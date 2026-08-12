@@ -817,6 +817,16 @@ export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/** Strips everything from the first `?` onward, so a signed or tokenized URL can't leak its
+ * access material (SAS tokens, share signatures) into stderr and from there into model context
+ * via an error message. String truncation rather than `new URL().origin` on purpose: the callers
+ * that need this most are the ones reporting a URL that failed to parse at all, where no URL
+ * object is available. Does not redact credentials in the userinfo or fragment parts. */
+export function redactUrlQuery(raw: string): string {
+  const q = raw.indexOf('?')
+  return q === -1 ? raw : raw.slice(0, q)
+}
+
 /** Basename of a path, mirroring Python's os.path.basename for convenience. */
 export function basename(p: string): string {
   return path.basename(p)

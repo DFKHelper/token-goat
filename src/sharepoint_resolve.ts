@@ -10,6 +10,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { redactUrlQuery } from './util.js'
+
 export interface ParsedShareUrl {
   tenant: string
   siteType: 'site' | 'personal'
@@ -28,9 +30,11 @@ export function parseShareUrl(url: string): ParsedShareUrl {
   try {
     u = new URL(url)
   } catch {
-    // Not parseable as a URL at all, so there's no query string to echo -- the raw input
-    // is safe here (there's nothing else to show).
-    throw new Error(`not a valid URL: ${url}`)
+    // Unparseable input can still carry access material after a `?` (a malformed share link
+    // keeps its token), and the origin+pathname redaction used below needs a URL object that
+    // doesn't exist here -- so redact by string truncation instead. Same contract either way:
+    // no query string ever reaches an error message.
+    throw new Error(`not a valid URL: ${redactUrlQuery(url)}`)
   }
 
   // SharePoint sharing links carry access material (tokens/signatures) in the query
