@@ -77,7 +77,9 @@ describe('mcp semantic tool projectRoot scoping', () => {
       expect(searchSemanticMock).toHaveBeenCalledTimes(1)
       const call = searchSemanticMock.mock.calls[0]
       // rootDir is searchSemantic's 6th positional argument (db, query, topK, modelName, maxDistance, rootDir).
-      expect(call?.[5]).toBe(scratchRoot)
+      // The MCP layer resolves the root once and passes the RESOLVED value on, so the raw
+      // argument spelling is deliberately not what arrives here.
+      expect(call?.[5]).toBe(resolveProjectRoot({ project: scratchRoot }))
       expect(call?.[5]).not.toBe(process.cwd())
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const block = (result.content as any[])[0]
