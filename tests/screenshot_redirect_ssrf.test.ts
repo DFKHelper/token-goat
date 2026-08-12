@@ -4,11 +4,18 @@
  * http://169.254.169.254/latest/meta-data/` rendered cloud instance metadata, and with
  * image_shrink.ocr_enabled that content is transcribed straight into model context.
  *
- * This drives a REAL browser through a REAL 302, because checking validateScreenshotUrl in
- * isolation cannot prove page.goto was actually prevented from following the redirect -- which
- * is the entire defect. A local server plays both the attacker and the metadata endpoint;
- * Chrome's --host-resolver-rules maps the two hostnames onto it, so no network access is needed
- * and no genuinely-private address is ever contacted. Skipped when no Chrome/Chromium is found.
+ * This drives a REAL browser, because checking validateScreenshotUrl in isolation cannot prove
+ * page.goto was actually prevented from following the redirect -- which is the entire defect. A
+ * local server plays both the attacker and the metadata endpoint; Chrome's --host-resolver-rules
+ * maps the two hostnames onto it, so no network access is needed and no genuinely-private address
+ * is ever contacted. Skipped when no Chrome/Chromium is found.
+ *
+ * Since the DNS-rebinding fix the policy judges resolved ADDRESSES, not hostnames, so this file's
+ * own setup -- a public-looking `attacker.example` whose resolver rule points at loopback -- is
+ * itself a rebinding case and is now refused one hop earlier, before the 302 is ever requested.
+ * That is a strictly stronger outcome, and the assertions below check it that way. The
+ * interception path that catches a redirect hop *after* an allowed first hop is exercised
+ * deterministically against the real handler in screenshot.test.ts.
  *
  * Chrome cannot start under the sandboxed HOME/LOCALAPPDATA that tests/setup/isolate-home.ts
  * installs (it can't create its user-data/crashpad dirs), so the real values it stashed in
@@ -74,8 +81,7 @@ describeWithBrowser('takeScreenshot redirect SSRF', () => {
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const port = (server.address() as { port: number }).port
-    // Both hostnames resolve to the local test server. The screenshot policy never sees this
-    // mapping -- it classifies the literal hostname in the URL, exactly as in production.
+    // Both hostnames resolve to the local test server. The screenshot policy never sees this mapping -- it classifies the literal hostname in the URL, exactly as in production.
     extraLaunchArgs = [
       `--host-resolver-rules=MAP attacker.example 127.0.0.1:${port},MAP 169.254.169.254 127.0.0.1:${port}`,
     ]
@@ -85,18 +91,24 @@ describeWithBrowser('takeScreenshot redirect SSRF', () => {
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     fs.rmSync(tmpDir, { recursive: true, force: true })
+    delete process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS']
     restoreSandboxedEnv()
     invalidateConfigCache()
   })
 
   it('renders an ordinary allowed page (control: the harness is not refusing everything)', async () => {
+    // Every address a local test server can bind is itself in the block list, so a rendering control has to run under the documented opt-out; the refusal cases below keep it on.
+    process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS'] = 'false'
+    invalidateConfigCache()
     const dest = path.join(tmpDir, 'control.png')
     const result = await takeScreenshot('http://attacker.example/ordinary', dest, { extraLaunchArgs })
     expect(fs.existsSync(result.path)).toBe(true)
     expect(result.originalBytes).toBeGreaterThan(0)
+    delete process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS']
+    invalidateConfigCache()
   }, 60_000)
 
-  it('refuses a 302 redirect to cloud metadata instead of rendering it', async () => {
+  it('refuses the metadata redirect chain instead of rendering it', async () => {
     const dest = path.join(tmpDir, 'redirect.png')
     let message = ''
     try {
@@ -105,10 +117,9 @@ describeWithBrowser('takeScreenshot redirect SSRF', () => {
     } catch (e) {
       message = e instanceof Error ? e.message : String(e)
     }
-    expect(message).toContain('169.254.169.254')
     expect(message).toMatch(/loopback\/link-local\/private IP/)
-    // The refusal must not merely be reported: no capture of the metadata page may exist, and
-    // the metadata body must not have reached the error text either.
+    expect(message).toMatch(/169\.254\.169\.254|attacker\.example/)
+    // The refusal must not merely be reported: no capture of the metadata page may exist, and the metadata body must not have reached the error text either.
     expect(message).not.toContain(METADATA_MARKER)
     expect(fs.existsSync(dest)).toBe(false)
     expect(fs.readdirSync(tmpDir).filter((f) => f.startsWith('redirect'))).toEqual([])

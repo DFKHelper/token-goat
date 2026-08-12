@@ -7,6 +7,7 @@
  * to local file reads -- so the output goes through one shrink pipeline.
  */
 
+import dns from 'node:dns/promises'
 import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
@@ -19,9 +20,10 @@ export interface ScreenshotOptions {
   width?: number
   height?: number
   fullPage?: boolean
-  /** Extra Chromium command-line flags. Not exposed on the CLI: this exists so the redirect-SSRF
-   * regression test can point a non-private hostname at a local server via `--host-resolver-rules`
-   * (the security policy under test is unaffected -- only DNS resolution is). */
+  /** Extra Chromium command-line flags. Not exposed on the CLI: this exists so the SSRF
+   * regression tests can point a hostname at a local server via `--host-resolver-rules`. Any MAP
+   * rule here is also read as the authoritative resolution for that host, because it IS what
+   * Chromium will dial -- the policy must judge the address actually connected to. */
   extraLaunchArgs?: string[]
 }
 
@@ -31,13 +33,13 @@ export interface ScreenshotResult {
   finalBytes: number
 }
 
-// Narrow structural type for the one puppeteer-core surface this module uses,
-// so the module compiles/tests without puppeteer-core's own types installed.
+// Narrow structural type for the one puppeteer-core surface this module uses, so the module compiles/tests without puppeteer-core's own types installed.
 interface PuppeteerRequest {
   url(): string
   isNavigationRequest(): boolean
   abort(): Promise<void>
   continue(): Promise<void>
+  frame?(): unknown
 }
 interface PuppeteerPage {
   setViewport(opts: { width: number; height: number }): Promise<void>
@@ -45,6 +47,7 @@ interface PuppeteerPage {
   on(event: 'request', handler: (req: PuppeteerRequest) => void): void
   goto(url: string, opts: { waitUntil: string; timeout: number }): Promise<unknown>
   screenshot(opts: { type: string; fullPage: boolean }): Promise<Buffer>
+  mainFrame?(): unknown
 }
 interface PuppeteerBrowser {
   newPage(): Promise<PuppeteerPage>
@@ -192,9 +195,13 @@ function parseIpv6Groups(text: string): number[] | null {
 function isBlockedIpv6(groups: number[]): boolean {
   if (groups.every((g) => g === 0)) return true // `::` unspecified -- connects to localhost
   if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true // ::1 loopback
-  // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96): classify by the embedded IPv4
-  // value, so [::ffff:169.254.169.254] is blocked for the same reason 169.254.169.254 is.
+  // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96): classify by the embedded IPv4 value, so [::ffff:169.254.169.254] is blocked for the same reason 169.254.169.254 is.
   if (groups.slice(0, 5).every((g) => g === 0) && (groups[5] === 0xffff || groups[5] === 0)) {
+    const embedded = groups[6] as number
+    return isBlockedIpv4Octets(embedded >> 8, embedded & 0xff)
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): the low 32 bits are a real IPv4 address a NAT64 gateway will translate back out, so 64:ff9b::a9fe:a9fe reaches 169.254.169.254. Same "encoded IPv4 must be decoded before classifying" class as the mapped/compatible case above.
+  if (groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
     const embedded = groups[6] as number
     return isBlockedIpv4Octets(embedded >> 8, embedded & 0xff)
   }
@@ -203,19 +210,28 @@ function isBlockedIpv6(groups: number[]): boolean {
   return false
 }
 
-// Loopback and link-local (incl. cloud metadata at 169.254.169.254) are always rejected when
-// literal IPs; RFC1918 private ranges are the other block class. This is a synchronous
-// literal-IP check ONLY -- a hostname that resolves to one of these ranges (DNS rebinding) is
-// NOT covered, since closing that requires an async DNS lookup this function deliberately
-// doesn't perform. The NAT64 well-known prefix (64:ff9b::/96) is likewise not decoded. Do not
-// read this as full SSRF protection.
-function isBlockedLiteralIp(host: string): boolean {
-  if (host === 'localhost') return true
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+/** Classifies one IP *address* (never a name). Split out of isBlockedLiteralIp so that addresses
+ * coming back from a DNS answer -- which are always literals -- run through the exact same
+ * ranges as a literal typed into the URL, instead of a second list that would drift. */
+export function isBlockedIpAddress(addr: string): boolean {
+  const bare = addr.replace(/^\[/, '').replace(/\]$/, '')
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare)
   if (v4) return isBlockedIpv4Octets(Number(v4[1]), Number(v4[2]))
-  const bare = host.replace(/^\[/, '').replace(/\]$/, '')
   const groups = parseIpv6Groups(bare)
   return groups !== null && isBlockedIpv6(groups)
+}
+
+/** Returns the first blocked address in a resolution answer, or null when every address is
+ * allowed. ANY blocked address rejects the whole host: an attacker owns their own record set, so
+ * a host answering both a public A record and a private one must not be reachable at all. */
+export function blockedAddressAmong(addresses: readonly string[]): string | null {
+  return addresses.find((addr) => isBlockedIpAddress(addr)) ?? null
+}
+
+// Loopback and link-local (incl. cloud metadata at 169.254.169.254) are always rejected when literal IPs; RFC1918 private ranges are the other block class. This is the synchronous literal-IP half of the policy; the DNS-rebinding half (a *name* that resolves into one of these ranges) lives in resolveTargetForPolicy below, which resolves the name and classifies the answers through the very same isBlockedIpAddress.
+function isBlockedLiteralIp(host: string): boolean {
+  if (host === 'localhost') return true
+  return isBlockedIpAddress(host)
 }
 
 /**
@@ -234,9 +250,7 @@ export function screenshotUrlRefusal(url: string): string | null {
   } catch {
     return `Invalid screenshot URL: ${redactUrlQuery(url)}`
   }
-  // A screenshot URL can be signed (SAS token, share signature), so error text shows only
-  // origin + pathname, never the query string -- otherwise a URL rejected for its scheme
-  // prints its own access token into stderr and from there into the model's context.
+  // A screenshot URL can be signed (SAS token, share signature), so error text shows only origin + pathname, never the query string -- otherwise a URL rejected for its scheme prints its own access token into stderr and from there into the model's context.
   const safeUrl = parsed.origin !== 'null' ? parsed.origin + parsed.pathname : redactUrlQuery(url)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return `Rejected screenshot URL scheme "${parsed.protocol}" (only http:/https: are allowed): ${safeUrl}`
@@ -256,6 +270,214 @@ export function validateScreenshotUrl(url: string): void {
   if (refusal !== null) throw new Error(refusal)
 }
 
+const HOST_RESOLVER_FLAG = '--host-resolver-rules='
+/** How many cross-host navigation hops (redirects) are re-launched with a fresh pin before the
+ * capture is abandoned. Real redirect chains are short; this only bounds a hostile loop. */
+const MAX_PIN_HOPS = 5
+
+/** Reads the `MAP <pattern> <target>` clauses out of any caller-supplied --host-resolver-rules.
+ * These rules ARE Chromium's resolver, so they are the truth about what it will dial; honouring
+ * them here keeps the address this module validates identical to the address that gets
+ * connected to, which is the whole point of the exercise. First rule for a pattern wins, matching
+ * Chromium's own first-match-wins ordering. */
+export function parseHostResolverMap(args: readonly string[]): Map<string, string> {
+  const rules = new Map<string, string>()
+  for (const arg of args) {
+    if (!arg.startsWith(HOST_RESOLVER_FLAG)) continue
+    for (const clause of arg.slice(HOST_RESOLVER_FLAG.length).split(',')) {
+      const parts = clause.trim().split(/\s+/)
+      if (parts.length < 3 || (parts[0] as string).toUpperCase() !== 'MAP') continue
+      const pattern = (parts[1] as string).toLowerCase()
+      if (!rules.has(pattern)) rules.set(pattern, parts[2] as string)
+    }
+  }
+  return rules
+}
+
+/** Strips the optional `:port` off a resolver-rule target, handling `[v6]:port` bracket form. A
+ * bare IPv6 literal keeps all its colons, so only a single trailing colon is treated as a port. */
+function mapTargetHost(target: string): string {
+  const bracketed = /^\[([^\]]+)\]/.exec(target)
+  if (bracketed) return bracketed[1] as string
+  const colon = target.indexOf(':')
+  if (colon !== -1 && target.indexOf(':', colon + 1) === -1) return target.slice(0, colon)
+  return target
+}
+
+function isIpLiteral(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || parseIpv6Groups(host) !== null
+}
+
+/** Resolves a hostname to every address it answers with, so the policy can be applied to the
+ * addresses rather than to the name. Literals resolve to themselves; resolver-rule targets take
+ * precedence over real DNS because Chromium will obey them; everything else goes to dns.lookup
+ * with all:true so both A and AAAA answers are classified, not just the first one. Rejects
+ * rather than returning empty on failure -- callers fail closed. */
+async function resolveHostAddresses(host: string, mapRules: Map<string, string>): Promise<string[]> {
+  const bare = host.replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
+  if (isIpLiteral(bare)) return [bare]
+  const mapped = mapRules.get(bare) ?? mapRules.get('*')
+  if (mapped !== undefined) {
+    const target = mapTargetHost(mapped)
+    // `~NOTFOUND` and friends are Chromium's "make this fail to resolve" directives.
+    if (target.startsWith('~')) throw new Error(`resolver rule maps it to ${target}`)
+    if (isIpLiteral(target)) return [target]
+    if (target.toLowerCase() !== bare) return resolveHostAddresses(target, mapRules)
+  }
+  const answers = await dns.lookup(bare, { all: true })
+  return answers.map((a) => a.address)
+}
+
+/** The async half of the screenshot target policy: resolve the host, then apply the identical
+ * address ranges the synchronous literal check uses. Returns the resolved addresses alongside the
+ * verdict so an allowed host can be *pinned* to exactly what was validated. */
+export async function resolveTargetForPolicy(
+  rawUrl: string,
+  mapRules: Map<string, string>,
+): Promise<{ reason: string | null; host: string; addresses: string[] }> {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return { reason: `Invalid screenshot URL: ${redactUrlQuery(rawUrl)}`, host: '', addresses: [] }
+  }
+  const host = parsed.hostname
+  const optIn = 'Set screenshot.block_private_targets = false in token-goat config to opt in for legitimate internal-service screenshots.'
+  let addresses: string[]
+  try {
+    addresses = await resolveHostAddresses(host, mapRules)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    // Fail closed: an unresolvable name must not be handed to the browser to resolve unchecked.
+    return { reason: `Rejected screenshot target "${host}": DNS resolution failed (${detail}). ${optIn}`, host, addresses: [] }
+  }
+  if (addresses.length === 0) {
+    return { reason: `Rejected screenshot target "${host}": DNS returned no addresses. ${optIn}`, host, addresses: [] }
+  }
+  const blocked = blockedAddressAmong(addresses)
+  if (blocked !== null) {
+    return {
+      reason: `Rejected screenshot target "${host}" (resolves to ${blocked}, a loopback/link-local/private IP). ${optIn}`,
+      host,
+      addresses,
+    }
+  }
+  return { reason: null, host, addresses }
+}
+
+/** Rewrites the launch args so every validated host carries a `MAP host <validated address>`
+ * pin. Without this, Chromium performs its OWN lookup after our check and the answer can differ
+ * -- that gap between the two resolutions IS the DNS-rebinding attack. Caller-supplied rules are
+ * kept first so their patterns keep winning, and are never duplicated. */
+function withPins(callerArgs: readonly string[], pins: ReadonlyMap<string, string>): string[] {
+  if (pins.size === 0) return [...callerArgs]
+  const clauses: string[] = []
+  for (const arg of callerArgs) {
+    if (arg.startsWith(HOST_RESOLVER_FLAG)) clauses.push(arg.slice(HOST_RESOLVER_FLAG.length))
+  }
+  for (const [host, addr] of pins) {
+    clauses.push(`MAP ${host} ${addr.includes(':') ? `[${addr}]` : addr}`)
+  }
+  const rest = callerArgs.filter((a) => !a.startsWith(HOST_RESOLVER_FLAG))
+  return [...rest, `${HOST_RESOLVER_FLAG}${clauses.join(',')}`]
+}
+
+function hostKey(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname.replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+/** True when Chromium's resolver is already fixed for this host, so no second lookup can differ
+ * from the one that was validated: a literal address, one of our pins, or a caller rule. */
+function isPinned(host: string, pins: ReadonlyMap<string, string>, mapRules: ReadonlyMap<string, string>): boolean {
+  return isIpLiteral(host) || pins.has(host) || mapRules.has(host) || mapRules.has('*')
+}
+
+interface CaptureContext {
+  puppeteer: PuppeteerModule
+  executablePath: string
+  launchArgs: string[]
+  enforce: boolean
+  mapRules: Map<string, string>
+  pins: Map<string, string>
+  opts: ScreenshotOptions | undefined
+}
+
+/** One browser launch + navigation. Resolves to the captured bytes, or -- when the main frame
+ * tries to navigate to a host that is not yet pinned (a cross-host redirect) -- to that hop's
+ * URL, so the caller can validate and pin it and try again. */
+async function captureOnce(url: string, ctx: CaptureContext): Promise<{ buffer: Buffer } | { redirectTo: string }> {
+  const browser = await ctx.puppeteer.launch({ headless: true, executablePath: ctx.executablePath, args: ctx.launchArgs })
+  try {
+    const page = await browser.newPage()
+    await page.setViewport({ width: ctx.opts?.width ?? 1280, height: ctx.opts?.height ?? 800 })
+    const mainFrame = typeof page.mainFrame === 'function' ? page.mainFrame() : undefined
+
+    // The pre-flight validation only sees the FIRST url; page.goto follows redirects, so `http://attacker.example/r` answering `302 Location: http://169.254.169.254/` would otherwise render cloud metadata. Request interception re-applies the identical policy -- now including the DNS-resolution half -- to every request the page makes: each redirect hop arrives as its own request event, and so does every sub-resource (image/script/iframe/XHR).
+    //
+    // data:/blob:/about: sub-resources are allowed through deliberately: they are page-local, cause no network egress, and aborting them would break rendering of legitimate inline images for no security gain.
+    const navRefusal: { reason: string | null } = { reason: null }
+    const hop: { url: string | null } = { url: null }
+    await page.setRequestInterception(true)
+    page.on('request', (req) => {
+      void (async () => {
+        try {
+          const target = req.url()
+          const isNav = req.isNavigationRequest()
+          if (!isNav && /^(data|blob|about):/i.test(target)) {
+            await req.continue()
+            return
+          }
+          const refusal = screenshotUrlRefusal(target)
+          if (refusal !== null) {
+            // A blocked navigation (i.e. a redirect hop) fails the whole render: that page is the thing being captured. A blocked sub-resource is just dropped -- the rest of the page is still a legitimate capture, and one hostile <img> shouldn't deny the user a screenshot. Only the first navigation refusal is kept; it diverted the render.
+            if (isNav && navRefusal.reason === null) navRefusal.reason = refusal
+            await req.abort()
+            return
+          }
+          if (ctx.enforce) {
+            const host = hostKey(target)
+            const isMainFrame = isNav && (mainFrame === undefined || req.frame?.() === mainFrame)
+            // A main-frame hop to an unpinned host is bounced back to the caller rather than continued: continuing would let Chromium resolve it independently of our check, which is exactly the rebinding gap. The retry re-launches with it pinned.
+            if (isMainFrame && !isPinned(host, ctx.pins, ctx.mapRules)) {
+              if (hop.url === null) hop.url = target
+              await req.abort()
+              return
+            }
+            const verdict = await resolveTargetForPolicy(target, ctx.mapRules)
+            if (verdict.reason !== null) {
+              if (isNav && navRefusal.reason === null) navRefusal.reason = verdict.reason
+              await req.abort()
+              return
+            }
+          }
+          await req.continue()
+        } catch {
+          // The request was already handled or the page went away mid-decision; nothing to do.
+        }
+      })()
+    })
+
+    try {
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30_000 })
+    } catch (err) {
+      if (hop.url !== null) return { redirectTo: hop.url }
+      // An aborted main-frame navigation surfaces as a generic net::ERR_FAILED, which would hide why it failed -- report the policy refusal instead.
+      if (navRefusal.reason !== null) throw new Error(navRefusal.reason, { cause: err })
+      throw err
+    }
+    if (hop.url !== null) return { redirectTo: hop.url }
+    // A blocked redirect can also resolve without rejecting (the browser lands on an error page), so refuse on any recorded navigation refusal rather than trusting goto's outcome alone.
+    if (navRefusal.reason !== null) throw new Error(navRefusal.reason)
+    return { buffer: await page.screenshot({ type: 'png', fullPage: ctx.opts?.fullPage ?? false }) }
+  } finally {
+    await browser.close()
+  }
+}
+
 export async function takeScreenshot(url: string, destPath: string, opts?: ScreenshotOptions): Promise<ScreenshotResult> {
   validateScreenshotUrl(url)
   const puppeteer = await loadPuppeteer()
@@ -272,67 +494,45 @@ export async function takeScreenshot(url: string, destPath: string, opts?: Scree
     )
   }
 
-  const browser = await puppeteer.launch({ headless: true, executablePath, args: opts?.extraLaunchArgs ?? [] })
-  try {
-    const page = await browser.newPage()
-    await page.setViewport({ width: opts?.width ?? 1280, height: opts?.height ?? 800 })
-
-    // The pre-flight validateScreenshotUrl above only sees the FIRST url; page.goto follows
-    // redirects, so `http://attacker.example/r` answering `302 Location: http://169.254.169.254/`
-    // would otherwise render cloud metadata. Request interception re-applies the identical policy
-    // to every request the page makes -- each redirect hop arrives as its own request event, and
-    // so does every sub-resource (image/script/iframe/XHR), closing the "page embeds
-    // <img src=http://169.254.169.254/...>" variant at the same time.
-    //
-    // What this does NOT cover: DNS rebinding (a public hostname resolving to a private IP is
-    // still allowed -- same async-lookup caveat as isBlockedLiteralIp), and anything the browser
-    // fetches outside the request pipeline. data:/blob: sub-resources are allowed through
-    // deliberately: they are page-local, cause no network egress, and aborting them would break
-    // rendering of legitimate inline images for no security gain.
-    const navRefusal: { reason: string | null } = { reason: null }
-    await page.setRequestInterception(true)
-    page.on('request', (req) => {
-      const target = req.url()
-      const isNav = req.isNavigationRequest()
-      if (!isNav && /^(data|blob|about):/i.test(target)) {
-        void req.continue()
-        return
-      }
-      const refusal = screenshotUrlRefusal(target)
-      if (refusal === null) {
-        void req.continue()
-        return
-      }
-      // A blocked navigation (i.e. a redirect hop) fails the whole render: that page is the
-      // thing being captured. A blocked sub-resource is just dropped -- the rest of the page is
-      // still a legitimate capture, and one hostile <img> shouldn't deny the user a screenshot.
-      // Only the first navigation refusal is kept; it is the one that diverted the render.
-      if (isNav && navRefusal.reason === null) navRefusal.reason = refusal
-      void req.abort()
-    })
-
-    try {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30_000 })
-    } catch (err) {
-      // An aborted main-frame navigation surfaces as a generic net::ERR_FAILED, which would hide
-      // why it failed -- report the policy refusal instead.
-      if (navRefusal.reason !== null) throw new Error(navRefusal.reason, { cause: err })
-      throw err
+  const callerArgs = opts?.extraLaunchArgs ?? []
+  const mapRules = parseHostResolverMap(callerArgs)
+  const enforce = loadConfig().screenshot.block_private_targets
+  const pins = new Map<string, string>()
+  let targetUrl = url
+  let buffer: Buffer | null = null
+  for (let attempt = 0; attempt < MAX_PIN_HOPS; attempt++) {
+    if (enforce) {
+      // Resolve the name, refuse on any private answer, then PIN the surviving address into Chromium's resolver. Validating a lookup and letting Chromium run its own is the rebinding hole; the pin makes the validated address the connected address.
+      const verdict = await resolveTargetForPolicy(targetUrl, mapRules)
+      if (verdict.reason !== null) throw new Error(verdict.reason)
+      const host = hostKey(targetUrl)
+      if (!isPinned(host, pins, mapRules)) pins.set(host, verdict.addresses[0] as string)
     }
-    // A blocked redirect can also resolve without rejecting (the browser lands on an error page),
-    // so refuse on any recorded navigation refusal rather than trusting goto's outcome alone.
-    if (navRefusal.reason !== null) throw new Error(navRefusal.reason)
-    const buffer = await page.screenshot({ type: 'png', fullPage: opts?.fullPage ?? false })
-    const shrunk = await shrinkImage(buffer)
-    const finalBuffer = shrunk?.data ?? buffer
-    // shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the shrink
-    // threshold; writing those bytes under the originally-requested (e.g. `.png`) extension
-    // would silently mislabel the file's actual format. Rename the destination extension to
-    // match the real output format and report the actual saved path.
-    const finalPath = shrunk ? withExtension(destPath, shrunk.format) : destPath
-    atomicWriteBytes(finalPath, finalBuffer)
-    return { path: finalPath, originalBytes: buffer.length, finalBytes: finalBuffer.length }
-  } finally {
-    await browser.close()
+    const ctx: CaptureContext = {
+      puppeteer,
+      executablePath,
+      launchArgs: withPins(callerArgs, pins),
+      enforce,
+      mapRules,
+      pins,
+      opts,
+    }
+    const outcome = await captureOnce(targetUrl, ctx)
+    if ('buffer' in outcome) {
+      buffer = outcome.buffer
+      break
+    }
+    targetUrl = outcome.redirectTo
   }
+  if (buffer === null) {
+    throw new Error(
+      `Screenshot abandoned after ${MAX_PIN_HOPS} cross-host redirect hops (last: ${redactUrlQuery(targetUrl)})`,
+    )
+  }
+  const shrunk = await shrinkImage(buffer)
+  const finalBuffer = shrunk?.data ?? buffer
+  // shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the shrink threshold; writing those bytes under the originally-requested (e.g. `.png`) extension would silently mislabel the file's actual format. Rename the destination extension to match the real output format and report the actual saved path.
+  const finalPath = shrunk ? withExtension(destPath, shrunk.format) : destPath
+  atomicWriteBytes(finalPath, finalBuffer)
+  return { path: finalPath, originalBytes: buffer.length, finalBytes: finalBuffer.length }
 }

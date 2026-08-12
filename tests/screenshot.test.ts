@@ -6,17 +6,12 @@ import { resolveBrowserExecutablePath, takeScreenshot } from '../src/screenshot.
 import { clearModuleCaches } from '../src/reset.js'
 import { shrinkImage } from '../src/image_shrink.js'
 
-// Stub out the real browser drive so takeScreenshot's own extension/path-correction logic can
-// be exercised without an actual Chrome install or network access. The captured "PNG" bytes
-// are arbitrary; what matters is that shrinkImage (mocked below) reports a format change and
-// takeScreenshot reacts to it correctly.
+// Stub out the real browser drive so takeScreenshot's own extension/path-correction logic can be exercised without an actual Chrome install or network access. The captured "PNG" bytes are arbitrary; what matters is that shrinkImage (mocked below) reports a format change and takeScreenshot reacts to it correctly.
 vi.mock('puppeteer-core', () => ({
   launch: vi.fn(async () => ({
     newPage: vi.fn(async () => ({
       setViewport: vi.fn(async () => {}),
-      // takeScreenshot now re-validates every navigation/sub-resource via request
-      // interception (the redirect-SSRF fix); these fakes just have to exist. The real
-      // interception behaviour is covered end-to-end in screenshot_redirect_ssrf.test.ts.
+      // takeScreenshot now re-validates every navigation/sub-resource via request interception (the redirect-SSRF fix); these fakes just have to exist. The real interception behaviour is covered end-to-end in screenshot_redirect_ssrf.test.ts.
       setRequestInterception: vi.fn(async () => {}),
       on: vi.fn(() => {}),
       goto: vi.fn(async () => {}),
@@ -50,10 +45,7 @@ afterEach(() => {
 })
 
 describe('resolveBrowserExecutablePath', () => {
-  // Isolates the Windows-candidate env vars so tests are deterministic even on a machine
-  // (like this project's own dev box) that has a real Chrome install under Program Files.
-  // localAppData defaults to a dir with nothing in it; pass an override to test the
-  // Playwright-cache-under-LOCALAPPDATA discovery path specifically.
+  // Isolates the Windows-candidate env vars so tests are deterministic even on a machine (like this project's own dev box) that has a real Chrome install under Program Files. localAppData defaults to a dir with nothing in it; pass an override to test the Playwright-cache-under-LOCALAPPDATA discovery path specifically.
   function withIsolatedWindowsCandidates<T>(dir: string, fn: () => T, localAppData?: string): T {
     const saved = {
       LOCALAPPDATA: process.env['LOCALAPPDATA'],
@@ -123,10 +115,7 @@ describe('resolveBrowserExecutablePath', () => {
 })
 
 describe('takeScreenshot', () => {
-  // Regression: shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the
-  // shrink threshold, but the shrunk bytes were written verbatim under the originally
-  // requested (e.g. `.png`) destPath -- silently mislabeling the file's real format -- and the
-  // success result still reported that same requested path.
+  // Regression: shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the shrink threshold, but the shrunk bytes were written verbatim under the originally requested (e.g. `.png`) destPath -- silently mislabeling the file's real format -- and the success result still reported that same requested path.
   it('renames the destination extension to match a format-changing shrink and reports the actual saved path', async () => {
     const dir = makeTmpDir()
     const fakeChrome = path.join(dir, 'chrome.exe')
@@ -141,7 +130,11 @@ describe('takeScreenshot', () => {
     } as Awaited<ReturnType<typeof shrinkImage>>)
 
     const destPath = path.join(dir, 'out.png')
-    const result = await takeScreenshot('https://example.com', destPath, { executablePath: fakeChrome })
+    const result = await takeScreenshot('https://example.com', destPath, {
+      executablePath: fakeChrome,
+      // Pins example.com to a literal so the new address-level policy needs no real DNS lookup.
+      extraLaunchArgs: ['--host-resolver-rules=MAP example.com 93.184.216.34'],
+    })
 
     const expectedPath = path.join(dir, 'out.jpg')
     expect(result.path).toBe(expectedPath)
@@ -158,7 +151,11 @@ describe('takeScreenshot', () => {
     vi.mocked(shrinkImage).mockResolvedValueOnce(null)
 
     const destPath = path.join(dir, 'out.png')
-    const result = await takeScreenshot('https://example.com', destPath, { executablePath: fakeChrome })
+    const result = await takeScreenshot('https://example.com', destPath, {
+      executablePath: fakeChrome,
+      // Pins example.com to a literal so the new address-level policy needs no real DNS lookup.
+      extraLaunchArgs: ['--host-resolver-rules=MAP example.com 93.184.216.34'],
+    })
 
     expect(result.path).toBe(destPath)
     expect(fs.existsSync(destPath)).toBe(true)
