@@ -35,6 +35,10 @@ import {
   runExports,
   findSpecSeparator,
   parseLineRange,
+  ConfinementIdentityError,
+  fileIdentity,
+  pinKey,
+  withPinnedReads,
 } from './read_commands.js'
 import { recordStat } from './stats.js'
 import {
@@ -203,19 +207,42 @@ function resolveToolRoot(projectRoot: string | undefined): string {
 }
 
 /**
- * True when `target` resolves inside `resolvedRoot`, which must already be the absolute root
- * produced by {@link resolveToolRoot} -- see the invariant documented there.
+ * Decides whether `target` resolves inside `resolvedRoot`, which must already be the absolute
+ * root produced by {@link resolveToolRoot} -- see the invariant documented there.
  *
  * Both sides go through `fs.realpathSync` first: a path that normalises inside the root but
  * resolves through a symlink to somewhere outside it is the classic bypass, so the REAL path is
  * compared against the REAL root, not the nominal one.
+ *
+ * Returns the resolved and real paths and the target's identity alongside the verdict, because a
+ * boolean is not enough to make the decision stick: resolving a path proves nothing about the
+ * object the read will later open, so the caller pins that object's identity.
+ *
+ * ORDER MATTERS. The identity stat is taken BEFORE the realpath the verdict is computed from, and
+ * that is not an accident. Stat last and a swap landing between the two calls would be validated
+ * in its pre-swap state but pinned in its post-swap state -- the pin would then certify the
+ * attacker's object as the one that passed the check, which is worse than no pin at all. Stat
+ * first and every ordering is safe: a swap before the stat is seen by the verdict and refused as
+ * out-of-root, a swap after it is caught by the identity comparison at open time.
  */
-function isWithinProjectRoot(target: string, resolvedRoot: string): boolean {
+function checkWithinProjectRoot(
+  target: string,
+  resolvedRoot: string,
+): { readonly inside: boolean; readonly abs: string; readonly real: string; readonly identity: string | null } {
   const root = forCompare(normalizePath(realPathOrSelf(resolvedRoot)))
   // Relative targets resolve against the project root, not the server process's cwd -- that is what the read_commands handlers themselves do with the same projectRoot this gate was handed, so resolving against cwd here would reject a legitimate relative spec whose read would have succeeded.
   const abs = path.resolve(resolvedRoot, normalizePath(target))
-  const real = forCompare(normalizePath(realPathOrSelf(abs)))
-  return real === root || real.startsWith(root.endsWith('/') ? root : root + '/')
+  // A target that does not exist (or cannot be stat'd) yields no identity and so no pin: a spec may legitimately name a missing file, and that read must fail as an ordinary "could not read" rather than be refused as a swap.
+  let identity: string | null
+  try {
+    identity = fileIdentity(fs.statSync(abs, { bigint: true }))
+  } catch {
+    identity = null
+  }
+  // The realpath is computed ONCE here and handed back, so the caller can key a pin on it without a second realpathSync -- this gate's syscall cost stays at one stat plus one realpath per target.
+  const realNative = realPathOrSelf(abs)
+  const real = forCompare(normalizePath(realNative))
+  return { inside: real === root || real.startsWith(root.endsWith('/') ? root : root + '/'), abs, real: realNative, identity }
 }
 
 /**
@@ -240,8 +267,13 @@ function specFilePart(spec: string): string {
   return colonIdx === -1 ? spec : spec.slice(0, colonIdx)
 }
 
-/** Either every target passed confinement (`targets` is what the caller must forward to its `run*` call), or the call is refused. */
-type ConfinementResult = { readonly ok: true; readonly targets: readonly string[] } | { readonly ok: false; readonly refusal: CallToolResult }
+/** Either every target passed confinement (`targets` is what the caller must forward to its `run*` call, `pins` what it must install around it via {@link withConfinedRead}), or the call is refused. */
+type ConfinementResult =
+  | { readonly ok: true; readonly targets: readonly string[]; readonly pins: ReadonlyMap<string, string> }
+  | { readonly ok: false; readonly refusal: CallToolResult }
+
+// Shared empty pin set for the confinement-disabled path, so `withPinnedReads` installs a map that can never match and the read helpers stay on their unmodified branch. A frozen-by-convention module constant rather than a fresh Map per call: it is only ever read.
+const NO_PINS: ReadonlyMap<string, string> = new Map<string, string>()
 
 /**
  * CONFINEMENT INVARIANT: a handler must pass `targets` from this function's own return value to its `run*` call, never the raw argument it validated -- the value checked and the value used must be the same reference, or a future normalisation step (trim, comma-strip, `@`/`::` parsing -- four such variants have shipped and been fixed individually in this function's history) reintroduces the bypass by construction.
@@ -253,14 +285,16 @@ type ConfinementResult = { readonly ok: true; readonly targets: readonly string[
  * here would (as it did) validate a different string than the one that gets read.
  */
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {
-  if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets }
+  if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets, pins: NO_PINS }
   const checked: string[] = []
+  const pins = new Map<string, string>()
   for (const raw of targets) {
     const parts = splitCommas ? raw.split(',') : [raw]
     for (const part of parts) {
       const file = specFilePart(part)
       if (file === '') continue
-      if (!isWithinProjectRoot(file, resolvedRoot)) {
+      const check = checkWithinProjectRoot(file, resolvedRoot)
+      if (!check.inside) {
         return {
           ok: false,
           refusal: toCallToolResult({
@@ -271,10 +305,38 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
           }),
         }
       }
+      // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. Both spellings are recorded -- the pre-realpath absolute path and the realpath -- because which one reaches the read helper depends on the handler, and a lookup that misses degrades silently to the unpinned behaviour.
+      if (check.identity !== null) {
+        pins.set(pinKey(check.abs), check.identity)
+        pins.set(pinKey(check.real), check.identity)
+      }
     }
     checked.push(splitCommas ? parts.join(',') : parts[0]!)
   }
-  return { ok: true, targets: checked }
+  return { ok: true, targets: checked, pins }
+}
+
+/**
+ * Runs a gated handler body with the gate's identity pins installed, converting a swap detected at
+ * open time into the same shape of refusal an out-of-root target gets.
+ *
+ * The conversion is not cosmetic: without it a detected bypass escapes the tool as an unhandled
+ * MCP protocol error rather than a confinement decision the client can read.
+ */
+function withConfinedRead(pins: ReadonlyMap<string, string>, fn: () => CallToolResult): CallToolResult {
+  try {
+    return withPinnedReads(pins, fn)
+  } catch (err) {
+    if (err instanceof ConfinementIdentityError) {
+      return toCallToolResult({
+        text:
+          `${err.message} The MCP tools are confined to the workspace. ` +
+          'Set mcp.confine_reads_to_project_root = false (or TOKEN_GOAT_MCP_CONFINE_READS=0) to allow cross-root reads.',
+        code: 1,
+      })
+    }
+    throw err
+  }
 }
 
 /** Builds the MCP server and registers every tool listed in tests/mcp_server.test.ts's TOOL_NAMES, which is asserted against a live listTools() call. Does not connect a transport. */
@@ -308,20 +370,24 @@ export function createMcpServer(): McpServer {
       const { name, limit, file, kind, json, projectRoot } = args
       const root = resolveToolRoot(projectRoot)
       let confinedFile = file
+      let pins = NO_PINS
       if (file !== undefined) {
         const gate = confineTargets([file], root)
         if (!gate.ok) return gate.refusal
         confinedFile = gate.targets[0]
+        pins = gate.pins
       }
-      return toCallToolResult(
-        runSymbol({
-          name,
-          limit: limit ?? 20,
-          ...(confinedFile !== undefined ? { file: confinedFile } : {}),
-          ...(kind !== undefined ? { kind } : {}),
-          ...(json === true ? { json: true } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(pins, () =>
+        toCallToolResult(
+          runSymbol({
+            name,
+            limit: limit ?? 20,
+            ...(confinedFile !== undefined ? { file: confinedFile } : {}),
+            ...(kind !== undefined ? { kind } : {}),
+            ...(json === true ? { json: true } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -345,14 +411,16 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([spec], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResult(
-        runRead({
-          spec: gate.targets[0]!,
-          ...(json === true ? { json: true } : {}),
-          ...(forceRefresh === true ? { forceRefresh: true } : {}),
-          ...(stats === true ? { stats: true } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResult(
+          runRead({
+            spec: gate.targets[0]!,
+            ...(json === true ? { json: true } : {}),
+            ...(forceRefresh === true ? { forceRefresh: true } : {}),
+            ...(stats === true ? { stats: true } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -372,12 +440,14 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([spec], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResult(
-        runSection({
-          spec: gate.targets[0]!,
-          ...(json === true ? { json: true } : {}),
-          ...(projectRoot !== undefined ? { projectRoot } : {}),
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResult(
+          runSection({
+            spec: gate.targets[0]!,
+            ...(json === true ? { json: true } : {}),
+            ...(projectRoot !== undefined ? { projectRoot } : {}),
+          }),
+        ),
       )
     },
   )
@@ -400,15 +470,17 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([file], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResult(
-        runSkeleton({
-          file: gate.targets[0]!,
-          ...(json === true ? { json: true } : {}),
-          ...(minLines !== undefined ? { minLines } : {}),
-          ...(forceRefresh === true ? { forceRefresh: true } : {}),
-          ...(stats === true ? { stats: true } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResult(
+          runSkeleton({
+            file: gate.targets[0]!,
+            ...(json === true ? { json: true } : {}),
+            ...(minLines !== undefined ? { minLines } : {}),
+            ...(forceRefresh === true ? { forceRefresh: true } : {}),
+            ...(stats === true ? { stats: true } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -431,15 +503,17 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([file], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResult(
-        runOutline({
-          file: gate.targets[0]!,
-          ...(json === true ? { json: true } : {}),
-          ...(minLines !== undefined ? { minLines } : {}),
-          ...(forceRefresh === true ? { forceRefresh: true } : {}),
-          ...(stats === true ? { stats: true } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResult(
+          runOutline({
+            file: gate.targets[0]!,
+            ...(json === true ? { json: true } : {}),
+            ...(minLines !== undefined ? { minLines } : {}),
+            ...(forceRefresh === true ? { forceRefresh: true } : {}),
+            ...(stats === true ? { stats: true } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -567,15 +641,17 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([spec], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResultFromExitCode(() =>
-        runRefs({
-          spec: gate.targets[0]!,
-          ...(callers === true ? { callers: true } : {}),
-          ...(json === true ? { json: true } : {}),
-          ...(limit !== undefined ? { limit } : {}),
-          ...(top !== undefined ? { top } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResultFromExitCode(() =>
+          runRefs({
+            spec: gate.targets[0]!,
+            ...(callers === true ? { callers: true } : {}),
+            ...(json === true ? { json: true } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(top !== undefined ? { top } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -605,15 +681,17 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([spec], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResultFromExitCode(() =>
-        runBrief({
-          spec: gate.targets[0]!,
-          ...(json === true ? { json: true } : {}),
-          ...(limit !== undefined ? { limit } : {}),
-          ...(context !== undefined ? { context } : {}),
-          ...(excludeTests === true ? { excludeTests: true } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResultFromExitCode(() =>
+          runBrief({
+            spec: gate.targets[0]!,
+            ...(json === true ? { json: true } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(context !== undefined ? { context } : {}),
+            ...(excludeTests === true ? { excludeTests: true } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -695,16 +773,18 @@ export function createMcpServer(): McpServer {
       const gate = confineTargets(searchPath === undefined ? [root] : searchPath, root, false)
       if (!gate.ok) return gate.refusal
       const confinedPath = searchPath === undefined ? undefined : [...gate.targets]
-      return toCallToolResultFromExitCode(() =>
-        runGrep({
-          pattern,
-          ...(confinedPath !== undefined && confinedPath.length > 0 ? { path: confinedPath } : {}),
-          ...(json === true ? { json: true } : {}),
-          ...(maxLines !== undefined ? { maxLines } : {}),
-          ...(recursive === false ? { recursive: false } : {}),
-          ...(context !== undefined ? { context } : {}),
-          projectRoot: root,
-        }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResultFromExitCode(() =>
+          runGrep({
+            pattern,
+            ...(confinedPath !== undefined && confinedPath.length > 0 ? { path: confinedPath } : {}),
+            ...(json === true ? { json: true } : {}),
+            ...(maxLines !== undefined ? { maxLines } : {}),
+            ...(recursive === false ? { recursive: false } : {}),
+            ...(context !== undefined ? { context } : {}),
+            projectRoot: root,
+          }),
+        ),
       )
     },
   )
@@ -724,8 +804,10 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([file], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResultFromExitCode(() =>
-        runImports({ file: gate.targets[0]!, ...(json === true ? { json: true } : {}), projectRoot: root }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResultFromExitCode(() =>
+          runImports({ file: gate.targets[0]!, ...(json === true ? { json: true } : {}), projectRoot: root }),
+        ),
       )
     },
   )
@@ -745,8 +827,10 @@ export function createMcpServer(): McpServer {
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([file], root)
       if (!gate.ok) return gate.refusal
-      return toCallToolResultFromExitCode(() =>
-        runExports({ file: gate.targets[0]!, ...(json === true ? { json: true } : {}), projectRoot: root }),
+      return withConfinedRead(gate.pins, () =>
+        toCallToolResultFromExitCode(() =>
+          runExports({ file: gate.targets[0]!, ...(json === true ? { json: true } : {}), projectRoot: root }),
+        ),
       )
     },
   )

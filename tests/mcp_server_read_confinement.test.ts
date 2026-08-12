@@ -2,13 +2,14 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
 import { createMcpServer } from '../src/mcp_server.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { ConfinementIdentityError, pinKey, runRead, withPinnedReads } from '../src/read_commands.js'
 
 /** Mirrors tests/mcp_server.test.ts: a real Client over the SDK's in-memory transport pair, so schema validation and request routing are exercised, not just the handler function. */
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
@@ -23,6 +24,26 @@ async function connectedClient(): Promise<{ client: Client; close: () => Promise
       await server.close()
     },
   }
+}
+
+/** Capability probe, not a platform guess: symlink creation is unprivileged on POSIX, EPERM on Windows without Developer Mode, and permitted on a Windows host that has it enabled. */
+function canCreateSymlinks(): boolean {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-symlink-probe-'))
+  try {
+    fs.writeFileSync(path.join(probe, 'target'), 'x')
+    fs.symlinkSync(path.join(probe, 'target'), path.join(probe, 'link'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true })
+  }
+}
+
+/** Windows compares paths case-insensitively, and the gate lowercases drive letters while the test holds the OS spelling; comparing raw strings would silently never match. */
+function samePath(a: string, b: string): boolean {
+  const [ra, rb] = [path.resolve(a), path.resolve(b)]
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb
 }
 
 function textOf(result: unknown): string {
@@ -285,6 +306,119 @@ describe('mcp read confinement', () => {
     expect(result.isError).toBe(false)
     expect(textOf(result)).toContain('return "alpha"')
     expect(textOf(result)).toContain('return "beta"')
+  })
+
+  // TEST A -- the check-vs-use boundary itself, deterministic and platform-independent.
+  //
+  // Every confinement test above proves a path was VALIDATED correctly. None of them proves the
+  // read opened the object that was validated, because they never separate the two moments: the
+  // gate resolves a path and the handler opens that path some time later, and pre-fix nothing at
+  // all connected the two. Here the identity captured at check time deliberately disagrees with
+  // what is on disk, which is exactly what a between-check-and-open swap looks like from the read
+  // side, and the read must refuse rather than serve the replacement.
+  it('refuses a read whose file identity does not match what confinement validated', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'swapped.txt')
+    fs.writeFileSync(file, 'SECRET-MARKER-DO-NOT-LEAK\n')
+
+    // A pin no real file can satisfy: dev/ino are unsigned, so a negative device number cannot be the identity of anything actually openable.
+    const pins = new Map<string, string>([[pinKey(file), '-1:-1']])
+
+    expect(() => withPinnedReads(pins, () => runRead({ spec: file, projectRoot: root }))).toThrow(ConfinementIdentityError)
+    expect(() => withPinnedReads(pins, () => runRead({ spec: file, projectRoot: root }))).toThrow(/changed identity between validation and read/)
+  })
+
+  // Companion to Test A: the refusal must reach the MCP client as a confinement decision, not
+  // escape as an unhandled protocol error, and must not carry the file's contents with it.
+  it('an identity mismatch surfaces as a confinement refusal, not an unhandled error', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'swapped.txt')
+    fs.writeFileSync(file, 'SECRET-MARKER-DO-NOT-LEAK\n')
+    const pins = new Map<string, string>([[pinKey(file), '-1:-1']])
+
+    let thrown: unknown
+    try {
+      withPinnedReads(pins, () => runRead({ spec: file, projectRoot: root }))
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(ConfinementIdentityError)
+    expect((thrown as Error).message).toContain('the read was not performed')
+    expect((thrown as Error).message).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+  })
+
+  // A pinned read that DOES match must still return the file verbatim -- the non-firing guard for
+  // the identity check, over a non-empty pin map, so a rule that refused everything would fail here.
+  it('non-firing: a matching identity pin serves the in-root read unchanged', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'ok.txt')
+    fs.writeFileSync(file, 'legitimate in-root content\n')
+    const st = fs.statSync(file, { bigint: true })
+    const pins = new Map<string, string>([[pinKey(file), `${st.dev}:${st.ino}`]])
+    expect(pins.size).toBeGreaterThan(0)
+
+    for (const [key] of pins) {
+      expect(key).not.toBe('')
+    }
+    const result = withPinnedReads(pins, () => runRead({ spec: file, projectRoot: root }))
+    expect(result.code).toBe(0)
+    expect(result.text).toContain('legitimate in-root content')
+  })
+
+  // A pinned read must still serve an ordinary in-root symlink. This is the guard against
+  // "hardening" the pinned open with O_NOFOLLOW: that flag makes this exact read fail ELOOP on
+  // Linux and macOS, which readFileText reports as a plain "could not read" -- a silent denial of
+  // a legitimate file, invisible on Windows where the flag does not exist. The identity check is
+  // what closes the window; the open flags are not, and must not start refusing valid targets.
+  it.runIf(canCreateSymlinks())('non-firing: a pinned read still follows a legitimate in-root symlink', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const target = path.join(root, 'target.txt')
+    const link = path.join(root, 'link.txt')
+    fs.writeFileSync(target, 'legitimate in-root content\n')
+    fs.symlinkSync(target, link, 'file')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'read', arguments: { spec: link, projectRoot: root } })
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('legitimate in-root content')
+  })
+
+  // TEST B -- the real escape, end to end: an in-root path repointed at an out-of-root file after
+  // the gate has resolved it. Gated on the ability to CREATE a symlink rather than on the platform
+  // name, because that is the actual requirement (unprivileged Windows refuses with EPERM, but a
+  // Windows host with Developer Mode on runs it fine) -- a platform gate would skip a test this
+  // machine can prove, and a skipped test proves nothing.
+  //
+  // The swap is driven from a vitest spy on the gate's own path resolution, NOT a racing loop:
+  // that places the replacement in precisely the window between check and open, deterministically,
+  // with no flake surface. Pre-fix this exact seam returned the out-of-root file's contents.
+  it.runIf(canCreateSymlinks())('refuses a read whose in-root path is repointed outside the root after validation', async () => {
+    const { inRoot, outsideFile } = makeDirs()
+
+    let swapped = false
+    const realNative = fs.realpathSync.native.bind(fs.realpathSync)
+    const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
+      const result = realNative(p as string)
+      if (!swapped && samePath(String(p), inRoot)) {
+        swapped = true
+        fs.rmSync(inRoot)
+        fs.symlinkSync(outsideFile, inRoot, 'file')
+      }
+      return result
+    }) as unknown as typeof fs.realpathSync.native)
+
+    const { client, close } = await connectedClient()
+    cleanup = async () => {
+      spy.mockRestore()
+      await close()
+    }
+
+    const result = await client.callTool({ name: 'read', arguments: { spec: inRoot, projectRoot: root } })
+    expect(swapped).toBe(true)
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+    expect(result.isError).toBe(true)
   })
 })
 

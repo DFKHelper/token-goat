@@ -11,7 +11,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs } from './index_reader.js'
-import { resolveIndexPath, toDisplayPath } from './paths.js'
+import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
@@ -92,10 +92,76 @@ function fileExists(p: string): boolean {
   }
 }
 
-function readFileText(p: string): string | null {
+/**
+ * Thrown when the identity of the file actually opened does not match the identity captured when
+ * that path was validated -- i.e. the object behind the path was swapped between check and use.
+ *
+ * This is deliberately NOT swallowed by the `catch { return null }` fallbacks around it: a silent
+ * "could not read" would make a detected confinement bypass indistinguishable from a missing file.
+ */
+export class ConfinementIdentityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConfinementIdentityError'
+  }
+}
+
+// Identity pins for the confined read currently executing, keyed by canonical absolute path. Null for every CLI caller, which is the default: the optional chaining in the read helpers below short-circuits before pinKey() runs, so the non-MCP path costs exactly zero extra syscalls and zero extra work.
+let activePins: ReadonlyMap<string, string> | null = null
+
+/** Canonical map key for an absolute path. Exported so mcp_server.ts pins with the exact same canonicalization the read side looks up with -- one function, so the two cannot drift the way a duplicated normalisation would. */
+export function pinKey(absPath: string): string {
+  const normalized = normalizePath(absPath)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+/** `dev:ino` identity string for a bigint stat result. Bigint, not number: a Windows NTFS file index exceeds 2^53, so the ordinary numeric stat would truncate it and could collapse two distinct files onto one identity. */
+export function fileIdentity(st: { readonly dev: bigint; readonly ino: bigint }): string {
+  return `${st.dev}:${st.ino}`
+}
+
+/** Runs `fn` with `pins` installed as the active identity pins, restoring the PREVIOUS pins (not null) in a finally so nesting is safe. Every MCP tool handler is synchronous, so a module-scoped variable is sound here; do not make this async. */
+export function withPinnedReads<T>(pins: ReadonlyMap<string, string> | null, fn: () => T): T {
+  const previous = activePins
+  activePins = pins
   try {
+    return fn()
+  } finally {
+    activePins = previous
+  }
+}
+
+/**
+ * Opens `p`, verifies the OPENED DESCRIPTOR's identity against `pinned`, and returns its bytes.
+ *
+ * Checking the descriptor rather than the path is the whole point: the confinement gate validated
+ * a path, and between that check and this open the path can be repointed at something outside the
+ * root. fstat answers "what did I actually open", which a second path-based stat cannot.
+ */
+function readPinnedBytes(p: string, pinned: string): Buffer {
+  // Deliberately a plain O_RDONLY, NOT O_NOFOLLOW. Adding O_NOFOLLOW here looks like free hardening and is not: measured on Linux, opening an ordinary in-root symlink with it fails ELOOP, which this function's caller turns into a silent "could not read" for a file the user is entitled to. It would also buy nothing, since the fstat identity comparison below -- not the open flags -- is what closes the check-vs-use window, and it resolves symlinks the same way the gate's stat did.
+  const fd = fs.openSync(p, fs.constants.O_RDONLY)
+  try {
+    const actual = fileIdentity(fs.fstatSync(fd, { bigint: true }))
+    if (actual !== pinned) {
+      throw new ConfinementIdentityError(
+        `refused: "${p}" changed identity between validation and read (validated ${pinned}, opened ${actual}). ` +
+          'The file was replaced or redirected after the confinement check, so the read was not performed.',
+      )
+    }
+    return fs.readFileSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+function readFileText(p: string): string | null {
+  const pinned = activePins?.get(pinKey(path.resolve(p)))
+  try {
+    if (pinned !== undefined) return readPinnedBytes(p, pinned).toString('utf-8')
     return fs.readFileSync(p, 'utf-8')
-  } catch {
+  } catch (err) {
+    if (err instanceof ConfinementIdentityError) throw err
     return null
   }
 }
@@ -104,9 +170,12 @@ function readFileText(p: string): string | null {
  * that must never be decoded as UTF-8 before parsing -- decoding first would corrupt any byte
  * sequence that isn't valid UTF-8, which is the common case for compressed/binary member data. */
 function readFileBytes(p: string): Buffer | null {
+  const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
+    if (pinned !== undefined) return readPinnedBytes(p, pinned)
     return fs.readFileSync(p)
-  } catch {
+  } catch (err) {
+    if (err instanceof ConfinementIdentityError) throw err
     return null
   }
 }
