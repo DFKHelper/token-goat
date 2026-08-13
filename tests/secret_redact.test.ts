@@ -168,6 +168,23 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).toBe('secret=[REDACTED:generic_secret_assignment] the rest of this sentence continues normally')
     expect(text).toContain('the rest of this sentence continues normally')
   })
+
+  it('redacts a generic api_key= assignment longer than 64 characters completely, not just its first 64 chars (regression: a 64-char upper bound on the value class left the tail of any longer secret unredacted in plain text)', () => {
+    const longSecret = 'A'.repeat(91)
+    const { text, count } = redactSecrets(`api_key=${longSecret} end`)
+    expect(count).toBe(1)
+    expect(text).toBe('api_key=[REDACTED:generic_secret_assignment] end')
+    expect(text).not.toContain(longSecret.slice(64))
+    expect(text).not.toContain('A'.repeat(27))
+  })
+
+  it('does not exhibit catastrophic backtracking on adversarial input for the generic assignment pattern (ReDoS safety after removing its upper length bound)', () => {
+    const adversarial = `api_key=${'a'.repeat(200000)}!`
+    const start = Date.now()
+    const { count } = redactSecrets(adversarial)
+    expect(Date.now() - start).toBeLessThan(2000)
+    expect(count).toBe(1)
+  })
 })
 
 describe('redactSecrets — no false positives on ordinary content', () => {

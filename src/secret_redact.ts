@@ -27,9 +27,10 @@
  * cached tool output. That list is also module-private. This module keeps a
  * separate, narrower set tuned for automatic in-place redaction.
  *
- * All patterns are single-pass, non-backtracking (fixed-width or bounded
- * character classes, no nested quantifiers) so a redaction pass over
- * arbitrarily large cached blobs stays linear in input size — no ReDoS risk.
+ * All patterns are single-pass, non-backtracking (fixed-width, bounded, or a
+ * single unbounded negated-class quantifier with no nesting or overlap) so a
+ * redaction pass over arbitrarily large cached blobs stays linear in input
+ * size — no ReDoS risk.
  */
 
 const SECRET_PATTERNS: Array<[string, RegExp]> = [
@@ -73,15 +74,20 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   ['google_api_key', /AIza[A-Za-z0-9_-]{35}/g],
   // Generic key=value assignments in .env-file and connection-string/query-string shape. The
   // lookbehind again redacts only the value, and the value's character class deliberately
-  // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- without that bound
-  // this would swallow the rest of the line (a trailing comment or the next key=value pair) or
-  // the remainder of a query string past the matched parameter, which is exactly the kind of
-  // over-eager match this module's own design note above warns broad heuristics produce. The
-  // '[' ']' ':' exclusion also matters because this pattern runs last: an earlier pattern's own
-  // "OPENAI_API_KEY=[REDACTED:openai_project_key]" replacement text contains "API_KEY=" too, and
-  // without excluding those characters this pattern would re-match and double-redact its own
-  // placeholder.
-  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api_key)\s*[:=]\s*)[^\s&;#'"[\]:]{4,64}/gi],
+  // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- that exclusion is
+  // what stops this from swallowing the rest of the line (a trailing comment or the next
+  // key=value pair) or the remainder of a query string past the matched parameter, which is
+  // exactly the kind of over-eager match this module's own design note above warns broad
+  // heuristics produce. The '[' ']' ':' exclusion also matters because this pattern runs last: an
+  // earlier pattern's own "OPENAI_API_KEY=[REDACTED:openai_project_key]" replacement text
+  // contains "API_KEY=" too, and without excluding those characters this pattern would re-match
+  // and double-redact its own placeholder. The length has a lower bound only (no upper bound):
+  // capping it at 64 used to leave the tail of any longer secret unredacted in plain text, which
+  // is worse than no redaction because it looks handled. A single negated-class quantifier like
+  // this cannot backtrack catastrophically -- there is no nested or overlapping quantifier for
+  // the engine to explore multiple ways of matching, so removing the upper bound does not
+  // introduce a ReDoS risk.
+  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api_key)\s*[:=]\s*)[^\s&;#'"[\]:]{4,}/gi],
 ]
 
 export interface RedactResult {
