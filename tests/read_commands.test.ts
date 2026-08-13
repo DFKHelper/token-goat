@@ -3757,10 +3757,10 @@ describe('read_commands', () => {
     })
 
     // Confinement-vs-unconfined behavior split (see src/read_commands.ts's searchDir comment):
-    // under confinement (activePins non-null), a recursive grep skips symlink entries outright to
-    // close a nested-symlink TOCTOU window rather than realpath-checking and still traversing
-    // them. Plain CLI grep -- never wrapped in withPinnedReads, so activePins stays null -- must
-    // keep its long-standing behavior of following symlinks exactly as before.
+    // under confinement (activePins non-null), a recursive grep resolves each symlink entry once
+    // and then traverses the REALPATH only, so the link cannot be repointed out from under the
+    // walk. Plain CLI grep -- never wrapped in withPinnedReads, so activePins stays null -- must
+    // keep its long-standing behavior of following the symlink pathname exactly as before.
     //
     // The real target is placed under a dot-prefixed directory (`.hidden-target`), which
     // searchDir's own leading-dot filter (`entry.startsWith('.') continue`) already excludes from
@@ -3786,11 +3786,60 @@ describe('read_commands', () => {
       expect(stdout).toContain('reachable only via symlink')
     })
 
-    it('runGrep skips a symlink entry outright when confined, even one that resolves within the search boundary', () => {
+    // Rewritten, not deleted: this test previously asserted the opposite (`code === 1`, i.e. the
+    // confined walk skipped every symlink outright and found nothing). That blanket skip closed
+    // the TOCTOU window at the cost of a real capability -- an in-root file reachable only via a
+    // legitimate in-root symlink became invisible to confined MCP grep. Resolving the entry once
+    // and traversing the realpath closes the same window without the capability loss, so the
+    // expectation is inverted deliberately.
+    it('runGrep finds a file reachable only through a legitimate in-root symlink when confined', () => {
       const { canSymlink } = makeSymlinkOnlyReachableFixture()
       if (!canSymlink) return
-      const code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
-      expect(code).toBe(1)
+      let code = 1
+      const { stdout } = capture(() => {
+        code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
+      })
+      expect(code).toBe(0)
+      expect(stdout).toContain('reachable only via symlink')
+    })
+
+    // A symlink cycle (`loop` -> tempDir itself) makes a naive walk recurse forever. The visited-
+    // realpath set must terminate it. Built with fs.symlinkSync, never Git Bash `ln -s`, which on
+    // Windows produces a junction that lstatSync().isSymbolicLink() reports as false.
+    it('runGrep terminates on a symlink cycle when confined', () => {
+      fs.writeFileSync(path.join(tempDir, 'plain.txt'), 'FINDME cycle fixture\n')
+      const sub = path.join(tempDir, 'sub')
+      fs.mkdirSync(sub)
+      try {
+        fs.symlinkSync(tempDir, path.join(sub, 'loop'), 'dir')
+      } catch {
+        return
+      }
+      let code = 1
+      const { stdout } = capture(() => {
+        code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
+      })
+      expect(code).toBe(0)
+      // Occurrence count, not a bare `toContain`: without the visited-realpath set the walk does
+      // eventually stop on its own (readdirSync throws once the accumulated path exceeds the
+      // platform limit), so termination alone is not falsifiable -- but it re-reports the same
+      // file once per loop level on the way there, which is.
+      expect(stdout.split('cycle fixture').length - 1).toBe(1)
+    })
+
+    it('runGrep does not report the same file twice via a symlink to an already-walked directory when confined', () => {
+      const sub = path.join(tempDir, 'sub')
+      fs.mkdirSync(sub)
+      fs.writeFileSync(path.join(sub, 'dup.txt'), 'FINDME duplicate-check marker\n')
+      try {
+        fs.symlinkSync(sub, path.join(tempDir, 'alias'), 'dir')
+      } catch {
+        return
+      }
+      const { stdout } = capture(() => {
+        withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
+      })
+      expect(stdout.split('duplicate-check marker').length - 1).toBe(1)
     })
   })
 

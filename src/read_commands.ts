@@ -4544,6 +4544,12 @@ interface GrepHit {
   symbol?: { name: string; kind: string; lineStart: number; lineEnd: number } | null
 }
 
+/** Normalizes a realpath to one comparable spelling: forward slashes via {@link normalizePath}, plus a case fold on win32 where the filesystem is case-insensitive. */
+function foldRealpath(p: string): string {
+  const n = normalizePath(p)
+  return process.platform === 'win32' ? n.toLowerCase() : n
+}
+
 /** Handle ``token-goat grep <pattern>``. */
 export function runGrep(opts: GrepOptions): number {
   const searchPaths =
@@ -4600,26 +4606,44 @@ export function runGrep(opts: GrepOptions): number {
   // sides are pre-normalized realpaths, so this is a plain string comparison -- no further
   // symlink resolution needed at the call site.
   function withinRealpathBoundary(candidateReal: string, boundaryReal: string): boolean {
-    const c = normalizePath(candidateReal)
-    const b = normalizePath(boundaryReal)
-    const cFold = process.platform === 'win32' ? c.toLowerCase() : c
-    const bFold = process.platform === 'win32' ? b.toLowerCase() : b
+    const cFold = foldRealpath(candidateReal)
+    const bFold = foldRealpath(boundaryReal)
     return cFold === bFold || cFold.startsWith(bFold.endsWith('/') ? bFold : `${bFold}/`)
   }
+
+  // Realpaths already visited by the confined walk, folded by `foldRealpath`, so a symlink that
+  // resolves back into the tree neither loops forever nor reports the same file twice. Reset
+  // before each top-level search path so overlapping explicit `--path` arguments keep their
+  // existing independent-walk semantics rather than silently deduplicating against each other.
+  let visitedRealDirs = new Set<string>()
 
   // `boundaryReal` is `dir`'s own top-level search root, realpath-resolved once by the caller.
   // `fs.statSync` (unlike `fs.lstatSync`) follows symlinks, so a directory symlink inside the
   // search root that points outside it would otherwise be silently descended into and its
   // out-of-root contents searched -- a confinement bypass distinct from searchFile's own pin
   // check above (that one guards HOW an explicitly-requested file is opened; this one guards
-  // WHICH files a recursive walk enumerates in the first place). When confinement is active
-  // (`activePins` non-null), symlink entries are skipped outright rather than realpath-checked:
-  // a nested symlink can be repointed outside the root between the realpath check and the
-  // later fs.statSync/recursion on the same pathname (no retained descriptor survives across
-  // that gap on any of this project's CI platforms), so the check-then-use here is itself a
-  // TOCTOU window. Skipping is deterministic and closes it; unconfined CLI grep keeps following
-  // symlinks exactly as before, since there is no attacker in that model.
+  // WHICH files a recursive walk enumerates in the first place). The earlier check-then-use
+  // shape was itself a TOCTOU window: it validated the symlink PATHNAME and then re-used that
+  // same pathname for fs.statSync/recursion, so the link could be repointed outside the root in
+  // between. Under confinement the walk now resolves the entry ONCE with fs.realpathSync,
+  // boundary-checks that realpath, and then stats/recurses/reads the REALPATH only -- repointing
+  // the symlink afterwards cannot affect a walk that never references it again. Unconfined CLI
+  // grep keeps following the symlink pathname exactly as before, since there is no attacker in
+  // that model.
   function searchDir(dir: string, boundaryReal: string): void {
+    if (activePins !== null) {
+      // Cycle and duplicate protection, confined-only so unconfined output stays byte-identical:
+      // a symlink resolving back into the already-walked tree would otherwise recurse forever
+      // (a -> b -> a) or report the same files twice via two different pathnames.
+      let realDir: string
+      try {
+        realDir = foldRealpath(fs.realpathSync(dir))
+      } catch {
+        return
+      }
+      if (visitedRealDirs.has(realDir)) return
+      visitedRealDirs.add(realDir)
+    }
     try {
       for (const entry of fs.readdirSync(dir)) {
         if (entry.startsWith('.')) continue
@@ -4630,8 +4654,10 @@ export function runGrep(opts: GrepOptions): number {
         } catch {
           continue
         }
+        // Everything below stats, recurses into, and reads `target` -- identical to `full` for an
+        // ordinary entry, and the realpath (never the link pathname) for a confined symlink.
+        let target = full
         if (lst.isSymbolicLink()) {
-          if (activePins !== null) continue
           let real: string
           try {
             real = fs.realpathSync(full)
@@ -4639,18 +4665,19 @@ export function runGrep(opts: GrepOptions): number {
             continue
           }
           if (!withinRealpathBoundary(real, boundaryReal)) continue
+          if (activePins !== null) target = real
         }
         let stat: fs.Stats
         try {
-          stat = fs.statSync(full)
+          stat = fs.statSync(target)
         } catch {
           continue
         }
         if (stat.isDirectory()) {
           if (SKIP_DIRS.has(entry)) continue
-          if (opts.recursive !== false) searchDir(full, boundaryReal)
+          if (opts.recursive !== false) searchDir(target, boundaryReal)
         } else {
-          searchFile(full)
+          searchFile(target)
         }
       }
     } catch (err) {
@@ -4705,6 +4732,7 @@ export function runGrep(opts: GrepOptions): number {
       // ubuntu, windows, and macos, so a swap landing in the small residual gap between this
       // second verification and searchDir's first entry read is still possible and undetected.
       if (pinned !== undefined) verifyPin(searchPath, pinned)
+      visitedRealDirs = new Set<string>()
       searchDir(searchPath, boundaryReal)
     } else {
       searchFile(searchPath)
