@@ -26,6 +26,10 @@ const realpathSyncSwapState = vi.hoisted(() => ({
   triggerPath: null as string | null,
   fired: false,
   onTrigger: null as (() => void) | null,
+  // When true the swap runs AFTER the real resolution returns instead of before it, so it lands
+  // strictly in the check-then-use window a caller that re-uses the link pathname would still be
+  // exposed to -- a before-swap only ever exercises the boundary check itself.
+  after: false,
 }))
 // Drives the negative-pin (validated-absent) race: an in-root target that does not exist at gate
 // time has no dev:ino to pin, so the FIRST filesystem call that touches it after validation is the
@@ -64,7 +68,11 @@ vi.mock('node:fs', async (importOriginal) => {
       foldPathForCompare(p) === realpathSyncSwapState.triggerPath
     ) {
       realpathSyncSwapState.fired = true
-      realpathSyncSwapState.onTrigger?.()
+      if (!realpathSyncSwapState.after) realpathSyncSwapState.onTrigger?.()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resolved = (actual.realpathSync as any)(...args)
+      if (realpathSyncSwapState.after) realpathSyncSwapState.onTrigger?.()
+      return resolved
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (actual.realpathSync as any)(...args)
@@ -816,20 +824,20 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
-  // Deliberate behavior change, not a regression: a realpath-then-later-use check on a nested
-  // symlink is itself a TOCTOU window (the entry can be repointed between the realpath check and
-  // the later fs.statSync/recursion on the same pathname, and no portable descriptor-relative
-  // traversal API exists on ubuntu/windows/macos to close it -- see searchDir's own comment in
-  // src/read_commands.ts). So under confinement (an MCP caller with an active pin), searchDir now
-  // skips symlink entries outright rather than realpath-checking them, even a legitimate one whose
-  // target resolves inside the search boundary. Unconfined CLI grep is unaffected: see
-  // tests/read_commands.test.ts's "runGrep still follows a legitimate symlink when unconfined".
+  // Restored capability, previously asserted the other way round: this test used to require the
+  // confined walk to skip EVERY symlink entry (isError, "No matches"), which closed the nested-
+  // symlink TOCTOU window by making an in-root file reachable only via a legitimate in-root
+  // symlink invisible to MCP grep. searchDir now resolves each entry once with fs.realpathSync,
+  // boundary-checks that realpath, and traverses the realpath only -- which closes the same window
+  // (the link pathname is never referenced again, so repointing it afterwards has no effect; see
+  // the TOCTOU test directly below) without losing the capability. Expectation inverted
+  // deliberately rather than the test being dropped.
   //
   // The real target is dot-prefixed (`.hidden-target`) so it is also excluded from direct
   // recursion by searchDir's own leading-dot filter, isolating "was the symlink itself followed"
   // from "would the target have been found anyway by ordinary recursion" -- a plainly-named
   // real-subdir sibling of the symlink would be walked directly regardless of the fix, masking it.
-  it.runIf(canCreateDirSymlinks())('a recursive confined grep does not follow even a legitimate in-root directory symlink', async () => {
+  it.runIf(canCreateDirSymlinks())('a recursive confined grep follows a legitimate in-root directory symlink', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
     const real = path.join(root, '.hidden-target')
     fs.mkdirSync(real)
@@ -840,8 +848,47 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     cleanup = close
 
     const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
-    expect(result.isError).toBe(true)
-    expect(textOf(result)).toContain("No matches for 'FINDME'")
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('reachable only via in-root symlink')
+  })
+
+  // The original TOCTOU attack the blanket skip existed to stop, now covered directly: the nested
+  // symlink is repointed at an out-of-root directory during searchDir's own fs.realpathSync call
+  // on it -- i.e. strictly between the boundary check and the traversal that follows. Because the
+  // walk continues on the REALPATH captured by that same call and never touches the link pathname
+  // again, the swap cannot redirect it and no out-of-root content is reachable. The pre-fix
+  // check-then-reuse-`full` shape is exactly what this would defeat.
+  it.runIf(canCreateDirSymlinks())('a confined grep does not leak out-of-root content when a nested symlink is repointed after its check', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+    const real = path.join(root, '.hidden-target')
+    fs.mkdirSync(real)
+    fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME legitimate in-root content\n')
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+    const link = path.join(root, 'alias')
+    fs.symlinkSync(real, link, 'dir')
+
+    realpathSyncSwapState.triggerPath = foldPathForCompare(link)
+    realpathSyncSwapState.fired = false
+    realpathSyncSwapState.after = true
+    realpathSyncSwapState.onTrigger = () => {
+      fs.unlinkSync(link)
+      fs.symlinkSync(outside, link, 'dir')
+    }
+
+    const { client, close } = await connectedClient()
+    cleanup = async () => {
+      realpathSyncSwapState.triggerPath = null
+      realpathSyncSwapState.fired = false
+      realpathSyncSwapState.after = false
+      realpathSyncSwapState.onTrigger = null
+      await close()
+    }
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
+    expect(realpathSyncSwapState.fired).toBe(true)
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+    expect(textOf(result)).toContain('legitimate in-root content')
   })
 
   // Gap (3): the TOP-LEVEL search directory itself repointed outside the root after the gate
