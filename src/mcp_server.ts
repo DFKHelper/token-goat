@@ -35,6 +35,7 @@ import {
   runExports,
   findSpecSeparator,
   parseLineRange,
+  ABSENT_PIN,
   ConfinementIdentityError,
   fileIdentity,
   pinKey,
@@ -305,11 +306,10 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
           }),
         }
       }
-      // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. Both spellings are recorded -- the pre-realpath absolute path and the realpath -- because which one reaches the read helper depends on the handler, and a lookup that misses degrades silently to the unpinned behaviour.
-      if (check.identity !== null) {
-        pins.set(pinKey(check.abs), check.identity)
-        pins.set(pinKey(check.real), check.identity)
-      }
+      // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. Both spellings are recorded -- the pre-realpath absolute path and the realpath -- because which one reaches the read helper depends on the handler, and a lookup that misses degrades silently to the unpinned behaviour. ALWAYS pin, even when check.identity is null (the target couldn't be stat'd, i.e. it's absent): recording ABSENT_PIN here is what stops "no map entry for this path" from meaning both "confinement is off" and "confined but unpinnable" -- without it, an in-root path validated as absent falls through to an unverified raw read the moment something is created there between validation and the read (see read_commands.ts's ABSENT_PIN and verifyStillAbsent).
+      const pinIdentity = check.identity ?? ABSENT_PIN
+      pins.set(pinKey(check.abs), pinIdentity)
+      pins.set(pinKey(check.real), pinIdentity)
     }
     checked.push(splitCommas ? parts.join(',') : parts[0]!)
   }
