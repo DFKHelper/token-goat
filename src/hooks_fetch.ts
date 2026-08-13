@@ -11,9 +11,9 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js';
 import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js';
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/base.js';
 
-/** Build a case-insensitive RegExp from a wildcard pattern where `*` matches any run of characters (including `/`). Deliberately not minimatch/pack.ts's path-glob semantics -- those treat `/` as a segment boundary a bare `*` won't cross, which is wrong for URL patterns like `*.example.com*` that need to span the `://` and path segments of a URL. */
+/** Build a case-insensitive RegExp from a wildcard pattern where `*` matches any run of characters (including `/`). Deliberately not minimatch/pack.ts's path-glob semantics -- those treat `/` as a segment boundary a bare `*` won't cross, which is wrong for URL patterns like `*.example.com*` that need to span the `://` and path segments of a URL. `?` is escaped along with the other regex metacharacters because it is an ordinary literal in a URL query string: left unescaped it turns the preceding character optional, so `*example.com/?debug=1*` both failed to match the URL it was written for and matched `https://example.com/debug=1`, which it was not -- a deny list that silently does not deny is the exact failure this wiring exists to remove. */
 function wildcardToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  const escaped = pattern.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*');
   return new RegExp(`^${escaped}$`, 'i');
 }
 
