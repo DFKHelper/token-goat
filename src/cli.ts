@@ -3039,7 +3039,8 @@ export function buildProgram(): Command {
     .option('--limit <n>', 'max callers to show (default: 20)')
     .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
     .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
-    .action((spec: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean }) =>
+    .option('--grep <pattern>', 'only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)')
+    .action((spec: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runBrief({
           spec,
@@ -3047,6 +3048,7 @@ export function buildProgram(): Command {
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )

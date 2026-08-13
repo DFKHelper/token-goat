@@ -673,11 +673,12 @@ export function createMcpServer(): McpServer {
         json: z.boolean().optional().describe('output as JSON'),
         context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('lines of call-site source to show before and after each caller (default 0)'),
         excludeTests: z.boolean().optional().describe('hide callers whose call site lives in a test file (opt-in; default output is unchanged)'),
+        grep: z.string().optional().describe('only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)'),
         projectRoot: makeProjectRootField('orient'),
       },
     },
     (args) => {
-      const { spec, limit, json, context, excludeTests, projectRoot } = args
+      const { spec, limit, json, context, excludeTests, grep, projectRoot } = args
       const root = resolveToolRoot(projectRoot)
       const gate = confineTargets([spec], root)
       if (!gate.ok) return gate.refusal
@@ -689,6 +690,7 @@ export function createMcpServer(): McpServer {
             ...(limit !== undefined ? { limit } : {}),
             ...(context !== undefined ? { context } : {}),
             ...(excludeTests === true ? { excludeTests: true } : {}),
+            ...(grep !== undefined ? { grep } : {}),
             projectRoot: root,
           }),
         ),
