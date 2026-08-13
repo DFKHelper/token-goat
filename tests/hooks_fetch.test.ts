@@ -245,6 +245,34 @@ describe('preFetchHandler', () => {
     }
   });
 
+  // `?` is a regex quantifier but an ordinary literal in a URL query string. Unescaped it made the pattern below miss the URL it was written for AND match a different one, so both halves are asserted -- the miss alone would still pass if the escape were replaced by simply dropping the `?`.
+  it('treats ? in a webfetch.deny pattern as a literal query-string character, not a regex quantifier', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.deny = ['*example.com/?debug=1*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const denied = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://example.com/?debug=1&x=2' },
+      sessionId: 'deny-qmark-session',
+      agentId: undefined,
+      raw: {},
+    });
+    expect(denied.hookType).toBe('deny');
+
+    const passed = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://example.com/debug=1' },
+      sessionId: 'deny-qmark-session',
+      agentId: undefined,
+      raw: {},
+    });
+    expect(passed.hookType).not.toBe('deny');
+  });
+
   it('does not deny a URL that fails to match webfetch.deny', () => {
     const cfg = defaultConfig();
     cfg.webfetch.deny = ['*evil.example.com*'];
