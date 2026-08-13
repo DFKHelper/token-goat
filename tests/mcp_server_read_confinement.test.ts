@@ -6,10 +6,52 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { normalizePath } from '../src/paths.js'
+
+// A `vi.spyOn(fs, 'openSync')` cannot work here -- Node's ESM namespace bindings for a builtin
+// module are not configurable, so redefining the `openSync` property throws. `vi.mock` replaces
+// the module at resolution time instead (before src/read_commands.ts's own `import * as fs from
+// 'node:fs'` is loaded), which sidesteps that restriction. State lives in `vi.hoisted` so the
+// mock factory (itself hoisted above this file's imports) and the tests below share one object;
+// `triggerPath` is null for every test except the one that opts in below, so this is a no-op
+// pass-through for the rest of the file.
+const openSyncFailureState = vi.hoisted(() => ({ triggerPath: null as string | null, fired: false }))
+// Normalize+case-fold via the app's own normalizePath (mirrors read_commands.ts's `pinKey`,
+// which is `normalizePath` plus a win32 lowercase): the argument reaching fs.openSync here is
+// read_commands.ts's already-normalized `resolvedPath`, not an OS-native `path.resolve()` form --
+// a literal-string comparison against the latter would never match, and a hand-rolled
+// backslash-flip diverges from normalizePath on a runner whose %TEMP% is pinned to its 8.3
+// short form (see tests/guards/windows_path_fixture_normalization.test.ts).
+function foldPathForCompare(p: string): string {
+  const normalized = normalizePath(p)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>()
+  return {
+    ...actual,
+    openSync: (...args: Parameters<typeof actual.openSync>) => {
+      const p = args[0]
+      if (
+        openSyncFailureState.triggerPath !== null &&
+        !openSyncFailureState.fired &&
+        typeof p === 'string' &&
+        foldPathForCompare(p) === openSyncFailureState.triggerPath
+      ) {
+        openSyncFailureState.fired = true
+        const err = new Error('EACCES: permission denied, open') as NodeJS.ErrnoException
+        err.code = 'EACCES'
+        throw err
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (actual.openSync as any)(...args)
+    },
+  }
+})
 
 import { createMcpServer } from '../src/mcp_server.js'
 import { invalidateConfigCache } from '../src/config.js'
-import { ConfinementIdentityError, pinKey, runRead, withPinnedReads } from '../src/read_commands.js'
+import { ConfinementIdentityError, healStaleIndex, pinKey, runRead, withPinnedReads } from '../src/read_commands.js'
 
 /** Directory-symlink counterpart to `canCreateSymlinks`: a `dir`-type symlink needs the same
  * elevated privilege on Windows without Developer Mode, but is a separate capability check from
@@ -644,5 +686,133 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
     expect(result.isError).toBe(false)
     expect(textOf(result)).toContain('reachable via in-root symlink')
+  })
+
+  // Gap (3): the TOP-LEVEL search directory itself repointed outside the root after the gate
+  // validated it (as opposed to a nested entry discovered by searchDir's own recursion, which
+  // gap (2) above already covers). confineTargets pins the directory it just validated, but
+  // runGrep's top-level loop used to ignore that pin entirely and derive `boundaryReal` from a
+  // fresh, unverified fs.realpathSync of the (now swapped) path -- so a directory replaced in the
+  // window between validation and this call had its search boundary silently become the
+  // attacker-controlled directory, and the recursive walk returned its contents. Same swap-timing
+  // technique as "Test B" above, but targeting the explicit grep `path` directory rather than a
+  // file.
+  it.runIf(canCreateDirSymlinks())(
+    'refuses a grep whose top-level search directory is repointed outside the root after validation',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const inRootDir = path.join(root, 'subdir')
+      fs.mkdirSync(inRootDir)
+      fs.writeFileSync(path.join(inRootDir, 'legit.txt'), 'FINDME legitimate in-root content\n')
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+
+      let swapped = false
+      const realNative = fs.realpathSync.native.bind(fs.realpathSync)
+      const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
+        const result = realNative(p as string)
+        if (!swapped && samePath(String(p), inRootDir)) {
+          swapped = true
+          fs.rmSync(inRootDir, { recursive: true, force: true })
+          fs.symlinkSync(outside, inRootDir, 'dir')
+        }
+        return result
+      }) as unknown as typeof fs.realpathSync.native)
+
+      const { client, close } = await connectedClient()
+      cleanup = async () => {
+        spy.mockRestore()
+        await close()
+      }
+
+      const result = await client.callTool({
+        name: 'grep',
+        arguments: { pattern: 'FINDME', path: [inRootDir], projectRoot: root },
+      })
+      expect(swapped).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+})
+
+// Regression for two follow-on defects found in the pinned-reindex/self-heal machinery above:
+// (B) indexFileSyncPinned fell back to an unpinned indexFileSync read when the initial pinned
+// open failed for any reason other than ConfinementIdentityError, including a non-ENOENT open
+// failure -- letting a caller who can make the first open fail (then swap the path) get an
+// unverified raw read served anyway. (C) healStaleIndex's best-effort catch blocks swallowed
+// ConfinementIdentityError along with ordinary parse/I/O errors, converting a detected
+// between-check-and-use swap into silent best-effort behavior instead of a refusal.
+describe('mcp read confinement -- pinned reindex failure handling', () => {
+  let root: string
+  let cleanup: (() => Promise<void>) | undefined
+
+  afterEach(async () => {
+    if (cleanup !== undefined) await cleanup()
+    cleanup = undefined
+    if (root !== undefined) fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  // Finding B: a genuinely matching pin, but the pinned open itself fails with a non-ENOENT
+  // error (e.g. a transient permission failure). Pre-fix, indexFileSyncPinned treated this the
+  // same as "file deleted since validation" and fell through to a raw, unpinned indexFileSync --
+  // which reads whatever is at the path NOW, with no identity verification at all -- instead of
+  // refusing. Post-fix, only ENOENT gets that clean fallback; any other open failure is a
+  // confinement refusal.
+  it('a non-ENOENT pinned-open failure during force-refresh refuses instead of falling back to an unpinned read', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'lib.ts')
+    fs.writeFileSync(file, 'export function greet(): string {\n  return "hi"\n}\n')
+    const st = fs.statSync(file, { bigint: true })
+    const pins = new Map<string, string>([[pinKey(file), `${st.dev}:${st.ino}`]])
+
+    openSyncFailureState.triggerPath = foldPathForCompare(path.resolve(file))
+    openSyncFailureState.fired = false
+    try {
+      expect(() =>
+        withPinnedReads(pins, () => runRead({ spec: `${file}::greet`, projectRoot: root, forceRefresh: true })),
+      ).toThrow(ConfinementIdentityError)
+      expect(openSyncFailureState.fired).toBe(true)
+    } finally {
+      openSyncFailureState.triggerPath = null
+      openSyncFailureState.fired = false
+    }
+  })
+
+  // Non-firing companion: a file genuinely deleted since validation (ENOENT) must still heal
+  // cleanly rather than start refusing every legitimate "file disappeared" case.
+  it('non-firing: an ENOENT pinned-open failure during force-refresh still returns cleanly', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'gone.ts')
+    fs.writeFileSync(file, 'export function greet(): string {\n  return "hi"\n}\n')
+    const st = fs.statSync(file, { bigint: true })
+    const pins = new Map<string, string>([[pinKey(file), `${st.dev}:${st.ino}`]])
+    fs.rmSync(file)
+
+    expect(() =>
+      withPinnedReads(pins, () => runRead({ spec: `${file}::greet`, projectRoot: root, forceRefresh: true })),
+    ).not.toThrow(ConfinementIdentityError)
+  })
+
+  // Finding C: a genuine identity mismatch (not a fallback -- readPinnedBytes itself throws
+  // ConfinementIdentityError from its fstat check) surfacing through healStaleIndex's self-heal
+  // path, on a file made stale relative to its indexed sha. Pre-fix, healStaleIndex's `catch {}`
+  // swallowed this along with ordinary parse/I/O errors and returned normally; the pinning
+  // contract requires a detected replacement to be refused, so this must propagate instead.
+  it('healStaleIndex rethrows a confinement identity mismatch instead of swallowing it', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'lib.ts')
+    fs.writeFileSync(file, 'export function greet(): string {\n  return "hi"\n}\n')
+    // Index it once for real (unpinned), so a `files` row with a sha exists to go stale against.
+    withPinnedReads(null, () => runRead({ spec: file, projectRoot: root }))
+    // Change the on-disk content without updating the indexed sha, so healStaleIndex sees it as
+    // stale and attempts a pinned reindex.
+    fs.writeFileSync(file, 'export function greet(): string {\n  return "changed"\n}\n')
+    // A pin no real file can satisfy: dev/ino are unsigned, so a negative device number cannot be
+    // the identity of anything actually openable.
+    const pins = new Map<string, string>([[pinKey(file), '-1:-1']])
+
+    expect(() => withPinnedReads(pins, () => healStaleIndex(file))).toThrow(ConfinementIdentityError)
+    expect(() => withPinnedReads(pins, () => healStaleIndex(file))).toThrow(/changed identity between validation and read/)
   })
 })
