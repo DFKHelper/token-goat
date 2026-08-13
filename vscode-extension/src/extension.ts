@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
-import { assertSafeArgSegment, runGitDiff, runTokenGoat } from './launcher'
+import { assertSafeArgSegment, resolveTokenGoatEntrypoint, runGitDiff, runTokenGoat } from './launcher'
 import { formatSavingsBar, parseStatsJson, type StatsJson } from './savings'
 
 // Workspace Trust is the only barrier stopping a hostile repo's file/symbol content from reaching token-goat's argv (see package.json's untrustedWorkspaces capability, which keeps the extension from activating at all in an untrusted workspace) — this is the belt-and-suspenders check for any call site that still consumes workspace-derived input after that gate.
@@ -47,6 +47,29 @@ function scrubPii(text: string): string {
   return out
 }
 
+/**
+ * Wrap a compressed payload in a fenced block so the chat model sees where the payload ends and
+ * the surrounding instruction begins. Every composer prepends a sentence of its own ("Use this
+ * local token-goat compressed selection when useful:") and `openChat` appends a decoding hint, so
+ * unfenced the payload runs straight into prose on both sides and the model has to guess the
+ * boundary. The `recovery: token-goat retrieve <id>` line stays inside the fence untouched, which
+ * is the line copilot-instructions.md tells the model to key on.
+ *
+ * The fence is sized to the payload's own longest backtick run rather than hard-coded to three.
+ * Today nothing inside it can contain a backtick -- `compress-text` emits fixed headers plus, at
+ * most, a `deflate-raw-base64url` body, and base64url's alphabet has no backtick in it (when
+ * compression is not a net win the body is withheld entirely rather than passed through raw). The
+ * composers' own prose stays outside the fence. So this is defensive, not currently load-bearing:
+ * the failure it prevents is silent -- a fence closed early by its own content truncates the
+ * payload with no error anywhere -- and the payload format is not frozen, so paying two lines to
+ * make the fence self-sizing is cheaper than depending on that alphabet staying backtick-free.
+ */
+export function fencePayload(payload: string): string {
+  const longestRun = Math.max(0, ...[...payload.matchAll(/`+/g)].map((m) => m[0].length))
+  const fence = '`'.repeat(Math.max(3, longestRun + 1))
+  return `${fence}\n${payload}\n${fence}`
+}
+
 // Single compression path for all text payloads: scrub, compress, report.
 async function compressText(text: string, extension: string): Promise<string> {
   const payload = await withTemporaryText(scrubPii(text), extension, (file) => runTokenGoat(['compress-text', '--file', file]))
@@ -66,7 +89,7 @@ async function compressText(text: string, extension: string): Promise<string> {
       void vscode.window.setStatusBarMessage(`token-goat: removed ${lastRedactions} personal-data item(s) before sending`, 6000)
     }
   }
-  return payload
+  return fencePayload(payload)
 }
 
 async function openChat(query: string): Promise<void> {
@@ -81,10 +104,49 @@ async function openChat(query: string): Promise<void> {
 // base64 blob.
 let decoderChecked = false
 
+// True once `activate` has registered this extension as VS Code's provider of the token-goat MCP server, which is what lets ensureDecoderSetup skip the whole install-and-reload prompt.
+let mcpProviderRegistered = false
+
+/**
+ * Ship the decoder as an extension-provided MCP server instead of asking the user to run
+ * `token-goat install --vscode`, reload the window, and start the server by hand. VS Code owns the
+ * lifecycle from here, starting the server on demand when the chat model calls `retrieve_text`.
+ *
+ * `process.execPath` is the editor's own Node, which is what lets the resolved JS entrypoint be
+ * launched directly -- no shell and no `.cmd` shim, the same way `runTokenGoat` already launches
+ * it, and for the same reason (a `.cmd` target is routed through cmd.exe even with `shell: false`).
+ *
+ * `ELECTRON_RUN_AS_NODE` is not optional here. In an extension host `process.execPath` is the
+ * Electron binary VS Code itself runs as, so without it the "command" relaunches the editor
+ * instead of running the CLI and the decoder never starts. `runTokenGoat` sets the same variable
+ * for the same reason. It is passed alone rather than spread over `process.env` because these two
+ * call sites differ: `execFile`'s `env` replaces the child environment wholesale, while VS Code
+ * merges this one over the extension host's own environment.
+ *
+ * Split out of `activate` so it is reachable from a test: nothing else in `activate` is.
+ */
+export function registerMcpDecoderProvider(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.lm.registerMcpServerDefinitionProvider('token-goat', {
+      provideMcpServerDefinitions: async () => [
+        new vscode.McpStdioServerDefinition('token-goat', process.execPath, [await resolveTokenGoatEntrypoint(), 'mcp-serve'], {
+          ELECTRON_RUN_AS_NODE: '1',
+        }),
+      ],
+    }),
+  )
+  mcpProviderRegistered = true
+}
+
 // Exposed for tests only: resets the module-level once-per-session cache so a test can
 // call ensureDecoderSetup more than once without an activate()/new extension host.
 export function resetDecoderCheckedForTests(): void {
   decoderChecked = false
+}
+
+// Exposed for tests only: clears the provider-registered flag so a case can exercise the fallback prompt after another case has registered the provider.
+export function resetMcpProviderRegisteredForTests(): void {
+  mcpProviderRegistered = false
 }
 
 // Commander's own wording for a command the installed CLI doesn't know about. The extension
@@ -99,6 +161,8 @@ function isUnknownMcpStatusCommandError(error: unknown): boolean {
 export async function ensureDecoderSetup(): Promise<void> {
   if (decoderChecked) return
   decoderChecked = true
+  // Registering the MCP server definition makes the decoder exist by construction: VS Code starts the server from that definition on demand, so there is no mcp.json to write, no window reload, and nothing for the user to set up. Everything below this line exists only to arrange what registration already guarantees, so asking the user to run `install --vscode` here would be asking them to fix a problem they do not have.
+  if (mcpProviderRegistered) return
   const folder = vscode.workspace.workspaceFolders?.[0]
   // Shell out to `mcp-status` rather than reading mcp.json here directly: a user-scope
   // install (the default since 9c220be7) has no workspace .vscode/mcp.json at all, so
@@ -452,9 +516,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('token-goat.sendFolderAnalysis', (target?: vscode.Uri) => sendFolderAnalysis(target).catch(reportError)),
   )
 
+  registerMcpDecoderProvider(context)
+
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
     try {
       await ensureDecoderSetup()
+      // Compressing shells out to the CLI (and for /file or /paste can read a whole document first), so without this the panel sits blank for the entire round trip with no sign anything is happening.
+      if (request.command) stream.progress('Compressing…')
       // A chat participant's reply is shown as the final answer — it never
       // reaches the Copilot model, so streaming a compressed payload here
       // would just display the blob. Instead, prefill the input box and let
@@ -496,6 +564,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     if (token.isCancellationRequested) return
   })
+  participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'icon.png')
   context.subscriptions.push(participant)
 }
 

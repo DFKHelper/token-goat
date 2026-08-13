@@ -26,6 +26,8 @@ import { describe, expect, it } from 'vitest'
 const extensionRoot = path.join(__dirname, '..')
 const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8')) as {
   files?: string[]
+  engines?: { vscode?: string }
+  contributes?: { mcpServerDefinitionProviders?: Array<{ id: string; label: string }> }
 }
 
 describe('VSIX packaging inputs', () => {
@@ -49,5 +51,23 @@ describe('VSIX packaging inputs', () => {
     // and one that drops icon.png fails validation against the manifest's own icon field.
     expect(manifest.files).toContain('out/**')
     expect(manifest.files).toContain('icon.png')
+  })
+})
+
+describe('MCP decoder contribution', () => {
+  it('requires the VS Code version that provides the API it registers against', () => {
+    // registerMcpServerDefinitionProvider is unavailable before 1.101, and activate() calls it
+    // unconditionally, so an older engines floor would let the extension install somewhere
+    // activation throws -- taking every command down with it, not just the decoder.
+    const declared = manifest.contributes?.mcpServerDefinitionProviders ?? []
+    if (declared.length === 0) return
+    const floor = manifest.engines?.vscode ?? ''
+    const parsed = /^\^?(\d+)\.(\d+)/.exec(floor)
+    const major = Number(parsed?.[1])
+    const minor = Number(parsed?.[2])
+    expect(
+      major > 1 || (major === 1 && minor >= 101),
+      `engines.vscode is "${floor}", but contributing mcpServerDefinitionProviders needs 1.101 or newer.`,
+    ).toBe(true)
   })
 })
