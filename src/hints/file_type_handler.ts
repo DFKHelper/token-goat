@@ -60,7 +60,8 @@ export function handlePdf(filePath: string, contentLength: number): FileTypeResu
     shouldBlock: true,
     message: [
       `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
-      `Extract text instead: token-goat pdf-extract "${filePath}"`,
+      `Inspect first: token-goat pdf-meta "${filePath}" and token-goat pdf-outline "${filePath}"`,
+      `Then extract relevant pages: token-goat pdf-extract "${filePath}" --pages <range>`,
     ].join('\n'),
   }
 }

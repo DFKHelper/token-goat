@@ -286,6 +286,23 @@ token-goat doctor          # confirms hooks and sharp are working; look for "sha
 
 Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
 
+### Agents choose the commands
+
+People install token-goat. Agents use it. You do not need to memorize its commands or tell the agent which file type it has.
+
+Installation adds a short routing guide to the agent's instructions. When the agent tries to read a supported binary document, a hook identifies the extension and returns the right next step. The agent starts with an inventory, then reads only the relevant part.
+
+| Task | Agent flow |
+| --- | --- |
+| Review a PDF | `pdf-meta` and `pdf-outline`, then `pdf-extract --pages` |
+| Review a Word document | `docx-outline`, then `docx-text` |
+| Review a slide deck | `pptx-outline`, then `pptx-slide` or `pptx-notes` |
+| Review a workbook | `xlsx-sheets`, then `xlsx-head`, `xlsx-range`, or `xlsx-query` |
+
+Give the agent the file and the task: “Review `manual.pdf` for warranty exceptions.” It selects the bounded reader. If no routing rule fits, it can run `token-goat commands` instead of guessing.
+
+The commands stay separate so every retrieval is visible, repeatable, and easy to narrow. The agent chooses the sequence; the developer can still inspect or run any step directly.
+
 For bounded archive/document comparisons after setup, see the [CLI comparison workflow](#archivedocument-comparison-workflow).
 
 **Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
@@ -466,7 +483,7 @@ Every command accepts a global `--cwd <path>`, which runs it as if invoked from 
 
 ### Archive/document comparison workflow
 
-The existing bounded readers cover the text and tabular parts of an archive comparison without loading whole files:
+These are agent-selected primitives, not a manual checklist. Give the agent the file and the question. The installed routing guide and read hook select the matching format flow; the commands below show the steps it can take without loading whole files:
 
 ```bash
 token-goat sqlite-schema catalog.db
@@ -474,6 +491,7 @@ token-goat sqlite-query catalog.db "SELECT file_path, name FROM files WHERE name
 token-goat xlsx-sheets link-map.xlsx
 token-goat xlsx-query link-map.xlsx --sheet Links --columns publication,source,target --head 50
 token-goat pdf-meta manual.pdf
+token-goat pdf-outline manual.pdf
 token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 ```
 
