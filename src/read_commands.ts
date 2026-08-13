@@ -163,6 +163,27 @@ function readPinnedBytes(p: string, pinned: string): Buffer {
 }
 
 /**
+ * Verifies `p`'s CURRENT identity (via an open+fstat, same technique as {@link readPinnedBytes})
+ * matches `pinned`, without reading any content -- used for directories, where `readPinnedBytes`
+ * itself cannot be reused because `fs.readFileSync` on a directory fails with EISDIR. Throws
+ * {@link ConfinementIdentityError} on a mismatch; returns normally when it matches.
+ */
+function verifyPinnedIdentity(p: string, pinned: string): void {
+  const fd = fs.openSync(p, fs.constants.O_RDONLY)
+  try {
+    const actual = fileIdentity(fs.fstatSync(fd, { bigint: true }))
+    if (actual !== pinned) {
+      throw new ConfinementIdentityError(
+        `refused: "${p}" changed identity between validation and read (validated ${pinned}, opened ${actual}). ` +
+          'The file was replaced or redirected after the confinement check, so the read was not performed.',
+      )
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
  * Pin-aware wrapper around `indexFileSync`, used by every read-command call site that can trigger
  * a mid-request reindex (healStaleIndex's self-heal, and each command's `--force-refresh`).
  * Without this wrapper, `indexFileSync` opens `resolvedPath` with its own independent
@@ -187,10 +208,17 @@ function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
     bytes = readPinnedBytes(resolvedPath, pinned)
   } catch (err) {
     if (err instanceof ConfinementIdentityError) throw err
-    // Unreadable (e.g. deleted since validation): fall through to indexFileSync's own ENOENT
-    // handling, which returns cleanly instead of throwing.
-    indexFileSync(resolvedPath, dbPath)
-    return
+    // Once a pin exists, never retry through the unpinned indexFileSync -- that would reopen
+    // `resolvedPath` itself with a fresh, unverified fs.readFileSync, exactly the bypass the pin
+    // exists to prevent. ENOENT is the one expected failure (the file was genuinely deleted since
+    // validation): return cleanly, mirroring indexFileSync's own ENOENT handling. Any other open
+    // failure (permission denied, replaced by a directory/device, etc.) is treated as a
+    // confinement refusal instead of silently falling back to an unverified raw read.
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw new ConfinementIdentityError(
+      `refused: "${resolvedPath}" could not be opened for pinned re-index (${err instanceof Error ? err.message : String(err)}). ` +
+        'The file may have changed since validation, so the read was not performed.',
+    )
   }
   indexFileSync(resolvedPath, dbPath, bytes)
 }
@@ -284,7 +312,11 @@ function staleWarning(resolvedPath: string): string {
  * falls back to the original warning text unchanged. Also enqueues the dirty-queue path on a
  * successful heal, mirroring `--force-refresh`'s own indexFileSync + enqueueDirtyPathSafe pairing
  * (see that function's doc): indexFileSync always wipes `files.embed_sha`, so semantic search
- * needs the same re-embed signal here too. Never throws.
+ * needs the same re-embed signal here too. Best-effort for ordinary parse/I/O failures (never
+ * throws for those); a ConfinementIdentityError from the pinned reindex is the one exception --
+ * that signals a detected between-check-and-use swap, and the pinning contract requires a
+ * detected replacement to be refused rather than silently treated as an ordinary heal failure, so
+ * it is rethrown rather than swallowed.
  */
 export function healStaleIndex(resolvedPath: string): void {
   const entry = getFileEntry(resolvedPath)
@@ -301,7 +333,8 @@ export function healStaleIndex(resolvedPath: string): void {
     try {
       indexFileSyncPinned(resolvedPath, globalDbPath())
       enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })
-    } catch {
+    } catch (err) {
+      if (err instanceof ConfinementIdentityError) throw err
       // Best-effort: leave it unindexed; the caller emits its normal "no symbols" message rather
       // than crashing a surgical-read command on a parse failure.
     }
@@ -313,7 +346,8 @@ export function healStaleIndex(resolvedPath: string): void {
   try {
     indexFileSyncPinned(resolvedPath, globalDbPath())
     enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })
-  } catch {
+  } catch (err) {
+    if (err instanceof ConfinementIdentityError) throw err
     // Fail-safe: leave the stale rows in place. The caller's trailing staleWarning(...) call
     // will detect the still-mismatched sha and fall back to the pre-existing warning text --
     // never let a reparse failure turn a surgical-read command into a hard crash.
@@ -4543,6 +4577,15 @@ export function runGrep(opts: GrepOptions): number {
 
     const stat = fs.statSync(searchPath)
     if (stat.isDirectory()) {
+      // Pin-aware: when this exact top-level directory was validated and pinned by the MCP
+      // confinement gate (see confineTargets), verify its identity has not changed since before
+      // deriving the search boundary from it below. Without this, a directory swapped to an
+      // out-of-root symlink between gate validation and this call would have its (attacker-
+      // controlled) realpath silently accepted as the boundary, and the recursive walk below
+      // would search outside the root -- searchDir's own lstat/realpath boundary check only
+      // guards entries discovered WITHIN the search, not the root of the search itself.
+      const pinned = activePins?.get(pinKey(path.resolve(searchPath)))
+      if (pinned !== undefined) verifyPinnedIdentity(searchPath, pinned)
       let boundaryReal: string
       try {
         boundaryReal = fs.realpathSync(searchPath)
