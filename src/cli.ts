@@ -57,7 +57,7 @@ import { installOpencode, uninstallOpencode } from './bridges/opencode_install.j
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, uninstallGrok } from './bridges/grok_install.js'
-import { installVscode, otherScopeHasManagedServer, uninstallVscode } from './bridges/vscode_install.js'
+import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured } from './bridges/vscode_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -698,6 +698,19 @@ async function cmdInstall(opts: {
   } catch {
     // fail-soft: install succeeded even if pre-gen fails
   }
+}
+
+// Backs the VS Code extension's ensureDecoderSetup check -- shelled out to rather than
+// reimplemented in the extension, so the extension and installVscode share one path
+// resolver (vscodeDecoderConfigured) and can never drift on where mcp.json lives or what
+// key name it looks for. --project checks the workspace `.vscode/mcp.json` too (via
+// process.cwd(), set by --cwd above), matching install/uninstall's --project convention.
+function cmdMcpStatus(opts: { vscode?: boolean; project?: boolean }): void {
+  if (opts.vscode !== true) {
+    throw new Error('mcp-status currently only supports --vscode')
+  }
+  const status = vscodeDecoderConfigured(opts.project === true ? { projectRoot: process.cwd() } : {})
+  out(JSON.stringify(status))
 }
 
 function cmdUninstall(opts: {
@@ -3239,6 +3252,13 @@ export function buildProgram(): Command {
     .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
+
+  program
+    .command('mcp-status')
+    .description('check whether an MCP integration is already configured (used by the VS Code extension)')
+    .option('--vscode', 'check VS Code mcp.json (user scope, plus workspace scope with --project)')
+    .option('-p, --project', 'also check the workspace .vscode/mcp.json (relative to --cwd or the real cwd)')
+    .action(guard(cmdMcpStatus))
 
   const worker = program.command('worker').description('background indexer lifecycle')
   worker.command('start').description('start the background indexer').action(guard(cmdWorkerStart))

@@ -81,16 +81,30 @@ async function openChat(query: string): Promise<void> {
 // base64 blob.
 let decoderChecked = false
 
-async function ensureDecoderSetup(): Promise<void> {
+// Exposed for tests only: resets the module-level once-per-session cache so a test can
+// call ensureDecoderSetup more than once without an activate()/new extension host.
+export function resetDecoderCheckedForTests(): void {
+  decoderChecked = false
+}
+
+export async function ensureDecoderSetup(): Promise<void> {
   if (decoderChecked) return
   decoderChecked = true
   const folder = vscode.workspace.workspaceFolders?.[0]
-  if (!folder) return
+  // Shell out to `mcp-status` rather than reading mcp.json here directly: a user-scope
+  // install (the default since 9c220be7) has no workspace .vscode/mcp.json at all, so
+  // reading only that file made this prompt fire every session for a correctly-installed
+  // user. The CLI's vscodeDecoderConfigured is the single source of truth the installer
+  // itself writes against, so this can never drift from what "installed" actually means --
+  // and it works with no folder open, since a user-scope install is workspace-independent.
   try {
-    const raw = await fs.readFile(path.join(folder.uri.fsPath, '.vscode', 'mcp.json'), 'utf8')
-    if (raw.includes('token-goat')) return
-  } catch {
-    // No mcp.json — fall through to the prompt below.
+    const args = folder ? ['mcp-status', '--vscode', '--project'] : ['mcp-status', '--vscode']
+    const stdout = await runTokenGoat(args, folder?.uri.fsPath)
+    const status = JSON.parse(stdout) as { configured: boolean }
+    if (status.configured) return
+  } catch (error) {
+    reportError(error)
+    return
   }
   const choice = await vscode.window.showWarningMessage(
     'token-goat compressed this for chat, but this workspace has no decoder set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
@@ -99,7 +113,7 @@ async function ensureDecoderSetup(): Promise<void> {
   if (choice !== 'Set up now') return
   try {
     requireTrustedWorkspace('Installing the token-goat decoder')
-    await runTokenGoat(['install', '--vscode'], folder.uri.fsPath)
+    await runTokenGoat(['install', '--vscode'], folder?.uri.fsPath)
     void vscode.window.showInformationMessage('token-goat decoder installed. Two steps left: reload the window (Ctrl+Shift+P → Developer: Reload Window), then start the server when VS Code asks — or via Ctrl+Shift+P → "MCP: List Servers" → token-goat → Start. Compressed payloads also need Agent mode in chat.')
   } catch (error) {
     reportError(error)

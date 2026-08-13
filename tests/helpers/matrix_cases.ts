@@ -1793,6 +1793,19 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(shimPath, `no quoted shim path in wired command: ${preCommand}`).toBeDefined()
     expect(fs.existsSync(shimPath!)).toBe(true)
   },
+  'mcp-status': () => {
+    // Backs the VS Code extension's ensureDecoderSetup check -- must run through the built
+    // bundle since it drives what the extension shells out to at runtime.
+    const proj = mkIsolated('tg-matrix-mcp-status-')
+    const before = run(['mcp-status', '--vscode', '--project'], { cwd: proj })
+    expect(before.status, before.stderr).toBe(0)
+    expect((JSON.parse(before.stdout) as { configured: boolean }).configured).toBe(false)
+    const installed = run(['install', '--project', '--vscode'], { cwd: proj })
+    expect(installed.status, installed.stderr).toBe(0)
+    const after = run(['mcp-status', '--vscode', '--project'], { cwd: proj })
+    expect(after.status, after.stderr).toBe(0)
+    expect((JSON.parse(after.stdout) as { configured: boolean }).configured).toBe(true)
+  },
   uninstall: () => {
     // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.
     const proj = mkIsolated('tg-matrix-uninstall-')

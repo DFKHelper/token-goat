@@ -3,7 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { installVscode, uninstallVscode, vscodeUserMcpPath } from '../src/bridges/vscode_install.js'
+import { installVscode, uninstallVscode, vscodeDecoderConfigured, vscodeUserMcpPath } from '../src/bridges/vscode_install.js'
 
 const savedAppData = process.env['APPDATA']
 
@@ -154,6 +154,64 @@ describe('VS Code user-scope install (default, no --project)', () => {
         const servers = (config['servers'] as Record<string, unknown> | undefined) ?? {}
         expect(servers['token-goat']).toBeUndefined()
       }
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('vscodeDecoderConfigured (extension false-prompt regression)', () => {
+  it('reports configured from a user-scope install with no workspace mcp.json and no projectRoot given', () => {
+    // This is the exact bug scenario: install --vscode defaults to user scope (9c220be7),
+    // so a correctly-installed user has no <project>/.vscode/mcp.json at all. A check that
+    // only reads the workspace file must not conclude "not configured" here.
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-userdir-'))
+    process.env['APPDATA'] = userDir
+    try {
+      installVscode({})
+      expect(vscodeDecoderConfigured().configured).toBe(true)
+      expect(vscodeDecoderConfigured().checkedPaths).toEqual([vscodeUserMcpPath()])
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+    }
+  })
+
+  it('detects a user-scope install even with no workspace folder open (no projectRoot passed)', () => {
+    // A user-scope install is workspace-independent -- it must be detectable with nothing
+    // to key a projectRoot off of at all, not just "no mcp.json inside this workspace".
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-nofolder-'))
+    process.env['APPDATA'] = userDir
+    try {
+      installVscode({})
+      const status = vscodeDecoderConfigured(undefined)
+      expect(status.configured).toBe(true)
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports not configured when neither scope has token-goat registered', () => {
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-empty-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-empty-project-'))
+    process.env['APPDATA'] = userDir
+    try {
+      const status = vscodeDecoderConfigured({ projectRoot: project })
+      expect(status.configured).toBe(false)
+      expect(status.checkedPaths).toEqual([vscodeUserMcpPath(), path.join(project, '.vscode', 'mcp.json')])
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('also reports configured from a project-scope install when projectRoot is given', () => {
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-projscope-userdir-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-projscope-'))
+    process.env['APPDATA'] = userDir
+    try {
+      installVscode({ project: true, projectRoot: project })
+      expect(vscodeDecoderConfigured({ projectRoot: project }).configured).toBe(true)
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
       fs.rmSync(project, { recursive: true, force: true })

@@ -59,6 +59,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'index', reason: LIFECYCLE_REASON },
   { command: 'doctor', reason: LIFECYCLE_REASON },
   { command: 'mcp-serve', reason: LIFECYCLE_REASON },
+  { command: 'mcp-status', reason: LIFECYCLE_REASON },
   { command: 'stats', reason: LIFECYCLE_REASON },
   { command: 'bridges-status', reason: LIFECYCLE_REASON },
   { command: 'commands', reason: LIFECYCLE_REASON },
