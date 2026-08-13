@@ -827,24 +827,32 @@ export function findStructuredKeyPath(name: string, filePaths: string[]): { file
   return null
 }
 
-/** Breadth-first search for `name` as an object key at depth >= 2 in a parsed JSON/YAML document, returning its dot-path in `json_query.ts`'s grammar (`a.b`, `a[0].b`). Breadth-first so the shallowest -- and so shortest and least ambiguous -- path wins, and node-capped so a deep document cannot make a failed lookup expensive. */
+/** True when `key` can appear unambiguously as a `.`-joined segment in `json_query.ts`'s dot-path grammar: a `.` would be parsed as an extra path separator and a `[`/`]` as a bracket-expression delimiter, so a key containing either cannot be encoded as a plain segment in that grammar. */
+function isDotPathSafeKey(key: string): boolean {
+  return !key.includes('.') && !key.includes('[') && !key.includes(']')
+}
+
+/** Breadth-first search for `name` as an object key at depth >= 2 in a parsed JSON/YAML document, returning its dot-path in `json_query.ts`'s grammar (`a.b`, `a[0].b`). Breadth-first so the shallowest -- and so shortest and least ambiguous -- path wins, and node-capped so a deep document cannot make a failed lookup expensive. A match reachable only through a key containing `.`, `[`, or `]` is skipped rather than returned: such a key is not representable in the dot-path grammar, so emitting it would suggest a command that either fails or silently selects a different value. */
 function findKeyDotPath(root: unknown, name: string): string | null {
-  const queue: Array<{ value: unknown; prefix: string; depth: number }> = [{ value: root, prefix: '', depth: 0 }]
+  const queue: Array<{ value: unknown; prefix: string; depth: number; safe: boolean }> = [
+    { value: root, prefix: '', depth: 0, safe: true },
+  ]
   let visited = 0
   while (queue.length > 0) {
     const node = queue.shift()
     if (node === undefined) break
     if (visited++ >= STRUCTURED_MISS_MAX_NODES) return null
-    const { value, prefix, depth } = node
+    const { value, prefix, depth, safe } = node
     if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) queue.push({ value: value[i], prefix: `${prefix}[${i}]`, depth })
+      for (let i = 0; i < value.length; i++) queue.push({ value: value[i], prefix: `${prefix}[${i}]`, depth, safe })
       continue
     }
     if (value === null || typeof value !== 'object') continue
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const keySafe = safe && isDotPathSafeKey(key)
       const childPath = prefix === '' ? key : `${prefix}.${key}`
-      if (key === name && depth + 1 >= 2) return childPath
-      queue.push({ value: child, prefix: childPath, depth: depth + 1 })
+      if (key === name && depth + 1 >= 2 && keySafe) return childPath
+      queue.push({ value: child, prefix: childPath, depth: depth + 1, safe: keySafe })
     }
   }
   return null
@@ -4577,9 +4585,13 @@ export function runGrep(opts: GrepOptions): number {
   // search root that points outside it would otherwise be silently descended into and its
   // out-of-root contents searched -- a confinement bypass distinct from searchFile's own pin
   // check above (that one guards HOW an explicitly-requested file is opened; this one guards
-  // WHICH files a recursive walk enumerates in the first place). Every entry is lstat'd first;
-  // a symlink (file or directory) is only followed once its realpath is proven to still resolve
-  // inside `boundaryReal`.
+  // WHICH files a recursive walk enumerates in the first place). When confinement is active
+  // (`activePins` non-null), symlink entries are skipped outright rather than realpath-checked:
+  // a nested symlink can be repointed outside the root between the realpath check and the
+  // later fs.statSync/recursion on the same pathname (no retained descriptor survives across
+  // that gap on any of this project's CI platforms), so the check-then-use here is itself a
+  // TOCTOU window. Skipping is deterministic and closes it; unconfined CLI grep keeps following
+  // symlinks exactly as before, since there is no attacker in that model.
   function searchDir(dir: string, boundaryReal: string): void {
     try {
       for (const entry of fs.readdirSync(dir)) {
@@ -4592,6 +4604,7 @@ export function runGrep(opts: GrepOptions): number {
           continue
         }
         if (lst.isSymbolicLink()) {
+          if (activePins !== null) continue
           let real: string
           try {
             real = fs.realpathSync(full)

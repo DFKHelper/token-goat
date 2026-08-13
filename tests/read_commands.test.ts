@@ -81,6 +81,7 @@ import {
   runYamlQuery,
   runSqliteSchema,
   runSqliteQuery,
+  withPinnedReads,
 
   runExports,
   runImports,
@@ -3694,6 +3695,43 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, json: true }) })
       const parsed = JSON.parse(stdout) as { items: Array<Record<string, unknown>> }
       expect(parsed.items[0]).not.toHaveProperty('context')
+    })
+
+    // Confinement-vs-unconfined behavior split (see src/read_commands.ts's searchDir comment):
+    // under confinement (activePins non-null), a recursive grep skips symlink entries outright to
+    // close a nested-symlink TOCTOU window rather than realpath-checking and still traversing
+    // them. Plain CLI grep -- never wrapped in withPinnedReads, so activePins stays null -- must
+    // keep its long-standing behavior of following symlinks exactly as before.
+    //
+    // The real target is placed under a dot-prefixed directory (`.hidden-target`), which
+    // searchDir's own leading-dot filter (`entry.startsWith('.') continue`) already excludes from
+    // direct recursion -- so the content is reachable ONLY via the `alias` symlink, isolating
+    // whether the symlink itself was traversed from whether the real directory would have been
+    // found anyway by ordinary recursion (it would not, dot-prefixed or not, if placed directly).
+    function makeSymlinkOnlyReachableFixture(): { canSymlink: boolean } {
+      const real = path.join(tempDir, '.hidden-target')
+      fs.mkdirSync(real)
+      fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME reachable only via symlink\n')
+      try {
+        fs.symlinkSync(real, path.join(tempDir, 'alias'), 'dir')
+        return { canSymlink: true }
+      } catch {
+        return { canSymlink: false }
+      }
+    }
+
+    it('runGrep still follows a legitimate symlink when unconfined (activePins is null)', () => {
+      const { canSymlink } = makeSymlinkOnlyReachableFixture()
+      if (!canSymlink) return
+      const { stdout } = capture(() => { runGrep({ pattern: 'FINDME', path: tempDir }) })
+      expect(stdout).toContain('reachable only via symlink')
+    })
+
+    it('runGrep skips a symlink entry outright when confined, even one that resolves within the search boundary', () => {
+      const { canSymlink } = makeSymlinkOnlyReachableFixture()
+      if (!canSymlink) return
+      const code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
+      expect(code).toBe(1)
     })
   })
 

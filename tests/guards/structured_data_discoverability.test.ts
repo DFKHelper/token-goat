@@ -131,4 +131,48 @@ describe('structured-data discoverability', () => {
     expect(hit?.dotPath).toBe('server.listenPort')
     expect(hit?.command).toBe('yaml-query')
   })
+
+  it('findStructuredKeyPath: suppresses a match reachable only through a key containing "." (dot-path grammar cannot encode it)', () => {
+    // `dependencies.["react.native"]` would be parsed by json_query.ts's grammar as the plain key
+    // "react" followed by a stray ".native" segment, not the single literal key "react.native" --
+    // so a suggestion built from this key would either fail or silently select the wrong value.
+    // The fix must suppress the suggestion rather than emit an unrunnable one.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-dotkey-'))
+    const file = join(dir, 'package.json')
+    writeFileSync(file, JSON.stringify({ name: 'x', version: '1.0.0', dependencies: { 'react.native': '1.0.0' } }, null, 2))
+    expect(findStructuredKeyPath('react.native', [file])).toBeNull()
+  })
+
+  it('findStructuredKeyPath: suppresses a match reachable only through a key containing "[" (bracket-expression delimiter in the grammar)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-brackkey-'))
+    const file = join(dir, 'weird.json')
+    writeFileSync(file, JSON.stringify({ outer: { 'odd[key]': 'value' } }, null, 2))
+    expect(findStructuredKeyPath('odd[key]', [file])).toBeNull()
+  })
+
+  it('findStructuredKeyPath: an unrepresentable key does not block a real match reachable through a different (safe) key at the same name', () => {
+    // Two sibling objects both have a key named "needle" -- one reached through a dotted key
+    // ("weird.group"), one through a plain key ("safe"). Breadth-first + "shallowest wins" means
+    // the search must not stop (and return null) at the first, unrepresentable occurrence; it
+    // must keep looking and return the safe one.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-mixedkey-'))
+    const file = join(dir, 'mixed.json')
+    writeFileSync(
+      file,
+      JSON.stringify({ 'weird.group': { needle: 'unreachable' }, safe: { needle: 'reachable' } }, null, 2),
+    )
+    const hit = findStructuredKeyPath('needle', [file])
+    expect(hit?.dotPath).toBe('safe.needle')
+  })
+
+  it('symbol miss on a key only reachable through a dotted key stays silent (no unrunnable suggestion), end-to-end', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-e2e-dotkey-'))
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ name: 'x', 'react.native': { peerOnly: true } }, null, 2))
+    const home = mkdtempSync(join(tmpdir(), 'tg-structdisc-e2e-dotkey-home-'))
+    run(['index', '.', '--walk'], dir, home)
+    const r = run(['symbol', 'peerOnly'], dir, home)
+    expect(r.status).not.toBe(0)
+    expect(r.out).not.toContain('is a key in')
+    expect(r.out).not.toContain('json-query')
+  })
 })
