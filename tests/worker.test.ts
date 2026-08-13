@@ -1818,12 +1818,21 @@ describe('runWorkerLoop prompt-stop (mutation-testing gap)', () => {
       calls += 1
       return calls > 1
     }
-    const start = Date.now()
-    await runWorkerLoop(DIR, 2000, shouldStop)
-    const elapsed = Date.now() - start
-    // The loop body itself is fast (an empty-queue drain plus a couple of best-effort no-ops);
-    // a passing run must finish in well under one 2000ms poll interval.
-    expect(elapsed).toBeLessThan(1000)
+    const setTimeoutSpy = vi.spyOn(global, 'setTimeout')
+    let resolved = false
+    // Await the loop's own promise chain (drainOnce + housekeeping are synchronous/microtask
+    // work) without ever advancing real or fake time: if the second shouldStop() check is
+    // skipped, the loop falls through to `setTimeout(resolve, pollIntervalMs)` and this would
+    // never resolve without a 2000ms timer advance -- proving the behavior directly instead of
+    // inferring it from a wall-clock bound.
+    void runWorkerLoop(DIR, 2000, shouldStop).then(() => {
+      resolved = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toBe(true)
+    expect(setTimeoutSpy).not.toHaveBeenCalled()
+    setTimeoutSpy.mockRestore()
   })
 })
 

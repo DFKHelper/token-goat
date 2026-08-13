@@ -200,13 +200,17 @@ describe('runStatuslineCommand — stdin handling', () => {
 
   it('does NOT hang when stdin never sends data or an end event (critical: must never block the terminal UI)', async () => {
     io.neverEnd()
-    const start = Date.now()
-    // The vitest default test timeout (5s) would fail this test if the command
-    // ever actually hung; asserting a much tighter bound below additionally
-    // proves it resolves via its own short internal timeout, not by luck.
-    await runStatuslineCommand()
-    const elapsedMs = Date.now() - start
-    expect(elapsedMs).toBeLessThan(3000)
+    vi.useFakeTimers()
+    try {
+      // Drive the internal stdin-read timeout forward explicitly instead of measuring wall-clock
+      // elapsed time: this proves the command resolves via its own short timer, not merely that
+      // it happened to return within a generous margin.
+      const settlement = runStatuslineCommand()
+      await vi.advanceTimersByTimeAsync(1500)
+      await settlement
+    } finally {
+      vi.useRealTimers()
+    }
     expect(io.written().trim().length).toBeGreaterThan(0)
   }, 10000)
 })
