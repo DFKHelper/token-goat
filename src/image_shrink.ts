@@ -104,6 +104,18 @@ export function isImagePath(p: string): boolean {
   return IMAGE_EXTENSIONS.has(path.extname(p).toLowerCase())
 }
 
+/** Raw decoded metadata for `image-meta` -- dimensions/format only, no re-encode. Returns `null` when `sharp` is unavailable or the input can't be decoded, same convention as {@link shrinkImage}. */
+export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number } | null> {
+  const sharp = await loadSharp()
+  if (sharp === null) return null
+  try {
+    const meta = await sharp(input, { limitInputPixels: false }).metadata()
+    return { width: meta.width ?? 0, height: meta.height ?? 0, format: meta.format ?? null, pages: meta.pages ?? 1 }
+  } catch {
+    return null
+  }
+}
+
 /**
  * Shrink an image buffer to fit within `maxDimension` on its longest edge and
  * re-encode it, choosing JPEG or WebP — whichever is smaller.

@@ -19,10 +19,12 @@ import { tmpdir } from 'node:os'
 
 import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import ExcelJS from 'exceljs'
+import sharp from 'sharp'
 
 import { run } from '../src/cli.js'
 import { summarize } from '../src/stats.js'
 import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
+import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
 
 // Minimal hand-authored single-page PDF (Helvetica text object), same fixture shape as
 // tests/helpers/matrix_cases.ts' MINIMAL_PDF.
@@ -68,9 +70,25 @@ describe('document-extraction CLI stat recording', () => {
     writeFileSync(join(root, 'deck.pptx'), buildPptxFixture([{ title: 'Intro', body: ['Welcome'], notes: 'Say hello warmly' }]))
     writeFileSync(join(root, 'doc.docx'), buildDocxFixture([{ text: 'Overview', headingLevel: 1 }, { text: 'Some body text.' }]))
     writeFileSync(join(root, 'meeting.vtt'), VTT)
+
+    const png = await sharp({ create: { width: 40, height: 20, channels: 3, background: { r: 9, g: 9, b: 9 } } }).png().toBuffer()
+    writeFileSync(join(root, 'pic.png'), png)
+
+    const stub = join(root, 'tesseract-stub.cjs')
+    writeFileSync(
+      stub,
+      `module.exports.createWorker = async function () {
+        return {
+          recognize: async () => ({ data: { text: 'stubbed text for stat recording coverage, plenty of characters here', confidence: 90 } }),
+          terminate: async () => {},
+        }
+      }`,
+    )
+    setTesseractEntryForTesting(stub)
   })
 
   afterAll(() => {
+    resetOcrStateForTesting()
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -100,6 +118,8 @@ describe('document-extraction CLI stat recording', () => {
     ],
     ['xlsx-sheets --json', () => ['xlsx-sheets', join(root, 'book.xlsx'), '--json'], 'xlsx_sheets'],
     ['pdf-meta --json', () => ['pdf-meta', join(root, 'doc.pdf'), '--json'], 'pdf_meta'],
+    ['image-meta', () => ['image-meta', join(root, 'pic.png')], 'image_meta'],
+    ['image-text', () => ['image-text', join(root, 'pic.png')], 'image_text'],
   ] as const)('`token-goat %s` records a %s stat row through the real global stats DB', async (_cmd, argsFn, kind) => {
     const before = summarize(30).by_kind[kind]
     const beforeEvents = before?.events ?? 0

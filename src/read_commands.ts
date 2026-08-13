@@ -52,6 +52,8 @@ import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqli
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
+import { isImagePath, probeImageMeta, shrinkImage } from './image_shrink.js'
+import { ocrImage, isTextHeavy } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
 import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
@@ -3330,6 +3332,68 @@ export async function runPdfMeta(file: string): Promise<PdfMeta> {
   }
   const data = fs.readFileSync(file)
   return extractPdfMeta(new Uint8Array(data))
+}
+
+export interface ImageMeta {
+  width: number
+  height: number
+  format: string | null
+  bytes: number
+  sharpAvailable: boolean
+  wouldShrink: boolean
+  shrunkBytes: number | null
+}
+
+/** Thin async wrapper (same rationale as runPdfExtractText above): sharp metadata only -- never runs OCR, a cheap "should I even look at this" probe. `wouldShrink`/`shrunkBytes` reuse shrinkImage (forcing sizeThresholdBytes 0) to report what a real shrink would cost without actually re-encoding for the caller. */
+export async function runImageMeta(file: string): Promise<ImageMeta> {
+  if (!fileExists(file)) {
+    throw new Error(`Could not read: ${file}`)
+  }
+  if (!isImagePath(file)) {
+    throw new Error(`Not an image file: ${file}`)
+  }
+  const data = fs.readFileSync(file)
+  const bytes = data.length
+  const probe = await probeImageMeta(data)
+  if (probe === null) {
+    return { width: 0, height: 0, format: null, bytes, sharpAvailable: false, wouldShrink: false, shrunkBytes: null }
+  }
+  const shrink = await shrinkImage(data, { sizeThresholdBytes: 0 })
+  return {
+    width: probe.width,
+    height: probe.height,
+    format: probe.format,
+    bytes,
+    sharpAvailable: true,
+    wouldShrink: shrink !== null,
+    shrunkBytes: shrink !== null ? shrink.shrunkBytes : null,
+  }
+}
+
+export interface ImageTextResult {
+  ocrAvailable: boolean
+  confidence: number
+  chars: number
+  textHeavy: boolean
+  text: string | null
+}
+
+/** Thin async wrapper (same rationale as runPdfExtractText above): runs OCR via image_ocr.ts's isolated-child-process ocrImage. Honest about low-confidence results -- `text` stays null below isTextHeavy's threshold rather than surfacing noise as content; `confidence`/`chars` are always reported so the caller can see why. */
+export async function runImageText(file: string): Promise<ImageTextResult> {
+  if (!fileExists(file)) {
+    throw new Error(`Could not read: ${file}`)
+  }
+  if (!isImagePath(file)) {
+    throw new Error(`Not an image file: ${file}`)
+  }
+  const data = fs.readFileSync(file)
+  const ocr = await ocrImage(data)
+  if (ocr === null) {
+    return { ocrAvailable: false, confidence: 0, chars: 0, textHeavy: false, text: null }
+  }
+  const minConfidence = loadConfig().image_shrink.ocr_min_confidence
+  const heavy = isTextHeavy(ocr, minConfidence)
+  return { ocrAvailable: true, confidence: ocr.confidence, chars: ocr.text.length, textHeavy: heavy, text: heavy ? ocr.text : null }
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above): drives a real
