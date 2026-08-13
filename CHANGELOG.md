@@ -2,6 +2,11 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Added
+- **`impact --grep` narrows the impacted-set output to entries whose symbol name (or `(module scope) <file>` key) matches a pattern**, closing the one gap left in this flag family after `call-chain`/`callers`/`dead` already had it. Applied before the `--top` slice, so it selects from the whole impacted set rather than an already-capped page; when it matches none of the impacted entries that do exist, the output (and `--json`'s bare `[]`) names how many were filtered out instead of reading as genuinely impact-free. See [src/graph_commands.ts](src/graph_commands.ts), [src/cli.ts](src/cli.ts), [tests/graph_commands.test.ts](tests/graph_commands.test.ts).
+
 ## [2.6.28] - 2026-08-13
 
 ### Added
