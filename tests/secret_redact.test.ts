@@ -89,6 +89,85 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain('first-key-body')
     expect(text).not.toContain('second-key-body')
   })
+
+  it('redacts an Authorization: Bearer header value, keeping the header name and scheme intact', () => {
+    const fake = 'abcDEF123ghiJKL456mnoPQR789'
+    const { text, count } = redactSecrets(`Authorization: Bearer ${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('Authorization: Bearer [REDACTED:auth_bearer_token]')
+    expect(text).not.toContain(fake)
+  })
+
+  it('redacts an Authorization: Basic header value (base64-encoded credentials), keeping the header name and scheme intact', () => {
+    const fake = 'dXNlcm5hbWU6cGFzc3dvcmQ=' // base64("username:password"), a fake example pair
+    const { text, count } = redactSecrets(`Authorization: Basic ${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('Authorization: Basic [REDACTED:auth_basic_token]')
+    expect(text).not.toContain(fake)
+  })
+
+  it('redacts a JWT (three base64url segments anchored on the eyJ header prefix)', () => {
+    // Regression: before this pattern existed, a JWT was deliberately left unmodified (see the
+    // "leaves a JWT unmodified" case below, which this task's brief changes on purpose).
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    const { text, count } = redactSecrets(`Authorization: ${jwt}`)
+    expect(count).toBe(1)
+    expect(text).toBe('Authorization: [REDACTED:jwt]')
+    expect(text).not.toContain(jwt)
+  })
+
+  it('redacts an npm token (npm_ + 36 chars)', () => {
+    const fake = 'npm_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+    const { text, count } = redactSecrets(`//registry.npmjs.org/:_authToken=${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe(`//registry.npmjs.org/:_authToken=[REDACTED:npm_token]`)
+    expect(text).not.toContain(fake)
+  })
+
+  it('redacts a Stripe live secret key', () => {
+    const fake = 'sk_live_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4'
+    const { text, count } = redactSecrets(`STRIPE_SECRET_KEY=${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('STRIPE_SECRET_KEY=[REDACTED:stripe_key]')
+    expect(text).not.toContain(fake)
+  })
+
+  it('redacts a Stripe test secret key and a Stripe restricted key', () => {
+    const testKey = 'sk_test_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4'
+    const restrictedKey = 'rk_live_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4'
+    const { text, count } = redactSecrets(`TEST=${testKey}\nRESTRICTED=${restrictedKey}`)
+    expect(count).toBe(2)
+    expect(text).toBe('TEST=[REDACTED:stripe_key]\nRESTRICTED=[REDACTED:stripe_key]')
+  })
+
+  it('redacts a Google API key (AIza + 35 chars)', () => {
+    const fake = 'AIza' + 'SyABCDEFGHIJKLMNOPQRSTUVWXYZ1234567'
+    const { text, count } = redactSecrets(`GOOGLE_API_KEY=${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('GOOGLE_API_KEY=[REDACTED:google_api_key]')
+    expect(text).not.toContain(fake)
+  })
+
+  it('redacts a generic password= assignment in an env-line shape, keeping the key name intact', () => {
+    const { text, count } = redactSecrets('DB_PASSWORD=hunter2FakeValue')
+    expect(count).toBe(1)
+    expect(text).toBe('DB_PASSWORD=[REDACTED:generic_secret_assignment]')
+  })
+
+  it('redacts a generic api_key= assignment in a query-string shape without eating the rest of the URL (regression guard for the exact failure mode this pattern must avoid)', () => {
+    const { text, count } = redactSecrets('https://api.example.com/v1/data?api_key=ZZZ9x8y7w6v5u4t3s2r1q0&format=json')
+    expect(count).toBe(1)
+    expect(text).toBe('https://api.example.com/v1/data?api_key=[REDACTED:generic_secret_assignment]&format=json')
+    expect(text).toContain('&format=json')
+  })
+
+  it('redacts a generic secret= assignment but stops at the next word, not the rest of the line', () => {
+    const { text, count } = redactSecrets('secret=abc123Fake the rest of this sentence continues normally')
+    expect(count).toBe(1)
+    expect(text).toBe('secret=[REDACTED:generic_secret_assignment] the rest of this sentence continues normally')
+    expect(text).toContain('the rest of this sentence continues normally')
+  })
 })
 
 describe('redactSecrets — no false positives on ordinary content', () => {
@@ -120,12 +199,57 @@ describe('redactSecrets — no false positives on ordinary content', () => {
     expect(text).toBe(input)
   })
 
-  it('leaves a JWT unmodified (no pattern in this set targets JWTs)', () => {
-    const jwt =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
-    const { text, count } = redactSecrets(jwt)
+  // Behavior change from this task's brief: a JWT is now redacted by the new 'jwt' pattern
+  // above; this case was updated from its previous "leaves a JWT unmodified" assertion to
+  // instead confirm a JWT-shaped-but-too-short string (only two segments, and each segment
+  // under the 10-char floor) is correctly left alone as a near-miss.
+  it('leaves a JWT-shaped string with too few segments or segments below the length floor unmodified', () => {
+    const notQuiteAJwt = 'eyJab.cd'
+    const { text, count } = redactSecrets(notQuiteAJwt)
     expect(count).toBe(0)
-    expect(text).toBe(jwt)
+    expect(text).toBe(notQuiteAJwt)
+  })
+
+  it('leaves an Authorization: Bearer header with a too-short value unmodified (below the 10-char confidence floor)', () => {
+    const input = 'Authorization: Bearer abc'
+    const { text, count } = redactSecrets(input)
+    expect(count).toBe(0)
+    expect(text).toBe(input)
+  })
+
+  it('leaves an npm-prefixed identifier that is not a real token unmodified (npm config var name, underscore breaks the run before 36 chars)', () => {
+    const input = 'npm_config_registry=https://registry.npmjs.org/'
+    const { text, count } = redactSecrets(input)
+    expect(count).toBe(0)
+    expect(text).toBe(input)
+  })
+
+  it('leaves a near-miss Stripe-shaped string unmodified (hyphen instead of the required underscore after the prefix)', () => {
+    const input = 'reference=sk_test-not-a-real-stripe-key-shape'
+    const { text, count } = redactSecrets(input)
+    expect(count).toBe(0)
+    expect(text).toBe(input)
+  })
+
+  it('leaves a near-miss Google-API-key-shaped string unmodified (too short after the AIza prefix)', () => {
+    const input = 'AIzaShortAndNotReal'
+    const { text, count } = redactSecrets(input)
+    expect(count).toBe(0)
+    expect(text).toBe(input)
+  })
+
+  it('leaves plain mentions of the word "password" with no assignment unmodified', () => {
+    const input = 'Please enter your password below and click submit.'
+    const { text, count } = redactSecrets(input)
+    expect(count).toBe(0)
+    expect(text).toBe(input)
+  })
+
+  it('leaves a word that merely contains "secret" as a substring unmodified (no assignment operator immediately follows it)', () => {
+    const input = 'secretary@example.com sent the quarterly report.'
+    const { text, count } = redactSecrets(input)
+    expect(count).toBe(0)
+    expect(text).toBe(input)
   })
 
   it('leaves normal JSON tool output unmodified', () => {
