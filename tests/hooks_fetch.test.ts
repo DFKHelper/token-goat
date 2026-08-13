@@ -1,4 +1,6 @@
+import { tempConfigPath } from './helpers/temp-config.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { unlinkSync } from 'node:fs';
 import type { HookEvent } from '../src/hook_registry.js';
 
 // vi.mock is hoisted — spy on recordStat while still calling through to the real
@@ -9,10 +11,19 @@ vi.mock('../src/stats.js', async (importOriginal) => {
   return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) };
 });
 
+// Redirects configPath() to a per-test-file temp file so the webfetch.allow/deny wiring tests can set non-default config values deterministically, mirroring tests/hooks_grep.test.ts.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>();
+  return { ...original, configPath: () => _testConfigPath };
+});
+
+const _testConfigPath = tempConfigPath('tg-hooks-fetch-config-test.toml');
+
 import { postFetchHandler, preFetchHandler } from '../src/hooks_fetch.js';
 import { getWebOutput, getWebOutputRaw } from '../src/web_cache.js';
 import { clearModuleCaches } from '../src/reset.js';
 import { recordStat } from '../src/stats.js';
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 
 beforeEach(() => {
   clearModuleCaches();
@@ -21,6 +32,12 @@ beforeEach(() => {
 
 afterEach(() => {
   clearModuleCaches();
+  invalidateConfigCache();
+  try {
+    unlinkSync(_testConfigPath);
+  } catch {
+    // ok -- may not exist
+  }
 });
 
 describe('preFetchHandler', () => {
@@ -200,6 +217,84 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url, prompt: 'What is the refund policy?' },
       sessionId,
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('denies a WebFetch whose URL matches a configured webfetch.deny pattern (regression: webfetch.allow/deny were parsed and validated but never consulted -- a deny list was a silent no-op)', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.deny = ['*evil.example.com*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://evil.example.com/page' },
+      sessionId: 'deny-session',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('deny');
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('webfetch.deny');
+    }
+  });
+
+  it('does not deny a URL that fails to match webfetch.deny', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.deny = ['*evil.example.com*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://safe.example.com/page' },
+      sessionId: 'deny-session-2',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('denies a WebFetch whose URL matches none of a configured webfetch.allow list', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.allow = ['https://trusted.example.com*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://untrusted.example.com/page' },
+      sessionId: 'allow-session',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('deny');
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('webfetch.allow');
+    }
+  });
+
+  it('passes a WebFetch whose URL matches a configured webfetch.allow list', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.allow = ['https://trusted.example.com*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://trusted.example.com/page' },
+      sessionId: 'allow-session-2',
       agentId: undefined,
       raw: {},
     });
