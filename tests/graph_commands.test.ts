@@ -3441,6 +3441,43 @@ describe('runImpact --grep', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // The --json counterpart of the text case above. `impact --json` is a deliberate bare array
+  // (NON_ENVELOPE_JSON_COMMANDS in json_envelope_shape.test.ts), so unlike its six grep-capable
+  // siblings it has no payload key to carry `hiddenByGrep` -- which meant the filtered-to-empty
+  // count was simply dropped under --json, leaving `[]` byte-identical to a genuinely impact-free
+  // symbol. That is the exact "filtered store renders as populated" trap the siblings were fixed
+  // for. The count now goes to stderr, so stdout keeps the shape a --json consumer parses while
+  // the distinction survives on the other stream. Asserts BOTH: stderr names the count, and
+  // stdout is still exactly `[]` -- pinning the fix without letting it change the payload.
+  it('names the filtered count on stderr under --json, keeping stdout a bare empty array', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-grep-json-empty-'))
+    try {
+      const defFile = join(root, 'impact-grep-json-def.ts')
+      const callerFile = join(root, 'impact-grep-json-caller.ts')
+      writeFileSync(defFile, 'export function impactGrepJsonTargetFn8w2() { return 1 }\n')
+      writeFileSync(callerFile, 'function impactGrepJsonCaller8w2() { impactGrepJsonTargetFn8w2() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let stdout = ''
+        const stderr = captureStderr(() => {
+          stdout = captureStdout(() => {
+            expect(runImpact({ symbol: 'impactGrepJsonTargetFn8w2', json: true, grep: '__no_such_match__' })).toBe(0)
+          })
+        })
+        expect(stderr).toContain('--grep')
+        expect(stderr).toContain('__no_such_match__')
+        expect(JSON.parse(stdout)).toEqual([])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- compareHopEntries (runImpact tiebreak) ---------------------------------
