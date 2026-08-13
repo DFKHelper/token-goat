@@ -4639,10 +4639,17 @@ export function runGrep(opts: GrepOptions): number {
   // shape was itself a TOCTOU window: it validated the symlink PATHNAME and then re-used that
   // same pathname for fs.statSync/recursion, so the link could be repointed outside the root in
   // between. Under confinement the walk now resolves the entry ONCE with fs.realpathSync,
-  // boundary-checks that realpath, and then stats/recurses/reads the REALPATH only -- repointing
-  // the symlink afterwards cannot affect a walk that never references it again. Unconfined CLI
-  // grep keeps following the symlink pathname exactly as before, since there is no attacker in
-  // that model.
+  // boundary-checks that realpath, and then stats/recurses/reads the REALPATH only -- so
+  // repointing the LINK afterwards cannot affect the walk, which never references that pathname
+  // again. That is the variant this closes, and it is the one the regression test exercises.
+  // It does NOT close the resolved-target variant: `target` is a path string, not a pinned
+  // descriptor, so fs.statSync(target) and the recursive walk both re-resolve it, and swapping a
+  // component of that realpath in between would still be followed. No portable
+  // descriptor-relative traversal API exists to eliminate that window, so the recursive entry
+  // re-checks the boundary on every call (below) to bound it rather than trusting one check, and
+  // the residual race is accepted under a threat model with no concurrent writer inside the
+  // confined root. Unconfined CLI grep keeps following the symlink pathname exactly as before,
+  // since there is no attacker in that model.
   function searchDir(dir: string, boundaryReal: string): void {
     if (activePins !== null) {
       // Cycle and duplicate protection, confined-only so unconfined output stays byte-identical:
@@ -4654,6 +4661,12 @@ export function runGrep(opts: GrepOptions): number {
       } catch {
         return
       }
+      // Re-checked on every entry, not just at the caller's one-time resolution: `dir` is already a
+      // boundary-checked realpath on the recursive path, so this normally re-derives the same string
+      // and passes -- it only ever fires if a component of that realpath was swapped between the
+      // caller's check and this re-resolution, which is exactly the residual race the docblock above
+      // scopes. Cheap enough to pay unconditionally rather than trust the caller's check.
+      if (!withinRealpathBoundary(realDir, boundaryReal)) return
       if (visitedRealDirs.has(realDir)) return
       visitedRealDirs.add(realDir)
     }

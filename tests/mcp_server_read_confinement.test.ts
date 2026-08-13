@@ -891,6 +891,45 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).toContain('legitimate in-root content')
   })
 
+  // The RESOLVED-TARGET counterpart to the swap above, and a genuinely distinct hole: that test
+  // repoints the LINK, which the walk never dereferences again, so it is defeated by construction.
+  // This one repoints what the link already resolved TO, at the moment searchDir's recursive entry
+  // re-resolves it -- and the walk does re-reference that string, in the readdirSync below. With
+  // the boundary re-checked only at the caller, the recursion trusted its `dir` argument and
+  // enumerated the swapped-in out-of-root directory; the leading-dot filter keeps `.hidden-target`
+  // unreachable by any route except the symlink, so a leak here can only have come through it.
+  it.runIf(canCreateDirSymlinks())('a confined grep does not leak out-of-root content when a symlink target is repointed at the recursive re-resolution', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+    const real = path.join(root, '.hidden-target')
+    fs.mkdirSync(real)
+    fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME legitimate in-root content\n')
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+    fs.symlinkSync(real, path.join(root, 'alias'), 'dir')
+
+    // Fires BEFORE the real resolution (after: false), so the recursive call's own fs.realpathSync
+    // observes the swapped entry -- the window the caller's one-time check cannot cover.
+    realpathSyncSwapState.triggerPath = foldPathForCompare(real)
+    realpathSyncSwapState.fired = false
+    realpathSyncSwapState.after = false
+    realpathSyncSwapState.onTrigger = () => {
+      fs.renameSync(real, path.join(root, '.hidden-moved'))
+      fs.symlinkSync(outside, real, 'dir')
+    }
+
+    const { client, close } = await connectedClient()
+    cleanup = async () => {
+      realpathSyncSwapState.triggerPath = null
+      realpathSyncSwapState.fired = false
+      realpathSyncSwapState.onTrigger = null
+      await close()
+    }
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
+    expect(realpathSyncSwapState.fired).toBe(true)
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+  })
+
   // Gap (3): the TOP-LEVEL search directory itself repointed outside the root after the gate
   // validated it (as opposed to a nested entry discovered by searchDir's own recursion, which
   // gap (2) above already covers). confineTargets pins the directory it just validated, but
