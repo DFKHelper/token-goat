@@ -26,11 +26,13 @@ describe('handlePdf', () => {
     expect(result.shouldBlock).toBe(true)
   })
 
-  it('does not advertise a pages-parameter Read retry — PDFs are always blocked regardless of args, so that remedy can never work; points to a real extraction command instead', () => {
+  it('does not advertise a pages-parameter Read retry and instead gives the PDF inspection and extraction flow', () => {
     const result = handlePdf('/path/to/doc.pdf', 1024)
-    expect(result.message).not.toContain('pages')
     expect(result.message).not.toContain('Read({')
+    expect(result.message).toContain('pdf-meta')
+    expect(result.message).toContain('pdf-outline')
     expect(result.message).toContain('pdf-extract')
+    expect(result.message).toContain('--pages <range>')
     expect(result.message).toContain('/path/to/doc.pdf')
   })
 
