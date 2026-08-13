@@ -45,6 +45,8 @@ beforeAll(() => {
   // A real file whose language has an extractor but which declares nothing: this is the
   // "exists but empty" control, and it must NOT be reported as unreadable.
   writeFileSync(join(projectDir, 'blank.ts'), '\n')
+  // A real file with no markdown headings: the "exists but no sections" control for `section --list`.
+  writeFileSync(join(projectDir, 'blank.md'), 'plain text, no headings\n')
   run(['index', '.', '--walk'])
 })
 
@@ -76,6 +78,19 @@ describe('missing path vs empty result', () => {
   it('types keeps its empty-result wording for a file that exists', () => {
     const r = run(['types', 'blank.ts'])
     expect(r.out).toContain('No type declarations found')
+    expect(r.out).not.toContain('Could not read')
+  })
+
+  it('section --list reports a nonexistent path as unreadable', () => {
+    const r = run(['section', 'nope.md', '--list'])
+    expect(r.status).not.toBe(0)
+    expect(r.out).toContain('Could not read: nope.md')
+    expect(r.out).not.toContain('No sections found')
+  })
+
+  it('section --list keeps its empty-result wording for a file that exists', () => {
+    const r = run(['section', 'blank.md', '--list'])
+    expect(r.out).toContain('No sections found')
     expect(r.out).not.toContain('Could not read')
   })
 

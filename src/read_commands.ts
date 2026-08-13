@@ -3734,6 +3734,14 @@ export function runListSections(opts: ListSectionsOptions): number {
   const sections = listSections(opts.file)
 
   if (sections.length === 0) {
+    // listSections() returns [] both for a path that does not exist and for a real file with
+    // no headings, so a typo'd path used to read identically to a genuinely empty doc. Checked
+    // here, after the query, because only the empty result needs disambiguating -- wording
+    // matches runPdfMeta's `Could not read: ${file}` precedent verbatim.
+    if (!fileExists(opts.file)) {
+      emitErr(`Could not read: ${opts.file}`)
+      return 1
+    }
     emitErr(`No sections found in '${opts.file}'`)
     return 1
   }
