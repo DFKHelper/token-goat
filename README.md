@@ -826,7 +826,12 @@ code --install-extension token-goat-vscode-0.1.0.vsix
 ```
 
 Its two commands call the local CLI and use `workbench.action.chat.open` to
-prefill chat. They never submit chat automatically.
+prefill chat. They never submit chat automatically. Before offering to run
+`install --vscode`, the extension calls `token-goat mcp-status --vscode` (add
+`-p`/`--project` for the workspace scope too) to check whether the decoder is
+already configured — the same path resolver `install`/`uninstall` write
+against, so the two can never drift on where `mcp.json` lives or what key
+name it looks for.
 
 **Copilot CLI** — add it to `~/.copilot/mcp-config.json`:
 

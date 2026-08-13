@@ -163,6 +163,39 @@ export function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
   }
 }
 
+export interface VscodeDecoderStatus {
+  configured: boolean
+  checkedPaths: string[]
+}
+
+/**
+ * Single source of truth for "is the VS Code decoder set up", shared by the extension's
+ * ensureDecoderSetup prompt so it can never drift from what installVscode actually writes.
+ * Always checks user scope (the default since 9c220be7); also checks the workspace scope
+ * when a projectRoot is given, since that is the only case where `.vscode/mcp.json` is
+ * relevant at all -- a user-scope install is workspace-independent, so this deliberately
+ * does not require projectRoot to report `configured: true`.
+ */
+export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): VscodeDecoderStatus {
+  const checkedPaths = [vscodeUserMcpPath()]
+  if (opts.projectRoot !== undefined) checkedPaths.push(vscodeProjectMcpPath(opts.projectRoot))
+  for (const candidate of checkedPaths) {
+    if (!fs.existsSync(candidate)) continue
+    try {
+      const config = readConfig(candidate)
+      const servers = config.value['servers']
+      if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) continue
+      if (isManagedServer((servers as Record<string, unknown>)['token-goat'])) {
+        return { configured: true, checkedPaths }
+      }
+    } catch {
+      // Malformed file at this path isn't this check's problem -- it surfaces loudly the
+      // moment someone actually installs into that scope. Keep scanning the rest.
+    }
+  }
+  return { configured: false, checkedPaths }
+}
+
 function writeGuidance(filePath: string): boolean {
   const body = [
     BEGIN,
