@@ -2,7 +2,18 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type * as ChildProcess from 'node:child_process'
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Wraps the real `spawn` so call counts are observable without breaking the actual subprocess
+// round trip other tests in this file rely on -- Node's built-in ESM module namespace can't be
+// spied on directly (its exports are non-configurable), so this is the only way to assert "no
+// second spawn happened" as behavior instead of falling back to a wall-clock race.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcess>()
+  return { ...actual, spawn: vi.fn(actual.spawn) }
+})
 
 import {
   formatOcrSummary,
@@ -108,11 +119,17 @@ describe('ocrImage', () => {
     )
     setTesseractEntryForTesting(stub)
     setOcrTimeoutForTesting(300)
-    const start = Date.now()
-    const result = await ocrImage(Buffer.from('fake-image-bytes'))
-    const elapsed = Date.now() - start
-    expect(result).toBeNull()
-    expect(elapsed).toBeLessThan(2000)
+    // Fake timers assert the kill-timeout path actually fires, instead of a wall-clock bound
+    // that measures the test machine's speed under load rather than the module's behaviour.
+    vi.useFakeTimers()
+    try {
+      const pending = ocrImage(Buffer.from('fake-image-bytes'))
+      await vi.advanceTimersByTimeAsync(300)
+      const result = await pending
+      expect(result).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('marks OCR unavailable for the rest of the process after a timeout, skipping the spawn on the next call', async () => {
@@ -123,22 +140,29 @@ describe('ocrImage', () => {
       }`,
     )
     setTesseractEntryForTesting(stub)
-    // A generous timeout with a wide safety margin on the assertion below -- under full-suite
-    // parallel load (many vitest workers competing for CPU), a tight timeout/threshold pair
-    // flakes: the first call's own timeout firing can itself take longer than a small
-    // absolute bound allows, well before the second call even starts. 3000ms/1500ms leaves
-    // enough headroom that only a genuine second spawn (which would also wait out the full
-    // 3000ms) could trip the assertion.
-    setOcrTimeoutForTesting(3000)
-    const first = await ocrImage(Buffer.from('a'))
-    expect(first).toBeNull()
+    setOcrTimeoutForTesting(1000)
+    const { spawn } = await import('node:child_process')
+    const spawnSpy = vi.mocked(spawn)
+    spawnSpy.mockClear()
+    // Fake timers drive the kill-timeout deterministically; the regression this guards against
+    // is the sticky-disable flag not being set, which a wall-clock "second call is fast" bound
+    // cannot distinguish from ordinary machine-speed variance under parallel test load.
+    vi.useFakeTimers()
+    try {
+      const firstPending = ocrImage(Buffer.from('a'))
+      await vi.advanceTimersByTimeAsync(1000)
+      const first = await firstPending
+      expect(first).toBeNull()
+      expect(spawnSpy).toHaveBeenCalledTimes(1)
 
-    // Second call must return near-instantly (no new spawn / no second wait for the timeout)
-    // -- if the sticky-disable flag weren't set, this call would also burn out the timeout.
-    const start = Date.now()
-    const second = await ocrImage(Buffer.from('b'))
-    expect(second).toBeNull()
-    expect(Date.now() - start).toBeLessThan(1500)
+      // Second call must not spawn a new child at all -- if the sticky-disable flag weren't
+      // set by the timeout above, this would spawn again and hang on the same fake timer.
+      const second = await ocrImage(Buffer.from('b'))
+      expect(second).toBeNull()
+      expect(spawnSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does NOT mark OCR unavailable after a normal per-image recognition failure (exit code 1)', async () => {
