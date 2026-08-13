@@ -106,6 +106,8 @@ import {
   runPdfExtractText,
   runPdfMeta,
   runPdfOutline,
+  runImageMeta,
+  runImageText,
 
   runScreenshot,
   extractTranscriptText,
@@ -1185,6 +1187,57 @@ async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
   recordStat('pdf_meta', bytesSaved, Math.round(bytesSaved / 4))
+}
+
+async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
+  const meta = await runImageMeta(file)
+  if (!meta.sharpAvailable) {
+    const msg = 'image-meta unavailable (install sharp to use this feature)'
+    const text = opts.json === true
+      ? JSON.stringify({ bytes: meta.bytes, sharpAvailable: false, error: msg }, null, 2)
+      : `Size: ${meta.bytes} bytes\n${msg}`
+    out(text)
+    return
+  }
+  const shrinkLine = meta.wouldShrink && meta.shrunkBytes !== null
+    ? `Shrink: would save ${meta.bytes - meta.shrunkBytes} bytes (${meta.bytes} -> ${meta.shrunkBytes})`
+    : 'Shrink: no benefit (already small/optimal)'
+  const lines = [
+    `Dimensions: ${meta.width}x${meta.height}`,
+    `Format: ${meta.format ?? '(unknown)'}`,
+    `Size: ${meta.bytes} bytes`,
+    shrinkLine,
+  ]
+  const text = opts.json === true ? JSON.stringify(meta, null, 2) : lines.join('\n')
+  out(text)
+  // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('image_meta', bytesSaved, Math.round(bytesSaved / 4))
+}
+
+async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
+  const result = await runImageText(file)
+  if (!result.ocrAvailable) {
+    const msg = 'image-text unavailable (install tesseract.js to use this feature)'
+    const text = opts.json === true ? JSON.stringify({ ocrAvailable: false, error: msg }, null, 2) : msg
+    out(text)
+    return
+  }
+  let text: string
+  if (opts.json === true) {
+    text = JSON.stringify(result, null, 2)
+  } else {
+    const lines = [`Confidence: ${Math.round(result.confidence)}%`, `Characters: ${result.chars}`]
+    text = result.textHeavy && result.text !== null
+      ? `${lines.join('\n')}\n\n${result.text}`
+      : `${lines.join('\n')}\n(below usefulness threshold; text likely noise, not shown)`
+  }
+  out(text)
+  // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('image_text', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 function cmdVideoChapters(file: string) {
@@ -3991,6 +4044,18 @@ export function buildProgram(): Command {
     .description('page count, title/author, and whether a PDF has an extractable text layer')
     .option('-j, --json', 'output as JSON')
     .action(guard(cmdPdfMeta))
+
+  program
+    .command('image-meta <file>')
+    .description('dimensions, byte size, format, and what a shrink would cost -- sharp metadata only, never runs OCR')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdImageMeta))
+
+  program
+    .command('image-text <file>')
+    .description('OCR text for an image instead of a raw Read, honest about low-confidence results')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdImageText))
 
   program
     .command('sharepoint-resolve <shareUrl>')

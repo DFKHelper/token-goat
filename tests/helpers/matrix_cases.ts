@@ -27,6 +27,7 @@ import * as path from 'node:path'
 
 import { expect } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
+import sharp from 'sharp'
 
 import { BUNDLE, ROOT } from './bundle.js'
 import { buildDocxFixture, buildPptxFixture } from './ooxml_fixtures.js'
@@ -986,6 +987,47 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // that rendering cannot be told apart from a PDF actually titled "(none)".
     expect(meta.title).toBeNull()
     expect(meta.author).toBeNull()
+  },
+  'image-meta': async () => {
+    const dir = mkIsolated('tg-matrix-imgmeta-')
+    const png = await sharp({ create: { width: 64, height: 32, channels: 3, background: { r: 10, g: 20, b: 30 } } }).png().toBuffer()
+    const imgPath = path.join(dir, 'pic.png')
+    fs.writeFileSync(imgPath, png)
+
+    const r = run(['image-meta', imgPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Dimensions: 64x32')
+    expect(r.stdout).toContain('Format: png')
+
+    const rj = run(['image-meta', imgPath, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const meta = JSON.parse(rj.stdout) as { width: number; height: number; format: string | null; sharpAvailable: boolean }
+    expect(meta.width).toBe(64)
+    expect(meta.height).toBe(32)
+    expect(meta.format).toBe('png')
+    expect(meta.sharpAvailable).toBe(true)
+
+    const nonImagePath = path.join(dir, 'notes.txt')
+    fs.writeFileSync(nonImagePath, 'not an image')
+    const rBadExt = run(['image-meta', nonImagePath])
+    expect(rBadExt.status).not.toBe(0)
+    expect(rBadExt.stderr).toContain('Not an image file')
+  },
+  'image-text': () => {
+    const dir = mkIsolated('tg-matrix-imgtext-')
+    const imgPath = path.join(dir, 'missing.png')
+    // Real tesseract.js needs a cached language model that may not be available in CI, so this
+    // sticks to reachability like video-chapters's own matrix case: dispatch, no crash, sane
+    // shape. Command-specific behavior (confidence honesty, degrade message) is covered by
+    // tests/image_meta_text.test.ts and tests/image_meta_sharp_unavailable.test.ts with stubs.
+    const rMissing = run(['image-text', imgPath])
+    expect(rMissing.status).not.toBe(0)
+    expect(rMissing.stderr).toContain('Could not read')
+
+    const rHelp = run(['image-text', '--help'])
+    expect(rHelp.status, rHelp.stderr).toBe(0)
+    expect(rHelp.stdout + rHelp.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(rHelp.stdout).toMatch(/OCR/i)
   },
   'sharepoint-resolve': () => {
     const home = mkIsolated('tg-matrix-sphome-')
