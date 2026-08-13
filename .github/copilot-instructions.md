@@ -12,16 +12,17 @@ Exemptions (gate passes, read directly): the file is under ~200 lines and you ne
 Failure shapes to catch yourself in, and the command that replaces each:
 - a shell text search with context flags to find a function body → `read "file::symbol"`
 - paging one function with view/view_range → `read "file::symbol"`
+- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`
 - reading one heading of a large doc → `section "file::Heading"`
 - searching for a symbol's callers → `refs file::symbol --callers`
 - searching for a *concept* rather than a literal string → `semantic "description"`
-- re-reading output you already captured → `bash-output`/`web-output` by ID
+- re-reading output you already captured → `bash-output`/`web-output`/`mcp-output` by ID
 - a directory listing or recursive wildcard walk to orient in an unfamiliar repo → `map --compact`
 - pulling one value or subtree out of a JSON/YAML file (manifest, lockfile, spec, config) → `json-query file 'a.b.c'` / `yaml-query file 'a.b.c'`
 - opening an image to check its dimensions, format, or size → `image-meta file`
 - opening a screenshot, diagram, or scan to read the text in it → `image-text file`
 
-Commands: `symbol NAME`, `read "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query`, `json-outline file`/`yaml-outline`, `bash-output`/`web-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`.
+Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query`, `json-outline file`/`yaml-outline`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`.
 
 Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.
 
