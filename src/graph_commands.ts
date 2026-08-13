@@ -388,6 +388,8 @@ export interface CallChainOptions {
   json?: boolean
   /** `--exclude-tests`: prune callers whose call site lives in a test file (per isTestFile) before they're admitted to the BFS, so nothing walks through a test node. Opt-in; omitted or false leaves output byte-identical to today. */
   excludeTests?: boolean
+  /** Only keep chains containing at least one symbol NAME matching this pattern (BFS still walks the full graph; this only narrows which completed chains are reported). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
 }
 
 export function runCallChain(opts: CallChainOptions): number {
@@ -466,16 +468,26 @@ export function runCallChain(opts: CallChainOptions): number {
 
   const chains = bfsCallChains(name, callersOf, maxDepth)
 
-  if (opts.json === true) {
-    emit(JSON.stringify({ chains }, null, 2))
-    return 0
-  }
-
   // bfsCallChains can never return an empty array -- a caller-less tip still pushes its chain
   // via `complete.push(chain)`, so `[[symbol]]` (one chain, one element) is the actual "no
   // callers" signal, not `chains.length === 0`. The depth<=0 rejection above rules out the only
   // other way bfsCallChains produces this exact shape (its own `maxDepth <= 0` short-circuit).
-  if (chains.length === 1 && chains[0]?.length === 1 && chains[0][0] === name) {
+  const noCallers = chains.length === 1 && chains[0]?.length === 1 && chains[0][0] === name
+
+  // --grep runs on the completed chains, AFTER the BFS -- it narrows which chains get reported,
+  // never which nodes the walk visits, so a chain that passes THROUGH a matching symbol on its
+  // way to an unrelated root still surfaces. Skipped entirely for the degenerate "no callers"
+  // chain so that case keeps its own dedicated message below rather than being reinterpreted as
+  // "--grep matched nothing".
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filteredChains = matchesGrep !== undefined && !noCallers ? chains.filter((chain) => chain.some((n) => matchesGrep(n))) : chains
+
+  if (opts.json === true) {
+    emit(JSON.stringify({ chains: filteredChains }, null, 2))
+    return 0
+  }
+
+  if (noCallers) {
     // "(no callers)" plus exit 0 for a symbol that IS called -- only from tests -- reads as
     // genuinely unreferenced. Name the suppressed count so the filtered view is never mistaken
     // for absence. Flag-absent, suppressedCount is always 0 so this stays unreachable and output
@@ -488,7 +500,15 @@ export function runCallChain(opts: CallChainOptions): number {
     return 0
   }
 
-  for (const chain of chains) {
+  if (matchesGrep !== undefined && filteredChains.length === 0) {
+    // Distinguish "--grep matched none of the N chains that do exist" from a genuinely
+    // caller-less symbol -- same "filtered store renders as populated" trap already fixed for
+    // dead/deps/types/callers.
+    emit(grepFilteredToEmptyNotice(chains.length, opts.grep as string, 'chain', 'chains'))
+    return 0
+  }
+
+  for (const chain of filteredChains) {
     emit(chain.join(' -> '))
   }
   return 0

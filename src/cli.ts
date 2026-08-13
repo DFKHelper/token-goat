@@ -3533,13 +3533,15 @@ export function buildProgram(): Command {
     .option('-d, --depth <n>', 'max BFS depth (default 8)')
     .option('-j, --json', 'output as JSON')
     .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
-    .action((symbol: string, opts: { depth?: string; json?: boolean; excludeTests?: boolean }) =>
+    .option('--grep <pattern>', 'only show chains containing a symbol name matching this regex (literal substring if it is not valid regex)')
+    .action((symbol: string, opts: { depth?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runCallChain({
           symbol,
           ...(opts.depth !== undefined ? { depth: requireInt('--depth', opts.depth) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )

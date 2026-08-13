@@ -2830,6 +2830,121 @@ describe('runCallChain --exclude-tests', () => {
   })
 })
 
+// ---- runCallChain --grep -----------------------------------------------------
+
+describe('runCallChain --grep', () => {
+  // MOST IMPORTANT: proves --grep narrows which COMPLETED chains are reported, not which nodes
+  // the BFS visits -- a chain that passes THROUGH a matching symbol on its way to an unrelated
+  // root must still surface, and a chain containing no matching symbol at all must be dropped.
+  it('keeps only chains containing a symbol matching the pattern, without pruning the BFS walk itself', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-grep-'))
+    try {
+      const defFile = join(root, 'chain-grep-def.ts')
+      const midFile = join(root, 'chain-grep-mid.ts')
+      const otherFile = join(root, 'chain-grep-other.ts')
+      writeFileSync(defFile, 'export function chainGrepTargetFn2p6() { return 1 }\n')
+      writeFileSync(midFile, 'function chainGrepMatchMid2p6() { chainGrepTargetFn2p6() }\n')
+      writeFileSync(otherFile, 'function chainGrepUnrelated2p6() { chainGrepTargetFn2p6() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(midFile))
+      indexFileSync(normalizePath(otherFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const unfiltered = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainGrepTargetFn2p6' })).toBe(0)
+        })
+        expect(unfiltered).toContain('chainGrepTargetFn2p6 -> chainGrepMatchMid2p6')
+        expect(unfiltered).toContain('chainGrepTargetFn2p6 -> chainGrepUnrelated2p6')
+
+        const filtered = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainGrepTargetFn2p6', grep: 'chainGrepMatchMid2p6' })).toBe(0)
+        })
+        expect(filtered).toContain('chainGrepTargetFn2p6 -> chainGrepMatchMid2p6')
+        expect(filtered).not.toContain('chainGrepUnrelated2p6')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('names the pre-filter chain count instead of reading as genuinely caller-less when --grep matches nothing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-grep-empty-'))
+    try {
+      const defFile = join(root, 'chain-grep-empty-def.ts')
+      const callerFile = join(root, 'chain-grep-empty-caller.ts')
+      writeFileSync(defFile, 'export function chainGrepEmptyFn7k3() { return 1 }\n')
+      writeFileSync(callerFile, 'function chainGrepEmptyCaller7k3() { chainGrepEmptyFn7k3() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const filtered = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainGrepEmptyFn7k3', grep: 'noSuchNameAnywhere9z1' })).toBe(0)
+        })
+        expect(filtered).toContain('all 1 chain was filtered out by --grep noSuchNameAnywhere9z1')
+        expect(filtered).not.toContain('(no callers)')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('--json wraps the filtered chains in the same {chains} envelope', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-grep-json-'))
+    try {
+      const defFile = join(root, 'chain-grep-json-def.ts')
+      const callerFile = join(root, 'chain-grep-json-caller.ts')
+      writeFileSync(defFile, 'export function chainGrepJsonFn4d9() { return 1 }\n')
+      writeFileSync(callerFile, 'function chainGrepJsonCaller4d9() { chainGrepJsonFn4d9() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainGrepJsonFn4d9', json: true, grep: 'chainGrepJsonCaller4d9' })).toBe(0)
+        })
+        const parsed = JSON.parse(out) as { chains: string[][] }
+        expect(parsed.chains).toEqual([['chainGrepJsonFn4d9', 'chainGrepJsonCaller4d9']])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('flag absent leaves output byte-for-byte unchanged', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-grep-unchanged-'))
+    try {
+      const defFile = join(root, 'chain-grep-unchanged-def.ts')
+      const callerFile = join(root, 'chain-grep-unchanged-caller.ts')
+      writeFileSync(defFile, 'export function chainGrepUnchangedFn6w2() { return 1 }\n')
+      writeFileSync(callerFile, 'function chainGrepUnchangedCaller6w2() { chainGrepUnchangedFn6w2() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainGrepUnchangedFn6w2' })).toBe(0)
+        })
+        expect(out).toBe('chainGrepUnchangedFn6w2 -> chainGrepUnchangedCaller6w2\n')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runImpact against the real repo index -------------------
 
 describe('runImpact integration', () => {
