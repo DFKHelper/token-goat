@@ -3156,6 +3156,65 @@ describe('read_commands', () => {
       expect(JSON.parse(stdout)).not.toHaveProperty('hiddenByExcludeTests')
     })
 
+    // ---- brief --grep --------------------------------------------------------
+    // Mirrors refs/call-chain's own --grep: a high-fanout symbol's caller block is capped at
+    // --limit 20 by default with no way to narrow it, forcing a separate `refs --callers --grep`
+    // round-trip that loses the body+section brief already bundled.
+    const otherCaller = { caller: 'otherCaller', kind: 'function', file: 'src/h.ts', line: 5 }
+
+    it('--grep narrows the caller block to callers whose name matches', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', grep: 'prod' }) })
+      expect(stdout).toContain('prodCaller')
+      expect(stdout).not.toContain('otherCaller')
+      expect(stdout).toContain('Callers (1)')
+    })
+
+    it('--grep scans unbounded rather than filtering a pre-capped page', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller])
+      capture(() => { runBrief({ spec: 'f.ts::myFunc', grep: 'prod' }) })
+      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts', expect.anything(), true)
+    })
+
+    it('--grep filtering everything out is distinguished from a genuinely caller-less symbol', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
+      const { stdout } = capture(() => {
+        expect(runBrief({ spec: 'f.ts::myFunc', grep: 'nomatch' })).toBe(0)
+      })
+      expect(stdout).toContain('filtered out by --grep nomatch')
+      expect(stdout).not.toContain('prodCaller')
+    })
+
+    it('--json reports hiddenByGrep only when the filter actually hid something', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
+      const withFlag = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true, grep: 'prod' }) }).stdout
+      const parsed = JSON.parse(withFlag) as { hiddenByGrep?: number; totalCallers: number; callers: unknown[] }
+      expect(parsed.hiddenByGrep).toBe(1)
+      expect(parsed.totalCallers).toBe(1)
+      expect(parsed.callers).toHaveLength(1)
+      const withoutFlag = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true }) }).stdout
+      expect(JSON.parse(withoutFlag)).not.toHaveProperty('hiddenByGrep')
+    })
+
+    it('omitting --grep leaves output byte-identical', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, otherCaller])
+      mockQueryRefCounts.mockReturnValueOnce(new Map([['myFunc', 2]]))
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc' }) })
+      expect(stdout).toContain('otherCaller')
+      expect(stdout).toContain('Callers (2)')
+      expect(stdout).not.toContain('--grep')
+    })
+
     it('assembles symbol, callers, and section into JSON shape', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -3553,6 +3553,8 @@ interface BriefOptions {
   context?: number
   /** `--exclude-tests`: drop callers whose call SITE is in a test file, matching `refs`/`callers` (which filter the call site) rather than `dead`/`symbol` (which filter the definition). Opt-in; output is byte-identical when omitted. */
   excludeTests?: boolean
+  /** `--grep <pattern>`: only show callers whose enclosing caller NAME matches this regex (literal substring if it does not compile) -- narrows a high-fanout symbol's caller block the same way `refs --grep`/`call-chain --grep` narrow theirs, so a symbol with hundreds of callers doesn't need a separate `refs` round-trip just to find the ones that matter. Opt-in; output is byte-identical when omitted. */
+  grep?: string
   /** Internal only -- set by {@link runBriefMulti} on each per-symbol recursive `runBriefCore` call so the single-symbol path skips its own `recordReadStat`, same convention as {@link ReadOptions.suppressStat} for `runReadMulti`. Not a CLI/MCP-facing option. */
   suppressStat?: boolean
 }
@@ -3564,6 +3566,8 @@ interface BriefResult {
   truncated: boolean
   /** How many callers `--exclude-tests` dropped. Omitted entirely when the flag is off or hid nothing, so default output stays byte-identical; present and non-zero it explains a `totalCallers` that would otherwise look inconsistent with an unfiltered `refs` count. */
   hiddenByExcludeTests?: number
+  /** How many (post `--exclude-tests`) callers `--grep` dropped. Same omit-when-zero convention as {@link hiddenByExcludeTests}. */
+  hiddenByGrep?: number
   section: SectionResult | null
 }
 
@@ -3611,12 +3615,26 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   // batched GROUP BY, no LIMIT) instead of trusting the capped list's length.
   const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
   const excludeTests = opts.excludeTests === true
+  // --grep filters client-side too (below), so it needs the same unbounded scan --exclude-tests
+  // already gets -- otherwise a high-fanout symbol's grep match could hide inside the callers that
+  // fell past resolveCallers' 500-row default page before the filter ever ran.
+  const unboundedQuery = excludeTests || opts.grep !== undefined
   // Passing excludeTests through makes resolveCallers scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
-  const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, excludeTests)
-  const callers = excludeTests ? allCallers.filter((c) => !isTestFile(c.file)) : allCallers
-  const hiddenByExcludeTests = excludeTests ? allCallers.length - callers.length : 0
-  // The uncapped COUNT(*) counts test refs too, so it would disagree with a filtered caller list and make the "Callers (N)" header and the "...(N more elided)" tail both overstate. With the filter on, the unbounded scan above IS the complete in-project set, so its post-filter length is the true total.
-  const totalCallers = excludeTests
+  const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, unboundedQuery)
+  const testFiltered = excludeTests ? allCallers.filter((c) => !isTestFile(c.file)) : allCallers
+  const hiddenByExcludeTests = excludeTests ? allCallers.length - testFiltered.length : 0
+  // --grep narrows by the caller's enclosing symbol NAME, same field/convention as
+  // runCallers'/call-chain's own --grep -- runs after the exclude-tests drop so both filters
+  // compose (grep sees the already test-filtered set, matching runCallers' ordering).
+  const preGrepCount = testFiltered.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const callers = matchesGrep !== undefined ? testFiltered.filter((c) => matchesGrep(c.caller)) : testFiltered
+  const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - callers.length : 0
+  // The uncapped COUNT(*) counts test refs (and every caller name, grep-matched or not) too, so it
+  // would disagree with a filtered caller list and make the "Callers (N)" header and the
+  // "...(N more elided)" tail both overstate. With either filter on, the unbounded scan above IS
+  // the complete in-project set, so its post-filter length is the true total.
+  const totalCallers = unboundedQuery
     ? callers.length
     : queryRefCounts([match.name], globalDbPath(), rootDir).get(match.name) ?? callers.length
   const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd, readFileText)
@@ -3643,6 +3661,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
       totalCallers,
       truncated,
       ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}),
+      ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}),
       section,
     }
     const jsonText = JSON.stringify(result, null, 2)
@@ -3661,9 +3680,17 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
 
   // An empty caller block reads as "nothing calls this", which for a symbol exercised only by tests is the opposite of the truth and invites deleting live code -- so when the filter is what emptied it, say so instead of showing a bare zero.
   const hiddenNote = excludeTests && hiddenByExcludeTests > 0 ? ` (${excludeTestsHiddenNote(hiddenByExcludeTests)})` : ''
-  lines.push(callers.length === 0 && hiddenNote !== ''
-    ? `Callers (0): no non-test callers${hiddenNote}`
-    : `Callers (${totalCallers}):${hiddenNote}`)
+  if (callers.length === 0 && matchesGrep !== undefined && preGrepCount > 0) {
+    // Distinguishes "--grep matched none of the N callers that do exist" from a genuinely
+    // caller-less symbol -- same "filtered store renders as populated" trap already fixed for
+    // refs/callers/dead/types/deps. preGrepCount already reflects --exclude-tests (if both are
+    // set), so this fires only once the grep filter is what zeroed the remaining set.
+    lines.push(`Callers (0): ${grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers').trim()}`)
+  } else {
+    lines.push(callers.length === 0 && hiddenNote !== ''
+      ? `Callers (0): no non-test callers${hiddenNote}`
+      : `Callers (${totalCallers}):${hiddenNote}`)
+  }
   for (const c of shown) {
     const callerDisplayPath = toDisplayPath(rootDir, c.file)
     lines.push(`  ${c.caller}\t${callerDisplayPath}:${c.line}`)
