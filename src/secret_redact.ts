@@ -56,6 +56,32 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // The lazy [\s\S]*? is bounded by the very next END marker (private key blocks don't nest),
   // so this stays linear in practice despite the lazy quantifier.
   ['private_key_block', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g],
+  // Redacts only the token itself, not the "Authorization: Bearer " prefix -- the lookbehind
+  // anchors on the header name and scheme so the surrounding request-log line stays readable,
+  // matching how AWS_ACCESS_KEY_ID=... above keeps its own prefix intact.
+  ['auth_bearer_token', /(?<=Authorization:\s*Bearer\s)[A-Za-z0-9\-._~+/]{10,}=*/gi],
+  ['auth_basic_token', /(?<=Authorization:\s*Basic\s)[A-Za-z0-9+/]{6,}=*/gi],
+  // JWTs have no distinctive prefix of their own, but the base64url encoding of the smallest
+  // realistic header ('{"alg":' or similar) always starts with "eyJ", so that's the practical
+  // anchor here -- each of the three dot-separated segments requires a minimum length to avoid
+  // matching a short, coincidentally dotted token.
+  ['jwt', /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g],
+  ['npm_token', /npm_[A-Za-z0-9]{36}/g],
+  // rk_live_ (restricted keys) share the sk_live_/sk_test_ secret-key shape and risk level, so
+  // one pattern covers all three rather than adding a near-duplicate entry.
+  ['stripe_key', /(?:sk_live_|sk_test_|rk_live_)[A-Za-z0-9]{20,}/g],
+  ['google_api_key', /AIza[A-Za-z0-9_-]{35}/g],
+  // Generic key=value assignments in .env-file and connection-string/query-string shape. The
+  // lookbehind again redacts only the value, and the value's character class deliberately
+  // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- without that bound
+  // this would swallow the rest of the line (a trailing comment or the next key=value pair) or
+  // the remainder of a query string past the matched parameter, which is exactly the kind of
+  // over-eager match this module's own design note above warns broad heuristics produce. The
+  // '[' ']' ':' exclusion also matters because this pattern runs last: an earlier pattern's own
+  // "OPENAI_API_KEY=[REDACTED:openai_project_key]" replacement text contains "API_KEY=" too, and
+  // without excluding those characters this pattern would re-match and double-redact its own
+  // placeholder.
+  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api_key)\s*[:=]\s*)[^\s&;#'"[\]:]{4,64}/gi],
 ]
 
 export interface RedactResult {
