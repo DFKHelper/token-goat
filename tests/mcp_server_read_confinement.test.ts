@@ -16,6 +16,17 @@ import { normalizePath } from '../src/paths.js'
 // `triggerPath` is null for every test except the one that opts in below, so this is a no-op
 // pass-through for the rest of the file.
 const openSyncFailureState = vi.hoisted(() => ({ triggerPath: null as string | null, fired: false }))
+// Same hoisting requirement as openSyncFailureState above, for a swap driven off runGrep's own
+// plain `fs.realpathSync(searchPath)` call (src/read_commands.ts) rather than the confinement
+// gate's `fs.realpathSync.native` call (src/mcp_server.ts) that the existing `.native`-spy tests
+// below intercept -- those two calls happen at different points, and this state targets the
+// later one specifically so the swap lands strictly between runGrep's first (fd-based)
+// verifyPinnedIdentity check and its derivation of the search boundary, not before it.
+const realpathSyncSwapState = vi.hoisted(() => ({
+  triggerPath: null as string | null,
+  fired: false,
+  onTrigger: null as (() => void) | null,
+}))
 // Normalize+case-fold via the app's own normalizePath (mirrors read_commands.ts's `pinKey`,
 // which is `normalizePath` plus a win32 lowercase): the argument reaching fs.openSync here is
 // read_commands.ts's already-normalized `resolvedPath`, not an OS-native `path.resolve()` form --
@@ -28,6 +39,25 @@ function foldPathForCompare(p: string): string {
 }
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
+  const realpathSyncMock = (...args: Parameters<typeof actual.realpathSync>) => {
+    const p = args[0]
+    if (
+      realpathSyncSwapState.triggerPath !== null &&
+      !realpathSyncSwapState.fired &&
+      typeof p === 'string' &&
+      foldPathForCompare(p) === realpathSyncSwapState.triggerPath
+    ) {
+      realpathSyncSwapState.fired = true
+      realpathSyncSwapState.onTrigger?.()
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (actual.realpathSync as any)(...args)
+  }
+  // `fs.realpathSync.native` is used independently (the confinement gate's own resolution, and
+  // the `.native`-spy tests elsewhere in this file) -- carry it over onto the mock so replacing
+  // the top-level function doesn't silently drop that sub-property for every other test in this
+  // file that relies on it.
+  realpathSyncMock.native = actual.realpathSync.native
   return {
     ...actual,
     openSync: (...args: Parameters<typeof actual.openSync>) => {
@@ -46,6 +76,7 @@ vi.mock('node:fs', async (importOriginal) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (actual.openSync as any)(...args)
     },
+    realpathSync: realpathSyncMock,
   }
 })
 
@@ -479,6 +510,48 @@ describe('mcp read confinement', () => {
     expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
     expect(result.isError).toBe(true)
   })
+
+  // Section-read counterpart to TEST B above: `section`'s handler goes through the same
+  // confinement gate as `read`, but src/section_reader.ts's `readTextForSections` used to call
+  // `readFileSync` directly, never consulting `activePins` at all -- so this exact swap-timing
+  // technique returned the out-of-root file's contents through `section` even though the
+  // identical technique against `read` (TEST B above) was already refused. Fixed by threading the
+  // pin-aware `readFileText` through `readSection`/`findContainingSection`/`listSections` (see
+  // src/section_reader.ts and src/read_commands.ts's `runSection`).
+  it.runIf(canCreateSymlinks())(
+    'refuses a section read whose in-root path is repointed outside the root after validation',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const inRoot = path.join(root, 'inside.md')
+      fs.writeFileSync(inRoot, '## Heading\nlegitimate in-root content\n')
+      const outsideFile = path.join(outside, 'secret.md')
+      fs.writeFileSync(outsideFile, '## Heading\nSECRET-MARKER-DO-NOT-LEAK\n')
+
+      let swapped = false
+      const realNative = fs.realpathSync.native.bind(fs.realpathSync)
+      const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
+        const result = realNative(p as string)
+        if (!swapped && samePath(String(p), inRoot)) {
+          swapped = true
+          fs.rmSync(inRoot)
+          fs.symlinkSync(outsideFile, inRoot, 'file')
+        }
+        return result
+      }) as unknown as typeof fs.realpathSync.native)
+
+      const { client, close } = await connectedClient()
+      cleanup = async () => {
+        spy.mockRestore()
+        await close()
+      }
+
+      const result = await client.callTool({ name: 'section', arguments: { spec: `${inRoot}::Heading`, projectRoot: root } })
+      expect(swapped).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
 })
 
 describe('mcp numeric param bounds', () => {
@@ -730,6 +803,52 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
         arguments: { pattern: 'FINDME', path: [inRootDir], projectRoot: root },
       })
       expect(swapped).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+
+  // Gap (4), narrower than gap (3) above: gap (3) swaps during the confinement gate's OWN
+  // `fs.realpathSync.native` resolution, which lands before `verifyPinnedIdentity`'s fd-based
+  // check ever runs -- that check alone already catches it, so gap (3) never actually exercised
+  // the second window runGrep has. This test swaps during runGrep's own plain
+  // `fs.realpathSync(searchPath)` call instead (the one that derives `boundaryReal`), which runs
+  // strictly AFTER the first `verifyPinnedIdentity` check has already passed. Pre-fix, that first
+  // check was the only one: `boundaryReal` was then derived from the now-swapped path with no
+  // re-verification, so the walk used the attacker's directory as its own boundary and every
+  // entry beneath it passed `withinRealpathBoundary` trivially. Post-fix, the second
+  // `verifyPinnedIdentity` call added immediately after `boundaryReal` is derived (see
+  // src/read_commands.ts's runGrep) catches the swap in this narrower window and refuses instead.
+  it.runIf(canCreateDirSymlinks())(
+    'refuses a grep whose top-level search directory is repointed after the pin check but during boundary resolution',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const inRootDir = path.join(root, 'subdir')
+      fs.mkdirSync(inRootDir)
+      fs.writeFileSync(path.join(inRootDir, 'legit.txt'), 'FINDME legitimate in-root content\n')
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+
+      realpathSyncSwapState.triggerPath = foldPathForCompare(inRootDir)
+      realpathSyncSwapState.fired = false
+      realpathSyncSwapState.onTrigger = () => {
+        fs.rmSync(inRootDir, { recursive: true, force: true })
+        fs.symlinkSync(outside, inRootDir, 'dir')
+      }
+
+      const { client, close } = await connectedClient()
+      cleanup = async () => {
+        realpathSyncSwapState.triggerPath = null
+        realpathSyncSwapState.fired = false
+        realpathSyncSwapState.onTrigger = null
+        await close()
+      }
+
+      const result = await client.callTool({
+        name: 'grep',
+        arguments: { pattern: 'FINDME', path: [inRootDir], projectRoot: root },
+      })
+      expect(realpathSyncSwapState.fired).toBe(true)
       expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
       expect(result.isError).toBe(true)
     },

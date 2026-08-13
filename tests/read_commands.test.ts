@@ -2195,7 +2195,10 @@ describe('read_commands', () => {
       mockReadSection.mockReturnValue(null)
       mockListSections.mockReturnValue([])
       runSection({ spec: 'a::b::Heading' })
-      expect(mockReadSection).toHaveBeenCalledWith('a::b', 'Heading')
+      // Third arg is the pin-aware readFileText helper, threaded through so a section read
+      // re-verifies file identity under MCP confinement (see src/section_reader.ts's readFn
+      // param) instead of section_reader.ts's raw fs.readFileSync bypassing the pin entirely.
+      expect(mockReadSection).toHaveBeenCalledWith('a::b', 'Heading', expect.any(Function))
     })
 
     it('returns 1 when section not found', () => {
@@ -2458,11 +2461,12 @@ describe('read_commands', () => {
         // before and after cross-file support existed -- it asserted nothing about inheritance.
         const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.md::Install,Layout' })
         expect(code).toBe(0)
-        expect(mockReadSection).toHaveBeenCalledWith('README.md', 'Commands')
-        expect(mockReadSection).toHaveBeenCalledWith('CLAUDE.md', 'Install')
-        expect(mockReadSection).toHaveBeenCalledWith('CLAUDE.md', 'Layout')
+        // Third arg is the pin-aware readFileText helper (see the #m2 test above for why).
+        expect(mockReadSection).toHaveBeenCalledWith('README.md', 'Commands', expect.any(Function))
+        expect(mockReadSection).toHaveBeenCalledWith('CLAUDE.md', 'Install', expect.any(Function))
+        expect(mockReadSection).toHaveBeenCalledWith('CLAUDE.md', 'Layout', expect.any(Function))
         // Not README.md: inheritance carries the latest file forward, never resets to the first.
-        expect(mockReadSection).not.toHaveBeenCalledWith('README.md', 'Layout')
+        expect(mockReadSection).not.toHaveBeenCalledWith('README.md', 'Layout', expect.any(Function))
         expect(stdout).toContain('npm test')
         expect(stdout).toContain('npm install')
         expect(stdout).toContain('src/ and tests/')

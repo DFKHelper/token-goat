@@ -1640,7 +1640,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     if (multiHeadings.length > 1) return runSectionMulti(specFilePath, filePath, multiHeadings, opts)
   }
 
-  const result = readSection(filePath, heading)
+  const result = readSection(filePath, heading, readFileText)
   if (result === null) {
     // readSection returns null both when the file is unreadable (missing, permissions, etc.)
     // and when the file exists but the heading isn't in it -- distinguish the two so a bad
@@ -1650,7 +1650,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
       return { text: `File not found: '${filePath}'`, code: 1 }
     }
     const messages = [`Section '${heading}' not found in '${filePath}'`]
-    const allHeadings = listSections(filePath)
+    const allHeadings = listSections(filePath, readFileText)
     const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(didYouMean(available))
     // The similarity filter correctly drops every candidate when the query resembles no heading, which would otherwise leave the miss with no next step -- worse than the unfiltered dump it replaced, since that at least revealed what the file contained. Point at outline (the command that lists headings), mirroring the `Try: token-goat semantic` fallback runSymbol prints for the same shape of dead end. A file with no headings at all is a different answer and gets said outright, because sending the caller to outline there would just print nothing.
@@ -3561,7 +3561,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const totalCallers = excludeTests
     ? callers.length
     : queryRefCounts([match.name], globalDbPath(), rootDir).get(match.name) ?? callers.length
-  const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd)
+  const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd, readFileText)
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
   const truncated = totalCallers > shown.length
@@ -4589,9 +4589,32 @@ export function runGrep(opts: GrepOptions): number {
       let boundaryReal: string
       try {
         boundaryReal = fs.realpathSync(searchPath)
-      } catch {
-        boundaryReal = path.resolve(searchPath)
+      } catch (err) {
+        // A swap that makes the path unresolvable (e.g. it was replaced with something
+        // realpathSync can't stat) is exactly the failure mode this check exists to catch --
+        // falling back to path.resolve(searchPath) here would derive the search boundary from
+        // an unverified, possibly-attacker-controlled pathname at the one moment something is
+        // already known to be wrong. Refuse instead of weakening the boundary; unpinned callers
+        // (every CLI invocation, and MCP with confinement disabled) keep the pre-existing
+        // resolve-and-continue fallback since there is no pin to have been swapped away from.
+        if (pinned === undefined) {
+          boundaryReal = path.resolve(searchPath)
+        } else {
+          throw new ConfinementIdentityError(
+            `refused: "${searchPath}" could not be resolved after validation (${String(err)}). ` +
+              'The path may have been replaced or redirected after the confinement check, so the search was not performed.',
+          )
+        }
       }
+      // NARROWS, does not close, the finding-2 TOCTOU window: re-verify pinned identity
+      // immediately after deriving boundaryReal, so a swap landing between the first
+      // verifyPinnedIdentity call above and fs.realpathSync is detected here rather than
+      // silently accepted into the search boundary. This does not eliminate the race -- Node
+      // has no portable openat-style directory-descriptor traversal API (no `/proc/self/fd` on
+      // Windows/macOS, no equivalent Node API on any platform), and this project's CI gates on
+      // ubuntu, windows, and macos, so a swap landing in the small residual gap between this
+      // second verification and searchDir's first entry read is still possible and undetected.
+      if (pinned !== undefined) verifyPinnedIdentity(searchPath, pinned)
       searchDir(searchPath, boundaryReal)
     } else {
       searchFile(searchPath)

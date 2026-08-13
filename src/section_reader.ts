@@ -523,12 +523,24 @@ export function extractSection(text: string, headingSpec: string): SectionResult
  * used (e.g. a `.py` file uses the Python def/class finder rather than the
  * markdown sniffer).
  */
-function readTextForSections(filePath: string): string | null {
+// `readFn`, when supplied, replaces the raw `readFileSync` below -- callers that hold a pin
+// verified by `confineTargets` (see src/mcp_server.ts) pass the pin-aware `readFileText` from
+// read_commands.ts so a section read re-verifies file identity instead of trusting the path a
+// second time. Threading a function rather than importing `readFileText` directly avoids a
+// circular import (read_commands.ts already imports this module), and CLI callers that omit it
+// keep the pre-existing plain-`fs` behavior byte-for-byte.
+function readTextForSections(filePath: string, readFn?: (p: string) => string | null): string | null {
   let text: string
-  try {
-    text = readFileSync(filePath, 'utf-8')
-  } catch {
-    return null
+  if (readFn !== undefined) {
+    const read = readFn(filePath)
+    if (read === null) return null
+    text = read
+  } else {
+    try {
+      text = readFileSync(filePath, 'utf-8')
+    } catch {
+      return null
+    }
   }
 
   // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix
@@ -538,8 +550,12 @@ function readTextForSections(filePath: string): string | null {
   return text
 }
 
-export function readSection(filePath: string, headingSpec: string): SectionResult | null {
-  const text = readTextForSections(filePath)
+export function readSection(
+  filePath: string,
+  headingSpec: string,
+  readFn?: (p: string) => string | null,
+): SectionResult | null {
+  const text = readTextForSections(filePath, readFn)
   if (text === null) return null
 
   return resolveSectionFromText(text, headingSpec, detectLanguage(filePath))
@@ -550,8 +566,9 @@ export function findContainingSection(
   filePath: string,
   lineStart: number,
   lineEnd: number,
+  readFn?: (p: string) => string | null,
 ): SectionResult | null {
-  const text = readTextForSections(filePath)
+  const text = readTextForSections(filePath, readFn)
   if (text === null) return null
 
   const language = detectLanguage(filePath)
@@ -586,8 +603,8 @@ export function findContainingSection(
  * Returns an empty array when the file cannot be read or has no recognisable
  * sections.
  */
-export function listSections(filePath: string): string[] {
-  const text = readTextForSections(filePath)
+export function listSections(filePath: string, readFn?: (p: string) => string | null): string[] {
+  const text = readTextForSections(filePath, readFn)
   if (text === null) return []
 
   const language = detectLanguage(filePath)
