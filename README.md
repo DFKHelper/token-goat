@@ -825,13 +825,24 @@ npx @vscode/vsce package
 code --install-extension token-goat-vscode-0.1.0.vsix
 ```
 
-Its two commands call the local CLI and use `workbench.action.chat.open` to
-prefill chat. They never submit chat automatically. Before offering to run
-`install --vscode`, the extension calls `token-goat mcp-status --vscode` (add
-`-p`/`--project` for the workspace scope too) to check whether the decoder is
-already configured — the same path resolver `install`/`uninstall` write
-against, so the two can never drift on where `mcp.json` lives or what key
-name it looks for.
+Its commands call the local CLI and use `workbench.action.chat.open` to
+prefill chat. They never submit chat automatically.
+
+Installing the extension is an alternative to `install --vscode`, not an
+addition to it: the extension contributes the MCP decoder itself through VS
+Code's `mcpServerDefinitionProviders` contribution point, so VS Code starts
+`token-goat mcp-serve` on demand and there is no `mcp.json` to write and no
+window to reload. That path needs VS Code 1.101 or newer, which the
+extension's `engines` field requires. `install --vscode` remains the way to
+configure the decoder without the extension — for Copilot in an editor that
+has no extension installed, or for any other MCP client.
+
+If the extension is running somewhere that contribution did not take effect,
+it falls back to calling `token-goat mcp-status --vscode` (add
+`-p`/`--project` for the workspace scope too) to check whether `mcp.json`
+already configures the decoder, and offers to run `install --vscode` if not —
+the same path resolver `install`/`uninstall` write against, so the two can
+never drift on where `mcp.json` lives or what key name it looks for.
 
 **Copilot CLI** — add it to `~/.copilot/mcp-config.json`:
 

@@ -63,9 +63,22 @@ Right-click inside a code editor, use the icon in the editor title bar, or
 
 ## Requirements
 
+- VS Code 1.101 or newer.
 - The `token-goat` CLI must be installed globally and on your PATH
   (`npm install -g token-goat`). On Windows the extension invokes the
   `token-goat.cmd` shim that npm creates.
+
+## The decoder sets itself up
+
+A compressed payload is only readable by the chat model if it can call
+token-goat's `retrieve_text` MCP tool. The extension contributes that MCP
+server itself, so there is nothing to configure: VS Code starts it on demand
+the first time the model needs to decode something. You do not need to run
+`token-goat install --vscode`, edit `mcp.json`, or reload the window.
+
+Two things are still on you: chat has to be in **Agent mode** (other modes
+cannot call MCP tools at all), and the CLI has to be on your PATH per the
+requirements above.
 
 ## Build and install manually
 
