@@ -791,22 +791,32 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
     expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
-  // Non-firing companion: an ordinary in-root directory symlink (pointing at ANOTHER in-root
-  // directory, not escaping anywhere) must still be followed and searched -- the boundary check
-  // must not turn into a blanket refusal to follow any symlink at all.
-  it.runIf(canCreateDirSymlinks())('non-firing: a recursive grep still follows a legitimate in-root directory symlink', async () => {
+  // Deliberate behavior change, not a regression: a realpath-then-later-use check on a nested
+  // symlink is itself a TOCTOU window (the entry can be repointed between the realpath check and
+  // the later fs.statSync/recursion on the same pathname, and no portable descriptor-relative
+  // traversal API exists on ubuntu/windows/macos to close it -- see searchDir's own comment in
+  // src/read_commands.ts). So under confinement (an MCP caller with an active pin), searchDir now
+  // skips symlink entries outright rather than realpath-checking them, even a legitimate one whose
+  // target resolves inside the search boundary. Unconfined CLI grep is unaffected: see
+  // tests/read_commands.test.ts's "runGrep still follows a legitimate symlink when unconfined".
+  //
+  // The real target is dot-prefixed (`.hidden-target`) so it is also excluded from direct
+  // recursion by searchDir's own leading-dot filter, isolating "was the symlink itself followed"
+  // from "would the target have been found anyway by ordinary recursion" -- a plainly-named
+  // real-subdir sibling of the symlink would be walked directly regardless of the fix, masking it.
+  it.runIf(canCreateDirSymlinks())('a recursive confined grep does not follow even a legitimate in-root directory symlink', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
-    const real = path.join(root, 'real-subdir')
+    const real = path.join(root, '.hidden-target')
     fs.mkdirSync(real)
-    fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME reachable via in-root symlink\n')
+    fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME reachable only via in-root symlink\n')
     fs.symlinkSync(real, path.join(root, 'alias'), 'dir')
 
     const { client, close } = await connectedClient()
     cleanup = close
 
     const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
-    expect(result.isError).toBe(false)
-    expect(textOf(result)).toContain('reachable via in-root symlink')
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain("No matches for 'FINDME'")
   })
 
   // Gap (3): the TOP-LEVEL search directory itself repointed outside the root after the gate
