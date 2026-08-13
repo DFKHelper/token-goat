@@ -178,10 +178,31 @@ function canCreateSymlinks(): boolean {
   }
 }
 
-/** Windows compares paths case-insensitively, and the gate lowercases drive letters while the test holds the OS spelling; comparing raw strings would silently never match. */
-function samePath(a: string, b: string): boolean {
-  const [ra, rb] = [path.resolve(a), path.resolve(b)]
-  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb
+/**
+ * Compares a live `fs.realpathSync.native` argument (`p`) against a PRE-NORMALIZED key produced
+ * by `normalizeKeyFor` below. `p` is always the string production's `checkWithinProjectRoot` just
+ * passed to `fs.realpathSync.native` -- i.e. `path.resolve(resolvedRoot, normalizePath(target))`
+ * (see src/mcp_server.ts) -- which is already the OUTPUT of `normalizePath`, so it is already
+ * short-path-expanded on Windows and `/var`->`/private/var`-aliased on macOS by the time it
+ * reaches here.
+ *
+ * A plain `path.resolve` + case-fold (this function's prior implementation) does not know about
+ * either transform, so a literal test-constructed path built straight from `fs.mkdtempSync`
+ * (still in its short/aliased form) silently never matched production's already-normalized
+ * argument on a Windows runner whose `%TEMP%` is pinned to an 8.3 short name, or on macOS where
+ * `os.tmpdir()` returns the `/var` alias -- `swapped` stayed false and these tests passed
+ * vacuously without ever exercising the swap on those platforms. Deliberately syscall-free: it
+ * must NOT call `normalizePath` itself here, since that would recurse into this very
+ * `fs.realpathSync.native` spy through `expandShortPath`'s own native call.
+ */
+function samePath(p: string, normalizedKey: string): boolean {
+  const folded = p.replace(/\\/g, '/')
+  return process.platform === 'win32' ? folded.toLowerCase() === normalizedKey.toLowerCase() : folded === normalizedKey
+}
+
+/** Precomputes the key `samePath` above compares against, calling the real (not-yet-mocked) `normalizePath`/`fs.realpathSync.native` exactly once, before the spy that would otherwise recurse into it is installed. */
+function normalizeKeyFor(p: string): string {
+  return normalizePath(p)
 }
 
 function textOf(result: unknown): string {
@@ -534,12 +555,13 @@ describe('mcp read confinement', () => {
   // with no flake surface. Pre-fix this exact seam returned the out-of-root file's contents.
   it.runIf(canCreateSymlinks())('refuses a read whose in-root path is repointed outside the root after validation', async () => {
     const { inRoot, outsideFile } = makeDirs()
+    const inRootKey = normalizeKeyFor(inRoot)
 
     let swapped = false
     const realNative = fs.realpathSync.native.bind(fs.realpathSync)
     const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
       const result = realNative(p as string)
-      if (!swapped && samePath(String(p), inRoot)) {
+      if (!swapped && samePath(String(p), inRootKey)) {
         swapped = true
         fs.rmSync(inRoot)
         fs.symlinkSync(outsideFile, inRoot, 'file')
@@ -575,12 +597,13 @@ describe('mcp read confinement', () => {
       fs.writeFileSync(inRoot, '## Heading\nlegitimate in-root content\n')
       const outsideFile = path.join(outside, 'secret.md')
       fs.writeFileSync(outsideFile, '## Heading\nSECRET-MARKER-DO-NOT-LEAK\n')
+      const inRootKey = normalizeKeyFor(inRoot)
 
       let swapped = false
       const realNative = fs.realpathSync.native.bind(fs.realpathSync)
       const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
         const result = realNative(p as string)
-        if (!swapped && samePath(String(p), inRoot)) {
+        if (!swapped && samePath(String(p), inRootKey)) {
           swapped = true
           fs.rmSync(inRoot)
           fs.symlinkSync(outsideFile, inRoot, 'file')
@@ -681,12 +704,13 @@ describe('mcp read confinement -- force-refresh / self-heal reindex path', () =>
       fs.writeFileSync(inRoot, 'export function greet(): string {\n  return "safe"\n}\n')
       const outsideFile = path.join(outside, 'secret.ts')
       fs.writeFileSync(outsideFile, 'export function greet(): string {\n  return "SECRET-MARKER-DO-NOT-LEAK"\n}\n')
+      const inRootKey = normalizeKeyFor(inRoot)
 
       let swapped = false
       const realNative = fs.realpathSync.native.bind(fs.realpathSync)
       const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
         const result = realNative(p as string)
-        if (!swapped && samePath(String(p), inRoot)) {
+        if (!swapped && samePath(String(p), inRootKey)) {
           swapped = true
           fs.rmSync(inRoot)
           fs.symlinkSync(outsideFile, inRoot, 'file')
@@ -743,12 +767,13 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
       fs.writeFileSync(inRoot, 'FINDME legitimate in-root content\n')
       const outsideFile = path.join(outside, 'secret.txt')
       fs.writeFileSync(outsideFile, 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+      const inRootKey = normalizeKeyFor(inRoot)
 
       let swapped = false
       const realNative = fs.realpathSync.native.bind(fs.realpathSync)
       const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
         const result = realNative(p as string)
-        if (!swapped && samePath(String(p), inRoot)) {
+        if (!swapped && samePath(String(p), inRootKey)) {
           swapped = true
           fs.rmSync(inRoot)
           fs.symlinkSync(outsideFile, inRoot, 'file')
@@ -837,12 +862,13 @@ describe('mcp read confinement -- grep pin and symlink-directory checks', () => 
       fs.mkdirSync(inRootDir)
       fs.writeFileSync(path.join(inRootDir, 'legit.txt'), 'FINDME legitimate in-root content\n')
       fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+      const inRootDirKey = normalizeKeyFor(inRootDir)
 
       let swapped = false
       const realNative = fs.realpathSync.native.bind(fs.realpathSync)
       const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
         const result = realNative(p as string)
-        if (!swapped && samePath(String(p), inRootDir)) {
+        if (!swapped && samePath(String(p), inRootDirKey)) {
           swapped = true
           fs.rmSync(inRootDir, { recursive: true, force: true })
           fs.symlinkSync(outside, inRootDir, 'dir')
