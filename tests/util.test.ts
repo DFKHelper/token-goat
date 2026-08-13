@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -642,6 +642,114 @@ describe('escapeRegExp', () => {
     // the literal three characters "abc$".
     expect(new RegExp(escapeRegExp('abc$')).test('abc$xyz')).toBe(true)
     expect(new RegExp(escapeRegExp('abc$')).test('abcxyz')).toBe(false)
+  })
+})
+
+// windowsCmdQuoteArg's output has to survive two sequential parsing passes before it becomes an
+// argv entry again: cmd.exe's own pass (which strips a caret used to escape the character right
+// after it -- the only place `^` appears in this function's output is immediately before a `"`,
+// `%`, or `!`, each emitted outside any quoted span, so a blanket strip is faithful to what
+// cmd.exe actually does here), then the CRT/CommandLineToArgvW argv-splitting pass used by the
+// invoked .cmd/.bat wrapper's underlying executable (node.exe, npm-cli.js, etc.) to re-parse the
+// string cmd hands it (a run of backslashes immediately before a real quote-span boundary
+// decodes to half as many backslashes, plus a literal quote if the run was odd). This two-stage
+// decoder mirrors both passes so the round-trip tests below prove the encoding is actually
+// invertible end to end, not just "looks escaped". The algorithm itself (including the specific
+// interaction bug this function's design comment describes -- caret-escaping a character
+// _inside_ a quoted span leaves the caret as a literal instead of stripping it, and a naive
+// backslash-escaped embedded quote silently closes cmd's own quote tracking early) was verified
+// against a real `cmd.exe /d /s /c` invocation of a `.cmd` wrapper forwarding to node.exe before
+// being written into src/util.ts; this decoder is the offline (non-cmd.exe) re-check of that
+// same behavior for CI, where a real Windows cmd.exe may not be available to shell out to.
+function decodeCmdThenCrt(s: string): string {
+  const afterCmd = s.replace(/\^(["%!])/g, '$1')
+  let out = ''
+  let i = 0
+  while (i < afterCmd.length) {
+    if (afterCmd[i] === '\\') {
+      let j = i
+      while (afterCmd[j] === '\\') j++
+      const nBackslashes = j - i
+      if (afterCmd[j] === '"') {
+        out += '\\'.repeat(Math.floor(nBackslashes / 2))
+        if (nBackslashes % 2 === 1) out += '"'
+        i = j + 1
+      } else {
+        out += '\\'.repeat(nBackslashes)
+        i = j
+      }
+    } else if (afterCmd[i] === '"') {
+      i++
+    } else {
+      out += afterCmd[i]
+      i++
+    }
+  }
+  return out
+}
+
+describe('windowsCmdQuoteArg', () => {
+  it('wraps a plain argument in double quotes', () => {
+    expect(windowsCmdQuoteArg('foo')).toBe('"foo"')
+  })
+
+  it('encodes an empty string as an empty quoted pair, not an empty (vanishing) output', () => {
+    expect(windowsCmdQuoteArg('')).toBe('""')
+  })
+
+  it('round-trips an argument containing whitespace', () => {
+    const arg = 'hello world'
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('round-trips an embedded double quote without letting it terminate the argument early (regression: the previous quoteIfNeeded lambda never escaped an embedded quote)', () => {
+    const arg = 'a"b'
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+    // The embedded quote must break out of the quoted span and be caret-escaped (`\^"`), not
+    // left as a bare backslash-escaped quote inside the quotes -- cmd.exe's own quote-state
+    // tracking flips on every literal `"` it sees regardless of a preceding backslash, so a
+    // naive `\"` would close cmd's quoted span early and expose the rest of the argument to
+    // cmd's own tokenizer.
+    expect(windowsCmdQuoteArg(arg)).toBe('"a"\\^""b"')
+  })
+
+  it('round-trips a trailing backslash immediately before the closing quote (must be doubled or it escapes the closing quote instead of terminating the argument)', () => {
+    const arg = 'C:\\some\\path\\'
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('round-trips a backslash immediately preceding an embedded quote', () => {
+    const arg = 'a\\"b'
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('round-trips cmd.exe metacharacters that have no special meaning once inside a quoted argument (regression: the previous quoteIfNeeded lambda left these raw whenever the arg had no whitespace, so cmd.exe could reinterpret them)', () => {
+    const arg = 'a&b|c<d>e^f(g)h'
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('caret-escapes a literal % outside any quoted span so cmd.exe cannot expand it as an environment variable reference (quoting alone does not suppress %-expansion, unlike every other metacharacter)', () => {
+    const arg = '%PATH%'
+    expect(windowsCmdQuoteArg(arg)).toBe('^%"PATH"^%')
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('caret-escapes a literal ! so cmd.exe cannot expand it under delayed variable expansion', () => {
+    const arg = 'a!b'
+    expect(windowsCmdQuoteArg(arg)).toBe('"a"^!"b"')
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('round-trips a kitchen-sink argument combining every special class in one string (embedded quote, cmd metacharacters, %, !, and a backslash)', () => {
+    const arg = 'a&b|c<d>e^f(g)h%i!j"k\\l'
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('round-trips a realistic multi-flag argument list unchanged (the common case: no metacharacters at all)', () => {
+    const args = ['exec', '--ephemeral', '--output-last-message', 'C:\\Temp\\tg-ask-1234-abcd.txt']
+    for (const arg of args) {
+      expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+    }
   })
 })
 

@@ -817,6 +817,64 @@ export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// Encodes a single argument for inclusion inside a `cmd.exe /d /s /c "<command>"` command line built by joining a program path and its arguments -- the standard way Node itself must invoke a .cmd/.bat wrapper when spawnSync's shell:true is required (there is no separate .exe for most Node-based CLIs on Windows, and spawnSync cannot exec .cmd/.bat directly). This replaces a naive "quote only if it contains whitespace" approach, which let a metacharacter-bearing-but-space-free arg (& | < > ^ ( )) pass through raw and never escaped an embedded `"`, so a quoted arg could be terminated early by its own content.
+//
+// Ordinary characters are wrapped in a cmd.exe-recognized double-quoted span, which neutralizes & | < > ^ ( ) for cmd's own tokenizer (cmd does not re-tokenize inside "..."). Two character classes, though, are NOT neutralized by quoting and need the opposite treatment -- emitted OUTSIDE any quoted span, caret-escaped:
+//   - `%` (and, defensively, `!` for delayed expansion) -- cmd.exe's percent/delayed-expansion variable substitution scans the raw command line before quote state is considered, so `"%WINDIR%"` still expands inside quotes; only `^%` (caret, unquoted) suppresses it, and a caret written *inside* a quoted span is left as a literal character in the final argument instead of being stripped, so quoting and caret-escaping can never be combined on the same character.
+//   - an embedded `"` -- cmd.exe's own quote-state tracking flips on every literal `"` it sees, oblivious to backslash-escaping, so a naive `\"` emitted inside a quoted span silently closes that span early and exposes the remainder of the argument to cmd's tokenizer. The safe encoding for a literal quote is `\^"` (backslash + caret-escaped quote) emitted outside any quoted span: cmd consumes the caret (without flipping its quote-state) and passes `\"` through, which the underlying CRT/CommandLineToArgvW argv parser used by the wrapper's target executable (node.exe, npm-cli.js, etc.) then decodes as one literal `"` with no phantom quote-toggle.
+// Everywhere else, backslash/quote escaping follows the CommandLineToArgvW argv-splitting convention (a run of backslashes immediately before a real quote-span boundary is doubled so the CRT parser reconstructs it exactly). All of the classes above -- embedded quote, cmd metacharacter with no adjacent whitespace, `%`/`!`, empty string, and combinations of these -- were verified against a real `cmd.exe /d /s /c` invocation of a `.cmd` wrapper forwarding to node.exe (the exact shape of the npm-shim target this function exists for) before being ported into this function; see windowsCmdQuoteArg's test file for the individual cases.
+export function windowsCmdQuoteArg(arg: string): string {
+  if (arg === '') return '""'
+  let out = ''
+  let inQuote = false
+  let backslashes = 0
+
+  const flushBackslashesPlain = (): void => {
+    if (backslashes > 0) {
+      out += '\\'.repeat(backslashes)
+      backslashes = 0
+    }
+  }
+  const ensureQuoteOpen = (): void => {
+    if (!inQuote) {
+      out += '"'
+      inQuote = true
+    }
+  }
+  const ensureQuoteClosed = (): void => {
+    if (inQuote) {
+      out += '\\'.repeat(backslashes * 2)
+      backslashes = 0
+      out += '"'
+      inQuote = false
+    } else {
+      flushBackslashesPlain()
+    }
+  }
+
+  for (const ch of arg) {
+    if (ch === '\\') {
+      backslashes++
+      continue
+    }
+    if (ch === '"') {
+      ensureQuoteClosed()
+      out += '\\^"'
+      continue
+    }
+    if (ch === '%' || ch === '!') {
+      ensureQuoteClosed()
+      out += `^${ch}`
+      continue
+    }
+    flushBackslashesPlain()
+    ensureQuoteOpen()
+    out += ch
+  }
+  ensureQuoteClosed()
+  return out
+}
+
 /** Strips everything from the first `?` onward, so a signed or tokenized URL can't leak its
  * access material (SAS tokens, share signatures) into stderr and from there into model context
  * via an error message. String truncation rather than `new URL().origin` on purpose: the callers
