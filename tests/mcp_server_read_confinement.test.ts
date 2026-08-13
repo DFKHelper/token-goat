@@ -11,6 +11,23 @@ import { createMcpServer } from '../src/mcp_server.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { ConfinementIdentityError, pinKey, runRead, withPinnedReads } from '../src/read_commands.js'
 
+/** Directory-symlink counterpart to `canCreateSymlinks`: a `dir`-type symlink needs the same
+ * elevated privilege on Windows without Developer Mode, but is a separate capability check from
+ * a file symlink (the two link types are created and permission-checked independently). */
+function canCreateDirSymlinks(): boolean {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-dirsymlink-probe-'))
+  try {
+    const target = path.join(probe, 'target-dir')
+    fs.mkdirSync(target)
+    fs.symlinkSync(target, path.join(probe, 'link-dir'), 'dir')
+    return true
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true })
+  }
+}
+
 /** Mirrors tests/mcp_server.test.ts: a real Client over the SDK's in-memory transport pair, so schema validation and request routing are exercised, not just the handler function. */
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
   const server = createMcpServer()
@@ -448,5 +465,184 @@ describe('mcp numeric param bounds', () => {
       expect(result.isError).toBe(true)
       expect(textOf(result)).toContain('too_big')
     }
+  })
+})
+
+// Regression for the mid-request-reindex bypass: `read`/`skeleton`/`outline`'s `--force-refresh`
+// path (and the same-shaped self-heal path healStaleIndex takes on a stale index) used to call
+// `indexFileSync` directly on the resolved path -- a second, independent `fs.readFileSync` that
+// never consulted the confinement gate's identity pin. A path swapped between gate validation and
+// that reindex was never caught, unlike every other read surface in this file. `indexFileSyncPinned`
+// (src/read_commands.ts) closes this by verifying the pin BEFORE any bytes are read and handing
+// the already-verified bytes straight into `indexFileSync`, so the reindex can no longer reopen a
+// swapped path on its own.
+describe('mcp read confinement -- force-refresh / self-heal reindex path', () => {
+  let root: string
+  let outside: string
+  let cleanup: (() => Promise<void>) | undefined
+
+  afterEach(async () => {
+    if (cleanup !== undefined) await cleanup()
+    cleanup = undefined
+    for (const dir of [root, outside]) {
+      if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Deterministic companion, same shape as "Test A" above: a pin no real file can satisfy,
+  // routed through the force-refresh reindex path instead of the plain read path. Pre-fix, this
+  // never throws at all -- indexFileSync reopens the path directly and the pin is never consulted.
+  it('a mismatched identity pin refuses a force-refresh reindex, not just a plain read', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'lib.ts')
+    fs.writeFileSync(file, 'export function greet(): string {\n  return "hi"\n}\n')
+    const pins = new Map<string, string>([[pinKey(file), '-1:-1']])
+
+    expect(() =>
+      withPinnedReads(pins, () => runRead({ spec: `${file}::greet`, projectRoot: root, forceRefresh: true })),
+    ).toThrow(ConfinementIdentityError)
+    expect(() =>
+      withPinnedReads(pins, () => runRead({ spec: `${file}::greet`, projectRoot: root, forceRefresh: true })),
+    ).toThrow(/changed identity between validation and read/)
+  })
+
+  // Real end-to-end escape: an in-root path repointed at an out-of-root file, timed via a spy on
+  // the gate's own realpath resolution (same technique as "Test B" above), but this time the read
+  // it drives is `read --force-refresh`, which reaches indexFileSyncPinned instead of readFileText.
+  it.runIf(canCreateSymlinks())(
+    'refuses a force-refresh reindex whose in-root path is repointed outside the root after validation',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const inRoot = path.join(root, 'inside.ts')
+      fs.writeFileSync(inRoot, 'export function greet(): string {\n  return "safe"\n}\n')
+      const outsideFile = path.join(outside, 'secret.ts')
+      fs.writeFileSync(outsideFile, 'export function greet(): string {\n  return "SECRET-MARKER-DO-NOT-LEAK"\n}\n')
+
+      let swapped = false
+      const realNative = fs.realpathSync.native.bind(fs.realpathSync)
+      const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
+        const result = realNative(p as string)
+        if (!swapped && samePath(String(p), inRoot)) {
+          swapped = true
+          fs.rmSync(inRoot)
+          fs.symlinkSync(outsideFile, inRoot, 'file')
+        }
+        return result
+      }) as unknown as typeof fs.realpathSync.native)
+
+      const { client, close } = await connectedClient()
+      cleanup = async () => {
+        spy.mockRestore()
+        await close()
+      }
+
+      const result = await client.callTool({
+        name: 'read',
+        arguments: { spec: `${inRoot}::greet`, projectRoot: root, forceRefresh: true },
+      })
+      expect(swapped).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+})
+
+// Regression for grep's two independent confinement gaps: (1) `runGrep` read explicitly-requested
+// files with a raw `fs.readFileSync` that never consulted the confinement gate's identity pin, and
+// (2) its recursive directory walk used `fs.statSync` (which follows symlinks) with no boundary
+// check at all, so an in-root directory symlink pointing outside the root was silently descended
+// into and searched. These are fixed independently in src/read_commands.ts's runGrep: searchFile
+// now goes through the pin-aware readFileText, and searchDir now lstat's every entry and only
+// follows a symlink (file or directory) once its realpath is proven to still resolve inside the
+// search root.
+describe('mcp read confinement -- grep pin and symlink-directory checks', () => {
+  let root: string
+  let outside: string
+  let cleanup: (() => Promise<void>) | undefined
+
+  afterEach(async () => {
+    if (cleanup !== undefined) await cleanup()
+    cleanup = undefined
+    for (const dir of [root, outside]) {
+      if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Gap (1): an explicitly-requested grep target repointed outside the root after the gate
+  // validated it. Same swap-timing technique as "Test B" above.
+  it.runIf(canCreateSymlinks())(
+    'refuses a grep of an explicit path repointed outside the root after validation',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const inRoot = path.join(root, 'inside.txt')
+      fs.writeFileSync(inRoot, 'FINDME legitimate in-root content\n')
+      const outsideFile = path.join(outside, 'secret.txt')
+      fs.writeFileSync(outsideFile, 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+
+      let swapped = false
+      const realNative = fs.realpathSync.native.bind(fs.realpathSync)
+      const spy = vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => {
+        const result = realNative(p as string)
+        if (!swapped && samePath(String(p), inRoot)) {
+          swapped = true
+          fs.rmSync(inRoot)
+          fs.symlinkSync(outsideFile, inRoot, 'file')
+        }
+        return result
+      }) as unknown as typeof fs.realpathSync.native)
+
+      const { client, close } = await connectedClient()
+      cleanup = async () => {
+        spy.mockRestore()
+        await close()
+      }
+
+      const result = await client.callTool({
+        name: 'grep',
+        arguments: { pattern: 'FINDME', path: [inRoot], projectRoot: root },
+      })
+      expect(swapped).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+
+  // Gap (2): a real in-root directory symlink pointing at an out-of-root directory. A recursive
+  // grep of the root must not descend into it, even though the top-level root itself validated
+  // fine (the gate only checks the top-level target; nothing re-validated this nested entry).
+  it.runIf(canCreateDirSymlinks())('a recursive grep does not follow an in-root directory symlink out of the root', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+    fs.writeFileSync(path.join(root, 'legit.txt'), 'FINDME legitimate in-root content\n')
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+    fs.symlinkSync(outside, path.join(root, 'escape'), 'dir')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('legitimate in-root content')
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+  })
+
+  // Non-firing companion: an ordinary in-root directory symlink (pointing at ANOTHER in-root
+  // directory, not escaping anywhere) must still be followed and searched -- the boundary check
+  // must not turn into a blanket refusal to follow any symlink at all.
+  it.runIf(canCreateDirSymlinks())('non-firing: a recursive grep still follows a legitimate in-root directory symlink', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const real = path.join(root, 'real-subdir')
+    fs.mkdirSync(real)
+    fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME reachable via in-root symlink\n')
+    fs.symlinkSync(real, path.join(root, 'alias'), 'dir')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [root], projectRoot: root } })
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('reachable via in-root symlink')
   })
 })
