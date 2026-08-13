@@ -311,9 +311,11 @@ export function runCallers(opts: CallersOptions): number {
       // under --json a prose notice would hand the consumer a success status with an unparseable
       // body. Emit the same `{items, truncated, totalCount}` envelope the populated branch below
       // does, with `totalCount: 0` -- the post-filter count, never `preGrepCount`. Matches
-      // `types`' own filtered-to-empty --json branch; text mode keeps the human notice.
+      // `types`' own filtered-to-empty --json branch; text mode keeps the human notice. The
+      // `hiddenByGrep` count is what tells the consumer this empty page is a filtered view and
+      // not a caller-less symbol -- `totalCount: 0` alone reads the same for both.
       if (opts.json === true) {
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preGrepCount }, null, 2))
         return 0
       }
       emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers'))
@@ -361,7 +363,10 @@ export function runCallers(opts: CallersOptions): number {
     })
     const capped = guardJsonRows(rows)
     const limitTruncated = entries.length < filtered.length
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length }, null, 2))
+    // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
+    // filtered page carries the count too rather than only the fully emptied one.
+    const hiddenByGrep = preGrepCount - filtered.length
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
     return 0
   }
 
@@ -483,7 +488,12 @@ export function runCallChain(opts: CallChainOptions): number {
   const filteredChains = matchesGrep !== undefined && !noCallers ? chains.filter((chain) => chain.some((n) => matchesGrep(n))) : chains
 
   if (opts.json === true) {
-    emit(JSON.stringify({ chains: filteredChains }, null, 2))
+    // How many chains --grep dropped, so a JSON consumer can tell "the filter matched none of the
+    // N chains that exist" from "genuinely no callers" -- `chains: []` alone says both. Omitted
+    // when zero (flag absent, or nothing filtered) so default output stays byte-identical, same
+    // convention as brief --json's own hiddenByGrep.
+    const hiddenByGrep = chains.length - filteredChains.length
+    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
     return 0
   }
 
@@ -820,7 +830,11 @@ export function runDead(opts: DeadOptions): number {
       return { ...r, file: displayPath, filePath: displayPath }
     }))
     const topTruncated = sliced.length < grepped.length
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length }, null, 2))
+    // How many dead symbols --grep dropped, omitted when zero: `items: []` with `totalCount: 0`
+    // alone cannot tell a filtered-to-empty view from a genuinely clean codebase, and the text
+    // branch below already says so in prose. Same convention as brief --json's hiddenByGrep.
+    const hiddenByGrep = preGrepCount - grepped.length
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
     return 0
   }
 
@@ -957,7 +971,11 @@ export function runDeps(opts: DepsOptions): number {
 
   if (opts.json === true) {
     // `file` echoed the argument verbatim, so an absolute or backslash-spelled argument produced a payload whose own two path fields disagreed no matter how `internal` was rendered. Relative arguments -- the common case -- are unchanged by normalizePath.
-    emit(JSON.stringify({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: filteredInternal, external: filteredExternal }, null, 2))
+    // How many dependencies --grep dropped, omitted when zero: two empty arrays alone cannot tell
+    // a filtered-to-empty view from a file with no dependencies, which is exactly what the text
+    // branch below spells out in prose. Same convention as brief --json's hiddenByGrep.
+    const hiddenByGrep = preFilterCount - (filteredInternal.length + filteredExternal.length)
+    emit(JSON.stringify({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: filteredInternal, external: filteredExternal, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
     return 0
   }
 
@@ -1180,8 +1198,10 @@ export function runTypes(opts: TypesOptions): number {
       // Same `{items, truncated, totalCount}` envelope the populated branch below emits, so a
       // filtered-to-empty result is a well-formed envelope with `totalCount: 0` rather than a
       // second shape a consumer has to branch on. `totalCount` is the post-`--grep` count (0
-      // here by definition), never `preFilterCount` -- it counts what MATCHED the filter.
-      emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+      // here by definition), never `preFilterCount` -- it counts what MATCHED the filter. The
+      // `hiddenByGrep` count is what tells the consumer this empty envelope is a filtered view
+      // and not an empty store.
+      emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preFilterCount }, null, 2))
       return 0
     }
     emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'type declaration', 'type declarations'))
@@ -1195,7 +1215,10 @@ export function runTypes(opts: TypesOptions): number {
     // the post-`--grep`, pre-overflow-guard count: `filtered` is the whole matched set, and
     // nothing truncates it between here and guardJsonRows.
     const capped = guardJsonRows(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })))
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
+    // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
+    // filtered set carries the count too rather than only the fully emptied one.
+    const hiddenByGrep = preFilterCount - filtered.length
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
     return 0
   }
 

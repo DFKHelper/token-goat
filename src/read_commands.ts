@@ -1996,8 +1996,13 @@ export function runRefs(opts: RefsOptions): number {
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
+      // Same omit-when-zero `hiddenByGrep` the single-spec JSON path emits, per symbol here: a
+      // symbol whose entry is `items: []` because --grep matched none of its references must not
+      // be indistinguishable from one that genuinely has none.
+      const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
+      const withHidden = <T extends object>(payload: T): T => ({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
       if (opts.top !== undefined) {
-        jsonOut[sym] = topFilesJsonPayload(results, opts.top)
+        jsonOut[sym] = withHidden(topFilesJsonPayload(results, opts.top))
       } else {
         // `results` is already truncated by queryRefs's own SQL `LIMIT` (opts.limit, or the
         // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
@@ -2007,7 +2012,7 @@ export function runRefs(opts: RefsOptions): number {
         // (the pre-slice filtered count, already scanned with full headroom above) is the honest total.
         const capped = guardJsonRows(results)
         const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
-        jsonOut[sym] = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+        jsonOut[sym] = withHidden({ items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal })
       }
       continue
     }
@@ -2172,7 +2177,10 @@ function runRefsSingle(opts: RefsOptions): number {
       // body. Same `{items, truncated, totalCount}` envelope the populated branch emits, with the
       // post-filter count; text mode keeps the human notice.
       if (opts.json === true) {
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+        // `hiddenByGrep` (brief --json's own convention) is what tells the consumer this empty
+        // envelope is a filtered view rather than a symbol with no references -- `totalCount: 0`
+        // alone reads identically for both.
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preGrepCount }, null, 2))
         return 0
       }
       emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references'))
@@ -2220,7 +2228,12 @@ function runRefsSingle(opts: RefsOptions): number {
       const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
       payload = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
-    const text = JSON.stringify(payload, null, 2)
+    // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
+    // filtered page carries the count too rather than only the fully emptied one. Spread onto the
+    // emitted object rather than into `payload` so both `--top` and per-reference envelopes get it
+    // without either shape's interface growing an optional field the other never sets.
+    const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
+    const text = JSON.stringify({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2)
     emit(text)
     recordReadStat('symbol_read', fullSourceBytes, text, symName)
     return 0
