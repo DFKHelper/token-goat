@@ -28,7 +28,7 @@ import { normalizePath } from '../src/paths.js'
 import { buildProgram } from '../src/cli.js'
 import { buildCommandManifest, type CommandManifestEntry } from '../src/cli_commands.js'
 import { runSymbol, runRefs, runOutline, runSkeleton, runSemantic } from '../src/read_commands.js'
-import { runTypes, runCallers, runDead, runTestFor } from '../src/graph_commands.js'
+import { runTypes, runCallers, runDead, runTestFor, runCallChain, runDeps } from '../src/graph_commands.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 
 /** Commands whose `--json` payload is a row list and MUST carry the shared envelope. */
@@ -199,6 +199,60 @@ describe('--json envelope shape', () => {
     const out = captureStdout(() => { expect(runCallers({ symbol: 'querySymbols', json: true, grep: 'zzzNoSuchCallerXyz' })).toBe(0) })
     expect(expectEnvelope(out, 'callers --grep')).toEqual([])
     expect((JSON.parse(out) as { totalCount: number }).totalCount).toBe(0)
+  })
+
+  // A filtered-to-empty --json payload was well-formed but still ambiguous: `items: []` with
+  // `totalCount: 0` (or `chains: []`, or two empty dependency arrays) reads identically whether
+  // --grep matched none of an existing set or the set was genuinely empty. Each command now
+  // carries `hiddenByGrep`, brief --json's existing convention, omitted entirely when zero.
+  it('types --grep matching nothing names how many declarations the filter hid', () => {
+    const out = captureStdout(() => { expect(runTypes({ json: true, grep: 'zzzNoSuchTypeXyz' })).toBe(0) })
+    expect((JSON.parse(out) as { hiddenByGrep?: number }).hiddenByGrep).toBeGreaterThan(0)
+  })
+
+  it('dead --grep matching nothing names how many dead symbols the filter hid', () => {
+    const out = captureStdout(() => { expect(runDead({ json: true, top: 500, grep: 'zzzNoSuchDeadXyz' })).toBe(0) })
+    expect((JSON.parse(out) as { hiddenByGrep?: number }).hiddenByGrep).toBeGreaterThan(0)
+  })
+
+  it('callers --grep matching nothing names how many callers the filter hid', () => {
+    const out = captureStdout(() => { expect(runCallers({ symbol: 'querySymbols', json: true, grep: 'zzzNoSuchCallerXyz' })).toBe(0) })
+    expect((JSON.parse(out) as { hiddenByGrep?: number }).hiddenByGrep).toBeGreaterThan(0)
+  })
+
+  it('refs --grep matching nothing names how many references the filter hid', () => {
+    const out = captureStdout(() => { expect(runRefs({ spec: 'querySymbols', json: true, grep: 'zzzNoSuchRefPathXyz' })).toBe(0) })
+    expect((JSON.parse(out) as { hiddenByGrep?: number }).hiddenByGrep).toBeGreaterThan(0)
+  })
+
+  it('call-chain --grep matching nothing names how many chains the filter hid', () => {
+    const out = captureStdout(() => { expect(runCallChain({ symbol: 'querySymbols', json: true, grep: 'zzzNoSuchChainXyz' })).toBe(0) })
+    const payload = JSON.parse(out) as { chains: unknown[]; hiddenByGrep?: number }
+    expect(payload.chains).toEqual([])
+    expect(payload.hiddenByGrep).toBeGreaterThan(0)
+  })
+
+  it('deps --grep matching nothing names how many dependencies the filter hid', () => {
+    const out = captureStdout(() => { expect(runDeps({ file: 'src/graph_commands.ts', json: true, grep: 'zzzNoSuchDepXyz' })).toBe(0) })
+    const payload = JSON.parse(out) as { internal: unknown[]; external: unknown[]; hiddenByGrep?: number }
+    expect(payload.internal).toEqual([])
+    expect(payload.external).toEqual([])
+    expect(payload.hiddenByGrep).toBeGreaterThan(0)
+  })
+
+  // Negative control for all six above: the field must be absent, not 0, when no filter ran --
+  // otherwise "omitted when zero" is untested and every default payload silently grew a key.
+  it('omits hiddenByGrep entirely when no --grep filter was applied', () => {
+    for (const out of [
+      captureStdout(() => { runTypes({ json: true }) }),
+      captureStdout(() => { runDead({ json: true, top: 20 }) }),
+      captureStdout(() => { runCallers({ symbol: 'querySymbols', json: true }) }),
+      captureStdout(() => { runRefs({ spec: 'querySymbols', json: true }) }),
+      captureStdout(() => { runCallChain({ symbol: 'querySymbols', json: true }) }),
+      captureStdout(() => { runDeps({ file: 'src/graph_commands.ts', json: true }) }),
+    ]) {
+      expect(JSON.parse(out) as object).not.toHaveProperty('hiddenByGrep')
+    }
   })
 
   it('semantic emits the envelope and keeps its payload-level source field', async () => {

@@ -6899,8 +6899,11 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
       expect(runRefs({ spec: 'f', grep: '^nomatch/', json: true })).toBe(0)
     })
     expect(() => JSON.parse(stdout)).not.toThrow()
-    // totalCount is the post-filter count, never the pre-filter 2.
-    expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
+    // totalCount is the post-filter count, never the pre-filter 2. hiddenByGrep carries that
+    // pre-filter count instead, so the empty envelope is legible as a filtered view rather than
+    // as a symbol with no references -- exact-shape assertion updated for the added field rather
+    // than loosened, so a future accidental key still fails here.
+    expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0, hiddenByGrep: 2 })
   })
 
   // Singular count branch: a bug shipped once where every fixture happened to filter 2+ items, leaving the count === 1 branch unasserted -- this pins both the verb ("was") and the noun ("reference", not "references").
