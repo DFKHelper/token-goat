@@ -6,6 +6,8 @@ import {
   assertSafeArgSegment,
   parseShimScriptPath,
   resetEntrypointCacheForTests,
+  resetGitExecutableCacheForTests,
+  resolveGitExecutable,
   resolveTokenGoatEntrypoint,
   runGitDiff,
   runTokenGoat,
@@ -214,6 +216,42 @@ describe('runGitDiff (post-fix)', () => {
   })
 })
 
+describe('resolveGitExecutable (post-fix, issue #76 A1)', () => {
+  afterEach(() => {
+    resetGitExecutableCacheForTests()
+  })
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a PATH containing only git.cmd, since execFile still routes .cmd through cmd.exe with shell:false',
+    async () => {
+      const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-gitcmd-'))
+      try {
+        await fs.writeFile(path.join(binDir, 'git.cmd'), '@echo off\r\necho fake git\r\n')
+        process.env['PATH'] = binDir
+        process.env['Path'] = binDir
+        resetGitExecutableCacheForTests()
+        await expect(resolveGitExecutable()).rejects.toThrow(/git\.exe/)
+      } finally {
+        await fs.rm(binDir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.runIf(process.platform === 'win32')('resolves a real git.exe on PATH', async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-gitexe-'))
+    try {
+      await fs.writeFile(path.join(binDir, 'git.exe'), 'not a real binary, just needs to exist')
+      process.env['PATH'] = binDir
+      process.env['Path'] = binDir
+      resetGitExecutableCacheForTests()
+      const resolved = await resolveGitExecutable()
+      expect(resolved).toBe(path.join(binDir, 'git.exe'))
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('parseShimScriptPath', () => {
   it('extracts the real script path from an npm-generated .cmd shim and resolves %dp0%', () => {
     const shimText = [
@@ -243,6 +281,106 @@ describe('parseShimScriptPath', () => {
   it('returns null for an unrecognized shim format instead of guessing', () => {
     expect(parseShimScriptPath('not a shim at all', 'C:\\anywhere')).toBeNull()
   })
+
+  // Real shim text captured from an actual `pnpm install` of a package with a `bin` entry
+  // (pnpm 11.11.0, Windows), not an invented approximation -- pnpm writes the launch line with
+  // `%~dp0` directly, no intermediate `dp0` variable at all, unlike current npm's two-step form.
+  it('resolves the %~dp0 dialect (real pnpm-generated shim)', () => {
+    const shimText = [
+      '@SETLOCAL',
+      '@IF NOT DEFINED NODE_PATH (',
+      '  @SET "NODE_PATH=..."',
+      ') ELSE (',
+      '  @SET "NODE_PATH=...;%NODE_PATH%"',
+      ')',
+      '@IF EXIST "%~dp0\\node.exe" (',
+      '  "%~dp0\\node.exe"  "%~dp0\\..\\fakebin\\bin.js" %*',
+      ') ELSE (',
+      '  @SET PATHEXT=%PATHEXT:;.JS;=;%',
+      '  node  "%~dp0\\..\\fakebin\\bin.js" %*',
+      ')',
+      '',
+    ].join('\r\n')
+    const result = parseShimScriptPath(shimText, 'C:\\proj\\node_modules\\.bin')
+    expect(result).toBe('C:\\proj\\node_modules\\fakebin\\bin.js')
+  })
+
+  // Real shim text captured from an actual `yarn install` (yarn classic 1.22.22, Windows) of a
+  // package with a `bin` entry. Yarn classic also writes the `%~dp0` dialect directly.
+  it('resolves the %~dp0 dialect (real yarn classic-generated shim)', () => {
+    const shimText = [
+      '@IF EXIST "%~dp0\\node.exe" (',
+      '  "%~dp0\\node.exe"  "%~dp0\\..\\fakebin\\bin.js" %*',
+      ') ELSE (',
+      '  @SETLOCAL',
+      '  @SET PATHEXT=%PATHEXT:;.JS;=;%',
+      '  node  "%~dp0\\..\\fakebin\\bin.js" %*',
+      ')',
+      '',
+    ].join('\r\n')
+    const result = parseShimScriptPath(shimText, 'C:\\proj\\node_modules\\.bin')
+    expect(result).toBe('C:\\proj\\node_modules\\fakebin\\bin.js')
+  })
+})
+
+describe('resolveTokenGoatEntrypoint POSIX non-JS shim (issue #76 A3)', () => {
+  it.runIf(process.platform !== 'win32')(
+    'rejects a compiled-binary shim on PATH instead of feeding it to node as a script',
+    async () => {
+      // Models a Volta-style shim: PATH points at a real executable file that is not JavaScript
+      // at all (no shebang, no .js/.mjs/.cjs extension) -- e.g. an ELF/Mach-O compiled binary.
+      const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-volta-'))
+      try {
+        const binPath = path.join(binDir, 'token-goat')
+        await fs.writeFile(binPath, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0])) // ELF magic bytes
+        await fs.chmod(binPath, 0o755)
+        process.env['PATH'] = binDir
+        process.env['Path'] = binDir
+        resetEntrypointCacheForTests()
+        await expect(resolveTokenGoatEntrypoint()).rejects.toThrow(/not a JavaScript file/)
+      } finally {
+        await fs.rm(binDir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.runIf(process.platform !== 'win32')(
+    'rejects a bash-script shim on PATH (asdf-style) instead of feeding it to node as a script',
+    async () => {
+      const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-asdf-'))
+      try {
+        const binPath = path.join(binDir, 'token-goat')
+        await fs.writeFile(binPath, '#!/usr/bin/env bash\nexec "$ASDF_DIR/bin/asdf" exec token-goat "$@"\n')
+        await fs.chmod(binPath, 0o755)
+        process.env['PATH'] = binDir
+        process.env['Path'] = binDir
+        resetEntrypointCacheForTests()
+        await expect(resolveTokenGoatEntrypoint()).rejects.toThrow(/not a JavaScript file/)
+      } finally {
+        await fs.rm(binDir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.runIf(process.platform !== 'win32')(
+    'accepts a real symlink-to-JS entrypoint (standard npm global install shape) and resolves the symlink',
+    async () => {
+      const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-npmlink-'))
+      try {
+        const realScript = path.join(binDir, 'token-goat.mjs')
+        await fs.writeFile(realScript, '#!/usr/bin/env node\nconsole.log("ok")\n')
+        const symlinkPath = path.join(binDir, 'token-goat')
+        await fs.symlink(realScript, symlinkPath)
+        process.env['PATH'] = binDir
+        process.env['Path'] = binDir
+        resetEntrypointCacheForTests()
+        const resolved = await resolveTokenGoatEntrypoint()
+        expect(resolved).toBe(await fs.realpath(realScript))
+      } finally {
+        await fs.rm(binDir, { recursive: true, force: true })
+      }
+    },
+  )
 })
 
 describe('assertSafeArgSegment', () => {
