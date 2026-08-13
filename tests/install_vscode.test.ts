@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -13,7 +14,7 @@ afterEach(() => {
 
 describe('VS Code project-local install', () => {
   it('merges servers and guidance without replacing unrelated content', () => {
-    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-test-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-test-'))
     try {
       fs.mkdirSync(path.join(project, '.vscode'), { recursive: true })
       fs.mkdirSync(path.join(project, '.github'), { recursive: true })
@@ -48,7 +49,7 @@ describe('VS Code project-local install', () => {
   })
 
   it('fails clearly on malformed JSON', () => {
-    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-malformed-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-malformed-'))
     try {
       fs.mkdirSync(path.join(project, '.vscode'), { recursive: true })
       fs.writeFileSync(path.join(project, '.vscode', 'mcp.json'), '{not json')
@@ -59,7 +60,7 @@ describe('VS Code project-local install', () => {
   })
 
   it('preserves valid JSONC comments and trailing commas', () => {
-    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-jsonc-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-jsonc-'))
     try {
       fs.mkdirSync(path.join(project, '.vscode'), { recursive: true })
       fs.writeFileSync(
@@ -78,7 +79,7 @@ describe('VS Code project-local install', () => {
   })
 
   it('does not overwrite an unrelated server using the token-goat name', () => {
-    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-conflict-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-conflict-'))
     try {
       fs.mkdirSync(path.join(project, '.vscode'), { recursive: true })
       fs.writeFileSync(
@@ -94,8 +95,8 @@ describe('VS Code project-local install', () => {
 
 describe('VS Code user-scope install (default, no --project)', () => {
   it('writes to the user-profile mcp.json, not the project-local one, when --project is omitted', () => {
-    const userDir = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userdir-'))
-    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userscope-project-'))
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userdir-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userscope-project-'))
     process.env['APPDATA'] = userDir
     try {
       const result = installVscode({ projectRoot: project })
@@ -118,7 +119,7 @@ describe('VS Code user-scope install (default, no --project)', () => {
   })
 
   it('preserves unrelated servers already in the user-profile mcp.json', () => {
-    const userDir = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userdir-merge-'))
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userdir-merge-'))
     process.env['APPDATA'] = userDir
     try {
       const mcpPath = vscodeUserMcpPath()
@@ -134,8 +135,8 @@ describe('VS Code user-scope install (default, no --project)', () => {
   })
 
   it('refuses to double-register when the other scope already has a managed entry', () => {
-    const userDir = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userdir-dup-'))
-    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-project-dup-'))
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userdir-dup-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-project-dup-'))
     process.env['APPDATA'] = userDir
     try {
       // Install project scope first, then attempt the default (user scope) install.

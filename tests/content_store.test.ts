@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -22,7 +23,7 @@ beforeEach(() => {
   previousHome = process.env['TOKEN_GOAT_HOME']
   previousLocalAppData = process.env['LOCALAPPDATA']
   previousXdgDataHome = process.env['XDG_DATA_HOME']
-  home = fs.mkdtempSync(path.join(process.cwd(), '.tg-content-test-'))
+  home = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-content-test-'))
   process.env['TOKEN_GOAT_HOME'] = home
   // recordStat writes through getGlobalDb() (which uses dataDir(), driven by these env vars) while summarize(..., home) reads through getGlobalDb(home) (which uses dataDirForHome(home)). The two agree only if the env root is the exact parent of dataDirForHome's per-platform layout -- `<home>/AppData/Local` happens to satisfy that on win32 and nowhere else, which is why hardcoding it passed on Windows and left every stat assertion at zero on macOS and Linux. Derive the root from dataDirForHome so the two paths agree on every platform, and pin both vars because dataDir() reads LOCALAPPDATA on win32 and XDG_DATA_HOME elsewhere.
   const dataRoot = dataDirForHome(home)
@@ -64,7 +65,7 @@ describe('generic content compression', () => {
 
 describe('project-local handoffs and telemetry', () => {
   it('resolves compactly by default and fully on request', () => {
-    const otherProject = fs.mkdtempSync(path.join(process.cwd(), '.tg-content-other-project-'))
+    const otherProject = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-content-other-project-'))
     fs.writeFileSync(path.join(otherProject, 'package.json'), '{}\n')
     const created = createHandoff('review-notes', 'handoff '.repeat(100), home)
     const compact = resolveHandoff('review-notes', { projectRoot: home })
