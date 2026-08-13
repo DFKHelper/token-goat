@@ -65,6 +65,19 @@ describe('ensureDecoderSetup (false-prompt regression, issue #82)', () => {
     await ensureDecoderSetup()
     expect(showWarningMessage).toHaveBeenCalledTimes(1)
   })
+
+  it('the prompt wording is workspace-independent, matching that the check itself fires with no folder open', async () => {
+    // Task C, issue #76-adjacent: the check no longer depends on a workspace at all (see the
+    // "no folder open" case above), so the prompt text must not claim "this workspace" has no
+    // decoder -- that claim is false whenever no folder is even open.
+    workspaceFolders = undefined
+    runTokenGoat.mockResolvedValue(JSON.stringify({ configured: false, checkedPaths: [] }))
+    showWarningMessage.mockResolvedValue('Not now')
+    await ensureDecoderSetup()
+    expect(showWarningMessage).toHaveBeenCalledTimes(1)
+    const promptText = showWarningMessage.mock.calls[0]?.[0] as string
+    expect(promptText).not.toMatch(/this workspace/i)
+  })
 })
 
 describe('ensureDecoderSetup (CLI/extension version skew, issue #76 task B)', () => {
