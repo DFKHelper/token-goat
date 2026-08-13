@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-const mockFetch = vi.fn()
-global.fetch = mockFetch as unknown as typeof fetch
+const mockPerformHttpFetch = vi.hoisted(() => vi.fn())
+
+vi.mock('../src/webfetch.js', () => ({
+  performHttpFetch: mockPerformHttpFetch,
+}))
 
 import * as webCache from '../src/web_cache.js'
 
@@ -12,9 +15,19 @@ vi.mock('../src/web_cache.js', () => ({
 
 import * as gdrive from '../src/gdrive.js'
 
+/** Builds an `HttpFetchResult`-shaped mock response for `performHttpFetch`. */
+function fetchResult(body: string, opts: { status?: number; statusText?: string; contentType?: string } = {}) {
+  return {
+    status: opts.status ?? 200,
+    statusText: opts.statusText ?? 'OK',
+    headers: opts.contentType !== undefined ? { 'content-type': opts.contentType } : {},
+    body: Buffer.from(body, 'utf-8'),
+  }
+}
+
 describe('gdrive', () => {
   beforeEach(() => {
-    mockFetch.mockClear()
+    mockPerformHttpFetch.mockClear()
     vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReset().mockReturnValue(null)
     vi.mocked(webCache.storeWebOutput).mockClear()
   })
@@ -24,50 +37,36 @@ describe('gdrive', () => {
       const fileId = 'abc123def456'
       const docText = '# **Header** {#header}\nContent'
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const result1 = await gdrive.fetchDoc(fileId)
       expect(result1).toBe(docText)
-      expect(mockFetch).toHaveBeenCalledOnce()
+      expect(mockPerformHttpFetch).toHaveBeenCalledOnce()
 
       vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReturnValueOnce({ cacheId: 'test', content: docText })
 
       const result2 = await gdrive.fetchDoc(fileId)
       expect(result2).toBe(docText)
-      expect(mockFetch).toHaveBeenCalledOnce()
+      expect(mockPerformHttpFetch).toHaveBeenCalledOnce()
     })
 
     it('fetches on cache miss', async () => {
       const fileId = 'xyz789abc'
       const docText = '# **New Doc** {#new-doc}\nNew content'
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const result = await gdrive.fetchDoc(fileId)
       expect(result).toBe(docText)
-      expect(mockFetch).toHaveBeenCalledOnce()
+      expect(mockPerformHttpFetch).toHaveBeenCalledOnce()
 
-      const url = mockFetch.mock.calls[0][0]
+      const url = mockPerformHttpFetch.mock.calls[0][0]
       expect(url).toContain(fileId)
       expect(url).toContain('export?format=markdown')
     })
 
     it('throws on HTTP error', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult('', { status: 404, statusText: 'Not Found' }))
 
       await expect(gdrive.fetchDoc('missing')).rejects.toThrow('Failed to fetch Google Doc: HTTP 404')
     })
@@ -80,13 +79,9 @@ describe('gdrive', () => {
 
     it('rejects a private-doc sign-in redirect instead of caching it as content', async () => {
       const signInHtml = '<html><body>Sign in to continue</body></html>'
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        headers: { get: (name: string) => (name === 'content-type' ? 'text/html; charset=utf-8' : null) },
-        text: async () => signInHtml,
-      } as unknown as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(
+        fetchResult(signInHtml, { contentType: 'text/html; charset=utf-8' })
+      )
 
       await expect(gdrive.fetchDoc('private-doc-id')).rejects.toThrow(/private or not shared/)
       expect(webCache.storeWebOutput).not.toHaveBeenCalled()
@@ -94,13 +89,7 @@ describe('gdrive', () => {
 
     it('caches real (non-HTML) doc content normally', async () => {
       const docText = '# Real content\nBody text.'
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        headers: { get: (name: string) => (name === 'content-type' ? 'text/plain; charset=utf-8' : null) },
-        text: async () => docText,
-      } as unknown as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText, { contentType: 'text/plain; charset=utf-8' }))
 
       const result = await gdrive.fetchDoc('public-doc-id')
       expect(result).toBe(docText)
@@ -113,18 +102,25 @@ describe('gdrive', () => {
       const freshText = 'fresh live content'
 
       vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReturnValueOnce({ cacheId: 'test', content: staleText })
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        headers: { get: () => 'text/plain' },
-        text: async () => freshText,
-      } as unknown as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(freshText, { contentType: 'text/plain' }))
 
       const result = await gdrive.fetchDoc(fileId, { fresh: true })
       expect(result).toBe(freshText)
-      expect(mockFetch).toHaveBeenCalledOnce()
+      expect(mockPerformHttpFetch).toHaveBeenCalledOnce()
       expect(webCache.storeWebOutput).toHaveBeenCalledWith(expect.any(String), freshText)
+    })
+
+    it('bounds the request with a timeout, size cap, and redirect cap instead of an unguarded fetch (regression: fetchDocFromApi used to call bare globalThis.fetch with no SSRF pinning, redirect limit, or timeout)', async () => {
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult('# Doc\nBody'))
+
+      await gdrive.fetchDoc('hardening-check-id')
+
+      expect(mockPerformHttpFetch).toHaveBeenCalledOnce()
+      const opts = mockPerformHttpFetch.mock.calls[0][1]
+      expect(opts.redirectsLeft).toBeGreaterThan(0)
+      expect(opts.timeoutSec).toBeGreaterThan(0)
+      expect(opts.maxSizeBytes).toBeGreaterThan(0)
+      expect(opts.deadlineAt).toBeGreaterThan(Date.now())
     })
   })
 
@@ -147,12 +143,7 @@ Install steps.
 ## **Advanced** {#advanced}
 More info.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('test-id')
       expect(sections.length).toBe(4)
@@ -181,12 +172,7 @@ More info.
       // the real export shape and would have failed under the old parseDocSections, which
       // left "**Introduction**" and the "{#introduction}" suffix embedded in the heading text.
       const docText = '# **Introduction** {#introduction}\nBody text.\n'
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('markdown-shape-id')
       expect(sections.length).toBe(1)
@@ -198,24 +184,14 @@ More info.
 
     it('handles docs with no headings', async () => {
       const docText = 'Just plain text.\nNo headings here.'
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('plain-id')
       expect(sections.length).toBe(0)
     })
 
     it('handles empty content', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => '',
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(''))
 
       const sections = await gdrive.getDocSections('empty-id')
       expect(sections.length).toBe(0)
@@ -223,12 +199,7 @@ More info.
 
     it('calculates byteStart correctly with Windows line endings (CRLF)', async () => {
       const docText = '# **First** {#first}\r\nContent\r\n\r\n# **Second** {#second}\r\nMore content'
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('crlf-id')
       expect(sections.length).toBe(2)
@@ -262,12 +233,7 @@ npm run build
 
 Done.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('fenced-id')
       expect(sections.length).toBe(1)
@@ -296,12 +262,7 @@ still inside
 
 After text.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('mismatched-fence-id')
       expect(sections.length).toBe(1)
@@ -325,12 +286,7 @@ outer code
 
 After text.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('short-run-fence-id')
       expect(sections.length).toBe(1)
@@ -355,12 +311,7 @@ Intro.
 
 After text.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const sections = await gdrive.getDocSections('info-string-fence-id')
       expect(sections.length).toBe(1)
@@ -442,12 +393,7 @@ Main content here.
 # **End** {#end}
 Final stuff.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const content = await gdrive.getSectionContent('doc-id', 'Main')
       expect(content).toBe('Main content here.')
@@ -457,12 +403,7 @@ Final stuff.
       const docText = `# **Getting Started** {#getting-started}
 Installation steps.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const content = await gdrive.getSectionContent('case-id', 'getting started')
       expect(content).toBe('Installation steps.')
@@ -472,12 +413,7 @@ Installation steps.
       const docText = `# **One** {#one}
 Content.
 `
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: async () => docText,
-      } as Response)
+      mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
       const content = await gdrive.getSectionContent('missing-id', 'Missing')
       expect(content).toBeNull()
