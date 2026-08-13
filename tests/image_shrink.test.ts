@@ -16,7 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...original, configPath: () => _testConfigPath }
 })
 
-import { isImagePath, preReadImageHandler, shrinkImage } from '../src/image_shrink.js'
+import { isImagePath, preReadImageHandler, resetShrinkCachePruneThrottleForTests, shrinkImage } from '../src/image_shrink.js'
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
 import { summarize } from '../src/stats.js'
 import type { HookEvent } from '../src/hook_registry.js'
@@ -297,6 +297,144 @@ describe('preReadImageHandler', () => {
       fs.writeFileSync(_testConfigPath, '', 'utf8')
       invalidateConfigCache()
     }
+  })
+})
+
+describe('preReadImageHandler shrink cache', () => {
+  let prevHome: string | undefined
+  let tmpHome: string
+  let cacheDir: string
+  let dir: string
+  let filePath: string
+
+  beforeEach(() => {
+    prevHome = process.env['TOKEN_GOAT_HOME']
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shrink-cache-home-'))
+    process.env['TOKEN_GOAT_HOME'] = tmpHome
+    cacheDir = path.join(tmpHome, 'image_shrink_cache')
+
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shrink-cache-src-'))
+    filePath = path.join(dir, 'photo.jpg')
+    fs.writeFileSync(filePath, largeJpeg)
+
+    resetShrinkCachePruneThrottleForTests()
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+    else process.env['TOKEN_GOAT_HOME'] = prevHome
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('writes a cache entry on a fresh shrink', async () => {
+    const out = await preReadImageHandler(makeEvent(filePath))
+    expect(out.hookType).toBe('context')
+    const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entries.length).toBe(1)
+  })
+
+  it('serves a warm cache hit without re-running the sharp re-encode, and still records the same image_shrink savings a fresh shrink would', async () => {
+    const firstOut = await preReadImageHandler(makeEvent(filePath))
+    expect(firstOut.hookType).toBe('context')
+    if (firstOut.hookType !== 'context') return
+
+    const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entries.length).toBe(1)
+    const cachedPath = path.join(cacheDir, entries[0] as string)
+    const mtimeAfterFirst = fs.statSync(cachedPath).mtimeMs
+
+    const before = summarize(30).by_kind['image_shrink']
+    const beforeEvents = before?.events ?? 0
+    const beforeBytesSaved = before?.bytes_saved ?? 0
+
+    const secondOut = await preReadImageHandler(makeEvent(filePath))
+    expect(secondOut.hookType).toBe('context')
+    if (secondOut.hookType !== 'context') return
+    // Same shrunk data URL both times -- the hit serves identical bytes to the miss.
+    expect(secondOut.context).toBe(firstOut.context)
+
+    // The cache file's own mtime is untouched by the second call -- proof the handler served
+    // the existing entry instead of running a fresh shrinkImage() and rewriting it (a real
+    // re-encode would write a new file via writeCachedShrink and change this mtime).
+    expect(fs.statSync(cachedPath).mtimeMs).toBe(mtimeAfterFirst)
+    const entriesAfter = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entriesAfter.length).toBe(1)
+
+    const after = summarize(30).by_kind['image_shrink']
+    // The cache-hit handler still reports honest savings: same accounting call, same
+    // shape, as a fresh shrink -- see the "accounting honesty" requirement this covers.
+    expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+    expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
+  })
+
+  it('invalidates the cache when the source file mtime changes, even at the same byte length (regression: mtime, not just path+size, must be part of the key)', async () => {
+    await preReadImageHandler(makeEvent(filePath))
+    const entriesBefore = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entriesBefore.length).toBe(1)
+
+    // Rewrite with byte-identical content but a bumped mtime (regenerating a
+    // same-dimension screenshot is the realistic case this guards against).
+    const future = new Date(Date.now() + 10_000)
+    fs.writeFileSync(filePath, largeJpeg)
+    fs.utimesSync(filePath, future, future)
+
+    const out = await preReadImageHandler(makeEvent(filePath))
+    expect(out.hookType).toBe('context')
+
+    const entriesAfter = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    // A second, distinct cache entry for the new (path, size, mtime) key -- the
+    // stale entry from before the mtime bump is left in place (pruned later by age),
+    // not overwritten, since its key no longer matches this file at all.
+    expect(entriesAfter.length).toBe(2)
+  })
+
+  it('treats a corrupt/truncated cache entry as a miss, deletes it, and still returns a valid shrink', async () => {
+    await preReadImageHandler(makeEvent(filePath))
+    const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entries.length).toBe(1)
+    const cachedPath = path.join(cacheDir, entries[0] as string)
+
+    // Truncate the cached file so it no longer decodes.
+    fs.writeFileSync(cachedPath, Buffer.from([0x00, 0x01, 0x02]))
+
+    const out = await preReadImageHandler(makeEvent(filePath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain('data:image/')
+
+    // The corrupt (3-byte) entry was deleted and a freshly written valid shrink was written
+    // back to the same key -- the file at cachedPath exists again, but it is no longer the
+    // corrupt 3-byte payload, and there is still exactly one entry (not a stray second one).
+    expect(fs.readFileSync(cachedPath).length).toBeGreaterThan(3)
+    const entriesAfter = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entriesAfter.length).toBe(1)
+  })
+
+  it('prunes cache entries older than DEFAULT_MAX_AGE_MS without touching an unrelated file in the same directory', async () => {
+    await preReadImageHandler(makeEvent(filePath))
+    const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entries.length).toBe(1)
+    const cachedPath = path.join(cacheDir, entries[0] as string)
+
+    // A sentinel that does NOT carry this cache's filename prefix, in the exact same
+    // directory -- proves the sweep is scoped by prefix, not "everything in this dir".
+    const sentinelPath = path.join(cacheDir, 'not-a-shrink-cache-file.txt')
+    fs.writeFileSync(sentinelPath, 'do not delete me')
+
+    // Age both files past the prune cutoff.
+    const old = new Date(Date.now() - 25 * 3600 * 1000) // > DEFAULT_MAX_AGE_MS (24h)
+    fs.utimesSync(cachedPath, old, old)
+    fs.utimesSync(sentinelPath, old, old)
+
+    resetShrinkCachePruneThrottleForTests()
+    // Any Read on an image path re-enters preReadImageHandler, which sweeps the cache
+    // dir first; the file doesn't need to be the same image being pruned.
+    fs.writeFileSync(path.join(dir, 'unrelated.png'), smallPng)
+    await preReadImageHandler(makeEvent(path.join(dir, 'unrelated.png')))
+
+    expect(fs.existsSync(cachedPath)).toBe(false)
+    expect(fs.existsSync(sentinelPath)).toBe(true)
   })
 })
 
