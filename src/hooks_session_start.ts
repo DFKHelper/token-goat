@@ -46,7 +46,8 @@ const GENERIC_REMINDER =
 const INDEXED_REMINDER =
   'token-goat: this project is indexed. Prefer `symbol <name>`, `read "file::symbol"`, ' +
   '`section "file::Heading"`, `semantic "description"`, or `outline <file>` over a full ' +
-  'Read/Grep tool call; shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are still just commands.'
+  'Read/Grep tool call; for JSON/YAML use `json-query file \'a.b.c\'` or `yaml-query` (nested keys are not symbols); ' +
+  'shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are still just commands.'
 
 /** Build the reminder string for `cwd`: distinguishes an indexed project from the generic fallback. */
 function buildReminder(cwd: string | undefined): string {

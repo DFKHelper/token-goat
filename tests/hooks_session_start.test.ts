@@ -81,6 +81,9 @@ describe('sessionStartHandler', () => {
         expect(result.context).toContain('symbol')
         expect(result.context).toContain('Read/Grep tool call')
         expect(result.context).toContain('shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls`')
+        // Structured data needs naming too: without it an agent reads "prefer symbol/read/section" as evidence that JSON/YAML have no token-goat path, which is exactly the wrong conclusion. Static clause only -- the byte-identity guard below is what keeps it that way.
+        expect(result.context).toContain("json-query file 'a.b.c'")
+        expect(result.context).toContain('yaml-query')
       }
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true })
