@@ -70,6 +70,11 @@ const GREP_MAX_LINES = 200
 // Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover
 // this tool's own index (thousands of symbols) without paging.
 const FIND_SCAN_LIMIT = 20_000
+// Caps for the JSON/YAML nested-key lookup that runs on a `symbol` miss. 128 KiB skips generated lockfiles (this repo's package-lock.json is ~302 KB) while still covering every hand-written manifest, and 12 files bounds the worst case at ~1.5 MiB of parsing on a path that already lost -- the node cap stops a pathologically deep document from turning a miss into a hang.
+const STRUCTURED_MISS_MAX_BYTES = 128 * 1024
+const STRUCTURED_MISS_MAX_FILES = 12
+const STRUCTURED_MISS_MAX_NODES = 20_000
+
 // `refs --top` exists specifically for high-fanout symbols (hundreds+ of references) and
 // aggregates by file before truncating, so it must scan far more rows than the default
 // per-line `refs` cap (100, sized for "read these individually"). queryRefs orders rows by
@@ -657,6 +662,75 @@ export interface SymbolOptions {
   stats?: boolean
 }
 
+/**
+ * Locate `name` as an object key nested at depth >= 2 inside one of the already-indexed
+ * JSON/YAML files in `filePaths`, returning the dot-path that `json-query`/`yaml-query`
+ * accepts, or `null` when it is not found.
+ *
+ * Exists because JSON/YAML files are indexed only to depth 1 (top-level keys become
+ * `property` symbols; nested keys deliberately do not, or every manifest would flood
+ * bare-name lookups with `name`/`version`/`type` rows and duplicate `json-query`). A `symbol
+ * better-sqlite3` miss is therefore correct-from-evidence but wrong-in-fact, and its
+ * `Did you mean: sql` suggestion actively points away from the answer.
+ *
+ * Deliberately answers with a real dot-path or with silence -- never a generic "JSON keys
+ * aren't symbols" line, which would fire on nearly every miss in nearly every project and
+ * bill itself for a saving it did not deliver.
+ */
+export function findStructuredKeyPath(name: string, filePaths: string[]): { filePath: string; dotPath: string; command: string } | null {
+  let filesTried = 0
+  for (const filePath of filePaths) {
+    if (filesTried >= STRUCTURED_MISS_MAX_FILES) break
+    const lower = filePath.toLowerCase()
+    const isYaml = lower.endsWith('.yaml') || lower.endsWith('.yml')
+    if (!isYaml && !lower.endsWith('.json')) continue
+    // Size-gate off the stat, before reading: the point of the cap is to never pay to load or parse a lockfile, so checking after readFileText would defeat it.
+    let size: number
+    try {
+      size = fs.statSync(filePath).size
+    } catch {
+      continue
+    }
+    if (size > STRUCTURED_MISS_MAX_BYTES) continue
+    filesTried += 1
+    let data: unknown
+    try {
+      const text = readFileText(filePath)
+      if (text === null) continue
+      data = isYaml ? parseYamlDocument(text) : (JSON.parse(text) as unknown)
+    } catch {
+      // A malformed manifest must never turn a clean miss into an error; the miss message is already correct without this hint.
+      continue
+    }
+    const dotPath = findKeyDotPath(data, name)
+    if (dotPath !== null) return { filePath, dotPath, command: isYaml ? 'yaml-query' : 'json-query' }
+  }
+  return null
+}
+
+/** Breadth-first search for `name` as an object key at depth >= 2 in a parsed JSON/YAML document, returning its dot-path in `json_query.ts`'s grammar (`a.b`, `a[0].b`). Breadth-first so the shallowest -- and so shortest and least ambiguous -- path wins, and node-capped so a deep document cannot make a failed lookup expensive. */
+function findKeyDotPath(root: unknown, name: string): string | null {
+  const queue: Array<{ value: unknown; prefix: string; depth: number }> = [{ value: root, prefix: '', depth: 0 }]
+  let visited = 0
+  while (queue.length > 0) {
+    const node = queue.shift()
+    if (node === undefined) break
+    if (visited++ >= STRUCTURED_MISS_MAX_NODES) return null
+    const { value, prefix, depth } = node
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) queue.push({ value: value[i], prefix: `${prefix}[${i}]`, depth })
+      continue
+    }
+    if (value === null || typeof value !== 'object') continue
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const childPath = prefix === '' ? key : `${prefix}.${key}`
+      if (key === name && depth + 1 >= 2) return childPath
+      queue.push({ value: child, prefix: childPath, depth: depth + 1 })
+    }
+  }
+  return null
+}
+
 /** Handle ``token-goat symbol <name>``. */
 export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
@@ -763,6 +837,13 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), opts.name)
       // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
       text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
+      // Appended in BOTH branches on purpose: the didYouMean case is exactly the one that needs correcting, since a near-name suggestion ("Did you mean: sql" for `better-sqlite3`) reads as a confident answer and points away from the real one. Candidate files come from the scan already in hand above, so this costs no extra DB round trip.
+      const structuredFiles = [...new Set(rawSymbols.map((s) => s.filePath))].sort()
+      const hit = findStructuredKeyPath(opts.name, structuredFiles)
+      if (hit !== null) {
+        const display = toDisplayPath(rootDir, hit.filePath)
+        text += `\n'${opts.name}' is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: token-goat ${hit.command} ${display} '${hit.dotPath}'`
+      }
     }
     if (indexEmpty && emptyIndexRoot !== null) {
       text += `\n${emptyIndexMessage(emptyIndexRoot)}`
