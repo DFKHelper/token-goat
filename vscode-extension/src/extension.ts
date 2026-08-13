@@ -128,7 +128,7 @@ export async function ensureDecoderSetup(): Promise<void> {
     return
   }
   const choice = await vscode.window.showWarningMessage(
-    'token-goat compressed this for chat, but this workspace has no decoder set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
+    'token-goat compressed this for chat, but no decoder is set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
     'Set up now', 'Not now',
   )
   if (choice !== 'Set up now') return
