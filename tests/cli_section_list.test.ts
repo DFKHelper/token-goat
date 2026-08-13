@@ -57,4 +57,75 @@ describe('section --list', () => {
     expect(out).toContain('First Heading')
     expect(out).toContain('Second Heading')
   })
+
+  it('--grep filters headings to matches only', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'tg-section-list-grep-'))
+    mdFile = join(tmpDir, 'doc.md')
+    writeFileSync(mdFile, ['## First Heading', 'body a', '', '## Second Heading', 'body b', ''].join('\n'), 'utf-8')
+
+    stdout = []
+    stdoutSpy = spyOnWrite(process.stdout, stdout)
+    stderr = []
+    stderrSpy = spyOnWrite(process.stderr, stderr)
+
+    const code = await runCli(['section', mdFile, '--list', '--grep', 'First'])
+
+    expect(code).toBe(0)
+    const out = stdout.join('')
+    expect(out).toContain('First Heading')
+    expect(out).not.toContain('Second Heading')
+  })
+
+  it('--grep matching nothing reports a filtered-to-empty notice, not "no sections found"', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'tg-section-list-grep-empty-'))
+    mdFile = join(tmpDir, 'doc.md')
+    writeFileSync(mdFile, ['## First Heading', 'body a', ''].join('\n'), 'utf-8')
+
+    stdout = []
+    stdoutSpy = spyOnWrite(process.stdout, stdout)
+    stderr = []
+    stderrSpy = spyOnWrite(process.stderr, stderr)
+
+    const code = await runCli(['section', mdFile, '--list', '--grep', 'NoSuchHeadingAnywhere'])
+
+    expect(code).toBe(0)
+    const out = stdout.join('')
+    expect(out).toContain('filtered out by --grep')
+    expect(out).not.toContain('No sections found')
+  })
+
+  it('--grep matching nothing with --json returns a well-formed empty envelope', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'tg-section-list-grep-empty-json-'))
+    mdFile = join(tmpDir, 'doc.md')
+    writeFileSync(mdFile, ['## First Heading', 'body a', ''].join('\n'), 'utf-8')
+
+    stdout = []
+    stdoutSpy = spyOnWrite(process.stdout, stdout)
+    stderr = []
+    stderrSpy = spyOnWrite(process.stderr, stderr)
+
+    const code = await runCli(['section', mdFile, '--list', '--grep', 'NoSuchHeadingAnywhere', '--json'])
+
+    expect(code).toBe(0)
+    const payload = JSON.parse(stdout.join(''))
+    expect(payload).toEqual({ items: [], truncated: false, totalCount: 0 })
+  })
+
+  it('a file with no headings at all still reports "No sections found" even with --grep set', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'tg-section-list-grep-no-headings-'))
+    mdFile = join(tmpDir, 'doc.md')
+    writeFileSync(mdFile, 'plain text, no headings\n', 'utf-8')
+
+    stdout = []
+    stdoutSpy = spyOnWrite(process.stdout, stdout)
+    stderr = []
+    stderrSpy = spyOnWrite(process.stderr, stderr)
+
+    const code = await runCli(['section', mdFile, '--list', '--grep', 'anything'])
+
+    expect(code).toBe(1)
+    const out = stdout.join('') + stderr.join('')
+    expect(out).toContain('No sections found')
+    expect(out).not.toContain('filtered out by --grep')
+  })
 })

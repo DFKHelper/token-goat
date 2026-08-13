@@ -3045,9 +3045,10 @@ export function buildProgram(): Command {
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
-    .action((spec: string, opts: { json?: boolean; list?: boolean }) =>
+    .option('--grep <pattern>', 'with --list, filter headings to this regex (literal substring if it is not valid regex)')
+    .action((spec: string, opts: { json?: boolean; list?: boolean; grep?: string }) =>
       opts.list === true
-        ? runExit(() => runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}) }))
+        ? runExit(() => runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) }))
         : runExitText(() => runSection({ spec, ...(opts.json === true ? { json: true } : {}) })),
     )
 
