@@ -3385,6 +3385,64 @@ describe('runImpact --exclude-tests', () => {
   })
 })
 
+// ---- runImpact --grep --------------------------------------------------------
+
+describe('runImpact --grep', () => {
+  it('narrows the impacted set to entries whose symbol name matches the pattern', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-grep-'))
+    try {
+      const defFile = join(root, 'impact-grep-def.ts')
+      const callerFile = join(root, 'impact-grep-callers.ts')
+      writeFileSync(defFile, 'export function impactGrepTargetFn3h7() { return 1 }\n')
+      writeFileSync(callerFile, [
+        'function impactGrepMatchCaller3h7() { impactGrepTargetFn3h7() }',
+        'function impactGrepOtherCaller3h7() { impactGrepTargetFn3h7() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runImpact({ symbol: 'impactGrepTargetFn3h7', json: true, grep: 'Match' })).toBe(0)
+        })
+        const parsed = JSON.parse(captured) as Array<{ symbol: string; hops: number }>
+        expect(parsed.map((e) => e.symbol)).toEqual(['impactGrepMatchCaller3h7'])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('names the filtered count in text mode when --grep matches none of the impacted entries that do exist', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-grep-empty-'))
+    try {
+      const defFile = join(root, 'impact-grep-empty-def.ts')
+      const callerFile = join(root, 'impact-grep-empty-caller.ts')
+      writeFileSync(defFile, 'export function impactGrepEmptyTargetFn6p4() { return 1 }\n')
+      writeFileSync(callerFile, 'function impactGrepEmptyCaller6p4() { impactGrepEmptyTargetFn6p4() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runImpact({ symbol: 'impactGrepEmptyTargetFn6p4', grep: '__no_such_match__' })).toBe(0)
+        })
+        expect(captured).toContain('--grep')
+        expect(captured).toContain('__no_such_match__')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- compareHopEntries (runImpact tiebreak) ---------------------------------
 //
 // Regression coverage for a locale-dependent-output bug: runImpact() used to

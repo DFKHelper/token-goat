@@ -550,6 +550,8 @@ export interface ImpactOptions {
   json?: boolean
   /** `--exclude-tests`: prune callers (including module-scope entries) whose call site lives in a test file (per isTestFile) before they're admitted to the BFS, so nothing walks through a test node. Opt-in; omitted or false leaves output byte-identical to today. */
   excludeTests?: boolean
+  /** `--grep`: only show impacted entries whose symbol name (or module-scope key) matches this pattern; applied AFTER the BFS but BEFORE the `--top` slice, matching runDead/runCallers' own grep-before-top convention. */
+  grep?: string
 }
 
 /**
@@ -644,9 +646,26 @@ export function runImpact(opts: ImpactOptions): number {
 
   hops.delete(rootName)
 
-  const sorted = [...hops.entries()]
-    .sort(compareHopEntries)
-    .slice(0, top)
+  const allSorted = [...hops.entries()].sort(compareHopEntries)
+  // --grep narrows the impacted set BEFORE the --top slice, matching runDead/runCallers' own
+  // grep-before-top convention -- filtering after would silently under-return by selecting from
+  // an already-capped page instead of the whole impacted set.
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const grepped = matchesGrep !== undefined ? allSorted.filter(([symbol]) => matchesGrep(symbol)) : allSorted
+  const sorted = grepped.slice(0, top)
+
+  if (matchesGrep !== undefined && sorted.length === 0 && allSorted.length > 0) {
+    // Distinguish "--grep matched none of the N impacted symbols that do exist" from a
+    // genuinely impact-free symbol -- same "filtered store renders as populated" trap already
+    // fixed for dead/deps/types/callers/call-chain. `[]` matches the bare-array shape the
+    // populated branch below emits, so a --json consumer never has to branch on payload shape.
+    if (opts.json === true) {
+      emit(JSON.stringify([], null, 2))
+      return 0
+    }
+    emit(grepFilteredToEmptyNotice(allSorted.length, opts.grep as string, 'impacted symbol', 'impacted symbols'))
+    return 0
+  }
 
   if (sorted.length === 0) {
     // "No callers found" for a symbol that IS called -- only from tests -- reads as genuinely

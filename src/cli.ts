@@ -3554,13 +3554,15 @@ export function buildProgram(): Command {
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
     .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
-    .action((symbol: string, opts: { top?: string; json?: boolean; excludeTests?: boolean }) =>
+    .option('--grep <pattern>', 'only show impacted symbols whose name matches this regex (literal substring if it is not valid regex)')
+    .action((symbol: string, opts: { top?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runImpact({
           symbol,
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )
