@@ -3727,6 +3727,7 @@ export function runFind(opts: FindOptions): number {
 export interface ListSectionsOptions {
   file: string
   json?: boolean
+  grep?: string
 }
 
 /** Handle ``token-goat section --list file``. */
@@ -3746,13 +3747,33 @@ export function runListSections(opts: ListSectionsOptions): number {
     return 1
   }
 
+  // --grep narrows on the heading text, same regex-with-literal-fallback semantics every other
+  // --grep flag in this repo uses (compileGrepMatcher). Applied after the genuinely-empty check
+  // above, so a filter can only ever narrow a real non-empty result -- never masquerade as one.
+  const preFilterCount = sections.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filtered = matchesGrep !== undefined ? sections.filter((s) => matchesGrep(s)) : sections
+
+  if (filtered.length === 0) {
+    // The file IS non-empty (preFilterCount > 0, already confirmed above) -- --grep matched none
+    // of it. Distinct from the "no sections found" case above, which exits 1 because there was
+    // nothing to find at all: this exits 0 with a well-formed empty result, same convention as
+    // types/exports/imports/deps' own --grep-filtered-to-empty branch.
+    if (opts.json === true) {
+      emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+      return 0
+    }
+    emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'section', 'sections'))
+    return 0
+  }
+
   if (opts.json === true) {
-    const capped = guardJsonRows(sections)
+    const capped = guardJsonRows(filtered)
     emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
 
-  for (const s of sections) {
+  for (const s of filtered) {
     emit(s)
   }
   return 0
