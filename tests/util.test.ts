@@ -751,6 +751,64 @@ describe('windowsCmdQuoteArg', () => {
       expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
     }
   })
+
+  // Regression coverage for a defect in the escaping shipped by 31a60efd: doubling the pending backslash run before an emitted `"` only happened on one of the three code paths that emit a quote, so `CommandLineToArgvW` halved an undoubled run on the other two and silently dropped the embedded quote -- `%\"` round-tripped back out as `%\`, `!\"` as `!\`. This table drives every case that was hand-verified against a real cmd.exe /d /s /c invocation (see the win32-only describe block below for the live-process version of the same cases) through the offline decodeCmdThenCrt double-parse, so a regression on any of these classes -- a backslash run before the in-quote-close path, the else-branch close path, or the open-quote path -- is caught cross-platform in CI without needing a real Windows shell. `%!&|^"\ mix` is deliberately excluded here: decodeCmdThenCrt's caret-stripping regex is context-free (it strips any `^"`/`^%`/`^!` regardless of quote state), but real cmd.exe only strips a caret emitted OUTSIDE a quoted span and leaves one emitted INSIDE quotes as a literal character, so a literal caret from the input landing right before this function's own quote-closing `"` makes the offline emulator over-strip in a way the real interpreter does not -- this input is still covered end to end by the live cmd.exe table below, where it passes.
+  it.each([
+    '%\\"', '!\\"', '%\\\\"', 'a\\"b', 'q"q', '"lead', 'trail"', '%x', 'a&calc', 'with space',
+    '%PATH%', 'a|b', 'a^b', 'a\\', '%\\', '\\', 'C:\\Users\\Temp\\f.txt',
+    'a b\\\\"c d', '!x!', '%a%b%', '\\a', '%\\a', '"\\a', '\\"\\', 'a\\\\\\"b', '&&calc.exe',
+    '%TEMP%\\tg-1234-abcd.txt', 'x y\\', '!\\!',
+  ])('round-trips %j', (arg) => {
+    expect(decodeCmdThenCrt(windowsCmdQuoteArg(arg))).toBe(arg)
+  })
+
+  it('rejects an argument that both starts and ends with a literal quote instead of silently handing cmd.exe a command line it will misexecute (cmd\'s own /s first-token scan toggles quote-state per literal `"`, ignoring the caret this function uses to escape one, so the back-to-back quotes this shape emits reset that naive parity to "unquoted" for the rest of the token and a later metacharacter ends the perceived program name early)', () => {
+    expect(() => windowsCmdQuoteArg('"&calc&"')).toThrow(/cannot faithfully encode/)
+  })
+
+  it('rejects a lone double-quote character (both starts and ends with the same literal quote)', () => {
+    expect(() => windowsCmdQuoteArg('"')).toThrow(/cannot faithfully encode/)
+  })
+
+  it('does not reject an argument that only starts or only ends with a literal quote', () => {
+    expect(() => windowsCmdQuoteArg('"lead')).not.toThrow()
+    expect(() => windowsCmdQuoteArg('trail"')).not.toThrow()
+  })
+})
+
+// Live cmd.exe round-trip: decodeCmdThenCrt above re-implements cmd.exe's and CommandLineToArgvW's parsing offline so this regression suite runs everywhere, but that reimplementation is itself only as trustworthy as its own correctness -- this block instead spawns a real cmd.exe /d /s /c invocation of a .cmd wrapper forwarding to node.exe (the exact shape of the npm-shim target windowsCmdQuoteArg exists for) and reads back the actual argv Node received, so a divergence between the offline decoder and real cmd.exe behavior cannot hide behind a decoder bug. Skipped off Windows since there is no cmd.exe to invoke.
+describe.skipIf(process.platform !== 'win32')('windowsCmdQuoteArg real cmd.exe round-trip', () => {
+  let dir: string
+  let wrapPath: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-cmdquote-'))
+    writeFileSync(path.join(dir, 'echoargs.js'), 'for (const a of process.argv.slice(2)) console.log(JSON.stringify(a))\n')
+    wrapPath = path.join(dir, 'wrap.cmd')
+    writeFileSync(wrapPath, '@echo off\nnode "%~dp0echoargs.js" %*\n')
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it.each([
+    '%\\"', '!\\"', '%\\\\"', 'a\\"b', 'q"q', '"lead', 'trail"', '%x', 'plain', 'a&calc',
+    'with space', '%PATH%', 'a|b', 'a^b', '', 'a\\', '%\\', '\\', 'C:\\Users\\Temp\\f.txt',
+    '%!&|^"\\ mix', 'a b\\\\"c d', '!x!', '%a%b%', '\\a', '%\\a', '"\\a', '\\"\\', 'a\\\\\\"b',
+    '&&calc.exe', '%TEMP%\\tg-1234-abcd.txt', 'x y\\', '!\\!',
+  ])('round-trips %j through a real cmd.exe /d /s /c invocation', (arg) => {
+    const quoted = windowsCmdQuoteArg(arg)
+    const result = childProcess.spawnSync('cmd.exe', ['/d', '/s', '/c', `"${wrapPath} ${quoted}"`], {
+      encoding: 'utf8', windowsVerbatimArguments: true,
+    })
+    const got: unknown = JSON.parse((result.stdout ?? '').trim().split(/\r?\n/)[0] ?? '""')
+    expect(got).toBe(arg)
+  })
+
+  it('rejects "&calc&" rather than handing cmd.exe a command it misparses (documents the residual case windowsCmdQuoteArg cannot encode: cmd would otherwise try to execute a stray quote fragment as the program name)', () => {
+    expect(() => windowsCmdQuoteArg('"&calc&"')).toThrow(/cannot faithfully encode/)
+  })
 })
 
 // Mutation-testing gap: normalizePathForwardSlash had no direct unit test, only indirect

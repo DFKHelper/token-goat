@@ -823,8 +823,13 @@ export function escapeRegExp(s: string): string {
 //   - `%` (and, defensively, `!` for delayed expansion) -- cmd.exe's percent/delayed-expansion variable substitution scans the raw command line before quote state is considered, so `"%WINDIR%"` still expands inside quotes; only `^%` (caret, unquoted) suppresses it, and a caret written *inside* a quoted span is left as a literal character in the final argument instead of being stripped, so quoting and caret-escaping can never be combined on the same character.
 //   - an embedded `"` -- cmd.exe's own quote-state tracking flips on every literal `"` it sees, oblivious to backslash-escaping, so a naive `\"` emitted inside a quoted span silently closes that span early and exposes the remainder of the argument to cmd's tokenizer. The safe encoding for a literal quote is `\^"` (backslash + caret-escaped quote) emitted outside any quoted span: cmd consumes the caret (without flipping its quote-state) and passes `\"` through, which the underlying CRT/CommandLineToArgvW argv parser used by the wrapper's target executable (node.exe, npm-cli.js, etc.) then decodes as one literal `"` with no phantom quote-toggle.
 // Everywhere else, backslash/quote escaping follows the CommandLineToArgvW argv-splitting convention (a run of backslashes immediately before a real quote-span boundary is doubled so the CRT parser reconstructs it exactly). All of the classes above -- embedded quote, cmd metacharacter with no adjacent whitespace, `%`/`!`, empty string, and combinations of these -- were verified against a real `cmd.exe /d /s /c` invocation of a `.cmd` wrapper forwarding to node.exe (the exact shape of the npm-shim target this function exists for) before being ported into this function; see windowsCmdQuoteArg's test file for the individual cases.
+// This corrects a defect in the escaping shipped by 31a60efd: `CommandLineToArgvW` halves a run of backslashes that immediately precedes a real `"`, so every code path that emits a `"` must double whatever backslash run is pending right before it, but the original code only did that doubling on one of the three call sites that emit a quote (the in-quote branch of the close-quote helper), leaving the close-quote else-branch and the open-quote helper to emit their `"` after an undoubled run -- `%\"` round-tripped back out as `%\` and `!\"` as `!\`, silently dropping the embedded quote. flushBackslashesDoubled/flushBackslashesPlain are now the single choke point every quote-emitting branch routes through, so the doubling can't again be wired to only one of them.
 export function windowsCmdQuoteArg(arg: string): string {
   if (arg === '') return '""'
+  // An argument that both starts and ends with a literal `"` (e.g. `"&calc&"`) cannot be faithfully round-tripped through cmd.exe even though the encoding below is correct: cmd's own `/s` first-token scan toggles a naive quote-state per literal `"` it sees (it does not honor the caret this function uses to escape one), so the back-to-back quotes this shape emits at the very start of the token reset that naive parity to "unquoted" for the rest of the string, and cmd then treats a later metacharacter as ending the program name instead of the neutralized character it actually is -- reject here, at the single point that encodes every argument, rather than let the caller silently hand cmd a command line it will misexecute.
+  if (arg[0] === '"' && arg[arg.length - 1] === '"') {
+    throw new Error(`windowsCmdQuoteArg: cannot faithfully encode an argument that both starts and ends with a literal double quote for cmd.exe: ${JSON.stringify(arg)}`)
+  }
   let out = ''
   let inQuote = false
   let backslashes = 0
@@ -835,16 +840,22 @@ export function windowsCmdQuoteArg(arg: string): string {
       backslashes = 0
     }
   }
+  const flushBackslashesDoubled = (): void => {
+    out += '\\'.repeat(backslashes * 2)
+    backslashes = 0
+  }
   const ensureQuoteOpen = (): void => {
     if (!inQuote) {
+      flushBackslashesDoubled()
       out += '"'
       inQuote = true
+    } else {
+      flushBackslashesPlain()
     }
   }
   const ensureQuoteClosed = (): void => {
     if (inQuote) {
-      out += '\\'.repeat(backslashes * 2)
-      backslashes = 0
+      flushBackslashesDoubled()
       out += '"'
       inQuote = false
     } else {
@@ -858,7 +869,11 @@ export function windowsCmdQuoteArg(arg: string): string {
       continue
     }
     if (ch === '"') {
-      ensureQuoteClosed()
+      flushBackslashesDoubled()
+      if (inQuote) {
+        out += '"'
+        inQuote = false
+      }
       out += '\\^"'
       continue
     }
@@ -867,7 +882,6 @@ export function windowsCmdQuoteArg(arg: string): string {
       out += `^${ch}`
       continue
     }
-    flushBackslashesPlain()
     ensureQuoteOpen()
     out += ch
   }
