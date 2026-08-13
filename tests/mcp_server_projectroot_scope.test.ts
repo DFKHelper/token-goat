@@ -148,7 +148,11 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
       expect(result.isError).toBe(true) // mock returns null -- we only care about the call args
       expect(readSectionMock).toHaveBeenCalledTimes(1)
       const [calledPath] = readSectionMock.mock.calls[0] as [string, string]
-      expect(calledPath).toBe(path.resolve(scratchRoot, 'relative/doc.md'))
+      // Like every other tool in this file, section must resolve against the RESOLVED root
+      // (resolvedScratchRoot), not the raw argument spelling -- passing the raw projectRoot
+      // straight through, as section previously did, resolves a different, ungated path than
+      // the one the confinement gate validated and pinned.
+      expect(calledPath).toBe(path.resolve(resolvedScratchRoot, 'relative/doc.md'))
       expect(calledPath).not.toBe(path.resolve(process.cwd(), 'relative/doc.md'))
     } finally {
       await close()

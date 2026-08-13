@@ -445,7 +445,7 @@ export function createMcpServer(): McpServer {
           runSection({
             spec: gate.targets[0]!,
             ...(json === true ? { json: true } : {}),
-            ...(projectRoot !== undefined ? { projectRoot } : {}),
+            projectRoot: root,
           }),
         ),
       )
