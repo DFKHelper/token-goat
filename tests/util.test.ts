@@ -62,10 +62,14 @@ describe('sleepSync', () => {
   })
 
   it('returns immediately for non-positive durations', () => {
-    const start = Date.now()
+    // Assert the underlying behavior (never blocks via Atomics.wait) instead of a wall-clock
+    // bound: a machine-speed reading can't distinguish "returned fast" from "returned instantly
+    // without blocking at all", which is what this guards.
+    const waitSpy = vi.spyOn(Atomics, 'wait')
     sleepSync(0)
     sleepSync(-50)
-    expect(Date.now() - start).toBeLessThan(50)
+    expect(waitSpy).not.toHaveBeenCalled()
+    waitSpy.mockRestore()
   })
 })
 

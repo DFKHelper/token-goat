@@ -437,17 +437,26 @@ describe('webfetch', () => {
         });
         return fakeReq;
       });
-      const start = Date.now();
-      await expect(
-        performHttpFetch('http://slow-loris.example.test/x', {
-          deadlineAt: Date.now() + 60,
-          timeoutSec: 0.06,
-          maxSizeBytes: 1000,
-          requestHeaders: {},
-          redirectsLeft: 5,
-        }),
-      ).rejects.toThrow(/timed out/);
-      expect(Date.now() - start).toBeLessThan(2000);
+      vi.useFakeTimers();
+      try {
+        // Drive the internal deadline timer forward explicitly instead of measuring how long the
+        // real call took: this proves the timeout actually fires (and destroys the request) via
+        // its own setTimeout, not merely that the call happened to return within a generous
+        // wall-clock margin.
+        const assertion = expect(
+          performHttpFetch('http://slow-loris.example.test/x', {
+            deadlineAt: Date.now() + 60,
+            timeoutSec: 0.06,
+            maxSizeBytes: 1000,
+            requestHeaders: {},
+            redirectsLeft: 5,
+          }),
+        ).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(60);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
       expect(fakeReq.destroy).toHaveBeenCalled();
     });
   });
