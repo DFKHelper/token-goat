@@ -27,6 +27,22 @@ const realpathSyncSwapState = vi.hoisted(() => ({
   fired: false,
   onTrigger: null as (() => void) | null,
 }))
+// Drives the negative-pin (validated-absent) race: an in-root target that does not exist at gate
+// time has no dev:ino to pin, so the FIRST filesystem call that touches it after validation is the
+// earliest point a between-check-and-use swap can land -- for `read`/`section` that is
+// readFileText's unpinned `fs.readFileSync` fallback, for `grep` it is `fileExists`'s
+// `fs.statSync`. `statSyncSkipRemaining` exists because `checkWithinProjectRoot` (the gate itself)
+// ALWAYS stats this exact path once, for every confinement-gated call regardless of which tool is
+// being exercised -- that touch must be ignored, or the swap lands INSIDE gate validation itself
+// (caught there, for the wrong reason: "outside the project root" rather than the read-side
+// negative-pin refusal this test targets) instead of strictly after it. `fs.readFileSync` is never
+// touched by the gate, so it needs no such skip.
+const absentPathSwapState = vi.hoisted(() => ({
+  triggerPath: null as string | null,
+  fired: false,
+  onTrigger: null as (() => void) | null,
+  statSyncSkipRemaining: 1,
+}))
 // Normalize+case-fold via the app's own normalizePath (mirrors read_commands.ts's `pinKey`,
 // which is `normalizePath` plus a win32 lowercase): the argument reaching fs.openSync here is
 // read_commands.ts's already-normalized `resolvedPath`, not an OS-native `path.resolve()` form --
@@ -77,6 +93,38 @@ vi.mock('node:fs', async (importOriginal) => {
       return (actual.openSync as any)(...args)
     },
     realpathSync: realpathSyncMock,
+    statSync: (...args: Parameters<typeof actual.statSync>) => {
+      const p = args[0]
+      if (
+        absentPathSwapState.triggerPath !== null &&
+        !absentPathSwapState.fired &&
+        typeof p === 'string' &&
+        foldPathForCompare(p) === absentPathSwapState.triggerPath
+      ) {
+        if (absentPathSwapState.statSyncSkipRemaining > 0) {
+          absentPathSwapState.statSyncSkipRemaining -= 1
+        } else {
+          absentPathSwapState.fired = true
+          absentPathSwapState.onTrigger?.()
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (actual.statSync as any)(...args)
+    },
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      const p = args[0]
+      if (
+        absentPathSwapState.triggerPath !== null &&
+        !absentPathSwapState.fired &&
+        typeof p === 'string' &&
+        foldPathForCompare(p) === absentPathSwapState.triggerPath
+      ) {
+        absentPathSwapState.fired = true
+        absentPathSwapState.onTrigger?.()
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (actual.readFileSync as any)(...args)
+    },
   }
 })
 
@@ -933,5 +981,150 @@ describe('mcp read confinement -- pinned reindex failure handling', () => {
 
     expect(() => withPinnedReads(pins, () => healStaleIndex(file))).toThrow(ConfinementIdentityError)
     expect(() => withPinnedReads(pins, () => healStaleIndex(file))).toThrow(/changed identity between validation and read/)
+  })
+})
+
+// Regression for the missing NEGATIVE pin: an in-root target that does not exist YET at gate-
+// validation time has no dev:ino for checkWithinProjectRoot to stat, so pre-fix `confineTargets`
+// (src/mcp_server.ts) simply skipped recording anything for it -- "no pin for this path" then meant
+// BOTH "confinement is off" and "confined but genuinely unpinnable", and every pin-aware read helper
+// (readFileText, readFileBytes, indexFileSyncPinned, runGrep's own fileExists/directory checks)
+// read a missing map entry as "not confined" and fell through to a raw, unverified read. An attacker
+// who names an in-root path that does not exist yet, waits for the gate to validate it as
+// absent-but-in-root, then creates an out-of-root symlink there before the actual read runs, got the
+// swapped file's contents served straight through. Fixed by recording ABSENT_PIN (read_commands.ts)
+// for every validated-absent target, so the read helpers can tell "unconfined" and "confined but
+// unpinnable" apart and refuse a create-after-validate swap (verifyStillAbsent) instead of silently
+// serving it. The swap is driven off `absentPathSwapState`, which fires on whichever syscall first
+// touches the not-yet-existing path after the gate has validated it -- readFileText's own
+// `fs.readFileSync` fallback for `read`/`section`, or `fileExists`'s `fs.statSync` for `grep` -- the
+// same deterministic swap-timing technique the "Test B" cases above use, just landing on a target
+// that was absent (not merely present-and-different) at validation time.
+describe('mcp read confinement -- negative pin (validated-absent race)', () => {
+  let root: string
+  let outside: string
+  let cleanup: (() => Promise<void>) | undefined
+
+  afterEach(async () => {
+    if (cleanup !== undefined) await cleanup()
+    cleanup = undefined
+    absentPathSwapState.triggerPath = null
+    absentPathSwapState.fired = false
+    absentPathSwapState.onTrigger = null
+    absentPathSwapState.statSyncSkipRemaining = 1
+    for (const dir of [root, outside]) {
+      if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(canCreateSymlinks())(
+    'refuses a read of an in-root path validated as absent, then swapped to an out-of-root symlink before the read',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const notYet = path.join(root, 'not-yet-created.txt')
+      const outsideFile = path.join(outside, 'secret.txt')
+      fs.writeFileSync(outsideFile, 'SECRET-MARKER-DO-NOT-LEAK\n')
+      expect(fs.existsSync(notYet)).toBe(false)
+
+      absentPathSwapState.triggerPath = foldPathForCompare(notYet)
+      absentPathSwapState.fired = false
+      absentPathSwapState.statSyncSkipRemaining = 1
+      absentPathSwapState.onTrigger = () => {
+        fs.symlinkSync(outsideFile, notYet, 'file')
+      }
+
+      const { client, close } = await connectedClient()
+      cleanup = close
+
+      const result = await client.callTool({ name: 'read', arguments: { spec: notYet, projectRoot: root } })
+      expect(absentPathSwapState.fired).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+
+  it.runIf(canCreateSymlinks())(
+    'refuses a section read of an in-root path validated as absent, then swapped to an out-of-root symlink before the read',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const notYet = path.join(root, 'not-yet-created.md')
+      const outsideFile = path.join(outside, 'secret.md')
+      fs.writeFileSync(outsideFile, '## Heading\nSECRET-MARKER-DO-NOT-LEAK\n')
+      expect(fs.existsSync(notYet)).toBe(false)
+
+      absentPathSwapState.triggerPath = foldPathForCompare(notYet)
+      absentPathSwapState.fired = false
+      absentPathSwapState.statSyncSkipRemaining = 1
+      absentPathSwapState.onTrigger = () => {
+        fs.symlinkSync(outsideFile, notYet, 'file')
+      }
+
+      const { client, close } = await connectedClient()
+      cleanup = close
+
+      const result = await client.callTool({ name: 'section', arguments: { spec: `${notYet}::Heading`, projectRoot: root } })
+      expect(absentPathSwapState.fired).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+
+  it.runIf(canCreateSymlinks())(
+    'refuses a grep of an explicit in-root path validated as absent, then swapped to an out-of-root symlink before the search',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const notYet = path.join(root, 'not-yet-created.txt')
+      const outsideFile = path.join(outside, 'secret.txt')
+      fs.writeFileSync(outsideFile, 'FINDME SECRET-MARKER-DO-NOT-LEAK\n')
+      expect(fs.existsSync(notYet)).toBe(false)
+
+      absentPathSwapState.triggerPath = foldPathForCompare(notYet)
+      absentPathSwapState.fired = false
+      absentPathSwapState.statSyncSkipRemaining = 1
+      absentPathSwapState.onTrigger = () => {
+        fs.symlinkSync(outsideFile, notYet, 'file')
+      }
+
+      const { client, close } = await connectedClient()
+      cleanup = close
+
+      const result = await client.callTool({ name: 'grep', arguments: { pattern: 'FINDME', path: [notYet], projectRoot: root } })
+      expect(absentPathSwapState.fired).toBe(true)
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+      expect(result.isError).toBe(true)
+    },
+  )
+
+  // Non-firing companion, read + grep: a genuinely missing in-root path (nothing is ever created at
+  // it) must still report the ordinary missing-file result, not a confinement refusal -- proves the
+  // fix cannot pass by turning every absent file into a refusal, only a create-after-validate swap.
+  it('non-firing: a genuinely missing in-root read still reports the ordinary missing-file result, not a refusal', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const notYet = path.join(root, 'still-missing.txt')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'read', arguments: { spec: notYet, projectRoot: root } })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).not.toContain('outside the project root')
+    expect(textOf(result)).not.toContain('validated as absent')
+    expect(textOf(result)).not.toContain('changed identity')
+  })
+
+  it('non-firing: a genuinely missing grep target still reports "Path not found", not a refusal', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const notYet = path.join(root, 'still-missing.txt')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'x', path: [notYet], projectRoot: root } })
+    expect(textOf(result)).toContain(`Path not found: ${notYet}`)
+    expect(textOf(result)).not.toContain('outside the project root')
+    expect(textOf(result)).not.toContain('validated as absent')
   })
 })

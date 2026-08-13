@@ -116,6 +116,16 @@ export class ConfinementIdentityError extends Error {
 // Identity pins for the confined read currently executing, keyed by canonical absolute path. Null for every CLI caller, which is the default: the optional chaining in the read helpers below short-circuits before pinKey() runs, so the non-MCP path costs exactly zero extra syscalls and zero extra work.
 let activePins: ReadonlyMap<string, string> | null = null
 
+/**
+ * Sentinel pin value for a target the confinement gate validated as in-root but could not stat
+ * (missing, or any other stat failure) at validation time -- so there is no dev:ino to pin. Absence
+ * of a map entry means "confinement is off" or "this path was never gated"; this sentinel is the
+ * distinct third state, "confined, in-root, but unpinnable", so a missing map entry can no longer
+ * be misread as "unconfined" by a pin-aware read helper. Never collides with a real fileIdentity()
+ * value, which is always `${bigint}:${bigint}` (digits and a colon only).
+ */
+export const ABSENT_PIN = 'ABSENT'
+
 /** Canonical map key for an absolute path. Exported so mcp_server.ts pins with the exact same canonicalization the read side looks up with -- one function, so the two cannot drift the way a duplicated normalisation would. */
 export function pinKey(absPath: string): string {
   const normalized = normalizePath(absPath)
@@ -184,6 +194,32 @@ function verifyPinnedIdentity(p: string, pinned: string): void {
 }
 
 /**
+ * Verifies a target pinned as {@link ABSENT_PIN} is STILL absent from disk. Throws
+ * {@link ConfinementIdentityError} when something now exists at `p` -- the create-after-
+ * validated-absent race the negative pin exists to catch (an attacker names an in-root path that
+ * does not exist yet, waits for the gate to validate it as absent-but-in-root, then creates an
+ * out-of-root symlink there before the read runs). Returns normally when still absent, which the
+ * caller then treats exactly like the pre-existing "no pin recorded" missing-file path.
+ */
+function verifyStillAbsent(p: string): void {
+  if (fileExists(p)) {
+    throw new ConfinementIdentityError(
+      `refused: "${p}" was created after being validated as absent (validated missing, now present). ` +
+        'Something was created at this path between the confinement check and the read, so the read was not performed.',
+    )
+  }
+}
+
+/** Dispatches a raw pin value to the right check: {@link ABSENT_PIN} verifies `p` is still absent (throwing on a create-after-validate swap), anything else verifies the live identity match via {@link verifyPinnedIdentity}. Shared by runGrep's two top-level-directory checks below so both stay in sync with how the file-read pin sites above interpret the sentinel. */
+function verifyPin(p: string, pinned: string): void {
+  if (pinned === ABSENT_PIN) {
+    verifyStillAbsent(p)
+    return
+  }
+  verifyPinnedIdentity(p, pinned)
+}
+
+/**
  * Pin-aware wrapper around `indexFileSync`, used by every read-command call site that can trigger
  * a mid-request reindex (healStaleIndex's self-heal, and each command's `--force-refresh`).
  * Without this wrapper, `indexFileSync` opens `resolvedPath` with its own independent
@@ -201,6 +237,12 @@ function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
   if (pinned === undefined) {
     indexFileSync(resolvedPath, dbPath)
+    return
+  }
+  if (pinned === ABSENT_PIN) {
+    // Throws if something now exists (the race); otherwise mirrors indexFileSync's own ENOENT
+    // handling -- nothing to reindex.
+    verifyStillAbsent(resolvedPath)
     return
   }
   let bytes: Buffer
@@ -226,6 +268,10 @@ function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
 function readFileText(p: string): string | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
+    if (pinned === ABSENT_PIN) {
+      verifyStillAbsent(p)
+      return null
+    }
     if (pinned !== undefined) return readPinnedBytes(p, pinned).toString('utf-8')
     return fs.readFileSync(p, 'utf-8')
   } catch (err) {
@@ -240,6 +286,10 @@ function readFileText(p: string): string | null {
 function readFileBytes(p: string): Buffer | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
+    if (pinned === ABSENT_PIN) {
+      verifyStillAbsent(p)
+      return null
+    }
     if (pinned !== undefined) return readPinnedBytes(p, pinned)
     return fs.readFileSync(p)
   } catch (err) {
@@ -4585,7 +4635,7 @@ export function runGrep(opts: GrepOptions): number {
       // would search outside the root -- searchDir's own lstat/realpath boundary check only
       // guards entries discovered WITHIN the search, not the root of the search itself.
       const pinned = activePins?.get(pinKey(path.resolve(searchPath)))
-      if (pinned !== undefined) verifyPinnedIdentity(searchPath, pinned)
+      if (pinned !== undefined) verifyPin(searchPath, pinned)
       let boundaryReal: string
       try {
         boundaryReal = fs.realpathSync(searchPath)
@@ -4614,7 +4664,7 @@ export function runGrep(opts: GrepOptions): number {
       // Windows/macOS, no equivalent Node API on any platform), and this project's CI gates on
       // ubuntu, windows, and macos, so a swap landing in the small residual gap between this
       // second verification and searchDir's first entry read is still possible and undetected.
-      if (pinned !== undefined) verifyPinnedIdentity(searchPath, pinned)
+      if (pinned !== undefined) verifyPin(searchPath, pinned)
       searchDir(searchPath, boundaryReal)
     } else {
       searchFile(searchPath)
