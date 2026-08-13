@@ -11,6 +11,17 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js';
 import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js';
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/base.js';
 
+/** Build a case-insensitive RegExp from a wildcard pattern where `*` matches any run of characters (including `/`). Deliberately not minimatch/pack.ts's path-glob semantics -- those treat `/` as a segment boundary a bare `*` won't cross, which is wrong for URL patterns like `*.example.com*` that need to span the `://` and path segments of a URL. */
+function wildcardToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`, 'i');
+}
+
+/** True when `url` matches at least one wildcard pattern in `patterns` (see {@link wildcardToRegExp}). Empty `patterns` never matches anything, so callers gate the allow-list branch on a non-empty list themselves. */
+function matchesAnyPattern(url: string, patterns: string[]): boolean {
+  return patterns.some((pat) => wildcardToRegExp(pat).test(url));
+}
+
 function extractToolResponse(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
 }
@@ -47,6 +58,18 @@ function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, u
 
 export function preFetchHandler(event: HookEvent): HookOutput {
   try {
+    // webfetch.allow/webfetch.deny gate every WebFetch call regardless of session id -- unlike the dedup check below, blocking a URL has nothing to do with caching, so it must run even for a harness that sends no session_id (see resolveWebFetchContext's own comment).
+    const urlOnlyCtx = resolveWebFetchUrl(event);
+    if (urlOnlyCtx !== null) {
+      const wfCfg = loadConfig().webfetch;
+      if (wfCfg.deny.length > 0 && matchesAnyPattern(urlOnlyCtx.url, wfCfg.deny)) {
+        return denyOutput(`WebFetch blocked: URL matches a configured webfetch.deny pattern.`);
+      }
+      if (wfCfg.allow.length > 0 && !matchesAnyPattern(urlOnlyCtx.url, wfCfg.allow)) {
+        return denyOutput(`WebFetch blocked: URL does not match any configured webfetch.allow pattern.`);
+      }
+    }
+
     const ctx = resolveWebFetchContext(event);
     if (ctx === null) {
       return passOutput();

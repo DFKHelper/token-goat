@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+- **`webfetch.allow`/`webfetch.deny` were parsed, validated, and echoed by `token-goat config get`, but no code ever consulted them, so setting a deny list silently did nothing to block a fetch.** `webfetch.max_file_count`/`webfetch.max_bytes` were already wired (they bound the on-disk web-output cache in [src/disk_cache.ts](src/disk_cache.ts)), which made `allow`/`deny` easy to miss as dead alongside working siblings in the same config block. `preFetchHandler` now checks every `WebFetch` call's URL against both lists before the existing dedup/caching logic runs: a URL matching any `deny` pattern is blocked, and when `allow` is non-empty a URL matching none of its patterns is blocked. Patterns are wildcard strings (`*` matches any run of characters, case-insensitive) matched against the full URL -- deliberately not `pack.ts`'s minimatch-based path-glob semantics, since those treat `/` as a segment boundary a bare `*` won't cross, which breaks a pattern like `*.example.com*` spanning a URL's `://` and path segments. Both lists default to empty, so existing behavior (no blocking) is unchanged. See [src/hooks_fetch.ts](src/hooks_fetch.ts), [src/config.ts](src/config.ts), [tests/hooks_fetch.test.ts](tests/hooks_fetch.test.ts).
+
 ## [2.6.29] - 2026-08-13
 
 ### Security
