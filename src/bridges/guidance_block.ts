@@ -71,6 +71,7 @@ export function buildGuidanceBody(fallbackToolClause: string): string {
     '- a directory listing or recursive wildcard walk to orient in an unfamiliar repo → `map --compact`',
     "- pulling one value or subtree out of a JSON/YAML file (manifest, lockfile, spec, config) → `json-query file 'a.b.c'` / `yaml-query file 'a.b.c'`",
     '- opening an image to check its dimensions, format, or size → `image-meta file`',
+    '- opening a screenshot, diagram, or scan to read the text in it → `image-text file`',
     '',
     'Commands: `symbol NAME`, `read "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`, `json-outline file`/`yaml-outline`, `bash-output`/`web-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`.',
     '',
