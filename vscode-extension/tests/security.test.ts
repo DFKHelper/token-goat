@@ -133,7 +133,10 @@ describe('resolveTokenGoatEntrypoint (shipping default, no injected seam)', () =
     try {
       process.env['PATH'] = emptyDir
       process.env['Path'] = emptyDir
-      await expect(resolveTokenGoatEntrypoint()).rejects.toThrow(/Could not find token-goat/)
+      // win32 and POSIX raise deliberately different wording ("Could not find token-goat.cmd on
+      // PATH" vs "Could not find the token-goat executable on PATH"), so the assertion matches
+      // both branches' shared substance instead of one branch's exact phrasing.
+      await expect(resolveTokenGoatEntrypoint()).rejects.toThrow(/Could not find.*token-goat.*on PATH/)
     } finally {
       await fs.rm(emptyDir, { recursive: true, force: true })
     }

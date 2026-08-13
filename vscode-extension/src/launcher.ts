@@ -30,7 +30,13 @@ export async function findOnPath(filename: string, pathEnv = process.env.PATH ??
 export function parseShimScriptPath(shimText: string, shimDir: string): string | null {
   const match = /"([^"]*\.(?:mjs|cjs|js))"\s+%\*/i.exec(shimText)
   if (!match) return null
-  return path.normalize(match[1].replace(/%~?dp0%?/gi, `${shimDir}${path.sep}`))
+  // .cmd shims and their %dp0%/%~dp0 tokens are Windows-only syntax with backslash-separated
+  // paths, regardless of which OS this function runs on (production only calls it when
+  // process.platform === 'win32', but the tests exercise it directly on every CI platform to
+  // keep shim-format parsing coverage host-independent). path.win32 is used explicitly here
+  // instead of the platform-default path module so normalization and the dp0 separator are
+  // always backslash-correct, never POSIX-forward-slash-correct.
+  return path.win32.normalize(match[1].replace(/%~?dp0%?/gi, `${shimDir}\\`))
 }
 
 // Resolves token-goat's real Node entrypoint so it can be launched directly by process.execPath with an array argv and shell:false. execFile alone is not enough on Windows: a .cmd/.bat target is still routed through cmd.exe even with shell:false (CERT/CC VU#123335), which reopens the same injection surface this file is fixing. On win32 the npm-generated token-goat.cmd shim is a static text file that names the real script it launches (relative to its own directory via %dp0%); we read that text and extract the script path instead of executing the shim. On other platforms the PATH-resolved binary is already the real script (an npm bin symlink to the JS entrypoint with a shebang line, which node ignores when given the file directly), so no shim-unwrapping is needed.
