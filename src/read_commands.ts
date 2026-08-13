@@ -4052,6 +4052,19 @@ function buildChangedRefHint(cwd: string, ref: string): string | null {
 /** Handle ``token-goat changed`` (plain file list, or `--symbol` for changed symbols). */
 export function runChanged(opts: ChangedOptions = {}): number {
   const ref = opts.ref ?? 'HEAD~5'
+  // `ref` lands in argv as a positional where git expects a revision, but git's own parser still
+  // reads a leading `-` as an option there -- so a caller-supplied `--output=<path>` turns
+  // `git diff` into an arbitrary-file-write primitive (it writes the diff to that path, truncating
+  // whatever was there), and `-O<file>` into a read primitive. Neither goes anywhere near the
+  // confinement gate, and `--no-ext-diff`/`--no-textconv` in runGit do not cover them: those close
+  // the diff-driver command-execution vector, not option injection. Reachable unauthenticated over
+  // MCP, where `ref` is a bare optional string. No legitimate revision starts with `-`
+  // (git check-ref-format forbids it), so refusing the whole shape costs nothing and closes every
+  // flag rather than blacklisting the two that are known to bite.
+  if (ref.startsWith('-')) {
+    emitErr(`Refusing a git ref that starts with '-': ${ref}`)
+    return 1
+  }
   const cwd = opts.projectRoot ?? process.cwd()
   // `git diff --name-only` always reports paths relative to the repo top-level, regardless
   // of which directory git was invoked from. Resolving those paths against `cwd` (which may

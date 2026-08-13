@@ -287,6 +287,20 @@ const NO_PINS: ReadonlyMap<string, string> = new Map<string, string>()
  */
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {
   if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets, pins: NO_PINS }
+  // Deliberately loadConfig() with NO argument -- the server's own config, never the caller-chosen root's -- which is the exact INVERSE of the line above and of what mcp_server_confine_reads_config_scoping.test.ts pins for `confine_reads_to_project_root`. That is intentional, not a reintroduction of that bug: the two settings answer different questions. `confine_reads_to_project_root` is a workspace's policy about ITSELF, so it must be read from that workspace. `allowed_roots` is the operator's policy about WHICH workspaces may be named at all, so reading it from `resolvedRoot` would let the root being restricted supply the setting that restricts it -- a repo could ship a project config listing itself and the allowlist would authorise the very root it exists to reject.
+  const allowedRoots = loadConfig().mcp.allowed_roots
+  if (allowedRoots.length > 0 && !allowedRoots.some((allowed) => checkWithinProjectRoot(resolvedRoot, allowed).inside)) {
+    return {
+      ok: false,
+      refusal: toCallToolResult({
+        text:
+          `refused: "${resolvedRoot}" is not inside any root listed in mcp.allowed_roots. ` +
+          'A caller-supplied projectRoot is untrusted input, so this deployment pins which roots may be named; ' +
+          'add the root to mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to permit it.',
+        code: 1,
+      }),
+    }
+  }
   const checked: string[] = []
   const pins = new Map<string, string>()
   for (const raw of targets) {

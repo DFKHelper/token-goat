@@ -467,6 +467,19 @@ describe('mcp_server', () => {
     expect(block.text).toContain('new.txt')
   })
 
+  it('refuses a leading-dash ref so `git diff` never treats it as an option, and never writes the victim file (--output= arbitrary-file-write)', () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-changed-argv-injection-'))
+    initRepo(tempDir)
+    const victim = path.join(tempDir, 'victim.txt')
+    const originalContent = 'do-not-truncate-me\n'
+    fs.writeFileSync(victim, originalContent)
+
+    const code = runChanged({ ref: `--output=${victim}`, projectRoot: tempDir })
+
+    expect(code).toBe(1)
+    expect(fs.readFileSync(victim, 'utf8')).toBe(originalContent)
+  })
+
   it('calls the grep tool against a real fixture file and matches runGrep()\'s own captured output', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-grep-'))
     const fixture = path.join(tempDir, 'fixture.txt')

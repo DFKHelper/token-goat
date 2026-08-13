@@ -62,3 +62,18 @@ export function envInt(key: string, defaultVal: number, min?: number, max?: numb
   if (max !== undefined) clamped = Math.min(max, clamped)
   return clamped
 }
+
+/**
+ * Read a delimiter-separated list env var (e.g. `TOKEN_GOAT_MCP_ALLOWED_ROOTS`), falling back to
+ * `defaultVal` when unset. `delimiter` is caller-supplied (not hardcoded here) so a config-layer
+ * caller can pass `path.delimiter` for a PATH-shaped list without this file importing `node:path`
+ * -- matching `src/shell.ts`'s own `PATH`-splitting convention (`;` on Windows, `:` on POSIX).
+ * Entries are trimmed and empty entries dropped, so a trailing delimiter or accidental double
+ * delimiter doesn't produce a spurious empty-string entry.
+ */
+export function envStrList(key: string, defaultVal: string[], delimiter: string): string[] {
+  const raw = process.env[key]
+  if (raw === undefined) return defaultVal
+  const entries = raw.split(delimiter).map((s) => s.trim()).filter((s) => s !== '')
+  return entries.length > 0 ? entries : defaultVal
+}
