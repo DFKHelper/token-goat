@@ -1,10 +1,11 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
 import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
 import { configPath, projectConfigPath } from './constants.js'
-import { envBool, envInt, envStr, TRUTHY_ENV_VALUES, FALSY_ENV_VALUES } from './env.js'
+import { envBool, envInt, envStr, envStrList, TRUTHY_ENV_VALUES, FALSY_ENV_VALUES } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
@@ -222,6 +223,8 @@ export interface InjectionConfig {
 /** Config for the MCP server's filesystem admission gate (mcp_server.ts). */
 export interface McpConfig {
   confine_reads_to_project_root: boolean
+  /** Absolute roots a caller-supplied `projectRoot` must resolve inside. Empty (the default) keeps today's behaviour exactly: any root the caller names is accepted. `confine_reads_to_project_root` stops traversal OUT of whichever root it is given; it does not constrain WHICH root the caller supplies, and since MCP tool arguments are model-generated that choice is untrusted input. This is the setting that pins it, for deployments where MCP is the only channel to the filesystem. */
+  allowed_roots: string[]
 }
 
 /**
@@ -462,6 +465,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   },
   mcp: {
     confine_reads_to_project_root: true,
+    allowed_roots: [],
   },
   hint_stats: {
     suppress_threshold_pct: 15,
@@ -1538,6 +1542,9 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const mcp = getDefaultConfig('mcp') as McpConfig
   mcp.confine_reads_to_project_root = validatedBool(mcp_raw['confine_reads_to_project_root'], mcp.confine_reads_to_project_root)
   mcp.confine_reads_to_project_root = envBool('TOKEN_GOAT_MCP_CONFINE_READS', mcp.confine_reads_to_project_root)
+  mcp.allowed_roots = validatedStrList(mcp_raw['allowed_roots'], mcp.allowed_roots)
+  // Delimiter-separated like PATH (';' on Windows, ':' elsewhere) so an operator writes the list the same way the platform already spells one. envStrList trims and drops blank entries, so a trailing or doubled delimiter cannot leave an empty-string root that matches nothing and reads as a silently broken allowlist.
+  mcp.allowed_roots = envStrList('TOKEN_GOAT_MCP_ALLOWED_ROOTS', mcp.allowed_roots, path.delimiter)
 
   const hs_raw = section(raw, 'hint_stats')
   const hs = getDefaultConfig('hint_stats') as HintStatsConfig
@@ -1643,6 +1650,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
+  'mcp.allowed_roots': ['TOKEN_GOAT_MCP_ALLOWED_ROOTS'],
   'indexing.embeddings_enabled': ['TOKEN_GOAT_EMBEDDINGS_ENABLED'],
 }
 
