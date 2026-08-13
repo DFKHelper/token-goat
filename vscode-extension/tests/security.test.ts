@@ -91,7 +91,11 @@ function restorePath(): void {
 
 /** Writes a real, resolvable fake token-goat entrypoint into a fresh temp dir and prepends it to PATH, so a test can drive `resolveTokenGoatEntrypoint`'s real PATH-scan/shim-parsing logic instead of relying on token-goat being globally installed on the machine running the test. Returns the dir for cleanup. */
 async function setUpFakeTokenGoatOnPath(): Promise<string> {
-  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-bin-'))
+  // realpath'd, not just mkdtemp'd: on macOS os.tmpdir() is the /var alias of /private/var, and
+  // resolveTokenGoatEntrypoint returns the resolved spelling -- so an un-normalized binDir puts
+  // /var/... on PATH while production reports /private/var/..., and the two never compare equal.
+  // Normalizing here fixes both sides at once, since binDir is what PATH and `expected` share.
+  const binDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-bin-')))
   if (process.platform === 'win32') {
     await fs.writeFile(path.join(binDir, 'token-goat.mjs'), '// fake entrypoint\n')
     await fs.writeFile(
