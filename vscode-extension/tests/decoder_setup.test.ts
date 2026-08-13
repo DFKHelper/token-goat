@@ -1,33 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ensureDecoderSetup, resetDecoderCheckedForTests } from '../src/extension'
 
-// 'vscode' only exists inside a real extension host; { virtual: true } lets vitest resolve
-// this mock as the module without ever finding a real 'vscode' package on disk.
-const showWarningMessage = vi.fn()
-const showInformationMessage = vi.fn()
+// 'vscode' only exists inside a real extension host, and a factory-only vi.mock resolves it
+// as the module without ever finding a real 'vscode' package on disk. The mocks it closes over
+// go through vi.hoisted so they exist by the time vitest's hoisting moves this vi.mock call
+// above the static imports above it.
+const { showWarningMessage, showInformationMessage, showErrorMessage } = vi.hoisted(() => ({
+  showWarningMessage: vi.fn(),
+  showInformationMessage: vi.fn(),
+  showErrorMessage: vi.fn(),
+}))
 let workspaceFolders: Array<{ uri: { fsPath: string } }> | undefined
 
-vi.mock(
-  'vscode',
-  () => ({
-    workspace: {
-      get workspaceFolders() {
-        return workspaceFolders
-      },
-      isTrusted: true,
+vi.mock('vscode', () => ({
+  workspace: {
+    get workspaceFolders() {
+      return workspaceFolders
     },
-    window: { showWarningMessage, showInformationMessage },
-  }),
-  { virtual: true },
-)
+    isTrusted: true,
+  },
+  window: { showWarningMessage, showInformationMessage, showErrorMessage },
+}))
 
-const runTokenGoat = vi.fn()
+const runTokenGoat = vi.hoisted(() => vi.fn())
 vi.mock('../src/launcher', () => ({
   runTokenGoat,
   assertSafeArgSegment: vi.fn(),
   runGitDiff: vi.fn(),
 }))
-
-const { ensureDecoderSetup, resetDecoderCheckedForTests } = await import('../src/extension')
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -64,5 +64,30 @@ describe('ensureDecoderSetup (false-prompt regression, issue #82)', () => {
     showWarningMessage.mockResolvedValue('Not now')
     await ensureDecoderSetup()
     expect(showWarningMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ensureDecoderSetup (CLI/extension version skew, issue #76 task B)', () => {
+  it('shows an actionable update message, not a raw Commander error toast, when the installed CLI predates mcp-status', async () => {
+    // Commander's own wording for a command the CLI doesn't recognize -- this is exactly what
+    // `runTokenGoat` rejects with when the global token-goat is older than the extension
+    // (marketplace and npm ship independently). Pre-fix this fell into the generic `catch`
+    // (`reportError(error); return`), surfacing this raw internal wording as an error toast
+    // and permanently skipping the setup prompt for the rest of the session.
+    workspaceFolders = undefined
+    runTokenGoat.mockRejectedValue(new Error("error: unknown command 'mcp-status'"))
+    await ensureDecoderSetup()
+    expect(showWarningMessage).toHaveBeenCalledTimes(1)
+    const promptText = showWarningMessage.mock.calls[0]?.[0] as string
+    expect(promptText).toMatch(/update/i)
+    expect(promptText).not.toMatch(/unknown command/i)
+  })
+
+  it('still routes a genuine, unrelated failure through the normal error path (not the version-skew message)', async () => {
+    workspaceFolders = undefined
+    runTokenGoat.mockRejectedValue(new Error('ECONNREFUSED: something else entirely broke'))
+    await ensureDecoderSetup()
+    expect(showWarningMessage).not.toHaveBeenCalled()
+    expect(showErrorMessage).toHaveBeenCalledTimes(1)
   })
 })
