@@ -15,6 +15,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -54,7 +55,7 @@ beforeEach(() => {
   previousHome = process.env['TOKEN_GOAT_HOME']
   previousLocalAppData = process.env['LOCALAPPDATA']
   previousXdgDataHome = process.env['XDG_DATA_HOME']
-  home = fs.mkdtempSync(path.join(process.cwd(), '.tg-compress-tokens-'))
+  home = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-compress-tokens-'))
   process.env['TOKEN_GOAT_HOME'] = home
   // Same platform-agnostic derivation tests/content_store.test.ts uses: recordStat writes through dataDir() (env-driven) while summarize(..., home) reads through dataDirForHome(home), and the two agree only when the env root is the exact parent of dataDirForHome's per-platform layout.
   const dataRoot = dataDirForHome(home)

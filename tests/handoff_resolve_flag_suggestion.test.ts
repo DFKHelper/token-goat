@@ -14,6 +14,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -43,7 +44,7 @@ beforeEach(() => {
   previousHome = process.env['TOKEN_GOAT_HOME']
   previousLocalAppData = process.env['LOCALAPPDATA']
   previousXdgDataHome = process.env['XDG_DATA_HOME']
-  home = fs.mkdtempSync(path.join(process.cwd(), '.tg-handoff-flag-'))
+  home = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-flag-'))
   process.env['TOKEN_GOAT_HOME'] = home
   const dataRoot = dataDirForHome(home)
   envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
