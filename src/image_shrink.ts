@@ -14,12 +14,14 @@
  * than crashing the hook.
  */
 
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
+import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import { createLazyModuleLoader } from './lazy_module.js'
-import { statSize, toKB } from './util.js'
+import { atomicWriteBytes, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -28,7 +30,7 @@ import { recordStat } from './stats.js'
 import type { HookOutput } from './types.js'
 import { formatOcrSummary, isTextHeavy, ocrImage } from './image_ocr.js'
 
-/** Recognised image extensions (lowercase, leading dot). Matches the Python set. */
+/** Recognised image extensions (lowercase, leading dot). Matches the Python set, plus AVIF/HEIC/HEIF which sharp can decode and the Python port predates. */
 const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.png',
   '.jpg',
@@ -37,6 +39,9 @@ const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.webp',
   '.bmp',
   '.tiff',
+  '.avif',
+  '.heic',
+  '.heif',
 ])
 
 /** Claude Vision's optimal max edge: images larger than this gain nothing. */
@@ -194,6 +199,165 @@ export async function shrinkImage(
   }
 }
 
+/** Best-effort file size and mtime in one stat call, or null when the path cannot be stat'd or isn't a regular file. */
+function statInfo(absPath: string): { size: number; mtimeMs: number } | null {
+  try {
+    const st = fs.statSync(absPath)
+    return st.isFile() ? { size: st.size, mtimeMs: st.mtimeMs } : null
+  } catch {
+    return null
+  }
+}
+
+/** Directory the shrunk-image re-encode cache lives under: `<home>/image_shrink_cache`. Its own dedicated subdir of token-goat home (not the OS temp dir, and not disk_cache.ts's JSON blob store -- see the module docblock above `findCachedShrink`), so pruning can be scoped to a directory nothing else writes into. */
+function imageShrinkCacheDir(): string {
+  return path.join(tokenGoatHome(), 'image_shrink_cache')
+}
+
+/**
+ * Cache key for a shrunk re-encode: sha256 of `path:size:mtimeMs`, truncated to 16 hex chars
+ * (64 bits). mtime is part of the key -- not just path + size -- so a content change that
+ * happens to preserve the exact byte length (e.g. regenerating a same-dimension screenshot)
+ * still busts the cache instead of silently serving a stale shrink. 64 bits of hash keeps
+ * collisions negligible for this cache's realistic working set: entries are pruned after
+ * DEFAULT_MAX_AGE_MS, so the live set at any moment is bounded by how many distinct images get
+ * read in that window, not by the process's lifetime total -- nowhere close to the ~2^32 items a
+ * 64-bit hash would need before collisions become likely by the birthday bound. The key already
+ * domain-separates by full source path, so a collision would additionally require two different
+ * paths to also match on size+mtime.
+ */
+function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number): string {
+  return createHash('sha256').update(`${originalPath}:${size}:${mtimeMs}`).digest('hex').slice(0, 16)
+}
+
+/**
+ * Look for an already-cached re-encode of this exact (path, size, mtime), in either output
+ * format {@link shrinkImage} can produce -- the format isn't known ahead of time (shrinkImage
+ * picks WEBP or JPEG based on content), so both candidate extensions are checked. Checked BEFORE
+ * running the shrink so a repeat Read of an unchanged image can skip the sharp re-encode
+ * entirely instead of always re-running it.
+ */
+function findCachedShrink(originalPath: string, size: number, mtimeMs: number): { filePath: string; format: 'webp' | 'jpeg' } | null {
+  const key = shrinkCacheKey(originalPath, size, mtimeMs)
+  const dir = imageShrinkCacheDir()
+  const candidates: Array<{ ext: string; format: 'webp' | 'jpeg' }> = [
+    { ext: '.webp', format: 'webp' },
+    { ext: '.jpg', format: 'jpeg' },
+  ]
+  for (const { ext, format } of candidates) {
+    const candidate = path.join(dir, `token-goat-shrink-${key}${ext}`)
+    if (fs.existsSync(candidate)) return { filePath: candidate, format }
+  }
+  return null
+}
+
+/** Write a shrink result's bytes to the cache, keyed by the source (path, size, mtime). Atomic (temp file + rename), so a reader never observes a partially-written cache entry. Best-effort: a write failure (permissions, disk full, ...) must never block returning the shrink result the caller already computed. */
+function writeCachedShrink(originalPath: string, result: ShrinkResult, mtimeMs: number): void {
+  try {
+    const dir = imageShrinkCacheDir()
+    fs.mkdirSync(dir, { recursive: true })
+    const key = shrinkCacheKey(originalPath, result.originalBytes, mtimeMs)
+    const ext = result.format === 'jpeg' ? '.jpg' : '.webp'
+    atomicWriteBytes(path.join(dir, `token-goat-shrink-${key}${ext}`), result.data)
+  } catch {
+    // Best-effort; failing to cache must not block returning the freshly computed shrink.
+  }
+}
+
+// Throttles pruneShrinkCache so a burst of Reads within the same process only sweeps the cache
+// dir once instead of on every single call. Each hook invocation is normally its own fresh
+// `token-goat hook <event>` process (see disk_cache.ts), so in production this already amounts
+// to roughly once per hook call; the throttle mainly protects long-lived hosts (tests, a
+// persistent worker) from re-scanning the cache dir on every image read.
+const SHRINK_CACHE_PRUNE_THROTTLE_MS = 60_000
+let lastShrinkCachePruneAtMs = 0
+
+/** Test-only: force the next pruneShrinkCache() call to run instead of being throttled. */
+export function resetShrinkCachePruneThrottleForTests(): void {
+  lastShrinkCachePruneAtMs = 0
+}
+
+/**
+ * Best-effort sweep of this cache's own `token-goat-shrink-*` files older than
+ * DEFAULT_MAX_AGE_MS, so heavy image-reading does not accumulate them unbounded -- nothing else
+ * in this codebase ever removes them otherwise. Mirrors disk_cache.ts's age-based pruning
+ * convention (same DEFAULT_MAX_AGE_MS, same mtime-cutoff-then-delete shape) rather than
+ * inventing a new policy; disk_cache.ts's own `pruneBlobs` isn't reused directly because it is
+ * hardcoded to `.json` blobs written through `storeBlob`, which runs every value through
+ * `redactSecrets()` -- a text-oriented secret scan that is the wrong tool for, and could corrupt,
+ * base64-free binary image bytes. Scoped to `imageShrinkCacheDir()`, a dedicated subdir of
+ * token-goat home that nothing else writes into, and additionally filtered to this cache's own
+ * `token-goat-shrink-` filename prefix as defense in depth -- this sweep can never delete
+ * anything outside that. Never throws: a prune failure (permissions, a file removed by another
+ * process mid-sweep, ...) must never break the caller's actual image-shrink operation.
+ */
+function pruneShrinkCache(): void {
+  const now = Date.now()
+  if (now - lastShrinkCachePruneAtMs < SHRINK_CACHE_PRUNE_THROTTLE_MS) return
+  lastShrinkCachePruneAtMs = now
+
+  try {
+    const dir = imageShrinkCacheDir()
+    if (!fs.existsSync(dir)) return
+    const cutoff = now - DEFAULT_MAX_AGE_MS
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.startsWith('token-goat-shrink-')) continue
+      const full = path.join(dir, file)
+      try {
+        const st = fs.statSync(full)
+        if (st.mtimeMs < cutoff) fs.unlinkSync(full)
+      } catch {
+        // Best-effort per-file cleanup; one bad stat/unlink must not abort the sweep.
+      }
+    }
+  } catch {
+    // Best-effort; a readdir failure (e.g. permissions) must never break the caller's shrink.
+  }
+}
+
+/**
+ * Shared tail of {@link preReadImageHandler}: OCR-or-pixel accounting and the `context` output,
+ * given a {@link ShrinkResult} regardless of whether it came from a fresh `shrinkImage()` call or
+ * a cache hit. Keeping one code path here is what keeps a cache hit's `recordStat` honest -- it
+ * reports the same savings a fresh shrink would have, because the model receives the same bytes
+ * either way; only the (unmeasured) re-encode CPU cost differs, and this function has no
+ * visibility into that.
+ */
+async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Promise<HookOutput> {
+  const basename = path.basename(filePath)
+
+  // OCR runs on the already-shrunk bytes, not the raw file: it is resized to Claude Vision's
+  // optimal edge already (plenty of resolution for legible screenshot text) and is much
+  // cheaper to hand to a subprocess than the original, sometimes-many-MB source. A text-heavy
+  // result REPLACES the shrunk-image output below rather than supplementing it -- the whole
+  // point is to avoid spending vision tokens on pixels the model would only reconstruct back
+  // into this same text. Any failure here (dep unavailable, low confidence, short text, OCR
+  // subprocess timeout/crash) is silently absorbed by ocrImage/isTextHeavy and this handler
+  // falls through to the existing pixel-shrink path unchanged -- zero regression risk to the
+  // image-shrink feature this OCR path sits on top of.
+  if (loadConfig().image_shrink.ocr_enabled) {
+    const ocr = await ocrImage(result.data)
+    if (ocr !== null && isTextHeavy(ocr, loadConfig().image_shrink.ocr_min_confidence)) {
+      // Measured against the shrunk image bytes (the realistic alternative this branch
+      // preempts), not the original file -- the shrink-step savings are already attributed
+      // to the 'image_shrink' stat kind above; this avoids double-counting the same bytes
+      // under two stat rows.
+      const textBytes = Buffer.byteLength(ocr.text, 'utf8')
+      const saved = Math.max(0, result.shrunkBytes - textBytes)
+      recordStat('image_ocr', saved, Math.round(saved / 4), undefined, basename)
+      return contextOutput(formatOcrSummary(ocr, basename, result.originalBytes))
+    }
+  }
+
+  const saved = result.originalBytes - result.shrunkBytes
+  const { summary, dataUrl } = formatShrinkSummary(result, basename)
+
+  // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that formula was never ported to shrinkImage's return shape, so this uses the same bytes/4 token-cost approximation the rest of this TS codebase already applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls). This call was dropped entirely during the Python->TS port -- restoring it is what makes 'image_shrink' rows (and the flagship image-shrink savings figure derived from them) appear in `token-goat stats --full` again.
+  recordStat('image_shrink', saved, Math.round(saved / 4), undefined, basename)
+
+  return contextOutput(`${summary}\n${dataUrl}`)
+}
+
 /**
  * pre_tool_use handler for Read on image files.
  *
@@ -218,8 +382,43 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (filePath === undefined) return passOutput()
   if (!isImagePath(filePath)) return passOutput()
 
-  const size = statSize(filePath)
-  if (size === null) return passOutput()
+  pruneShrinkCache()
+
+  const stat = statInfo(filePath)
+  if (stat === null) return passOutput()
+  const size = stat.size
+
+  // Checked before any read/decode of the original: a cache hit skips the sharp re-encode (and,
+  // for small-but-oversized-dimension files, the metadata probe below) entirely. A corrupt or
+  // truncated cache entry (unexpected external interference; atomicWriteBytes itself never
+  // leaves a partial file) is detected by re-probing it with sharp -- an undecodable cached file
+  // is deleted and treated as a miss, never served.
+  const cached = findCachedShrink(filePath, stat.size, stat.mtimeMs)
+  if (cached !== null) {
+    let cachedData: Buffer | null
+    try {
+      cachedData = fs.readFileSync(cached.filePath)
+    } catch {
+      cachedData = null
+    }
+    const meta = cachedData !== null ? await probeImageMeta(cachedData) : null
+    if (cachedData !== null && meta !== null) {
+      const result: ShrinkResult = {
+        data: cachedData,
+        originalBytes: stat.size,
+        shrunkBytes: cachedData.length,
+        width: meta.width,
+        height: meta.height,
+        format: cached.format,
+      }
+      return finalizeShrinkResult(result, filePath)
+    }
+    try {
+      fs.unlinkSync(cached.filePath)
+    } catch {
+      // Best-effort; falling through to a fresh shrink below is correct either way.
+    }
+  }
 
   let input: Buffer | null = null
   let qualifies = size >= DEFAULT_SIZE_THRESHOLD_BYTES
@@ -270,38 +469,9 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     return passOutput()
   }
 
-  const basename = path.basename(filePath)
+  writeCachedShrink(filePath, result, stat.mtimeMs)
 
-  // OCR runs on the already-shrunk bytes, not the raw file: it is resized to Claude Vision's
-  // optimal edge already (plenty of resolution for legible screenshot text) and is much
-  // cheaper to hand to a subprocess than the original, sometimes-many-MB source. A text-heavy
-  // result REPLACES the shrunk-image output below rather than supplementing it -- the whole
-  // point is to avoid spending vision tokens on pixels the model would only reconstruct back
-  // into this same text. Any failure here (dep unavailable, low confidence, short text, OCR
-  // subprocess timeout/crash) is silently absorbed by ocrImage/isTextHeavy and this handler
-  // falls through to the existing pixel-shrink path unchanged -- zero regression risk to the
-  // image-shrink feature this OCR path sits on top of.
-  if (loadConfig().image_shrink.ocr_enabled) {
-    const ocr = await ocrImage(result.data)
-    if (ocr !== null && isTextHeavy(ocr, loadConfig().image_shrink.ocr_min_confidence)) {
-      // Measured against the shrunk image bytes (the realistic alternative this branch
-      // preempts), not the original file -- the shrink-step savings are already attributed
-      // to the 'image_shrink' stat kind above; this avoids double-counting the same bytes
-      // under two stat rows.
-      const textBytes = Buffer.byteLength(ocr.text, 'utf8')
-      const saved = Math.max(0, result.shrunkBytes - textBytes)
-      recordStat('image_ocr', saved, Math.round(saved / 4), undefined, basename)
-      return contextOutput(formatOcrSummary(ocr, basename, result.originalBytes))
-    }
-  }
-
-  const saved = result.originalBytes - result.shrunkBytes
-  const { summary, dataUrl } = formatShrinkSummary(result, basename)
-
-  // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that formula was never ported to shrinkImage's return shape, so this uses the same bytes/4 token-cost approximation the rest of this TS codebase already applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls). This call was dropped entirely during the Python->TS port -- restoring it is what makes 'image_shrink' rows (and the flagship image-shrink savings figure derived from them) appear in `token-goat stats --full` again.
-  recordStat('image_shrink', saved, Math.round(saved / 4), undefined, basename)
-
-  return contextOutput(`${summary}\n${dataUrl}`)
+  return finalizeShrinkResult(result, filePath)
 }
 
 registerHook('pre_tool_use', preReadImageHandler, { toolName: 'Read' })
