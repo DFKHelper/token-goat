@@ -1404,6 +1404,40 @@ describe('runCallers --exclude-tests', () => {
     }
   })
 
+  // Same fully-suppressed scenario as the test above, but under --json: previously this fell
+  // through to emitErr's plain prose even with --json set, so a --json consumer got unparseable
+  // text on stdout instead of a JSON body -- the same gap --grep's own sibling branch never had.
+  it('emits parseable JSON with hiddenByExcludeTests, not plain prose, when --json + --exclude-tests hides every caller', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-exclude-empty-json-'))
+    try {
+      const defFile = join(root, 'excl-empty-json-def.ts')
+      const testFile = join(root, 'excl-empty-json-caller.test.ts')
+      writeFileSync(defFile, 'export function exclOnlyTestedJson9k2() { return 1 }\n')
+      writeFileSync(testFile, 'function onlyTestCallerJson9k2() { exclOnlyTestedJson9k2() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(testFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errs: string[] = []
+        const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => { errs.push(String(c)); return true })
+        try {
+          const out = captureStdout(() => {
+            expect(runCallers({ symbol: 'exclOnlyTestedJson9k2', excludeTests: true, json: true })).toBe(1)
+          })
+          const parsed = JSON.parse(out) as { items: unknown[]; truncated: boolean; totalCount: number; hiddenByExcludeTests?: number }
+          expect(parsed).toEqual({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: 1 })
+        } finally {
+          errSpy.mockRestore()
+        }
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('hides callers whose call site is a test file, leaves default output untouched, and reports exact filtered/suppressed counts', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-exclude-'))
     try {

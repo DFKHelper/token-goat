@@ -323,6 +323,15 @@ export function runCallers(opts: CallersOptions): number {
     }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
+      // Exit code stays 1 (unchanged, existing tests pin it), but under --json the body must
+      // still be parseable JSON -- previously this fell through to emitErr's plain prose even
+      // with --json set, the same "--json returns unparseable text" gap --grep's own sibling
+      // branch above never had. `hiddenByExcludeTests` mirrors --grep's `hiddenByGrep`: it is
+      // what tells a JSON consumer this is a filtered view, not a caller-less symbol.
+      if (opts.json === true) {
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }, null, 2))
+        return 1
+      }
       emitErr(`No non-test references found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressed)})`)
       return 1
     }
@@ -366,7 +375,10 @@ export function runCallers(opts: CallersOptions): number {
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
     // filtered page carries the count too rather than only the fully emptied one.
     const hiddenByGrep = preGrepCount - filtered.length
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
+    // Same partial-suppression case for --exclude-tests: some (not all) callers were test-only
+    // and pruned before this envelope was built, so the count belongs alongside hiddenByGrep
+    // rather than only in the fully-emptied branch above.
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
     return 0
   }
 
@@ -493,7 +505,13 @@ export function runCallChain(opts: CallChainOptions): number {
     // when zero (flag absent, or nothing filtered) so default output stays byte-identical, same
     // convention as brief --json's own hiddenByGrep.
     const hiddenByGrep = chains.length - filteredChains.length
-    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
+    // Same disambiguation as hiddenByGrep above, but for --exclude-tests: `chains: [[name]]`
+    // (the noCallers shape) reads the same whether the symbol has zero real callers or every
+    // caller was test-only and pruned by the BFS. Only meaningful in the noCallers shape --
+    // --exclude-tests never zeroes a non-empty chain set the way --grep can, it only prunes BFS
+    // hops before chains are built. Text mode's own sibling branch below already names this.
+    const hiddenByExcludeTests = noCallers && opts.excludeTests === true ? suppressedCount : 0
+    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}) }, null, 2))
     return 0
   }
 
@@ -636,6 +654,15 @@ export function runImpact(opts: ImpactOptions): number {
     // view is never mistaken for absence. Flag-absent, suppressedCount is always 0 so this
     // stays unreachable and output/exit code is byte-identical to today.
     if (opts.excludeTests === true && suppressedCount > 0) {
+      // Exit code stays 1 (unchanged, existing tests pin it), but under --json the body must
+      // still be parseable -- previously this fell through to emitErr's plain prose even with
+      // --json set, the same "--json returns unparseable text" gap runRefsSingle had. `[]`
+      // matches the shape the populated branch below emits (a bare array, no envelope object),
+      // so a --json consumer never has to branch on payload shape between the two exit codes.
+      if (opts.json === true) {
+        emit(JSON.stringify([], null, 2))
+        return 1
+      }
       emitErr(`No non-test impact found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressedCount)})`)
       return 1
     }
@@ -834,7 +861,11 @@ export function runDead(opts: DeadOptions): number {
     // alone cannot tell a filtered-to-empty view from a genuinely clean codebase, and the text
     // branch below already says so in prose. Same convention as brief --json's hiddenByGrep.
     const hiddenByGrep = preGrepCount - grepped.length
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
+    // Same disambiguation, but for --exclude-tests: `items: []`/`totalCount: 0` alone cannot
+    // tell "--exclude-tests hid every dead symbol" from "no dead symbols hidden by tests
+    // either, the codebase is genuinely clean" -- brief's own hiddenByExcludeTests field, same
+    // omit-when-zero convention.
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
     return 0
   }
 
@@ -1171,7 +1202,10 @@ export function runTypes(opts: TypesOptions): number {
     // The store IS non-empty -- --exclude-tests hid every declaration -- so a bare "No type declarations found" would be a lie that stops the caller looking; name the filter instead, exiting 0 like symbol's own hiddenByExcludeTests branch.
     if (excludeTests && suppressed > 0) {
       if (opts.json === true) {
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+        // `hiddenByExcludeTests` names the filter as the cause -- `items: []`/`totalCount: 0`
+        // alone reads identically to a file that genuinely declares no types, same convention
+        // as dead/refs/callers' own hiddenByExcludeTests.
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }, null, 2))
         return 0
       }
       emit(`No non-test type declarations found${ctx} (${excludeTestsHiddenNote(suppressed)})`)
@@ -1218,7 +1252,7 @@ export function runTypes(opts: TypesOptions): number {
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
     // filtered set carries the count too rather than only the fully emptied one.
     const hiddenByGrep = preFilterCount - filtered.length
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(excludeTests && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
     return 0
   }
 
