@@ -657,9 +657,15 @@ export function runImpact(opts: ImpactOptions): number {
   if (matchesGrep !== undefined && sorted.length === 0 && allSorted.length > 0) {
     // Distinguish "--grep matched none of the N impacted symbols that do exist" from a
     // genuinely impact-free symbol -- same "filtered store renders as populated" trap already
-    // fixed for dead/deps/types/callers/call-chain. `[]` matches the bare-array shape the
-    // populated branch below emits, so a --json consumer never has to branch on payload shape.
+    // fixed for dead/deps/types/callers/call-chain. Those carry a `hiddenByGrep` key, which this
+    // command has nowhere to put: `impact --json` is a deliberate bare array (it is on
+    // json_envelope_shape's NON_ENVELOPE_JSON_COMMANDS list), and wrapping it in an envelope to
+    // hold one diagnostic would break every existing consumer. So stdout keeps the bare `[]` the
+    // populated branch's shape demands, and the count goes to stderr instead of being dropped --
+    // the distinction survives for a human and for anything reading both streams, without the
+    // parsed payload changing shape between the filtered and unfiltered cases.
     if (opts.json === true) {
+      emitErr(grepFilteredToEmptyNotice(allSorted.length, opts.grep as string, 'impacted symbol', 'impacted symbols'))
       emit(JSON.stringify([], null, 2))
       return 0
     }
