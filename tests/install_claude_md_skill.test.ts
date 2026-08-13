@@ -182,6 +182,22 @@ describe('installSkill', () => {
     expect(claudeBlock).toContain(sharedBody)
   })
 
+  // Regression: the gate listed only code-shaped commands, and named `config-get file KEY` while naming no JSON/YAML command at all -- so the omission read as a deliberate boundary ("config has a command, structured data does not") rather than a gap, and a manifest lookup routed to a full file read. Asserted on the shared body so all four surfaces are covered at once.
+  it('names the JSON/YAML query commands in both the failure shapes and the Commands line', () => {
+    const failureShapes = sharedBody.split('\n').filter((l) => l.startsWith('- '))
+    expect(failureShapes.length).toBeGreaterThan(0)
+    const jsonShape = failureShapes.filter((l) => l.includes('json-query'))
+    expect(jsonShape.length).toBe(1)
+    expect(jsonShape[0]).toContain('JSON/YAML')
+    expect(jsonShape[0]).toContain('yaml-query')
+
+    const commandsLine = sharedBody.split('\n').find((l) => l.startsWith('Commands: '))
+    expect(commandsLine).toBeDefined()
+    for (const cmd of ['json-query', 'yaml-query', 'json-outline', 'yaml-outline']) {
+      expect(commandsLine).toContain(cmd)
+    }
+  })
+
   it('keeps well-formed frontmatter that is unaffected by the gate body', () => {
     installSkill()
     const content = fs.readFileSync(skillPath(), 'utf8')
