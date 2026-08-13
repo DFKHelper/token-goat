@@ -162,6 +162,39 @@ function readPinnedBytes(p: string, pinned: string): Buffer {
   }
 }
 
+/**
+ * Pin-aware wrapper around `indexFileSync`, used by every read-command call site that can trigger
+ * a mid-request reindex (healStaleIndex's self-heal, and each command's `--force-refresh`).
+ * Without this wrapper, `indexFileSync` opens `resolvedPath` with its own independent
+ * `fs.readFileSync`, which never consults `activePins` -- an MCP caller's confinement pin,
+ * validated once against the path before the read command runs, is silently bypassed the moment
+ * a stale-index heal or forced reindex kicks in, so a path swapped (e.g. an in-root symlink
+ * repointed) between validation and that reindex is never caught. When a pin exists for
+ * `resolvedPath`, this verifies it via the same fstat-identity check `readFileBytes` uses (a
+ * ConfinementIdentityError propagates up exactly like every other pinned read), then hands the
+ * already-verified bytes straight into `indexFileSync` so it never reopens the path itself. With
+ * no active pin (every CLI caller, and every MCP call with confinement disabled), this is
+ * byte-for-byte the pre-existing behavior: indexFileSync does its own read.
+ */
+function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
+  const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
+  if (pinned === undefined) {
+    indexFileSync(resolvedPath, dbPath)
+    return
+  }
+  let bytes: Buffer
+  try {
+    bytes = readPinnedBytes(resolvedPath, pinned)
+  } catch (err) {
+    if (err instanceof ConfinementIdentityError) throw err
+    // Unreadable (e.g. deleted since validation): fall through to indexFileSync's own ENOENT
+    // handling, which returns cleanly instead of throwing.
+    indexFileSync(resolvedPath, dbPath)
+    return
+  }
+  indexFileSync(resolvedPath, dbPath, bytes)
+}
+
 function readFileText(p: string): string | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
@@ -266,7 +299,7 @@ export function healStaleIndex(resolvedPath: string): void {
     // to nothing, as in unit tests) is skipped cleanly with no parse and no dirty-queue enqueue.
     if (fingerprintFile(resolvedPath) === null) return
     try {
-      indexFileSync(resolvedPath, globalDbPath())
+      indexFileSyncPinned(resolvedPath, globalDbPath())
       enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })
     } catch {
       // Best-effort: leave it unindexed; the caller emits its normal "no symbols" message rather
@@ -278,7 +311,7 @@ export function healStaleIndex(resolvedPath: string): void {
   const diskSha = fingerprintFile(resolvedPath)
   if (diskSha === null || diskSha === entry.sha) return
   try {
-    indexFileSync(resolvedPath, globalDbPath())
+    indexFileSyncPinned(resolvedPath, globalDbPath())
     enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })
   } catch {
     // Fail-safe: leave the stale rows in place. The caller's trailing staleWarning(...) call
@@ -1223,7 +1256,7 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
 
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
   if (forceRefresh === true) {
-    indexFileSync(resolved, globalDbPath())
+    indexFileSyncPinned(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
   } else {
     // Self-heal a stale index before querying below, so runRead/runBrief serve fresh data
@@ -2300,7 +2333,7 @@ function prepareSymbolListing(
 ): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
-    indexFileSync(resolved, globalDbPath())
+    indexFileSyncPinned(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
   } else {
     // Self-heal a stale index before querying below, so skeleton/outline serve fresh data
@@ -4415,7 +4448,14 @@ export function runGrep(opts: GrepOptions): number {
 
   function searchFile(filePath: string): void {
     try {
-      const text = fs.readFileSync(filePath, 'utf-8')
+      // Pin-aware: consults `activePins` when this exact path was validated and pinned by the
+      // MCP confinement gate (see readFileText), so an explicitly-requested `path` argument gets
+      // the same swap-between-validate-and-read protection every other surgical-read command
+      // gets. Files discovered by searchDir's own recursion below were never individually
+      // pinned by the gate -- their protection is the realpath boundary check in searchDir, not
+      // this identity check, which only fires for paths the gate itself validated.
+      const text = readFileText(filePath)
+      if (text === null) return
       const lines = text.split(/\r?\n/)
       lines.forEach((lineText, idx) => {
         if (regex.test(lineText)) {
@@ -4431,25 +4471,66 @@ export function runGrep(opts: GrepOptions): number {
           hits.push(hit)
         }
       })
-    } catch {
+    } catch (err) {
+      if (err instanceof ConfinementIdentityError) throw err
       // skip unreadable files
     }
   }
 
-  function searchDir(dir: string): void {
+  // True when `candidateReal` (a realpath) is `boundaryReal` itself or nested inside it. Both
+  // sides are pre-normalized realpaths, so this is a plain string comparison -- no further
+  // symlink resolution needed at the call site.
+  function withinRealpathBoundary(candidateReal: string, boundaryReal: string): boolean {
+    const c = normalizePath(candidateReal)
+    const b = normalizePath(boundaryReal)
+    const cFold = process.platform === 'win32' ? c.toLowerCase() : c
+    const bFold = process.platform === 'win32' ? b.toLowerCase() : b
+    return cFold === bFold || cFold.startsWith(bFold.endsWith('/') ? bFold : `${bFold}/`)
+  }
+
+  // `boundaryReal` is `dir`'s own top-level search root, realpath-resolved once by the caller.
+  // `fs.statSync` (unlike `fs.lstatSync`) follows symlinks, so a directory symlink inside the
+  // search root that points outside it would otherwise be silently descended into and its
+  // out-of-root contents searched -- a confinement bypass distinct from searchFile's own pin
+  // check above (that one guards HOW an explicitly-requested file is opened; this one guards
+  // WHICH files a recursive walk enumerates in the first place). Every entry is lstat'd first;
+  // a symlink (file or directory) is only followed once its realpath is proven to still resolve
+  // inside `boundaryReal`.
+  function searchDir(dir: string, boundaryReal: string): void {
     try {
       for (const entry of fs.readdirSync(dir)) {
         if (entry.startsWith('.')) continue
         const full = path.join(dir, entry)
-        const stat = fs.statSync(full)
+        let lst: fs.Stats
+        try {
+          lst = fs.lstatSync(full)
+        } catch {
+          continue
+        }
+        if (lst.isSymbolicLink()) {
+          let real: string
+          try {
+            real = fs.realpathSync(full)
+          } catch {
+            continue
+          }
+          if (!withinRealpathBoundary(real, boundaryReal)) continue
+        }
+        let stat: fs.Stats
+        try {
+          stat = fs.statSync(full)
+        } catch {
+          continue
+        }
         if (stat.isDirectory()) {
           if (SKIP_DIRS.has(entry)) continue
-          if (opts.recursive !== false) searchDir(full)
+          if (opts.recursive !== false) searchDir(full, boundaryReal)
         } else {
           searchFile(full)
         }
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof ConfinementIdentityError) throw err
       // skip
     }
   }
@@ -4462,7 +4543,13 @@ export function runGrep(opts: GrepOptions): number {
 
     const stat = fs.statSync(searchPath)
     if (stat.isDirectory()) {
-      searchDir(searchPath)
+      let boundaryReal: string
+      try {
+        boundaryReal = fs.realpathSync(searchPath)
+      } catch {
+        boundaryReal = path.resolve(searchPath)
+      }
+      searchDir(searchPath, boundaryReal)
     } else {
       searchFile(searchPath)
     }

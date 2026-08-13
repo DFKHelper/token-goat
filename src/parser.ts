@@ -2486,7 +2486,15 @@ function writeParseResult(
  * logs it and returns the `INDEX_FAILED` sentinel instead of letting
  * `processDirtyBatch` silently count this file as indexed.
  */
-export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
+// `preReadBytes`, when passed, is used verbatim instead of this function opening `filePath`
+// itself. This exists so a confinement-pinned caller (read_commands.ts's healStaleIndex /
+// force-refresh paths) can verify the file's identity against its MCP-validated pin BEFORE any
+// bytes are read, then hand those already-verified bytes straight through -- closing the
+// check-then-open race that a second, independent fs.readFileSync inside this function would
+// reopen. A CLI caller (worker.ts, cli.ts) never has a pin to verify against and omits this
+// parameter, so this function's own fs.readFileSync (below) still runs for every call site
+// except the pinned ones, unchanged from before this parameter existed.
+export function indexFileSync(filePath: string, dbPath: string = globalDbPath(), preReadBytes?: Buffer): void {
   const ixCfg = loadConfig().indexing
   if (ixCfg !== undefined && isParseSkipEligible(filePath, ixCfg)) {
     // Purge stale rows AND the files row (sha) so the file settles into a stable not-indexed state instead of being re-selected as "changed" on every drain; also drop any embedding rows it held before becoming skip-eligible (indexFileSync is called directly from read_commands' --force-refresh path).
@@ -2497,11 +2505,15 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
   }
   const language = detectLanguage(filePath)
   let raw: Buffer
-  try {
-    raw = fs.readFileSync(filePath)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw err
+  if (preReadBytes !== undefined) {
+    raw = preReadBytes
+  } else {
+    try {
+      raw = fs.readFileSync(filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw err
+    }
   }
   const content = raw.toString('utf8')
   const { symbols, refs } = parseContent(content, filePath, language)
