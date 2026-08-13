@@ -2,7 +2,7 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.6.28] - 2026-08-13
 
 ### Added
 - **Image shrink now caches its re-encode on disk, keyed by source path + size + mtime, so a repeat Read of an unchanged image skips the `sharp` re-encode entirely.** Ported from an archived, never-merged change. Cache entries live under `<home>/image_shrink_cache`, are bounded by a `DEFAULT_MAX_AGE_MS`-based sweep run (throttled to once per 60s) on every qualifying image Read, and are scoped to their own `token-goat-shrink-` filename prefix in their own dedicated subdir, so pruning can never touch anything else -- the archived version wrote to the unbounded OS temp dir with no pruning at all, which this deliberately does not carry over. mtime is part of the cache key (not just path + size) so a content change that happens to preserve the exact byte length -- e.g. regenerating a same-dimension screenshot -- still busts the cache. A corrupt or truncated cache entry is detected by re-probing it with `sharp` before it is ever served, deleted, and treated as a miss. A cache hit runs through the same accounting path as a fresh shrink, so `image_shrink` stats stay honest either way. Also adds `.avif`, `.heic`, and `.heif` to the recognised image extensions. See [src/image_shrink.ts](src/image_shrink.ts), [tests/image_shrink.test.ts](tests/image_shrink.test.ts).
