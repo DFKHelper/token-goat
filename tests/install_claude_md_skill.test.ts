@@ -198,6 +198,24 @@ describe('installSkill', () => {
     }
   })
 
+  // Regression: image-meta/image-text (added in a2a76dc7) give an honest metadata/OCR read of an image, but the exemption list still blanket-exempted images as "binary or an image" -- so an agent could cite the exemption to open an image file directly instead of routing to image-meta. Narrowed to a genuinely opaque binary and added a failure-shape row so the fallback is one-step decidable.
+  it('routes images to image-meta instead of blanket-exempting them', () => {
+    const exemptionsLine = sharedBody.split('\n').find((l) => l.startsWith('Exemptions '))
+    expect(exemptionsLine).toBeDefined()
+    expect(exemptionsLine).not.toContain('binary or an image')
+    expect(exemptionsLine).toContain('opaque binary')
+
+    const failureShapes = sharedBody.split('\n').filter((l) => l.startsWith('- '))
+    const imageShape = failureShapes.filter((l) => l.includes('image-meta'))
+    expect(imageShape.length).toBe(1)
+    expect(imageShape[0]).toContain('image')
+
+    const commandsLine = sharedBody.split('\n').find((l) => l.startsWith('Commands: '))
+    expect(commandsLine).toBeDefined()
+    expect(commandsLine).toContain('image-meta')
+    expect(commandsLine).toContain('image-text')
+  })
+
   it('keeps well-formed frontmatter that is unaffected by the gate body', () => {
     installSkill()
     const content = fs.readFileSync(skillPath(), 'utf8')
