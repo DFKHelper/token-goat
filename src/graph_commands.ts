@@ -21,7 +21,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
@@ -1870,13 +1870,17 @@ export function runAsk(opts: AskOptions): number {
       askArgs = ['--print', '--bare', '--no-session-persistence']
     }
     const needsShell = isWin && /\.(cmd|bat)$/i.test(backendPath)
-    // shell:true plus a separate args array is a deprecated (DEP0190) combination on Windows;
-    // fold the args into a single quoted command string instead. Quote any arg containing
-    // whitespace too -- only the backend path itself was previously guaranteed space-free, and
-    // the codex output-file path (under the OS temp dir) is not.
-    const quoteIfNeeded = (a: string): string => (/\s/.test(a) ? `"${a}"` : a)
+    // A .cmd/.bat backend can't be exec'd directly by spawnSync; it has to go through cmd.exe.
+    // Rather than lean on spawnSync's own shell:true string-concatenation (deprecated as DEP0190
+    // on Windows, and the previous quoteIfNeeded lambda here only quoted an arg when it contained
+    // whitespace, so a cmd metacharacter with no space passed through raw and an embedded `"` was
+    // never escaped), invoke cmd.exe directly the way Node's own child_process internals do for a
+    // .cmd/.bat target: `cmd.exe /d /s /c "<command>"` with windowsVerbatimArgs so spawnSync
+    // doesn't re-quote the already-escaped command string. Every argument goes through
+    // windowsCmdQuoteArg so cmd.exe's tokenizer never sees an unquoted metacharacter.
+    const command = [backendPath, ...askArgs].map(windowsCmdQuoteArg).join(' ')
     const result = needsShell
-      ? spawnSync([`"${backendPath}"`, ...askArgs.map(quoteIfNeeded)].join(' '), { input: prompt, encoding: 'utf8', timeout: 30000, shell: true })
+      ? spawnSync(process.env['ComSpec'] || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], { input: prompt, encoding: 'utf8', timeout: 30000, windowsVerbatimArguments: true })
       : spawnSync(backendPath, askArgs, { input: prompt, encoding: 'utf8', timeout: 30000 })
     let answer = ''
     if (result.status === 0) {
