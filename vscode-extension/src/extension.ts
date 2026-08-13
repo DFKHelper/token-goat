@@ -87,6 +87,15 @@ export function resetDecoderCheckedForTests(): void {
   decoderChecked = false
 }
 
+// Commander's own wording for a command the installed CLI doesn't know about. The extension
+// (marketplace) and the CLI (npm) ship and update independently, so a user can easily have an
+// older global token-goat with no `mcp-status` command yet -- this is not a genuine failure of
+// the check itself, just a version mismatch between the two halves of the install.
+function isUnknownMcpStatusCommandError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /unknown command ['"]mcp-status['"]/i.test(message)
+}
+
 export async function ensureDecoderSetup(): Promise<void> {
   if (decoderChecked) return
   decoderChecked = true
@@ -103,6 +112,18 @@ export async function ensureDecoderSetup(): Promise<void> {
     const status = JSON.parse(stdout) as { configured: boolean }
     if (status.configured) return
   } catch (error) {
+    if (isUnknownMcpStatusCommandError(error)) {
+      // Deliberately no fallback to reading mcp.json directly here: that was the exact
+      // per-scope-assumption bug `mcp-status` replaced (9c220be7 / 71bf3fea), so resurrecting
+      // it as a "just in case" path would reintroduce the same drift for a stale CLI, which
+      // is precisely when the version information from that old logic is least trustworthy.
+      // Telling the user to update the one thing that's actually out of date is both simpler
+      // and correct.
+      void vscode.window.showWarningMessage(
+        'token-goat: the installed CLI is older than this extension and does not support the decoder check yet. Run `npm install -g token-goat` to update, then reload the window.',
+      )
+      return
+    }
     reportError(error)
     return
   }
