@@ -1,10 +1,19 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
+import crypto from 'node:crypto';
 import { passOutput, contextOutput, getCwd } from './hooks_common.js';
 import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
+import { markHintShown, wasHintShown } from './session.js';
+
+const EMBEDDED_SKILL_CONTEXT_RE = /^\s*<skill-context\b/i;
+const CONTINUATION_PROMPT_RE = /^(?:continue|resume|next|go on)$/i;
+
+function promptFingerprint(prompt: string): string {
+  return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
+}
 
 function userPromptSubmitHandler(event: HookEvent): HookOutput {
   try {
@@ -15,6 +24,24 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
     }
 
     const parts: string[] = [];
+    const prompt = rawPrompt.trim();
+
+    if (EMBEDDED_SKILL_CONTEXT_RE.test(prompt)) {
+      const key = `embedded-skill:${promptFingerprint(prompt)}`;
+      if (wasHintShown(key)) {
+        parts.push('This identical embedded skill payload was already provided in this session; treat it as loaded and do not re-read its full body.');
+      } else {
+        markHintShown(key);
+      }
+    }
+
+    if (CONTINUATION_PROMPT_RE.test(prompt)) {
+      const key = 'continuation-checkpoint';
+      if (!wasHintShown(key)) {
+        markHintShown(key);
+        parts.push('Before a long continuation loop, checkpoint the current goal and evidence; start a fresh session when earlier context is no longer needed.');
+      }
+    }
 
     // The branch-hint git subprocess is only worth its cost for a substantive prompt -- skip it
     // (and the getCwd/runGit call it implies) for a trivial one like "ok"/"yes"/"continue". This
@@ -22,7 +49,7 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
     // and its own "on each user turn" contract must hold even on a short turn -- a session whose
     // next few prompts happen to be short ("continue", "next") previously never learned about a
     // mid-session upgrade at all, since the drift check sat after this same early return.
-    if (rawPrompt.trim().length >= 8) {
+    if (prompt.length >= 8) {
       const cwd = getCwd(event);
       if (cwd) {
         try {

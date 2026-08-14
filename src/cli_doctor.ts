@@ -29,6 +29,65 @@ export interface DoctorResult {
   message: string
 }
 
+export interface ProcessInfo {
+  processId: number
+  parentProcessId: number
+  name: string
+  commandLine: string
+}
+
+export function checkMcpProcessHealth(processes: readonly ProcessInfo[]): DoctorResult {
+  const byPid = new Set(processes.map((process) => process.processId))
+  const nodeProcesses = processes.filter((process) => process.name.toLowerCase() === 'node.exe')
+  const chromeLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*chrome-devtools-mcp/i.test(process.commandLine))
+  const playwrightLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*@playwright[\\/]mcp/i.test(process.commandLine))
+  const orphanedNodeProcesses = nodeProcesses.filter((process) => !byPid.has(process.parentProcessId))
+  const launchers = chromeLaunchers.length + playwrightLaunchers.length
+
+  if (launchers > 2 || orphanedNodeProcesses.length > 0) {
+    const details: string[] = []
+    if (chromeLaunchers.length > 1) details.push(`${chromeLaunchers.length} Chrome DevTools MCP launchers`)
+    if (playwrightLaunchers.length > 1) details.push(`${playwrightLaunchers.length} Playwright MCP launchers`)
+    if (orphanedNodeProcesses.length > 0) details.push(`${orphanedNodeProcesses.length} orphaned Node process${orphanedNodeProcesses.length === 1 ? '' : 'es'}`)
+    return {
+      name: 'MCP process health',
+      status: 'warn',
+      message: `${details.join('; ')} detected. These are host-managed processes; close stale Copilot sessions before terminating a specific confirmed orphan.`,
+    }
+  }
+
+  return { name: 'MCP process health', status: 'ok', message: 'no duplicate MCP launchers or orphaned Node processes detected' }
+}
+
+function readWindowsProcesses(): ProcessInfo[] {
+  if (process.platform !== 'win32') return []
+  try {
+    const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
+    const output = execSync(`powershell.exe -NoProfile -NonInteractive -Command "${command}"`, {
+      encoding: 'utf8',
+      timeout: 5000,
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+    }).trim()
+    if (output === '') return []
+    const parsed: unknown = JSON.parse(output)
+    const rows = Array.isArray(parsed) ? parsed : [parsed]
+    return rows.flatMap((row): ProcessInfo[] => {
+      if (typeof row !== 'object' || row === null) return []
+      const value = row as Record<string, unknown>
+      if (typeof value['ProcessId'] !== 'number' || typeof value['ParentProcessId'] !== 'number' || typeof value['Name'] !== 'string') return []
+      return [{
+        processId: value['ProcessId'],
+        parentProcessId: value['ParentProcessId'],
+        name: value['Name'],
+        commandLine: typeof value['CommandLine'] === 'string' ? value['CommandLine'] : '',
+      }]
+    })
+  } catch {
+    return []
+  }
+}
+
 /**
  * Check if the token-goat worker process is running for `dataDir`. Accepts an explicit
  * `dataDir` (defaulting to the real install dir via isWorkerRunning's own default) so a
@@ -568,6 +627,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
+  if (process.platform === 'win32') results.push(checkMcpProcessHealth(readWindowsProcesses()))
 
   return results
 }
