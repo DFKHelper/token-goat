@@ -29,7 +29,7 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
     const prompt = rawPrompt.trim();
 
     if (EMBEDDED_SKILL_CONTEXT_RE.test(prompt)) {
-      const key = `embedded-skill:${promptFingerprint(prompt)}`;
+      const key = `embedded-skill:${event.sessionId}:${promptFingerprint(prompt)}`;
       if (wasHintShown(key)) {
         parts.push('This identical embedded skill payload was already provided in this session; treat it as loaded and do not re-read its full body.');
       } else {
@@ -38,7 +38,7 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
     }
 
     if (CONTINUATION_PROMPT_RE.test(prompt)) {
-      const key = 'continuation-checkpoint';
+      const key = `continuation-checkpoint:${event.sessionId}`;
       if (!wasHintShown(key)) {
         markHintShown(key);
         parts.push('Before a long continuation loop, checkpoint the current goal and evidence; start a fresh session when earlier context is no longer needed.');

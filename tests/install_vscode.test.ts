@@ -137,17 +137,19 @@ describe('VS Code user-scope install (default, no --project)', () => {
 
   it('preserves unrelated servers already in the user-profile mcp.json', () => {
     const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userdir-merge-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userscope-project-'))
     isolateVscodeUserDir(userDir)
     try {
       const mcpPath = vscodeUserMcpPath()
       fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
       fs.writeFileSync(mcpPath, JSON.stringify({ servers: { other: { type: 'stdio' } } }))
-      installVscode({})
+      installVscode({ projectRoot: project })
       const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>
       expect((config['servers'] as Record<string, unknown>)['other']).toEqual({ type: 'stdio' })
       expect((config['servers'] as Record<string, unknown>)['token-goat']).toBeDefined()
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
     }
   })
 
@@ -184,13 +186,15 @@ describe('vscodeDecoderConfigured (extension false-prompt regression)', () => {
     // so a correctly-installed user has no <project>/.vscode/mcp.json at all. A check that
     // only reads the workspace file must not conclude "not configured" here.
     const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-userdir-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-user-project-'))
     isolateVscodeUserDir(userDir)
     try {
-      installVscode({})
+      installVscode({ projectRoot: project })
       expect(vscodeDecoderConfigured().configured).toBe(true)
       expect(vscodeDecoderConfigured().checkedPaths).toEqual([vscodeUserMcpPath()])
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
     }
   })
 
@@ -198,13 +202,15 @@ describe('vscodeDecoderConfigured (extension false-prompt regression)', () => {
     // A user-scope install is workspace-independent -- it must be detectable with nothing
     // to key a projectRoot off of at all, not just "no mcp.json inside this workspace".
     const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-nofolder-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-nofolder-project-'))
     isolateVscodeUserDir(userDir)
     try {
-      installVscode({})
+      installVscode({ projectRoot: project })
       const status = vscodeDecoderConfigured(undefined)
       expect(status.configured).toBe(true)
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
     }
   })
 
