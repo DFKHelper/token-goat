@@ -109,31 +109,35 @@ describe('hooks_session', () => {
     expect(second.hookType).toBe('context');
   });
 
-  it.each([25, 100, 250])('advises at scheduled prompt pressure threshold #%i', (sequence) => {
+  it.each([25, 100, 250])('advises after %i observed scheduled prompt deliveries', (sequence) => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
       toolInput: {},
       sessionId: nonce(),
       agentId: undefined,
-      raw: { prompt: `[Scheduled prompt #${sequence}] Continue improving the project.` },
+      raw: { prompt: '[Scheduled prompt #5] Continue improving the project.' },
     };
 
-    const first = userPromptSubmitHandler(event);
-    const second = userPromptSubmitHandler(event);
+    for (let occurrence = 1; occurrence < sequence; occurrence += 1) {
+      const result = userPromptSubmitHandler(event);
+      expect(result.hookType).toBe([25, 100, 250].includes(occurrence) ? 'context' : 'pass');
+    }
+    const threshold = userPromptSubmitHandler(event);
+    const subsequent = userPromptSubmitHandler(event);
 
-    expect((first as { context: string }).context).toContain('start a fresh session');
-    expect(second.hookType).toBe('pass');
+    expect((threshold as { context: string }).context).toContain('start a fresh session');
+    expect(subsequent.hookType).toBe('pass');
   });
 
-  it('does not advise outside scheduled prompt pressure thresholds', () => {
+  it('does not treat the schedule identifier as an observed occurrence count', () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
       toolInput: {},
       sessionId: nonce(),
       agentId: undefined,
-      raw: { prompt: '[Scheduled prompt #26] Continue improving the project.' },
+      raw: { prompt: '[Scheduled prompt #25] Continue improving the project.' },
     };
 
     expect(userPromptSubmitHandler(event).hookType).toBe('pass');

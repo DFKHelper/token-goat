@@ -34,10 +34,11 @@ export default defineConfig({
     // many tests. That combination pushed ordinary tests past the 30s bound -- a sqlite cap test
     // took 51s and 55s, and two suites died in hooks -- across all three workflow attempts, while
     // ubuntu and macOS absorbed 6 workers fine. 4 is the value this suite was green on before.
-    // Scoped to CI, not to Windows generally: the constraint is the runner's core count, not the
-    // OS, so a developer's many-core Windows box keeps the full 6 (capping it there cost 58% of
-    // wall clock locally -- 219s to 346s -- for no benefit).
-    maxWorkers: process.platform === 'win32' && process.env.CI ? 4 : 6,
+    // The local Windows suite also creates large V8 heaps and many built-bundle subprocesses.
+    // Six workers recently consumed 1.34 GB on a developer workstation and caused browser,
+    // snapshot, daemon, and type-reference tests to time out in the same full run. Keep the
+    // known-stable four-worker ceiling for every Windows invocation; Linux and macOS retain six.
+    maxWorkers: process.platform === 'win32' ? 4 : 6,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

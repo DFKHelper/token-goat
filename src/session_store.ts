@@ -179,6 +179,13 @@ function coerce(raw: unknown): SerializedSession {
     : Array.isArray(o['hints_seen'])
       ? (o['hints_seen'] as unknown[]).filter((h): h is string => typeof h === 'string')
       : []
+  const scheduledPromptCounts: Array<[string, number]> = Array.isArray(o['scheduledPromptCounts'])
+    ? (o['scheduledPromptCounts'] as unknown[]).filter(
+        (p): p is [string, number] =>
+          Array.isArray(p) && p.length === 2 && typeof p[0] === 'string'
+          && typeof p[1] === 'number' && Number.isSafeInteger(p[1]) && p[1] >= 0,
+      )
+    : []
   const cliReads = Array.isArray(o['cliReads'])
     ? o['cliReads'].filter((h): h is string => typeof h === 'string')
     : []
@@ -212,6 +219,7 @@ function coerce(raw: unknown): SerializedSession {
   return {
     files,
     hintsShown,
+    ...(scheduledPromptCounts.length > 0 ? { scheduledPromptCounts } : {}),
     webFetches: asStringPairs(o['webFetches']),
     bashOutputs: asStringPairs(o['bashOutputs']),
     curlDownloads: asStringPairs(o['curlDownloads']),
@@ -256,6 +264,15 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
  * {@link mergeCurlDownloads} instead so a clearing deletion actually sticks. */
 function mergePairs<V>(disk: Array<[string, V]>, mem: Array<[string, V]>): Array<[string, V]> {
   return Array.from(new Map([...disk, ...mem]).entries())
+}
+
+/** Merge monotonically increasing counters so stale hook processes cannot lower an occurrence. */
+function mergeMaxNumberPairs(disk: Array<[string, number]>, mem: Array<[string, number]>): Array<[string, number]> {
+  const merged = new Map(disk)
+  for (const [key, value] of mem) {
+    merged.set(key, Math.max(merged.get(key) ?? 0, value))
+  }
+  return Array.from(merged.entries())
 }
 
 /** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file.
@@ -373,6 +390,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   return {
     files: Array.from(byPath.values()),
     hintsShown: Array.from(new Set([...disk.hintsShown, ...mem.hintsShown])),
+    scheduledPromptCounts: mergeMaxNumberPairs(disk.scheduledPromptCounts ?? [], mem.scheduledPromptCounts ?? []),
     webFetches: mergePairs(disk.webFetches, mem.webFetches),
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergeCurlDownloads(disk.curlDownloads, mem.curlDownloads),

@@ -123,10 +123,44 @@ export interface StatsOptions {
    * plain-text totals dump with no way to opt into the richer view.
    */
   short?: boolean
+  /** Explain how local savings estimates are calculated. */
+  methodology?: boolean
+}
+
+const METHODOLOGY = {
+  estimate_scope: 'Local estimate of content avoided or reduced by token-goat.',
+  billing: 'They are not GitHub Copilot usage, provider-reported token consumption, or billing data.',
+  byte_derived_formula: 'Most read, hook, and command entries use Math.round(bytes_saved / 4).',
+  filter_estimates: 'Output compressors record their filter-calculated delta; image entries use the byte-derived approximation unless the source provides a narrower estimate.',
+  advisory_events: 'Zero-byte, zero-token advisory events show that guidance fired, not that an agent followed it.',
+  audit: 'Use stats --full or stats --json for source and command breakdowns; reconcile billing with provider-exported usage data.',
+} as const
+
+function renderMethodology(json = false): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ methodology: METHODOLOGY })}\n`)
+    return
+  }
+
+  process.stdout.write([
+    '# token-goat savings methodology',
+    '',
+    `\`tokens saved\` is a ${METHODOLOGY.estimate_scope.toLowerCase()} ${METHODOLOGY.billing}`,
+    '',
+    `- ${METHODOLOGY.byte_derived_formula}`,
+    `- ${METHODOLOGY.filter_estimates}`,
+    `- ${METHODOLOGY.advisory_events}`,
+    `- ${METHODOLOGY.audit}`,
+    '',
+  ].join('\n'))
 }
 
 /** Run the ``token-goat stats`` command. */
 export function runStats(opts: StatsOptions = {}): void {
+  if (opts.methodology === true) {
+    renderMethodology(opts.json === true)
+    return
+  }
   const window = opts.windowDays ?? 30
   const summary = summarize(window, undefined, opts.homeDir)
 
