@@ -274,6 +274,8 @@ A failing `pytest` / `jest` / `vitest` / `go test` / `cargo test` run (including
 
 Token-goat tracks how close a session is to the autocompact trigger and tightens its hints as the window fills. Surgical-read suggestions kick in on progressively smaller files as pressure builds (500 lines at cool, down to 50 at critical), so large reads get flagged before they tip the session over. The PreCompact manifest also shrinks: capped at 500 tokens once the window runs hot, 300 once critical, so it stops contributing to the pressure it measures. The denominator is always the fixed 660,000-token autocompact trigger budget, not the model's raw context window, so the same thresholds apply across models. Run `token-goat doctor --context` to see the current footprint.
 
+For recurring scheduler loops, prompt #25, #100, and #250 receive a one-time checkpoint/fresh-session reminder; it prevents further accumulation but cannot reclaim input already injected. Before a direct test command without a focused selector or explicit timeout, the Bash hook gives an advisory only: it never rewrites or stops the test.
+
 ## Install
 
 > **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will run the commands, check codecs, and confirm everything is working.

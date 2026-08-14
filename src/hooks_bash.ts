@@ -33,6 +33,16 @@ function stripCdPrefix(cmd: string): string {
   return stripped.trim() || cmd
 }
 
+function hasTestRunScopeOrBudget(cmd: string): boolean {
+  const hasTimeout = /(?:^|\s)(?:timeout(?:\.exe)?\s+\S+|--(?:test)?timeout(?:=|\s)\S+)/i.test(cmd)
+  const hasSelector = /(?:\s::\S+|\s(?:-k|-t|-run|--(?:testNamePattern|last-failed|test|project))(?:=|\s)|\b(?:tests?|spec)\S*\.(?:[cm]?[jt]sx?|py|go|rs)\b|(?:^|\s)\.\/\S+)/i.test(cmd)
+  return hasTimeout || hasSelector
+}
+
+function isDirectTestRunnerCommand(cmd: string): boolean {
+  return /^(?:pytest|(?:npx\s+)?(?:jest|vitest)|go\s+test|cargo\s+test)\b/i.test(cmd)
+}
+
 /**
  * Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the
  * order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the
@@ -1703,6 +1713,17 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       return contextOutput(notes.join(' '))
     }
     return passOutput()
+  }
+
+  if (isTestRunnerCommand(cmd) && isDirectTestRunnerCommand(cmd) && !hasTestRunScopeOrBudget(cmd)) {
+    const key = `test-run-budget:${event.sessionId}:${shortFingerprint(cmd)}`
+    if (!wasHintShown(key)) {
+      markHintShown(key)
+      recordStat('session_hint', 0, 0)
+      return contextOutput(
+        'This test command has no targeted selector or explicit timeout. Prefer a focused test path/name or the runner’s supported timeout before starting a potentially unbounded suite; run the full suite deliberately when it is needed.',
+      )
+    }
   }
 
   // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.

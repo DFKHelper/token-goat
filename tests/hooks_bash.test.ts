@@ -283,6 +283,27 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
   })
 }
 
+describe('preBashHandler — test-run budget advice', () => {
+  it('advises once for an unscoped pytest command', () => {
+    const first = preBashHandler(makeBashEvent('pytest'))
+    const second = preBashHandler(makeBashEvent('pytest'))
+
+    expect((first as { context: string }).context).toContain('no targeted selector or explicit timeout')
+    expect(second.hookType).not.toBe('context')
+  })
+
+  it.each([
+    'pytest tests/unit/test_hooks.py',
+    'pytest -k hooks',
+    'vitest run -t hooks',
+    'go test ./pkg/hooks',
+    'cargo test --timeout 60',
+  ])('does not advise for bounded test command: %s', (command) => {
+    const result = preBashHandler(makeBashEvent(command))
+    expect(result.hookType === 'context' ? result.context : '').not.toContain('no targeted selector or explicit timeout')
+  })
+})
+
 describe('preBashHandler — unbalanced shell quoting false positives (detectUnbalancedShellSyntax)', () => {
   beforeEach(() => {
     clearModuleCaches()

@@ -10,6 +10,8 @@ import { markHintShown, wasHintShown } from './session.js';
 
 const EMBEDDED_SKILL_CONTEXT_RE = /^\s*<skill-context\b/i;
 const CONTINUATION_PROMPT_RE = /^(?:continue|resume|next|go on)$/i;
+const SCHEDULED_PROMPT_RE = /^\[Scheduled prompt #(\d+)\]/i;
+const SCHEDULED_PROMPT_PRESSURE_THRESHOLDS = new Set([25, 100, 250]);
 
 function promptFingerprint(prompt: string): string {
   return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
@@ -40,6 +42,18 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
       if (!wasHintShown(key)) {
         markHintShown(key);
         parts.push('Before a long continuation loop, checkpoint the current goal and evidence; start a fresh session when earlier context is no longer needed.');
+      }
+    }
+
+    const scheduledPrompt = SCHEDULED_PROMPT_RE.exec(prompt);
+    if (scheduledPrompt !== null) {
+      const sequence = Number(scheduledPrompt[1]);
+      if (SCHEDULED_PROMPT_PRESSURE_THRESHOLDS.has(sequence)) {
+        const key = `scheduled-prompt-pressure:${event.sessionId}:${sequence}`;
+        if (!wasHintShown(key)) {
+          markHintShown(key);
+          parts.push(`This is scheduled prompt #${sequence}. Checkpoint the current objective and start a fresh session before continuing if earlier context is no longer needed; this cannot reclaim tokens already injected.`);
+        }
       }
     }
 

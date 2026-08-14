@@ -87,6 +87,36 @@ describe('hooks_session', () => {
     expect(second.hookType).toBe('pass')
   });
 
+  it.each([25, 100, 250])('advises at scheduled prompt pressure threshold #%i', (sequence) => {
+    const event: HookEvent = {
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt: `[Scheduled prompt #${sequence}] Continue improving the project.` },
+    };
+
+    const first = userPromptSubmitHandler(event);
+    const second = userPromptSubmitHandler(event);
+
+    expect((first as { context: string }).context).toContain('start a fresh session');
+    expect(second.hookType).toBe('pass');
+  });
+
+  it('does not advise outside scheduled prompt pressure thresholds', () => {
+    const event: HookEvent = {
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt: '[Scheduled prompt #26] Continue improving the project.' },
+    };
+
+    expect(userPromptSubmitHandler(event).hookType).toBe('pass');
+  });
+
   it('advises when an identical embedded skill payload is replayed', () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
