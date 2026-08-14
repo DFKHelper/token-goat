@@ -5,6 +5,7 @@
  */
 
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
@@ -34,6 +35,71 @@ export interface ProcessInfo {
   parentProcessId: number
   name: string
   commandLine: string
+}
+
+export function globalMcpConfigPath(): string {
+  const copilotHome = process.env['COPILOT_HOME']
+  const root = copilotHome !== undefined && copilotHome.trim() !== ''
+    ? path.resolve(copilotHome)
+    : path.join(os.homedir(), '.copilot')
+  return path.join(root, 'mcp-config.json')
+}
+
+export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): DoctorResult {
+  if (!fs.existsSync(configPath)) {
+    return { name: 'Global MCP configuration', status: 'ok', message: `no global Copilot MCP configuration found at ${configPath}` }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+  } catch {
+    return {
+      name: 'Global MCP configuration',
+      status: 'warn',
+      message: `could not read global Copilot MCP configuration at ${configPath}; unable to audit heavy launchers.`,
+    }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return {
+      name: 'Global MCP configuration',
+      status: 'warn',
+      message: `global Copilot MCP configuration at ${configPath} has an unsupported format; unable to audit heavy launchers.`,
+    }
+  }
+
+  const configuredServers = (parsed as Record<string, unknown>)['mcpServers']
+  if (typeof configuredServers !== 'object' || configuredServers === null || Array.isArray(configuredServers)) {
+    return { name: 'Global MCP configuration', status: 'ok', message: `no global stdio MCP servers configured at ${configPath}` }
+  }
+
+  let chromeDevTools = 0
+  let playwright = 0
+  for (const server of Object.values(configuredServers)) {
+    if (typeof server !== 'object' || server === null || Array.isArray(server)) continue
+    const entry = server as Record<string, unknown>
+    const rawCommand = entry['command']
+    const command = typeof rawCommand === 'string' ? rawCommand : ''
+    const args = entry['args']
+    if (!/\bnpx(?:\.cmd)?\b/i.test(command) || !Array.isArray(args)) continue
+    const invocation = args.filter((arg): arg is string => typeof arg === 'string').join(' ')
+    if (/\bchrome-devtools-mcp\b/i.test(invocation)) chromeDevTools += 1
+    if (/@playwright[\\/]mcp\b/i.test(invocation)) playwright += 1
+  }
+
+  if (chromeDevTools > 0 || playwright > 0) {
+    const launchers: string[] = []
+    if (chromeDevTools > 0) launchers.push(`${chromeDevTools} Chrome DevTools MCP launcher${chromeDevTools === 1 ? '' : 's'}`)
+    if (playwright > 0) launchers.push(`${playwright} Playwright MCP launcher${playwright === 1 ? '' : 's'}`)
+    return {
+      name: 'Global MCP configuration',
+      status: 'warn',
+      message: `${launchers.join(' and ')} configured at ${configPath}. Move heavy launchers to project scope or remove them when not actively needed.`,
+    }
+  }
+
+  return { name: 'Global MCP configuration', status: 'ok', message: `no known heavy global MCP launchers configured at ${configPath}` }
 }
 
 export function checkMcpProcessHealth(processes: readonly ProcessInfo[]): DoctorResult {
@@ -627,6 +693,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
+  results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(readWindowsProcesses()))
 
   return results
