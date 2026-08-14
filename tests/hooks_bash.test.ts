@@ -285,11 +285,18 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
 
 describe('preBashHandler — test-run budget advice', () => {
   it('advises once for an unscoped pytest command', () => {
-    const first = preBashHandler(makeBashEvent('pytest'))
-    const second = preBashHandler(makeBashEvent('pytest'))
+    const original = process.env['TOKEN_GOAT_BASH_COMPRESS']
+    process.env['TOKEN_GOAT_BASH_COMPRESS'] = '0'
+    try {
+      const first = preBashHandler(makeBashEvent('pytest'))
+      const second = preBashHandler(makeBashEvent('pytest'))
 
-    expect((first as { context: string }).context).toContain('no targeted selector or explicit timeout')
-    expect(second.hookType).not.toBe('context')
+      expect((first as { context: string }).context).toContain('no targeted selector or explicit timeout')
+      expect(second.hookType).not.toBe('context')
+    } finally {
+      if (original === undefined) delete process.env['TOKEN_GOAT_BASH_COMPRESS']
+      else process.env['TOKEN_GOAT_BASH_COMPRESS'] = original
+    }
   })
 
   it.each([
