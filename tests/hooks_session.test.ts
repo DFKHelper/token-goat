@@ -87,6 +87,28 @@ describe('hooks_session', () => {
     expect(second.hookType).toBe('pass')
   });
 
+  it('advises independently for continuation loops in separate sessions', () => {
+    const first = userPromptSubmitHandler({
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt: 'continue' },
+    });
+    const second = userPromptSubmitHandler({
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt: 'continue' },
+    });
+
+    expect(first.hookType).toBe('context');
+    expect(second.hookType).toBe('context');
+  });
+
   it.each([25, 100, 250])('advises at scheduled prompt pressure threshold #%i', (sequence) => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
@@ -130,6 +152,29 @@ describe('hooks_session', () => {
     expect(userPromptSubmitHandler(event).hookType).toBe('pass')
     const replay = userPromptSubmitHandler(event);
     expect((replay as { context: string }).context).toContain('already provided')
+  });
+
+  it('does not treat the first skill payload in a separate session as a replay', () => {
+    const prompt = '<skill-context name="example">Repeated payload</skill-context>';
+    const firstSession = userPromptSubmitHandler({
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt },
+    });
+    const secondSession = userPromptSubmitHandler({
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt },
+    });
+
+    expect(firstSession.hookType).toBe('pass');
+    expect(secondSession.hookType).toBe('pass');
   });
 
   it('user_prompt_submit emits a branch hint for longer prompts', () => {
