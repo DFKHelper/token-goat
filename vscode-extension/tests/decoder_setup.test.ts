@@ -42,7 +42,7 @@ describe('ensureDecoderSetup (false-prompt regression, issue #82)', () => {
     // Post-fix it must call mcp-status (not require a folder) and see configured: true.
     workspaceFolders = undefined
     runTokenGoat.mockResolvedValue(JSON.stringify({ configured: true, checkedPaths: ['C:\\Users\\x\\AppData\\Roaming\\Code\\User\\mcp.json'] }))
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(true)
     expect(runTokenGoat).toHaveBeenCalledWith(['mcp-status', '--vscode'], undefined)
     expect(showWarningMessage).not.toHaveBeenCalled()
   })
@@ -53,7 +53,7 @@ describe('ensureDecoderSetup (false-prompt regression, issue #82)', () => {
     // that file and always found it missing, so the prompt fired every session.
     workspaceFolders = [{ uri: { fsPath: 'C:\\proj' } }]
     runTokenGoat.mockResolvedValue(JSON.stringify({ configured: true, checkedPaths: [] }))
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(true)
     expect(runTokenGoat).toHaveBeenCalledWith(['mcp-status', '--vscode', '--project'], 'C:\\proj')
     expect(showWarningMessage).not.toHaveBeenCalled()
   })
@@ -62,7 +62,7 @@ describe('ensureDecoderSetup (false-prompt regression, issue #82)', () => {
     workspaceFolders = [{ uri: { fsPath: 'C:\\proj' } }]
     runTokenGoat.mockResolvedValue(JSON.stringify({ configured: false, checkedPaths: [] }))
     showWarningMessage.mockResolvedValue('Not now')
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(false)
     expect(showWarningMessage).toHaveBeenCalledTimes(1)
   })
 
@@ -73,7 +73,7 @@ describe('ensureDecoderSetup (false-prompt regression, issue #82)', () => {
     workspaceFolders = undefined
     runTokenGoat.mockResolvedValue(JSON.stringify({ configured: false, checkedPaths: [] }))
     showWarningMessage.mockResolvedValue('Not now')
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(false)
     expect(showWarningMessage).toHaveBeenCalledTimes(1)
     const promptText = showWarningMessage.mock.calls[0]?.[0] as string
     expect(promptText).not.toMatch(/this workspace/i)
@@ -89,7 +89,7 @@ describe('ensureDecoderSetup (CLI/extension version skew, issue #76 task B)', ()
     // and permanently skipping the setup prompt for the rest of the session.
     workspaceFolders = undefined
     runTokenGoat.mockRejectedValue(new Error("error: unknown command 'mcp-status'"))
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(false)
     expect(showWarningMessage).toHaveBeenCalledTimes(1)
     const promptText = showWarningMessage.mock.calls[0]?.[0] as string
     expect(promptText).toMatch(/update/i)
@@ -99,7 +99,7 @@ describe('ensureDecoderSetup (CLI/extension version skew, issue #76 task B)', ()
   it('still routes a genuine, unrelated failure through the normal error path (not the version-skew message)', async () => {
     workspaceFolders = undefined
     runTokenGoat.mockRejectedValue(new Error('ECONNREFUSED: something else entirely broke'))
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(false)
     expect(showWarningMessage).not.toHaveBeenCalled()
     expect(showErrorMessage).toHaveBeenCalledTimes(1)
   })

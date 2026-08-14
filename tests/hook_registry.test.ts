@@ -95,6 +95,19 @@ describe('hook registry', () => {
       const result = await runHook(makeEvent())
       expect(result).toEqual({ hookType: 'pass' })
     })
+
+    it('continues after a handler throws so a later handler can respond', async () => {
+      registerHook('pre_tool_use', () => {
+        throw new Error('broken handler')
+      })
+      const later = vi.fn((): HookOutput => ({ hookType: 'context', context: 'still works' }))
+      registerHook('pre_tool_use', later)
+
+      const result = await runHook(makeEvent())
+
+      expect(result).toEqual({ hookType: 'context', context: 'still works' })
+      expect(later).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('advisory handlers', () => {

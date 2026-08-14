@@ -133,7 +133,7 @@ describe('registerMcpDecoderProvider', () => {
 describe('ensureDecoderSetup with the provider registered', () => {
   it('does not shell out to mcp-status or prompt, because the decoder now exists by construction', async () => {
     registerMcpDecoderProvider(fakeContext() as never)
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(true)
     // Pre-change this always ran mcp-status and, on a machine with no mcp.json, told the user to
     // run `install --vscode` and reload -- setup work the provider makes unnecessary.
     expect(runTokenGoat).not.toHaveBeenCalled()
@@ -144,7 +144,7 @@ describe('ensureDecoderSetup with the provider registered', () => {
     // Guards against the skip above being unconditional: without registration the original path
     // must survive intact, so this file cannot pass by having disabled the check outright.
     runTokenGoat.mockResolvedValue(JSON.stringify({ configured: true, checkedPaths: [] }))
-    await ensureDecoderSetup()
+    await expect(ensureDecoderSetup()).resolves.toBe(true)
     expect(runTokenGoat).toHaveBeenCalledWith(['mcp-status', '--vscode'], undefined)
   })
 })

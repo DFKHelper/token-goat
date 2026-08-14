@@ -180,7 +180,13 @@ export async function runHook(event: HookEvent): Promise<HookOutput> {
   let advisoryResult: HookOutput | undefined
   for (const { handler, toolName, advisory } of list) {
     if (toolName !== undefined && toolName !== event.toolName) continue
-    const result = await handler(event)
+    let result: HookOutput
+    try {
+      result = await handler(event)
+    } catch {
+      // A single extension hook must not suppress the remaining handlers.
+      continue
+    }
     if (result.hookType !== 'pass') {
       if (advisory) {
         advisoryResult = result

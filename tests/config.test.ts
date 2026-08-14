@@ -583,6 +583,7 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.hints.reread_deny).toBe(true)
     expect(cfg.hints.reread_deny_min_bytes).toBe(51_200)
     expect(cfg.hints.large_read_redirect_bytes).toBe(512_000)
+    expect(cfg.hints.serve_diff_on_reread).toBe(true)
   })
 
   it('ImageShrinkConfig defaults', () => {

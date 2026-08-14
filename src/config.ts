@@ -404,7 +404,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // is only meant to catch the "mostly untouched, a few lines changed" case, not a genuine
     // rewrite that happens to share some boilerplate.
     write_rewrite_unchanged_pct: 75,
-    serve_diff_on_reread: false,
+    serve_diff_on_reread: true,
     backoff_thresholds: [1, 3, 10, 30],
     git_hint_max_ms: 50,
     min_session_hint_savings_bytes: 512,
