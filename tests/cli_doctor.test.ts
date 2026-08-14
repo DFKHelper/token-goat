@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -61,6 +61,62 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('warn')
       expect(result.message).toContain('2 Chrome DevTools MCP launchers')
       expect(result.message).toContain('1 orphaned Node process')
+    })
+  })
+
+  describe('checkGlobalMcpConfig', () => {
+    it('accepts an absent global MCP configuration', () => {
+      const configPath = path.join(tempDir, 'mcp-config.json')
+      const result = checkGlobalMcpConfig(configPath)
+
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain(configPath)
+    })
+
+    it('warns when the global configuration cannot be parsed', () => {
+      const configPath = path.join(tempDir, 'mcp-config.json')
+      fs.writeFileSync(configPath, '{ malformed')
+
+      const result = checkGlobalMcpConfig(configPath)
+
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('unable to audit heavy launchers')
+      expect(result.message).toContain(configPath)
+    })
+
+    it('ignores non-matching MCP servers without exposing their configuration', () => {
+      const configPath = path.join(tempDir, 'mcp-config.json')
+      fs.writeFileSync(configPath, JSON.stringify({
+        mcpServers: {
+          unrelated: { command: 'node', args: ['server.mjs', '--token', 'secret-value'] },
+        },
+      }))
+
+      const result = checkGlobalMcpConfig(configPath)
+
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no known heavy global MCP launchers')
+      expect(result.message).not.toContain('unrelated')
+      expect(result.message).not.toContain('secret-value')
+    })
+
+    it('warns only for known heavy npx MCP launchers', () => {
+      const configPath = path.join(tempDir, 'mcp-config.json')
+      fs.writeFileSync(configPath, JSON.stringify({
+        mcpServers: {
+          browser: { command: 'npx.cmd', args: ['-y', 'chrome-devtools-mcp@latest'] },
+          playwright: { command: 'npx', args: ['@playwright/mcp@latest'] },
+        },
+      }))
+
+      const result = checkGlobalMcpConfig(configPath)
+
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('1 Chrome DevTools MCP launcher')
+      expect(result.message).toContain('1 Playwright MCP launcher')
+      expect(result.message).toContain('Move heavy launchers to project scope')
+      expect(result.message).not.toContain('browser')
+      expect(result.message).not.toContain('playwright:')
     })
   })
 
