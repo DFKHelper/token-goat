@@ -5,9 +5,11 @@ import path from 'node:path'
 import { dataDir } from './constants.js'
 import { normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
+import { embedTexts, isAvailable } from './embeddings.js'
 
 const MAX_ENTRIES = 500
 const MAX_TEXT_BYTES = 128 * 1024
+const MAX_SEMANTIC_CANDIDATES = 100
 const CACHE_FILE = 'workspace-evidence.json'
 
 export type EvidenceRepresentation = 'file' | 'tool-output'
@@ -20,6 +22,7 @@ export interface EvidenceEntry {
   contentHash: string
   text: string
   createdAt: number
+  embedding?: string
 }
 
 function cachePath(): string {
@@ -42,7 +45,8 @@ function load(): EvidenceEntry[] {
       ((entry as EvidenceEntry).representation === 'file' || (entry as EvidenceEntry).representation === 'tool-output') &&
       typeof (entry as EvidenceEntry).contentHash === 'string' &&
       typeof (entry as EvidenceEntry).text === 'string' &&
-      typeof (entry as EvidenceEntry).createdAt === 'number',
+      typeof (entry as EvidenceEntry).createdAt === 'number' &&
+      ((entry as EvidenceEntry).embedding === undefined || typeof (entry as EvidenceEntry).embedding === 'string'),
     )
   } catch {
     return []
@@ -112,6 +116,73 @@ export function searchEvidence(projectRoot: string, query: string, limit = 10): 
     .sort((a, b) => b.score - a.score || b.entry.createdAt - a.entry.createdAt)
     .slice(0, limit)
     .map(({ entry }) => entry)
+}
+
+function decodeEmbedding(encoded: string | undefined): Float32Array | null {
+  if (encoded === undefined) return null
+  try {
+    const bytes = Buffer.from(encoded, 'base64')
+    if (bytes.length === 0 || bytes.length % Float32Array.BYTES_PER_ELEMENT !== 0) return null
+    return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / Float32Array.BYTES_PER_ELEMENT)
+  } catch {
+    return null
+  }
+}
+
+function encodeEmbedding(vector: readonly number[]): string {
+  const values = Float32Array.from(vector)
+  return Buffer.from(values.buffer, values.byteOffset, values.byteLength).toString('base64')
+}
+
+function cosineSimilarity(left: Float32Array, right: Float32Array): number {
+  if (left.length !== right.length) return Number.NEGATIVE_INFINITY
+  let dot = 0
+  let leftMagnitude = 0
+  let rightMagnitude = 0
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index] ?? 0
+    const b = right[index] ?? 0
+    dot += a * b
+    leftMagnitude += a * a
+    rightMagnitude += b * b
+  }
+  return leftMagnitude === 0 || rightMagnitude === 0
+    ? Number.NEGATIVE_INFINITY
+    : dot / Math.sqrt(leftMagnitude * rightMagnitude)
+}
+
+export async function searchEvidenceSemantically(projectRoot: string, query: string, limit = 10): Promise<EvidenceEntry[]> {
+  if (query.trim() === '' || !isAvailable()) return []
+  const root = normalizePath(projectRoot)
+  const entries = load()
+    .filter((entry) => entry.projectRoot === root)
+    .slice(0, MAX_SEMANTIC_CANDIDATES)
+  if (entries.length === 0) return []
+
+  try {
+    const missing = entries.filter((entry) => decodeEmbedding(entry.embedding) === null)
+    const vectors = await embedTexts([query, ...missing.map((entry) => entry.text)])
+    const queryVector = vectors[0]
+    if (queryVector === undefined) return []
+    for (let index = 0; index < missing.length; index += 1) {
+      const vector = vectors[index + 1]
+      if (vector !== undefined) missing[index]!.embedding = encodeEmbedding(vector)
+    }
+    if (missing.length > 0) {
+      const updated = new Map(entries.map((entry) => [entry.id, entry]))
+      save(load().map((entry) => updated.get(entry.id) ?? entry))
+    }
+
+    const queryValues = Float32Array.from(queryVector)
+    return entries
+      .map((entry) => ({ entry, score: cosineSimilarity(queryValues, decodeEmbedding(entry.embedding) ?? new Float32Array()) }))
+      .filter(({ score }) => Number.isFinite(score))
+      .sort((left, right) => right.score - left.score || right.entry.createdAt - left.entry.createdAt)
+      .slice(0, limit)
+      .map(({ entry }) => entry)
+  } catch {
+    return []
+  }
 }
 
 export function buildDeltaCapsule(projectRoot: string, limit = 8): string | null {

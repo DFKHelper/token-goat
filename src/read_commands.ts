@@ -18,6 +18,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
+import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
@@ -6030,6 +6031,34 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       return { text: JSON.stringify(payload, null, 2), code: 0 }
     }
     return { text: `token-goat: ${notice}`, code: 0 }
+  }
+  // Evidence is a project-scoped fallback, not a replacement for source-index matches: its
+  // entries are redacted historical observations and carry no source line contract. Only consult
+  // it after both source retrieval paths miss and when no source-specific filter was requested.
+  if (!anyFilter) {
+    const evidenceHits = await searchEvidenceSemantically(rootDir, query, n)
+    if (evidenceHits.length > 0) {
+      if (opts.json === true) {
+        const items = evidenceHits.map((entry) => ({
+          source: toDisplayPath(rootDir, entry.source),
+          representation: entry.representation,
+          preview: previewLines(entry.text, 3),
+          cachedAt: entry.createdAt,
+        }))
+        const capped = guardJsonRows(items)
+        const text = JSON.stringify({ source: 'workspace-evidence', ...capped }, null, 2)
+        recordReadStat('semantic_search', 0, text, query)
+        return { text, code: 0 }
+      }
+      const text = guardText(
+        evidenceHits
+          .map((entry) => `# cached ${entry.representation} evidence — ${toDisplayPath(rootDir, entry.source)}\n${previewLines(entry.text, 3)}`)
+          .join('\n\n'),
+        'semantic',
+      )
+      recordReadStat('semantic_search', 0, text, query)
+      return { text, code: 0 }
+    }
   }
   // Only paid after both the dense search and the BM25 search already came back empty.
   const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)

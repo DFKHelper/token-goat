@@ -16,14 +16,18 @@ import {
   findVerifiedFileEvidence,
   recordEvidence,
   searchEvidence,
+  searchEvidenceSemantically,
 } from '../src/evidence_cache.js'
 import { normalizePath } from '../src/paths.js'
+import { setPipelineFnForTesting } from '../src/embeddings.js'
+import { clearModuleCaches } from '../src/reset.js'
 
 beforeEach(() => {
   testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-evidence-cache-'))
 })
 
 afterEach(() => {
+  clearModuleCaches()
   fs.rmSync(testDataDir, { recursive: true, force: true })
 })
 
@@ -67,5 +71,23 @@ describe('workspace evidence cache', () => {
     expect(capsule).toContain(normalizePath(source))
     expect(capsule).not.toContain('answer = 43')
     expect(searchEvidence(project, 'answer')).toHaveLength(1)
+  })
+
+  it('ranks redacted evidence semantically within its project and persists its vector', async () => {
+    const project = path.join(testDataDir, 'project')
+    const otherProject = path.join(testDataDir, 'other')
+    setPipelineFnForTesting(async () => async (text: string) => {
+      const vector = new Float32Array(384)
+      vector[text.includes('marine') ? 0 : 1] = 1
+      return { data: vector }
+    })
+    recordEvidence({ projectRoot: project, source: path.join(project, 'ocean.md'), representation: 'file', text: 'marine biology report' })
+    recordEvidence({ projectRoot: otherProject, source: path.join(otherProject, 'forest.md'), representation: 'file', text: 'forest ecology report' })
+
+    const hits = await searchEvidenceSemantically(project, 'marine research')
+
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.source).toBe(normalizePath(path.join(project, 'ocean.md')))
+    expect(fs.readFileSync(path.join(testDataDir, 'workspace-evidence.json'), 'utf8')).toContain('"embedding"')
   })
 })
