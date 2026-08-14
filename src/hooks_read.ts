@@ -43,6 +43,7 @@ import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 import { isImagePath } from './image_shrink.js'
 import { compactPathFor, isCompactFresh, readCompactBody } from './doc_compact.js'
+import { findVerifiedFileEvidence, recordEvidence } from './evidence_cache.js'
 import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
@@ -579,6 +580,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       'node_modules is typically noise; use npm ls, npm outdated, or npm audit instead for dependency info. ' +
       'To force access, use: token-goat read node_modules/package/file.js::symbol-name or token-goat section node_modules/package/file.js::heading',
     )
+  }
+
+  if (event.toolName === 'Read' && loadConfig().hints.cross_session_read_dedup) {
+    try {
+      const cwd = getCwd(event) ?? process.cwd()
+      const project = findProject(cwd) ?? makeProjectAt(cwd)
+      const current = fs.readFileSync(normalized, 'utf8')
+      const evidence = findVerifiedFileEvidence(project.root, normalized, current)
+      if (evidence !== null) {
+        recordStat('evidence_cache_hit', 0)
+        return quietContextOutput(
+          `Verified cross-session evidence exists for this unchanged file (${evidence.id}). ` +
+          'Use a narrow read instead of loading the full file again.',
+        )
+      }
+    } catch {
+      // A cache miss or unreadable file must preserve the normal Read path.
+    }
   }
 
   const basename = path.basename(normalized)
@@ -1212,6 +1231,17 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
       }
     } catch {
       // best-effort; never block the hook
+    }
+  }
+
+  if (loadConfig().hints.cross_session_read_dedup) {
+    try {
+      const cwd = getCwd(event) ?? process.cwd()
+      const project = findProject(cwd) ?? makeProjectAt(cwd)
+      const source = fs.readFileSync(normalized, 'utf8')
+      recordEvidence({ projectRoot: project.root, source: normalized, representation: 'file', text: source })
+    } catch {
+      // Evidence is best-effort; it must never affect the completed Read.
     }
   }
 

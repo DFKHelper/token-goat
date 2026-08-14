@@ -91,6 +91,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Typoed `token-goat symbol getUserr` | `symbol` matches on exact name; a miss returns `No matches for 'getUserr'` (no fuzzy/auto-redirect) — use `token-goat find getUserr` for a typo-tolerant name lookup, or `token-goat semantic "<what it does>"` when you don't know the name at all |
 | `grep`/`rg` returns 50+ match lines | File-level summary: top 20 files by match count; full result cached, ~80% smaller |
 | Same "already read" hint fires on every re-read | Suppressed after first injection; SHA-256 fingerprinting prevents the same nag twice per session |
+| A file already read in another session is requested unchanged | With `hints.cross_session_read_dedup = true`, a project-scoped SHA-256 evidence record adds a compact advisory instead of replaying content. Changed files are named at startup for a fresh surgical read; cached bodies are never injected |
 | Same bash command runs 3+ times in one session | Escalating warning: "ran 2×" on repeat, "WARNING: ran N×" by the third; output always cached |
 | Agent starts cold with no git context in a dirty repo | Branch, change counts, and 5 recent commits injected at startup (~50 tokens) |
 | Re-read hint shows only the line range | Hint includes previously-accessed symbol names: `[symbols: login, refresh, …]` |

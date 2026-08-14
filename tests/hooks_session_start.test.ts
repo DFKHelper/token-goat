@@ -13,11 +13,13 @@ vi.mock('../src/constants.js', async (importOriginal) => {
     ...original,
     configPath: () => _testConfigPath,
     globalDbPath: () => _testDbPath,
+    dataDir: () => _testDataDir,
   }
 })
 
 const _testConfigPath = tempConfigPath('tg-hooks-session-start-config.toml')
 const _testDbPath = tempConfigPath('tg-hooks-session-start-db.sqlite')
+const _testDataDir = tempConfigPath('tg-hooks-session-start-data')
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
@@ -26,6 +28,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
+import { recordEvidence } from '../src/evidence_cache.js'
 
 function makeEvent(cwd?: string): HookEvent {
   return {
@@ -41,7 +44,7 @@ function makeEvent(cwd?: string): HookEvent {
 beforeEach(() => {
   clearModuleCaches()
   invalidateConfigCache()
-  for (const p of [_testConfigPath, _testDbPath]) {
+  for (const p of [_testConfigPath, _testDbPath, _testDataDir]) {
     try {
       fs.rmSync(p)
     } catch {
@@ -51,7 +54,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  for (const p of [_testConfigPath, _testDbPath]) {
+  for (const p of [_testConfigPath, _testDbPath, _testDataDir]) {
     try {
       fs.rmSync(p)
     } catch {
@@ -61,6 +64,28 @@ afterEach(() => {
 })
 
 describe('sessionStartHandler', () => {
+  it('adds a bounded delta capsule for evidence whose source changed', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-evidence-'))
+    const source = path.join(projectDir, 'example.ts')
+    try {
+      fs.writeFileSync(source, 'export const answer = 42\n')
+      recordEvidence({
+        projectRoot: projectDir,
+        source,
+        representation: 'file',
+        text: 'export const answer = 41\n',
+      })
+
+      const result = sessionStartHandler(makeEvent(projectDir))
+
+      expect(JSON.stringify(result)).toContain('Cross-session evidence changed since it was cached')
+      expect(JSON.stringify(result)).toContain(normalizePath(source))
+      expect(JSON.stringify(result)).not.toContain('answer = 42')
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
   it('emits a project-aware reminder that names no exact symbol count when the cwd is indexed', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-proj-'))
     try {

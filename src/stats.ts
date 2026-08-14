@@ -80,6 +80,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   session_hint: SOURCE_HINT,
   session_hint_suppressed: SOURCE_HINT,
   diff_hint: SOURCE_HINT,
+  evidence_cache_hit: SOURCE_HINT,
   structured_file_hint: SOURCE_HINT,
   predictive_prefetch_hit: SOURCE_HINT,
   grep_dedup_hint: SOURCE_HINT,

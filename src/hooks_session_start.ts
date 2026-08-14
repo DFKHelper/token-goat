@@ -27,6 +27,7 @@ import { loadConfig } from './config.js'
 import { countSymbols } from './index_reader.js'
 import { globalDbPath } from './constants.js'
 import { checkSymbolBodySize } from './cli_doctor.js'
+import { buildDeltaCapsule } from './evidence_cache.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
 const GENERIC_REMINDER =
@@ -66,7 +67,12 @@ function buildReminder(cwd: string | undefined): string {
 export function sessionStartHandler(event: HookEvent): HookOutput {
   try {
     if (!loadConfig().hints.session_start_reminder) return passOutput()
-    let context = buildReminder(getCwd(event))
+    const cwd = getCwd(event)
+    let context = buildReminder(cwd)
+    if (cwd !== undefined) {
+      const capsule = buildDeltaCapsule(cwd)
+      if (capsule !== null) context += `\n\n${capsule}`
+    }
     try {
       const dbHealth = checkSymbolBodySize(globalDbPath())
       if (dbHealth.status === 'warn') {
