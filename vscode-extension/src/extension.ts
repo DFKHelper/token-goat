@@ -72,7 +72,9 @@ export function fencePayload(payload: string): string {
 
 // Single compression path for all text payloads: scrub, compress, report.
 async function compressText(text: string, extension: string): Promise<string> {
-  const payload = await withTemporaryText(scrubPii(text), extension, (file) => runTokenGoat(['compress-text', '--file', file]))
+  const scrubbed = scrubPii(text)
+  if (!await ensureDecoderSetup()) return scrubbed
+  const payload = await withTemporaryText(scrubbed, extension, (file) => runTokenGoat(['compress-text', '--file', file]))
   showStats(payload)
   if (lastRedactions > 0) {
     if (savingsContext && !savingsContext.globalState.get<boolean>('piiNoticeShown', false)) {
@@ -93,8 +95,9 @@ async function compressText(text: string, extension: string): Promise<string> {
 }
 
 async function openChat(query: string): Promise<void> {
-  await ensureDecoderSetup()
-  const hint = '\n\n(This message contains token-goat-compressed text. Decode it with the recovery command in the payload. If you cannot, tell the user to run: token-goat install --vscode)'
+  const hint = await ensureDecoderSetup()
+    ? '\n\n(This message contains token-goat-compressed text. Decode it with the recovery command in the payload.)'
+    : ''
   await vscode.commands.executeCommand('workbench.action.chat.open', { query: query + hint })
 }
 
@@ -103,6 +106,7 @@ async function openChat(query: string): Promise<void> {
 // session and offer to set it up instead of leaving the user staring at a
 // base64 blob.
 let decoderChecked = false
+let decoderAvailable = false
 
 // True once `activate` has registered this extension as VS Code's provider of the token-goat MCP server, which is what lets ensureDecoderSetup skip the whole install-and-reload prompt.
 let mcpProviderRegistered = false
@@ -142,6 +146,7 @@ export function registerMcpDecoderProvider(context: vscode.ExtensionContext): vo
 // call ensureDecoderSetup more than once without an activate()/new extension host.
 export function resetDecoderCheckedForTests(): void {
   decoderChecked = false
+  decoderAvailable = false
 }
 
 // Exposed for tests only: clears the provider-registered flag so a case can exercise the fallback prompt after another case has registered the provider.
@@ -158,11 +163,11 @@ function isUnknownMcpStatusCommandError(error: unknown): boolean {
   return /unknown command ['"]mcp-status['"]/i.test(message)
 }
 
-export async function ensureDecoderSetup(): Promise<void> {
-  if (decoderChecked) return
+export async function ensureDecoderSetup(): Promise<boolean> {
+  if (decoderChecked) return decoderAvailable
   decoderChecked = true
   // Registering the MCP server definition makes the decoder exist by construction: VS Code starts the server from that definition on demand, so there is no mcp.json to write, no window reload, and nothing for the user to set up. Everything below this line exists only to arrange what registration already guarantees, so asking the user to run `install --vscode` here would be asking them to fix a problem they do not have.
-  if (mcpProviderRegistered) return
+  if (mcpProviderRegistered) return decoderAvailable = true
   const folder = vscode.workspace.workspaceFolders?.[0]
   // Shell out to `mcp-status` rather than reading mcp.json here directly: a user-scope
   // install (the default since 9c220be7) has no workspace .vscode/mcp.json at all, so
@@ -174,7 +179,7 @@ export async function ensureDecoderSetup(): Promise<void> {
     const args = folder ? ['mcp-status', '--vscode', '--project'] : ['mcp-status', '--vscode']
     const stdout = await runTokenGoat(args, folder?.uri.fsPath)
     const status = JSON.parse(stdout) as { configured: boolean }
-    if (status.configured) return
+    if (status.configured) return decoderAvailable = true
   } catch (error) {
     if (isUnknownMcpStatusCommandError(error)) {
       // Deliberately no fallback to reading mcp.json directly here: that was the exact
@@ -186,16 +191,16 @@ export async function ensureDecoderSetup(): Promise<void> {
       void vscode.window.showWarningMessage(
         'token-goat: the installed CLI is older than this extension and does not support the decoder check yet. Run `npm install -g token-goat` to update, then reload the window.',
       )
-      return
+      return false
     }
     reportError(error)
-    return
+    return false
   }
   const choice = await vscode.window.showWarningMessage(
     'token-goat compressed this for chat, but no decoder is set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
     'Set up now', 'Not now',
   )
-  if (choice !== 'Set up now') return
+  if (choice !== 'Set up now') return false
   try {
     requireTrustedWorkspace('Installing the token-goat decoder')
     await runTokenGoat(['install', '--vscode'], folder?.uri.fsPath)
@@ -203,6 +208,7 @@ export async function ensureDecoderSetup(): Promise<void> {
   } catch (error) {
     reportError(error)
   }
+  return false
 }
 
 // Tokens-saved status bar: rendered straight from the local ledger (`token-goat stats --json`), which already covers every source (reads, hints, bash, images, compression), not just the compress-text operations this extension itself triggers.
