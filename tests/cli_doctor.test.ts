@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -47,6 +47,21 @@ describe('cli_doctor', () => {
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }
+  })
+
+  describe('checkMcpProcessHealth', () => {
+    it('warns about duplicate MCP launchers and orphaned Node processes without mutating them', () => {
+      const result = checkMcpProcessHealth([
+        { processId: 1, parentProcessId: 0, name: 'copilot.exe', commandLine: '' },
+        { processId: 2, parentProcessId: 1, name: 'node.exe', commandLine: 'npx-cli.js chrome-devtools-mcp@latest' },
+        { processId: 3, parentProcessId: 1, name: 'node.exe', commandLine: 'npx-cli.js chrome-devtools-mcp@latest' },
+        { processId: 4, parentProcessId: 999, name: 'node.exe', commandLine: 'scripts/selfimprove-scheduler.mjs' },
+      ])
+
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('2 Chrome DevTools MCP launchers')
+      expect(result.message).toContain('1 orphaned Node process')
+    })
   })
 
   describe('checkDbExists', () => {

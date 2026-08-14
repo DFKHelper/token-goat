@@ -70,6 +70,38 @@ describe('hooks_session', () => {
     expect(util.runGit).not.toHaveBeenCalled();
   });
 
+  it('advises only once when a continuation loop starts', () => {
+    const event: HookEvent = {
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt: 'continue' },
+    };
+
+    const first = userPromptSubmitHandler(event);
+    const second = userPromptSubmitHandler(event);
+
+    expect((first as { context: string }).context).toContain('checkpoint')
+    expect(second.hookType).toBe('pass')
+  });
+
+  it('advises when an identical embedded skill payload is replayed', () => {
+    const event: HookEvent = {
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: nonce(),
+      agentId: undefined,
+      raw: { prompt: '<skill-context name="example">Repeated payload</skill-context>' },
+    };
+
+    expect(userPromptSubmitHandler(event).hookType).toBe('pass')
+    const replay = userPromptSubmitHandler(event);
+    expect((replay as { context: string }).context).toContain('already provided')
+  });
+
   it('user_prompt_submit emits a branch hint for longer prompts', () => {
     vi.mocked(util.runGit).mockReturnValue({ stdout: 'feature/foo', stderr: '', exitCode: 0 });
     const event: HookEvent = {
