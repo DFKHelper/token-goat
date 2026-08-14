@@ -1716,6 +1716,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   if (isTestRunnerCommand(cmd) && isDirectTestRunnerCommand(cmd) && !hasTestRunScopeOrBudget(cmd)) {
+    // The compressor supplies a timeout itself. Preserve that stronger existing safeguard instead
+    // of replacing its rewrite with an advisory that would leave the test unbounded.
+    const compression = maybeCompressRewrite(event, rawCmd, cmd)
+    if (compression !== null) return compression
+
     const key = `test-run-budget:${event.sessionId}:${shortFingerprint(cmd)}`
     if (!wasHintShown(key)) {
       markHintShown(key)
