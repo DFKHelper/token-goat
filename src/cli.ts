@@ -814,13 +814,14 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean } = {}): void {
+function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean; methodology?: boolean } = {}): void {
   const windowDays = opts.windowDays !== undefined ? requireNonNegativeInt('--window-days', opts.windowDays) : 30
   const statsOpts: Parameters<typeof runStats>[0] = {
     json: opts.json === true,
     windowDays,
     full: opts.full === true,
     short: opts.short === true,
+    methodology: opts.methodology === true,
   }
   if (opts.homeDir !== undefined) {
     statsOpts.homeDir = opts.homeDir
@@ -3273,6 +3274,7 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--full', 'show the full breakdown (by source, by command, by day)')
     .option('--short', 'force the rich short KPI view even when stdout is not a TTY (e.g. piped)')
+    .option('--methodology', 'explain local savings estimates and their billing limits')
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))

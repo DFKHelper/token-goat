@@ -89,6 +89,32 @@ describe('save/load round-trip', () => {
     expect(exportSessionState().bashReruns?.sort()).toEqual(['cmdhash-1', 'cmdhash-2'])
   })
 
+  it('persists session-scoped scheduled prompt counts across hook processes', () => {
+    importSessionState({ ...empty(), scheduledPromptCounts: [['session-a', 24]] })
+    saveSessionState('sid-scheduled-prompts')
+
+    importSessionState(empty())
+    loadSessionState('sid-scheduled-prompts')
+
+    expect(exportSessionState().scheduledPromptCounts).toEqual([['session-a', 24]])
+  })
+
+  it('does not lower a scheduled prompt count when a stale hook process saves later', () => {
+    importSessionState({ ...empty(), scheduledPromptCounts: [['session-a', 24]] })
+    const staleSnapshot = exportSessionState()
+    saveSessionState('sid-scheduled-prompts-stale')
+
+    importSessionState({ ...empty(), scheduledPromptCounts: [['session-a', 25]] })
+    saveSessionState('sid-scheduled-prompts-stale')
+
+    importSessionState(staleSnapshot)
+    saveSessionState('sid-scheduled-prompts-stale')
+
+    importSessionState(empty())
+    loadSessionState('sid-scheduled-prompts-stale')
+    expect(exportSessionState().scheduledPromptCounts).toEqual([['session-a', 25]])
+  })
+
   it('persists and restores lastTabContext across a save/load round-trip (regression: coerce() and mergeSessionState() both omitted lastTabContext entirely, so it never survived the disk round-trip even though exportSessionState/importSessionState carry it in-process -- silently making hooks_browser_image.ts\'s cross-process Tab Context dedup inert)', () => {
     importSessionState({ ...empty(), lastTabContext: 'Tab Context: tab 1' })
     saveSessionState('sid-tabcontext')

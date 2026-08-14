@@ -166,6 +166,40 @@ describe('cli_stats', () => {
   // ---- runStats -----------------------------------------------------------
 
   describe('runStats', () => {
+    it('explains local estimates without opening the statistics ledger', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runStats({ methodology: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+
+      expect(output).toContain('# token-goat savings methodology')
+      expect(output.toLowerCase()).toContain('not github copilot usage')
+      expect(output).toContain('Math.round(bytes_saved / 4)')
+    })
+
+    it('emits structured methodology when json is requested', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runStats({ methodology: true, json: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+
+      const parsed = JSON.parse(output) as { methodology: { billing: string; byte_derived_formula: string } }
+      expect(parsed.methodology.billing).toContain('billing data')
+      expect(parsed.methodology.byte_derived_formula).toContain('Math.round(bytes_saved / 4)')
+    })
+
     it('emits JSON when json flag is set', () => {
       let output = ''
       const orig = process.stdout.write.bind(process.stdout)

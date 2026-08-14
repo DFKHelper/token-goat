@@ -6,7 +6,7 @@ import { passOutput, contextOutput, getCwd } from './hooks_common.js';
 import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
-import { markHintShown, wasHintShown } from './session.js';
+import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
 
 const EMBEDDED_SKILL_CONTEXT_RE = /^\s*<skill-context\b/i;
 const CONTINUATION_PROMPT_RE = /^(?:continue|resume|next|go on)$/i;
@@ -47,12 +47,12 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
 
     const scheduledPrompt = SCHEDULED_PROMPT_RE.exec(prompt);
     if (scheduledPrompt !== null) {
-      const sequence = Number(scheduledPrompt[1]);
-      if (SCHEDULED_PROMPT_PRESSURE_THRESHOLDS.has(sequence)) {
-        const key = `scheduled-prompt-pressure:${event.sessionId}:${sequence}`;
+      const occurrence = recordScheduledPrompt(event.sessionId);
+      if (SCHEDULED_PROMPT_PRESSURE_THRESHOLDS.has(occurrence)) {
+        const key = `scheduled-prompt-pressure:${event.sessionId}:${occurrence}`;
         if (!wasHintShown(key)) {
           markHintShown(key);
-          parts.push(`This is scheduled prompt #${sequence}. Checkpoint the current objective and start a fresh session before continuing if earlier context is no longer needed; this cannot reclaim tokens already injected.`);
+          parts.push(`This is scheduled prompt delivery #${occurrence} (schedule #${scheduledPrompt[1]}). Checkpoint the current objective and start a fresh session before continuing if earlier context is no longer needed; this cannot reclaim tokens already injected.`);
         }
       }
     }

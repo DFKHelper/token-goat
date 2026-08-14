@@ -62,6 +62,10 @@ let _filesAtLoad = new Map<string, number>()
 // Hint fingerprints already emitted this session (dedup, matches session.py mark_hint_seen / has_hint_fingerprint).
 let _hintsShown = new Set<string>()
 
+// sessionId -> number of scheduled prompts observed. The prompt marker is a scheduler identifier
+// in some hosts, so it cannot reliably represent the number of deliveries.
+let _scheduledPromptCounts = new Map<string, number>()
+
 // url -> cacheId index for web-fetch dedup.
 let _webFetches = new Map<string, string>()
 
@@ -324,6 +328,13 @@ export function wasHintShown(hintKey: string): boolean {
 /** Mark `hintKey` as shown so a later {@link wasHintShown} returns true. */
 export function markHintShown(hintKey: string): void {
   _hintsShown.add(hintKey)
+}
+
+/** Record one scheduled-prompt delivery and return its session-local occurrence number. */
+export function recordScheduledPrompt(sessionId: string): number {
+  const count = (_scheduledPromptCounts.get(sessionId) ?? 0) + 1
+  _scheduledPromptCounts.set(sessionId, count)
+  return count
 }
 
 /** True if `cliReadKey` (a `token-goat symbol|read|section` invocation) already ran this session. */
@@ -621,6 +632,7 @@ export function getSessionId(): string {
 export interface SerializedSession {
   files: FileEntry[]
   hintsShown: string[]
+  scheduledPromptCounts?: Array<[string, number]>
   webFetches: Array<[string, string]>
   bashOutputs: Array<[string, string]>
   bashReruns?: string[]
@@ -648,6 +660,7 @@ export function exportSessionState(): SerializedSession {
   return {
     files: Array.from(_files.values()),
     hintsShown: Array.from(_hintsShown),
+    ...(_scheduledPromptCounts.size > 0 ? { scheduledPromptCounts: Array.from(_scheduledPromptCounts.entries()) } : {}),
     webFetches: Array.from(_webFetches.entries()),
     bashOutputs: Array.from(_bashOutputs.entries()),
     bashReruns: Array.from(_bashReruns),
@@ -678,6 +691,7 @@ export function importSessionState(s: SerializedSession): void {
   }
   _filesAtLoad = new Map(Array.from(_files, ([key, e]) => [key, e.readCount]))
   _hintsShown = new Set(s.hintsShown)
+  _scheduledPromptCounts = new Map(s.scheduledPromptCounts ?? [])
   _webFetches = new Map(s.webFetches)
   _bashOutputs = new Map(s.bashOutputs)
   _bashReruns = new Set(s.bashReruns ?? [])
@@ -699,6 +713,7 @@ registerReset(() => {
   _files = new Map()
   _filesAtLoad = new Map()
   _hintsShown = new Set()
+  _scheduledPromptCounts = new Map()
   _webFetches = new Map()
   _bashOutputs = new Map()
   _bashReruns = new Set()
