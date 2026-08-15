@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
+import { gitRepoWithCommit } from './helpers/git-repo.js'
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp
 // file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests
@@ -2005,26 +2006,13 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
   })
 })
 
-/** Init a git repo with one committed file at `<repo>/a.txt`, returning the repo dir. */
-function initGitRepoForBashTests(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
-  writeFileSync(join(dir, 'a.txt'), 'one\n')
-  const git = (args: string[]): void => {
-    execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
-  }
-  git(['init'])
-  git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
-  git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
-  return dir
-}
-
 describe('preBashHandler/postBashHandler — scoped git status/diff --stat recall (Bug D regression)', () => {
   beforeEach(() => {
     clearModuleCaches()
   })
 
   it('recalls a cached scoped `git status --porcelain -- <path>` on an identical rerun with no intervening edit', async () => {
-    const dir = initGitRepoForBashTests('tg-gitscope-status-')
+    const dir = gitRepoWithCommit()
     try {
       const cmd = 'git status --porcelain -- a.txt'
       // Padded well above bash_compress.cache_min_bytes (512) — a real scoped status/diff
@@ -2051,7 +2039,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
   })
 
   it('recalls a cached scoped `git diff --stat HEAD -- <path>` on an identical rerun with no intervening edit', async () => {
-    const dir = initGitRepoForBashTests('tg-gitscope-diffstat-')
+    const dir = gitRepoWithCommit()
     try {
       const cmd = 'git diff --stat HEAD -- a.txt'
       const output = (' a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n').repeat(20)
@@ -2071,7 +2059,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
   })
 
   it('does not recall a scoped git status once the scoped path is edited (dirty-queue-visible change invalidates the cache)', async () => {
-    const dir = initGitRepoForBashTests('tg-gitscope-invalidate-')
+    const dir = gitRepoWithCommit()
     try {
       const cmd = 'git status --porcelain -- a.txt'
       const output = (' M a.txt\n').repeat(80)
@@ -2100,7 +2088,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
   })
 
   it('does not recall a scoped git diff --stat once HEAD changes (a commit lands between runs)', async () => {
-    const dir = initGitRepoForBashTests('tg-gitscope-head-')
+    const dir = gitRepoWithCommit()
     try {
       const cmd = 'git diff --stat -- a.txt'
       const output = (' a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n').repeat(20)
@@ -2125,7 +2113,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
   })
 
   it('does not cache/recall an unscoped `git status` (no `-- <path>`) via the scoped-git recall path', async () => {
-    const dir = initGitRepoForBashTests('tg-gitscope-unscoped-')
+    const dir = gitRepoWithCommit()
     try {
       const cmd = 'git status'
       const output = 'nothing to commit, working tree clean\n'.repeat(20)
@@ -3436,7 +3424,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 
   it('enqueues a file changed by `git checkout <branch>` to the dirty queue', async () => {
-    const dir = initGitRepoForBashTests('tg-gitmutate-checkout-')
+    const dir = gitRepoWithCommit()
     try {
       const git = (args: string[]): void => {
         execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
@@ -3459,7 +3447,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 
   it('enqueues a file changed by `git reset --hard <ref>`', async () => {
-    const dir = initGitRepoForBashTests('tg-gitmutate-reset-')
+    const dir = gitRepoWithCommit()
     try {
       const git = (args: string[]): void => {
         execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
@@ -3555,7 +3543,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 
   it('does NOT enqueue anything for a path-scoped `git checkout -- <file>` restore (HEAD never moves)', async () => {
-    const dir = initGitRepoForBashTests('tg-gitmutate-scoped-')
+    const dir = gitRepoWithCommit()
     try {
       writeFileSync(join(dir, 'a.txt'), 'two\n')
 
@@ -3568,7 +3556,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 
   it('does NOT enqueue anything for a non-git-mutating command', async () => {
-    const dir = initGitRepoForBashTests('tg-gitmutate-noop-')
+    const dir = gitRepoWithCommit()
     try {
       await postBashHandler(makePostBashEvent('git status', '', dir))
       expect(getDirtyPaths()).toEqual([])
@@ -3578,7 +3566,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 
   it('does NOT enqueue anything when the head-moving command failed (non-zero exit)', async () => {
-    const dir = initGitRepoForBashTests('tg-gitmutate-fail-')
+    const dir = gitRepoWithCommit()
     try {
       const event = makeHookEvent({
         eventName: 'post_tool_use',
@@ -3602,7 +3590,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
   // Regression: `git reset` is deliberately excluded from the ORIG_HEAD-preferring diff base (see ORIG_HEAD_ELIGIBLE_GIT_RE in hooks_bash.ts) because a bare `git reset <pathspec>` shares `git checkout <file>`'s ref-vs-path ambiguity -- always using HEAD@{1} for reset sidesteps that ambiguity entirely rather than trying to heuristically detect it. This test locks in that a reset immediately following a multi-commit rebase (which sets a far-back ORIG_HEAD) still enqueues based on the reset's own single, immediately-prior reflog step, not the rebase's ORIG_HEAD -- proving reset truly never reads ORIG_HEAD, not just that it happens to coincide with HEAD@{1} in the common case.
   it('enqueues based on the reset itself, not a leftover ORIG_HEAD from an earlier rebase', async () => {
-    const dir = initGitRepoForBashTests('tg-gitmutate-reset-after-rebase-')
+    const dir = gitRepoWithCommit()
     try {
       const gitEnv = ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null']
       const git = (args: string[]): void => {

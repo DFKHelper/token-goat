@@ -34,13 +34,18 @@ function sweepStaleRoots(): void {
 
 /** Returns `<fresh dir>/<fileName>`; the file itself is not created. */
 export function tempConfigPath(fileName: string): string {
+  return path.join(tempDir(), fileName)
+}
+
+/** A fresh empty directory under this process's temp root, removed with the root on exit. Callers never clean up after themselves, so a directory survives a failing assertion for debugging and is still not leaked. */
+export function tempDir(): string {
   if (root === null) {
     root = fs.mkdtempSync(path.join(os.tmpdir(), ROOT_PREFIX))
     sweepStaleRoots()
   }
   const dir = path.join(root, String(counter++))
   fs.mkdirSync(dir, { recursive: true })
-  return path.join(dir, fileName)
+  return dir
 }
 
 process.on('exit', () => {
