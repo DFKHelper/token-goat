@@ -1,18 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
-import { parseFile } from '../src/parser.js'
 import { extractApex } from '../src/languages/apex.js'
 import { extractSalesforceMetadata } from '../src/languages/salesforce_metadata.js'
 
-function tmp(name: string, content: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-salesforce-test-'))
-  const file = path.join(dir, name)
-  fs.writeFileSync(file, content)
-  return file
-}
+import { parseFixture } from './helpers/parse-fixture.js'
 
 describe('apex adapter', () => {
   it('extracts Apex classes, constructors, methods, and inner classes', () => {
@@ -335,15 +326,13 @@ public class MyTestClass {
   })
 
   it('is used by parseFile for .cls files', async () => {
-    const file = tmp(
+    const result = await parseFixture(
       'ExampleService.cls',
       `public class ExampleService {
   public static void run() {}
 }
 `,
     )
-
-    const result = await parseFile(file)
     expect(result.language).toBe('apex')
     expect(result.symbols.map((s) => s.name)).toEqual(expect.arrayContaining(['ExampleService', 'run']))
   })

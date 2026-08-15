@@ -1,8 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import * as os from 'node:os'
-import { parseFile } from '../src/parser.js'
 import { extractCsharp } from '../src/languages/csharp.js'
 import { extractPhp } from '../src/languages/php.js'
 import { extractHtml } from '../src/languages/html.js'
@@ -25,6 +21,8 @@ import { extractDart } from '../src/languages/dart.js'
 import { extractZig } from '../src/languages/zig.js'
 import { extractR } from '../src/languages/r.js'
 
+import { parseFixture } from './helpers/parse-fixture.js'
+
 // Every `?.docstring).toBe('SomeClassName' | '')` assertion in this file was updated to `?.parent`
 // when the `symbols.parent` column was added: the containing class/type name these regex
 // adapters recover for a method/property now lives in its own `parent` field, not overloaded
@@ -34,13 +32,6 @@ import { extractR } from '../src/languages/r.js'
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function tmp(name: string, content: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lang-test-'))
-  const file = path.join(dir, name)
-  fs.writeFileSync(file, content)
-  return file
-}
 
 // ---------------------------------------------------------------------------
 // C#
@@ -371,10 +362,8 @@ public class Foo {
   })
 
   it('detects .cs language via parseFile', async () => {
-    const file = tmp('Foo.cs', 'public class Foo {}')
-    const result = await parseFile(file)
+    const result = await parseFixture('Foo.cs', 'public class Foo {}')
     expect(result.language).toBe('csharp')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
@@ -942,10 +931,8 @@ class Outer {
   })
 
   it('detects .php language via parseFile', async () => {
-    const file = tmp('foo.php', '<?php function foo() {}')
-    const result = await parseFile(file)
+    const result = await parseFixture('foo.php', '<?php function foo() {}')
     expect(result.language).toBe('php')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
@@ -1068,10 +1055,8 @@ describe('html adapter', () => {
   })
 
   it('detects .html language via parseFile', async () => {
-    const file = tmp('page.html', '<h1>Hello</h1>')
-    const result = await parseFile(file)
+    const result = await parseFixture('page.html', '<h1>Hello</h1>')
     expect(result.language).toBe('html')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('extracts a heading whose text spans multiple lines', () => {
@@ -1087,14 +1072,12 @@ describe('html adapter', () => {
     // Regression: extractHtml computed headings into .sections, but extractSymbolsNoTreeSitter
     // only consumed .symbols, so headings never entered the index and were unreachable via
     // symbol/skeleton/outline or the live `section` command.
-    const file = tmp('page.html', '<h2 id="setup">Setup Guide</h2>\n<p>content</p>\n<h3>Next Steps</h3>')
-    const result = await parseFile(file)
+    const result = await parseFixture('page.html', '<h2 id="setup">Setup Guide</h2>\n<p>content</p>\n<h3>Next Steps</h3>')
     const heading = result.symbols.find((s) => s.name === 'Setup Guide')
     expect(heading?.kind).toBe('heading')
     expect(heading?.lineStart).toBe(1)
     const nextHeading = result.symbols.find((s) => s.name === 'Next Steps')
     expect(nextHeading?.kind).toBe('heading')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('does not match id=/class= inside a longer attribute name lacking a left boundary', () => {
@@ -1316,10 +1299,8 @@ describe('liquid adapter', () => {
   })
 
   it('detects .liquid language via parseFile', async () => {
-    const file = tmp('test.liquid', '{% include "foo" %}')
-    const result = await parseFile(file)
+    const result = await parseFixture('test.liquid', '{% include "foo" %}')
     expect(result.language).toBe('liquid')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('extracts a heading whose text spans multiple lines', () => {
@@ -1334,11 +1315,9 @@ describe('liquid adapter', () => {
   it('headings are included in symbols via parseFile', async () => {
     // Regression: extractLiquid computed headings into .sections, but extractSymbolsNoTreeSitter
     // only consumed .symbols, so headings never entered the index.
-    const file = tmp('test.liquid', '<h2>Setup Guide</h2>\n<p>content</p>')
-    const result = await parseFile(file)
+    const result = await parseFixture('test.liquid', '<h2>Setup Guide</h2>\n<p>content</p>')
     const heading = result.symbols.find((s) => s.name === 'Setup Guide')
     expect(heading?.kind).toBe('heading')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('does not index a heading commented out with <!-- -->', () => {
@@ -1562,10 +1541,8 @@ class Dog : Animal {
   })
 
   it('detects .kt language via parseFile', async () => {
-    const file = tmp('Foo.kt', 'fun main() {}')
-    const result = await parseFile(file)
+    const result = await parseFixture('Foo.kt', 'fun main() {}')
     expect(result.language).toBe('kotlin')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('captures methods from a class whose primary-constructor header spans multiple lines', () => {
@@ -3241,10 +3218,8 @@ type Foo {
   })
 
   it('detects .graphql language via parseFile', async () => {
-    const file = tmp('schema.graphql', 'type Query { hello: String }')
-    const result = await parseFile(file)
+    const result = await parseFixture('schema.graphql', 'type Query { hello: String }')
     expect(result.language).toBe('graphql')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -3526,10 +3501,8 @@ CREATE TABLE real_table (id int);
   })
 
   it('detects .sql language via parseFile', async () => {
-    const file = tmp('schema.sql', 'CREATE TABLE foo (id INT);')
-    const result = await parseFile(file)
+    const result = await parseFixture('schema.sql', 'CREATE TABLE foo (id INT);')
     expect(result.language).toBe('sql')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -3597,10 +3570,8 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 
   it('detects .ini language via parseFile', async () => {
-    const file = tmp('config.ini', '[section]\nkey=value\n')
-    const result = await parseFile(file)
+    const result = await parseFixture('config.ini', '[section]\nkey=value\n')
     expect(result.language).toBe('ini')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -3750,12 +3721,8 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 
   it('detects .env filename via parseFile', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-env-test-'))
-    const file = path.join(dir, '.env')
-    fs.writeFileSync(file, 'KEY=value\n')
-    const result = await parseFile(file)
+    const result = await parseFixture('.env', 'KEY=value\n')
     expect(result.language).toBe('env_file')
-    fs.rmSync(dir, { recursive: true, force: true })
   })
 })
 
@@ -4102,25 +4069,17 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 
   it('detects Makefile by name via parseFile', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-make-test-'))
-    const file = path.join(dir, 'Makefile')
-    fs.writeFileSync(file, 'all:\n\techo hi\n')
-    const result = await parseFile(file)
+    const result = await parseFixture('Makefile', 'all:\n\techo hi\n')
     expect(result.language).toBe('makefile')
-    fs.rmSync(dir, { recursive: true, force: true })
   })
 
   it('detects and indexes a .mk fragment via parseFile', async () => {
     // Regression: a `.mk` fragment (config.mk, rules.mk) was classified 'unknown' and produced
     // zero symbols despite extractMakefile handling its content -- `.mk` had no extension mapping.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mk-test-'))
-    const file = path.join(dir, 'rules.mk')
-    fs.writeFileSync(file, 'build:\n\techo building\n\nclean:\n\trm -rf out\n')
-    const result = await parseFile(file)
+    const result = await parseFixture('rules.mk', 'build:\n\techo building\n\nclean:\n\trm -rf out\n')
     expect(result.language).toBe('makefile')
     expect(result.symbols.find((s) => s.name === 'build')?.kind).toBe('makefile_target')
     expect(result.symbols.find((s) => s.name === 'clean')?.kind).toBe('makefile_target')
-    fs.rmSync(dir, { recursive: true, force: true })
   })
 })
 
@@ -4186,10 +4145,8 @@ service UserService {
   })
 
   it('detects .proto language via parseFile', async () => {
-    const file = tmp('user.proto', 'message Foo {}')
-    const result = await parseFile(file)
+    const result = await parseFixture('user.proto', 'message Foo {}')
     expect(result.language).toBe('proto')
-    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('captures nested message/enum with correct end lines, not just column-0 top-level ones', () => {
@@ -4507,15 +4464,11 @@ function MyFunction {
   })
 
   it('detects .ps1 and .psm1 languages via parseFile', async () => {
-    const ps1File = tmp('script.ps1', 'function Get-Test { }')
-    const result1 = await parseFile(ps1File)
+    const result1 = await parseFixture('script.ps1', 'function Get-Test { }')
     expect(result1.language).toBe('powershell')
-    fs.rmSync(path.dirname(ps1File), { recursive: true, force: true })
-    
-    const psm1File = tmp('module.psm1', 'function Get-Test { }')
-    const result2 = await parseFile(psm1File)
+
+    const result2 = await parseFixture('module.psm1', 'function Get-Test { }')
     expect(result2.language).toBe('powershell')
-    fs.rmSync(path.dirname(psm1File), { recursive: true, force: true })
   })
 
   it('indexes a function whose declaration line also carries a same-line inline block comment', () => {
@@ -4876,18 +4829,9 @@ resource "aws_instance" "web" {
   })
 
   it('detects .tf, .tfvars, and .hcl language via parseFile', async () => {
-    const tfFile = tmp('main.tf', 'resource "aws_instance" "web" {}')
-    const tfvarsFile = tmp('terraform.tfvars', 'region = "us-east-1"')
-    const hclFile = tmp('config.hcl', 'block "x" {}')
-    try {
-      expect((await parseFile(tfFile)).language).toBe('terraform')
-      expect((await parseFile(tfvarsFile)).language).toBe('terraform')
-      expect((await parseFile(hclFile)).language).toBe('terraform')
-    } finally {
-      fs.rmSync(path.dirname(tfFile), { recursive: true, force: true })
-      fs.rmSync(path.dirname(tfvarsFile), { recursive: true, force: true })
-      fs.rmSync(path.dirname(hclFile), { recursive: true, force: true })
-    }
+    expect((await parseFixture('main.tf', 'resource "aws_instance" "web" {}')).language).toBe('terraform')
+    expect((await parseFixture('terraform.tfvars', 'region = "us-east-1"')).language).toBe('terraform')
+    expect((await parseFixture('config.hcl', 'block "x" {}')).language).toBe('terraform')
   })
 
   it('gives an outer resource its own end line past a nested lifecycle/dynamic sub-block, and does not mis-parent the next sibling', () => {
@@ -5106,19 +5050,12 @@ AFTER_HEREDOC=ok
   })
 
   it('detects .sh and .bash language via parseFile', async () => {
-    const shFile = tmp('deploy.sh', 'log() {\n  echo hi\n}\n')
-    const bashFile = tmp('deploy.bash', 'log() {\n  echo hi\n}\n')
-    try {
-      const shResult = await parseFile(shFile)
-      expect(shResult.language).toBe('bash')
-      expect(shResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
+    const shResult = await parseFixture('deploy.sh', 'log() {\n  echo hi\n}\n')
+    expect(shResult.language).toBe('bash')
+    expect(shResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
 
-      const bashResult = await parseFile(bashFile)
-      expect(bashResult.language).toBe('bash')
-      expect(bashResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
-    } finally {
-      fs.rmSync(path.dirname(shFile), { recursive: true, force: true })
-      fs.rmSync(path.dirname(bashFile), { recursive: true, force: true })
-    }
+    const bashResult = await parseFixture('deploy.bash', 'log() {\n  echo hi\n}\n')
+    expect(bashResult.language).toBe('bash')
+    expect(bashResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
   })
 })
