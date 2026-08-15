@@ -125,7 +125,7 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[]): Doctor
   return { name: 'MCP process health', status: 'ok', message: 'no duplicate MCP launchers or orphaned Node processes detected' }
 }
 
-function readWindowsProcesses(): ProcessInfo[] {
+export function readWindowsProcesses(): ProcessInfo[] {
   if (process.platform !== 'win32') return []
   try {
     const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
@@ -670,7 +670,16 @@ export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
   }
 }
 
-export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string): DoctorResult[] {
+/**
+ * Runs every diagnostic check and returns the results.
+ *
+ * `processes` exists so a caller that does not care about MCP process health can skip gathering
+ * it: on Windows that gather shells out to PowerShell for a full `Win32_Process` listing, which
+ * measured 1.2 s of this function's 1.5 s. Leave it undefined and the listing happens as normal --
+ * that is what the CLI does, and `tests/cli_doctor.test.ts` covers that default path explicitly so
+ * the gather cannot rot behind an argument every test supplies.
+ */
+export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
 
@@ -694,7 +703,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
   results.push(checkGlobalMcpConfig())
-  if (process.platform === 'win32') results.push(checkMcpProcessHealth(readWindowsProcesses()))
+  if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 
   return results
 }
@@ -734,8 +743,10 @@ export async function runDoctorAndExit(opts?: {
   configPath?: string
   context?: boolean
   rootDir?: string
+  /** See `runDoctor`: supply a list to skip the Windows process gather. */
+  processes?: ProcessInfo[]
 }): Promise<number> {
-  const results = runDoctor(opts?.dataDir, opts?.configPath, opts?.rootDir)
+  const results = runDoctor(opts?.dataDir, opts?.configPath, opts?.rootDir, opts?.processes)
   printDoctorResults(results)
 
   if (opts?.context === true) {
