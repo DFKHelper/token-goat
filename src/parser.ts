@@ -1494,7 +1494,8 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
 
   // Class field initializer bound to an existing name: class C { handler = myHelperFunction }.
   // Python's equivalent (a class-body assignment) is already covered by the `assignment` case above.
-  if (isJs && node.type === 'public_field_definition') {
+  // TypeScript spells this node public_field_definition and JavaScript spells it field_definition; loadGrammar loads two separate grammar modules, so matching only the TypeScript name skipped every .js file outright.
+  if (isJs && (node.type === 'public_field_definition' || node.type === 'field_definition')) {
     const value = node.childForFieldName('value')
     if (value !== null && value.type === 'identifier') result.push(value)
   }
@@ -1527,7 +1528,8 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // base list is an `argument_list` already matched above, JS/TS wraps the extends target in its
   // own class_heritage/extends_clause nodes with no field name -- so it's otherwise never walked,
   // and every base class permanently false-positives as a zero-ref dead symbol.
-  if (isJs && node.type === 'extends_clause') {
+  // The wrapper differs by grammar: TypeScript nests class_heritage > extends_clause > base, while JavaScript puts the base directly under class_heritage with no extends_clause at all. Matching both is safe rather than double-counting, because on the TypeScript side class_heritage's first named child is the extends_clause itself, which is neither an identifier nor a member_expression and so contributes nothing.
+  if (isJs && (node.type === 'extends_clause' || node.type === 'class_heritage')) {
     const base = node.namedChildren[0]
     if (base !== undefined) {
       if (base.type === 'identifier') result.push(base)
