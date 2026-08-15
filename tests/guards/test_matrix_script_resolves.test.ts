@@ -13,6 +13,8 @@ import { join, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { SHARD_COUNT } from '../helpers/matrix_cases.js'
+
 /** Last whitespace-separated token of the script is the filter vitest receives. */
 function matrixFilter(): string {
   const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8')) as { scripts: Record<string, string> }
@@ -37,17 +39,37 @@ describe('test:matrix script', () => {
     expect(matched.length, `test:matrix filter '${filter}' matches no file under tests/; the gate would run zero tests`).toBeGreaterThan(0)
   })
 
-  it('selects every command-matrix shard, so no shard is silently left unrun', () => {
+  // Every command-matrix file, not only the numbered shards: the non-shard members of this tier
+  // (the image/OCR wiring tests) are selected purely by how they are named, so a name that reads
+  // fine -- command_matrix_image_e2e.test.ts -- can stop containing the filter substring and drop
+  // out of the tier with nothing failing. That happened while splitting them out of shard 4.
+  it('selects every command-matrix file, so none is silently left unrun', () => {
     const filter = matrixFilter().replace(/\\/g, '/')
-    const shards = readdirSync(resolve('tests')).filter((f) => /^command_matrix_e2e\.\d+\.test\.ts$/.test(f))
-    expect(shards.length, 'expected the sharded command-matrix files to exist').toBeGreaterThan(1)
-    for (const shard of shards) {
-      expect(`tests/${shard}`.includes(filter), `shard ${shard} is not selected by test:matrix filter '${filter}'`).toBe(true)
+    const files = readdirSync(resolve('tests')).filter((f) => /^command_matrix.*\.test\.ts$/.test(f))
+    expect(files.length, 'expected the command-matrix files to exist').toBeGreaterThan(1)
+    for (const file of files) {
+      expect(`tests/${file}`.includes(filter), `${file} is not selected by test:matrix filter '${filter}'`).toBe(true)
     }
   })
 })
 
 describe('command-matrix shard set', () => {
+  // SHARD_COUNT and the files on disk are two halves of one fact, and only the files run tests.
+  // Raising the constant without adding the file drops that shard's cases from every run, and
+  // nothing else notices: the union guard checks shardKeys against each other, not against what
+  // is executed, so it keeps passing while the cases it is vouching for are never run at all.
+  it('has exactly one shard file per SHARD_COUNT, each running its own slice', () => {
+    const shards = readdirSync(resolve('tests')).filter((f) => /^command_matrix_e2e\.\d+\.test\.ts$/.test(f)).sort()
+    expect(shards.length, `SHARD_COUNT is ${SHARD_COUNT} but ${shards.length} shard files exist; the difference is cases no file runs`).toBe(SHARD_COUNT)
+
+    for (let i = 0; i < SHARD_COUNT; i++) {
+      const file = `command_matrix_e2e.${i + 1}.test.ts`
+      expect(shards, `missing shard file ${file}`).toContain(file)
+      const body = readFileSync(join(resolve('tests'), file), 'utf8')
+      expect(body, `${file} must run shardKeys(${i}); a duplicated index silently runs one slice twice and never runs another`).toContain(`shardKeys(${i})`)
+    }
+  })
+
   it('has no leftover unsharded command_matrix_e2e.test.ts alongside the shards', () => {
     // Both present would double-run every case and double the suite's slowest file.
     const files = readdirSync(join(resolve('tests')))
