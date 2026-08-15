@@ -26,9 +26,25 @@ import * as path from 'node:path'
 
 import { tempDir } from './temp-config.js'
 
+/**
+ * Fixed author and committer date for the fixture commit.
+ *
+ * Without it the commit SHA depends on the wall-clock second the commit landed in, which makes
+ * the repository non-reproducible: the loose object git writes for the commit lives at
+ * `.git/objects/<first 2 hex>/<remaining 38>`, so two runs a second apart produce different paths
+ * on disk for the same logical repo. `git_repo_helper.test.ts` compares this fixture's full file
+ * listing against a control repo built the long way, and that comparison flaked exactly when the
+ * two commits straddled a second boundary -- same file count, different object path.
+ */
+export const FIXTURE_COMMIT_DATE = '2020-01-02T03:04:05+00:00'
+
 /** Run git in `cwd`, silently. `core.hooksPath` is neutralised so a developer's own global hooks cannot fail or slow a fixture commit. */
 function git(cwd: string, args: string[]): void {
-  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, stdio: 'ignore' })
+  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd,
+    stdio: 'ignore',
+    env: { ...process.env, GIT_AUTHOR_DATE: FIXTURE_COMMIT_DATE, GIT_COMMITTER_DATE: FIXTURE_COMMIT_DATE },
+  })
 }
 
 let committedTemplate: string | null = null
