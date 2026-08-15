@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -31,6 +31,11 @@ vi.mock('child_process', async (importOriginal) => {
   const original = await importOriginal<typeof ChildProcess>()
   return { ...original, spawnSync: vi.fn(original.spawnSync) }
 })
+
+// Passed by every runDoctor test that is not about process health. Gathering the real list shells
+// out to PowerShell for a full Win32_Process listing, which measured 1.2 s of runDoctor's 1.5 s and
+// was the single largest cost in this file. The default gather is still covered, once, below.
+const NO_PROCESSES: ProcessInfo[] = []
 
 describe('cli_doctor', () => {
   let tempDir: string
@@ -533,50 +538,64 @@ describe('cli_doctor', () => {
   })
 
   describe('runDoctor', () => {
-    it('returns array of doctor results', () => {
+    // The one test that leaves `processes` undefined, so the real gather runs. Without it the
+    // gather would be dead code that no test ever reaches -- every other test here supplies the
+    // argument, which is exactly the injected-seam shape where a shipping path rots unnoticed.
+    // It was already untested before the argument existed: checkMcpProcessHealth had synthetic-row
+    // coverage, but nothing asserted runDoctor wires it in at all.
+    it.runIf(process.platform === 'win32')('gathers the Windows process list itself when none is supplied', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const health = results.find((r) => r.name === 'MCP process health')
+      expect(health, 'runDoctor did not run the MCP process-health check at all').toBeDefined()
+      // This process is running right now, so a real gather cannot come back empty; an empty list
+      // would have produced the "no duplicate MCP launchers" ok message with nothing behind it.
+      expect(readWindowsProcesses().some((p) => p.processId === process.pid)).toBe(true)
+    })
+
+    it('returns array of doctor results', () => {
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       expect(Array.isArray(results)).toBe(true)
       expect(results.length).toBeGreaterThan(0)
     })
 
     it('includes installation check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const install = results.find((r) => r.name === 'Installation')
       expect(install).toBeDefined()
     })
 
     it('includes worker check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const worker = results.find((r) => r.name === 'Worker')
       expect(worker).toBeDefined()
     })
 
     it('includes TypeScript compiler check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const tsCompiler = results.find((r) => r.name === 'TypeScript compiler')
       expect(tsCompiler).toBeDefined()
     })
 
     it('includes database check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const db = results.find((r) => r.name === 'Database')
       expect(db).toBeDefined()
     })
 
     it('includes symbol body size check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const bodySize = results.find((r) => r.name === 'Symbol body size')
       expect(bodySize).toBeDefined()
     })
 
     it('includes config check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const config = results.find((r) => r.name === 'Config')
       expect(config).toBeDefined()
     })
 
     it('marks results with ok/warn/fail status', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       for (const result of results) {
         expect(['ok', 'warn', 'fail']).toContain(result.status)
       }
@@ -593,7 +612,7 @@ describe('cli_doctor', () => {
       fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
       fs.writeFileSync(drainHeartbeatPathFor(tempDir), `${process.pid}\n`)
 
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const worker = results.find((r) => r.name === 'Worker')
       expect(worker?.status).toBe('ok')
       expect(worker?.message).toBe('running')
@@ -792,11 +811,11 @@ describe('cli_doctor', () => {
       // back to the wrapped real implementation for every subsequent call, so no manual restore
       // is needed.
       mocked.mockRejectedValueOnce(new Error('boom from context stats'))
-      await expect(runDoctorAndExit({ dataDir: tempDir, context: true })).rejects.toThrow('boom from context stats')
+      await expect(runDoctorAndExit({ dataDir: tempDir, context: true, processes: NO_PROCESSES })).rejects.toThrow('boom from context stats')
     })
 
     it('resolves normally with --context when runContextStats succeeds', async () => {
-      const code = await runDoctorAndExit({ dataDir: tempDir, context: true })
+      const code = await runDoctorAndExit({ dataDir: tempDir, context: true, processes: NO_PROCESSES })
       expect(typeof code).toBe('number')
     })
   })
@@ -830,7 +849,7 @@ describe('cli_doctor', () => {
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
       let calls: unknown[][]
       try {
-        await runDoctorAndExit({ dataDir: tempDir, context: true })
+        await runDoctorAndExit({ dataDir: tempDir, context: true, processes: NO_PROCESSES })
         // Read the call log before mockRestore() below, which resets it (mockRestore() also
         // calls mockReset() internally, wiping mock.calls) -- reading it after would always
         // see zero calls regardless of what actually logged.
