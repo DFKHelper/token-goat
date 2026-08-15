@@ -115,16 +115,35 @@ describe('RetryVisibilityReporter', () => {
 
 // ---- end-to-end against a genuinely retried test ---------------------------------------------
 
-const TMP_FLAKY = path.resolve('tests', 'zz_generated_flaky_probe.test.ts')
+// Deliberately outside tests/. This file is created and deleted while the rest of the suite is
+// running, and several guards walk tests/ listing every entry and then reading each one, so with it
+// in there one of them would eventually list it and find it already gone: an ENOENT failure in a
+// guard that has nothing to do with retries, blaming a file it never meant to read. Vitest's
+// default include glob covers the whole repo apart from node_modules, dist and .claude, so a probe
+// here is still collected and still matched by the filter the spawn below passes, while being
+// somewhere no tests/ walker will ever look. The directory is gitignored and removed with the file.
+const PROBE_DIR = path.resolve('.vitest-probe')
+const TMP_FLAKY = path.join(PROBE_DIR, 'zz_generated_flaky_probe.test.ts')
 
 afterAll(() => {
-  fs.rmSync(TMP_FLAKY, { force: true })
+  fs.rmSync(PROBE_DIR, { recursive: true, force: true })
 })
 
 describe('reporter against the real vitest API', () => {
+  // Regression: the probe used to be written into tests/ and deleted in afterAll, while
+  // temp_config_isolation.test.ts lists every entry of tests/ and reads each one. Running in
+  // separate workers, that guard listed the probe and then failed with ENOENT reading it, pointing
+  // at a file it never meant to check. Nothing pinned where the probe lives, so this is the missing
+  // half: it fails if the probe moves back under tests/, and the end-to-end test below fails if it
+  // moves somewhere vitest does not collect, so the two together bracket the valid locations.
+  it('writes its generated probe outside tests/, where no directory walker can race it', () => {
+    expect(path.relative(path.resolve('tests'), TMP_FLAKY).startsWith('..')).toBe(true)
+  })
+
   it('fires on a test that actually failed and passed on retry', () => {
     // A module-level counter makes attempt 1 fail and attempt 2 pass, so vitest genuinely marks
     // the test flaky rather than us asserting our own idea of its task shape.
+    fs.mkdirSync(PROBE_DIR, { recursive: true })
     fs.writeFileSync(
       TMP_FLAKY,
       [

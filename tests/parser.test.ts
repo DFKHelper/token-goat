@@ -1611,6 +1611,51 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(2)
   })
 
+  // Regression: value-position extraction matched a bare `identifier` child and nothing else, so a
+  // type-only or grouping wrapper between the position and the name dropped the reference entirely,
+  // and several ordinary value positions had no branch at all. Each row below was confirmed missing
+  // against the built binary before the fix: `refs` answered "No references found" for a symbol
+  // that is plainly used on the line above. Every node type and field name here was checked against
+  // the real grammar first, since a branch naming a node type that grammar never emits is silently
+  // dead rather than wrong, which is the failure the .js/.ts pairs above already had to catch once.
+  it.each([
+    ['object shorthand', 'shorthand-ref.js', 'export function myHelperFunction() {}\nexport const o = { myHelperFunction }\n'],
+    ['decorator (TS)', 'decorator-ref.ts', 'export function myHelperFunction(x: unknown): unknown {\n  return x\n}\n@myHelperFunction\nexport class Decorated {}\n'],
+    ['as-expression', 'as-ref.ts', 'export function myHelperFunction(): void {}\nexport const a = myHelperFunction as unknown\n'],
+    ['satisfies-expression', 'satisfies-ref.ts', 'export function myHelperFunction(): void {}\nexport const a = myHelperFunction satisfies () => void\n'],
+    ['non-null assertion', 'nonnull-ref.ts', 'export function myHelperFunction(): void {}\nexport const a = myHelperFunction!\n'],
+    ['parenthesized value', 'paren-ref.js', 'export function myHelperFunction() {}\nexport const a = (myHelperFunction)\n'],
+    ['awaited value', 'await-ref.ts', 'export function myHelperFunction(): void {}\nexport async function driver(): Promise<unknown> {\n  return await myHelperFunction\n}\n'],
+    ['augmented assignment', 'augassign-ref.js', 'export function myHelperFunction() {}\nexport let cur = null\ncur ||= myHelperFunction\n'],
+  ])('captures a reference in a %s', async (_label, name, source) => {
+    const file = write(name, source)
+    const result = await parseFile(file)
+    expect(result.refs.map((r) => r.name)).toContain('myHelperFunction')
+  })
+
+  it.each([
+    ['decorator', 'decorator_ref.py', 'def my_helper_function(f):\n    return f\n@my_helper_function\ndef g():\n    pass\n'],
+    ['dictionary value', 'dictvalue_ref.py', 'def my_helper_function():\n    pass\nCALLBACKS = {"key": my_helper_function}\n'],
+    ['f-string interpolation', 'fstring_ref.py', 'def my_helper_function():\n    pass\ndef driver():\n    return f"{my_helper_function}"\n'],
+    ['tuple element', 'tuple_ref.py', 'def my_helper_function():\n    pass\nHANDLERS = (my_helper_function,)\n'],
+    ['set element', 'set_ref.py', 'def my_helper_function():\n    pass\nHANDLERS = {my_helper_function}\n'],
+    ['augmented assignment', 'augassign_ref.py', 'def my_helper_function():\n    pass\ndef driver(acc):\n    acc += my_helper_function\n    return acc\n'],
+  ])('captures a Python reference in a %s', async (_label, name, source) => {
+    const file = write(name, source)
+    const result = await parseFile(file)
+    expect(result.refs.map((r) => r.name)).toContain('my_helper_function')
+  })
+
+  // The exclusion is deliberate and load-bearing, so it is pinned rather than left to drift: were an
+  // export counted as a reference, every exported symbol would look used by its own export line and
+  // `dead` would stop reporting anything at all. This is the one case above where "no ref recorded"
+  // is the correct answer rather than the bug.
+  it('does not count a symbol\'s own export as a reference to it', async () => {
+    const file = write('export-not-a-ref.js', 'function myHelperFunction() {}\nexport default myHelperFunction\n')
+    const result = await parseFile(file)
+    expect(result.refs.map((r) => r.name)).not.toContain('myHelperFunction')
+  })
+
   it('captures a Python function passed as a bare callback argument', async () => {
     const file = write(
       'callback_ref.py',
