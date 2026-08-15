@@ -4449,6 +4449,14 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     runDetachedWorkerDaemon()
     return
   }
+  // `--batch-serve <token>`: serve many invocations from this one already-started process. Same
+  // argv[2]-only interception as --worker-daemon above, and for the same reason -- commander has
+  // no such option, so it would reject it before the server ever started. See batch_serve.ts.
+  if (argv[2] === '--batch-serve' && typeof argv[3] === 'string') {
+    const { serveBatch } = await import('./batch_serve.js')
+    serveBatch(argv[3], (a) => run(a))
+    return
+  }
   const program = buildProgram()
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush.
   program.exitOverride()
