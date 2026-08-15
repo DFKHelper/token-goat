@@ -10,11 +10,19 @@ import * as path from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
-import { gitRepoWithCommit } from './helpers/git-repo.js'
+import { FIXTURE_COMMIT_DATE, gitRepoWithCommit } from './helpers/git-repo.js'
 import { tempDir } from './helpers/temp-config.js'
 
+// Same pinned date the helper uses, so the control commit hashes to the same SHA and the two
+// repositories are comparable file for file. Left to the ambient clock, the control's commit
+// object lands at a different `.git/objects/xx/yyy` path whenever it falls in a different second
+// than the template's, which is a race the file-listing assertion below lost under suite load.
 function git(cwd: string, args: string[]): string {
-  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, encoding: 'utf8' })
+  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_AUTHOR_DATE: FIXTURE_COMMIT_DATE, GIT_COMMITTER_DATE: FIXTURE_COMMIT_DATE },
+  })
 }
 
 /** Every path under `dir`, relative and slash-normalised, sorted. Directories included, so a missing subdirectory shows up as a difference rather than as nothing. */
@@ -42,6 +50,14 @@ describe('git-repo fixtures are equivalent to building the repo directly', () =>
     expect(git(copied, ['symbolic-ref', '--short', 'HEAD'])).toBe(git(control, ['symbolic-ref', '--short', 'HEAD']))
     expect(git(copied, ['ls-files'])).toBe('a.txt\n')
     expect(fs.readFileSync(path.join(copied, 'a.txt'), 'utf8')).toBe('one\n')
+
+    // The fixture is fully determined -- pinned date, author, message and content -- so its commit
+    // hashes to one fixed value. Pinned as a literal rather than just compared against the control,
+    // because the two agreeing proves nothing on its own: before the date was pinned they agreed
+    // whenever both commits happened to land in the same wall-clock second, which is most of the
+    // time and none of the time under load. Drop the pin and this fails on every run instead.
+    expect(git(copied, ['rev-parse', 'HEAD']).trim()).toBe('32ba05faacf1c3dc7aed01ce1e67d38e6e89f51d')
+    expect(git(control, ['rev-parse', 'HEAD']).trim()).toBe(git(copied, ['rev-parse', 'HEAD']).trim())
 
     // Same set of files on disk, .git included: a copy that silently dropped part of .git could
     // still answer every command above correctly from the parts it did copy.
