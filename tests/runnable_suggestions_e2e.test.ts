@@ -15,14 +15,14 @@
  *     byte-identical.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
 let repo: string
 let dataBase: string
@@ -40,14 +40,8 @@ interface RunResult {
   stderr: string
 }
 
-function run(args: string[]): RunResult {
-  const res = spawnSync(process.execPath, [BUNDLE, ...args], {
-    cwd: repo,
-    env: { ...process.env, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase },
-    encoding: 'utf8',
-    timeout: 30000,
-  })
-  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+async function run(args: string[]): Promise<RunResult> {
+  return runBatched(args, { cwd: repo, env: { ...process.env, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase } })
 }
 
 /** Pulls the quoted spec out of an emitted `token-goat read "<spec>"` suggestion line. */
@@ -57,7 +51,7 @@ function specOf(line: string): string {
   return m![1]!
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   dataBase = mkIsolated('tg-runnable-data-')
   repo = mkIsolated('tg-runnable-repo-')
 
@@ -110,11 +104,12 @@ beforeAll(() => {
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
 
-  const idx = run(['index', '.'])
+  const idx = await run(['index', '.'])
   expect(idx.status, `index failed: ${idx.stderr}`).toBe(0)
 }, 120000)
 
 afterAll(() => {
+  stopBatchCli()
   for (const dir of tempDirs) {
     try {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -125,24 +120,24 @@ afterAll(() => {
 })
 
 describe('context-for / ask emit runnable read commands', () => {
-  it('PRECONDITION: the unanchored spec really is ambiguous in this fixture', () => {
+  it('PRECONDITION: the unanchored spec really is ambiguous in this fixture', async () => {
     // Guards the whole suite against going vacuous. If the fixture ever degrades to a single
     // definition, `read "dupsym.ts::dupBudgetCalc"` starts succeeding, this fails, and nobody is
     // fooled into thinking the anchored suggestions below proved anything.
-    const r = run(['read', 'dupsym.ts::dupBudgetCalc'])
+    const r = await run(['read', 'dupsym.ts::dupBudgetCalc'])
     expect(r.status).not.toBe(0)
     expect(`${r.stdout}${r.stderr}`).toContain('Ambiguous symbol')
   })
 
-  it('context-for emits anchored suggestions that all execute successfully', () => {
-    const r = run(['context-for', 'dupBudgetCalc'])
+  it('context-for emits anchored suggestions that all execute successfully', async () => {
+    const r = await run(['context-for', 'dupBudgetCalc'])
     expect(r.status, r.stderr).toBe(0)
     const lines = r.stdout.trim().split('\n').filter((l) => l.trim().length > 0)
     // The load-bearing assertion comes FIRST and is behavioural, not cosmetic: every emitted
     // suggestion, verbatim, must actually run. A change to how the suggestion is *formatted*
     // cannot make this pass or fail; only an unrunnable suggestion can.
     for (const line of lines) {
-      const exec = run(['read', specOf(line)])
+      const exec = await run(['read', specOf(line)])
       expect(exec.status, `suggestion failed: ${line}\n${exec.stderr}`).toBe(0)
       expect(exec.stdout.trim().length).toBeGreaterThan(0)
     }
@@ -154,8 +149,8 @@ describe('context-for / ask emit runnable read commands', () => {
     expect(new Set(lines).size).toBe(3)
   })
 
-  it('context-for --json entries are pairwise distinct and carry a line', () => {
-    const r = run(['context-for', 'dupBudgetCalc', '--json'])
+  it('context-for --json entries are pairwise distinct and carry a line', async () => {
+    const r = await run(['context-for', 'dupBudgetCalc', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const entries = JSON.parse(r.stdout) as { file: string; symbol: string; kind: string; line: number; readCmd: string }[]
     expect(entries.length).toBe(3)
@@ -172,12 +167,12 @@ describe('context-for / ask emit runnable read commands', () => {
     expect(dups[0]!.line).not.toBe(dups[1]!.line)
   })
 
-  it('ask (degraded mode) emits anchored suggestions that all execute successfully', () => {
-    const r = run(['ask', 'dupBudgetCalc'])
+  it('ask (degraded mode) emits anchored suggestions that all execute successfully', async () => {
+    const r = await run(['ask', 'dupBudgetCalc'])
     expect(r.status, r.stderr).toBe(0)
     const lines = r.stdout.trim().split('\n').filter((l) => l.startsWith('token-goat read '))
     for (const line of lines) {
-      const exec = run(['read', specOf(line)])
+      const exec = await run(['read', specOf(line)])
       expect(exec.status, `suggestion failed: ${line}\n${exec.stderr}`).toBe(0)
       expect(exec.stdout.trim().length).toBeGreaterThan(0)
     }
@@ -188,8 +183,8 @@ describe('context-for / ask emit runnable read commands', () => {
 })
 
 describe('outline / skeleton / exports / imports accept a comma-separated file list', () => {
-  it('outline "a,b" reports both files, each with its own unique symbol', () => {
-    const r = run(['outline', 'alpha.ts,beta.ts'])
+  it('outline "a,b" reports both files, each with its own unique symbol', async () => {
+    const r = await run(['outline', 'alpha.ts,beta.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('# Outline: alpha.ts')
     expect(r.stdout).toContain('# Outline: beta.ts')
@@ -197,8 +192,8 @@ describe('outline / skeleton / exports / imports accept a comma-separated file l
     expect(r.stdout).toContain('betaOnlyFn')
   })
 
-  it('skeleton "a,b" reports both files, each with its own unique symbol', () => {
-    const r = run(['skeleton', 'alpha.ts,beta.ts'])
+  it('skeleton "a,b" reports both files, each with its own unique symbol', async () => {
+    const r = await run(['skeleton', 'alpha.ts,beta.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('# Skeleton: alpha.ts')
     expect(r.stdout).toContain('# Skeleton: beta.ts')
@@ -206,8 +201,8 @@ describe('outline / skeleton / exports / imports accept a comma-separated file l
     expect(r.stdout).toContain('betaOnlyFn')
   })
 
-  it('exports "a,b" reports both files, each with its own unique export', () => {
-    const r = run(['exports', 'alpha.ts,beta.ts'])
+  it('exports "a,b" reports both files, each with its own unique export', async () => {
+    const r = await run(['exports', 'alpha.ts,beta.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('# Exports: alpha.ts')
     expect(r.stdout).toContain('# Exports: beta.ts')
@@ -215,8 +210,8 @@ describe('outline / skeleton / exports / imports accept a comma-separated file l
     expect(r.stdout).toContain('betaOnlyFn')
   })
 
-  it('imports "a,b" reports both files, each with its own unique import', () => {
-    const r = run(['imports', 'alpha.ts,beta.ts'])
+  it('imports "a,b" reports both files, each with its own unique import', async () => {
+    const r = await run(['imports', 'alpha.ts,beta.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('# Imports: alpha.ts')
     expect(r.stdout).toContain('# Imports: beta.ts')
@@ -224,17 +219,17 @@ describe('outline / skeleton / exports / imports accept a comma-separated file l
     expect(r.stdout).toContain('./vendor_b.js')
   })
 
-  it('single-file behaviour is unchanged (no per-file header, no second file)', () => {
-    const r = run(['outline', 'alpha.ts'])
+  it('single-file behaviour is unchanged (no per-file header, no second file)', async () => {
+    const r = await run(['outline', 'alpha.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('# Outline: alpha.ts')
     expect(r.stdout).not.toContain('# Outline: beta.ts')
     expect(r.stdout).not.toContain('betaOnlyFn')
   })
 
-  it('extra space-separated file arguments are named, not silently dropped', () => {
+  it('extra space-separated file arguments are named, not silently dropped', async () => {
     for (const cmd of ['outline', 'skeleton', 'exports', 'imports']) {
-      const r = run([cmd, 'alpha.ts', 'beta.ts'])
+      const r = await run([cmd, 'alpha.ts', 'beta.ts'])
       expect(r.status, `${cmd}: ${r.stderr}`).toBe(0)
       expect(r.stdout, `${cmd} dropped beta.ts in silence`).toContain('beta.ts')
       expect(r.stdout).toContain(`token-goat ${cmd} "alpha.ts,beta.ts"`)
@@ -245,52 +240,52 @@ describe('outline / skeleton / exports / imports accept a comma-separated file l
 describe('refs / callers -C shows real call-site source', () => {
   const MARKER = 'ZQUNIQUECALLSITE'
 
-  it('refs -C 1 renders the call-site source line; plain refs does not', () => {
-    const plain = run(['refs', 'ctxdef.ts::ctxTarget'])
+  it('refs -C 1 renders the call-site source line; plain refs does not', async () => {
+    const plain = await run(['refs', 'ctxdef.ts::ctxTarget'])
     expect(plain.status, plain.stderr).toBe(0)
     expect(plain.stdout).not.toContain(MARKER)
 
-    const ctx = run(['refs', 'ctxdef.ts::ctxTarget', '-C', '1'])
+    const ctx = await run(['refs', 'ctxdef.ts::ctxTarget', '-C', '1'])
     expect(ctx.status, ctx.stderr).toBe(0)
     expect(ctx.stdout).toContain(MARKER)
   })
 
-  it('omitting -C leaves refs output byte-identical to -C 0', () => {
-    const plain = run(['refs', 'ctxdef.ts::ctxTarget'])
-    const zero = run(['refs', 'ctxdef.ts::ctxTarget', '-C', '0'])
+  it('omitting -C leaves refs output byte-identical to -C 0', async () => {
+    const plain = await run(['refs', 'ctxdef.ts::ctxTarget'])
+    const zero = await run(['refs', 'ctxdef.ts::ctxTarget', '-C', '0'])
     expect(plain.status).toBe(0)
     expect(zero.stdout).toBe(plain.stdout)
   })
 
-  it('callers -C 1 renders the call-site source line; plain callers does not', () => {
-    const plain = run(['callers', 'ctxTarget'])
+  it('callers -C 1 renders the call-site source line; plain callers does not', async () => {
+    const plain = await run(['callers', 'ctxTarget'])
     expect(plain.status, plain.stderr).toBe(0)
     expect(plain.stdout).not.toContain(MARKER)
 
-    const ctx = run(['callers', 'ctxTarget', '-C', '1'])
+    const ctx = await run(['callers', 'ctxTarget', '-C', '1'])
     expect(ctx.status, ctx.stderr).toBe(0)
     expect(ctx.stdout).toContain(MARKER)
   })
 
-  it('brief -C 1 renders the call-site source line in its caller block', () => {
-    const plain = run(['brief', 'ctxdef.ts::ctxTarget'])
+  it('brief -C 1 renders the call-site source line in its caller block', async () => {
+    const plain = await run(['brief', 'ctxdef.ts::ctxTarget'])
     expect(plain.status, plain.stderr).toBe(0)
     expect(plain.stdout).not.toContain(MARKER)
 
-    const ctx = run(['brief', 'ctxdef.ts::ctxTarget', '-C', '1'])
+    const ctx = await run(['brief', 'ctxdef.ts::ctxTarget', '-C', '1'])
     expect(ctx.status, ctx.stderr).toBe(0)
     expect(ctx.stdout).toContain(MARKER)
   })
 
-  it('refs --json gains contextLines only with -C, and keeps the existing context field', () => {
-    const plain = run(['refs', 'ctxdef.ts::ctxTarget', '--json'])
+  it('refs --json gains contextLines only with -C, and keeps the existing context field', async () => {
+    const plain = await run(['refs', 'ctxdef.ts::ctxTarget', '--json'])
     expect(plain.status, plain.stderr).toBe(0)
     const plainItems = (JSON.parse(plain.stdout) as { items: Record<string, unknown>[] }).items
     expect(plainItems.length).toBe(1)
     expect(plainItems[0]!['contextLines']).toBeUndefined()
     expect(plainItems[0]!['context']).toBe('ctxCaller')
 
-    const ctx = run(['refs', 'ctxdef.ts::ctxTarget', '--json', '-C', '1'])
+    const ctx = await run(['refs', 'ctxdef.ts::ctxTarget', '--json', '-C', '1'])
     expect(ctx.status, ctx.stderr).toBe(0)
     const ctxItems = (JSON.parse(ctx.stdout) as { items: Record<string, unknown>[] }).items
     expect(ctxItems.length).toBe(1)
