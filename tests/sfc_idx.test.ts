@@ -1,18 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import * as os from 'node:os'
 
-import { parseFile } from '../src/parser.js'
 import { detectLanguage } from '../src/parser_types.js'
 import { extractVue, extractSvelte, extractAstro } from '../src/languages/sfc_idx.js'
 
-function tmp(name: string, content: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-sfc-test-'))
-  const file = path.join(dir, name)
-  fs.writeFileSync(file, content)
-  return file
-}
+import { parseFixture } from './helpers/parse-fixture.js'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -196,16 +187,11 @@ describe('vue adapter', () => {
   })
 
   it('indexes a real .vue file end-to-end through parseFile', async () => {
-    const file = tmp('Widget.vue', VUE_CONTENT)
-    try {
-      const result = await parseFile(file)
-      expect(result.language).toBe('vue')
-      expect(result.symbols.some((s) => s.kind === 'vue_component' && s.name === 'Widget')).toBe(true)
-      expect(result.symbols.some((s) => s.name === 'increment' && s.kind === 'sfc_script_function')).toBe(true)
-      expect(result.refs.some((r) => r.name === 'MyButton')).toBe(true)
-    } finally {
-      fs.rmSync(path.dirname(file), { recursive: true, force: true })
-    }
+    const result = await parseFixture('Widget.vue', VUE_CONTENT)
+    expect(result.language).toBe('vue')
+    expect(result.symbols.some((s) => s.kind === 'vue_component' && s.name === 'Widget')).toBe(true)
+    expect(result.symbols.some((s) => s.name === 'increment' && s.kind === 'sfc_script_function')).toBe(true)
+    expect(result.refs.some((r) => r.name === 'MyButton')).toBe(true)
   })
 })
 
@@ -245,16 +231,11 @@ describe('svelte adapter', () => {
   })
 
   it('indexes a real .svelte file end-to-end through parseFile', async () => {
-    const file = tmp('Counter.svelte', SVELTE_CONTENT)
-    try {
-      const result = await parseFile(file)
-      expect(result.language).toBe('svelte')
-      expect(result.symbols.some((s) => s.kind === 'svelte_component' && s.name === 'Counter')).toBe(true)
-      expect(result.symbols.some((s) => s.name === 'handleClick' && s.kind === 'sfc_script_function')).toBe(true)
-      expect(result.refs.some((r) => r.name === 'sub-widget')).toBe(true)
-    } finally {
-      fs.rmSync(path.dirname(file), { recursive: true, force: true })
-    }
+    const result = await parseFixture('Counter.svelte', SVELTE_CONTENT)
+    expect(result.language).toBe('svelte')
+    expect(result.symbols.some((s) => s.kind === 'svelte_component' && s.name === 'Counter')).toBe(true)
+    expect(result.symbols.some((s) => s.name === 'handleClick' && s.kind === 'sfc_script_function')).toBe(true)
+    expect(result.refs.some((r) => r.name === 'sub-widget')).toBe(true)
   })
 })
 
@@ -299,16 +280,11 @@ describe('astro adapter', () => {
   })
 
   it('indexes a real .astro file end-to-end through parseFile', async () => {
-    const file = tmp('Home.astro', ASTRO_CONTENT)
-    try {
-      const result = await parseFile(file)
-      expect(result.language).toBe('astro')
-      expect(result.symbols.some((s) => s.kind === 'astro_component' && s.name === 'Home')).toBe(true)
-      expect(result.symbols.some((s) => s.name === 'greet' && s.kind === 'sfc_script_function')).toBe(true)
-      expect(result.refs.some((r) => r.name === 'MainHero')).toBe(true)
-    } finally {
-      fs.rmSync(path.dirname(file), { recursive: true, force: true })
-    }
+    const result = await parseFixture('Home.astro', ASTRO_CONTENT)
+    expect(result.language).toBe('astro')
+    expect(result.symbols.some((s) => s.kind === 'astro_component' && s.name === 'Home')).toBe(true)
+    expect(result.symbols.some((s) => s.name === 'greet' && s.kind === 'sfc_script_function')).toBe(true)
+    expect(result.refs.some((r) => r.name === 'MainHero')).toBe(true)
   })
 
   it('does not misdetect a `---`-only line inside the frontmatter script\'s own template literal as the closing fence (regression: detectAstroFrontmatter\'s naive line-exact scan had no string/template-literal awareness)', () => {
