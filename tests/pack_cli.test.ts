@@ -15,6 +15,7 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { BUNDLE } from './helpers/bundle.js'
+import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
 interface RunResult {
   status: number | null
@@ -22,14 +23,20 @@ interface RunResult {
   stderr: string
 }
 
-function run(args: string[], opts: { cwd?: string; input?: string } = {}): RunResult {
-  const res = spawnSync(process.execPath, [BUNDLE, ...args], {
-    cwd: opts.cwd ?? tmpDir,
-    encoding: 'utf8',
-    timeout: 30000,
-    ...(opts.input !== undefined ? { input: opts.input } : {}),
-  })
-  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+// Batched against one long-lived bundle process (see tests/cli.test.ts for the same pattern).
+// Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a
+// stdin stream.
+async function run(args: string[], opts: { cwd?: string; input?: string } = {}): Promise<RunResult> {
+  if (opts.input !== undefined) {
+    const res = spawnSync(process.execPath, [BUNDLE, ...args], {
+      cwd: opts.cwd ?? tmpDir,
+      encoding: 'utf8',
+      timeout: 30000,
+      input: opts.input,
+    })
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  }
+  return runBatched(args, { cwd: opts.cwd ?? tmpDir })
 }
 
 let tmpDir: string
@@ -51,60 +58,61 @@ beforeAll(() => {
 })
 
 afterAll(() => {
+  stopBatchCli()
   fs.rmSync(tmpDir, { recursive: true, force: true })
 })
 
 // pack
 
 describe('pack command', () => {
-  it('bundles a file and its content appears in output', () => {
-    const r = run(['pack', 'hello.ts'])
+  it('bundles a file and its content appears in output', async () => {
+    const r = await run(['pack', 'hello.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('greet')
     expect(r.stdout).toContain('hello.ts')
   })
 
-  it('--format xml wraps content in XML elements', () => {
-    const r = run(['pack', 'hello.ts', '--format', 'xml'])
+  it('--format xml wraps content in XML elements', async () => {
+    const r = await run(['pack', 'hello.ts', '--format', 'xml'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('<documents>')
     expect(r.stdout).toContain('greet')
   })
 
-  it('--format text produces plain output without markdown fences', () => {
-    const r = run(['pack', 'hello.ts', '--format', 'text'])
+  it('--format text produces plain output without markdown fences', async () => {
+    const r = await run(['pack', 'hello.ts', '--format', 'text'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).not.toContain('```')
     expect(r.stdout).toContain('greet')
   })
 
-  it('--scan-secrets exits 2 when a credential is found', () => {
-    const r = run(['pack', 'secret.ts', '--scan-secrets'])
+  it('--scan-secrets exits 2 when a credential is found', async () => {
+    const r = await run(['pack', 'secret.ts', '--scan-secrets'])
     expect(r.status).toBe(2)
     expect(r.stderr).toContain('secret')
   })
 
-  it('--scan-secrets exits 0 when no credentials are found', () => {
-    const r = run(['pack', 'hello.ts', '--scan-secrets'])
+  it('--scan-secrets exits 0 when no credentials are found', async () => {
+    const r = await run(['pack', 'hello.ts', '--scan-secrets'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('greet')
   })
 
-  it('--budget exits 3 when token count exceeds the limit', () => {
-    const r = run(['pack', 'hello.ts', '--budget', '1'])
+  it('--budget exits 3 when token count exceeds the limit', async () => {
+    const r = await run(['pack', 'hello.ts', '--budget', '1'])
     expect(r.status).toBe(3)
     expect(r.stderr).toContain('exceeds budget')
   })
 
-  it('--budget exits 0 when token count is within the limit', () => {
-    const r = run(['pack', 'hello.ts', '--budget', '99999'])
+  it('--budget exits 0 when token count is within the limit', async () => {
+    const r = await run(['pack', 'hello.ts', '--budget', '99999'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('greet')
   })
 
-  it('--output writes to a file instead of stdout', () => {
+  it('--output writes to a file instead of stdout', async () => {
     const dest = path.join(tmpDir, 'out.md')
-    const r = run(['pack', 'hello.ts', '--output', dest])
+    const r = await run(['pack', 'hello.ts', '--output', dest])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.trim()).toBe('')
     expect(fs.readFileSync(dest, 'utf8')).toContain('greet')
@@ -115,18 +123,18 @@ describe('pack command', () => {
   // glob-expansion branch, so an absolute glob pattern got its matched hits re-joined against
   // root anyway -- path.join() does not special-case an absolute second segment, so the result
   // was a mangled, nonexistent path instead of the real file.
-  it('an absolute glob pattern is not mangled by re-joining its matches against the cwd', () => {
+  it('an absolute glob pattern is not mangled by re-joining its matches against the cwd', async () => {
     const absoluteGlob = `${tmpDir.split(path.sep).join('/')}/hel*.ts`
-    const r = run(['pack', absoluteGlob])
+    const r = await run(['pack', absoluteGlob])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('greet')
   })
 
   // Regression guard: cmdPack fell back to reading stdin whenever expandGlobs() returned zero
   // matches, even when the user explicitly passed a pattern -- so a typo'd pattern silently
-  // packed empty stdin instead of reporting "no files matched".
-  it('a pattern that matches zero files errors instead of silently falling back to stdin', () => {
-    const r = run(['pack', 'no-such-file-*.ts'], { input: '' })
+  // packed empty stdin instead of reporting "no files matched". Carries stdin: must keep spawning.
+  it('a pattern that matches zero files errors instead of silently falling back to stdin', async () => {
+    const r = await run(['pack', 'no-such-file-*.ts'], { input: '' })
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('no files matched')
   })
@@ -149,15 +157,15 @@ describe('pack command', () => {
       fs.rmSync(ignoreDir, { recursive: true, force: true })
     })
 
-    it('excludes a file matching a .tokengoatignore pattern by default', () => {
-      const r = run(['pack', 'keep.ts', 'secret.ts'], { cwd: ignoreDir })
+    it('excludes a file matching a .tokengoatignore pattern by default', async () => {
+      const r = await run(['pack', 'keep.ts', 'secret.ts'], { cwd: ignoreDir })
       expect(r.status, r.stderr).toBe(0)
       expect(r.stdout).toContain('keep')
       expect(r.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
     })
 
-    it('--no-ignore includes a file that would otherwise be excluded', () => {
-      const r = run(['pack', 'keep.ts', 'secret.ts', '--no-ignore'], { cwd: ignoreDir })
+    it('--no-ignore includes a file that would otherwise be excluded', async () => {
+      const r = await run(['pack', 'keep.ts', 'secret.ts', '--no-ignore'], { cwd: ignoreDir })
       expect(r.status, r.stderr).toBe(0)
       expect(r.stdout).toContain('keep')
       expect(r.stdout).toContain('AKIAIOSFODNN7EXAMPLE')
@@ -168,23 +176,23 @@ describe('pack command', () => {
 // tokens
 
 describe('tokens command', () => {
-  it('shows a per-file table with token counts', () => {
-    const r = run(['tokens', 'hello.ts', 'math.ts'])
+  it('shows a per-file table with token counts', async () => {
+    const r = await run(['tokens', 'hello.ts', 'math.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('hello.ts')
     expect(r.stdout).toContain('math.ts')
     expect(r.stdout).toContain('~Tokens')
   })
 
-  it('--top 1 limits output to one file row', () => {
-    const r = run(['tokens', 'hello.ts', 'math.ts', '--top', '1'])
+  it('--top 1 limits output to one file row', async () => {
+    const r = await run(['tokens', 'hello.ts', 'math.ts', '--top', '1'])
     expect(r.status, r.stderr).toBe(0)
     const fileRows = r.stdout.split('\n').filter((l) => l.includes('.ts') && !l.startsWith('-') && !l.startsWith('F'))
     expect(fileRows.length).toBe(1)
   })
 
-  it('--json emits parseable structured output', () => {
-    const r = run(['tokens', 'hello.ts', '--json'])
+  it('--json emits parseable structured output', async () => {
+    const r = await run(['tokens', 'hello.ts', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { entries: Array<{ rel_path: string; tokens: number }>; total_tokens: number }
     expect(parsed.entries.length).toBe(1)
@@ -192,16 +200,16 @@ describe('tokens command', () => {
     expect(parsed.total_tokens).toBe(26)
   })
 
-  it('--json includes expected fields per entry', () => {
-    const r = run(['tokens', 'hello.ts', '--json'])
+  it('--json includes expected fields per entry', async () => {
+    const r = await run(['tokens', 'hello.ts', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { entries: Array<{ rel_path: string; lines: number; tokens: number; size_bytes: number }> }
     const entry = parsed.entries[0]
     expect(entry).toEqual({ rel_path: 'hello.ts', lines: 4, tokens: 26, size_bytes: 75 })
   })
 
-  it('no files matched returns zero-row message', () => {
-    const r = run(['tokens'])
+  it('no files matched returns zero-row message', async () => {
+    const r = await run(['tokens'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('No files matched.')
   })
@@ -210,15 +218,15 @@ describe('tokens command', () => {
 // budget
 
 describe('budget command', () => {
-  it('prints a table showing token cost for the file', () => {
-    const r = run(['budget', 'hello.ts'])
+  it('prints a table showing token cost for the file', async () => {
+    const r = await run(['budget', 'hello.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('hello.ts')
     expect(r.stdout).toContain('Total')
   })
 
-  it('--context shows percentage fill annotation', () => {
-    const r = run(['budget', 'hello.ts', '--context', '200'])
+  it('--context shows percentage fill annotation', async () => {
+    const r = await run(['budget', 'hello.ts', '--context', '200'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+% of 200K/)
   })
@@ -226,38 +234,38 @@ describe('budget command', () => {
   // Regression: context.model_window_tokens was a fully-validated, env-overridable config knob
   // with zero read-side consumers -- cmdBudget only ever showed the percentage when --context
   // was passed explicitly on every invocation, silently ignoring the configured window size.
-  it('shows the percentage fill using the configured context.model_window_tokens when --context is omitted', () => {
-    const r = run(['budget', 'hello.ts'])
+  it('shows the percentage fill using the configured context.model_window_tokens when --context is omitted', async () => {
+    const r = await run(['budget', 'hello.ts'])
     expect(r.status, r.stderr).toBe(0)
     // Default context.model_window_tokens is 200_000 -> 200K.
     expect(r.stdout).toMatch(/\d+% of 200K/)
   })
 
-  it('an explicit --context still overrides the configured default', () => {
-    const r = run(['budget', 'hello.ts', '--context', '50'])
+  it('an explicit --context still overrides the configured default', async () => {
+    const r = await run(['budget', 'hello.ts', '--context', '50'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+% of 50K/)
     expect(r.stdout).not.toMatch(/% of 200K/)
   })
 
-  it('--context rejects a negative value instead of printing a bogus negative percentage', () => {
-    const r = run(['budget', 'hello.ts', '--context', '-5'])
+  it('--context rejects a negative value instead of printing a bogus negative percentage', async () => {
+    const r = await run(['budget', 'hello.ts', '--context', '-5'])
     expect(r.status).not.toBe(0)
     expect(r.stderr).toContain('--context')
     expect(r.stdout).not.toMatch(/% of -5K/)
   })
 
-  it('--json emits parseable structured output', () => {
-    const r = run(['budget', 'hello.ts', '--json'])
+  it('--json emits parseable structured output', async () => {
+    const r = await run(['budget', 'hello.ts', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { entries: unknown[]; total_tokens: number; total_lines: number }
     expect(parsed.entries.length).toBe(1)
     expect(parsed.total_tokens).toBe(26)
   })
 
-  it('total_tokens reflects actual content size', () => {
-    const rSingle = run(['budget', 'hello.ts', '--json'])
-    const rBoth = run(['budget', 'hello.ts', 'math.ts', '--json'])
+  it('total_tokens reflects actual content size', async () => {
+    const rSingle = await run(['budget', 'hello.ts', '--json'])
+    const rBoth = await run(['budget', 'hello.ts', 'math.ts', '--json'])
     expect(rSingle.status, rSingle.stderr).toBe(0)
     expect(rBoth.status, rBoth.stderr).toBe(0)
     const single = JSON.parse(rSingle.stdout) as { total_tokens: number }
@@ -280,22 +288,24 @@ const PYTEST_OUTPUT = [
 ].join('\n')
 
 describe('failures command', () => {
-  it('extracts a pytest failure block from stdin', () => {
-    const r = run(['failures'], { input: PYTEST_OUTPUT })
+  // Carries stdin: must keep spawning.
+  it('extracts a pytest failure block from stdin', async () => {
+    const r = await run(['failures'], { input: PYTEST_OUTPUT })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('test_add')
   })
 
-  it('reads from a file when a src path is given', () => {
+  it('reads from a file when a src path is given', async () => {
     const srcFile = path.join(tmpDir, 'run.log')
     fs.writeFileSync(srcFile, PYTEST_OUTPUT, 'utf8')
-    const r = run(['failures', srcFile])
+    const r = await run(['failures', srcFile])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('test_add')
   })
 
-  it('--json emits parseable structured output', () => {
-    const r = run(['failures', '--json'], { input: PYTEST_OUTPUT })
+  // Carries stdin: must keep spawning.
+  it('--json emits parseable structured output', async () => {
+    const r = await run(['failures', '--json'], { input: PYTEST_OUTPUT })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { runner: string; failures: Array<{ name: string }> }
     expect(parsed.runner).toBe('pytest')
@@ -303,8 +313,9 @@ describe('failures command', () => {
     expect(parsed.failures[0]?.name).toContain('test_add')
   })
 
-  it('--runner pytest forces pytest detection', () => {
-    const r = run(['failures', '--runner', 'pytest', '--json'], { input: PYTEST_OUTPUT })
+  // Carries stdin: must keep spawning.
+  it('--runner pytest forces pytest detection', async () => {
+    const r = await run(['failures', '--runner', 'pytest', '--json'], { input: PYTEST_OUTPUT })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { runner: string }
     expect(parsed.runner).toBe('pytest')
