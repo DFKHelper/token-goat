@@ -1627,6 +1627,12 @@ describe('parseFile reference extraction', () => {
     ['parenthesized value', 'paren-ref.js', 'export function myHelperFunction() {}\nexport const a = (myHelperFunction)\n'],
     ['awaited value', 'await-ref.ts', 'export function myHelperFunction(): void {}\nexport async function driver(): Promise<unknown> {\n  return await myHelperFunction\n}\n'],
     ['augmented assignment', 'augassign-ref.js', 'export function myHelperFunction() {}\nexport let cur = null\ncur ||= myHelperFunction\n'],
+    ['comma expression', 'sequence-ref.js', 'export function myHelperFunction() {}\nexport const a = (0, myHelperFunction)\n'],
+    ['object spread', 'objspread-ref.js', 'export const myHelperFunction = {}\nexport const a = { ...myHelperFunction }\n'],
+    ['array spread', 'arrspread-ref.js', 'export const myHelperFunction = []\nexport const a = [...myHelperFunction]\n'],
+    ['computed key', 'computedkey-ref.js', 'export const myHelperFunction = 1\nexport const a = { [myHelperFunction]: 1 }\n'],
+    ['unary operand', 'unary-ref.js', 'export function myHelperFunction() {}\nexport const a = void myHelperFunction\n'],
+    ['yielded value', 'yield-ref.js', 'export function myHelperFunction() {}\nexport function* driver() {\n  yield myHelperFunction\n}\n'],
   ])('captures a reference in a %s', async (_label, name, source) => {
     const file = write(name, source)
     const result = await parseFile(file)
@@ -1640,6 +1646,17 @@ describe('parseFile reference extraction', () => {
     ['tuple element', 'tuple_ref.py', 'def my_helper_function():\n    pass\nHANDLERS = (my_helper_function,)\n'],
     ['set element', 'set_ref.py', 'def my_helper_function():\n    pass\nHANDLERS = {my_helper_function}\n'],
     ['augmented assignment', 'augassign_ref.py', 'def my_helper_function():\n    pass\ndef driver(acc):\n    acc += my_helper_function\n    return acc\n'],
+    ['list comprehension body', 'listcomp_ref.py', 'def my_helper_function():\n    pass\ndef driver(values):\n    return [my_helper_function for _ in values]\n'],
+    ['set comprehension body', 'setcomp_ref.py', 'def my_helper_function():\n    pass\ndef driver(values):\n    return {my_helper_function for _ in values}\n'],
+    ['generator expression body', 'genexpr_ref.py', 'def my_helper_function():\n    pass\ndef driver(values):\n    return (my_helper_function for _ in values)\n'],
+    ['dictionary comprehension value', 'dictcomp_ref.py', 'def my_helper_function():\n    pass\ndef driver(values):\n    return {k: my_helper_function for k in values}\n'],
+    ['comprehension iterable', 'compiter_ref.py', 'my_helper_function = []\ndef driver():\n    return [x for x in my_helper_function]\n'],
+    ['lambda body', 'lambda_ref.py', 'def my_helper_function():\n    pass\ndef driver():\n    return lambda: my_helper_function\n'],
+    ['list splat', 'listsplat_ref.py', 'my_helper_function = []\ndef driver():\n    return [*my_helper_function]\n'],
+    ['dictionary splat', 'dictsplat_ref.py', 'my_helper_function = {}\ndef driver():\n    return {**my_helper_function}\n'],
+    ['awaited value', 'awaitpy_ref.py', 'def my_helper_function():\n    pass\nasync def driver():\n    return await my_helper_function\n'],
+    ['yielded value', 'yieldpy_ref.py', 'def my_helper_function():\n    pass\ndef driver():\n    yield my_helper_function\n'],
+    ['raised value', 'raise_ref.py', 'class my_helper_function(Exception):\n    pass\ndef driver():\n    raise my_helper_function\n'],
   ])('captures a Python reference in a %s', async (_label, name, source) => {
     const file = write(name, source)
     const result = await parseFile(file)
