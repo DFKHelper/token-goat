@@ -6038,6 +6038,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   if (!anyFilter) {
     const evidenceHits = await searchEvidenceSemantically(rootDir, query, n)
     if (evidenceHits.length > 0) {
+      // What this hit avoids is re-reading the cached entries in full, so the saving is measured against their whole text: the preview below is what gets emitted, and recordReadStat subtracts it.
+      const evidenceFullBytes = evidenceHits.reduce((sum, entry) => sum + Buffer.byteLength(entry.text, 'utf8'), 0)
       if (opts.json === true) {
         const items = evidenceHits.map((entry) => ({
           source: toDisplayPath(rootDir, entry.source),
@@ -6047,7 +6049,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
         }))
         const capped = guardJsonRows(items)
         const text = JSON.stringify({ source: 'workspace-evidence', ...capped }, null, 2)
-        recordReadStat('semantic_search', 0, text, query)
+        recordReadStat('semantic_search', evidenceFullBytes, text, query)
         return { text, code: 0 }
       }
       const text = guardText(
@@ -6056,7 +6058,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
           .join('\n\n'),
         'semantic',
       )
-      recordReadStat('semantic_search', 0, text, query)
+      recordReadStat('semantic_search', evidenceFullBytes, text, query)
       return { text, code: 0 }
     }
   }
