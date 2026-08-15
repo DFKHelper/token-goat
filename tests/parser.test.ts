@@ -1555,6 +1555,62 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(2)
   })
 
+  // Regression: the two class-shaped value positions were matched by their TypeScript node names
+  // only, and JavaScript is a separate grammar module that spells both differently -- a class field
+  // is `field_definition` rather than `public_field_definition`, and a base class sits directly
+  // under `class_heritage` with no `extends_clause` wrapper at all. So both branches were dead on
+  // every .js file, and a base class or field-initialized helper used only from JavaScript looked
+  // completely unreferenced: `refs` returned nothing and `dead` called it a false positive. Every
+  // value-position test above uses a .ts fixture, which is exactly how this survived them all, so
+  // these two assert the .js and .ts spellings side by side rather than .js alone.
+  it.each([
+    ['js', 'extends-heritage-ref.js'],
+    ['ts', 'extends-heritage-ref.ts'],
+  ])('captures a base class in an extends clause for %s, not just one grammar', async (_lang, name) => {
+    const file = write(
+      name,
+      'export class BaseFilter {}\n' + 'export class ConcreteFilter extends BaseFilter {\n' + '  run() {}\n' + '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'BaseFilter')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('ConcreteFilter')
+    expect(ref?.line).toBe(2)
+  })
+
+  it.each([
+    ['js', 'field-init-ref.js'],
+    ['ts', 'field-init-ref.ts'],
+  ])('captures a class field initializer for %s, not just one grammar', async (_lang, name) => {
+    const file = write(
+      name,
+      'export function myHelperFunction() {}\n' + 'export class Widget {\n' + '  handler = myHelperFunction\n' + '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('Widget')
+    expect(ref?.line).toBe(3)
+  })
+
+  // The member-expression base has the same two spellings, and the JS one reaches the object
+  // through class_heritage rather than extends_clause, so it is worth its own pair: a fix that
+  // handled only the bare-identifier base would still drop `ns` on every .js file.
+  it.each([
+    ['js', 'extends-member-heritage-ref.js'],
+    ['ts', 'extends-member-heritage-ref.ts'],
+  ])('captures the object of a member-expression base for %s', async (_lang, name) => {
+    const file = write(
+      name,
+      "import * as ns from './ns.js'\n" + 'export class ConcreteFilter extends ns.BaseFilter {\n' + '  run() {}\n' + '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'ns')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('ConcreteFilter')
+    expect(ref?.line).toBe(2)
+  })
+
   it('captures a Python function passed as a bare callback argument', async () => {
     const file = write(
       'callback_ref.py',
