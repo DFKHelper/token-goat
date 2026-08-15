@@ -2666,10 +2666,57 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
 }
 
-/** Number of sharded command_matrix_e2e.*.test.ts files the case table is split across. */
+/** Number of sharded command_matrix_e2e.*.test.ts files the case table is split across. A guard asserts this equals the number of shard files actually on disk, since raising it without adding the file would drop those cases from the run while every other check still passed. */
 export const SHARD_COUNT = 4
 
-/** Deterministic, interleaved slice of `cases`' keys for one shard (0-indexed). Interleaved rather than contiguous because per-case durations are heavily skewed, so a contiguous slice would leave shards lopsided. */
+// Relative cost of the cases that are not roughly average, in arbitrary units of ~1s, measured on a
+// full run. Interleaving by sorted name balances case COUNT, and case cost is spread over more than
+// an order of magnitude (mean ~1.2s, `refs` alone 14.7s), so counting produced a 56s shard next to a
+// 37s one. Only balance depends on these numbers, never correctness: a stale or missing weight makes
+// a shard lopsided, it can never drop or duplicate a case, which is what the union guard pins.
+// Unlisted cases weigh 1. Worth re-measuring only if the shards visibly diverge again.
+const CASE_WEIGHTS: Record<string, number> = {
+  refs: 15,
+  changed: 6,
+  doctor: 5,
+  callers: 4,
+  'xlsx-sheets': 4,
+  symbol: 3,
+  exports: 3,
+  failures: 3,
+  outline: 3,
+  types: 3,
+  dead: 3,
+  'hint-stats': 3,
+  deps: 3,
+  read: 3,
+}
+
+/**
+ * Deterministic, cost-balanced slice of `cases`' keys for one shard (0-indexed).
+ *
+ * Greedy longest-processing-time: heaviest case first, each assigned to the shard that is lightest
+ * so far, ties broken by name and then by lowest shard index so the split is identical on every
+ * machine and every run.
+ *
+ * Balance only, not wall clock. Splitting further was tried and reverted: 8 shards did cut the
+ * slowest matrix file from 56s to 24s and made the full suite *slower*, 83-87s against 82s. The
+ * slowest file was never the binding constraint -- it finished well inside the run -- while each
+ * added file pays its own fixture setup and module import, and import is already 120s across the
+ * suite. Shard count is worth raising only if one shard ever approaches the whole wall clock.
+ */
 export function shardKeys(shard: number): string[] {
-  return Object.keys(cases).sort().filter((_, i) => i % SHARD_COUNT === shard)
+  const buckets: Array<{ total: number; keys: string[] }> = Array.from({ length: SHARD_COUNT }, () => ({ total: 0, keys: [] }))
+  // Codepoint order, not localeCompare: the tie-break decides which shard a case lands in, and a
+  // locale-sensitive comparison would split differently on a differently-configured machine.
+  const ordered = Object.keys(cases).sort((a, b) => (CASE_WEIGHTS[b] ?? 1) - (CASE_WEIGHTS[a] ?? 1) || (a < b ? -1 : a > b ? 1 : 0))
+  for (const name of ordered) {
+    let lightest = 0
+    for (let i = 1; i < buckets.length; i++) if ((buckets[i]?.total ?? 0) < (buckets[lightest]?.total ?? 0)) lightest = i
+    const bucket = buckets[lightest]
+    if (bucket === undefined) continue
+    bucket.total += CASE_WEIGHTS[name] ?? 1
+    bucket.keys.push(name)
+  }
+  return (buckets[shard]?.keys ?? []).sort()
 }
