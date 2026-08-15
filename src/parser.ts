@@ -1406,6 +1406,36 @@ function calleeName(call: TsNode, language: Language): string | null {
  * matches, since tree-sitter already gives those their own distinct node types -- this needs no
  * separate string/comment-stripping pass the way a regex-based extractor would.
  */
+// Wrappers that change a value's type or grouping without changing which binding it names, so `const a = h as X` still references h. Every branch below matched a bare `identifier` child only, which meant one of these in between silently dropped the reference and left the symbol looking unused.
+const VALUE_WRAPPER_TYPES = new Set([
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'non_null_expression',
+  'type_assertion',
+  'instantiation_expression',
+  'await_expression',
+])
+
+/** The bare identifier a value position names, peeling any type-only or grouping wrappers around it, or null when the value is anything else (a call, a literal, an arrow function). */
+function unwrapValueIdentifier(node: TsNode | null | undefined): TsNode | null {
+  if (node === null || node === undefined) return null
+  if (node.type === 'identifier') return node
+  // Recursing only through wrapper types is what keeps this from wandering into unrelated subtrees: a type_assertion's own type_arguments child is not a wrapper, so it yields null rather than offering up a type name as if it were a value.
+  if (!VALUE_WRAPPER_TYPES.has(node.type)) return null
+  for (const child of node.namedChildren) {
+    const inner = unwrapValueIdentifier(child)
+    if (inner !== null) return inner
+  }
+  return null
+}
+
+/** Records `node` as a reference when it resolves to a bare identifier, wrappers included. */
+function pushValueIdentifier(result: TsNode[], node: TsNode | null | undefined): void {
+  const identifier = unwrapValueIdentifier(node)
+  if (identifier !== null) result.push(identifier)
+}
+
 function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   const isJs = language === 'typescript' || language === 'javascript'
   const isPy = language === 'python'
@@ -1416,7 +1446,7 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // Direct call/constructor argument passed by bare name: arr.map(myHelperFunction).
   if ((isJs && node.type === 'arguments') || (isPy && node.type === 'argument_list')) {
     for (const child of node.namedChildren) {
-      if (child.type === 'identifier') result.push(child)
+      pushValueIdentifier(result, child)
     }
   }
 
@@ -1426,7 +1456,7 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // never walked.
   if (isPy && node.type === 'keyword_argument') {
     const value = node.childForFieldName('value')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Logical/nullish fallback operand bound to an existing name: const fn = override ?? myHelperFunction,
@@ -1438,25 +1468,25 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     if (operator === '??' || operator === '||' || operator === '&&') {
       const left = node.childForFieldName('left')
       const right = node.childForFieldName('right')
-      if (left !== null && left.type === 'identifier') result.push(left)
-      if (right !== null && right.type === 'identifier') result.push(right)
+      pushValueIdentifier(result, left)
+      pushValueIdentifier(result, right)
     }
   }
 
   // Assignment of an existing binding to a variable: const x = myHelperFunction / x = myHelperFunction. Arrow/function-expression values are handled separately by scopeName() as a new scope, not a reference to an existing one, so they're excluded here by only matching a plain `identifier` value.
   if (isJs && (node.type === 'variable_declarator' || node.type === 'assignment_expression')) {
     const value = node.childForFieldName(node.type === 'variable_declarator' ? 'value' : 'right')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
   if (isPy && node.type === 'assignment') {
     const value = node.childForFieldName('right')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Object-literal value bound to an existing name: { onClick: myHelperFunction }.
   if (isJs && node.type === 'pair') {
     const value = node.childForFieldName('value')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Default parameter value bound to an existing name: function f(cb = myHelperFunction) {},
@@ -1465,14 +1495,15 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // `type` field is also present.
   if (isJs && (node.type === 'required_parameter' || node.type === 'optional_parameter')) {
     const value = node.childForFieldName('value')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Array-literal element bound to an existing name: const handlers = [myHelperFunction, other].
   // JS `array` and Python `list` both expose their elements as plain namedChildren, no field name.
-  if ((isJs && node.type === 'array') || (isPy && node.type === 'list')) {
+  // Python tuples and sets expose elements the same way as a list. Their assignment-target lookalikes are distinct node types (pattern_list, tuple_pattern), so a name being written rather than read is not picked up here.
+  if ((isJs && node.type === 'array') || (isPy && (node.type === 'list' || node.type === 'tuple' || node.type === 'set'))) {
     for (const child of node.namedChildren) {
-      if (child.type === 'identifier') result.push(child)
+      pushValueIdentifier(result, child)
     }
   }
 
@@ -1482,14 +1513,14 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   if (isJs && node.type === 'ternary_expression') {
     const consequence = node.childForFieldName('consequence')
     const alternative = node.childForFieldName('alternative')
-    if (consequence !== null && consequence.type === 'identifier') result.push(consequence)
-    if (alternative !== null && alternative.type === 'identifier') result.push(alternative)
+    pushValueIdentifier(result, consequence)
+    pushValueIdentifier(result, alternative)
   }
   if (isPy && node.type === 'conditional_expression' && node.namedChildren.length === 3) {
     const consequence = node.namedChildren[0]
     const alternative = node.namedChildren[2]
-    if (consequence !== undefined && consequence.type === 'identifier') result.push(consequence)
-    if (alternative !== undefined && alternative.type === 'identifier') result.push(alternative)
+    pushValueIdentifier(result, consequence)
+    pushValueIdentifier(result, alternative)
   }
 
   // Class field initializer bound to an existing name: class C { handler = myHelperFunction }.
@@ -1497,7 +1528,7 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // TypeScript spells this node public_field_definition and JavaScript spells it field_definition; loadGrammar loads two separate grammar modules, so matching only the TypeScript name skipped every .js file outright.
   if (isJs && (node.type === 'public_field_definition' || node.type === 'field_definition')) {
     const value = node.childForFieldName('value')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Bare-identifier return: return myHelperFunction. Neither grammar names this a field, so it's
@@ -1505,7 +1536,7 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // Python bare `return` with no value, which has zero).
   if (node.type === 'return_statement' && node.namedChildren.length === 1) {
     const value = node.namedChildren[0]
-    if (value !== undefined && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Destructuring default bound to an existing name: const [cb = myHelperFunction] = arr, or
@@ -1513,14 +1544,14 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // fallback value via a `right` field.
   if (isJs && (node.type === 'assignment_pattern' || node.type === 'object_assignment_pattern')) {
     const value = node.childForFieldName('right')
-    if (value !== null && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Template-literal interpolation of an existing name: `value: ${myHelperFunction}`. The
   // substitution wraps its expression as a single namedChild with no field name.
   if (isJs && node.type === 'template_substitution' && node.namedChildren.length === 1) {
     const value = node.namedChildren[0]
-    if (value !== undefined && value.type === 'identifier') result.push(value)
+    pushValueIdentifier(result, value)
   }
 
   // Base class named in an extends clause: class Impl extends Base {}, or a member-expression
@@ -1529,6 +1560,27 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // own class_heritage/extends_clause nodes with no field name -- so it's otherwise never walked,
   // and every base class permanently false-positives as a zero-ref dead symbol.
   // The wrapper differs by grammar: TypeScript nests class_heritage > extends_clause > base, while JavaScript puts the base directly under class_heritage with no extends_clause at all. Matching both is safe rather than double-counting, because on the TypeScript side class_heritage's first named child is the extends_clause itself, which is neither an identifier nor a member_expression and so contributes nothing.
+  // Shorthand object property: const handlers = { myHelperFunction }. The name is the whole node rather than an `identifier` child of a `pair`, so the pair branch above never sees it.
+  if (isJs && node.type === 'object') {
+    for (const child of node.namedChildren) {
+      if (child.type === 'shorthand_property_identifier') result.push(child)
+    }
+  }
+
+  // Decorator applied by bare name: @myDecorator above a class, method or def. A decorator called with arguments (@myDecorator(x)) is a call_expression and is already recorded as a call.
+  if (node.type === 'decorator') pushValueIdentifier(result, node.namedChildren[0])
+
+  // Python dictionary value: CALLBACKS = {'key': my_helper_function}. Python spells this `pair` too, but the pair branch above is JavaScript-only.
+  if (isPy && node.type === 'pair') pushValueIdentifier(result, node.childForFieldName('value'))
+
+  // Python f-string interpolation: f'{my_helper_function}', the counterpart of the JavaScript template_substitution case above.
+  if (isPy && node.type === 'interpolation') pushValueIdentifier(result, node.childForFieldName('expression'))
+
+  // Augmented assignment of an existing binding: cur ||= myHelperFunction, or Python's cur += my_helper_function. Only the right side is a value position; the left is the target being written.
+  if (isJs && node.type === 'augmented_assignment_expression') pushValueIdentifier(result, node.childForFieldName('right'))
+  if (isPy && node.type === 'augmented_assignment') pushValueIdentifier(result, node.childForFieldName('right'))
+
+  // Deliberately not handled: `export default myHelperFunction` and `export { myHelperFunction }`. Both are genuine mentions, but counting them would make every exported symbol look referenced by its own export statement, which is precisely the signal `dead` exists to report.
   if (isJs && (node.type === 'extends_clause' || node.type === 'class_heritage')) {
     const base = node.namedChildren[0]
     if (base !== undefined) {

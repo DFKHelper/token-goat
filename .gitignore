@@ -185,3 +185,7 @@ coverage/
 .webp
 
 vscode-extension/*.vsix
+
+# Scratch directory for the generated flaky probe in tests/retry_visibility_reporter.test.ts.
+# It lives outside tests/ so guards that walk tests/ cannot race its creation and deletion.
+.vitest-probe/
