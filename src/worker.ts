@@ -40,6 +40,23 @@ export interface WorkerOptions {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
+
+/**
+ * Resolve the poll interval a worker should use: an explicit caller-supplied value first, then a
+ * positive-integer `TG_WORKER_POLL_MS`, then the default. Anything else in the env var (empty,
+ * non-numeric, zero, negative) is ignored rather than trusted.
+ *
+ * Shared by {@link startDetachedWorker} and {@link runDetachedWorkerDaemon} so the two ends agree
+ * on what a valid interval is: the parent can never forward a value the child would reject and
+ * silently swap for the default. The parent used to skip the env entirely and hardcode the
+ * default into the child's environment, which made `TG_WORKER_POLL_MS` a no-op on the normal
+ * `worker start` path even though the daemon itself reads it.
+ */
+export function resolvePollIntervalMs(explicit?: number): number {
+  if (explicit !== undefined) return explicit
+  const parsed = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_POLL_INTERVAL_MS
+}
 export const WORKER_HEARTBEAT_STALE_MS = 60_000
 const WORKER_HEARTBEAT_REFRESH_MS = 5_000
 const WORKER_STARTUP_GRACE_MS = 10_000
@@ -1033,7 +1050,7 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
  * second daemon is ever left running.
  */
 export function startDetachedWorker(opts?: WorkerOptions): number {
-  const pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const pollIntervalMs = resolvePollIntervalMs(opts?.pollIntervalMs)
   const dir = opts?.dataDir ?? dataDir()
   try {
     fs.mkdirSync(dir, { recursive: true })
@@ -1172,8 +1189,7 @@ export async function runWorkerLoop(
  */
 export function runDetachedWorkerDaemon(): void {
   const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
-  const interval = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '0', 10)
-  const safeInterval = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_POLL_INTERVAL_MS
+  const safeInterval = resolvePollIntervalMs()
   process.on('SIGTERM', () => process.exit(0))
   process.on('exit', () => {
     if (readPidFile(dir) === process.pid) {
