@@ -1,5 +1,8 @@
+import * as os from 'node:os'
+
 import { defineConfig } from 'vitest/config'
 
+import { resolveMaxWorkers } from './tests/setup/max-workers.js'
 import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
 
 export default defineConfig({
@@ -29,16 +32,11 @@ export default defineConfig({
     reporters: ['default', new RetryVisibilityReporter()],
     pool: 'forks',
     minWorkers: 1,
-    // 6 forked workers oversubscribe GitHub's 4-vCPU windows-latest runner by 50%, and Windows
-    // process spawn is far more expensive than Linux while this suite spawns the built bundle in
-    // many tests. That combination pushed ordinary tests past the 30s bound -- a sqlite cap test
-    // took 51s and 55s, and two suites died in hooks -- across all three workflow attempts, while
-    // ubuntu and macOS absorbed 6 workers fine. 4 is the value this suite was green on before.
-    // The local Windows suite also creates large V8 heaps and many built-bundle subprocesses.
-    // Six workers recently consumed 1.34 GB on a developer workstation and caused browser,
-    // snapshot, daemon, and type-reference tests to time out in the same full run. Keep the
-    // known-stable four-worker ceiling for every Windows invocation; Linux and macOS retain six.
-    maxWorkers: process.platform === 'win32' ? 4 : 6,
+    // Derived from the machine: the known-stable 4 (Windows) / 6 (Linux, macOS) on anything the
+    // size of a CI runner, more only on a machine large enough that the heap exhaustion those
+    // numbers protect against cannot recur. Why those numbers and where the bar sits:
+    // tests/setup/max-workers.ts.
+    maxWorkers: resolveMaxWorkers(process.platform, os.cpus().length, os.totalmem() / 2 ** 30),
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
