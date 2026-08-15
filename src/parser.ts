@@ -1415,6 +1415,9 @@ const VALUE_WRAPPER_TYPES = new Set([
   'type_assertion',
   'instantiation_expression',
   'await_expression',
+  'unary_expression',
+  // Python spells this as a bare `await` rather than with an `_expression` suffix.
+  'await',
 ])
 
 /** The bare identifier a value position names, peeling any type-only or grouping wrappers around it, or null when the value is anything else (a call, a literal, an arrow function). */
@@ -1579,6 +1582,36 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   // Augmented assignment of an existing binding: cur ||= myHelperFunction, or Python's cur += my_helper_function. Only the right side is a value position; the left is the target being written.
   if (isJs && node.type === 'augmented_assignment_expression') pushValueIdentifier(result, node.childForFieldName('right'))
   if (isPy && node.type === 'augmented_assignment') pushValueIdentifier(result, node.childForFieldName('right'))
+
+  // Comma expression: const b = (0, myHelperFunction). Handled as a container rather than as a wrapper because both operands are read, so unwrapping to a single value would record the first and drop the rest.
+  if (isJs && node.type === 'sequence_expression') {
+    for (const child of node.namedChildren) pushValueIdentifier(result, child)
+  }
+
+  // Spread of an existing binding: { ...myHelperFunction }, [ ...myHelperFunction ], and Python's [*xs] / {**kw}. The container branches above look at their direct children, and a spread wraps the name in a node of its own.
+  if (isJs && node.type === 'spread_element') pushValueIdentifier(result, node.namedChildren[0])
+  if (isPy && (node.type === 'list_splat' || node.type === 'dictionary_splat')) pushValueIdentifier(result, node.namedChildren[0])
+
+  // Computed object key: { [myHelperFunction]: 1 }. The key half of a pair, which the pair branch above ignores in favour of the value.
+  if (isJs && node.type === 'computed_property_name') pushValueIdentifier(result, node.namedChildren[0])
+
+  // Comprehension body: [my_helper_function(x) for x in values] and its set and generator forms. A dictionary comprehension holds a `pair` instead, which the Python pair branch above already covers.
+  if (isPy && (node.type === 'list_comprehension' || node.type === 'set_comprehension' || node.type === 'generator_expression')) {
+    pushValueIdentifier(result, node.namedChildren[0])
+  }
+
+  // The thing a comprehension iterates over: [x for x in my_helper_function]. The loop variable on the left is a binding being introduced, not a reference, so only the right side counts.
+  if (isPy && node.type === 'for_in_clause') pushValueIdentifier(result, node.childForFieldName('right'))
+
+  // Lambda body bound to an existing name: cb = lambda: my_helper_function. The body field is present whether or not the lambda declares parameters.
+  if (isPy && node.type === 'lambda') pushValueIdentifier(result, node.childForFieldName('body'))
+
+  // Yielded by bare name: yield myHelperFunction. Needs a branch of its own rather than a place in the wrapper set above, because a yield is usually a statement in its own right and so sits in no value position for the unwrapping to be reached from.
+  if (isJs && node.type === 'yield_expression') pushValueIdentifier(result, node.namedChildren[0])
+  if (isPy && node.type === 'yield') pushValueIdentifier(result, node.namedChildren[0])
+
+  // Raised by bare name: raise my_error_class. A statement rather than a value position, so no branch above reaches it.
+  if (isPy && node.type === 'raise_statement') pushValueIdentifier(result, node.namedChildren[0])
 
   // Deliberately not handled: `export default myHelperFunction` and `export { myHelperFunction }`. Both are genuine mentions, but counting them would make every exported symbol look referenced by its own export statement, which is precisely the signal `dead` exists to report.
   if (isJs && (node.type === 'extends_clause' || node.type === 'class_heritage')) {
