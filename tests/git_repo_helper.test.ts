@@ -1,0 +1,63 @@
+// The whole premise of tests/helpers/git-repo.ts is that copying an already-built repository is
+// indistinguishable from running init/add/commit again. If that were ever false -- a future git
+// version recording an absolute path during init, say -- every fixture built on it would drift
+// silently, and the tests using those fixtures would not notice, because they assert on hook and
+// indexer behaviour rather than on repository state. So the equivalence itself is pinned here,
+// against a control repo built the long way in this same test.
+import { execFileSync } from 'node:child_process'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
+import { describe, it, expect } from 'vitest'
+
+import { gitRepoWithCommit } from './helpers/git-repo.js'
+import { tempDir } from './helpers/temp-config.js'
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, encoding: 'utf8' })
+}
+
+/** Every path under `dir`, relative and slash-normalised, sorted. Directories included, so a missing subdirectory shows up as a difference rather than as nothing. */
+function listTree(dir: string): string[] {
+  return fs
+    .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .map((p) => p.split(path.sep).join('/'))
+    .sort()
+}
+
+describe('git-repo fixtures are equivalent to building the repo directly', () => {
+  it('gitRepoWithCommit matches a repo built by running init/add/commit', () => {
+    const control = tempDir()
+    fs.writeFileSync(path.join(control, 'a.txt'), 'one\n')
+    git(control, ['init'])
+    git(control, ['add', '.'])
+    git(control, ['-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-m', 'init'])
+
+    const copied = gitRepoWithCommit()
+
+    // The tree hash is the content of the commit, independent of when or where it was made.
+    expect(git(copied, ['log', '--format=%T', '-1'])).toBe(git(control, ['log', '--format=%T', '-1']))
+    expect(git(copied, ['status', '--porcelain'])).toBe(git(control, ['status', '--porcelain']))
+    expect(git(copied, ['status', '--porcelain'])).toBe('')
+    expect(git(copied, ['symbolic-ref', '--short', 'HEAD'])).toBe(git(control, ['symbolic-ref', '--short', 'HEAD']))
+    expect(git(copied, ['ls-files'])).toBe('a.txt\n')
+    expect(fs.readFileSync(path.join(copied, 'a.txt'), 'utf8')).toBe('one\n')
+
+    // Same set of files on disk, .git included: a copy that silently dropped part of .git could
+    // still answer every command above correctly from the parts it did copy.
+    expect(listTree(copied)).toEqual(listTree(control))
+  })
+
+  it('hands out independent repos, so writing to one never reaches another', () => {
+    const first = gitRepoWithCommit()
+    const second = gitRepoWithCommit()
+
+    expect(first).not.toBe(second)
+    fs.writeFileSync(path.join(first, 'a.txt'), 'two\n')
+
+    expect(fs.readFileSync(path.join(second, 'a.txt'), 'utf8')).toBe('one\n')
+    expect(git(second, ['status', '--porcelain'])).toBe('')
+    // The template itself must survive being copied from: a third repo is still pristine.
+    expect(git(gitRepoWithCommit(), ['status', '--porcelain'])).toBe('')
+  })
+})
