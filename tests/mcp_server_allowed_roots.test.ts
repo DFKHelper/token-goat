@@ -25,7 +25,7 @@ const { createMcpServer } = await import('../src/mcp_server.js')
 const { invalidateConfigCache } = await import('../src/config.js')
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
-  const server = createMcpServer()
+  const server = await createMcpServer()
   const client = new Client({ name: 'test-client', version: '0.0.1' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])

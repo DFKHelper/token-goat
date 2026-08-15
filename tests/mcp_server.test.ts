@@ -74,7 +74,7 @@ function initRepo(dir: string): void {
  * not a bare function call to a tool handler.
  */
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
-  const server = createMcpServer()
+  const server = await createMcpServer()
   const client = new Client({ name: 'test-client', version: '0.0.1' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])

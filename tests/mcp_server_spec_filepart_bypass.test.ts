@@ -29,7 +29,7 @@ const SECRET = 'SECRET-MARKER-DO-NOT-LEAK'
 const IN_ROOT = 'IN-ROOT-MARKER'
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
-  const server = createMcpServer()
+  const server = await createMcpServer()
   const client = new Client({ name: 'test-client', version: '0.0.1' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])

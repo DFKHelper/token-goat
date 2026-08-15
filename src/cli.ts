@@ -501,7 +501,7 @@ async function cmdMcpServe(): Promise<void> {
     process.exitCode = 1
     return
   }
-  const server = createMcpServer()
+  const server = await createMcpServer()
   const transport = new StdioServerTransport()
   await server.connect(transport)
   await new Promise<void>((resolve) => {

@@ -13,8 +13,14 @@ import { fileURLToPath } from 'node:url'
 import type { ParseError } from 'jsonc-parser'
 import type * as JsoncParser from 'jsonc-parser'
 
-const jsoncParser = createRequire(import.meta.url)('jsonc-parser') as typeof JsoncParser
-const { applyEdits, modify, parse } = jsoncParser
+// Loaded on first use, not at module scope: this module is statically imported by cli.ts, so a
+// top-level require here runs on every invocation of the binary -- including every hook and every
+// `--version` -- to serve the two VS Code install commands that actually parse JSONC.
+let jsoncParser: typeof JsoncParser | undefined
+function jsonc(): typeof JsoncParser {
+  jsoncParser ??= createRequire(import.meta.url)('jsonc-parser') as typeof JsoncParser
+  return jsoncParser
+}
 
 import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
@@ -114,7 +120,7 @@ interface VscodeConfig {
 function readConfig(filePath: string): VscodeConfig {
   const text = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '{}\n'
   const errors: ParseError[] = []
-  const parsed = parse(text, errors, { allowTrailingComma: true, disallowComments: false })
+  const parsed = jsonc().parse(text, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0) {
     throw new Error(`malformed VS Code MCP JSON at ${filePath}`)
   }
@@ -125,9 +131,9 @@ function readConfig(filePath: string): VscodeConfig {
 }
 
 function updateConfig(text: string, value: unknown): string {
-  return applyEdits(
+  return jsonc().applyEdits(
     text,
-    modify(text, ['servers', 'token-goat'], value, {
+    jsonc().modify(text, ['servers', 'token-goat'], value, {
       formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' },
     }),
   )
