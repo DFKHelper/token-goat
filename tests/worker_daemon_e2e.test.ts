@@ -48,13 +48,15 @@ function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResu
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
 }
 
-function tgEnv(base: string): NodeJS.ProcessEnv {
+/** `pollMs` is forwarded to the daemon as TG_WORKER_POLL_MS, so the drain assertions below do not have to wait out the 2000ms production default. */
+function tgEnv(base: string, pollMs?: number): NodeJS.ProcessEnv {
   return {
     ...process.env,
     HOME: base,
     USERPROFILE: base,
     LOCALAPPDATA: base,
     XDG_DATA_HOME: base,
+    ...(pollMs === undefined ? {} : { TG_WORKER_POLL_MS: String(pollMs) }),
   }
 }
 
@@ -88,6 +90,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Poll `check` every 50ms until it returns true, then return how long that took. Throws with
+ * `label` once `timeoutMs` elapses.
+ *
+ * Every wait in this file used to be a fixed sleep sized to the worst case with a generous
+ * margin on top -- 2000ms to see the daemon survive, 5000ms to see it drain, 300ms to see it
+ * die. That is 7.3s of wall clock spent waiting for things that are typically done in a fraction
+ * of it, and the margins existed precisely because a fixed sleep is also the flakiest possible
+ * way to wait: too short and it fails on a slow machine, too long and it still tells you nothing
+ * about when the condition actually became true. Polling is both faster and stricter, since the
+ * elapsed time it returns can itself be asserted on.
+ */
+async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<number> {
+  const start = Date.now()
+  for (;;) {
+    if (check()) return Date.now() - start
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`)
+    }
+    await sleep(50)
+  }
+}
+
+/** Poll interval handed to the daemon under test. Fast enough that the drain assertion resolves in well under the 2000ms production default, which is what makes that assertion able to detect the default being forced back on. */
+const DAEMON_POLL_MS = 200
+
 const tempDirs: string[] = []
 function mkIsolated(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -114,7 +142,7 @@ describe('detached worker daemon (built bundle)', () => {
     async () => {
       const dataBase = mkIsolated('tg-daemon-data-')
       const repo = mkIsolated('tg-daemon-repo-')
-      const env = tgEnv(dataBase)
+      const env = tgEnv(dataBase, DAEMON_POLL_MS)
       let pid: number | undefined
 
       try {
@@ -125,11 +153,21 @@ describe('detached worker daemon (built bundle)', () => {
         expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
         pid = parseInt((m as RegExpMatchArray)[1], 10)
 
-        // 2. Wait well past the point the pre-fix bug would already have killed the child --
-        // that death was near-instant (commander rejects --worker-daemon and the process exits
-        // before ever reaching the daemon loop), so any positive wait exposes it. Use a
-        // generous margin against process-spawn/scheduling jitter.
-        await sleep(2000)
+        // 2. Wait for positive proof the child reached the daemon loop rather than for a fixed
+        // interval: runDetachedWorkerDaemon writes its own pid to queue/drain-heartbeat as its
+        // first act, so that file naming this pid can only happen on the far side of the argv
+        // dispatch the pre-fix bug died at (commander rejected --worker-daemon and the process
+        // exited before ever reaching the loop). A dead child never writes it, so that failure
+        // still fails here -- as a timeout rather than a liveness assertion.
+        const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
+        const daemonPid = pid
+        await waitFor('the daemon to write its drain heartbeat', 15000, () => {
+          try {
+            return fs.readFileSync(heartbeat, 'utf8').trim() === String(daemonPid)
+          } catch {
+            return false
+          }
+        })
 
         expect(
           pidAlive(pid),
@@ -149,18 +187,32 @@ describe('detached worker daemon (built bundle)', () => {
         fs.mkdirSync(queueDir, { recursive: true })
         fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n`)
 
-        // Default poll interval is 2000ms (no CLI override exists); wait past two full cycles
-        // with margin for cold-start native-module (better-sqlite3/tree-sitter) overhead.
-        await sleep(5000)
+        let sym: RunResult | undefined
+        const drainMs = await waitFor('the running daemon to drain the seeded queue entry', 20000, () => {
+          sym = runBundle(['symbol', 'daemonDrainedSymbol'], env, repo)
+          return sym.status === 0 && sym.stdout.includes('daemonDrainedSymbol')
+        })
+        expect(sym?.stdout).toContain('daemonDrainedSymbol')
 
-        const sym = runBundle(['symbol', 'daemonDrainedSymbol'], env, repo)
-        expect(sym.status, `symbol lookup stderr: ${sym.stderr}`).toBe(0)
-        expect(sym.stdout).toContain('daemonDrainedSymbol')
+        // The drain landing this fast is itself the assertion that TG_WORKER_POLL_MS reached the
+        // daemon. `worker start` used to hardcode the 2000ms default into the child's env
+        // regardless of what it inherited, so the variable the daemon reads was a no-op on the
+        // only path that actually starts one. With that bug back, the first poll cycle alone puts
+        // this past the bound; DAEMON_POLL_MS is an order of magnitude under it.
+        expect(
+          drainMs,
+          `drain took ${drainMs}ms, past the 2000ms default floor -- TG_WORKER_POLL_MS is being ignored again`,
+        ).toBeLessThan(1500)
       } finally {
         // 4. Clean teardown so this test never leaks a real background process.
         const stop = runBundle(['worker', 'stop'], env, repo)
         expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
-        await sleep(300)
+        const stopped = pid
+        if (stopped !== undefined) {
+          // Give SIGTERM a moment to land, but stop waiting the instant it has: the SIGKILL below
+          // is the backstop for a daemon that ignores it, not the expected path.
+          await waitFor('the stopped daemon to exit', 5000, () => !pidAlive(stopped)).catch(() => 0)
+        }
         if (pid !== undefined && pidAlive(pid)) {
           try {
             process.kill(pid, 'SIGKILL')

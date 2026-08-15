@@ -15,6 +15,7 @@ import {
   isWorkerRunning,
   processDirtyBatch,
   resetTransientRetryCount,
+  resolvePollIntervalMs,
   runWorkerLoop,
   stopWorker,
   workerPidPath,
@@ -2006,4 +2007,38 @@ describe('runWorkerLoop known-roots auto-prune sweep (regression)', () => {
 
     expect(symbolCountFor(aKey)).toBe(0)
   })
+})
+
+describe('resolvePollIntervalMs', () => {
+  const saved = process.env['TG_WORKER_POLL_MS']
+  afterEach(() => {
+    if (saved === undefined) delete process.env['TG_WORKER_POLL_MS']
+    else process.env['TG_WORKER_POLL_MS'] = saved
+  })
+
+  it('prefers an explicit caller value over the environment', () => {
+    process.env['TG_WORKER_POLL_MS'] = '777'
+    expect(resolvePollIntervalMs(123)).toBe(123)
+  })
+
+  // The regression: startDetachedWorker skipped the env entirely and wrote the default straight
+  // into the child's environment, so TG_WORKER_POLL_MS was inert on the one path that starts a
+  // real daemon, even though the daemon itself reads that exact variable.
+  it('falls back to TG_WORKER_POLL_MS when the caller passed nothing', () => {
+    process.env['TG_WORKER_POLL_MS'] = '777'
+    expect(resolvePollIntervalMs()).toBe(777)
+  })
+
+  it('falls back to the 2000ms default when the variable is unset', () => {
+    delete process.env['TG_WORKER_POLL_MS']
+    expect(resolvePollIntervalMs()).toBe(2000)
+  })
+
+  it.each(['', '   ', 'soon', '0', '-1', 'NaN'])(
+    'ignores %j rather than polling at a nonsense interval',
+    (raw) => {
+      process.env['TG_WORKER_POLL_MS'] = raw
+      expect(resolvePollIntervalMs()).toBe(2000)
+    },
+  )
 })
