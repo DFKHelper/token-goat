@@ -35,6 +35,22 @@
 export const CLAUDECODE_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Claude Code hook shim. Reads the hook payload on stdin, forwards it to \`token-goat hook <event>\`, and relays the response on stdout.
 'use strict'
+// Cache V8's compiled bytecode for the 3.4 MB hook bundle this shim import()s below. Without it
+// every hook invocation recompiles that bundle from source, which profiled at ~40ms of the ~148ms
+// a single hook takes -- and a hook fires on every tool call. Worth ~23ms per invocation, measured
+// twice on the installed shim by interleaving both variants: 148ms to 125ms, and later 186ms to
+// 163ms on a busier machine. The floor moves with load; the 23ms it removes does not.
+//
+// It has to be here rather than inside the bundle: a module is compiled before any of its own code
+// runs, so a bundle cannot enable the cache for itself. This shim is small enough to compile in
+// well under a millisecond, and the dynamic import() happens after this line, so the bundle is
+// compiled with the cache already active. Same reason the MCP SDK could not be deferred from
+// inside mcp_server.ts -- what a module can affect starts after it is already compiled.
+//
+// enableCompileCache landed in Node 22.1 and package.json allows >=22.0.0, so a miss is possible;
+// it is also best-effort by nature (read-only cache dir, full disk). Swallow everything: this shim
+// must never fail a tool call to save itself 23ms.
+try { require('node:module').enableCompileCache() } catch { /* older Node, or an unwritable cache dir: run uncached */ }
 const { spawnSync } = require('node:child_process')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
