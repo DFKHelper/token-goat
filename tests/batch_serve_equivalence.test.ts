@@ -42,6 +42,11 @@ function fixture(): string {
 const CASES: Array<{ label: string; args: string[] }> = [
   { label: 'version', args: ['--version'] },
   { label: 'help', args: ['--help'] },
+  // Subcommand help, at both depths. This used to kill the batch server outright: commander only
+  // copies the exit-override callback into a subcommand when that subcommand is created, so every
+  // subcommand fell through to a real process.exit(). Top-level `--help` above never caught it.
+  { label: 'subcommand help', args: ['symbol', '--help'] },
+  { label: 'nested subcommand help', args: ['worker', 'start', '--help'] },
   { label: 'outline', args: ['outline', 'sample.ts'] },
   { label: 'skeleton', args: ['skeleton', 'sample.ts'] },
   { label: 'section', args: ['section', 'notes.md::Heading One'] },
