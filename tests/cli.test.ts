@@ -3,13 +3,27 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runCli, type RunResult } from './helpers/bundle.js'
+import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
+
+// Batched against one long-lived bundle process (see tests/text_commands.test.ts for the same
+// pattern and tests/batch_serve_equivalence.test.ts for the byte-for-byte equivalence guard).
+// Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a
+// stdin stream.
+async function run(args: string[], input?: string): Promise<RunResult> {
+  if (input !== undefined) {
+    return runCli(args, input)
+  }
+  return runBatched(args)
+}
 
 describe('token-goat CLI', () => {
-  it('version exits 0 and prints a semver-ish string', () => {
-    const r = runCli(['version'])
+  afterAll(stopBatchCli)
+
+  it('version exits 0 and prints a semver-ish string', async () => {
+    const r = await run(['version'])
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/)
   }, 30000)
@@ -32,8 +46,8 @@ describe('token-goat CLI', () => {
     expect(r.stdout).toContain('stats')
   }, 30000)
 
-  it('stats --json outputs valid JSON', () => {
-    const r = runCli(['stats', '--json'])
+  it('stats --json outputs valid JSON', async () => {
+    const r = await run(['stats', '--json'])
     expect(r.status).toBe(0)
     const output = JSON.parse(r.stdout)
     expect(typeof output.total_events).toBe('number')
@@ -45,15 +59,15 @@ describe('token-goat CLI', () => {
     expect(r.stdout).toContain('context')
   }, 30000)
 
-  it('context-stats --json outputs valid JSON', () => {
-    const r = runCli(['context-stats', '--json'])
+  it('context-stats --json outputs valid JSON', async () => {
+    const r = await run(['context-stats', '--json'])
     expect(r.status).toBe(0)
     const output = JSON.parse(r.stdout)
     expect(typeof output.total_tokens).toBe('number')
   }, 30000)
 
-  it('hook pre_tool_use with empty stdin exits 0 and writes {} to stdout', () => {
-    const r = runCli(['hook', 'pre_tool_use'], '')
+  it('hook pre_tool_use with empty stdin exits 0 and writes {} to stdout', async () => {
+    const r = await run(['hook', 'pre_tool_use'], '')
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe('{}')
   }, 30000)
@@ -64,8 +78,8 @@ describe('token-goat CLI', () => {
   // in-process. It self-identifies via this --harness flag instead. This confirms the flag
   // doesn't break the hook relay path (exit 0, valid JSON) exactly as the flag-less form above
   // does.
-  it('hook pre_tool_use --harness qwen with empty stdin exits 0 and writes {} to stdout', () => {
-    const r = runCli(['hook', 'pre_tool_use', '--harness', 'qwen'], '')
+  it('hook pre_tool_use --harness qwen with empty stdin exits 0 and writes {} to stdout', async () => {
+    const r = await run(['hook', 'pre_tool_use', '--harness', 'qwen'], '')
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe('{}')
   }, 30000)
@@ -103,8 +117,8 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output exits 1 for missing ID', () => {
-    const r = runCli(['bash-output', 'nonexistent-id'])
+  it('bash-output exits 1 for missing ID', async () => {
+    const r = await run(['bash-output', 'nonexistent-id'])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('no cached bash output')
     expect(r.stderr).toContain('--file')
@@ -116,8 +130,8 @@ describe('token-goat CLI', () => {
     expect(r.stdout).toContain('skill')
   }, 30000)
 
-  it('skill-body exits 1 for missing skill', () => {
-    const r = runCli(['skill-body', 'nonexistent-skill'])
+  it('skill-body exits 1 for missing skill', async () => {
+    const r = await run(['skill-body', 'nonexistent-skill'])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('not found')
   }, 30000)
@@ -166,7 +180,7 @@ describe('token-goat CLI', () => {
     const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
     fs.writeFileSync(tmpFile, 'line one\nline two\nline three\n')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile])
+      const r = await run(['bash-output', '--file', tmpFile])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('line one')
       expect(r.stdout).toContain('line three')
@@ -179,7 +193,7 @@ describe('token-goat CLI', () => {
     const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
     fs.writeFileSync(tmpFile, 'test passed\ntest failed\ntest skipped\n')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'passed'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'passed'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('passed')
       expect(r.stdout).not.toContain('failed')
@@ -192,7 +206,7 @@ describe('token-goat CLI', () => {
     const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
     fs.writeFileSync(tmpFile, 'test passed\ntest failed\nerror here\n')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', '-E passed|failed'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', '-E passed|failed'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('passed')
       expect(r.stdout).toContain('failed')
@@ -202,12 +216,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --grep --max-matches caps matching lines', () => {
+  it('bash-output --file --grep --max-matches caps matching lines', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-${Date.now()}.txt`)
     const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '3'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '3'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('showing first 3 of 10 matching lines')
       expect(r.stdout).toContain('MATCH line 0')
@@ -218,14 +232,14 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --grep --max-matches 0 shows zero matching lines instead of unlimited', () => {
+  it('bash-output --file --grep --max-matches 0 shows zero matching lines instead of unlimited', async () => {
     // Regression: --max-matches was bare-parsed and only applied `cap > 0`, so an explicit
     // 0 silently fell through to "no cap" and printed every matching line.
     const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-zero-${Date.now()}.txt`)
     const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '0'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '0'])
       expect(r.status).toBe(0)
       expect(r.stdout).not.toContain('MATCH line')
       expect(r.stdout).toContain('showing first 0 of 10 matching lines')
@@ -234,12 +248,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --grep --max-matches abc errors instead of silently applying no cap', () => {
+  it('bash-output --file --grep --max-matches abc errors instead of silently applying no cap', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-nan-${Date.now()}.txt`)
     const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', 'abc'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', 'abc'])
       expect(r.status).toBe(1)
       expect(r.stdout).not.toContain('MATCH line')
       expect(r.stderr).toContain('--max-matches')
@@ -248,12 +262,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --grep --max-matches -2 errors instead of silently applying no cap', () => {
+  it('bash-output --file --grep --max-matches -2 errors instead of silently applying no cap', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-neg-${Date.now()}.txt`)
     const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '-2'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '-2'])
       expect(r.status).toBe(1)
       expect(r.stdout).not.toContain('MATCH line')
       expect(r.stderr).toContain('--max-matches')
@@ -262,12 +276,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --full returns every line with no elision (the blob store is lossless, so exactly one flag must expose it that way -- an elision marker elsewhere that points a reader at a cached id is only honest if this holds)', () => {
+  it('bash-output --file --full returns every line with no elision (the blob store is lossless, so exactly one flag must expose it that way -- an elision marker elsewhere that points a reader at a cached id is only honest if this holds)', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-full-noelide-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `LINE ${i + 1}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--full'])
+      const r = await run(['bash-output', '--file', tmpFile, '--full'])
       expect(r.status).toBe(0)
       expect(r.stdout).not.toContain('...(elided)...')
       expect(r.stdout).toContain('LINE 1')
@@ -278,12 +292,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', () => {
+  it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-grep-only-elide-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `MATCH line ${i + 1}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH'])
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('...(elided)...')
       expect(r.stdout).toContain('MATCH line 1')
@@ -294,7 +308,7 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --transcript keeps only assistant text from a JSONL transcript', () => {
+  it('bash-output --file --transcript keeps only assistant text from a JSONL transcript', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-transcript-${Date.now()}.jsonl`)
     const jsonl = [
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'do it' } }),
@@ -305,7 +319,7 @@ describe('token-goat CLI', () => {
     ].join('\n')
     fs.writeFileSync(tmpFile, jsonl + '\n', 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--transcript'])
+      const r = await run(['bash-output', '--file', tmpFile, '--transcript'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('inspecting the file')
       expect(r.stdout).toContain('the answer is 42')
@@ -316,7 +330,7 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --transcript with --grep composes after transcript extraction', () => {
+  it('bash-output --file --transcript with --grep composes after transcript extraction', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-transcript-grep-${Date.now()}.jsonl`)
     const jsonl = [
       JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'alpha line' }] } }),
@@ -324,7 +338,7 @@ describe('token-goat CLI', () => {
     ].join('\n')
     fs.writeFileSync(tmpFile, jsonl + '\n', 'utf8')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--transcript', '--grep', 'beta'])
+      const r = await run(['bash-output', '--file', tmpFile, '--transcript', '--grep', 'beta'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('beta line')
       expect(r.stdout).not.toContain('alpha line')
@@ -333,13 +347,13 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output with no id and no --file exits 1', () => {
-    const r = runCli(['bash-output'])
+  it('bash-output with no id and no --file exits 1', async () => {
+    const r = await run(['bash-output'])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('provide an <id> or --file')
   }, 30000)
 
-  it.skipIf(process.platform === 'win32')('bash-output --file rejects a FIFO (special file)', () => {
+  it.skipIf(process.platform === 'win32')('bash-output --file rejects a FIFO (special file)', async () => {
     const tmpDir = os.tmpdir()
     const fifo = path.join(tmpDir, `tg-bo-fifo-${Date.now()}`)
     try {
@@ -348,7 +362,7 @@ describe('token-goat CLI', () => {
       return
     }
     try {
-      const r = runCli(['bash-output', '--file', fifo])
+      const r = await run(['bash-output', '--file', fifo])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('special file')
     } finally {
@@ -361,7 +375,7 @@ describe('token-goat CLI', () => {
     const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`)
     fs.writeFileSync(tmpFile, lines.join('\n') + '\n')
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
+      const r = await run(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('line 1')
       expect(r.stdout).toContain('line 5')
@@ -373,12 +387,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --head and --tail does not apply elision when output size would not shrink', () => {
+  it('bash-output --head and --tail does not apply elision when output size would not shrink', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-test-edge-${Date.now()}.txt`)
     const lines = Array.from({ length: 16 }, (_, i) => `line ${i + 1}`)
     fs.writeFileSync(tmpFile, lines.join('\n'))
     try {
-      const r = runCli(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
+      const r = await run(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
       expect(r.status).toBe(0)
       expect(r.stdout).not.toContain('...(elided)...')
       expect(r.stdout).toContain('line 1')
@@ -388,12 +402,12 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('write-file --b64 writes decoded bytes', () => {
+  it('write-file --b64 writes decoded bytes', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-${Date.now()}.txt`)
     const content = 'hello ```world``` and """quotes""" and $VAR'
     const b64 = Buffer.from(content, 'utf8').toString('base64')
     try {
-      const r = runCli(['write-file', tmp, '--b64', b64])
+      const r = await run(['write-file', tmp, '--b64', b64])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp, 'utf8')).toBe(content)
     } finally {
@@ -401,13 +415,13 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --from copies source bytes exactly', () => {
+  it('write-file --from copies source bytes exactly', async () => {
     const src = path.join(os.tmpdir(), `tg-wf-src-${Date.now()}.txt`)
     const dst = path.join(os.tmpdir(), `tg-wf-dst-${Date.now()}.txt`)
     const content = '#!/bin/sh\necho `date`\n'
     fs.writeFileSync(src, content, 'utf8')
     try {
-      const r = runCli(['write-file', dst, '--from', src])
+      const r = await run(['write-file', dst, '--from', src])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(dst, 'utf8')).toBe(content)
     } finally {
@@ -422,11 +436,11 @@ describe('token-goat CLI', () => {
     expect(r.stdout).toContain('write-file')
   })
 
-  it('write-file stdin writes exact bytes', () => {
+  it('write-file stdin writes exact bytes', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-stdin-${Date.now()}.txt`)
     const content = 'stdin content with ```backticks``` and $VAR'
     try {
-      const r = runCli(['write-file', tmp], content)
+      const r = await run(['write-file', tmp], content)
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp, 'utf8')).toBe(content)
     } finally {
@@ -434,10 +448,10 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --b64 empty payload writes empty file', () => {
+  it('write-file --b64 empty payload writes empty file', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-empty-${Date.now()}.txt`)
     try {
-      const r = runCli(['write-file', tmp, '--b64', ''])
+      const r = await run(['write-file', tmp, '--b64', ''])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp)).toHaveLength(0)
     } finally {
@@ -445,12 +459,12 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --b64 binary bytes round-trip', () => {
+  it('write-file --b64 binary bytes round-trip', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-bin-${Date.now()}.bin`)
     const bytes = Buffer.from([0x00, 0xff, 0x80, 0x1f, 0xfe, 0xd8])
     const b64 = bytes.toString('base64')
     try {
-      const r = runCli(['write-file', tmp, '--b64', b64])
+      const r = await run(['write-file', tmp, '--b64', b64])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp)).toEqual(bytes)
     } finally {
@@ -458,10 +472,10 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --b64 with invalid base64 exits 1 with helpful message', () => {
+  it('write-file --b64 with invalid base64 exits 1 with helpful message', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-bad-${Date.now()}.txt`)
     try {
-      const r = runCli(['write-file', tmp, '--b64', 'not$valid!base64'])
+      const r = await run(['write-file', tmp, '--b64', 'not$valid!base64'])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('non-base64')
     } finally {
@@ -469,19 +483,19 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --from missing source exits 1 with helpful message', () => {
+  it('write-file --from missing source exits 1 with helpful message', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-dst-missing-${Date.now()}.txt`)
-    const r = runCli(['write-file', tmp, '--from', '/no/such/file/ever.txt'])
+    const r = await run(['write-file', tmp, '--from', '/no/such/file/ever.txt'])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('not found')
   })
 
-  it('write-file overwrites existing file', () => {
+  it('write-file overwrites existing file', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-overwrite-${Date.now()}.txt`)
     fs.writeFileSync(tmp, 'original content', 'utf8')
     const b64 = Buffer.from('new content', 'utf8').toString('base64')
     try {
-      const r = runCli(['write-file', tmp, '--b64', b64])
+      const r = await run(['write-file', tmp, '--b64', b64])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp, 'utf8')).toBe('new content')
     } finally {
@@ -496,7 +510,7 @@ describe('token-goat CLI', () => {
       expect(r.stdout).toContain('replace')
     })
 
-    it('replace --old-from/--new-from replaces a unique match', () => {
+    it('replace --old-from/--new-from replaces a unique match', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-from-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-new-${Date.now()}.txt`)
@@ -504,7 +518,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, 'beta', 'utf8')
       fs.writeFileSync(newFile, 'delta', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha delta gamma')
         expect(r.stdout).toContain(tmp)
@@ -516,14 +530,14 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace --old-from with a missing source file names the failing flag, not a bare "source"', () => {
+    it('replace --old-from with a missing source file names the failing flag, not a bare "source"', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-missing-old-${Date.now()}.txt`)
       const missingOld = path.join(os.tmpdir(), `tg-rpl-missing-old-src-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-missing-old-new-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
       fs.writeFileSync(newFile, 'delta', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-from', missingOld, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', missingOld, '--new-from', newFile])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('--old-from file not found')
       } finally {
@@ -532,14 +546,14 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace --new-from with a missing source file names the failing flag, not a bare "source"', () => {
+    it('replace --new-from with a missing source file names the failing flag, not a bare "source"', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-missing-new-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-missing-new-src-${Date.now()}.txt`)
       const missingNew = path.join(os.tmpdir(), `tg-rpl-missing-new-dest-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
       fs.writeFileSync(oldFile, 'beta', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', missingNew])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', missingNew])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('--new-from file not found')
       } finally {
@@ -548,7 +562,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace --old-b64/--new-b64 replaces a unique match', () => {
+    it('replace --old-b64/--new-b64 replaces a unique match', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-b64-${Date.now()}.txt`)
       const oldText = 'needle'
       const newText = 'thread'
@@ -556,7 +570,7 @@ describe('token-goat CLI', () => {
       const newB64 = Buffer.from(newText, 'utf8').toString('base64')
       fs.writeFileSync(tmp, 'haystack needle haystack', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe('haystack thread haystack')
         expect(r.stdout).toContain(tmp)
@@ -566,7 +580,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace zero matches exits 1', () => {
+    it('replace zero matches exits 1', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-zero-${Date.now()}.txt`)
       const oldText = 'needle'
       const newText = 'thread'
@@ -574,7 +588,7 @@ describe('token-goat CLI', () => {
       const newB64 = Buffer.from(newText, 'utf8').toString('base64')
       fs.writeFileSync(tmp, 'haystack only', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('old string not found')
         expect(fs.readFileSync(tmp, 'utf8')).toBe('haystack only')
@@ -583,7 +597,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace zero matches reports a trailing-newline near-match diagnostic instead of a bare "not found"', () => {
+    it('replace zero matches reports a trailing-newline near-match diagnostic instead of a bare "not found"', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-trail-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-trail-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-trail-new-${Date.now()}.txt`)
@@ -591,7 +605,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, 'beta\ngamma\n', 'utf8')
       fs.writeFileSync(newFile, 'BETA\nGAMMA', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('old string not found')
         expect(r.stderr).toContain('near-match')
@@ -604,7 +618,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace auto-heals a CRLF-file/LF-old-text near-match instead of erroring (the reported case)', () => {
+    it('replace auto-heals a CRLF-file/LF-old-text near-match instead of erroring (the reported case)', async () => {
       // Regression: replace used to diagnose "a near-match exists that differs only by line
       // endings" and then still error out, forcing the caller to manually re-encode. It should
       // instead perform the replacement, writing the new text back in CRLF (the file's EOL at
@@ -616,7 +630,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, Buffer.from('beta\ngamma', 'utf8'))
       fs.writeFileSync(newFile, Buffer.from('BETA\nGAMMA', 'utf8'))
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status, r.stderr).toBe(0)
         expect(r.stdout).toContain('replaced 1 occurrence')
         expect(r.stdout).toContain('line-ending normalized')
@@ -630,7 +644,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace auto-heals an LF-file/CRLF-old-text near-match instead of erroring (mirror case)', () => {
+    it('replace auto-heals an LF-file/CRLF-old-text near-match instead of erroring (mirror case)', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-opp-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-opp-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-opp-new-${Date.now()}.txt`)
@@ -638,7 +652,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, Buffer.from('beta\r\ngamma', 'utf8'))
       fs.writeFileSync(newFile, Buffer.from('BETA\r\nGAMMA', 'utf8'))
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status, r.stderr).toBe(0)
         expect(r.stdout).toContain('replaced 1 occurrence')
         expect(r.stdout).toContain('line-ending normalized')
@@ -654,13 +668,13 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace reports how many places matched when the EOL-normalized match is ambiguous', () => {
+    it('replace reports how many places matched when the EOL-normalized match is ambiguous', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-ambig-${Date.now()}.txt`)
       fs.writeFileSync(tmp, Buffer.from('one\r\ntwo\r\none\r\ntwo\r\n', 'utf8'))
       const oldB64 = Buffer.from('one\ntwo', 'utf8').toString('base64')
       const newB64 = Buffer.from('ONE\nTWO', 'utf8').toString('base64')
       try {
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('old string not found')
         expect(r.stderr).toContain('2')
@@ -672,7 +686,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace EOL auto-heal preserves a literal $, $$ and $& in the new text', () => {
+    it('replace EOL auto-heal preserves a literal $, $$ and $& in the new text', async () => {
       // Regression guard: String.replace/replaceAll treat $, $$ and $& as special replacement-
       // pattern sequences even for a plain-string search. The auto-heal path must build the
       // healed buffer via Buffer.concat, never String.replace, so a literal dollar sign in the
@@ -684,7 +698,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, Buffer.from('beta\ngamma', 'utf8'))
       fs.writeFileSync(newFile, Buffer.from('cost is $5, $$, and $&', 'utf8'))
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status, r.stderr).toBe(0)
         const result = fs.readFileSync(tmp)
         expect(result.equals(Buffer.from('alpha\r\ncost is $5, $$, and $&\r\n', 'utf8'))).toBe(true)
@@ -695,11 +709,11 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace multiple matches without --all exits 1', () => {
+    it('replace multiple matches without --all exits 1', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-multi-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'red blue red blue red', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-b64', Buffer.from('red', 'utf8').toString('base64'), '--new-b64', Buffer.from('green', 'utf8').toString('base64')])
+        const r = await run(['replace', tmp, '--old-b64', Buffer.from('red', 'utf8').toString('base64'), '--new-b64', Buffer.from('green', 'utf8').toString('base64')])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('appears 3 times')
         expect(r.stderr).toContain('--all')
@@ -709,11 +723,11 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace --all replaces every occurrence', () => {
+    it('replace --all replaces every occurrence', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-all-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'cat dog cat bird cat', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-b64', Buffer.from('cat', 'utf8').toString('base64'), '--new-b64', Buffer.from('fox', 'utf8').toString('base64'), '--all'])
+        const r = await run(['replace', tmp, '--old-b64', Buffer.from('cat', 'utf8').toString('base64'), '--new-b64', Buffer.from('fox', 'utf8').toString('base64'), '--all'])
         expect(r.status).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe('fox dog fox bird fox')
         expect(r.stdout).toContain('replaced 3 occurrences')
@@ -722,7 +736,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace does not corrupt non-UTF-8 bytes elsewhere in the file', () => {
+    it('replace does not corrupt non-UTF-8 bytes elsewhere in the file', async () => {
       // Regression test: the target file used to be read via fs.readFileSync(path, 'utf8') — a
       // lossy decode that silently rewrites ANY invalid UTF-8 byte in the whole file to U+FFFD,
       // then re-encodes on write, permanently corrupting it to ef bf bd — even though the edit
@@ -739,7 +753,7 @@ describe('token-goat CLI', () => {
       try {
         const oldB64 = Buffer.from('needle', 'utf8').toString('base64')
         const newB64 = Buffer.from('thread', 'utf8').toString('base64')
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(0)
         expect(r.stdout).toContain('replaced 1 occurrence')
 
@@ -758,7 +772,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace preserves non-UTF-8 bytes supplied via --new-b64 in the replacement text', () => {
+    it('replace preserves non-UTF-8 bytes supplied via --new-b64 in the replacement text', async () => {
       // Regression test: --old-b64/--new-b64 used to be decoded via decodeBase64Text, which base64-
       // decodes the payload then calls .toString('utf8') on it; the byte-exact match/replace logic
       // then re-encoded that string back to bytes via Buffer.from(text, 'utf8'). Any invalid-UTF-8
@@ -772,7 +786,7 @@ describe('token-goat CLI', () => {
       try {
         const oldB64 = Buffer.from('NEEDLE', 'utf8').toString('base64')
         const newB64 = newRaw.toString('base64')
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(0)
         expect(r.stdout).toContain('replaced 1 occurrence')
 
@@ -787,11 +801,11 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace target file not found exits 1 with a mapFsError-style message', () => {
+    it('replace target file not found exits 1 with a mapFsError-style message', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-missing-${Date.now()}.txt`)
       const oldB64 = Buffer.from('old', 'utf8').toString('base64')
       const newB64 = Buffer.from('new', 'utf8').toString('base64')
-      const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+      const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('not found')
     })
@@ -856,14 +870,14 @@ describe('token-goat CLI', () => {
     // regression: atomicWriteBuffer always created its temp file at 0o600 and renamed it
     // over dest, so a `replace` against a committed executable (chmod +x hook script, binary)
     // silently dropped the exec bit -- git would then record a 100755->100644 mode change.
-    it.skipIf(process.platform === 'win32')('replace preserves the exec bit on a chmod +x target file', () => {
+    it.skipIf(process.platform === 'win32')('replace preserves the exec bit on a chmod +x target file', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-exec-${Date.now()}.txt`)
       fs.writeFileSync(tmp, '#!/bin/sh\necho old\n', 'utf8')
       fs.chmodSync(tmp, 0o755)
       try {
         const oldB64 = Buffer.from('old', 'utf8').toString('base64')
         const newB64 = Buffer.from('new', 'utf8').toString('base64')
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toContain('echo new')
         const mode = fs.statSync(tmp).mode
@@ -873,7 +887,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace --normalize-newlines converts a CRLF old/new snippet to match an LF target', () => {
+    it('replace --normalize-newlines converts a CRLF old/new snippet to match an LF target', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-normeol-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-normeol-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-normeol-new-${Date.now()}.txt`)
@@ -881,7 +895,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, 'beta\r\ngamma\r\n', 'utf8')
       fs.writeFileSync(newFile, 'BETA\r\nGAMMA\r\n', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile, '--normalize-newlines'])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile, '--normalize-newlines'])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nBETA\nGAMMA\n')
       } finally {
@@ -891,7 +905,7 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace auto-heals a CRLF old/new snippet against an LF target without requiring --normalize-newlines', () => {
+    it('replace auto-heals a CRLF old/new snippet against an LF target without requiring --normalize-newlines', async () => {
       // Superseded expectation: this used to assert that omitting --normalize-newlines left the
       // near-match unresolved (the flag was required to opt in). The unique-normalized-match
       // auto-heal now handles this by default, so the flag is no longer required for this case
@@ -904,7 +918,7 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(oldFile, 'beta\r\ngamma\r\n', 'utf8')
       fs.writeFileSync(newFile, 'BETA\r\nGAMMA\r\n', 'utf8')
       try {
-        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        const r = await run(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status, r.stderr).toBe(0)
         expect(r.stdout).toContain('line-ending normalized')
         expect(fs.readFileSync(tmp).equals(Buffer.from('alpha\nBETA\nGAMMA\n', 'utf8'))).toBe(true)
@@ -915,13 +929,13 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace zero matches with no near-match reports a closest-matching line hint instead of a bare "not found"', () => {
+    it('replace zero matches with no near-match reports a closest-matching line hint instead of a bare "not found"', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-closest-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'one\ntwo\nthree\nfour\nfive\n', 'utf8')
       const oldB64 = Buffer.from('two\nthree\nSIX', 'utf8').toString('base64')
       const newB64 = Buffer.from('replacement', 'utf8').toString('base64')
       try {
-        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('old string not found')
         expect(r.stderr).toContain('closest match at line 2')
@@ -939,12 +953,12 @@ describe('token-goat CLI', () => {
       expect(r.stdout).toContain('insert-section')
     })
 
-    it('insert-section --content-b64 inserts after an exact heading match', () => {
+    it('insert-section --content-b64 inserts after an exact heading match', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-exact-${Date.now()}.md`)
       fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
       const contentB64 = Buffer.from('## Lesson 1.5\nnew content\n', 'utf8').toString('base64')
       try {
-        const r = runCli(['insert-section', tmp, '--after', 'Lesson 1', '--content-b64', contentB64])
+        const r = await run(['insert-section', tmp, '--after', 'Lesson 1', '--content-b64', contentB64])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe(
           '# Doc\n\n## Lesson 1\nfirst\n## Lesson 1.5\nnew content\n\n## Lesson 2\nsecond\n',
@@ -955,12 +969,12 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('insert-section resolves an unambiguous heading prefix and reports the redirect', () => {
+    it('insert-section resolves an unambiguous heading prefix and reports the redirect', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-prefix-${Date.now()}.md`)
       fs.writeFileSync(tmp, '# Doc\n\n## Lesson 16: a long heading with detail\nbody\n\n## Lesson 17\nother\n', 'utf8')
       const contentB64 = Buffer.from('## Lesson 16.5\nnew\n', 'utf8').toString('base64')
       try {
-        const r = runCli(['insert-section', tmp, '--after', 'Lesson 16', '--content-b64', contentB64])
+        const r = await run(['insert-section', tmp, '--after', 'Lesson 16', '--content-b64', contentB64])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe(
           '# Doc\n\n## Lesson 16: a long heading with detail\nbody\n## Lesson 16.5\nnew\n\n## Lesson 17\nother\n',
@@ -972,12 +986,12 @@ describe('token-goat CLI', () => {
     })
 
     // This used to assert that 'Nonexistent Heading' still listed 'Lesson 1' under "Did you mean" -- an oracle that encoded the unranked heading dump as correct. A query near no heading gets the listing command instead, and the file is still left untouched either way.
-    it('insert-section on a heading resembling nothing exits 1 pointing at outline, without dumping every heading', () => {
+    it('insert-section on a heading resembling nothing exits 1 pointing at outline, without dumping every heading', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-notfound-${Date.now()}.md`)
       fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
       const contentB64 = Buffer.from('new\n', 'utf8').toString('base64')
       try {
-        const r = runCli(['insert-section', tmp, '--after', 'Nonexistent Heading', '--content-b64', contentB64])
+        const r = await run(['insert-section', tmp, '--after', 'Nonexistent Heading', '--content-b64', contentB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('not found')
         expect(r.stderr).not.toContain('Did you mean')
@@ -989,12 +1003,12 @@ describe('token-goat CLI', () => {
     })
 
     // The ranked suggestion still fires for a heading the query actually resembles, which is what keeps the negative assertion above a filter rather than a blanket removal of the hint.
-    it('insert-section suggests the near-name heading for a misspelled --after', () => {
+    it('insert-section suggests the near-name heading for a misspelled --after', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-near-${Date.now()}.md`)
       fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
       const contentB64 = Buffer.from('new\n', 'utf8').toString('base64')
       try {
-        const r = runCli(['insert-section', tmp, '--after', 'Leson 2', '--content-b64', contentB64])
+        const r = await run(['insert-section', tmp, '--after', 'Leson 2', '--content-b64', contentB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('Did you mean')
         expect(r.stderr).toContain('Lesson 2')
@@ -1004,13 +1018,13 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('insert-section --content-from reads content from a file and normalizes CRLF to match an LF target', () => {
+    it('insert-section --content-from reads content from a file and normalizes CRLF to match an LF target', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-from-${Date.now()}.md`)
       const contentFile = path.join(os.tmpdir(), `tg-ins-from-content-${Date.now()}.md`)
       fs.writeFileSync(tmp, '## Lesson 1\nfirst\n', 'utf8')
       fs.writeFileSync(contentFile, '## Lesson 2\r\nsecond\r\n', 'utf8')
       try {
-        const r = runCli(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', contentFile])
+        const r = await run(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', contentFile])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe('## Lesson 1\nfirst\n## Lesson 2\nsecond\n')
       } finally {
@@ -1019,11 +1033,11 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('insert-section --content-from and --content-b64 together exits 1', () => {
+    it('insert-section --content-from and --content-b64 together exits 1', async () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-both-${Date.now()}.md`)
       fs.writeFileSync(tmp, '## Lesson 1\nfirst\n', 'utf8')
       try {
-        const r = runCli(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', tmp, '--content-b64', 'dGVzdA=='])
+        const r = await run(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', tmp, '--content-b64', 'dGVzdA=='])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('cannot mix --content-from with --content-b64')
       } finally {
@@ -1034,14 +1048,14 @@ describe('token-goat CLI', () => {
 
   // regression: same atomicWriteBuffer/atomicWriteCore mode-drop bug, exercised via
   // write-file --from (the other caller that rewrites an existing destination file).
-  it.skipIf(process.platform === 'win32')('write-file --from preserves the exec bit on a chmod +x destination file', () => {
+  it.skipIf(process.platform === 'win32')('write-file --from preserves the exec bit on a chmod +x destination file', async () => {
     const dst = path.join(os.tmpdir(), `tg-wf-exec-${Date.now()}.txt`)
     const src = path.join(os.tmpdir(), `tg-wf-exec-src-${Date.now()}.txt`)
     fs.writeFileSync(dst, '#!/bin/sh\necho old\n', 'utf8')
     fs.chmodSync(dst, 0o755)
     fs.writeFileSync(src, '#!/bin/sh\necho new\n', 'utf8')
     try {
-      const r = runCli(['write-file', dst, '--from', src])
+      const r = await run(['write-file', dst, '--from', src])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(dst, 'utf8')).toBe('#!/bin/sh\necho new\n')
       const mode = fs.statSync(dst).mode
@@ -1052,19 +1066,19 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --from and --b64 together exits 1', () => {
-    const r = runCli(['write-file', '/tmp/nope', '--from', '/tmp/a', '--b64', 'dGVzdA=='])
+  it('write-file --from and --b64 together exits 1', async () => {
+    const r = await run(['write-file', '/tmp/nope', '--from', '/tmp/a', '--b64', 'dGVzdA=='])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('cannot use --from and --b64 together')
   })
 
-  it('write-file --from overwrites existing file atomically', () => {
+  it('write-file --from overwrites existing file atomically', async () => {
     const src = path.join(os.tmpdir(), `tg-wf-src-ow-${Date.now()}.txt`)
     const dst = path.join(os.tmpdir(), `tg-wf-dst-ow-${Date.now()}.txt`)
     fs.writeFileSync(src, 'source content', 'utf8')
     fs.writeFileSync(dst, 'old content', 'utf8')
     try {
-      const r = runCli(['write-file', dst, '--from', src])
+      const r = await run(['write-file', dst, '--from', src])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(dst, 'utf8')).toBe('source content')
     } finally {
@@ -1073,13 +1087,13 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --b64 accepts url-safe base64 (- and _)', () => {
+  it('write-file --b64 accepts url-safe base64 (- and _)', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-urlsafe-${Date.now()}.bin`)
     // bytes that produce + and / in standard base64
     const bytes = Buffer.from([0xfb, 0xff, 0xfe])
     const urlSafe = bytes.toString('base64').replace(/\+/g, '-').replace(/\//g, '_')
     try {
-      const r = runCli(['write-file', tmp, '--b64', urlSafe])
+      const r = await run(['write-file', tmp, '--b64', urlSafe])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp)).toEqual(bytes)
     } finally {
@@ -1087,32 +1101,32 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file dest is a directory exits 1 with readable message', () => {
-    const r = runCli(['write-file', os.tmpdir(), '--b64', 'dGVzdA=='])
+  it('write-file dest is a directory exits 1 with readable message', async () => {
+    const r = await run(['write-file', os.tmpdir(), '--b64', 'dGVzdA=='])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('directory')
   })
 
-  it('write-file --from where source is a directory exits 1 with "source" in message', () => {
+  it('write-file --from where source is a directory exits 1 with "source" in message', async () => {
     const dst = path.join(os.tmpdir(), `tg-wf-dst-isdir-${Date.now()}.txt`)
-    const r = runCli(['write-file', dst, '--from', os.tmpdir()])
+    const r = await run(['write-file', dst, '--from', os.tmpdir()])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('source')
     expect(r.stderr).toContain('directory')
   })
 
-  it('write-file non-existent dest directory exits 1 without .tmp in message', () => {
-    const r = runCli(['write-file', '/nonexistent-dir-xyz/file.txt', '--b64', 'dGVzdA=='])
+  it('write-file non-existent dest directory exits 1 without .tmp in message', async () => {
+    const r = await run(['write-file', '/nonexistent-dir-xyz/file.txt', '--b64', 'dGVzdA=='])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('nonexistent-dir-xyz')
     expect(r.stderr).not.toContain('.tmp.')
   })
 
-  it('write-file --from self-overwrite preserves content', () => {
+  it('write-file --from self-overwrite preserves content', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-self-${Date.now()}.txt`)
     fs.writeFileSync(tmp, 'self-overwrite content', 'utf8')
     try {
-      const r = runCli(['write-file', tmp, '--from', tmp])
+      const r = await run(['write-file', tmp, '--from', tmp])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp, 'utf8')).toBe('self-overwrite content')
     } finally {
@@ -1120,10 +1134,10 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file stdin empty write produces zero-byte file', () => {
+  it('write-file stdin empty write produces zero-byte file', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-stdin-empty-${Date.now()}.txt`)
     try {
-      const r = runCli(['write-file', tmp], '')
+      const r = await run(['write-file', tmp], '')
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp)).toHaveLength(0)
     } finally {
@@ -1137,20 +1151,20 @@ describe('token-goat CLI', () => {
     expect(r.stdout).toContain('stdin')
   })
 
-  it('write-file empty dest exits 1 with helpful message', () => {
-    const r = runCli(['write-file', '', '--b64', 'dGVzdA=='])
+  it('write-file empty dest exits 1 with helpful message', async () => {
+    const r = await run(['write-file', '', '--b64', 'dGVzdA=='])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('empty')
   })
 
-  it('write-file --b64 multi-line base64 (openssl-style) writes correctly', () => {
+  it('write-file --b64 multi-line base64 (openssl-style) writes correctly', async () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-multiline-${Date.now()}.bin`)
     const content = 'hello world from multiline base64'
     // simulate openssl enc -base64 output: newline every 64 chars
     const flat = Buffer.from(content, 'utf8').toString('base64')
     const multiline = flat.match(/.{1,64}/g)!.join('\n')
     try {
-      const r = runCli(['write-file', tmp, '--b64', multiline])
+      const r = await run(['write-file', tmp, '--b64', multiline])
       expect(r.status).toBe(0)
       expect(fs.readFileSync(tmp, 'utf8')).toBe(content)
     } finally {
@@ -1210,9 +1224,9 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --from empty string exits 1', function () {
+  it('write-file --from empty string exits 1', async function () {
     const tmp = path.join(os.tmpdir(), `tg-wf-fromempty-${Date.now()}.txt`)
-    const r = runCli(['write-file', tmp, '--from', ''])
+    const r = await run(['write-file', tmp, '--from', ''])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('--from path cannot be empty')
   })
@@ -1265,19 +1279,19 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --b64 whitespace-only exits 1', function () {
+  it('write-file --b64 whitespace-only exits 1', async function () {
     const tmp = path.join(os.tmpdir(), `tg-wf-wsonly-${Date.now()}.txt`)
-    const r = runCli(['write-file', tmp, '--b64', '   '])
+    const r = await run(['write-file', tmp, '--b64', '   '])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('whitespace')
   })
 
-  it.skipIf(process.platform === 'win32')('write-file --from FIFO exits 1', function () {
+  it.skipIf(process.platform === 'win32')('write-file --from FIFO exits 1', async function () {
     const tmpDir = os.tmpdir()
     const fifo = path.join(tmpDir, `tg-wf-fifo-${Date.now()}.fifo`)
     execSync(`mkfifo ${fifo}`)
     try {
-      const r = runCli(['write-file', path.join(tmpDir, `tg-wf-fifo-out-${Date.now()}.txt`), '--from', fifo])
+      const r = await run(['write-file', path.join(tmpDir, `tg-wf-fifo-out-${Date.now()}.txt`), '--from', fifo])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('special file')
     } finally {
@@ -1285,21 +1299,21 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --b64 single-char payload (length%4===1) exits 1', function () {
+  it('write-file --b64 single-char payload (length%4===1) exits 1', async function () {
     const tmp = path.join(os.tmpdir(), `tg-wf-b64trunc-${Date.now()}.txt`)
-    const r = runCli(['write-file', tmp, '--b64', 'd'])
+    const r = await run(['write-file', tmp, '--b64', 'd'])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('payload length is invalid')
   })
 
-  it.skipIf(process.platform === 'win32')('write-file --from symlink-to-FIFO exits 1', function () {
+  it.skipIf(process.platform === 'win32')('write-file --from symlink-to-FIFO exits 1', async function () {
     const tmpDir = os.tmpdir()
     const fifo = path.join(tmpDir, `tg-wf-fifo2-${Date.now()}.fifo`)
     const link = path.join(tmpDir, `tg-wf-fifolink-${Date.now()}`)
     execSync(`mkfifo ${fifo}`)
     fs.symlinkSync(fifo, link)
     try {
-      const r = runCli(['write-file', path.join(tmpDir, `tg-wf-fifo2-out-${Date.now()}.txt`), '--from', link])
+      const r = await run(['write-file', path.join(tmpDir, `tg-wf-fifo2-out-${Date.now()}.txt`), '--from', link])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('special file')
     } finally {
@@ -1308,7 +1322,7 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it.skipIf(process.platform === 'win32')('write-file replaces symlink at dest rather than writing through it', function () {
+  it.skipIf(process.platform === 'win32')('write-file replaces symlink at dest rather than writing through it', async function () {
     const tmpDir = os.tmpdir()
     const target = path.join(tmpDir, `tg-wf-target-${Date.now()}.txt`)
     const link = path.join(tmpDir, `tg-wf-link-${Date.now()}.txt`)
@@ -1316,7 +1330,7 @@ describe('token-goat CLI', () => {
     fs.symlinkSync(target, link)
     const b64 = Buffer.from('new content', 'utf8').toString('base64')
     try {
-      const r = runCli(['write-file', link, '--b64', b64])
+      const r = await run(['write-file', link, '--b64', b64])
       expect(r.status).toBe(0)
       expect(fs.lstatSync(link).isSymbolicLink()).toBe(false)
       expect(fs.readFileSync(link, 'utf8')).toBe('new content')
