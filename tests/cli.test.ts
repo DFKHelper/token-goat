@@ -28,20 +28,20 @@ describe('token-goat CLI', () => {
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/)
   }, 30000)
 
-  it('symbol --help exits 0', () => {
-    const r = runCli(['symbol', '--help'])
+  it('symbol --help exits 0', async () => {
+    const r = await run(['symbol', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('symbol')
   }, 30000)
 
-  it('install --help exits 0', () => {
-    const r = runCli(['install', '--help'])
+  it('install --help exits 0', async () => {
+    const r = await run(['install', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout.toLowerCase()).toContain('install')
   }, 30000)
 
-  it('stats --help exits 0', () => {
-    const r = runCli(['stats', '--help'])
+  it('stats --help exits 0', async () => {
+    const r = await run(['stats', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('stats')
   }, 30000)
@@ -53,8 +53,8 @@ describe('token-goat CLI', () => {
     expect(typeof output.total_events).toBe('number')
   }, 30000)
 
-  it('context-stats --help exits 0', () => {
-    const r = runCli(['context-stats', '--help'])
+  it('context-stats --help exits 0', async () => {
+    const r = await run(['context-stats', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('context')
   }, 30000)
@@ -124,8 +124,8 @@ describe('token-goat CLI', () => {
     expect(r.stderr).toContain('--file')
   }, 30000)
 
-  it('skill-list --help exits 0', () => {
-    const r = runCli(['skill-list', '--help'])
+  it('skill-list --help exits 0', async () => {
+    const r = await run(['skill-list', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('skill')
   }, 30000)
@@ -170,8 +170,8 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('changed --help exits 0', () => {
-    const r = runCli(['changed', '--help'])
+  it('changed --help exits 0', async () => {
+    const r = await run(['changed', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('changed')
   }, 30000)
@@ -430,8 +430,8 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --help exits 0', () => {
-    const r = runCli(['write-file', '--help'])
+  it('write-file --help exits 0', async () => {
+    const r = await run(['write-file', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('write-file')
   })
@@ -504,8 +504,8 @@ describe('token-goat CLI', () => {
   })
 
   describe('replace', () => {
-    it('replace --help exits 0', () => {
-      const r = runCli(['replace', '--help'])
+    it('replace --help exits 0', async () => {
+      const r = await run(['replace', '--help'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('replace')
     })
@@ -947,8 +947,8 @@ describe('token-goat CLI', () => {
   })
 
   describe('insert-section', () => {
-    it('insert-section --help exits 0', () => {
-      const r = runCli(['insert-section', '--help'])
+    it('insert-section --help exits 0', async () => {
+      const r = await run(['insert-section', '--help'])
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('insert-section')
     })
@@ -1145,8 +1145,8 @@ describe('token-goat CLI', () => {
     }
   })
 
-  it('write-file --help mentions stdin', () => {
-    const r = runCli(['write-file', '--help'])
+  it('write-file --help mentions stdin', async () => {
+    const r = await run(['write-file', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('stdin')
   })

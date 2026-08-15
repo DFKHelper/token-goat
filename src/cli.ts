@@ -4439,6 +4439,12 @@ export function buildProgram(): Command {
   return program
 }
 
+/** Applies commander's exitOverride to a command and, recursively, every subcommand under it. */
+export function applyExitOverride(command: Command): void {
+  command.exitOverride()
+  for (const sub of command.commands) applyExitOverride(sub)
+}
+
 /**
  * Parse `argv` and dispatch. Sets `process.exitCode`; callers (main.ts) should
  * let the process exit naturally so buffered stdout flushes first.
@@ -4458,8 +4464,16 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     return
   }
   const program = buildProgram()
-  // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush.
-  program.exitOverride()
+  // Commander's exitOverride lets us catch its internal exits (help, version, unknown command)
+  // instead of letting it call process.exit() mid-flush.
+  //
+  // Applied to every subcommand, not just the program. Commander copies the exit callback to a
+  // subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and
+  // buildProgram() has already created all of them by the time this runs -- so they each inherited
+  // "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is
+  // exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can
+  // truncate output already written to a pipe.
+  applyExitOverride(program)
   try {
     await program.parseAsync(argv)
   } catch (e) {
