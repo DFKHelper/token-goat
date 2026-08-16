@@ -1124,9 +1124,27 @@ export function parseMultiFileSpec(spec: string): string[] | null {
   return parts.length > 1 ? parts : null
 }
 
-/** The note `outline`/`skeleton`/`exports`/`imports` print when extra positional file arguments were supplied. Space-separated extras were previously dropped in silence -- an agent would believe it had seen every file it named. Naming the comma form here is the whole point: it is the grammar that actually reads them all. */
-export function extraFileArgsNote(command: string, first: string, extras: readonly string[]): string {
-  return `Note: ${extras.length} extra file argument(s) ignored (${extras.join(', ')}). ${command} reads one file, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
+/**
+ * The note a single-argument read command prints when extra positional arguments were supplied.
+ * Space-separated extras are dropped in silence -- an agent would believe it had seen every file
+ * or symbol it named. Naming the comma form here is the whole point: it is the grammar that
+ * actually reads them all.
+ *
+ * `noun` matches what the command's argument is called in its own usage line, so `read` says
+ * "spec" rather than "file". `mergeable: false` is for the commands that genuinely have no
+ * merged form (`symbol`, and `section --list`): suggesting a comma list there would print a
+ * command that does not work, which is worse than printing no suggestion at all.
+ */
+export function extraFileArgsNote(
+  command: string,
+  first: string,
+  extras: readonly string[],
+  opts: { noun?: 'file' | 'spec'; mergeable?: boolean } = {},
+): string {
+  const noun = opts.noun ?? 'file'
+  const head = `Note: ${extras.length} extra ${noun} argument(s) ignored (${extras.join(', ')}).`
+  if (opts.mergeable === false) return `${head} ${command} takes one ${noun} at a time.`
+  return `${head} ${command} reads one ${noun}, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
 }
 
 // A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read. Exported so mcp_server.ts's confinement gate can recognize the exact same range syntax runRead does, instead of restating this regex in a second place (see specFilePart there).

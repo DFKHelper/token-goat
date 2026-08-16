@@ -44,28 +44,31 @@ describe('buildCommandManifest', () => {
 
   it('captures a real command\'s required argument', () => {
     const manifest = buildCommandManifest(buildProgram())
-    // Specimen is `read <spec>`, not `symbol`: `symbol`'s positional became OPTIONAL when
-    // `--grep` was added (the pattern is the query in that mode), so it no longer exercises the
-    // required-argument path this test exists for. `read` still takes exactly one required
-    // argument. The optional case `symbol` now represents is covered by the test below.
+    // Specimen is `read <spec> [more...]`, not `symbol`: `symbol`'s first positional became
+    // OPTIONAL when `--grep` was added (the pattern is the query in that mode), so it no longer
+    // exercises the required-argument path this test exists for. The optional case `symbol` now
+    // represents is covered by the test below.
     const read = manifest.find((e) => e.name === 'read')
     expect(read).toBeDefined()
     // Pin the exact count so a regression that dropped or duplicated the argument list (still
-    // non-empty) is caught too.
-    expect(read?.arguments.length).toBe(1)
+    // non-empty) is caught too. The trailing `[more...]` exists to catch space-separated extras
+    // and report them instead of dropping them silently; it is optional, so it does not disturb
+    // the required/optional distinction this test pins.
+    expect(read?.arguments.length).toBe(2)
     expect(read?.arguments[0]?.required).toBe(true)
+    expect(read?.arguments[1]?.required).toBe(false)
   })
 
   it('captures a real command\'s optional argument', () => {
     const manifest = buildCommandManifest(buildProgram())
     const symbol = manifest.find((e) => e.name === 'symbol')
     expect(symbol).toBeDefined()
-    // `symbol [name]` takes exactly one OPTIONAL argument -- omitting the name is how a
+    // `symbol [name] [more...]` takes no required argument at all -- omitting the name is how a
     // `--grep` pattern search is invoked. Pins the other half of the required/optional
     // distinction, so a regression that marked every argument required (or dropped the
     // argument list entirely) is caught rather than silently passing the case above.
-    expect(symbol?.arguments.length).toBe(1)
-    expect(symbol?.arguments[0]?.required).toBe(false)
+    expect(symbol?.arguments.length).toBe(2)
+    expect(symbol?.arguments.every((a) => !a.required)).toBe(true)
   })
 
   it('captures a real command\'s registered aliases', () => {
