@@ -27,6 +27,21 @@ export function pathEqClause(column: string): string {
  * root (backslash first, since it's the escape character itself) before appending the `/%`
  * suffix, which is never escaped -- it's the actual wildcard.
  */
+/**
+ * Name the index a project-scoped `file_path` filter can actually be served from, for the
+ * `<table>` given. Which one is correct depends on case folding: the folded index stores
+ * `TG_LOWER(file_path)`, so it only matches the predicate `projectScopeClause` builds on a
+ * case-insensitive filesystem, and the plain index only matches the other one. Both are created
+ * unconditionally by db.ts's schema on every connection open, so naming either is safe.
+ *
+ * This exists because SQLite's planner, with no ANALYZE statistics, prefers whichever index
+ * removes a sort over the far more selective path filter. See the INDEXED BY note in
+ * baseline.ts's fetchTopSymbols for the measurement that motivated it.
+ */
+export function projectScopeIndex(table: string): string {
+  return isCaseInsensitiveFs() ? `idx_${table}_file_folded` : `idx_${table}_file`
+}
+
 export function projectScopeClause(column: string): { clause: string; param: (root: string) => string } {
   const caseInsensitive = isCaseInsensitiveFs()
   const col = caseInsensitive ? `TG_LOWER(${column})` : column
