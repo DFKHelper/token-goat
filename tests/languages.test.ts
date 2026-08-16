@@ -2756,6 +2756,48 @@ void main() {
     expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
   })
 
+  it('indexes named and factory constructors under their own names, not the class name', () => {
+    const content = `class A {
+  A();
+  A.named();
+  const A.k(int x);
+  factory A.create() => A.named();
+  void go() {}
+}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    const ctors = symbols.filter((s) => s.kind === 'constructor')
+    expect(ctors.map((s) => s.name).sort()).toEqual(['create', 'k', 'named'])
+    expect(ctors.every((s) => s.parent === 'A')).toBe(true)
+    // The unnamed `A()` is deliberately not indexed: it would collide with the class symbol.
+    expect(symbols.filter((s) => s.name === 'A')).toHaveLength(1)
+    expect(symbols.find((s) => s.name === 'A')?.kind).toBe('class')
+    // `factory` must not be read as a return type, which would file the factory under `A`.
+    expect(symbols.filter((s) => s.kind === 'function').map((s) => s.name)).toEqual(['go'])
+  })
+
+  it('indexes a getter alongside its matching setter, and keeps a braced getter body from leaking scope', () => {
+    const content = `class A {
+  int get value => 1;
+  set value(int v) {}
+  static bool get ok => true;
+  String get name {
+    return 'x';
+  }
+}
+
+void top() {}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('ok')
+    expect(names).toContain('name')
+    // The getter/setter pair share a name, so both halves must be present, not just the setter.
+    expect(symbols.filter((s) => s.name === 'value')).toHaveLength(2)
+    // A `{`-bodied getter still reaches the brace counter, so the class frame closes on time.
+    expect(symbols.find((s) => s.name === 'top')?.parent).toBe('')
+  })
+
   it('extracts class-modifier declarations: abstract (long-standing) and Dart 3 base/sealed/interface/final/mixin class', () => {
     const content = `abstract class Shape {
   double area();
