@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+- **Every command and hook now starts about 20% faster.** Node can cache the compiled form of a large program between runs, but only if that caching is switched on before the program is loaded. The command now starts from a tiny launcher that switches it on and then loads the main program, so the work of compiling 3.5 MB of code is done once and reused. A bare command went from about 131 ms to 108 ms, and a hook call, which happens on nearly every tool use, went from about 145 ms to 112 ms. See [esbuild.config.mjs](esbuild.config.mjs).
+
 ### Fixed
 - **`token-goat index <file>` said a tracked file was not tracked.** Pointing the command at a single file instead of a folder always failed with "no tracked files found ... (is it a git repo?)", even when git tracked the file. The lookup asked git to run from the path it was given, and git cannot run from inside a file. It now runs from the file's folder and asks about that one file. See [src/repomap.ts](src/repomap.ts).
 - **Throttle marker files piled up in the data folder without limit.** The background indexer writes one small marker per folder it has seen, and nothing ever removed them, so a long-lived install collected hundreds. Markers past their one-hour window are already ignored, so they are now deleted on the indexer's regular cleanup pass. See [src/index_prune.ts](src/index_prune.ts) and [src/worker.ts](src/worker.ts).

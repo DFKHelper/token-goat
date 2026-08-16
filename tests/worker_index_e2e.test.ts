@@ -24,7 +24,7 @@ import { normalizePath } from '../src/paths.js'
 import { loadConfig } from '../src/config.js'
 import type * as ConfigModule from '../src/config.js'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { BUNDLE, CORE_BUNDLE } from './helpers/bundle.js'
 
 // Partial mock that defaults to calling through to the REAL loadConfig (so the spawned-bundle
 // tests and the prune test above see identical behavior to before this mock existed -- they
@@ -266,7 +266,7 @@ afterAll(() => {
 
 describe('built bundle end-to-end indexing', () => {
   it('builds a bundle that actually contains the indexer', () => {
-    const bundle = fs.readFileSync(BUNDLE, 'utf8')
+    const bundle = fs.readFileSync(CORE_BUNDLE, 'utf8')
     // The real indexer's write path must survive bundling; the old stub must not. The SQL is built as `DELETE FROM symbols WHERE ${pathEqClause('file_path')}`, so assert the static prefix that survives the interpolation — it vanishes if deleteFileRows is ever stubbed out.
     expect(bundle).toContain('DELETE FROM symbols WHERE ')
     expect(bundle).not.toContain('would index')
