@@ -391,6 +391,57 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
 }
 
 /**
+ * Depth-aware sibling of `stripBlockCommentSpan`, for languages whose block comments nest.
+ *
+ * Swift, Kotlin, Scala and Dart all specify nesting `/* ... /* ... *\/ ... *\/`; C# and PHP do not.
+ * The boolean-state version above closes the outer comment at the first inner `*\/`, which exposes
+ * whatever follows as code -- a `}` in that exposed tail decrements the caller's brace depth and
+ * pops a type frame that is still open, misattributing every later declaration in the file. This
+ * takes and returns a nesting depth instead of a boolean, so only the matching close ends the span.
+ * Callers in non-nesting languages must keep using `stripBlockCommentSpan`: there, a `/*` inside a
+ * comment is ordinary comment text and counting it would leave the span open forever.
+ */
+export function stripNestedBlockCommentSpan(line: string, depth: number): { code: string; depth: number } {
+  let code = ''
+  let j = 0
+  let d = depth
+  while (j < line.length) {
+    if (d === 0) {
+      const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
+      let open = line.indexOf('/*', j)
+      while (
+        open !== -1 &&
+        (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+      ) {
+        open = line.indexOf('/*', open + 1)
+      }
+      if (open === -1) {
+        code += line.slice(j)
+        break
+      }
+      code += line.slice(j, open)
+      code += '  '
+      j = open + 2
+      d = 1
+    } else {
+      // Whichever delimiter comes first decides: a nested opener deepens the span, a closer
+      // unwinds one level. Scanning for only one of the two is how the boolean version ends early.
+      const open = line.indexOf('/*', j)
+      const close = line.indexOf('*/', j)
+      if (close === -1 && open === -1) {
+        code += ' '.repeat(line.length - j)
+        break
+      }
+      const next = close === -1 ? open : open === -1 ? close : Math.min(open, close)
+      code += ' '.repeat(next + 2 - j)
+      d = Math.max(0, d + (next === open ? 1 : -1))
+      j = next + 2
+    }
+  }
+  return { code, depth: d }
+}
+
+/**
  * Strip a `//` line comment from `line`, returning only the code portion before it.
  * A `//` occurrence that falls inside an open single- or double-quoted string literal (e.g.
  * `"http://example.com"`) is not treated as a comment opener, mirroring the quote-awareness

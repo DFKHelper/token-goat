@@ -2263,6 +2263,136 @@ func firstElement<T>(_ items: [T]) -> T? {
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('does not count a brace inside a regex literal as nesting', () => {
+    // The worst of this batch: `/\{/` left the struct frame open for the rest of the file, so every
+    // later top-level declaration was emitted as a method of a type it has nothing to do with.
+    const content = `struct S {
+  let openBrace = /\\{/
+}
+func topLevel() {}
+`
+    const { symbols } = extractSwift(content, 'r.swift')
+    const top = symbols.find((s) => s.name === 'topLevel')
+    expect(top?.kind).toBe('function')
+    expect(top?.parent).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'openBrace')?.parent).toBe('S')
+  })
+
+  it('keeps a type frame open across a nested block comment', () => {
+    // Swift block comments nest. Ending the outer span at the inner `*/` exposed the commented `}`,
+    // which popped the frame early and dropped every member after it.
+    const content = `struct S {
+  /* outer
+     /* inner */ }
+  */
+  func f() {}
+}
+`
+    const { symbols } = extractSwift(content, 'n.swift')
+    expect(symbols.find((s) => s.name === 'f')?.parent).toBe('S')
+  })
+
+  it('indexes a declaration with a nested generic constraint', () => {
+    const { symbols } = extractSwift('func f<C: Collection<Int>>(_: C) {}\n', 'g.swift')
+    expect(symbols.map((s) => s.name)).toContain('f')
+  })
+
+  it('indexes Unicode and backtick-escaped declaration names in full', () => {
+    // An ASCII-only name class did not skip these, it truncated them: `Café` was indexed as `Caf`
+    // and its members were parented to that name, so neither name resolved.
+    const content = `struct Café {
+  var café = 0
+  var \`default\` = 1
+}
+`
+    const { symbols } = extractSwift(content, 'u.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['Café', 'café', 'default'])
+    expect(symbols.find((s) => s.name === 'café')?.parent).toBe('Café')
+  })
+
+  it('indexes members of a type whose body is written on one line', () => {
+    const { symbols } = extractSwift('struct S { var value = 0 }\nstruct T { func g() {} }\n', 'o.swift')
+    expect(symbols.find((s) => s.name === 'value')?.parent).toBe('S')
+    expect(symbols.find((s) => s.name === 'g')?.parent).toBe('T')
+  })
+
+  it('indexes every name in a multi-declarator var', () => {
+    const { symbols } = extractSwift('struct S {\n  var a = 0, b = 1\n}\n', 'm.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['S', 'a', 'b'])
+  })
+
+  it('does not split a declarator list on a comma inside brackets', () => {
+    const content = 'struct S {\n  var m: Dictionary<String, Int> = [:], n = f(1, 2)\n}\n'
+    const { symbols } = extractSwift(content, 'd.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['S', 'm', 'n'])
+  })
+
+  it('indexes declarations carrying modifiers that take an argument', () => {
+    const content = `actor A {
+  nonisolated(unsafe) var cache = 0
+  unowned(unsafe) var delegate = 1
+}
+`
+    const { symbols } = extractSwift(content, 'a.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['A', 'cache', 'delegate'])
+  })
+
+  it('indexes ownership, operator and objc-optional modifiers', () => {
+    const content = `struct S {
+  consuming func take() {}
+  borrowing func peek() {}
+}
+prefix func ~~~(x: Int) -> Int { x }
+`
+    const { symbols } = extractSwift(content, 'md.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['S', 'take', 'peek', '~~~'])
+    const proto = extractSwift('@objc protocol P {\n  optional func maybe()\n}\n', 'p.swift')
+    expect(proto.symbols.find((s) => s.name === 'maybe')?.parent).toBe('P')
+  })
+
+  it('records an import carrying an attribute or an access level', () => {
+    const { imports } = extractSwift('@preconcurrency import Foundation\npublic import Core\n', 'i.swift')
+    expect(imports.map((i) => i.target)).toEqual(['Foundation', 'Core'])
+  })
+
+  it('indexes file-scope declarations that are indented or split across lines', () => {
+    // Leading whitespace has no meaning in Swift: a declaration indented inside a `#if` region is
+    // still file-scope. Brace depth, not indentation, decides.
+    const { symbols } = extractSwift('  struct S {}\n  func f() {}\n', 'w.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['S', 'f'])
+    const split = extractSwift('func g\n() {}\n', 's.swift')
+    expect(split.symbols.map((s) => s.name)).toEqual(['g'])
+  })
+
+  it('indexes a file-scope let or var as a property', () => {
+    const { symbols } = extractSwift('let shared = 1\nvar count = 0\n', 'gl.swift')
+    expect(symbols.map((s) => `${s.kind}:${s.name}`)).toEqual(['var:shared', 'var:count'])
+    expect(symbols.every((s) => !s.parent)).toBe(true)
+  })
+
+  it('indexes a failable initializer under the plain name init', () => {
+    // Stored as `init?`, it could not be found by the name anyone would search for.
+    const { symbols } = extractSwift('struct S {\n  init?(x: Int) {}\n}\n', 'f.swift')
+    expect(symbols.find((s) => s.kind === 'method')?.name).toBe('init')
+  })
+
+  it('does not index a local declared inside a function body', () => {
+    // The gate this batch replaced (indentation) also happened to block locals; brace depth has
+    // to keep blocking them or every local becomes a phantom file-scope symbol.
+    const content = `func outer() {
+  let localVar = 1
+  func inner() {}
+}
+`
+    const { symbols } = extractSwift(content, 'l.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['outer'])
+  })
+
+  it('does not treat plain division as a regex literal', () => {
+    const { symbols } = extractSwift('struct S {\n  var ratio = a / b\n}\n', 'div.swift')
+    expect(symbols.map((s) => s.name)).toEqual(['S', 'ratio'])
+  })
 })
 
 // ---------------------------------------------------------------------------

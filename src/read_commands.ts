@@ -15,6 +15,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
+import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
 import { getDb } from './db.js'
 import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
@@ -5620,17 +5621,16 @@ export function extractImports(text: string, ext: string): string[] {
       if (m) push(m[1])
     }
   } else if (e === '.swift') {
-    // Same gap as Kotlin above, mirrored from swift.ts's IMPORT_RE: Swift's submodule-import
-    // form (`import class UIKit.UIView`, importing just one member of a module) has its leading
-    // keyword (class/struct/enum/protocol/func/var/let/typealias) consumed by the dedicated
-    // extractor before the real target is captured, but the generic
-    // `import|require|use|#include` fallback below has no such stop condition and greedily
-    // captures "class UIKit.UIView" verbatim as the import target instead of the real
-    // "UIKit.UIView" dependency -- diverging from the symbol index for the same file.
-    const re =
-      /^(?:@testable\s+)?import\s+(?:(?:class|struct|enum|protocol|func|var|let|typealias)\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
+    // Same gap as Kotlin above: Swift's submodule-import form (`import class UIKit.UIView`,
+    // importing just one member of a module) has its leading keyword consumed by the dedicated
+    // extractor before the real target is captured, but the generic `import|require|use|#include`
+    // fallback below has no such stop condition and greedily captures "class UIKit.UIView"
+    // verbatim as the import target -- diverging from the symbol index for the same file.
+    // swift.ts's own pattern is imported rather than copied here, because a copy is what let the
+    // two drift: attributes and Swift 6 access-controlled imports were added to one and not the
+    // other, so this command reported no imports for a file the index had indexed correctly.
     for (const line of lines) {
-      const m = re.exec(line.trim())
+      const m = SWIFT_IMPORT_RE.exec(stripSwiftImportAttributes(line.trim()))
       if (m) push(m[1])
     }
   } else if (e === '.hs') {
