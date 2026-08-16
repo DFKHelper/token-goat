@@ -5300,6 +5300,87 @@ function AfterSetup {
     expect(names).toContain('Setup')
     expect(names).toContain('AfterSetup')
   })
+  it('carries an unterminated quoted string across lines so its braces are not counted', () => {
+    const content = `$doc = "
+{
+"
+function AfterString {}
+`
+    const { symbols } = extractPowershell(content, 'multiline_string.ps1')
+    expect(symbols.map((s) => s.name)).toContain('AfterString')
+  })
+
+  it('does not index a declaration written inside a multi-line string', () => {
+    const content = `$doc = "
+function Ghost {}
+"
+function Real {}
+`
+    const { symbols } = extractPowershell(content, 'string_body.ps1')
+    expect(symbols.map((s) => s.name)).toEqual(['Real'])
+  })
+
+  it('does not count a backtick-escaped brace outside a string', () => {
+    const content = [
+      'function One { Write-Output `{ }',
+      'function Two {}',
+      '',
+    ].join('\n')
+    const { symbols } = extractPowershell(content, 'escaped_brace.ps1')
+    expect(symbols.map((s) => s.name)).toEqual(['One', 'Two'])
+  })
+
+  it('blanks every completed block comment on a line, not just the first', () => {
+    const content = `function One { <# a #> <# b #> }
+function Two {}
+`
+    const { symbols } = extractPowershell(content, 'two_block_comments.ps1')
+    expect(symbols.map((s) => s.name)).toEqual(['One', 'Two'])
+  })
+
+  it('still recognizes a here-string opener preceded by a completed block comment', () => {
+    const content = `<# note #> $text = @"
+{
+"@
+function AfterHeredoc {}
+`
+    const { symbols } = extractPowershell(content, 'comment_then_heredoc.ps1')
+    expect(symbols.map((s) => s.name)).toEqual(['AfterHeredoc'])
+  })
+
+  it('extracts a method declared on the same line as its class header', () => {
+    const content = `class C { [void] Run() {} }
+function AfterClass {}
+`
+    const { symbols } = extractPowershell(content, 'one_line_class.ps1')
+    const run = symbols.find((s) => s.name === 'Run')
+    expect(run?.kind).toBe('method')
+    expect(run?.parent).toBe('C')
+    expect(symbols.map((s) => s.name)).toContain('AfterClass')
+  })
+
+  it('extracts a method whose return type nests brackets more than two deep', () => {
+    const content = `class C {
+  [System.Collections.Generic.List[System.Collections.Generic.List[string]]] Get() {}
+}
+`
+    const { symbols } = extractPowershell(content, 'deep_generic.ps1')
+    expect(symbols.find((s) => s.name === 'Get')?.parent).toBe('C')
+  })
+
+  it('extracts an enum or class carrying a same-line attribute', () => {
+    const content = `[Flags()] enum Mode { Read = 1 }
+`
+    const { symbols } = extractPowershell(content, 'attributed_enum.ps1')
+    expect(symbols.find((s) => s.name === 'Mode')?.kind).toBe('enum')
+  })
+
+  it('keeps the hyphen and any non-ASCII characters in a command name', () => {
+    const content = `function Get-Ünicode {}
+`
+    const { symbols } = extractPowershell(content, 'unicode_name.ps1')
+    expect(symbols.map((s) => s.name)).toEqual(['Get-Ünicode'])
+  })
 })
 })
 
