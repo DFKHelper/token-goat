@@ -5,6 +5,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ## [Unreleased]
 
 ### Changed
+- **`refs` on a TypeScript symbol got about 11% faster.** To tell apart two different things that share a name, the command builds a small TypeScript program and asks the compiler which declaration each use points at. Building that program was parsing every documentation comment in every file it pulled in, which this step never looks at: it only ever asks whether two names resolve to the same declaration, and it never reports a compiler error. Documentation comments are now skipped in TypeScript files, and still parsed in plain JavaScript files, where they are the only place a type can be written. A `refs` call measured on the built binary went from about 1180 ms to about 1053 ms, over three alternating builds, with byte-identical output on five symbols. See [src/ts_refs.ts](src/ts_refs.ts).
 - **Every command and hook now starts about 20% faster.** Node can cache the compiled form of a large program between runs, but only if that caching is switched on before the program is loaded. The command now starts from a tiny launcher that switches it on and then loads the main program, so the work of compiling 3.5 MB of code is done once and reused. A bare command went from about 131 ms to 108 ms, and a hook call, which happens on nearly every tool use, went from about 145 ms to 112 ms. See [esbuild.config.mjs](esbuild.config.mjs).
 
 ### Fixed
