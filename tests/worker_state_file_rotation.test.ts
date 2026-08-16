@@ -66,6 +66,30 @@ describe('cleanupWorkerStateFiles', () => {
     }
   })
 
+  it('removes expired known-root-record markers, keeping ones inside the throttle window', () => {
+    // Regression: recordKnownRootThrottled writes one marker per directory ever edited and nothing ever removed them, so a long-lived data dir accumulated hundreds. Deleting an expired one is behaviour-neutral because the throttle already treats a marker older than its one-hour interval as absent.
+    const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-rotate-marker-'))
+    try {
+      const staleMarker = path.join(DIR, 'known-root-record-deadbeefdeadbeef.marker')
+      const freshMarker = path.join(DIR, 'known-root-record-cafebabecafebabe.marker')
+      const unrelated = path.join(DIR, 'config.toml')
+      fs.writeFileSync(staleMarker, '')
+      fs.writeFileSync(freshMarker, '')
+      fs.writeFileSync(unrelated, 'keep = true\n')
+
+      const staleTime = new Date(Date.now() - 2 * 60 * 60 * 1000)
+      fs.utimesSync(staleMarker, staleTime, staleTime)
+
+      cleanupWorkerStateFiles(DIR)
+
+      expect(fs.existsSync(staleMarker)).toBe(false)
+      expect(fs.existsSync(freshMarker)).toBe(true)
+      expect(fs.existsSync(unrelated)).toBe(true)
+    } finally {
+      fs.rmSync(DIR, { recursive: true, force: true })
+    }
+  })
+
   it('is a no-op fail-soft when neither the log file nor the queue dir exist', () => {
     const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-rotate-empty-'))
     try {
