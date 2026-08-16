@@ -10,6 +10,8 @@ import {
   type ResolveTypedRefsInput,
 } from '../src/ts_refs.js'
 import type { RefEntry } from '../src/parser_types.js'
+import * as realTs from 'typescript'
+import type * as TsModule from 'typescript'
 
 function ref(filePath: string, line: number, col: number, name = 'run', context = ''): RefEntry {
   return { filePath, name, line, col, context }
@@ -248,5 +250,61 @@ describe('ts_refs — performance sanity on this repo\'s own codebase', () => {
     // Generous CI-safe ceiling -- this repo has ~600 files total, but the scoped program only
     // ever touches defFile + candidate files + their own import closures, not the whole project.
     expect(elapsedMs).toBeLessThan(15_000)
+  })
+})
+
+describe('ts_refs — scoped program skips JSDoc parsing it never reads', () => {
+  afterEach(() => {
+    setTsModuleForTesting(undefined)
+  })
+
+  // This tier asks the checker one thing -- do two identifiers resolve to the same declaration --
+  // and never reads a doc comment or reports a diagnostic, so parsing every JSDoc comment in every
+  // file the program pulls in is pure waste. Configuring the host to skip it is worth ~127ms of a
+  // ~1180ms `refs` call here, measured on the built bundle across three alternating builds, with
+  // byte-identical output. None of that is observable from the command's behaviour: drop the host
+  // and every functional test still passes while the saving silently disappears.
+  function recordingTs(withEnum: boolean): { calls: TsModule.CreateProgramOptions[]; mod: typeof TsModule } {
+    const calls: TsModule.CreateProgramOptions[] = []
+    const mod = {
+      ...realTs,
+      JSDocParsingMode: withEnum ? realTs.JSDocParsingMode : undefined,
+      createProgram: (opts: TsModule.CreateProgramOptions) => {
+        calls.push(opts)
+        return realTs.createProgram(opts)
+      },
+    } as unknown as typeof TsModule
+    return { calls, mod }
+  }
+
+  function runOnce(mod: typeof TsModule): void {
+    setTsModuleForTesting(mod)
+    const defFile = path.resolve(process.cwd(), 'src/util.ts')
+    resolveTypedRefs({
+      defFile,
+      defLineStart: 1,
+      defLineEnd: 2,
+      symbolName: 'countNoun',
+      candidates: [ref(defFile, 1, 0, 'countNoun')],
+    })
+  }
+
+  it('builds the program with a host that skips JSDoc in .ts files', () => {
+    const { calls, mod } = recordingTs(true)
+    runOnce(mod)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.host?.jsDocParsingMode).toBe(realTs.JSDocParsingMode.ParseForTypeErrors)
+  })
+
+  it('falls back to the default host on a TypeScript too old to have the enum', () => {
+    // typescript is an optional dependency and JSDocParsingMode only exists from 5.3, so reading
+    // the mode off an older module yields undefined -- which must mean "keep the default host",
+    // not "pass undefined as the mode" and not a crash.
+    const { calls, mod } = recordingTs(false)
+    runOnce(mod)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.host).toBeUndefined()
   })
 })

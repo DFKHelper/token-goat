@@ -210,7 +210,20 @@ function buildScopedProgram(
   // only ever used for type resolution, never for emitting output.
   options.noEmit = true
 
-  return ts.createProgram({ rootNames: [...rootNames], options })
+  // Parsing every JSDoc comment in every file the program pulls in is pure waste here: this tier
+  // only ever asks the checker whether two identifiers resolve to the same declaration, and never
+  // reads a doc comment or reports a diagnostic. Skipping it in .ts files takes program
+  // construction from ~700ms to ~600ms on this repo, with the same 626 files loaded.
+  // ParseForTypeErrors rather than ParseNone so JSDoc in plain .js files, where it is the only
+  // place a type can be declared, is still parsed. The enum arrived in TypeScript 5.3 and
+  // typescript is an optional dependency, so an older install just keeps the default host.
+  const jsDocParsingMode = ts.JSDocParsingMode?.ParseForTypeErrors
+  if (jsDocParsingMode === undefined) {
+    return ts.createProgram({ rootNames: [...rootNames], options })
+  }
+  const host = ts.createCompilerHost(options)
+  host.jsDocParsingMode = jsDocParsingMode
+  return ts.createProgram({ rootNames: [...rootNames], options, host })
 }
 
 /**
