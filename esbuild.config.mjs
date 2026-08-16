@@ -1,5 +1,8 @@
 import * as esbuild from 'esbuild'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+
+// Shared by the hook build's chunkNames and its own stale-chunk sweep below.
+const HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
@@ -75,13 +78,32 @@ await esbuild.build({
 // stay a plain library with zero load-time side effects, unlike
 // dist/token-goat.mjs (whose banner-less src/main.ts entry calls `run()` at
 // import time to parse `process.argv` as CLI args) -- see src/hook_lib.ts.
+// Hashed chunk names change whenever their contents do, so yesterday's chunks would otherwise
+// pile up in dist/ and ship inside the tarball (package.json's `files` is the whole directory).
+for (const stale of readdirSync('dist').filter((f) => f.startsWith(HOOK_CHUNK_PREFIX))) {
+  rmSync(`dist/${stale}`)
+}
+
+// splitting:true, not a single outfile. A hook `import()`s this bundle on nearly every tool call,
+// and V8 parses every byte of it -- including code the hook never runs. The CLI surface reached
+// through skill_version_drift.ts's drift check, the MCP server and zod all sit behind dynamic
+// imports already, but without splitting esbuild inlines them into this one file, so their bytes
+// are parsed on every hook anyway and only their *execution* is deferred. Splitting moves them
+// into sibling chunks that are read only if that dynamic import actually fires, taking the
+// eagerly parsed set from 3.61 MB to 2.27 MB and import+eval from ~57 ms to ~39 ms, measured with
+// the compile cache warm. entryNames pins the entry's filename, which the bridges, the installed
+// hook shim and the README all reference by name; outExtension keeps it `.mjs`.
 await esbuild.build({
   entryPoints: ['src/hook_lib.ts'],
   bundle: true,
+  splitting: true,
   platform: 'node',
   target: 'node22',
   format: 'esm',
-  outfile: 'dist/token-goat-hook.mjs',
+  outdir: 'dist',
+  entryNames: 'token-goat-hook',
+  chunkNames: `${HOOK_CHUNK_PREFIX}[hash]`,
+  outExtension: { '.js': '.mjs' },
   external: EXTERNAL_NATIVE_DEPS,
   banner: {
     js: [

@@ -73,44 +73,44 @@ afterEach(() => {
 
 describe('skill_version_drift', () => {
   describe('checkSkillVersionDrift — no-op cases', () => {
-    it('returns null when no snapshot exists for the session', () => {
-      expect(checkSkillVersionDrift(nonce())).toBeNull()
+    it('returns null when no snapshot exists for the session', async () => {
+      expect(await checkSkillVersionDrift(nonce())).toBeNull()
     })
 
-    it('returns null for an empty/undefined session id', () => {
-      expect(checkSkillVersionDrift('')).toBeNull()
-      expect(checkSkillVersionDrift(undefined)).toBeNull()
+    it('returns null for an empty/undefined session id', async () => {
+      expect(await checkSkillVersionDrift('')).toBeNull()
+      expect(await checkSkillVersionDrift(undefined)).toBeNull()
     })
 
-    it('returns null when the snapshot version matches the running version (no drift)', () => {
+    it('returns null when the snapshot version matches the running version (no drift)', async () => {
       const sessionId = nonce()
-      recordSkillVersionSnapshot(sessionId, 'token-goat')
-      expect(checkSkillVersionDrift(sessionId)).toBeNull()
+      await recordSkillVersionSnapshot(sessionId, 'token-goat')
+      expect(await checkSkillVersionDrift(sessionId)).toBeNull()
     })
   })
 
   describe('recordSkillVersionSnapshot — scoping', () => {
-    it('no-ops for a skill other than token-goat (no drift ever detected for it)', () => {
+    it('no-ops for a skill other than token-goat (no drift ever detected for it)', async () => {
       const sessionId = nonce()
-      recordSkillVersionSnapshot(sessionId, 'some-other-skill')
-      expect(checkSkillVersionDrift(sessionId)).toBeNull()
+      await recordSkillVersionSnapshot(sessionId, 'some-other-skill')
+      expect(await checkSkillVersionDrift(sessionId)).toBeNull()
     })
 
-    it('no-ops for an empty session id (never throws)', () => {
-      expect(() => recordSkillVersionSnapshot('', 'token-goat')).not.toThrow()
-      expect(() => recordSkillVersionSnapshot(undefined, 'token-goat')).not.toThrow()
+    it('no-ops for an empty session id (never throws)', async () => {
+      await expect(recordSkillVersionSnapshot('', 'token-goat')).resolves.not.toThrow()
+      await expect(recordSkillVersionSnapshot(undefined, 'token-goat')).resolves.not.toThrow()
     })
   })
 
   describe('checkSkillVersionDrift — real drift', () => {
-    it('reports specific new commands and fires only once per (re)load', () => {
+    it('reports specific new commands and fires only once per (re)load', async () => {
       const sessionId = nonce()
       // An empty "loaded commands" set plus an older version string means every currently
       // registered command counts as new -- deliberately the maximal-drift case, so the
       // message is guaranteed non-trivial regardless of which commands exist today.
       seedOldSnapshot(sessionId, '0.0.0-test-old', [])
 
-      const first = checkSkillVersionDrift(sessionId)
+      const first = await checkSkillVersionDrift(sessionId)
       expect(first).not.toBeNull()
       expect(first).toContain('upgraded v0.0.0-test-old -> v' + VERSION)
       expect(first).toContain('new command(s) available')
@@ -118,32 +118,32 @@ describe('skill_version_drift', () => {
 
       // One-shot: the session was already notified, so a second check (same turn or a later
       // one) must not repeat it.
-      const second = checkSkillVersionDrift(sessionId)
+      const second = await checkSkillVersionDrift(sessionId)
       expect(second).toBeNull()
     })
 
-    it('still nudges (generically) when the version differs but no new commands were added', () => {
+    it('still nudges (generically) when the version differs but no new commands were added', async () => {
       const sessionId = nonce()
       // Seed with the *current* full command set but an older version string, so the diff is
       // empty even though the version itself has changed (e.g. a patch release with no new
       // commands, only fixes).
       seedOldSnapshot(sessionId, '0.0.0-test-old', currentCommandNamesForTest())
 
-      const message = checkSkillVersionDrift(sessionId)
+      const message = await checkSkillVersionDrift(sessionId)
       expect(message).not.toBeNull()
       expect(message).toContain('upgraded v0.0.0-test-old -> v' + VERSION)
       expect(message).toContain('token-goat commands')
     })
 
-    it('a fresh (re)load resets the baseline and the one-shot notified flag', () => {
+    it('a fresh (re)load resets the baseline and the one-shot notified flag', async () => {
       const sessionId = nonce()
       seedOldSnapshot(sessionId, '0.0.0-test-old', [])
-      expect(checkSkillVersionDrift(sessionId)).not.toBeNull()
-      expect(checkSkillVersionDrift(sessionId)).toBeNull()
+      expect(await checkSkillVersionDrift(sessionId)).not.toBeNull()
+      expect(await checkSkillVersionDrift(sessionId)).toBeNull()
 
       // Reloading the skill at the current version re-baselines: no more drift to report.
-      recordSkillVersionSnapshot(sessionId, 'token-goat')
-      expect(checkSkillVersionDrift(sessionId)).toBeNull()
+      await recordSkillVersionSnapshot(sessionId, 'token-goat')
+      expect(await checkSkillVersionDrift(sessionId)).toBeNull()
     })
   })
 
@@ -154,7 +154,7 @@ describe('skill_version_drift', () => {
       expect(result.hookType).toBe('pass')
 
       // No drift right after a fresh load at the real running version.
-      expect(checkSkillVersionDrift(sessionId)).toBeNull()
+      expect(await checkSkillVersionDrift(sessionId)).toBeNull()
 
       const db = getDb(globalDbPath())
       const row = db

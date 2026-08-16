@@ -53,7 +53,7 @@ describe('hooks_session', () => {
     }
   });
 
-  it('user_prompt_submit passes through without calling git for short prompts', () => {
+  it('user_prompt_submit passes through without calling git for short prompts', async () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -65,12 +65,12 @@ describe('hooks_session', () => {
         cwd: '/tmp',
       },
     };
-    const result = userPromptSubmitHandler(event);
+    const result = await userPromptSubmitHandler(event);
     expect(result.hookType).toBe('pass');
     expect(util.runGit).not.toHaveBeenCalled();
   });
 
-  it('advises only once when a continuation loop starts', () => {
+  it('advises only once when a continuation loop starts', async () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -80,15 +80,15 @@ describe('hooks_session', () => {
       raw: { prompt: 'continue' },
     };
 
-    const first = userPromptSubmitHandler(event);
-    const second = userPromptSubmitHandler(event);
+    const first = await userPromptSubmitHandler(event);
+    const second = await userPromptSubmitHandler(event);
 
     expect((first as { context: string }).context).toContain('checkpoint')
     expect(second.hookType).toBe('pass')
   });
 
-  it('advises independently for continuation loops in separate sessions', () => {
-    const first = userPromptSubmitHandler({
+  it('advises independently for continuation loops in separate sessions', async () => {
+    const first = await userPromptSubmitHandler({
       eventName: 'user_prompt_submit',
       toolName: undefined,
       toolInput: {},
@@ -96,7 +96,7 @@ describe('hooks_session', () => {
       agentId: undefined,
       raw: { prompt: 'continue' },
     });
-    const second = userPromptSubmitHandler({
+    const second = await userPromptSubmitHandler({
       eventName: 'user_prompt_submit',
       toolName: undefined,
       toolInput: {},
@@ -109,7 +109,7 @@ describe('hooks_session', () => {
     expect(second.hookType).toBe('context');
   });
 
-  it.each([25, 100, 250])('advises after %i observed scheduled prompt deliveries', (sequence) => {
+  it.each([25, 100, 250])('advises after %i observed scheduled prompt deliveries', async (sequence) => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -120,17 +120,17 @@ describe('hooks_session', () => {
     };
 
     for (let occurrence = 1; occurrence < sequence; occurrence += 1) {
-      const result = userPromptSubmitHandler(event);
+      const result = await userPromptSubmitHandler(event);
       expect(result.hookType).toBe([25, 100, 250].includes(occurrence) ? 'context' : 'pass');
     }
-    const threshold = userPromptSubmitHandler(event);
-    const subsequent = userPromptSubmitHandler(event);
+    const threshold = await userPromptSubmitHandler(event);
+    const subsequent = await userPromptSubmitHandler(event);
 
     expect((threshold as { context: string }).context).toContain('start a fresh session');
     expect(subsequent.hookType).toBe('pass');
   });
 
-  it('does not treat the schedule identifier as an observed occurrence count', () => {
+  it('does not treat the schedule identifier as an observed occurrence count', async () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -140,10 +140,10 @@ describe('hooks_session', () => {
       raw: { prompt: '[Scheduled prompt #25] Continue improving the project.' },
     };
 
-    expect(userPromptSubmitHandler(event).hookType).toBe('pass');
+    expect((await userPromptSubmitHandler(event)).hookType).toBe('pass');
   });
 
-  it('advises when an identical embedded skill payload is replayed', () => {
+  it('advises when an identical embedded skill payload is replayed', async () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -153,14 +153,14 @@ describe('hooks_session', () => {
       raw: { prompt: '<skill-context name="example">Repeated payload</skill-context>' },
     };
 
-    expect(userPromptSubmitHandler(event).hookType).toBe('pass')
-    const replay = userPromptSubmitHandler(event);
+    expect((await userPromptSubmitHandler(event)).hookType).toBe('pass')
+    const replay = await userPromptSubmitHandler(event);
     expect((replay as { context: string }).context).toContain('already provided')
   });
 
-  it('does not treat the first skill payload in a separate session as a replay', () => {
+  it('does not treat the first skill payload in a separate session as a replay', async () => {
     const prompt = '<skill-context name="example">Repeated payload</skill-context>';
-    const firstSession = userPromptSubmitHandler({
+    const firstSession = await userPromptSubmitHandler({
       eventName: 'user_prompt_submit',
       toolName: undefined,
       toolInput: {},
@@ -168,7 +168,7 @@ describe('hooks_session', () => {
       agentId: undefined,
       raw: { prompt },
     });
-    const secondSession = userPromptSubmitHandler({
+    const secondSession = await userPromptSubmitHandler({
       eventName: 'user_prompt_submit',
       toolName: undefined,
       toolInput: {},
@@ -181,7 +181,7 @@ describe('hooks_session', () => {
     expect(secondSession.hookType).toBe('pass');
   });
 
-  it('user_prompt_submit emits a branch hint for longer prompts', () => {
+  it('user_prompt_submit emits a branch hint for longer prompts', async () => {
     vi.mocked(util.runGit).mockReturnValue({ stdout: 'feature/foo', stderr: '', exitCode: 0 });
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
@@ -194,12 +194,12 @@ describe('hooks_session', () => {
         cwd: '/tmp/repo',
       },
     };
-    const result = userPromptSubmitHandler(event);
+    const result = await userPromptSubmitHandler(event);
     expect(result.hookType).toBe('context');
     expect((result as { context: string }).context).toContain('feature/foo');
   });
 
-  it('subagent_stop passes through without calling git when sessionId is missing', () => {
+  it('subagent_stop passes through without calling git when sessionId is missing', async () => {
     const event: HookEvent = {
       eventName: 'subagent_stop',
       toolName: undefined,
@@ -213,7 +213,7 @@ describe('hooks_session', () => {
     expect(util.runGit).not.toHaveBeenCalled();
   });
 
-  it('subagent_stop passes through without calling git when cwd is missing', () => {
+  it('subagent_stop passes through without calling git when cwd is missing', async () => {
     const event: HookEvent = {
       eventName: 'subagent_stop',
       toolName: undefined,
@@ -228,7 +228,7 @@ describe('hooks_session', () => {
   });
 
   describe('subagentStopHandler - hallucination detection', () => {
-    it('does not warn when the report is a readonly research summary and git status is clean', () => {
+    it('does not warn when the report is a readonly research summary and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -255,7 +255,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not warn when the report claims a fix AND a commit and git status is clean (legitimate success, not a hallucination)', () => {
+    it('does not warn when the report claims a fix AND a commit and git status is clean (legitimate success, not a hallucination)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -282,7 +282,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not warn when the report claims work was pushed and git status is clean', () => {
+    it('does not warn when the report claims work was pushed and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -309,7 +309,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('warns when the report claims an implementation and git status is clean', () => {
+    it('warns when the report claims an implementation and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -338,7 +338,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not warn when the report claims a fix but git status has changes', () => {
+    it('does not warn when the report claims a fix but git status has changes', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -365,7 +365,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not warn when the report has no claimed-change verbs despite clean status', () => {
+    it('does not warn when the report has no claimed-change verbs despite clean status', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -392,7 +392,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not warn when raw event has no last_assistant_message field (real minimal payload shape)', () => {
+    it('does not warn when raw event has no last_assistant_message field (real minimal payload shape)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -422,7 +422,7 @@ describe('hooks_session', () => {
   });
 
   describe('hints.git_hint_max_ms wiring', () => {
-    it('userPromptSubmitHandler passes the configured value through to runGit as timeoutMs', () => {
+    it('userPromptSubmitHandler passes the configured value through to runGit as timeoutMs', async () => {
       const cfg = defaultConfig();
       cfg.hints.git_hint_max_ms = 777;
       saveConfig(cfg);
@@ -439,7 +439,7 @@ describe('hooks_session', () => {
         raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: '/tmp/repo' },
       };
 
-      userPromptSubmitHandler(event);
+      await userPromptSubmitHandler(event);
 
       expect(util.runGit).toHaveBeenCalledWith(
         ['rev-parse', '--abbrev-ref', 'HEAD'],
@@ -447,7 +447,7 @@ describe('hooks_session', () => {
       );
     });
 
-    it('subagentStopHandler passes the configured value through to runGit as timeoutMs', () => {
+    it('subagentStopHandler passes the configured value through to runGit as timeoutMs', async () => {
       const cfg = defaultConfig();
       cfg.hints.git_hint_max_ms = 333;
       saveConfig(cfg);
@@ -474,7 +474,7 @@ describe('hooks_session', () => {
   });
 
   describe('non-string raw.cwd (regression: both handlers previously cast `event.raw[\'cwd\'] as string | undefined` with no runtime check, so a malformed/harness-divergent payload where cwd is present but not a string -- e.g. a number -- would pass the truthy check and be handed straight to runGit as its cwd option)', () => {
-    it('userPromptSubmitHandler never calls runGit when raw.cwd is not a string', () => {
+    it('userPromptSubmitHandler never calls runGit when raw.cwd is not a string', async () => {
       const event: HookEvent = {
         eventName: 'user_prompt_submit',
         toolName: undefined,
@@ -484,12 +484,12 @@ describe('hooks_session', () => {
         raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: 12345 },
       };
 
-      userPromptSubmitHandler(event);
+      await userPromptSubmitHandler(event);
 
       expect(util.runGit).not.toHaveBeenCalled();
     });
 
-    it('subagentStopHandler never calls runGit when raw.cwd is not a string', () => {
+    it('subagentStopHandler never calls runGit when raw.cwd is not a string', async () => {
       const event: HookEvent = {
         eventName: 'subagent_stop',
         toolName: undefined,
@@ -506,7 +506,7 @@ describe('hooks_session', () => {
   });
 
   describe('skill_version_drift wiring (token-goat upgraded since the skill was loaded)', () => {
-    it('surfaces the drift nudge alongside the branch line when both apply', () => {
+    it('surfaces the drift nudge alongside the branch line when both apply', async () => {
       vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', exitCode: 0 });
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
@@ -520,7 +520,7 @@ describe('hooks_session', () => {
         raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: '/tmp/repo' },
       };
 
-      const result = userPromptSubmitHandler(event);
+      const result = await userPromptSubmitHandler(event);
       expect(result.hookType).toBe('context');
       const context = (result as { context: string }).context;
       expect(context).toContain('branch: main');
@@ -528,7 +528,7 @@ describe('hooks_session', () => {
       expect(context).toContain('token-goat commands');
     });
 
-    it('surfaces the drift nudge on its own when there is no branch to report', () => {
+    it('surfaces the drift nudge on its own when there is no branch to report', async () => {
       vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
@@ -542,12 +542,12 @@ describe('hooks_session', () => {
         raw: { prompt: 'this is a long enough prompt to pass the length check' },
       };
 
-      const result = userPromptSubmitHandler(event);
+      const result = await userPromptSubmitHandler(event);
       expect(result.hookType).toBe('context');
       expect((result as { context: string }).context).toContain(`upgraded v0.0.0-test-old -> v${VERSION}`);
     });
 
-    it('does not repeat the nudge on a second turn in the same session', () => {
+    it('does not repeat the nudge on a second turn in the same session', async () => {
       vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
@@ -561,15 +561,15 @@ describe('hooks_session', () => {
         raw: { prompt: 'this is a long enough prompt to pass the length check' },
       };
 
-      const first = userPromptSubmitHandler(event);
+      const first = await userPromptSubmitHandler(event);
       expect(first.hookType).toBe('context');
 
-      const second = userPromptSubmitHandler(event);
+      const second = await userPromptSubmitHandler(event);
       // No branch (empty stdout) and no drift left to report (already notified) -> nothing to say.
       expect(second.hookType).toBe('pass');
     });
 
-    it('does not nudge a session that never loaded the token-goat skill', () => {
+    it('does not nudge a session that never loaded the token-goat skill', async () => {
       vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
       const event: HookEvent = {
         eventName: 'user_prompt_submit',
@@ -580,7 +580,7 @@ describe('hooks_session', () => {
         raw: { prompt: 'this is a long enough prompt to pass the length check' },
       };
 
-      const result = userPromptSubmitHandler(event);
+      const result = await userPromptSubmitHandler(event);
       expect(result.hookType).toBe('pass');
     });
 
@@ -591,7 +591,7 @@ describe('hooks_session', () => {
     // session's next turn happened to be short -- a very common real pattern ("continue", "yes",
     // "go on", "next"). The nudge should still surface on a short prompt, even though no branch
     // line is computed for it.
-    it('still surfaces the drift nudge on a short prompt (below the git-branch length gate)', () => {
+    it('still surfaces the drift nudge on a short prompt (below the git-branch length gate)', async () => {
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
 
@@ -604,7 +604,7 @@ describe('hooks_session', () => {
         raw: { prompt: 'ok', cwd: '/tmp/repo' },
       };
 
-      const result = userPromptSubmitHandler(event);
+      const result = await userPromptSubmitHandler(event);
       expect(util.runGit).not.toHaveBeenCalled();
       expect(result.hookType).toBe('context');
       expect((result as { context: string }).context).toContain(`upgraded v0.0.0-test-old -> v${VERSION}`);
