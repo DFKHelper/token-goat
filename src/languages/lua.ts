@@ -9,7 +9,6 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
-  stripLineComment,
   stripStringLiterals,
   type AdapterImport,
   makeLineSymbol,
@@ -76,6 +75,56 @@ function lineClosesItself(strippedLine: string): boolean {
   return closes >= opens
 }
 
+/**
+ * Strips Lua comments and long-bracket strings, carrying the open long-bracket level across
+ * lines. Lua writes both block comments and multi-line strings with level-N long brackets
+ * (`[[`, `[==[` ... `]]`, `]==]`, the `=` count being the level), and a block comment is just a
+ * long bracket behind `--`. Only the opening line of such a span looks like a comment to a
+ * line-based stripper, so the body used to be read as code: a commented-out or documented
+ * `function` was indexed as a real one, and its `end` popped a live scope frame.
+ * Short quoted strings are copied through untouched so that a `[[` or `--` inside one is not
+ * mistaken for an opener.
+ */
+function stripLuaSpans(line: string, level: number | null): { code: string; level: number | null } {
+  let out = ''
+  let lvl = level
+  let i = 0
+  while (i < line.length) {
+    if (lvl !== null) {
+      const close = `]${'='.repeat(lvl)}]`
+      const at = line.indexOf(close, i)
+      if (at < 0) return { code: out, level: lvl }
+      i = at + close.length
+      lvl = null
+      continue
+    }
+    const ch = line[i]!
+    if (ch === '"' || ch === "'") {
+      out += ch
+      i += 1
+      while (i < line.length && line[i] !== ch) {
+        // A backslash escapes the next character, including the closing quote itself.
+        if (line[i] === '\\' && i + 1 < line.length) { out += line[i]! + line[i + 1]!; i += 2; continue }
+        out += line[i]!
+        i += 1
+      }
+      if (i < line.length) { out += line[i]!; i += 1 }
+      continue
+    }
+    if (ch === '-' && line[i + 1] === '-') {
+      const block = /^--\[(=*)\[/.exec(line.slice(i))
+      if (block) { lvl = block[1]!.length; i += block[0].length; continue }
+      // An ordinary `--` line comment runs to end of line.
+      return { code: out, level: null }
+    }
+    const open = /^\[(=*)\[/.exec(line.slice(i))
+    if (open) { lvl = open[1]!.length; i += open[0].length; continue }
+    out += ch
+    i += 1
+  }
+  return { code: out, level: lvl }
+}
+
 export function extractLua(
   content: string,
   filePath: string,
@@ -85,13 +134,17 @@ export function extractLua(
   const lines = content.split(/\r?\n/)
 
   const funcStack: FunctionFrame[] = []
+  // Non-null while inside an unterminated long-bracket comment or string; carries its level.
+  let longBracketLevel: number | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Strip a trailing `--` line comment (Lua uses `--` for line comments, not `//`).
-    const line = stripLineComment(rawLine, ['--']).trimEnd()
+    // Strips `--` line comments plus long-bracket comments and strings, which span lines.
+    const span = stripLuaSpans(rawLine, longBracketLevel)
+    longBracketLevel = span.level
+    const line = span.code.trimEnd()
     const stripped = line.trim()
 
     if (!stripped) {
@@ -198,7 +251,12 @@ export function extractLua(
     // followed by whitespace or end-of-line) before popping once PER `end` token; popping only
     // once regardless of count left a stale frame on the stack, corrupting parent attribution
     // for every symbol declared afterward in the enclosing scope.
-    if (/^(?:end(?:\s+|$))+$/.test(stripped)) {
+    // Trailing `)`/`}`/`,`/`;` count as closing punctuation, not as code: an anonymous callback
+    // body ends on `end)`, and a function stored in a table literal ends on `end,`. Requiring the
+    // line to be bare `end` tokens left those frames on the stack forever, so the *enclosing*
+    // function's own `end` popped the stale frame instead and every symbol declared after it was
+    // attributed to a parent that had already closed.
+    if (/^(?:\bend\b[\s),;}]*)+$/.test(stripped)) {
       const popCount = (stripped.match(/\bend\b/g) ?? []).length
       for (let k = 0; k < popCount && funcStack.length > 0; k++) {
         funcStack.pop()
