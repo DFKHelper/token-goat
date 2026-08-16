@@ -109,6 +109,31 @@ const lastKnownProjectRoots = new Map<string, string>()
 const unclearedDrainingSnapshots = new Map<string, string>()
 
 /**
+ * Identity-plus-content stamp for a draining file, used as the {@link unclearedDrainingSnapshots}
+ * value. Content alone is not enough to decide "we already folded this file in": a *different*
+ * file reusing the same `.draining` name can hold byte-identical content, which is the common
+ * case rather than a rare one, since re-editing the same source file queues the same path again.
+ * A stale snapshot matching that way makes stage (a) skip a batch nobody processed -- reachable
+ * when a crash between stage (b)'s claim-rename and its batch leaves the claimed file unprocessed.
+ * mtime and size separate the two: cycles are seconds apart, so a recreated file differs.
+ */
+function drainingSnapshotStamp(file: string, content: string): string {
+  let identity = 'unknown'
+  try {
+    const stat = fs.statSync(file)
+    identity = `${stat.mtimeMs}:${stat.size}:${stat.ino}`
+  } catch {
+    // Unstattable: fall back to content-only matching, which is the previous behavior.
+  }
+  return `${identity}::${content}`
+}
+
+/** How many times stage (a) re-reads a `.draining` file before treating it as genuinely unreadable. Mirrors stage (b)'s claim-rename retry budget. */
+const DRAINING_READ_ATTEMPTS = 5
+/** Delay between the stage (a) read retries above, in milliseconds. */
+const DRAINING_READ_RETRY_DELAY_MS = 50
+
+/**
  * List every live draining-recovery file for `queuePath`: the primary
  * `dirty.txt.draining` name, plus any `.alt-<ts>` fallback claimed by stage
  * (b) when the primary name was still occupied by a file a previous cycle
@@ -724,21 +749,36 @@ export function drainOnce(
   }
 
   // (a) Crash recovery: absorb any `.draining` (and `.draining.alt-*` fallback) files abandoned by a previous crashed or stuck drain. Multiple files can accumulate when a Windows sharing violation keeps the primary `.draining` name locked across cycles (see stage (b)'s fallback-claim comment) -- recover every one of them, not just the first, so a single stuck file can never starve the rest of the queue from ever draining.
-  for (const drainingFile of listDrainingFiles(queuePath)) {
-    let drainingContent: string
-    try {
-      drainingContent = fs.readFileSync(drainingFile, 'utf8')
-    } catch {
-      // Genuinely unreadable: quarantine so it cannot collide with a future claim, then skip it this cycle.
+  const liveDrainingFiles = listDrainingFiles(queuePath)
+  // Drop snapshots for draining files that no longer exist. An entry is only added when both cleanup attempts failed, and is otherwise removed when its file is cleared -- but a file deleted or quarantined by anything else leaves its entry behind forever, so the map grows without bound across cycles and each value holds a whole queue file's contents. A stale entry is also wrong, not merely large: if a later cycle recreates the same draining name with byte-identical content, the leftover snapshot makes the guard below skip a batch that was never processed.
+  const liveDrainingSet = new Set(liveDrainingFiles)
+  for (const key of unclearedDrainingSnapshots.keys()) {
+    if (!liveDrainingSet.has(key) && key.startsWith(`${queuePath}.draining`)) unclearedDrainingSnapshots.delete(key)
+  }
+  for (const drainingFile of liveDrainingFiles) {
+    let drainingContent: string | null = null
+    // A read failure here is not proof the file is corrupt: on Windows an antivirus scan or another process holding the file open fails the read while a rename still succeeds, and quarantining on the first failure loses every path the file named, permanently -- listDrainingFiles excludes `.corrupt-` names from recovery and cleanupWorkerStateFiles deletes them after 30 days. Retry on the same schedule stage (b) uses for its claim rename before concluding the file is genuinely unreadable.
+    for (let attempt = 0; attempt < DRAINING_READ_ATTEMPTS; attempt++) {
+      try {
+        drainingContent = fs.readFileSync(drainingFile, 'utf8')
+        break
+      } catch {
+        if (attempt < DRAINING_READ_ATTEMPTS - 1) sleepSyncMs(DRAINING_READ_RETRY_DELAY_MS)
+      }
+    }
+    if (drainingContent === null) {
+      // Still unreadable after every retry: quarantine so it cannot collide with a future claim, then skip it this cycle.
       try {
         fs.renameSync(drainingFile, `${drainingFile}.corrupt-${Date.now()}`)
+        // The file is gone under its old name, so any snapshot keyed to it now describes a path that no longer exists.
+        unclearedDrainingSnapshots.delete(drainingFile)
       } catch {
         // best effort
       }
       continue
     }
     // Only process this content if it was not already folded into a batch on a prior cycle (see unclearedDrainingSnapshots below). Without this guard, a draining file that outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be re-read and its paths reprocessed on every cycle.
-    if (unclearedDrainingSnapshots.get(drainingFile) !== drainingContent) {
+    if (unclearedDrainingSnapshots.get(drainingFile) !== drainingSnapshotStamp(drainingFile, drainingContent)) {
       processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir, requeueFn)
     }
     // Only clear the recovered file now that its batch has been durably processed (or recognized above as already processed) -- never before -- so a crash partway through processDirtyBatch leaves the file in place for the next startup to recover, instead of deleting it up front and losing every path it named.
@@ -751,7 +791,7 @@ export function drainOnce(
         unclearedDrainingSnapshots.delete(drainingFile)
       } catch {
         // Both cleanup attempts failed and the file is still stuck: remember exactly what we already folded into this cycle's batch so the next cycle can retry cleanup without reprocessing the same paths again.
-        unclearedDrainingSnapshots.set(drainingFile, drainingContent)
+        unclearedDrainingSnapshots.set(drainingFile, drainingSnapshotStamp(drainingFile, drainingContent))
       }
     }
   }
@@ -802,7 +842,7 @@ export function drainOnce(
             fs.renameSync(claimTarget, `${claimTarget}.corrupt-${Date.now()}`)
           } catch {
             // Both cleanup attempts failed: record it the same way stage (a) does, so a leftover file here is recognized as already-processed (and not silently reprocessed) by stage (a)'s crash recovery on the next cycle.
-            unclearedDrainingSnapshots.set(claimTarget, claimedContent)
+            unclearedDrainingSnapshots.set(claimTarget, drainingSnapshotStamp(claimTarget, claimedContent))
           }
         }
       }
