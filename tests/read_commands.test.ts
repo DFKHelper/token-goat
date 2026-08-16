@@ -43,9 +43,13 @@ vi.mock('../src/hooks_index.js', () => ({
   enqueueDirtyPathSafe: vi.fn(),
 }))
 
-vi.mock('../src/constants.js', () => ({
-  globalDbPath: vi.fn(() => ':memory:'),
-}))
+// Partial-mock rather than a bare factory: only globalDbPath needs redirecting, and a factory
+// listing it alone silently drops every other export, so any module reaching for a different one
+// fails to load with "No X export is defined on the mock" rather than getting the real value.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  return { ...actual, globalDbPath: vi.fn(() => ':memory:') }
+})
 
 // Partial-mock util so runGit is controllable while ensureNewline (used by emit) keeps its real behavior.
 vi.mock('../src/util.js', async (importOriginal) => {

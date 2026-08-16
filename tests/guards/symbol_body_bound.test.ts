@@ -163,9 +163,14 @@ describe('symbols.body storage choke point', () => {
   })
 
   it('caps bodies at a value small enough to bound a pathological file', () => {
-    const src = read(path.join(SRC_DIR, 'parser.ts'))
-    const m = /export const MAX_SYMBOL_BODY_CHARS\s*=\s*([^\n]+)/.exec(src)
-    expect(m, 'MAX_SYMBOL_BODY_CHARS must exist and be exported').not.toBeNull()
+    // The value lives in constants.ts (db.ts bakes it into the partial index backing
+    // checkSymbolBodySize, and parser.ts imports db.ts, so it cannot be declared in parser.ts).
+    // parser.ts still has to re-export it under the old name, which every caller imports.
+    expect(read(path.join(SRC_DIR, 'parser.ts')), 'parser.ts must still export MAX_SYMBOL_BODY_CHARS')
+      .toMatch(/export const MAX_SYMBOL_BODY_CHARS\s*=/)
+    const src = read(path.join(SRC_DIR, 'constants.ts'))
+    const m = /export const SYMBOL_BODY_CHAR_CAP\s*=\s*([^\n]+)/.exec(src)
+    expect(m, 'SYMBOL_BODY_CHAR_CAP must exist and be exported').not.toBeNull()
     const value = Number(new Function(`return (${m![1]!})`)())
     expect(Number.isFinite(value)).toBe(true)
     expect(value).toBeGreaterThan(0)
