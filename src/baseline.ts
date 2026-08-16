@@ -21,7 +21,7 @@ import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { suggestedIndexCommand } from './index_health.js'
-import { projectScopeClause } from './sql_path.js'
+import { projectScopeClause, projectScopeIndex } from './sql_path.js'
 import { isTestFile } from './util.js'
 import { normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
@@ -162,37 +162,58 @@ interface TopSymbolRow {
  * `projectScopeClause('file_path')` -- and left-joined onto `symbols`, rather
  * than joining the raw `refs` table per symbol row.
  */
+/**
+ * The exact SQL {@link fetchTopSymbols} runs, exported so its query plan can be asserted against
+ * the shipping string rather than a copy retyped in a test -- a copy would keep passing while
+ * production silently regressed. See tests/baseline_top_symbols_plan.test.ts.
+ */
+export function buildTopSymbolsSql(): string {
+  const { clause } = projectScopeClause('file_path')
+  const refScope = projectScopeClause('file_path')
+  // refs carry only a bare name, so a name defined N times cannot claim all N copies' references: divide by the number of same-named definitions, and keep one representative per name so a generic helper like `apply` occupies one slot instead of seven.
+        // Ranking selects only each body's LENGTH, never its text, and the rowid join pulls bodies back for the `limit` survivors alone. Selecting `body` inside the window query instead makes SQLite carry every symbol's full text (up to boundSymbolBody's 131072 chars) through both window functions before LIMIT discards nearly all of it.
+        // INDEXED BY on the refs aggregate is a correctness-neutral planner override, not a hint: without ANALYZE statistics SQLite picks idx_refs_name because it makes GROUP BY sort-free, and then scans every ref row in the whole global index to apply the path filter. Pinning the path index scans only this project's rows and pays for one temp b-tree instead. Measured on a 751731-row global index: 1754ms to 155ms, byte-identical rows. Both candidate indexes are created unconditionally in db.ts, so this cannot fail on a live DB.
+  return `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
+         FROM (
+           SELECT rid, kind, score, body_len
+           FROM (
+             SELECT t.rid, t.name, t.kind, t.body_len,
+                    COALESCE(r.ref_count, 0) * 1.0 / COUNT(*) OVER (PARTITION BY t.name) AS score,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY t.name
+                      ORDER BY t.body_len DESC, t.file_path
+                    ) AS rn
+             FROM (
+               SELECT rowid AS rid, file_path, name, kind, LENGTH(COALESCE(body, '')) AS body_len
+               FROM symbols
+               WHERE kind IN ('class', 'function', 'interface') AND ${clause}
+             ) t
+             LEFT JOIN (
+               SELECT name, COUNT(*) AS ref_count
+               FROM refs INDEXED BY ${projectScopeIndex('refs')}
+               WHERE ${refScope.clause}
+               GROUP BY name
+             ) r ON r.name = t.name
+           )
+           WHERE rn = 1
+           ORDER BY score DESC,
+                    CASE kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
+                    body_len DESC
+           LIMIT ?
+         ) top
+         JOIN symbols s ON s.rowid = top.rid
+         ORDER BY top.score DESC,
+                  CASE top.kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
+                  top.body_len DESC`
+}
+
 function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): SymbolEntry[] {
   try {
     const db = getDb(dbPath)
-    const { clause, param } = projectScopeClause('file_path')
+    const { param } = projectScopeClause('file_path')
     const refScope = projectScopeClause('file_path')
     const rows = db
-      .prepare(
-        // refs carry only a bare name, so a name defined N times cannot claim all N copies' references: divide by the number of same-named definitions, and keep one representative per name so a generic helper like `apply` occupies one slot instead of seven.
-        `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent
-         FROM (
-           SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent,
-                  COALESCE(r.ref_count, 0) * 1.0 / COUNT(*) OVER (PARTITION BY s.name) AS score,
-                  ROW_NUMBER() OVER (
-                    PARTITION BY s.name
-                    ORDER BY LENGTH(COALESCE(s.body, '')) DESC, s.file_path
-                  ) AS rn
-           FROM symbols s
-           LEFT JOIN (
-             SELECT name, COUNT(*) AS ref_count
-             FROM refs
-             WHERE ${refScope.clause}
-             GROUP BY name
-           ) r ON r.name = s.name
-           WHERE s.kind IN ('class', 'function', 'interface') AND ${clause}
-         )
-         WHERE rn = 1
-         ORDER BY score DESC,
-                  CASE kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
-                  LENGTH(COALESCE(body, '')) DESC
-         LIMIT ?`,
-      )
+      .prepare(buildTopSymbolsSql())
       .all(refScope.param(rootDir), param(rootDir), limit) as TopSymbolRow[]
     return rows.map((r) => ({
       filePath: r.file_path,
