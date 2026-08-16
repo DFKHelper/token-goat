@@ -138,7 +138,7 @@ export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
     await incrementSkillHit(skillName);
     // Stamp this (re)load's CLI version/command set as the session's drift baseline -- see
     // skill_version_drift.ts. No-op unless skillName is 'token-goat' itself.
-    recordSkillVersionSnapshot(event.sessionId, skillName);
+    await recordSkillVersionSnapshot(event.sessionId, skillName);
 
     return passOutput();
   } catch {

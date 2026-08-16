@@ -17,7 +17,7 @@ function promptFingerprint(prompt: string): string {
   return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
 }
 
-function userPromptSubmitHandler(event: HookEvent): HookOutput {
+async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const rawPrompt = (event.raw['prompt'] as string) || '';
 
@@ -83,7 +83,7 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
     // One-shot "token-goat was upgraded since you loaded this skill" nudge -- see
     // skill_version_drift.ts. Deliberately not folded into `parts`/the bracketed summary above:
     // it is a standalone, occasional line, not another terse `key: value` fragment.
-    const driftNudge = checkSkillVersionDrift(event.sessionId);
+    const driftNudge = await checkSkillVersionDrift(event.sessionId);
 
     if (parts.length === 0 && !driftNudge) {
       return passOutput();

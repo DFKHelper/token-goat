@@ -20,7 +20,6 @@
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { VERSION } from './version.js'
-import { buildProgram } from './cli.js'
 import { buildCommandManifest, flattenCommandNames } from './cli_commands.js'
 
 // Only the `token-goat` skill's own command surface is meaningful to diff against itself --
@@ -36,7 +35,21 @@ interface SnapshotRow {
   notified_at: number | null
 }
 
-function currentCommandNames(): string[] {
+/**
+ * The live command-name set, loading cli.ts only at the moment it is needed.
+ *
+ * This import is dynamic to keep cli.ts out of the *statically evaluated* module graph. This file
+ * is reached from relay.ts via hooks_session.ts, so a static import here put the entire CLI --
+ * commander, the MCP server, every graph/text/read command and every tool filter -- into
+ * dist/token-goat-hook.mjs, which a hook `import()`s on nearly every tool call. That took the hook
+ * bundle from 1.38 MB to 3.48 MB and its import+eval from ~29 ms to ~55 ms, paid on every hook,
+ * to serve two rare call sites: a skill load and a drifted user turn. esbuild still inlines the
+ * module into the same bundle, so nothing is fetched at runtime; it is only evaluated on first
+ * use. Keep it dynamic -- a static import here is invisible until someone profiles a hook, which
+ * is why tests/guards/hook_bundle_excludes_cli.test.ts fails the build instead.
+ */
+async function currentCommandNames(): Promise<string[]> {
+  const { buildProgram } = await import('./cli.js')
   return flattenCommandNames(buildCommandManifest(buildProgram()))
 }
 
@@ -44,11 +57,11 @@ function currentCommandNames(): string[] {
  * baseline for `skillName`. Called from hooks_skill.ts's postSkillHandler on every (re)load of
  * the `token-goat` skill -- a reload resets both the baseline and the notified flag, since the
  * agent has presumably just re-read the current command set. No-op for any other skill name. */
-export function recordSkillVersionSnapshot(sessionId: string | undefined, skillName: string): void {
+export async function recordSkillVersionSnapshot(sessionId: string | undefined, skillName: string): Promise<void> {
   if (skillName !== TRACKED_SKILL || !sessionId) return
   try {
     const db = getDb(globalDbPath())
-    const commands = JSON.stringify(currentCommandNames())
+    const commands = JSON.stringify(await currentCommandNames())
     db.prepare(
       `INSERT INTO skill_version_snapshots (session_id, skill_name, loaded_version, loaded_commands_json, notified_at)
        VALUES (@sessionId, @skillName, @version, @commands, NULL)
@@ -65,7 +78,7 @@ export function recordSkillVersionSnapshot(sessionId: string | undefined, skillN
  * new since that load; otherwise null. Marks the session notified so the nudge fires at most
  * once per skill load, not on every subsequent turn. Cheap in the common (no-drift) case: only
  * a version-string compare runs before the (heavier) command-manifest diff. */
-export function checkSkillVersionDrift(sessionId: string | undefined): string | null {
+export async function checkSkillVersionDrift(sessionId: string | undefined): Promise<string | null> {
   if (!sessionId) return null
   try {
     const db = getDb(globalDbPath())
@@ -92,7 +105,7 @@ export function checkSkillVersionDrift(sessionId: string | undefined): string | 
       loadedCommands = []
     }
     const loadedSet = new Set(loadedCommands)
-    const newCommands = currentCommandNames().filter((c) => !loadedSet.has(c))
+    const newCommands = (await currentCommandNames()).filter((c) => !loadedSet.has(c))
 
     if (newCommands.length === 0) {
       return `[token-goat: upgraded v${row.loaded_version} -> v${VERSION} since you loaded this skill -- run \`token-goat commands\` if anything seems missing]`

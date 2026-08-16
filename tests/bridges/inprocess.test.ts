@@ -15,9 +15,9 @@
  *      real hook registry and that session state persists correctly across two calls.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { transformSync } from 'esbuild'
 
@@ -78,6 +78,12 @@ function setupPoisonedEntryWithRealHookLib(_cwd: string): { entryPath: string; m
     // Enforce the expansion above rather than trusting it: a surviving `~` segment does not fail here, it fails much later as an opaque "Failed to load url ...%7E1..." collection error for the entire file.
     if (/~\d/.test(dir)) throw new Error(`hook fixture dir still holds an 8.3 short name: ${dir}`)
     copyFileSync(HOOK_BUNDLE, join(dir, 'token-goat-hook.mjs'))
+    // The hook bundle is code-split (see esbuild.config.mjs), so the entry is a stub that imports
+    // sibling chunks by relative path -- copying it alone yields a file that throws on import.
+    const distDir = dirname(HOOK_BUNDLE)
+    for (const chunk of readdirSync(distDir).filter((f) => f.startsWith('token-goat-hook-chunk-'))) {
+      copyFileSync(join(distDir, chunk), join(dir, chunk))
+    }
     // token-goat-hook.mjs bundles everything except its native/optional deps
     // (better-sqlite3, sqlite-vec, tree-sitter*, see esbuild.config.mjs's `external` list),
     // which it resolves at runtime via ordinary Node module resolution from its own
