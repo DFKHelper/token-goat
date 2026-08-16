@@ -9,7 +9,9 @@
 import type { SymbolEntry } from '../parser_types.js'
 import {
   stripLineComment,
+  stripMultilineStringSpan,
   type AdapterImport,
+  type MultilineStringState,
   makeLineSymbol,
 } from './common.js'
 
@@ -63,13 +65,22 @@ export function extractElixir(
   const lines = content.split(/\r?\n/)
 
   const moduleStack: ModuleFrame[] = []
+  let mlState: MultilineStringState | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
+    // Mask heredoc spans (`"""` / `'''`, state carried across lines) before anything reads the
+    // line. `@doc`/`@moduledoc` bodies are heredocs and routinely hold example code, so without
+    // this a `def` in a doc example was indexed as a real function AND stole the parent of the
+    // next real one, while a bare `end` in an `iex>` example popped the enclosing module frame
+    // and orphaned every symbol declared after it.
+    const { code: masked, state: nextMlState } = stripMultilineStringSpan(rawLine, mlState, 'elixir')
+    mlState = nextMlState
+
     // Strip a trailing `#` line comment (Elixir uses `#` for line comments).
-    const line = stripLineComment(rawLine, ['#']).trimEnd()
+    const line = stripLineComment(masked, ['#']).trimEnd()
     const stripped = line.trim()
 
     if (!stripped) {
