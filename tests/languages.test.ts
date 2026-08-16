@@ -3001,6 +3001,13 @@ triple = \\(x) x * 3
     expect(names).toContain('as.data.frame')
     expect(names).not.toContain('as')
   })
+
+  it('extracts a single-character setMethod name, which the old two-or-more quantifier skipped entirely', () => {
+    // Widening the character class also relaxed `+` to `*`: the old pattern required a second name character, so a one-letter method matched nothing at all rather than matching wrongly.
+    const content = `setMethod("f", "MyClass", function(x) x)\n`
+    const { symbols } = extractR(content, 'method.R')
+    expect(symbols.map((s) => s.name)).toContain('f')
+  })
 })
 
 // ---------------------------------------------------------------------------
