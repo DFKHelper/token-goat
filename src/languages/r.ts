@@ -28,7 +28,7 @@ const FUNC_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_.]*)\s*(?:<-|=)\s*(?:function|\\)\
 const SETCLASS_RE = /setClass\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/
 
 // `setMethod("methodName", ...)` — S4 method definition
-const SETMETHOD_RE = /setMethod\s*\(\s*["']([A-Za-z_][A-Za-z0-9_]+)/
+const SETMETHOD_RE = /setMethod\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/
 
 export function extractR(
   content: string,
