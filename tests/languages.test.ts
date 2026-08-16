@@ -2388,6 +2388,33 @@ end
     expect(symbols.find((s) => s.name === 'func')).toBeDefined()
   })
 
+  it('indexes a colon-defined method under its own name, not the whole receiver path', () => {
+    // Regression: FUNC_RE captures the full `M:bar` path, and the name was split on '.' only, so
+    // the idiomatic Lua method form was stored as `M:bar` -- `symbol bar` and `read "f.lua::bar"`
+    // both missed it, while the dotted `function M.foo()` on the line above resolved as `foo`.
+    // The sibling assignment path in this same file already split on both separators.
+    const content = `function M.foo(a)
+  return a
+end
+
+function M:bar()
+  return 1
+end
+
+function Deep.Nested:baz()
+  return 2
+end
+`
+    const { symbols } = extractLua(content, 'oo.lua')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('foo')
+    expect(names).toContain('bar')
+    expect(names).toContain('baz')
+    expect(names).not.toContain('M:bar')
+    expect(names).not.toContain('Deep.Nested:baz')
+    expect(symbols.find((s) => s.name === 'bar')?.kind).toBe('function')
+  })
+
   it('extracts function-value assignments (local/bare/dotted) as functions, not variables', () => {
     // Regression: `local cb = function()` was misfiled as a plain `variable`, and the bare/
     // dotted `M.foo = function()` idiom was dropped entirely. Both are function definitions.

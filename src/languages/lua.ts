@@ -104,8 +104,10 @@ export function extractLua(
     const fm = FUNC_RE.exec(stripped)
     if (fm) {
       const fname = fm[1] ?? ''
-      // Extract just the final name (after any dots) for symbol indexing.
-      const baseName = fname.split('.').pop() ?? fname
+      // Extract just the final name (after any dot or colon path) for symbol indexing. The colon
+      // matters as much as the dot: `function M:bar()` is the idiomatic method form, and splitting
+      // on the dot alone stored it whole as `M:bar`, which no lookup by method name ever finds.
+      const baseName = fname.split(/[.:]/).pop() ?? fname
       const parent = nearestFunctionName(funcStack)
       if (parent !== undefined) {
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200), parent))
