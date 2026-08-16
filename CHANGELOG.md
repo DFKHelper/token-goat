@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.30] - 2026-08-16
+
 ### Changed
 - **Hooks now load about 19 ms faster, on nearly every tool call.** A hook loads `dist/token-goat-hook.mjs`, and Node reads and compiles the whole file before running any of it. That file had grown to 3.6 MB because one line in the skill drift check imported the command-line surface directly, dragging in every command, the argument parser and the MCP server. Two of those were already behind lazy imports, but the bundler had been copying them into the single file anyway, so their code was still compiled on every hook and only their execution was postponed. The drift check now loads the command surface lazily, and the bundle is split into separate pieces that are read only when something actually needs them. What gets compiled on every hook drops from 3.6 MB to 2.3 MB, and loading goes from about 56 ms to about 37 ms, measured on the built file with the compile cache warm. A new guard walks the bundle's real import graph and fails if the command surface ever becomes eagerly loaded again. See [esbuild.config.mjs](esbuild.config.mjs), [src/skill_version_drift.ts](src/skill_version_drift.ts) and [tests/guards/hook_bundle_excludes_cli.test.ts](tests/guards/hook_bundle_excludes_cli.test.ts).
 - **Every session now starts about 200 ms sooner.** At the start of a session token-goat checks whether the index holds any oversized symbol body, a leftover from before that size was capped. Nothing could answer that question except reading every symbol in the shared index: 226 MB and 231324 rows here, 229 ms, every single session. The check was written to stop at the first offending row, but on a healthy index there is nothing to stop at, so it always read all of them. The index now keeps a small list of exactly the offending rows, which is empty on a healthy index, so the check is a lookup into an empty list instead of a full read: 229 ms down to under a millisecond, measured on the real index. That list costs 4 KB and no measurable time to maintain, because rows under the cap are skipped without writing anything (measured at -0.2%, within noise, over 40000 real rows). The whole session-start hook went from about 490 ms to about 290 ms, and `token-goat doctor`, which runs the same check, from about 2110 ms to about 1730 ms. See [src/db.ts](src/db.ts) and [src/cli_doctor.ts](src/cli_doctor.ts), with the query plan pinned in [tests/cli_doctor.test.ts](tests/cli_doctor.test.ts).
@@ -2870,7 +2872,8 @@ First public release.
 - Windows 10 and 11 only.
 - Python 3.11, 3.12, 3.13, and 3.14 supported.
 
-[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v1.9.9...HEAD
+[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v2.6.30...HEAD
+[2.6.30]: https://github.com/DFKHelper/token-goat/compare/v2.6.29...v2.6.30
 [1.9.9]: https://github.com/DFKHelper/token-goat/compare/v1.9.8...v1.9.9
 [1.9.4]: https://github.com/DFKHelper/token-goat/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/DFKHelper/token-goat/compare/v1.9.2...v1.9.3
