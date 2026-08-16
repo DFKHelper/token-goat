@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
@@ -40,7 +40,7 @@ await esbuild.build({
   platform: 'node',
   target: 'node22',
   format: 'esm',
-  outfile: 'dist/token-goat.mjs',
+  outfile: 'dist/token-goat.core.mjs',
   // Native addons cannot be bundled, and every package here is declared
   // optionalDependencies in package.json — bundling one anyway (as sharp,
   // puppeteer-core, pdfjs-dist, exceljs, fflate, fast-xml-parser, and
@@ -51,12 +51,12 @@ await esbuild.build({
   // node_modules, not because the graceful-degradation fallback ever ran.
   external: EXTERNAL_NATIVE_DEPS,
   banner: {
-    // The shebang lets the OS run this file directly.
     // The require polyfill makes esbuild's CJS-interop stub (__require2) work
     // on Node.js 24 ESM: the stub checks `typeof require !== "undefined"` and
     // delegates to this createRequire-backed implementation when found.
+    // The shebang lives on the dist/token-goat.mjs launcher written below, which
+    // is the file package.json's `bin` points at, not on this core bundle.
     js: [
-      '#!/usr/bin/env node',
       "import { createRequire as __cjsRequire } from 'node:module';",
       'const require = __cjsRequire(import.meta.url);',
     ].join('\n'),
@@ -94,5 +94,25 @@ await esbuild.build({
     __TG_VERSION__: JSON.stringify(pkg.version),
   },
 })
+
+// The `bin` entry point is a launcher, not the bundle itself, purely so that
+// module.enableCompileCache() can run BEFORE the ~3.5MB core bundle is compiled.
+// V8 compiles a module in full before executing any of it, so the same call
+// placed in the core bundle's own banner runs too late to cache that bundle --
+// measured as no change at all, versus ~22ms (about 17% of a bare invocation)
+// when it precedes the import from here. Every CLI call and every spawned hook
+// pays that compile, so the launcher stays tiny: anything added to it is
+// compiled uncached on every single run.
+const LAUNCHER = [
+  '#!/usr/bin/env node',
+  "import { enableCompileCache } from 'node:module'",
+  '// Older Node (<22.1) has no compile cache, and a read-only or full cache dir throws; neither is a reason to fail the command.',
+  'try {',
+  '  enableCompileCache?.()',
+  '} catch {}',
+  "await import('./token-goat.core.mjs')",
+  '',
+].join('\n')
+writeFileSync('dist/token-goat.mjs', LAUNCHER)
 
 console.log(`Built dist/token-goat.mjs  (v${pkg.version})`)
