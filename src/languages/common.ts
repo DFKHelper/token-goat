@@ -588,7 +588,7 @@ export function stripStringLiterals(line: string): string {
 // ---------------------------------------------------------------------------
 
 /** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
-export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle'
+export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle'
 
 /**
  * Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state
@@ -619,7 +619,7 @@ export interface MultilineStringState {
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
-export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift'
+export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir'
 
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
@@ -635,6 +635,11 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       const re = new RegExp(`^[ \\t]*${escapeRegExp(state.identifier)}\\b`)
       const m = re.exec(line)
       return m ? { maskEnd: m[0].length } : null
+    }
+    case 'tripleSingleQuote': {
+      // Elixir's charlist heredoc (`'''`), closed by its own delimiter rather than `"""`.
+      const m = /'{3,}/.exec(line.slice(from))
+      return m === null ? null : { maskEnd: from + m.index + m[0].length }
     }
     case 'tripleQuote': {
       // Closer must match the opener's quote-run length (or a longer run) — see the
@@ -736,6 +741,7 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
   csharp: ['//'],
   powershell: ['#'],
   swift: ['//'],
+  elixir: ['#'],
 }
 
 // Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
@@ -827,6 +833,28 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
       return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
     }
     return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '3' } }
+  }
+
+  if (lang === 'elixir') {
+    // Elixir heredocs open with `"""` or `'''`, and `@doc`/`@moduledoc` bodies -- which are
+    // heredocs -- routinely contain example code. Whichever delimiter appears first on the line
+    // wins, so a `'''` inside a `"""` body (or vice versa) is content, not a second opener.
+    // A sigil heredoc (`~S"""`, `~s'''`) needs no special case: its delimiter run is what this
+    // finds, and the sigil prefix is left as ordinary code before the opener.
+    const candidates: Array<[number, MultilineStringKind, string]> = []
+    const dq = line.indexOf('"""', from)
+    if (dq !== -1) candidates.push([dq, 'tripleQuote', '"""'])
+    const sq = line.indexOf("'''", from)
+    if (sq !== -1) candidates.push([sq, 'tripleSingleQuote', "'''"])
+    candidates.sort((a, b) => a[0] - b[0])
+    const first = candidates[0]
+    if (first === undefined) return null
+    const [idx, kind, delim] = first
+    if (isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
+    const closeIdx = line.indexOf(delim, idx + 3)
+    const state = { kind, identifier: '3' }
+    if (closeIdx !== -1) return { openStart: idx, closesSameLine: closeIdx + 3, state }
+    return { openStart: idx, closesSameLine: null, state }
   }
 
   if (lang === 'csharp') {

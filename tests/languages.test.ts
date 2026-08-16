@@ -2835,6 +2835,88 @@ end
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('does not index a def written inside a @moduledoc heredoc (regression: heredoc bodies were parsed as code, so a doc example produced a phantom function AND became the parent of the next real one)', () => {
+    const content = `defmodule M do
+  @moduledoc """
+  def not_a_function do
+  """
+  def real_one, do: :ok
+end
+`
+    const { symbols } = extractElixir(content, 'm.ex')
+    expect(symbols.map((s) => s.name)).not.toContain('not_a_function')
+    expect(symbols.find((s) => s.name === 'real_one')?.parent).toBe('M')
+  })
+
+  it('does not let a bare `end` inside a @doc heredoc pop the module frame (regression: an iex> example closing a block orphaned every symbol declared after it)', () => {
+    const content = `defmodule M do
+  @doc """
+  Closes the block:
+
+      end
+  """
+  def run, do: :ok
+end
+
+defmodule N do
+  def hi, do: :ok
+end
+`
+    const { symbols } = extractElixir(content, 'm.ex')
+    expect(symbols.find((s) => s.name === 'run')?.parent).toBe('M')
+    expect(symbols.find((s) => s.name === 'hi')?.parent).toBe('N')
+  })
+
+  it('masks a charlist heredoc and a sigil heredoc the same way as a plain one', () => {
+    const charlist = `defmodule M do
+  @doc '''
+  def phantom do
+      end
+  '''
+  def real, do: :ok
+end
+`
+    const sigil = `defmodule M do
+  @sql ~S"""
+  def phantom do
+      end
+  """
+  def real, do: :ok
+end
+`
+    for (const content of [charlist, sigil]) {
+      const { symbols } = extractElixir(content, 'm.ex')
+      expect(symbols.map((s) => s.name)).not.toContain('phantom')
+      expect(symbols.find((s) => s.name === 'real')?.parent).toBe('M')
+    }
+  })
+
+  it('closes a heredoc that opens and closes on one line, so following code is still parsed', () => {
+    const content = `defmodule M do
+  @doc """one line"""
+  def real, do: :ok
+
+  def after_it, do: :ok
+end
+`
+    const { symbols } = extractElixir(content, 'm.ex')
+    expect(symbols.find((s) => s.name === 'real')?.parent).toBe('M')
+    expect(symbols.find((s) => s.name === 'after_it')?.parent).toBe('M')
+  })
+
+  it('does not treat a heredoc delimiter inside a # comment as an opener', () => {
+    const content = `defmodule M do
+  # see """ for details
+  def real, do: :ok
+
+  def after_it, do: :ok
+end
+`
+    const { symbols } = extractElixir(content, 'm.ex')
+    expect(symbols.find((s) => s.name === 'real')?.parent).toBe('M')
+    expect(symbols.find((s) => s.name === 'after_it')?.parent).toBe('M')
+  })
 })
 
 // ---------------------------------------------------------------------------
