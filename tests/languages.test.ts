@@ -2993,6 +2993,14 @@ triple = \\(x) x * 3
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('extracts the full dotted method name from setMethod, not just the segment before the first dot', () => {
+    const content = `setMethod("as.data.frame", "MyClass", function(x) x)\n`
+    const { symbols } = extractR(content, 'method.R')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('as.data.frame')
+    expect(names).not.toContain('as')
+  })
 })
 
 // ---------------------------------------------------------------------------
