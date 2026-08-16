@@ -1587,28 +1587,34 @@ function runExitText(fn: () => { text: string; code: number }): void {
 }
 
 /**
- * `outline`/`skeleton`/`exports`/`imports` each take a single file, but nothing stopped a caller
- * from passing several space-separated ones -- commander bound the first and dropped the rest in
- * silence, so an agent could believe it had seen files it never got. These two helpers surface the
- * dropped arguments and name the comma-separated form that actually reads them all. The extras are
- * still not read (that would change what the invocation returns); the note just makes the drop
- * visible. `noteExtraFileArgs` prepends to a `{text, code}` result, `emitExtraFileArgsNote` prints
- * ahead of an emit-directly command.
+ * `outline`/`skeleton`/`exports`/`imports`/`read`/`brief`/`section`/`refs`/`symbol` each take a
+ * single positional argument, but nothing stopped a caller from passing several space-separated
+ * ones -- commander bound the first and dropped the rest in silence, so an agent could believe it
+ * had seen files or symbols it never got. These two helpers surface the dropped arguments and name
+ * the comma-separated form that actually reads them all. The extras are still not read (that would
+ * change what the invocation returns); the note just makes the drop visible. `noteExtraFileArgs`
+ * prepends to a `{text, code}` result, `emitExtraFileArgsNote` prints ahead of an emit-directly
+ * command. `opts` is passed straight through to `extraFileArgsNote`, which is what keeps the
+ * wording honest for a spec-taking command and keeps an unrunnable comma suggestion off the
+ * commands that have no merged form.
  */
+type ExtraArgsNoteOpts = { noun?: 'file' | 'spec'; mergeable?: boolean }
+
 function noteExtraFileArgs(
   command: string,
   first: string,
   extras: string[] | undefined,
   fn: () => { text: string; code: number },
+  opts: ExtraArgsNoteOpts = {},
 ): { text: string; code: number } {
   const result = fn()
   if (extras === undefined || extras.length === 0) return result
-  return { text: `${extraFileArgsNote(command, first, extras)}\n${result.text}`, code: result.code }
+  return { text: `${extraFileArgsNote(command, first, extras, opts)}\n${result.text}`, code: result.code }
 }
 
-function emitExtraFileArgsNote(command: string, first: string, extras: string[] | undefined): void {
+function emitExtraFileArgsNote(command: string, first: string, extras: string[] | undefined, opts: ExtraArgsNoteOpts = {}): void {
   if (extras === undefined || extras.length === 0) return
-  out(extraFileArgsNote(command, first, extras))
+  out(extraFileArgsNote(command, first, extras, opts))
 }
 
 // Sets process.exitCode to the wrapped command's exit code (NOT via `guard`, which forces 0 on success — compress must propagate the real code so shell chaining still sees the original failure/success signal).
@@ -2980,7 +2986,7 @@ export function buildProgram(): Command {
     }
 
   program
-    .command('symbol [name]')
+    .command('symbol [name] [more...]')
     .description('search for a symbol by name, or project-wide by --grep name pattern')
     .option('-l, --limit <n>', 'max results')
     .option('-f, --file <path>', 'restrict to one file')
@@ -2990,7 +2996,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex); cannot be combined with <name>')
     .option('--exclude-tests', 'hide symbols defined in a test file (opt-in; default output is unchanged)')
     .option('--stats', 'add per-result reference count and doc-coverage flag (project-wide count per NAME, not per definition site -- same-named symbols across files share a count)')
-    .action((name: string | undefined, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; stats?: boolean }) => {
+    .action((name: string | undefined, more: string[], opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; stats?: boolean }) => {
       let projectRoot: string | undefined
       if (opts.project === true) {
         projectRoot = resolveProjectRoot({ project: process.cwd() })
@@ -2998,41 +3004,56 @@ export function buildProgram(): Command {
         projectRoot = resolveProjectRoot({ project: opts.project })
       }
       return runExitText(() =>
-        runSymbol({
-          ...(name !== undefined ? { name } : {}),
-          limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
-          ...(opts.file !== undefined ? { file: opts.file } : {}),
-          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
-          ...(projectRoot !== undefined ? { projectRoot } : {}),
-          ...(opts.json === true ? { json: true } : {}),
-          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
-          ...(opts.stats === true ? { stats: true } : {}),
-        }),
+        noteExtraFileArgs(
+          'symbol',
+          name ?? '',
+          more,
+          () =>
+            runSymbol({
+              ...(name !== undefined ? { name } : {}),
+              limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
+              ...(opts.file !== undefined ? { file: opts.file } : {}),
+              ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+              ...(projectRoot !== undefined ? { projectRoot } : {}),
+              ...(opts.json === true ? { json: true } : {}),
+              ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+              ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+              ...(opts.stats === true ? { stats: true } : {}),
+            }),
+          // `symbol` searches one name; there is no comma form that would search several.
+          { noun: 'spec', mergeable: false },
+        ),
       )
     })
 
   program
-    .command('read <spec>')
+    .command('read <spec> [more...]')
     .description(
       "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; a trailing @LINE anchor -- file::symbol@LINE, or combined as file::Parent.symbol@LINE -- picks out a specific candidate by its exact starting line, for the case a Parent qualifier can't reach (e.g. a top-level definition); comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files)",
     )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
-    .action((spec: string, opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean }) =>
+    .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean }) =>
       runExitText(() =>
-        runRead({
+        noteExtraFileArgs(
+          'read',
           spec,
-          ...(opts.json === true ? { json: true } : {}),
-          ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-          ...(opts.stats === true ? { stats: true } : {}),
-        }),
+          more,
+          () =>
+            runRead({
+              spec,
+              ...(opts.json === true ? { json: true } : {}),
+              ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+              ...(opts.stats === true ? { stats: true } : {}),
+            }),
+          { noun: 'spec' },
+        ),
       ),
     )
 
   program
-    .command('brief <spec>')
+    .command('brief <spec> [more...]')
     .description(
       'symbol body + callers + containing doc section in one call (spec: file::symbol; also accepts the file::symbol@LINE anchor form documented under `read`; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported)',
     )
@@ -3041,31 +3062,38 @@ export function buildProgram(): Command {
     .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
     .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
     .option('--grep <pattern>', 'only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)')
-    .action((spec: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean; grep?: string }) =>
-      runExit(() =>
-        runBrief({
+    .action((spec: string, more: string[], opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean; grep?: string }) =>
+      runExit(() => {
+        emitExtraFileArgsNote('brief', spec, more, { noun: 'spec' })
+        return runBrief({
           spec,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-        }),
-      ),
+        })
+      }),
     )
 
   program
-    .command('section <spec>')
+    .command('section <spec> [more...]')
     .description(
       'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view), or list all sections with --list',
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
     .option('--grep <pattern>', 'with --list, filter headings to this regex (literal substring if it is not valid regex)')
-    .action((spec: string, opts: { json?: boolean; list?: boolean; grep?: string }) =>
+    .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string }) =>
       opts.list === true
-        ? runExit(() => runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) }))
-        : runExitText(() => runSection({ spec, ...(opts.json === true ? { json: true } : {}) })),
+        ? runExit(() => {
+            // --list reads a plain file and has no comma form, so name no suggestion here.
+            emitExtraFileArgsNote('section --list', spec, more, { mergeable: false })
+            return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
+          })
+        : runExitText(() =>
+            noteExtraFileArgs('section', spec, more, () => runSection({ spec, ...(opts.json === true ? { json: true } : {}) }), { noun: 'spec' }),
+          ),
     )
 
   program
@@ -3126,7 +3154,7 @@ export function buildProgram(): Command {
     )
 
   program
-    .command('refs <spec>')
+    .command('refs <spec> [more...]')
     .description('find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported). For an unambiguous TypeScript symbol, automatically type-resolves candidates via the TypeScript compiler API to drop same-named-different-symbol false positives; falls back to name-based matching when that is not possible.')
     .option('--callers', 'group references by their enclosing caller symbol')
     .option('-l, --limit <n>', 'max results')
@@ -3138,9 +3166,10 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--exclude-tests', 'hide references whose call site lives in a test file (opt-in; default output is unchanged)')
     .option('--grep <pattern>', 'filter to references whose call-site file path matches this regex (falls back to a literal substring match when the pattern does not compile); matched against the path as rendered, so ^src/ matches what you see in every form -- drops test/vendored hits from a wide-fanout symbol')
-    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
-      runExit(() =>
-        runRefs({
+    .action((spec: string, more: string[], opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
+      runExit(() => {
+        emitExtraFileArgsNote('refs', spec, more, { noun: 'spec' })
+        return runRefs({
           spec,
           ...(opts.callers === true ? { callers: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
@@ -3149,8 +3178,8 @@ export function buildProgram(): Command {
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-        }),
-      ),
+        })
+      }),
     )
 
   program
