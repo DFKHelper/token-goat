@@ -786,7 +786,9 @@ export function grepFilteredToEmptyNotice(preFilterCount: number, grep: string, 
   const noun = preFilterCount === 1 ? nounSingular : nounPlural
   // The verb has to agree with the noun the count already selects: "all 1 dead symbol were filtered out" reads as a typo in the tool rather than as a report about the store, and a single survivor is the most common way to hit this notice.
   const verb = preFilterCount === 1 ? 'was' : 'were'
-  return `  (all ${preFilterCount} ${noun} ${verb} filtered out by --grep ${grep} -- widen or drop the filter to see them)`
+  // The trailing pronoun has to agree for the same reason the verb does -- "all 1 type declaration was filtered out ... to see them" was half-corrected, agreeing the verb and then contradicting it one clause later.
+  const pronoun = preFilterCount === 1 ? 'it' : 'them'
+  return `  (all ${preFilterCount} ${noun} ${verb} filtered out by --grep ${grep} -- widen or drop the filter to see ${pronoun})`
 }
 
 /**
