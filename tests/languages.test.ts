@@ -2776,6 +2776,57 @@ void main() {
     expect(symbols.filter((s) => s.kind === 'function').map((s) => s.name)).toEqual(['go'])
   })
 
+  it('does not turn an unnamed constructor or an initialised field into a phantom function', () => {
+    const content = `class A {
+  const A() : value = 0;
+  final int value;
+  final void Function() callback = () {};
+  var lazy = compute();
+  void real() {}
+}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    // `const A()` read as a return type plus a name, filing a second symbol spelled `A`.
+    expect(symbols.filter((s) => s.name === 'A')).toHaveLength(1)
+    expect(symbols.find((s) => s.name === 'A')?.kind).toBe('class')
+    // A function-typed field and an initialiser call both look like declarations to FUNC_RE.
+    expect(symbols.map((s) => s.name)).not.toContain('Function')
+    expect(symbols.map((s) => s.name)).not.toContain('compute')
+    expect(symbols.filter((s) => s.kind === 'function').map((s) => s.name)).toEqual(['real'])
+  })
+
+  it('indexes a top-level getter', () => {
+    const content = `int get version => 1;
+
+void f() {}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    expect(symbols.map((s) => s.name)).toEqual(['version', 'f'])
+    expect(symbols.every((s) => s.parent === '')).toBe(true)
+  })
+
+  it('indexes a generic extension and the members inside its body', () => {
+    const content = `extension E<T> on List<T> {
+  void go() {}
+}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    expect(symbols.find((s) => s.name === 'E')?.kind).toBe('extension')
+    // No frame was pushed for a generic extension, so its members were dropped too.
+    expect(symbols.find((s) => s.name === 'go')?.parent).toBe('E')
+  })
+
+  it('does not open a scope for a body-less mixin-application class', () => {
+    const content = `mixin M {}
+class A = Object with M;
+void after() {}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    expect(symbols.find((s) => s.name === 'A')?.kind).toBe('class')
+    // The frame for a class with no braces never closed, swallowing what followed it.
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('')
+  })
+
   it('indexes a getter alongside its matching setter, and keeps a braced getter body from leaking scope', () => {
     const content = `class A {
   int get value => 1;

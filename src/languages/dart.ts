@@ -37,8 +37,12 @@ const ENUM_RE = /^enum\s+([A-Za-z_][A-Za-z0-9_]*)/
 // `mixin MyMixin`, `mixin MyMixin on BaseClass`, and Dart 3's `base mixin MyMixin`.
 const MIXIN_RE = /^(?:base\s+)?mixin\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `extension MyExtension on Type`, `extension on Type` (unnamed extensions)
-const EXTENSION_RE = /^extension\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?on\s+/
+// `extension MyExtension on Type`, `extension on Type` (unnamed extensions), and the generic form
+// `extension E<T> on List<T>`. The type-parameter list sits between the name and `on` with no space
+// before it, so requiring `name` and `on` to be separated by whitespace alone rejected every
+// generic extension -- and because no frame was pushed for it, every member inside its body was
+// dropped from the index too, not just the extension itself.
+const EXTENSION_RE = /^extension\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s+)?on\s+/
 
 // `extension type Meters(int value)`, Dart 3.3's extension type declaration -- a zero-cost
 // wrapper over a representation type. It shares the `extension` keyword prefix with EXTENSION_RE
@@ -68,6 +72,25 @@ const GETTER_RE = /^(?:(?:static|external|abstract|covariant)\s+)*(?:[A-Za-z_][A
 // unnamed `A()` carries no name of its own, and indexing it as `A` would make `read "f.dart::A"`
 // ambiguous against the class declaration one line above it.
 const NAMED_CTOR_RE = /^(?:(?:const|factory|external)\s+)*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/
+
+// The unnamed form, `A()` / `const A()` / `A(this.x) : super(x)`, matched against the enclosing
+// class name the same way. It is recognised only to be suppressed: FUNC_RE otherwise reads the
+// leading modifier as a return type and files the constructor as a *function* named after the
+// class, so the file ends up with two different symbols spelled `A`, which is exactly the
+// collision skipping the unnamed form was meant to avoid.
+const UNNAMED_CTOR_RE = /^(?:(?:const|factory|external)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/
+
+// `final void Function() cb = ...`, `var x = compute();`, `const y = f();`. FUNC_RE only requires a
+// word followed by `(`, so an initialiser call or a function-typed field looked exactly like a
+// method declaration and produced a phantom symbol (`Function` for the callback field above). No
+// Dart method declaration can begin with `final`, `var` or `const`, so a line that does is a field
+// and never a method.
+const FIELD_START_RE = /^(?:(?:static|covariant|late|external)\s+)*(?:final|var|const)\s/
+
+// `class A = Object with M;`, a mixin-application class: a complete declaration with no body. It
+// was pushed onto the type stack like any other class, and with no braces to close it the frame
+// never popped, so the next top-level declaration was silently attributed to it and lost.
+const CLASS_ALIAS_RE = /^(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*=/
 
 // Variable declarations not extracted at this time — would need complex parsing of
 // multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`)
@@ -124,7 +147,10 @@ export function extractDart(
         const cname = cm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-        typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
+        // A mixin-application class has no body, so pushing a frame for it would never pop.
+        if (!CLASS_ALIAS_RE.test(stripped)) {
+          typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
+        }
         matched = true
       }
 
@@ -185,6 +211,17 @@ export function extractDart(
           member = true
         }
 
+        // Claimed, then deliberately dropped: see UNNAMED_CTOR_RE.
+        const um = !member ? UNNAMED_CTOR_RE.exec(stripped) : null
+        if (um && um[1] === frame.name) {
+          member = true
+        }
+
+        // A field can carry an initialiser call that looks just like a declaration to FUNC_RE.
+        if (!member && FIELD_START_RE.test(stripped)) {
+          member = true
+        }
+
         const gm = !member ? GETTER_RE.exec(stripped) : null
         if (gm) {
           symbols.push(makeLineSymbol(filePath, gm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
@@ -203,9 +240,15 @@ export function extractDart(
         // For now, we skip property extraction to keep it simple
         // (properties would need complex parsing of multiple declarations per line)
       }
-    } else if (!matched && frame === null && !isIndented) {
-      // Top-level function
-      const fm = FUNC_RE.exec(stripped)
+    } else if (!matched && frame === null && !isIndented && !FIELD_START_RE.test(stripped)) {
+      // Top-level getter, then top-level function. Dart allows a getter at file scope
+      // (`int get version => 1;`) and it was never looked for outside a class body.
+      const gm = GETTER_RE.exec(stripped)
+      if (gm) {
+        symbols.push(makeLineSymbol(filePath, gm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
+      }
+
+      const fm = !gm ? FUNC_RE.exec(stripped) : null
       if (fm) {
         let fname = fm[1] ?? ''
         fname = fname.replace(/^operator\s+/, '')
