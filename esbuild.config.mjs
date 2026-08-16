@@ -105,12 +105,17 @@ await esbuild.build({
 // compiled uncached on every single run.
 const LAUNCHER = [
   '#!/usr/bin/env node',
-  "import { enableCompileCache } from 'node:module'",
-  '// Older Node (<22.1) has no compile cache, and a read-only or full cache dir throws; neither is a reason to fail the command.',
+  '// Namespace import, not a named one: enableCompileCache landed in Node 22.1 and package.json still supports 22.0, where importing it by name is a link-time failure the try/catch below never gets to run against.',
+  "import * as nodeModule from 'node:module'",
+  '// Older Node has no compile cache, and a read-only or full cache dir throws; neither is a reason to fail the command.',
   'try {',
-  '  enableCompileCache?.()',
+  '  nodeModule.enableCompileCache?.()',
   '} catch {}',
-  "await import('./token-goat.core.mjs')",
+  '// Deliberately not awaited: a top-level await here makes this file an async ESM graph, and this file is the package main, so require("token-goat") would fail with ERR_REQUIRE_ASYNC_MODULE.',
+  "import('./token-goat.core.mjs').catch((err) => {",
+  '  console.error(err)',
+  '  process.exitCode = 1',
+  '})',
   '',
 ].join('\n')
 writeFileSync('dist/token-goat.mjs', LAUNCHER)

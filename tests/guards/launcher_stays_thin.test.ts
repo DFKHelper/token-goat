@@ -34,6 +34,23 @@ describe('bin launcher', () => {
     expect(fs.readFileSync(BUNDLE, 'utf8').startsWith('#!/usr/bin/env node')).toBe(true)
   })
 
+  it('reaches node:module by namespace, so Node 22.0 can still link the file', () => {
+    // enableCompileCache landed in Node 22.1 and package.json engines still allows 22.0. A named
+    // import of a missing export fails during ESM linking, before any statement runs, so the
+    // try/catch guarding the call cannot catch it: every CLI call and every hook would die.
+    const launcher = fs.readFileSync(BUNDLE, 'utf8')
+    expect(launcher).not.toMatch(/import\s*\{[^}]*enableCompileCache/)
+    expect(launcher).toContain("import * as nodeModule from 'node:module'")
+  })
+
+  it('never puts a top-level await in the package main entry', () => {
+    // This file is `main`, and a top-level await makes the whole graph async, which turns a
+    // plain require('token-goat') into ERR_REQUIRE_ASYNC_MODULE -- confirmed against the built file.
+    const launcher = fs.readFileSync(BUNDLE, 'utf8')
+    expect(launcher).not.toMatch(/^\s*await\s/m)
+    expect(launcher).toContain('.catch(')
+  })
+
   it('ships the core bundle alongside it, holding the actual product code', () => {
     const core = fs.readFileSync(CORE_BUNDLE, 'utf8')
     expect(core.length).toBeGreaterThan(1_000_000)
