@@ -14,7 +14,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { captureStdout } from './helpers/capture-stdout.js'
-import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
+import { querySymbols, queryRefs, searchSymbolsFts, distinctSymbolKinds } from '../src/index_reader.js'
 import type * as IndexReaderModule from '../src/index_reader.js'
 import {
   bfsCallChains,
@@ -69,7 +69,7 @@ function captureStderr(fn: () => void): string {
 // callers/testFor a synthetic out-of-project row without indexing a real file there.
 vi.mock('../src/index_reader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof IndexReaderModule>()
-  return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts), queryRefs: vi.fn(actual.queryRefs) }
+  return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts), queryRefs: vi.fn(actual.queryRefs), distinctSymbolKinds: vi.fn(actual.distinctSymbolKinds) }
 })
 
 // ---- helpers ----------------------------------------------------------------
@@ -1675,6 +1675,36 @@ describe('runDead integration', () => {
     vi.mocked(querySymbols).mockReturnValueOnce([])
     const code = runDead({ kind: 'function' })
     expect(code).toBe(0)
+  })
+
+  it('does not scan the index for known kinds when the static list already covers them', () => {
+    // The scoped distinct-kind query cannot use an index (project scope is a LIKE over a
+    // lowercased column), so it scans the whole shared index: measured at 167ms of a 785ms
+    // `dead` on this machine. Every kind in CORE_SYMBOL_KINDS is answerable without it, and the
+    // default kind is 'function'. Nothing about skipping it is visible in the output, so this
+    // call-count assertion is the only thing that fails if the query moves back ahead of the
+    // static check.
+    vi.mocked(distinctSymbolKinds).mockClear()
+    vi.mocked(querySymbols).mockReturnValueOnce([])
+    expect(runDead({ kind: 'function' })).toBe(0)
+    expect(vi.mocked(distinctSymbolKinds)).not.toHaveBeenCalled()
+  })
+
+  it('still consults the index for a real kind the static list does not name', () => {
+    // The union exists for kinds a language adapter emits that CORE_SYMBOL_KINDS never listed --
+    // 'heading' from the markdown adapter is one. Rejecting it would be a false "unrecognized
+    // kind" error, so the fallback must fire exactly when the static check comes up short.
+    vi.mocked(distinctSymbolKinds).mockClear()
+    // Stubbed rather than relying on this suite's index, which holds only src/*.ts and so has no
+    // markdown headings in it: the point here is the wiring, that a kind the static list misses
+    // is looked up and then accepted, not which kinds this particular fixture happens to contain.
+    vi.mocked(distinctSymbolKinds).mockReturnValueOnce(['heading'])
+    vi.mocked(querySymbols).mockReturnValueOnce([])
+    const errCaptured = captureStderr(() => {
+      expect(runDead({ kind: 'heading' })).toBe(0)
+    })
+    expect(errCaptured).not.toContain('Unrecognized kind')
+    expect(vi.mocked(distinctSymbolKinds)).toHaveBeenCalledTimes(1)
   })
 
   it('rejects an unrecognized --kind instead of silently reporting a false-clean "no dead symbols" result', () => {

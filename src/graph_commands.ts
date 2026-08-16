@@ -812,8 +812,17 @@ export function runDead(opts: DeadOptions): number {
   // index alone is not enough, since a genuinely valid kind (e.g. 'class' in a project with zero
   // classes) would never appear in a small project's own distinct-kind set and would otherwise be
   // wrongly rejected as unrecognized (see the empty-index-hint guard's "class" fixture case).
-  const knownKinds = [...new Set([...distinctSymbolKinds(rootDir), ...CORE_SYMBOL_KINDS])]
-  const unknownKinds = kinds.filter((k) => !knownKinds.includes(k))
+  // CORE_SYMBOL_KINDS is checked on its own first, and the index is only consulted for a kind that
+  // list does not already cover. The scoped distinct-kind query cannot use an index (the project
+  // scope is a LIKE over a lowercased column), so it scans the whole shared index: 171ms of a
+  // 785ms `dead` here, spent to re-derive an answer the static list already had. The union below
+  // is unchanged for the case that needs it, and only that case pays for it.
+  let knownKinds: string[] = [...CORE_SYMBOL_KINDS]
+  let unknownKinds = kinds.filter((k) => !knownKinds.includes(k))
+  if (unknownKinds.length > 0) {
+    knownKinds = [...new Set([...distinctSymbolKinds(rootDir), ...CORE_SYMBOL_KINDS])]
+    unknownKinds = kinds.filter((k) => !knownKinds.includes(k))
+  }
   if (unknownKinds.length > 0) {
     const label = unknownKinds.length === 1 ? 'kind' : 'kinds'
     const quoted = unknownKinds.map((k) => `'${k}'`).join(', ')
