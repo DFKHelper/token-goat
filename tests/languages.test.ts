@@ -2824,6 +2824,95 @@ end
     const { symbols } = extractLua(content, 'main.lua')
     expect(symbols.find((s) => s.name === 'after')?.parent).toBe('outer')
   })
+
+  it('does not index declarations inside a long-bracket block comment', () => {
+    const content = `--[[
+function ghost(x)
+  return x
+end
+]]
+
+function real()
+  return 1
+end
+`
+    const { symbols } = extractLua(content, 'commented.lua')
+    expect(symbols.map((s) => s.name)).toEqual(['real'])
+  })
+
+  it('does not index declarations inside a multi-line long string', () => {
+    const content = `local doc = [[
+function alsoGhost()
+end
+]]
+
+function afterDoc()
+  return 2
+end
+`
+    const { symbols } = extractLua(content, 'doc.lua')
+    expect(symbols.map((s) => s.name)).toEqual(['doc', 'afterDoc'])
+    expect(symbols.find((s) => s.name === 'doc')?.kind).toBe('variable')
+    expect(symbols.find((s) => s.name === 'afterDoc')?.parent).toBeFalsy()
+  })
+
+  it('closes a levelled long bracket only on its own matching level', () => {
+    const content = `--[==[
+function ghost()
+end
+]]
+function stillInside()
+end
+]==]
+
+function outside()
+  return 3
+end
+`
+    const { symbols } = extractLua(content, 'levelled.lua')
+    expect(symbols.map((s) => s.name)).toEqual(['outside'])
+  })
+
+  it('keeps a long-bracket opener inside a quoted string from starting a span', () => {
+    const content = `local marker = "[[ not an opener"
+
+function afterQuoted()
+  return 4
+end
+`
+    const { symbols } = extractLua(content, 'quoted.lua')
+    expect(symbols.map((s) => s.name)).toEqual(['marker', 'afterQuoted'])
+  })
+
+  it('pops the callback frame on an `end)` line so later functions stay top-level', () => {
+    const content = `function outer()
+  register("x", function(a)
+    return a
+  end)
+end
+
+function shouldBeTopLevel()
+  return 1
+end
+`
+    const { symbols } = extractLua(content, 'callback.lua')
+    expect(symbols.find((s) => s.name === 'shouldBeTopLevel')?.parent).toBeFalsy()
+  })
+
+  it('pops a table-literal function frame on an `end,` line', () => {
+    const content = `local handlers = {
+  onLoad = function()
+    return 1
+  end,
+}
+
+function afterTable()
+  return 2
+end
+`
+    const { symbols } = extractLua(content, 'table.lua')
+    expect(symbols.find((s) => s.name === 'afterTable')?.parent).toBeFalsy()
+  })
 })
 
 // ---------------------------------------------------------------------------
