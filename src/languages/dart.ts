@@ -54,6 +54,21 @@ const EXTENSION_TYPE_RE = /^extension\s+type\s+([A-Za-z_][A-Za-z0-9_]*)/
 // This guards against matching function calls like `print("text")` as function declarations.
 const FUNC_RE = /(?:^|\s)(?:static\s+)?(?:(?:void|Future|Stream|async|external)\s+|[A-Za-z_][A-Za-z0-9_<>]*(?:\s*\?)?\s+)([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(/
 
+// `int get value => 1;`, `String get name { ... }`, `static bool get ok => true`. A getter has no
+// parameter list, so FUNC_RE (which anchors on the opening paren) never matched one, while the
+// matching `set value(int v)` was picked up incidentally -- `set` reads as a return type to
+// FUNC_RE. A class exposing a value through a getter/setter pair therefore indexed the write half
+// and dropped the read half.
+const GETTER_RE = /^(?:(?:static|external|abstract|covariant)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>,\s]*(?:\s*\?)?\s+)?get\s+([A-Za-z_][A-Za-z0-9_]*)/
+
+// `A.named()`, `const A.from(...)`, `factory A.create() => ...`. The class name is checked against
+// the enclosing frame at the call site rather than baked in here, which is what keeps this from
+// matching an ordinary call: a call sits deeper than one brace inside the type, and a constructor
+// declaration can only appear at exactly that depth. Only the named forms are indexed -- an
+// unnamed `A()` carries no name of its own, and indexing it as `A` would make `read "f.dart::A"`
+// ambiguous against the class declaration one line above it.
+const NAMED_CTOR_RE = /^(?:(?:const|factory|external)\s+)*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/
+
 // Variable declarations not extracted at this time — would need complex parsing of
 // multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`)
 // or destructuring patterns.
@@ -159,7 +174,24 @@ export function extractDart(
     if (!matched && frame !== null) {
       const depthInType = braceDepth - frame.startDepth
       if (depthInType === 1) {
-        const fm = FUNC_RE.exec(stripped)
+        // Constructor first: `factory A.create() => ...` also satisfies FUNC_RE, which reads
+        // `factory` as a return type and would index the declaration under the class name rather
+        // than the constructor's own name. As with the type block above, each branch sets a flag
+        // instead of `continue`-ing, so a same-line `{` still reaches the brace counter below.
+        const cm = NAMED_CTOR_RE.exec(stripped)
+        let member = false
+        if (cm && cm[1] === frame.name) {
+          symbols.push(makeLineSymbol(filePath, cm[2] ?? '', 'constructor', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          member = true
+        }
+
+        const gm = !member ? GETTER_RE.exec(stripped) : null
+        if (gm) {
+          symbols.push(makeLineSymbol(filePath, gm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          member = true
+        }
+
+        const fm = !member ? FUNC_RE.exec(stripped) : null
         if (fm) {
           let fname = fm[1] ?? ''
           // Normalize `operator +` to `+`
