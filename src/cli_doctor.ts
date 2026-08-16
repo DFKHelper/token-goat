@@ -241,6 +241,14 @@ export function checkDbExists(dataDir: string): DoctorResult {
 }
 
 /**
+ * Existence probe for a stored symbol body over the cap, exported so the query-plan guard in
+ * tests/cli_doctor.test.ts can EXPLAIN the exact text the check runs rather than a retyped copy
+ * of it, which would pass while the real query regressed to a full table scan.
+ */
+export const OVERSIZED_BODY_PROBE_SQL =
+  `SELECT 1 FROM symbols WHERE LENGTH(body) > ${MAX_SYMBOL_BODY_CHARS} LIMIT 1`
+
+/**
  * Check the largest stored symbol body against parser.ts's own `MAX_SYMBOL_BODY_CHARS` cap.
  *
  * Total DB size (see {@link DB_SIZE_WARN_BYTES}) is a lagging proxy for the pathology this
@@ -259,15 +267,19 @@ export function checkSymbolBodySize(dbPath: string): DoctorResult {
   }
   try {
     const db = getDb(dbPath)
-    // Bounded early-exit scan instead of `SELECT MAX(LENGTH(body))`, which is a full table scan
-    // with no index able to serve it (symbols is only indexed on name/file_path, see db.ts). On a
-    // real 391 MB / 239,976-row damaged index this form measured 6.9 ms vs 54-62 ms for MAX() --
-    // it stops at the first offending row instead of scanning every row to find the largest.
-    // Selecting file_path alongside the length also gives the message an actionable target
-    // instead of a bare number.
-    const row = db
-      .prepare('SELECT LENGTH(body) as len, file_path as filePath FROM symbols WHERE LENGTH(body) > ? LIMIT 1')
-      .get(MAX_SYMBOL_BODY_CHARS) as { len: number; filePath: string } | undefined
+    // Existence probe served by idx_symbols_oversized_body (db.ts), a partial index over exactly
+    // the violating rows. The threshold is interpolated rather than bound so the comparison text
+    // matches the index predicate exactly at prepare time: SQLite will use a partial index only
+    // where the query's WHERE implies the index's, and with `> ?` that decision is made against
+    // whatever value happens to be bound first, so the same cached statement could be planned as
+    // an index lookup or a full scan depending on the caller. Nothing but existence is selected --
+    // the message below deliberately omits both the offending row's size and its path, so
+    // selecting either would force a table lookup for a value no caller reads. On a healthy index
+    // the b-tree is empty, so this answers without touching `symbols` at all.
+    // Pinned by an EXPLAIN QUERY PLAN assertion in tests/cli_doctor.test.ts: losing the index
+    // still returns the right answer, just 229 ms slower on every SessionStart, which no
+    // behavioural test would notice.
+    const row = db.prepare(OVERSIZED_BODY_PROBE_SQL).get() as { 1: number } | undefined
     if (row !== undefined) {
       // Deliberately omits row.filePath and row.len: this message is surfaced verbatim by
       // hooks_session_start.ts in the earliest, most cacheable position of a SessionStart

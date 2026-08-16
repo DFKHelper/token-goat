@@ -18,7 +18,7 @@ import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
 
-import { globalDbPath } from './constants.js'
+import { globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
 import type { IndexingConfig } from './config.js'
@@ -151,7 +151,7 @@ const CPP_HEADER_SNIFF_RE = /\bclass\s+\w|\bnamespace\s+\w|\btemplate\s*<|::\s*\
  * realistic single function/class body (~32k tokens) while still bounding the
  * pathological case.
  */
-export const MAX_SYMBOL_BODY_CHARS = 128 * 1024
+export const MAX_SYMBOL_BODY_CHARS = SYMBOL_BODY_CHAR_CAP
 
 /**
  * Bound what gets *stored* for a symbol body, without losing what gets *read*.

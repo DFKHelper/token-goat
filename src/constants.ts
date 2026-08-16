@@ -225,3 +225,10 @@ export const ENV_KEYS = {
   OVERFLOW_MAX_TOKENS: 'TOKEN_GOAT_OVERFLOW_MAX_TOKENS',
   HARNESS_OVERRIDE: 'TOKEN_GOAT_HARNESS_OVERRIDE',
 } as const
+
+// Largest symbol body stored in the index; parser.ts re-exports this as MAX_SYMBOL_BODY_CHARS and
+// its docblock carries the full rationale. The value lives here rather than there because db.ts
+// bakes it into the partial index backing checkSymbolBodySize, and parser.ts imports db.ts.
+// Changing it invalidates that index's predicate: bump SCHEMA_VERSION and add a MIGRATIONS step
+// dropping idx_symbols_oversized_body, or the stored index keeps the old threshold.
+export const SYMBOL_BODY_CHAR_CAP = 128 * 1024

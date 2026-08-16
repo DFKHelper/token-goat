@@ -10,6 +10,7 @@ import { setTsModuleForTesting } from '../src/ts_refs.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { normalizePath } from '../src/paths.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
+import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -369,6 +370,60 @@ describe('cli_doctor', () => {
       const result = checkSymbolBodySize(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('could not query symbol body size')
+    })
+
+    // This check runs on every SessionStart. Its predicate cannot be served by any of the
+    // name/file_path indexes, so before idx_symbols_oversized_body it read the whole symbols
+    // table: 229 ms per session start on a real 226 MB / 231324-row index, and the early-exit
+    // LIMIT 1 never fires on a healthy index because there is nothing to find. Every assertion
+    // below guards a way of losing the index silently -- the answers stay correct, the check
+    // just goes back to a full scan, which no behavioural test above would notice.
+    describe('query plan', () => {
+      it('creates the partial index on a fresh database', () => {
+        const dbPath = path.join(tempDir, 'global.db')
+        const db = getDb(dbPath)
+        const idx = db
+          .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_symbols_oversized_body'`)
+          .get() as { sql: string } | undefined
+        expect(idx).toBeDefined()
+        // The index predicate and the probe's comparison have to agree textually for SQLite to
+        // prove implication, so pin the shared threshold in both rather than the index's mere
+        // existence -- an index built at a different cap would still be found by the query above.
+        expect(idx?.sql).toContain(`LENGTH(body) > ${MAX_SYMBOL_BODY_CHARS}`)
+        expect(OVERSIZED_BODY_PROBE_SQL).toContain(`LENGTH(body) > ${MAX_SYMBOL_BODY_CHARS}`)
+      })
+
+      it('serves the probe from the partial index instead of scanning symbols', () => {
+        const dbPath = path.join(tempDir, 'global.db')
+        const db = getDb(dbPath)
+        db.prepare(
+          'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ).run('src/main.ts', 'main', 'function', 1, 2, 'return 1', '')
+
+        const plan = (db.prepare(`EXPLAIN QUERY PLAN ${OVERSIZED_BODY_PROBE_SQL}`).all() as Array<{ detail: string }>)
+          .map((r) => r.detail)
+          .join(' | ')
+        expect(plan).toContain('idx_symbols_oversized_body')
+        // A plain `SCAN symbols` with no index named is the exact regression this pins.
+        expect(plan).not.toMatch(/SCAN symbols(?! USING)/)
+      })
+
+      it('does not let the partial index hide rows from a reader using a lower threshold', () => {
+        const dbPath = path.join(tempDir, 'global.db')
+        const db = getDb(dbPath)
+        const ins = db.prepare(
+          'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        )
+        ins.run('src/small.ts', 'small', 'function', 1, 2, 'x'.repeat(2000), '')
+        ins.run('src/huge.ts', 'huge', 'function', 1, 2, 'x'.repeat(200 * 1024), '')
+
+        // The index holds only rows over the cap. A reader asking about a *lower* threshold must
+        // still see both rows: SQLite falls back to a full scan because 2000 does not imply the
+        // index predicate. This is the soundness half of the optimisation -- if the planner ever
+        // reused this index for a threshold it does not cover, callers would silently lose rows.
+        const rows = db.prepare('SELECT name FROM symbols WHERE LENGTH(body) > 1000').all() as Array<{ name: string }>
+        expect(rows.map((r) => r.name).sort()).toEqual(['huge', 'small'])
+      })
     })
   })
 
