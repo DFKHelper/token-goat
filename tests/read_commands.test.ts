@@ -5272,6 +5272,14 @@ describe('read_commands', () => {
       expect(extractImports(src, '.swift')).toEqual(['UIKit.UIView', 'MyApp'])
     })
 
+    it('extracts Swift imports carrying an attribute or a Swift 6 access level', () => {
+      // This branch used to hold its own copy of swift.ts's pattern. When the extractor learned
+      // these two forms the copy did not, so `imports` reported nothing for a file the index had
+      // indexed correctly. It now shares the one pattern, and this pins that the two agree.
+      const src = ['@preconcurrency import Foundation', 'public import Core'].join('\n')
+      expect(extractImports(src, '.swift')).toEqual(['Foundation', 'Core'])
+    })
+
     it('extracts Haskell imports, stripping qualified/safe modifiers and hiding/selector clauses (regression: the generic fallback\'s greedy capture swallowed "qualified Data.Map as Map" verbatim)', () => {
       const src = [
         'import qualified Data.Map as Map', // idiomatic qualified import
