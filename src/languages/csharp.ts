@@ -46,29 +46,48 @@ const NAMESPACE_RE = /^(?:namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)/
 // family at once - same pattern as kotlin.ts's stripLeadingAnnotations(). Leading whitespace is
 // preserved so METHOD_RE/CONSTRUCTOR_RE/PROPERTY_RE's own `^\s+` class-member indentation gate
 // still functions correctly.
-const LEADING_ATTRIBUTE_RE = /^(\s*)((?:\[[^[\]]*\]\s*)+)/
+// The inner `\[[^[\]]*\]` alternative admits one level of nesting, so an attribute whose
+// ARGUMENT contains brackets (`[JsonPropertyName("x[y]")]`, `[Obsolete(nameof(A[0]))]`) is still
+// consumed whole. With the flat `[^[\]]*` body this regex stopped at the first inner `]`, left a
+// trailing `")]` on the line, and every regex below then failed against that garbage - silently
+// dropping the decorated member.
+const LEADING_ATTRIBUTE_RE = /^(\s*)((?:\[(?:[^[\]]|\[[^[\]]*\])*\]\s*)+)/
 function stripLeadingAttributes(s: string): string {
   const m = LEADING_ATTRIBUTE_RE.exec(s)
   if (!m) return s
   return (m[1] ?? '') + s.slice(m[0].length)
 }
+// Shared filler for the return/property TYPE slot. `.` is included so a fully-qualified type
+// (`System.Collections.Generic.List<int>`, `System.Threading.Tasks.Task`) matches - without it
+// every member declared with a namespace-qualified type was dropped. `(`/`)` stay excluded: the
+// expression-bodied-property regex relies on that exclusion to avoid matching an
+// expression-bodied METHOD, whose parens sit between the name and `=>`.
+const TYPE_FILLER = '[A-Za-z_][A-Za-z0-9_<>?,.\\[\\]\\s]*?'
+// The type slot proper: either a tuple type (`(int a, string b)`) or the filler above. The tuple
+// alternative is a separate branch rather than parens added to the filler class, so the
+// exclusion the arrow-property regex depends on is preserved.
+const TYPE_SLOT = `(?:\\([^()]+\\)|${TYPE_FILLER})`
+// Member names may carry an explicit-interface qualifier (`void IDisposable.Dispose()`); the
+// qualifier is matched but not captured, so the recorded name is the final segment.
+const MEMBER_NAME = '(?:[A-Za-z_][A-Za-z0-9_.]*\\.)?([A-Za-z_][A-Za-z0-9_]*)'
+// Members are matched with `^\s*`, not `^\s+`: a member written at column zero (legal, and common
+// in file-scoped-namespace code) is still a member. Nothing else can reach these regexes - they
+// only run one brace level inside a type body, where a bare statement cannot legally appear.
+const MEMBER_INDENT = '^\\s*'
 const DELEGATE_RE = new RegExp(
-  '^\\s*(?:public|protected|private|internal)?\\s*delegate\\s+' +
-  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
+  `^\\s*(?:public|protected|private|internal)?\\s*delegate\\s+${TYPE_SLOT}\\s+` +
   '([A-Za-z_][A-Za-z0-9_]*)\\s*[<(]',
 )
 const PROPERTY_RE = new RegExp(
-  '^\\s+(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*' +
-  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
-  '([A-Z][A-Za-z0-9_]*)\\s*\\{[^}]*(?:get|set)',
+  `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*` +
+  `${TYPE_SLOT}\\s+${MEMBER_NAME}\\s*\\{[^}]*(?:get|set)`,
 )
 // Allman-style auto-property header (`public int Foo` with the `{ get; set; }` block on the
 // following lines rather than trailing this line) - same shape as PROPERTY_RE but anchored to
 // end-of-line instead of requiring a same-line `{`.
 const PROPERTY_HEADER_RE = new RegExp(
-  '^\\s+(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*' +
-  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
-  '([A-Z][A-Za-z0-9_]*)\\s*$',
+  `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*` +
+  `${TYPE_SLOT}\\s+${MEMBER_NAME}\\s*$`,
 )
 const ALLMAN_ACCESSOR_RE = /^(?:get\s*;\s*set\s*;|set\s*;\s*get\s*;|get\s*;|set\s*;)$/
 // A real (non-shorthand) accessor body opener, e.g. `get { return 1; }` or `set {`. Safe to OR
@@ -81,13 +100,15 @@ const ALLMAN_ACCESSOR_BODY_RE = /^(?:get|set)\b/
 // accidentally match an expression-bodied METHOD (`Add(int a, int b) => a + b;`), where the
 // parens sit between the name and `=>`.
 const PROPERTY_ARROW_RE = new RegExp(
-  '^\\s+(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*' +
-  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
-  '([A-Z][A-Za-z0-9_]*)\\s*=>',
+  `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*` +
+  `${TYPE_SLOT}\\s+${MEMBER_NAME}\\s*=>`,
 )
+// The name class is any identifier, not just an uppercase-initial one: a lowercase type name is
+// unconventional but legal, and its constructor was dropped. Widening is safe here because the
+// only caller additionally requires the captured name to equal the enclosing type's name.
 const CONSTRUCTOR_RE = new RegExp(
-  '^\\s+(?:(?:public|protected|private|internal|static)\\s+)*' +
-  '([A-Z][A-Za-z0-9_]*)\\s*\\(',
+  `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static)\\s+)*` +
+  '([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
 )
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial|readonly|ref|unsafe|file)\\s+)*' +
@@ -100,12 +121,26 @@ const CLASS_HEADER_RE = new RegExp(
 // name-capture group stop early at the first `<`, phantom-capturing the inner type name
 // (`List`) instead of the real method name (`GetMap`).
 const METHOD_RE = new RegExp(
-  '^\\s+(?!(?:return|throw|yield|await|if|else|while|for|foreach|do|switch|case|' +
+  `${MEMBER_INDENT}(?!(?:return|throw|yield|await|if|else|while|for|foreach|do|switch|case|` +
   'lock|using|fixed|checked|unchecked|goto|var)\\b)' +
   '(?:(?:public|protected|private|internal|static|virtual|override|abstract|' +
   'sealed|new|async|extern|partial|readonly)\\s+)*' +
-  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:<[^<>]*>\\s*)?\\(',
+  `${TYPE_SLOT}\\s+${MEMBER_NAME}\\s*(?:<[^<>]*>\\s*)?\\(`,
 )
+
+// The next `count` lines that carry code, skipping blanks, `//` comments and preprocessor
+// directives. The Allman auto-property peek uses this rather than raw `lines[i + 1]`/`[i + 2]`:
+// a documentation or `#region` line between the header and its `{` used to shift the accessor
+// block out of the two-line window, dropping the property.
+function nextCodeLines(lines: readonly string[], from: number, count: number): string[] {
+  const out: string[] = []
+  for (let j = from + 1; j < lines.length && out.length < count; j++) {
+    const t = (lines[j] ?? '').trim()
+    if (!t || t.startsWith('//') || t.startsWith('#')) continue
+    out.push(t)
+  }
+  return out
+}
 
 export function extractCsharp(
   content: string,
@@ -119,6 +154,11 @@ export function extractCsharp(
   let braceDepth = 0
   let inComment = false
   let mlState: MultilineStringState | null = null
+  // `#if false` / `#if 0` guards a block the compiler never sees, so its braces and declarations
+  // must not reach the brace counter or the symbol list. `falseNesting` counts `#if`s opened
+  // inside the disabled block so only the matching `#endif` re-enables extraction.
+  let inFalseBlock = false
+  let falseNesting = 0
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -147,6 +187,25 @@ export function extractCsharp(
     const stripped = line.trim()
 
     if (!stripped || stripped.startsWith('//')) continue
+
+    // Preprocessor directives are not code: a brace inside one (`#region {`, a very common way to
+    // label a region after an opening brace) previously incremented braceDepth with no matching
+    // decrement, leaving the enclosing type "open" for the rest of the file - its own members
+    // were lost and every later top-level type was recorded as nested inside it.
+    if (stripped.startsWith('#')) {
+      if (inFalseBlock) {
+        if (/^#if\b/.test(stripped)) falseNesting++
+        else if (/^#endif\b/.test(stripped)) {
+          if (falseNesting > 0) falseNesting--
+          else inFalseBlock = false
+        } else if (falseNesting === 0 && /^#(?:else|elif)\b/.test(stripped)) inFalseBlock = false
+      } else if (/^#if\s+(?:false|0)\s*$/.test(stripped)) {
+        inFalseBlock = true
+        falseNesting = 0
+      }
+      continue
+    }
+    if (inFalseBlock) continue
 
     // using import
     const usingM = USING_RE.exec(stripped)
@@ -219,8 +278,7 @@ export function extractCsharp(
           // requires a same-line `{`) never matches. Peek the next two lines for that shape.
           const headerM = PROPERTY_HEADER_RE.exec(lineNoAttr)
           if (headerM) {
-            const braceLineNext = (lines[i + 1] ?? '').trim()
-            const accessorLine = (lines[i + 2] ?? '').trim()
+            const [braceLineNext = '', accessorLine = ''] = nextCodeLines(lines, i, 2)
             if (braceLineNext === '{' && (ALLMAN_ACCESSOR_RE.test(accessorLine) || ALLMAN_ACCESSOR_BODY_RE.test(accessorLine))) {
               isPropertyLine = true
               symbols.push(makeLineSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
