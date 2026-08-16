@@ -6,52 +6,45 @@ export function pathEqClause(column: string): string {
 }
 
 /**
- * Build a `<column> LIKE ? ESCAPE '\'` SQL predicate for "file_path is under this project
- * root", plus a matching `param()` function that turns a root directory into the correctly
- * escaped LIKE pattern. Every indexed `file_path` is stored via `normalizePath()`, which
- * always uses forward slashes (see paths.ts) -- so the prefix boundary separator here is
- * always `/`, never `path.sep`, regardless of host platform.
+ * Build a half-open range predicate for "file_path is under this project root", plus a matching
+ * `params()` function that turns a root directory into the two bounds it binds. Every indexed
+ * `file_path` is stored via `normalizePath()`, which always uses forward slashes (see paths.ts)
+ * -- so the prefix boundary separator here is always `/`, never `path.sep`, regardless of host
+ * platform.
  *
  * Case folding mirrors `pathEqClause`: on a case-insensitive filesystem the column is wrapped
- * in `TG_LOWER()` and the bind parameter is folded with `foldPath()` so SQL-side and JS-side
+ * in `TG_LOWER()` and the bind parameters are folded with `foldPath()` so SQL-side and JS-side
  * folding stay byte-for-byte consistent.
  *
- * Boundary correctness: the root is suffixed with `/` *before* the trailing `%` wildcard is
- * appended, so a root of `/proj` produces the pattern `/proj/%` -- this matches `/proj/file.ts`
- * and `/proj/sub/file.ts` but NOT `/proj-other/file.ts` (which would incorrectly match a naive
- * `/proj%` pattern).
+ * Boundary correctness: the lower bound is the root suffixed with `/`, so a root of `/proj`
+ * produces `>= '/proj/'` -- this matches `/proj/file.ts` and `/proj/sub/file.ts` but NOT
+ * `/proj-other/file.ts`. The upper bound replaces that trailing `/` (U+002F) with `0` (U+0030),
+ * the next code point, so the range holds exactly the strings that begin with the lower bound
+ * and nothing else: to land inside it a string must share every character up to the separator
+ * and then carry a character in `['/', '0')`, which is only `/` itself.
  *
- * Wildcard escaping: LIKE treats `%` and `_` as wildcards and (implicitly) `\` as nothing
- * special until an ESCAPE clause names it -- so a root path containing a literal `%` or `_`
- * would otherwise wildcard-match unrelated paths. `param()` escapes `\`, `%`, and `_` in the
- * root (backslash first, since it's the escape character itself) before appending the `/%`
- * suffix, which is never escaped -- it's the actual wildcard.
+ * This used to be `LIKE ? ESCAPE '\'`, which was correct but could not be served from an index:
+ * SQLite's LIKE-to-range optimization is disabled outright whenever an ESCAPE clause is present,
+ * so every project-scoped query scanned the whole machine-wide index and then filtered. Writing
+ * the range out by hand is what the optimization would have produced anyway, and it needs no
+ * wildcard escaping at all, since `%` and `_` in a root path are now ordinary characters. It
+ * also drops LIKE's implicit ASCII case folding, which on a case-sensitive filesystem let a
+ * project at `/home/x/Repo` match rows belonging to a genuinely different `/home/x/repo`.
  */
-/**
- * Name the index a project-scoped `file_path` filter can actually be served from, for the
- * `<table>` given. Which one is correct depends on case folding: the folded index stores
- * `TG_LOWER(file_path)`, so it only matches the predicate `projectScopeClause` builds on a
- * case-insensitive filesystem, and the plain index only matches the other one. Both are created
- * unconditionally by db.ts's schema on every connection open, so naming either is safe.
- *
- * This exists because SQLite's planner, with no ANALYZE statistics, prefers whichever index
- * removes a sort over the far more selective path filter. See the INDEXED BY note in
- * baseline.ts's fetchTopSymbols for the measurement that motivated it.
- */
-export function projectScopeIndex(table: string): string {
-  return isCaseInsensitiveFs() ? `idx_${table}_file_folded` : `idx_${table}_file`
-}
-
-export function projectScopeClause(column: string): { clause: string; param: (root: string) => string } {
+export function projectScopeClause(column: string): {
+  clause: string
+  params: (root: string) => [string, string]
+} {
   const caseInsensitive = isCaseInsensitiveFs()
   const col = caseInsensitive ? `TG_LOWER(${column})` : column
   return {
-    clause: `${col} LIKE ? ESCAPE '\\'`,
-    param: (root: string): string => {
+    // Parenthesised so an OR anywhere in the surrounding WHERE cannot bind tighter than the pair.
+    clause: `(${col} >= ? AND ${col} < ?)`,
+    params: (root: string): [string, string] => {
       const folded = caseInsensitive ? foldPath(normalizePath(root)) : normalizePath(root)
-      const escaped = folded.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
-      const withBoundary = escaped.endsWith('/') ? escaped : `${escaped}/`
-      return `${withBoundary}%`
+      const lower = folded.endsWith('/') ? folded : `${folded}/`
+      const upper = `${lower.slice(0, -1)}0`
+      return [lower, upper]
     },
   }
 }

@@ -21,7 +21,7 @@ import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { suggestedIndexCommand } from './index_health.js'
-import { projectScopeClause, projectScopeIndex } from './sql_path.js'
+import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
 import { normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
@@ -172,7 +172,7 @@ export function buildTopSymbolsSql(): string {
   const refScope = projectScopeClause('file_path')
   // refs carry only a bare name, so a name defined N times cannot claim all N copies' references: divide by the number of same-named definitions, and keep one representative per name so a generic helper like `apply` occupies one slot instead of seven.
         // Ranking selects only each body's LENGTH, never its text, and the rowid join pulls bodies back for the `limit` survivors alone. Selecting `body` inside the window query instead makes SQLite carry every symbol's full text (up to boundSymbolBody's 131072 chars) through both window functions before LIMIT discards nearly all of it.
-        // INDEXED BY on the refs aggregate is a correctness-neutral planner override, not a hint: without ANALYZE statistics SQLite picks idx_refs_name because it makes GROUP BY sort-free, and then scans every ref row in the whole global index to apply the path filter. Pinning the path index scans only this project's rows and pays for one temp b-tree instead. Measured on a 751731-row global index: 1754ms to 155ms, byte-identical rows. Both candidate indexes are created unconditionally in db.ts, so this cannot fail on a live DB.
+        // Both path filters are range predicates (sql_path.ts), so the planner picks the file_path index on its own and no INDEXED BY override is needed to keep it off a full scan of the machine-wide index. An earlier LIKE-based clause did need one on the refs aggregate, because a LIKE carrying an ESCAPE cannot drive an index at all and the planner then preferred whichever index made GROUP BY sort-free.
   return `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
          FROM (
            SELECT rid, kind, score, body_len
@@ -190,7 +190,7 @@ export function buildTopSymbolsSql(): string {
              ) t
              LEFT JOIN (
                SELECT name, COUNT(*) AS ref_count
-               FROM refs INDEXED BY ${projectScopeIndex('refs')}
+               FROM refs
                WHERE ${refScope.clause}
                GROUP BY name
              ) r ON r.name = t.name
@@ -210,11 +210,9 @@ export function buildTopSymbolsSql(): string {
 function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): SymbolEntry[] {
   try {
     const db = getDb(dbPath)
-    const { param } = projectScopeClause('file_path')
-    const refScope = projectScopeClause('file_path')
-    const rows = db
-      .prepare(buildTopSymbolsSql())
-      .all(refScope.param(rootDir), param(rootDir), limit) as TopSymbolRow[]
+    // Bind order follows the SQL text: the symbols filter's bounds, then the refs aggregate's.
+    const bounds = projectScopeClause('file_path').params(rootDir)
+    const rows = db.prepare(buildTopSymbolsSql()).all(...bounds, ...bounds, limit) as TopSymbolRow[]
     return rows.map((r) => ({
       filePath: r.file_path,
       name: r.name,

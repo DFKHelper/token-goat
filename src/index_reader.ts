@@ -92,9 +92,9 @@ function applyRootDirScope(
   params: (string | number)[],
 ): void {
   if (rootDir === undefined) return
-  const { clause, param } = projectScopeClause(column)
+  const { clause, params: bounds } = projectScopeClause(column)
   where.push(clause)
-  params.push(param(rootDir))
+  params.push(...bounds(rootDir))
 }
 
 interface SymbolQueryOpts {
@@ -333,7 +333,7 @@ function runFtsQuery(
     `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
   const params: (string | number)[] = [match]
   if (scope !== undefined && rootDir !== undefined) {
-    params.push(scope.param(rootDir))
+    params.push(...scope.params(rootDir))
   }
   params.push(limit)
   const rows = db.prepare(sql).all(...params) as SymbolRow[]

@@ -4,15 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { buildTopSymbolsSql } from '../src/baseline.js'
 import { getDb } from '../src/db.js'
-import { projectScopeClause, projectScopeIndex } from '../src/sql_path.js'
+import { projectScopeClause } from '../src/sql_path.js'
 import { isCaseInsensitiveFs } from '../src/util.js'
 
-// Regression: `map --compact` spent 1754ms of its 2330ms in one subquery. The refs aggregate is
-// `SELECT name, COUNT(*) FROM refs WHERE <project scope> GROUP BY name`, and with no ANALYZE
-// statistics SQLite prefers idx_refs_name -- because grouping by an indexed column makes GROUP BY
-// sort-free -- over the far more selective path filter. On a global index shared by every project
-// that means scanning all 751731 ref rows to keep 7918. Pinning the path index with INDEXED BY
-// scans only this project's rows: 1754ms to 155ms, identical rows. This is invisible to a
+// Regression: `map --compact` spent nearly all of its time in two project-scope filters. Both were
+// `<path> LIKE ? ESCAPE '\'`, and SQLite disables its LIKE-to-range optimization outright whenever
+// an ESCAPE clause is present -- so neither filter could be served from an index and both scanned
+// every row in the machine-wide index before filtering. Writing the prefix test as a half-open
+// range instead lets the planner search the path index directly. This is invisible to a
 // correctness test, so the query plan itself is the assertion. It runs against the string
 // production actually prepares, not a copy -- a copy would stay green through a real regression.
 describe('fetchTopSymbols query plan', () => {
@@ -20,19 +19,33 @@ describe('fetchTopSymbols query plan', () => {
     return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-plan-')), 'x.db')
   }
 
+  /** The path index each table's scope filter must be served from, per the case-folding split. */
+  function pathIndex(table: string): string {
+    return isCaseInsensitiveFs() ? `idx_${table}_file_folded` : `idx_${table}_file`
+  }
+
   function planOfShippingSql(): string {
     const db = getDb(tmpDbPath())
-    const { param } = projectScopeClause('file_path')
+    const bounds = projectScopeClause('file_path').params('C:/proj')
     const rows = db
       .prepare(`EXPLAIN QUERY PLAN ${buildTopSymbolsSql()}`)
-      .all(param('C:/proj'), param('C:/proj'), 40) as Array<{ detail: string }>
+      .all(...bounds, ...bounds, 40) as Array<{ detail: string }>
     return rows.map((r) => r.detail).join(' | ')
   }
 
-  it('scans refs by the project-path index, never by the name index', () => {
+  it('searches refs by the project-path index, never scanning refs or the name index', () => {
     const detail = planOfShippingSql()
-    expect(detail).toMatch(new RegExp(`refs USING (COVERING )?INDEX ${projectScopeIndex('refs')}`))
+    expect(detail).toMatch(new RegExp(`SEARCH refs USING (COVERING )?INDEX ${pathIndex('refs')}`))
     expect(detail).not.toMatch(/refs USING (COVERING )?INDEX idx_refs_name/)
+    expect(detail).not.toMatch(/SCAN refs\b/)
+  })
+
+  it('searches symbols by the project-path index rather than scanning the whole table', () => {
+    // The symbols side had the same defect and no INDEXED BY override ever covered it: on a global
+    // index shared by every project it scanned every symbol row to keep this project's few thousand.
+    const detail = planOfShippingSql()
+    expect(detail).toMatch(new RegExp(`SEARCH symbols USING (COVERING )?INDEX ${pathIndex('symbols')}`))
+    expect(detail).not.toMatch(/SCAN symbols\b/)
   })
 
   it('never carries symbol bodies through the ranking window functions', () => {
@@ -51,23 +64,26 @@ describe('fetchTopSymbols query plan', () => {
     expect(sql).toMatch(/JOIN symbols s ON s\.rowid = top\.rid/)
   })
 
-  it('pins an index that the schema always creates, so the plan cannot fail at runtime', () => {
-    // INDEXED BY is a hard requirement, not a hint: naming an absent index makes prepare() throw.
-    // Both candidates are created unconditionally by db.ts's schema on every connection open, so
-    // a freshly created DB must already satisfy it -- that is exactly what preparing here proves.
+  it('leans on indexes the schema always creates, so the plan cannot fail at runtime', () => {
+    // The plan above is only reachable if both path indexes exist on a freshly opened DB. db.ts's
+    // schema creates them unconditionally on every connection open; this proves it for a new file.
     const db = getDb(tmpDbPath())
     expect(() => db.prepare(buildTopSymbolsSql())).not.toThrow()
-    const names = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='refs'").all() as Array<{ name: string }>).map((r) => r.name)
-    expect(names).toContain(projectScopeIndex('refs'))
+    for (const table of ['refs', 'symbols']) {
+      const names = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?").all(table) as Array<{
+          name: string
+        }>
+      ).map((r) => r.name)
+      expect(names).toContain(pathIndex(table))
+    }
   })
 
-  it('picks the index whose stored expression matches the scope clause it is paired with', () => {
-    // The folded index stores TG_LOWER(file_path) and only matches the case-insensitive clause;
-    // the plain index only matches the other. Pairing them the wrong way round would still run,
-    // just without the selectivity, so assert the pairing rather than trusting it.
+  it('pairs the scope clause with the index whose stored expression matches it', () => {
+    // The folded index stores TG_LOWER(file_path) and can only serve the case-insensitive clause;
+    // the plain index only serves the other. A mismatch would still run, just without an index.
     const folded = isCaseInsensitiveFs()
-    expect(projectScopeIndex('refs')).toBe(folded ? 'idx_refs_file_folded' : 'idx_refs_file')
-    expect(projectScopeIndex('symbols')).toBe(folded ? 'idx_symbols_file_folded' : 'idx_symbols_file')
+    expect(pathIndex('refs')).toBe(folded ? 'idx_refs_file_folded' : 'idx_refs_file')
     expect(projectScopeClause('file_path').clause.includes('TG_LOWER')).toBe(folded)
   })
 })

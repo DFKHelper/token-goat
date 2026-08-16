@@ -25,7 +25,7 @@ export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileC
       return (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c
     }
     const scope = projectScopeClause(column)
-    return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${scope.clause}`).get(scope.param(rootDir)) as {
+    return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${scope.clause}`).get(...scope.params(rootDir)) as {
       c: number
     }).c
   }
