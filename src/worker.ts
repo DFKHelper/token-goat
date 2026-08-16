@@ -26,7 +26,7 @@ import { foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
-import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
+import { removeFileFromIndex, pruneDeletedFiles, sweepExpiredKnownRootMarkers, sweepKnownRoots } from './index_prune.js'
 import { cleanup_stale } from './snapshots.js'
 import { findProject } from './project.js'
 import { registerReset } from './reset.js'
@@ -358,7 +358,9 @@ const CORRUPT_QUARANTINE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
  *  - rotates (truncates) `worker-errors.log` once it exceeds {@link WORKER_ERROR_LOG_MAX_BYTES}.
  *  - removes `.corrupt-*` dirty-queue quarantine files older than
  *    {@link CORRUPT_QUARANTINE_MAX_AGE_MS}.
- * Neither had any rotation/cleanup before this, so both could grow unbounded over a project's
+ *  - removes expired `known-root-record-*.marker` throttle files (see
+ *    {@link sweepExpiredKnownRootMarkers}).
+ * None had any rotation/cleanup before this, so all could grow unbounded over a project's
  * index lifetime. Mirrors the size/age-cutoff cleanup pattern already used elsewhere in this
  * codebase for other accumulating state (disk_cache.ts's pruneBlobs, snapshots.ts's
  * cleanup_stale). Fail-soft: never throws. Called on the same periodic sweep as cleanup_stale in
@@ -392,6 +394,8 @@ export function cleanupWorkerStateFiles(dir: string): void {
   } catch {
     // Missing queue dir, or a readdir failure -- nothing to clean.
   }
+  // Third accumulating state file, in the data dir rather than the queue dir: one throttle marker per directory ever edited, with no reaper of its own.
+  sweepExpiredKnownRootMarkers(dir)
 }
 
 /**

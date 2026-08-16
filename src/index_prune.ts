@@ -253,6 +253,40 @@ function knownRootRecordMarkerPath(dir: string, filePath: string): string {
   return path.join(dir, `known-root-record-${shortFingerprint(path.dirname(filePath))}.marker`)
 }
 
+/** Filename prefix shared by every {@link knownRootRecordMarkerPath}, so the sweep below can find them without recomputing a fingerprint. */
+const KNOWN_ROOT_MARKER_PREFIX = 'known-root-record-'
+
+/**
+ * Delete expired {@link recordKnownRootThrottled} markers.
+ *
+ * The per-directory keying that fixed the starvation bug above also made these markers
+ * accumulate without bound: one file per directory ever edited, and nothing ever removed
+ * them, so a long-lived data dir collects hundreds of them. Deleting an expired marker is
+ * exactly equivalent to leaving it, because {@link recordKnownRootThrottled} already treats
+ * any marker older than {@link KNOWN_ROOT_RECORD_MIN_INTERVAL_MS} as absent.
+ */
+export function sweepExpiredKnownRootMarkers(dir: string = dataDir()): number {
+  let removed = 0
+  try {
+    const cutoff = Date.now() - KNOWN_ROOT_RECORD_MIN_INTERVAL_MS
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.startsWith(KNOWN_ROOT_MARKER_PREFIX) || !file.endsWith('.marker')) continue
+      const full = path.join(dir, file)
+      try {
+        if (fs.statSync(full).mtimeMs < cutoff) {
+          fs.unlinkSync(full)
+          removed += 1
+        }
+      } catch {
+        // best-effort per-file cleanup -- one unremovable marker must not abort the sweep.
+      }
+    }
+  } catch {
+    // Missing data dir, or a readdir failure -- nothing to clean.
+  }
+  return removed
+}
+
 /**
  * Rate-limited wrapper around {@link recordKnownRoot} for the edit-hook hot path.
  *
