@@ -2415,6 +2415,28 @@ end
     expect(symbols.find((s) => s.name === 'bar')?.kind).toBe('function')
   })
 
+  it('attributes a function nested in a colon method to the trimmed method name', () => {
+    // The trimmed name is also what gets pushed on the frame stack, so it becomes the `parent` of
+    // anything declared inside the method body. Pinned because it is the one place the trim is
+    // visible on a symbol other than the method itself, and because the dotted form has always
+    // reported the bare name here -- the two spellings must not disagree.
+    const content = `function M:outer()
+  local function child()
+    return 1
+  end
+end
+
+function M.dotted()
+  local function kid()
+    return 2
+  end
+end
+`
+    const { symbols } = extractLua(content, 'nested.lua')
+    expect(symbols.find((s) => s.name === 'child')?.parent).toBe('outer')
+    expect(symbols.find((s) => s.name === 'kid')?.parent).toBe('dotted')
+  })
+
   it('extracts function-value assignments (local/bare/dotted) as functions, not variables', () => {
     // Regression: `local cb = function()` was misfiled as a plain `variable`, and the bare/
     // dotted `M.foo = function()` idiom was dropped entirely. Both are function definitions.

@@ -106,6 +106,57 @@ describe('ts_refs — resolveTypedRefs precision: two same-named methods on unre
   })
 })
 
+describe('ts_refs — precision survives with JSDoc parsing narrowed', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ts-refs-jsdoc-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('drops a same-named false positive when the true caller is a .js file typed only by JSDoc', () => {
+    // The scoped program is built with jsDocParsingMode ParseForTypeErrors, which skips JSDoc in
+    // .ts files but keeps it in .js files, where it is the only place a type can be written. This
+    // pins that a JS caller typed that way still survives the tier rather than being lost with the
+    // comments. It does not prove the mode choice: switching to ParseNone leaves this fixture
+    // green, because a candidate the checker cannot decide about is kept rather than dropped, so
+    // an erased annotation looks the same from here as a resolved one. ParseForTypeErrors is
+    // conservatism about .js typing, not something this assertion can distinguish.
+    const fooSrc = ['export class Foo {', '  run(): void {}', '}', ''].join('\n')
+    const barSrc = ['export class Bar {', '  run(): void {}', '}', ''].join('\n')
+    const jsCallerSrc = [
+      "/** @type {import('./fileA').Foo} */",
+      'const foo = null',
+      'foo.run()',
+      '',
+    ].join('\n')
+    const barCallerSrc = ["import { Bar } from './fileB'", 'const bar = new Bar()', 'bar.run()', ''].join('\n')
+
+    const fileA = path.join(dir, 'fileA.ts')
+    const fileB = path.join(dir, 'fileB.ts')
+    const jsCaller = path.join(dir, 'caller.js')
+    const barCaller = path.join(dir, 'callerB.ts')
+    fs.writeFileSync(fileA, fooSrc)
+    fs.writeFileSync(fileB, barSrc)
+    fs.writeFileSync(jsCaller, jsCallerSrc)
+    fs.writeFileSync(barCaller, barCallerSrc)
+
+    const result = resolveTypedRefs({
+      defFile: fileA,
+      defLineStart: 2,
+      defLineEnd: 2,
+      symbolName: 'run',
+      candidates: [ref(jsCaller, 3, 0), ref(barCaller, 3, 0)],
+    })
+
+    expect(result).not.toBeNull()
+    expect(result?.map((r) => r.filePath)).toEqual([jsCaller])
+  })
+})
+
 describe('ts_refs — graceful fallback', () => {
   afterEach(() => {
     setTsModuleForTesting(undefined)
