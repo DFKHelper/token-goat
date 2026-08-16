@@ -112,8 +112,8 @@ describe('pathEqClause query plan (full table scan fix)', () => {
 describe('projectScopeClause', () => {
   function matches(dbPath: string, root: string, file: string): boolean {
     const db = getDb(dbPath)
-    const { clause, param } = projectScopeClause('file_path')
-    const row = db.prepare(`SELECT 1 v FROM chunks WHERE ${clause} AND file_path = ?`).get(param(root), file) as
+    const { clause, params } = projectScopeClause('file_path')
+    const row = db.prepare(`SELECT 1 v FROM chunks WHERE ${clause} AND file_path = ?`).get(...params(root), file) as
       | { v: number }
       | undefined
     return row !== undefined
@@ -147,10 +147,27 @@ describe('projectScopeClause', () => {
     expect(matches(db, 'c:/proj', 'c:/Proj/File.ts')).toBe(true)
   })
 
-  it('case-sensitive FS: builds a plain (non-TG_LOWER) LIKE clause', () => {
+  it('case-sensitive FS: builds a plain (non-TG_LOWER) range clause', () => {
     vi.mocked(isCaseInsensitiveFs).mockReturnValue(false)
     const { clause } = projectScopeClause('file_path')
-    expect(clause).toBe("file_path LIKE ? ESCAPE '\\'")
+    expect(clause).toBe('(file_path >= ? AND file_path < ?)')
+  })
+
+  it('builds a half-open range whose upper bound is the separator advanced by one code point', () => {
+    // The bound is what makes the filter index-searchable, and it is also the whole boundary
+    // argument: only a string sharing every character up to the `/` can land inside [lower, upper).
+    const { params } = projectScopeClause('file_path')
+    expect(params('c:/proj')).toEqual(['c:/proj/', 'c:/proj0'])
+    expect(params('c:/proj/')).toEqual(['c:/proj/', 'c:/proj0'])
+  })
+
+  it('case-sensitive FS: a root differing only by case does NOT match', () => {
+    // LIKE folded ASCII case implicitly, so the old clause matched a genuinely different directory
+    // on a filesystem where `/x/Repo` and `/x/repo` are two separate places. The range does not.
+    vi.mocked(isCaseInsensitiveFs).mockReturnValue(false)
+    const db = path.join(TMP, 'case-sensitive.db')
+    seed(db, 'c:/Proj/File.ts')
+    expect(matches(db, 'c:/proj', 'c:/Proj/File.ts')).toBe(false)
   })
 
   it('wildcard escaping: a literal % in the root does not wildcard-match unrelated paths', () => {

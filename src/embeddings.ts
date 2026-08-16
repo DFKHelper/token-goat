@@ -716,7 +716,7 @@ export function fetchScopedHits(
       ? `SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ? AND ${scope.clause}`
       : `SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ?`
   const chunkStmt = db.prepare(chunkSql)
-  const scopeParam = scope !== undefined && rootDir !== undefined ? scope.param(rootDir) : undefined
+  const scopeParams = scope !== undefined && rootDir !== undefined ? scope.params(rootDir) : undefined
 
   // Build hits from rows.
   const hits: SearchHit[] = []
@@ -726,7 +726,7 @@ export function fetchScopedHits(
     }
     if (row.distance <= maxDistance) {
       const chunk = (
-        scopeParam !== undefined ? chunkStmt.get(row.rowid, scopeParam) : chunkStmt.get(row.rowid)
+        scopeParams !== undefined ? chunkStmt.get(row.rowid, ...scopeParams) : chunkStmt.get(row.rowid)
       ) as { file_path: string; start_line: number; end_line: number; text: string; kind: string } | null | undefined
       if (chunk) {
         hits.push({

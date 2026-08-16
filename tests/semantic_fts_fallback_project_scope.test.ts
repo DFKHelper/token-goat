@@ -77,7 +77,7 @@ describe('runSemantic FTS fallback project scoping', () => {
 
   it('scopes to the whole project root, not just a subdirectory, when invoked with cwd inside a subdirectory (regression)', async () => {
     // Regression: `runSemantic` defaulted its scope to `opts.projectRoot ?? process.cwd()`.
-    // `projectScopeClause` does a literal `LIKE '<root>/%'` prefix match with no project-root
+    // `projectScopeClause` does a literal `<root>/` prefix range match with no project-root
     // resolution, so running from a subdirectory silently scoped the search to that subtree
     // only, instead of walking up to the real project root the way other commands in this same
     // file (runFind, runChanged) already do via `resolveProjectRoot`.
