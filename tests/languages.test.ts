@@ -639,6 +639,117 @@ public class Account
     expect(symbols.find((s) => s.name === 'Account')?.parent).toBe('')
     expect(symbols.find((s) => s.name === 'Deposit')?.parent).toBe('Account')
   })
+
+  it('does not count a brace inside a preprocessor directive (regression: `#region {` -- a common way to label a region right after an opening brace -- raised braceDepth with no matching decrement, so the enclosing type never closed: its own members were lost and every later top-level type was recorded as nested inside it)', () => {
+    const content = `class C
+{
+#region {
+    void M() { }
+#endregion
+}
+class D { }
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'M')?.parent).toBe('C')
+    expect(symbols.find((s) => s.name === 'D')).toBeDefined()
+    expect(symbols.find((s) => s.name === 'D')?.parent).toBe('')
+  })
+
+  it('ignores a `#if false` block entirely (regression: the disabled block\'s declarations were indexed as real symbols and its unclosed braces poisoned the class stack, so the first real type after it was recorded as nested inside a type the compiler never sees)', () => {
+    const content = `#if false
+class Ignored {
+#endif
+public class C
+{
+    public void M() { }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.map((s) => s.name)).not.toContain('Ignored')
+    expect(symbols.find((s) => s.name === 'C')?.parent).toBe('')
+    expect(symbols.find((s) => s.name === 'M')?.parent).toBe('C')
+  })
+
+  it('extracts members declared with a fully-qualified type (regression: the shared type filler class excluded `.`, so any member whose return/property type was namespace-qualified -- System.Threading.Tasks.Task, System.Collections.Generic.List<int> -- failed to match and was dropped)', () => {
+    const content = `class C
+{
+    public System.Collections.Generic.List<int> Items { get; set; }
+    public System.Threading.Tasks.Task Run() { return null; }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'Items')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'Run')?.kind).toBe('method')
+    expect(symbols.find((s) => s.name === 'Run')?.parent).toBe('C')
+  })
+
+  it('extracts a tuple-returning method and an explicit interface implementation (regression: the type slot admitted neither a parenthesised tuple type nor a dotted member name, so both declarations were dropped)', () => {
+    const content = `class C
+{
+    public (int a, string b) Pair() { return (1, ""); }
+    void IDisposable.Dispose() { }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'Pair')?.parent).toBe('C')
+    // The explicit-interface qualifier is matched but not captured, so the recorded name is the
+    // final segment -- not "IDisposable.Dispose", which no caller would ever search for.
+    expect(symbols.find((s) => s.name === 'Dispose')?.parent).toBe('C')
+  })
+
+  it('extracts a lowercase-initial property and a lowercase-initial type\'s constructor (regression: four member regexes captured the name as [A-Z][A-Za-z0-9_]*, so an unconventionally-but-legally lowercase member or type name was silently dropped)', () => {
+    const content = `class widget
+{
+    public widget() { }
+    public int value { get; set; }
+    public int Value2 { get; set; }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'value')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'Value2')?.kind).toBe('var')
+    expect(symbols.filter((s) => s.name === 'widget' && s.kind === 'method')).toHaveLength(1)
+  })
+
+  it('extracts a member at column zero (regression: every member regex required `^\\s+`, so a member written with no indentation -- legal, and common in file-scoped-namespace code -- never matched)', () => {
+    const content = `class C
+{
+public void Run() { }
+public int Count { get; set; }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'Run')?.parent).toBe('C')
+    expect(symbols.find((s) => s.name === 'Count')?.parent).toBe('C')
+  })
+
+  it('extracts a member whose attribute argument contains brackets (regression: LEADING_ATTRIBUTE_RE\'s flat [^[\\]]* body stopped at the first inner `]`, leaving `")]` on the line so every member regex then failed against the garbage)', () => {
+    const content = `class C
+{
+    [JsonPropertyName("x[y]")] public string Name { get; set; }
+    [Obsolete] public string Ok { get; set; }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'Name')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'Ok')?.kind).toBe('var')
+  })
+
+  it('extracts an Allman auto-property with a comment between the header and its brace (regression: the peek read raw lines[i + 1]/[i + 2], so any doc comment or blank line shifted the accessor block out of the two-line window and the property was dropped)', () => {
+    const content = `class C
+{
+    public int P
+    // comment
+    {
+        get { return 1; }
+    }
+    public void After() { }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'P')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'After')?.kind).toBe('method')
+  })
 })
 
 // ---------------------------------------------------------------------------
