@@ -47,6 +47,21 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
   // (untouched) and above-floor (rewritten) boundary explicitly.
   const bigPlanBody = 'This is the plan body. '.repeat(20) // ~480 bytes
 
+  it('leaves an unrelated body untouched when a short plan merely occurs somewhere inside it', async () => {
+    // The echoed text is not this call's plan; the one-word plan just happens to appear in it.
+    const marker = '## Approved Plan:'
+    const plan = 'refactor'
+    const unrelatedBody = `Some other content that mentions refactor once. ${'filler text. '.repeat(40)}`
+    const output = `User has approved your plan.
+
+${marker}
+${unrelatedBody}`
+
+    const res = await runHook(buildEvent('post_tool_use', postPayload(output, plan)))
+
+    expect(res.hookType).toBe('pass')
+  })
+
   it('rewrites a result with the "## Approved Plan:" marker to omit the plan body', async () => {
     const confirmLine = 'User has approved your plan.'
     const marker = '## Approved Plan:'

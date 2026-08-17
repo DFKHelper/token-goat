@@ -121,7 +121,17 @@ export function storeBlob(
   if (!p) return false
   const defaults = subdirCacheDefaults(subdir)
   const maxBytesPerItem = opts.maxBytesPerItem ?? defaults.maxBytesPerItem
-  const rawJson = JSON.stringify(value)
+  // Inside the guard, not above it: JSON.stringify itself throws on a value it cannot serialize --
+  // a circular reference (an object graph a caller built by hand, or a tool result that references
+  // its own request) or a BigInt -- and this function's contract is that it returns false on any
+  // error and never throws. Uncaught, it propagated out of the one funnel every cached blob goes
+  // through, into a hook, which is the one place a throw is never acceptable.
+  let rawJson: string
+  try {
+    rawJson = JSON.stringify(value)
+  } catch {
+    return false
+  }
   // Defense-in-depth: scan every blob for high-confidence secret patterns
   // (API keys, tokens, private-key blocks) before it ever reaches disk, so a
   // credential accidentally echoed into cached tool output isn't persisted
