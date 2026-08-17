@@ -77,9 +77,23 @@ export function analyzeMcpCache(): Map<string, { callCount: number; perCallEstim
     const command = typeof entry['command'] === 'string' ? entry['command'] : ''
     const sizeBytes = typeof entry['sizeBytes'] === 'number' ? entry['sizeBytes'] : 0
 
-    // Extract server name from command like "mcp:mcp__plugin_name__..."
-    const toolMatch = command.match(/^mcp:mcp__([a-z0-9_-]+)__/i)
-    const toolName = (toolMatch?.[1]) ?? 'unknown'
+    // Extract server name from command like "mcp:mcp__plugin_name__...". The name is whatever the
+    // harness put between the two `__` separators -- an .mcp.json key, which is free-form JSON and
+    // routinely carries a dot (`my.server`, `acme.tools`) -- so it is matched lazily up to the next
+    // separator rather than against a guessed character class. A dotted name used to miss the match
+    // entirely and land in the bucket below, showing up twice in the report: once from config with
+    // zero calls, once as unattributed cost.
+    const toolMatch = command.match(/^mcp:mcp__(.+?)__/i)
+    // A non-MCP label is not an MCP server with an unknown name -- it is not a server at all.
+    // hooks_agent_spawn and hooks_websearch store Agent and WebSearch results through
+    // storeMcpOutput so they are recallable, which mints them the same `mcp_` id prefix the filter
+    // above keys on, so they reached this loop and were billed as MCP server cost under a made-up
+    // 'unknown' server. On this machine every one of the 43 cached entries was an Agent or
+    // WebSearch call, so the whole report was 63597 tokens of cost attributed to a server that does
+    // not exist. Same reasoning as the `mcp_` prefix filter's own note above, applied to the labels
+    // that get past it: no server name, no server row.
+    if (!toolMatch) continue
+    const toolName = toolMatch[1] as string
 
     if (!serverMetrics.has(toolName)) {
       serverMetrics.set(toolName, { callCount: 0, perCallEstimate: 0, totalBytes: 0 })

@@ -372,6 +372,21 @@ describe('storeBlob — secret redaction choke point', () => {
     expect(remaining).toHaveLength(0)
   })
 
+  it('returns false instead of throwing when the value cannot be serialized to JSON', () => {
+    const circular: Record<string, unknown> = { name: 'loop' }
+    circular['self'] = circular
+
+    expect(() => storeBlob('bash_outputs', 'circular', circular)).not.toThrow()
+    expect(storeBlob('bash_outputs', 'circular', circular)).toBe(false)
+    expect(loadBlob('bash_outputs', 'circular')).toBeNull()
+  })
+
+  it('returns false instead of throwing on a BigInt, which JSON.stringify rejects outright', () => {
+    expect(() => storeBlob('bash_outputs', 'bigint', { count: 1n })).not.toThrow()
+    expect(storeBlob('bash_outputs', 'bigint', { count: 1n })).toBe(false)
+    expect(loadBlob('bash_outputs', 'bigint')).toBeNull()
+  })
+
   it('recovers on the next call after a one-off redaction failure (the mocked throw does not persist)', () => {
     vi.mocked(redactSecrets).mockImplementationOnce(() => {
       throw new Error('boom')

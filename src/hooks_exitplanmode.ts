@@ -71,7 +71,13 @@ export function postExitPlanModeHandler(event: HookEvent): HookOutput {
     if (typeof planValue !== 'string' || planValue.trim() === '') return passOutput()
     const plan = planValue.trim()
     const suffix = output.slice(markerIndex + APPROVED_PLAN_MARKER.length).trim()
-    if (suffix !== plan && !suffix.includes(plan) && !plan.includes(suffix)) return passOutput()
+    // Anchored at the start, not an unanchored `includes` either way round. The echo begins where
+    // the plan begins, so a genuine echo is a prefix of the plan (truncated) or starts with it
+    // (trailing extras); a match anywhere else is a coincidence. An unanchored test made a short
+    // plan match almost any body -- a one-word plan like "refactor" appearing anywhere in an
+    // unrelated approval message was enough -- and the body was then replaced with the omission
+    // pointer, losing content the plan had nothing to do with.
+    if (!suffix.startsWith(plan) && !plan.startsWith(suffix)) return passOutput()
 
     // Keep everything up to and including the marker, then add the pointer.
     // This preserves the "User has approved your plan" confirmation line.

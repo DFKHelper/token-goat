@@ -159,5 +159,48 @@ describe('mcp-audit', () => {
       expect(metrics.has('github')).toBe(true)
       expect(metrics.get('github')?.callCount).toBe(1)
     })
+
+    it('attributes a call to a server whose name contains a dot, as an .mcp.json key may', () => {
+      storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_dotted', {
+        id: 'mcp_dotted',
+        command: 'mcp:mcp__my.server__search {"q":"test"}',
+        output: '{}',
+        exitCode: 0,
+        storedAt: Date.now(),
+        sizeBytes: 30,
+      })
+
+      const metrics = analyzeMcpCache()
+
+      expect(metrics.has('my.server')).toBe(true)
+      expect(metrics.get('my.server')?.callCount).toBe(1)
+      expect(metrics.has('unknown')).toBe(false)
+    })
+
+    it('does not bill an Agent or WebSearch result as MCP server cost, though both are stored under the mcp_ prefix', () => {
+      // hooks_agent_spawn and hooks_websearch store their results through storeMcpOutput so they
+      // are recallable, which gives them the same mcp_ id prefix a real MCP call gets.
+      storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_agent1', {
+        id: 'mcp_agent1',
+        command: 'mcp:Agent {"description":"scan"}',
+        output: 'agent output',
+        exitCode: 0,
+        storedAt: Date.now(),
+        sizeBytes: 9603,
+      })
+      storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_websearch1', {
+        id: 'mcp_websearch1',
+        command: 'mcp:WebSearch {"query":"vitest"}',
+        output: 'search output',
+        exitCode: 0,
+        storedAt: Date.now(),
+        sizeBytes: 2265,
+      })
+
+      const metrics = analyzeMcpCache()
+
+      expect(metrics.has('unknown')).toBe(false)
+      expect([...metrics.keys()]).toEqual([])
+    })
   })
 })
