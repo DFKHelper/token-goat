@@ -22,7 +22,9 @@
  * crashes it.
  */
 
-import { readStdinJson } from './relay.js'
+// From stdin_json.ts, not relay.js: importing it from relay would pull in every hook handler
+// and the whole bash filter registry for one stdin read (see stdin_json.ts).
+import { readStdinJson } from './stdin_json.js'
 import { colorStdout, stripAnsi, fg, RESET, C } from './render/ansi.js'
 import { dataDir } from './constants.js'
 import { getDirtyPathsFor } from './worker.js'

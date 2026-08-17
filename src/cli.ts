@@ -37,7 +37,6 @@ import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { resolveIndexPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
-import { relay } from './relay.js'
 import {
   installHooks,
   isInstalled,
@@ -67,7 +66,9 @@ import {
 } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
-import * as bashRunner from './bash_runner.js'
+// Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash
+// tool-filter registry (every language, linter, cloud and package-manager filter), which only the
+// compress command ever uses. See the same reasoning for relay in cmdHook.
 import {
   runSymbol,
   runRead,
@@ -519,6 +520,12 @@ async function cmdHook(event: string, opts: { harness?: string }): Promise<void>
   if (typeof opts.harness === 'string' && opts.harness.length > 0) {
     process.env[ENV_KEYS.HARNESS_OVERRIDE] = opts.harness
   }
+  // Imported here rather than at module scope: relay.ts side-effect-imports every hook handler to
+  // register them, so a top-level import made every CLI command -- `symbol`, `read`, even
+  // `--version` -- parse the whole hook subsystem, the bash tool-filter registry and the HTML
+  // extractor before doing anything. Only this one command needs any of it. Hooks themselves are
+  // unaffected: they run through dist/token-goat-hook.mjs, which imports relay directly.
+  const { relay } = await import('./relay.js')
   // relay handles its own stdin read / stdout write and never throws on a malformed/unknown event — it emits `{}` and returns.
   await relay(event)
 }
@@ -1618,24 +1625,25 @@ function emitExtraFileArgsNote(command: string, first: string, extras: string[] 
 }
 
 // Sets process.exitCode to the wrapped command's exit code (NOT via `guard`, which forces 0 on success — compress must propagate the real code so shell chaining still sees the original failure/success signal).
-function cmdCompress(opts: {
+async function cmdCompress(opts: {
   cmd: string
   filter?: string
   timeout?: string
   compress?: boolean
   profile?: string
   maxTokens?: string
-}): void {
+}): Promise<void> {
   try {
+    const bashRunner = await import('./bash_runner.js')
     if (opts.compress === false) {
       // Commander maps `--no-compress` to `opts.compress === false`.
-      process.exitCode = bashRunner.runRaw(opts.cmd, parseTimeout(opts.timeout))
+      process.exitCode = bashRunner.runRaw(opts.cmd, parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS))
       return
     }
     const maxTokens = opts.maxTokens !== undefined ? requireNonNegativeInt('--max-tokens', opts.maxTokens) : 0
     process.exitCode = bashRunner.run(opts.cmd, {
       filterName: opts.filter,
-      timeout: parseTimeout(opts.timeout),
+      timeout: parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
       maxTokens,
       ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
     })
@@ -1646,9 +1654,9 @@ function cmdCompress(opts: {
 }
 
 /** Resolve the --timeout flag (seconds): 0/absent/invalid → the built-in default. */
-function parseTimeout(raw: string | undefined): number {
+function parseTimeout(raw: string | undefined, fallbackSeconds: number): number {
   const sec = raw ? parseInt(raw, 10) : 0
-  return Number.isFinite(sec) && sec > 0 ? sec : bashRunner.DEFAULT_TIMEOUT_SECONDS
+  return Number.isFinite(sec) && sec > 0 ? sec : fallbackSeconds
 }
 
 async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
