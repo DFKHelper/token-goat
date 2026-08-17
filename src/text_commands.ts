@@ -22,6 +22,7 @@ import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js
 import { resolveBody } from './read_commands.js'
 import { getSessionFiles } from './session.js'
 import { foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
+import { detectWalkMode } from './walk_mode.js'
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
@@ -1573,20 +1574,6 @@ interface IgnoresReport {
   // map/todo/conflicts/hot --project ignore it entirely.
   blockedRoots: string[]
   excludeTests: boolean
-}
-
-export function detectWalkMode(cwd: string): 'git' | 'non-git' {
-  const project = findProject(cwd)
-  if (project?.marker === '.git') return 'git'
-  // walk up to see if there's a .git folder
-  let cur = cwd
-  while (true) {
-    if (fs.existsSync(path.join(cur, '.git'))) return 'git'
-    const parent = path.dirname(cur)
-    if (parent === cur) break
-    cur = parent
-  }
-  return 'non-git'
 }
 
 export function cmdIgnores(opts: { json?: boolean }): void {

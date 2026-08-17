@@ -26,7 +26,7 @@ import { passOutput, contextOutput, getCwd } from './hooks_common.js'
 import { loadConfig } from './config.js'
 import { countSymbols } from './index_reader.js'
 import { globalDbPath } from './constants.js'
-import { checkSymbolBodySize } from './cli_doctor.js'
+import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { buildDeltaCapsule } from './evidence_cache.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
