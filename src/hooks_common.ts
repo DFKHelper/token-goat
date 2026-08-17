@@ -72,6 +72,24 @@ export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'co
 /** Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`. */
 export const BODY_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'body', 'text', 'content']
 
+/**
+ * Return true when a tool_response is an MCP `CallToolResult` carrying an in-band `isError: true`
+ * -- a genuine tool-level failure ("tool not found", bad params, a downstream API error surfaced
+ * through MCP) rather than a hard transport failure. Such a response is still a normal, successful
+ * protocol round trip, so {@link extractToolResultText} happily returns its text; every caller
+ * that caches into the session dedup store must exclude it, or a one-off or transient error is
+ * served back to every identical retry until the dedup window ages out.
+ *
+ * Lives beside extractToolResultText, not in the one hook that first needed it: the rule is a
+ * condition on that function's output, and hooks_websearch.ts cached past it into the same store
+ * for exactly as long as the rule lived somewhere a second caller would not think to look.
+ */
+export function isMcpErrorResponse(raw: Record<string, unknown>): boolean {
+  const tr = raw['tool_response']
+  if (!tr || typeof tr !== 'object') return false
+  return (tr as Record<string, unknown>)['isError'] === true
+}
+
 /** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. */
 export function extractToolResultText(raw: Record<string, unknown>): string {
   const tr = raw['tool_response']

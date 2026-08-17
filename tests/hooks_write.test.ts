@@ -191,6 +191,41 @@ describe('preWriteRewriteHandler', () => {
     expect(preWriteRewriteHandler(writeEvent(target, content)).hookType).toBe('context')
   })
 
+  it('reports the file\'s real line count and unchanged percentage, not the ones a trailing newline inflates (regression: split on a final newline yields a phantom empty element, so a 40-line file was described as 41-line and 30 of 40 kept lines as 76%)', () => {
+    const target = path.join(FILES_DIR, 'trailing-newline.ts')
+    const oldLines: string[] = []
+    for (let i = 0; i < 40; i++) oldLines.push(`line ${i}`)
+    fs.writeFileSync(target, oldLines.join('\n') + '\n')
+
+    const newLines = [...oldLines]
+    for (let i = 30; i < 40; i++) newLines[i] = `CHANGED ${i}`
+    const result = preWriteRewriteHandler(writeEvent(target, newLines.join('\n') + '\n'))
+
+    expect(result.hookType).toBe('context')
+    if (result.hookType !== 'context') return
+    expect(result.context).toContain('40-line file')
+    expect(result.context).not.toContain('41-line file')
+    // 30 of 40 lines kept is exactly 75%, not the 76% the phantom element's free match produced.
+    expect(result.context).toContain('75% of its lines are unchanged')
+  })
+
+  it('counts a file one line short of write_rewrite_min_lines as short (regression: the phantom trailing element let a 39-line file clear a 40-line floor)', () => {
+    const target = path.join(FILES_DIR, 'floor-off-by-one.ts')
+    const oldLines: string[] = []
+    for (let i = 0; i < 39; i++) oldLines.push(`line ${i}`)
+    fs.writeFileSync(target, oldLines.join('\n') + '\n')
+
+    const newLines = [...oldLines]
+    newLines[0] = 'CHANGED 0'
+
+    const cfg = defaultConfig()
+    cfg.hints.write_rewrite_min_lines = 40
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    expect(preWriteRewriteHandler(writeEvent(target, newLines.join('\n') + '\n')).hookType).toBe('pass')
+  })
+
   it('write_rewrite_unchanged_pct wiring: raising the threshold suppresses a hint that fired at the default', () => {
     const target = path.join(FILES_DIR, 'wiring-pct.ts')
     const oldLines: string[] = []
