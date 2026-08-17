@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
 // Nothing about that win is observable from behaviour: point `bin` back at the core bundle, or let
 // the launcher grow, and every functional test still passes while the saving quietly disappears.
 // These assertions are the only thing that fails.
-import { BUNDLE, CORE_BUNDLE } from '../helpers/bundle.js'
+import { BUNDLE, readCoreBundleText } from '../helpers/bundle.js'
 
 describe('bin launcher', () => {
   it('stays small enough that compiling it is not itself a startup cost', () => {
@@ -52,7 +52,9 @@ describe('bin launcher', () => {
   })
 
   it('ships the core bundle alongside it, holding the actual product code', () => {
-    const core = fs.readFileSync(CORE_BUNDLE, 'utf8')
-    expect(core.length).toBeGreaterThan(1_000_000)
+    // The entry is a few hundred bytes under the split build, so the size assertion is on the
+    // whole emitted set: entry plus chunks. What it guards is unchanged -- that the launcher is
+    // shipped next to real product code and not on its own.
+    expect(readCoreBundleText().length).toBeGreaterThan(1_000_000)
   })
 })

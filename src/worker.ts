@@ -1083,7 +1083,7 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
 /**
  * Spawn the drain loop as a detached child process and record its pid.
  *
- * The child runs `node <thisModule> --worker-daemon` with the poll interval and
+ * The child runs `node <CLI entry> --worker-daemon` (see {@link daemonEntryScript}) with the poll interval and
  * data dir passed via env (a detached process cannot share `workerData`). The
  * child is `unref`'d so the launching CLI can exit immediately. Returns the
  * child pid (or throws if the spawn itself fails synchronously).
@@ -1094,6 +1094,30 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
  * child is killed immediately and {@link WorkerAlreadyRunningError} is thrown, so no orphaned
  * second daemon is ever left running.
  */
+/**
+ * The script the daemon child must be spawned on: the CLI launcher sitting next to this module,
+ * when there is one.
+ *
+ * `fileURLToPath(import.meta.url)` is not it, and only looked like it while the core build emitted
+ * a single file. Under `splitting: true` this module's code lands in a hashed chunk, which has no
+ * entrypoint of its own: spawning it starts a process that loads a library and exits without ever
+ * reaching the `--worker-daemon` dispatch, so `worker start` reported a pid for a child that was
+ * already dead and no drain heartbeat ever appeared. Every chunk is emitted beside the launcher,
+ * so resolving it by name is stable however the bundler arranges the code, and it re-enables the
+ * V8 compile cache for the child as a side benefit. Falls back to this module's own path for a
+ * non-bundled (source) run, where no launcher exists beside it.
+ */
+function daemonEntryScript(): string {
+  const self = fileURLToPath(import.meta.url)
+  const launcher = path.join(path.dirname(self), 'token-goat.mjs')
+  try {
+    if (fs.existsSync(launcher)) return launcher
+  } catch {
+    // An unreadable dist dir is no reason to fail the spawn -- fall through to the module path.
+  }
+  return self
+}
+
 export function startDetachedWorker(opts?: WorkerOptions): number {
   const pollIntervalMs = resolvePollIntervalMs(opts?.pollIntervalMs)
   const dir = opts?.dataDir ?? dataDir()
@@ -1105,7 +1129,7 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
 
   const child: ChildProcess = spawn(
     process.execPath,
-    [fileURLToPath(import.meta.url), '--worker-daemon'],
+    [daemonEntryScript(), '--worker-daemon'],
     {
       detached: true,
       stdio: 'ignore',
