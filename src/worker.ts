@@ -28,6 +28,7 @@ import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepExpiredKnownRootMarkers, sweepKnownRoots } from './index_prune.js'
 import { cleanup_stale } from './snapshots.js'
+import { sweepCacheRoots } from './disk_cache.js'
 import { findProject } from './project.js'
 import { registerReset } from './reset.js'
 
@@ -1180,6 +1181,12 @@ export async function runWorkerLoop(
       // Rotate/prune the worker's own accumulating state files (worker-errors.log, .corrupt-* quarantine files) on the same periodic cadence -- see cleanupWorkerStateFiles' doc comment.
       try {
         cleanupWorkerStateFiles(dir)
+      } catch {
+        // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
+      }
+      // Age out the id-keyed disk caches on the same cadence. storeBlob prunes the subdir it writes, but session state is written outside that funnel and so had no reaper at all -- see sweepCacheRoots' doc comment. `dataDir()` is passed as a second root because older versions kept these caches there.
+      try {
+        sweepCacheRoots([dataDir()])
       } catch {
         // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
       }
