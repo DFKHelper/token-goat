@@ -173,6 +173,32 @@ describe('parseConflicts', () => {
     expect(result.regions[0]!.ours.content).toBe('ours-inner')
     expect(result.regions[0]!.theirs.content).toBe('theirs-inner')
   })
+
+  it('parses a region whose "=======" carries trailing whitespace, like its sibling markers do', () => {
+    const text = ['<<<<<<< HEAD', 'ours', '=======  ', 'theirs', '>>>>>>> feature', ''].join('\n')
+    const result = parseConflicts('src/trailsp.ts', text)
+    // Was: the strict `/^={7}$/` missed this separator, so the region stayed in the ours state to
+    // EOF -- zero regions, plus a warning claiming no '>>>>>>>' matched when one was right there.
+    expect(result.warnings).toEqual([])
+    expect(result.regions).toHaveLength(1)
+    expect(result.regions[0]!.ours).toEqual({ label: 'HEAD', content: 'ours' })
+    expect(result.regions[0]!.theirs).toEqual({ label: 'feature', content: 'theirs' })
+    expect(result.regions[0]!.lineStart).toBe(1)
+    expect(result.regions[0]!.lineEnd).toBe(5)
+  })
+
+  it('does not treat a labelled or over-long "=======" line as a separator', () => {
+    // The tolerance above is whitespace only, deliberately unlike the other three markers' label
+    // capture: content lines that merely start with seven `=` must stay content, or a prose file
+    // would have its ours section silently truncated at the first such line.
+    const labelled = parseConflicts('src/lbl.ts', ['<<<<<<< HEAD', '======= notes', 'ours', '=======', 'theirs', '>>>>>>> feature', ''].join('\n'))
+    expect(labelled.warnings).toEqual([])
+    expect(labelled.regions).toHaveLength(1)
+    expect(labelled.regions[0]!.ours.content).toBe('======= notes\nours')
+    const overlong = parseConflicts('src/ovl.ts', ['<<<<<<< HEAD', '========', 'ours', '=======', 'theirs', '>>>>>>> feature', ''].join('\n'))
+    expect(overlong.regions).toHaveLength(1)
+    expect(overlong.regions[0]!.ours.content).toBe('========\nours')
+  })
 })
 
 describe('summarizeFileConflicts', () => {

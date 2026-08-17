@@ -12,7 +12,16 @@
 
 const OURS_RE = /^<{7}(?:\s+(.*))?$/
 const BASE_RE = /^\|{7}(?:\s+(.*))?$/
-const SEP_RE = /^={7}$/
+// Trailing whitespace is tolerated, as it already is on the other three markers: their
+// `(?:\s+(.*))?` tail matches a run of spaces with an empty label. Only the separator demanded an
+// exact match, so `=======` with one trailing space -- easily left by an editor or a merge tool --
+// took the whole region down with it: the conflict was not reported at all, and the file was
+// flagged "reached end of file without a matching '>>>>>>>'" even though the `>>>>>>>` was right
+// there. Deliberately `\s*` and not a label capture like the others: a content line reading
+// `======= notes` inside the ours section would then be taken for the separator, which is a worse
+// failure than the one being fixed. More than seven `=` (a markdown heading rule) still does not
+// match, which is the point of the exact `{7}`.
+const SEP_RE = /^={7}\s*$/
 const THEIRS_RE = /^>{7}(?:\s+(.*))?$/
 
 /** One side of a conflict region: the label git wrote on its marker line (often a ref/branch
