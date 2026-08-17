@@ -24,7 +24,7 @@ function ensureChunkVectors(db: ReturnType<typeof getDb>): void {
 }
 
 describe('deleteFileEmbeddings does not overflow the SQL bound-parameter limit', () => {
-  // Regression: the old body expanded `DELETE FROM chunk_vectors WHERE rowid IN (?, ?, ...)` to one parameter per chunk id, so a file with > SQLITE_MAX_VARIABLE_NUMBER (32766) chunks threw "too many SQL variables". The subquery form binds zero ids. Seed 32767 chunk rows (one over the limit) for one file and assert the delete neither throws nor leaves chunks behind.
+  // Regression: the old body expanded `DELETE FROM chunk_vectors WHERE rowid IN (?, ?, ...)` to one parameter per chunk id, so a file with > SQLITE_MAX_VARIABLE_NUMBER (32766) chunks threw "too many SQL variables". The current body deletes one rowid per statement, so it binds a single id at a time. Seed 32767 chunk rows (one over the limit) for one file and assert the delete neither throws nor leaves chunks behind.
   it('deletes a file whose chunk count exceeds 32766 without throwing', () => {
     const db = getDb(path.join(TMP, 'index.db'))
     ensureChunkVectors(db)
@@ -39,7 +39,7 @@ describe('deleteFileEmbeddings does not overflow the SQL bound-parameter limit',
     expect(left.c).toBe(0)
   })
 
-  // The subquery must delete exactly the target file's chunks and leave every other file's chunks intact.
+  // The delete must remove exactly the target file's chunks and leave every other file's chunks intact.
   it('removes only the target file\'s chunks, leaving other files untouched', () => {
     const db = getDb(path.join(TMP, 'index.db'))
     ensureChunkVectors(db)
