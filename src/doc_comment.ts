@@ -73,8 +73,17 @@ export function precedingDocComment(
     if (blockStart < 0) return ''
     const opener = lines[blockStart]
     if (opener === undefined || !opener.trim().startsWith('/*')) return ''
-    return lines
-      .slice(blockStart, aboveIdx + 1)
+    const region = lines.slice(blockStart, aboveIdx + 1)
+    // The upward scan stops at the first line that *starts* with `/*`, which is not enough to prove
+    // the region is one comment. A trailing block comment on a code line (`int x = f(); /* cached */`)
+    // ends with `*/` like a doc block does, so the scan sails up past arbitrary code until it reaches
+    // some earlier line opening a block -- a license header, typically -- and returns everything
+    // between the two as the symbol's docstring, source lines and all. A `*/` anywhere but at the very
+    // end closes an earlier comment, which means at least one line in between is code, so there is no
+    // doc block here at all.
+    const joined = region.join('\n').trimEnd()
+    if (joined.indexOf('*/') !== joined.length - 2) return ''
+    return region
       .map((l) =>
         l
           .trim()
