@@ -5695,6 +5695,36 @@ AFTER_HEREDOC=ok
     expect(symbols.find((s) => s.name === 'LIST')).toMatchObject({ kind: 'variable', lineStart: 3 })
   })
 
+  it('treats a here-string as a redirect, not a heredoc opener (regression: `<<<` matched the heredoc pattern from its second `<`, taking the redirected word for a terminator and masking every following line as heredoc body until a line reading exactly that word -- usually never, so every function after it was lost)', () => {
+    const content = `alpha() {\n  echo one\n}\ngrep -q x <<< "hello"\nbeta() {\n  echo two\n}\n`
+    const symbols = extractBash(content, 'herestring.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['alpha', 'beta'])
+  })
+
+  it('treats an unquoted here-string the same way', () => {
+    const content = `one() {\n  echo 1\n}\nread -r v <<< word\ntwo() {\n  echo 2\n}\n`
+    const symbols = extractBash(content, 'herestring2.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['one', 'two'])
+  })
+
+  it('still masks a real heredoc body, so the here-string guard did not disable heredocs', () => {
+    const content = `first() {\n  echo 1\n}\ncat <<EOF\nfake() {\n  echo nope\n}\nEOF\nsecond() {\n  echo 2\n}\n`
+    const symbols = extractBash(content, 'heredoc.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['first', 'second'])
+  })
+
+  it('masks the body of every heredoc opened on one line (regression: only the first terminator was tracked, so a second body such as `cat <<A <<B` was scanned as ordinary code and any declaration inside it indexed as real)', () => {
+    const content = `cat <<A <<B\nghostA() {\n  echo a\n}\nA\nghostB() {\n  echo b\n}\nB\nreal() {\n  echo c\n}\n`
+    const symbols = extractBash(content, 'twoheredocs.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['real'])
+  })
+
+  it('indexes a function whose name contains a hyphen or dot under its full name (regression: the name pattern allowed only \\w, so `my-func()` matched nothing and was dropped outright while `function other-func` truncated to `other` -- stored under a name nothing would ever search for)', () => {
+    const content = `my-func() {\n  echo a\n}\nfunction other-func {\n  echo b\n}\nnpm.install() {\n  echo c\n}\n`
+    const symbols = extractBash(content, 'names.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['my-func', 'other-func', 'npm.install'])
+  })
+
   it('returns an empty array for empty input', () => {
     expect(extractBash('', 'empty.sh')).toHaveLength(0)
   })
