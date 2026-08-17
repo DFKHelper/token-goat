@@ -14,8 +14,13 @@ const TYPE_DECL_RE = new RegExp(
   `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
   'gm',
 )
+// The event list is routinely wrapped across lines when a trigger handles several events, so it
+// must not be confined to one line. When it was, the trigger did not merely go unindexed: `on` read
+// as a return type and `Account` as a name, so METHOD_RE matched the same lines and the file's only
+// symbol was a method named after the SObject, which does not exist. Matching the trigger first now
+// covers those lines, and overlapsExisting suppresses that phantom.
 const TRIGGER_RE = new RegExp(
-  `^[ \\t]*trigger[ \\t]+(${IDENT})[ \\t]+on[ \\t]+([A-Za-z_][A-Za-z0-9_.]*)[ \\t]*\\([^\\n)]*\\)`,
+  `^[ \\t]*trigger[ \\t]+(${IDENT})[ \\t]+on[ \\t]+([A-Za-z_][A-Za-z0-9_.]*)[ \\t\\r\\n]*\\([^)]*\\)`,
   'gm',
 )
 // Apex allows a method/constructor to be declared with no access modifier at all (implicitly
@@ -31,10 +36,20 @@ const TRIGGER_RE = new RegExp(
 // since none of MODIFIER's keywords overlap with those statement keywords.
 const RETURN_TYPE = '(?:[A-Za-z_][A-Za-z0-9_.<>?,\\[\\] ]*[ \\t]+)'
 const STATEMENT_KEYWORD_GUARD = '(?!(?:return|throw|new|yield|else|do|try|finally|break|continue)\\b)'
+// Two things about the tail. The parameter list is `[^;{}]*`, not a lazy `[\s\S]*?`: a parameter
+// list can span lines but can never contain `;`, `{` or `}`, and bounding it that way stops one
+// match from reaching across a declaration into another's. It could before, because the `{` was
+// required on the same line as the `)`: an Allman-style `void first()` followed by `{` on the next
+// line failed there, so the lazy scan ran on to the *next* declaration's `) {` and matched both at
+// once -- `first` still got the right body, but `second` had already been consumed and was never
+// indexed. Allowing a line break between `)` and `{` fixes that shape directly; the bound makes the
+// whole class of run-on impossible. The two return-type groups are captured (rather than
+// non-capturing as before) purely so the emit site can tell a constructor from a method: a
+// constructor is the branch that matched no return type at all.
 const METHOD_RE = new RegExp(
   `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*` +
-    `(?:(?:${MODIFIER}[ \\t]+)+${RETURN_TYPE}?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}${RETURN_TYPE})` +
-    `(${IDENT})[ \\t]*\\([\\s\\S]*?\\)[ \\t]*(?:\\{|;)`,
+    `(?:(?:${MODIFIER}[ \\t]+)+(${RETURN_TYPE})?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}(${RETURN_TYPE}))` +
+    `(${IDENT})[ \\t]*\\([^;{}]*\\)[ \\t\\r\\n]*(?:\\{|;)`,
   'gm',
 )
 
@@ -254,13 +269,19 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   }
 
   for (const match of code.matchAll(METHOD_RE)) {
-    const name = match[1] ?? ''
+    const name = match[3] ?? ''
     if (CONTROL_NAMES.has(name)) continue
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
     if (overlapsExisting(symbols, line)) continue
     const bodyStartLine = annotationStartLine(codeLines, line)
-    const kind = typeNames.has(name) ? 'apex_constructor' : 'apex_method'
+    // Sharing a name with a type declared somewhere in the file is not enough to be that type's
+    // constructor: `class Outer { class Inner { void Outer() {} } }` is a method of Inner, and was
+    // being reported as a constructor. There is no scope tracking here to say which type encloses
+    // the declaration, but a constructor never has a return type, and a method always does -- so
+    // requiring the no-return-type branch settles the ambiguous case without needing scopes.
+    const hasReturnType = (match[1] ?? match[2] ?? '') !== ''
+    const kind = typeNames.has(name) && !hasReturnType ? 'apex_constructor' : 'apex_method'
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 

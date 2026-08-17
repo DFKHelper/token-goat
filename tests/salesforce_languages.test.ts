@@ -325,6 +325,31 @@ public class MyTestClass {
     expect(symbols.find((s) => s.name === 'methodB')?.kind).toBe('apex_method')
   })
 
+  it('indexes a method whose opening brace is on the next line, and the one after it (regression: the parameter-list scan was lazy and the `{` had to share the line with the `)`, so an Allman-style header ran on to the FOLLOWING declaration\'s `) {` and consumed it -- the second method was silently absent from the index)', () => {
+    const content = `public class X {\n  public void first()\n  {\n  }\n  public void second() {}\n}\n`
+    const { symbols } = extractApex(content, 'X.cls')
+    expect(symbols.filter((s) => s.kind === 'apex_method').map((s) => s.name)).toEqual(['first', 'second'])
+  })
+
+  it('indexes a trigger whose event list wraps across lines, and emits no phantom method for it (regression: the event list had to fit on one line, so the trigger went unindexed AND `on` read as a return type with the SObject as the name -- the file\'s only symbol was a method called `Account` that does not exist)', () => {
+    const content = `trigger T on Account (\n  before insert,\n  after update\n) {\n}\n`
+    const { symbols } = extractApex(content, 'T.trigger')
+    expect(symbols.map((s) => ({ name: s.name, kind: s.kind }))).toEqual([{ name: 'T', kind: 'apex_trigger' }])
+  })
+
+  it('calls a method a method even when its name matches a type declared elsewhere in the file (regression: constructor classification asked only whether the name was in the file\'s set of type names, so `class Outer { class Inner { void Outer() {} } }` reported Inner\'s method as a constructor of Outer)', () => {
+    const content = `public class Outer2 {\n  public class Inner {\n    public void Outer2() {}\n  }\n}\n`
+    const { symbols } = extractApex(content, 'C.cls')
+    expect(symbols.find((s) => s.lineStart === 3)).toMatchObject({ name: 'Outer2', kind: 'apex_method' })
+  })
+
+  it('still calls a real no-return-type declaration a constructor, so the return-type rule did not disable them', () => {
+    const content = `public class Outer2 {\n  public Outer2() {}\n  public void doWork() {}\n}\n`
+    const { symbols } = extractApex(content, 'C2.cls')
+    expect(symbols.find((s) => s.lineStart === 2)).toMatchObject({ name: 'Outer2', kind: 'apex_constructor' })
+    expect(symbols.find((s) => s.lineStart === 3)).toMatchObject({ name: 'doWork', kind: 'apex_method' })
+  })
+
   it('is used by parseFile for .cls files', async () => {
     const result = await parseFixture(
       'ExampleService.cls',
