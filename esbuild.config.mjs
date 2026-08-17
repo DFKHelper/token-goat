@@ -1,5 +1,7 @@
 import * as esbuild from 'esbuild'
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+
+import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
 
 // Shared by the hook build's chunkNames and its own stale-chunk sweep below.
 const HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
@@ -7,15 +9,6 @@ const HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
 // other's chunks, since both write into dist/.
 const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
 
-/** Remove last build's hashed chunks: their names change with their contents, so stale ones would otherwise pile up in dist/ and ship inside the tarball (package.json's `files` is the whole directory). */
-function sweepStaleChunks(prefix) {
-  // The core sweep now runs before anything has created dist/, so a clean checkout has no
-  // directory to read yet. Nothing to sweep is not an error.
-  if (!existsSync('dist')) return
-  for (const stale of readdirSync('dist').filter((f) => f.startsWith(prefix))) {
-    rmSync(`dist/${stale}`)
-  }
-}
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
@@ -50,8 +43,6 @@ const EXTERNAL_NATIVE_DEPS = [
   'typescript',
 ]
 
-sweepStaleChunks(CORE_CHUNK_PREFIX)
-
 // splitting:true, for the same reason the hook build below uses it: V8 compiles a module in full
 // before running any of it, so code sitting behind a dynamic import is still parsed on every
 // single invocation when esbuild inlines it into one file -- only its *execution* is deferred.
@@ -60,7 +51,8 @@ sweepStaleChunks(CORE_CHUNK_PREFIX)
 // cache warm, over 15 interleaved A/B pairs of `symbol`: 149 ms -> 139 ms, the split build faster
 // in 13 of the 15 pairs. entryNames pins the entry's filename, which the launcher written at the
 // bottom of this file imports by name; outExtension keeps it `.mjs`.
-await esbuild.build({
+const coreResult = await esbuild.build({
+  metafile: true,
   entryPoints: ['src/main.ts'],
   bundle: true,
   splitting: true,
@@ -97,7 +89,7 @@ await esbuild.build({
   },
 })
 
-sweepStaleChunks(HOOK_CHUNK_PREFIX)
+sweepStaleChunks('dist', CORE_CHUNK_PREFIX, Object.keys(coreResult.metafile.outputs))
 
 // Separate library bundle for in-process hook invocation: bridges that either
 // already run inside a long-lived Node host (OpenClaw, opencode, pi) or spawn
@@ -117,7 +109,8 @@ sweepStaleChunks(HOOK_CHUNK_PREFIX)
 // eagerly parsed set from 3.61 MB to 2.27 MB and import+eval from ~57 ms to ~39 ms, measured with
 // the compile cache warm. entryNames pins the entry's filename, which the bridges, the installed
 // hook shim and the README all reference by name; outExtension keeps it `.mjs`.
-await esbuild.build({
+const hookResult = await esbuild.build({
+  metafile: true,
   entryPoints: ['src/hook_lib.ts'],
   bundle: true,
   splitting: true,
@@ -140,6 +133,8 @@ await esbuild.build({
     __TG_VERSION__: JSON.stringify(pkg.version),
   },
 })
+
+sweepStaleChunks('dist', HOOK_CHUNK_PREFIX, Object.keys(hookResult.metafile.outputs))
 
 // The `bin` entry point is a launcher, not the bundle itself, purely so that
 // module.enableCompileCache() can run BEFORE the ~3.5MB core bundle is compiled.

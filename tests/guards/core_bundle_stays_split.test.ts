@@ -13,10 +13,14 @@
  * means it checks the artifact that actually ships.
  */
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+// @ts-expect-error -- plain .mjs build helper with JSDoc types, outside tsconfig's include.
+import { sweepStaleChunks } from '../../scripts/sweep-chunks.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(HERE, '..', '..', 'dist')
@@ -78,5 +82,68 @@ describe('core bundle stays split', () => {
     let bytes = fs.statSync(ENTRY).size
     for (const chunk of eager) bytes += fs.statSync(path.join(DIST, chunk)).size
     expect(bytes, `eager startup set is ${(bytes / 1024 / 1024).toFixed(2)} MB`).toBeLessThan(MAX_EAGER_BYTES)
+  })
+
+  it('leaves dist/ internally consistent: every chunk an emitted file imports exists on disk', () => {
+    // Splitting made a partial dist/ possible for the first time. The stale-chunk sweep used to run
+    // before its build, so mid-build the previous entry was still present and still importing
+    // chunks that had just been deleted; anything starting the CLI then died with
+    // ERR_MODULE_NOT_FOUND. Both static and dynamic edges are checked here, since a dynamic one
+    // fails just as hard, only later.
+    const files = [ENTRY, ...fs.readdirSync(DIST).filter((f) => f.startsWith(CORE_CHUNK_PREFIX)).map((f) => path.join(DIST, f))]
+    const missing: string[] = []
+    for (const file of files) {
+      for (const m of fs.readFileSync(file, 'utf8').matchAll(/["(]\s*"?(\.\/token-goat-chunk-[^"')]+\.mjs)"/g)) {
+        const target = path.join(DIST, m[1]!.slice(2))
+        if (!fs.existsSync(target)) missing.push(`${path.basename(file)} -> ${m[1]}`)
+      }
+    }
+    expect(missing, 'dangling chunk imports in dist/').toEqual([])
+  })
+
+})
+
+describe('sweepStaleChunks', () => {
+  // Tested directly rather than by asserting dist/ is orphan-free after the fact: the suite's
+  // globalSetup rebuilds before any test runs, and on a fresh checkout that build starts from an
+  // empty dist/, so an end-state assertion there passes even with the sweep deleted outright.
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-sweep-')) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  const write = (name: string): string => { fs.writeFileSync(path.join(dir, name), 'x'); return name }
+
+  it('removes a prefixed chunk this build did not emit', () => {
+    write('token-goat-chunk-OLD.mjs')
+    const kept = write('token-goat-chunk-NEW.mjs')
+    expect(sweepStaleChunks(dir, CORE_CHUNK_PREFIX, [`dist/${kept}`])).toEqual(['token-goat-chunk-OLD.mjs'])
+    expect(fs.readdirSync(dir)).toEqual([kept])
+  })
+
+  it('keeps an unchanged chunk, which is re-emitted under the same content-hashed name', () => {
+    const same = write('token-goat-chunk-SAME.mjs')
+    expect(sweepStaleChunks(dir, CORE_CHUNK_PREFIX, [`dist/${same}`])).toEqual([])
+    expect(fs.existsSync(path.join(dir, same))).toBe(true)
+  })
+
+  it('never touches the other build\'s chunks or the entry files', () => {
+    // Both builds write into the same directory, so a sweep matching too broadly would delete the
+    // sibling build's output -- which, unlike a stale chunk, nothing recreates until that build
+    // runs again.
+    write('token-goat-hook-chunk-A.mjs')
+    write('token-goat.core.mjs')
+    write('token-goat.mjs')
+    expect(sweepStaleChunks(dir, CORE_CHUNK_PREFIX, [])).toEqual([])
+    expect(fs.readdirSync(dir).sort()).toEqual(['token-goat-hook-chunk-A.mjs', 'token-goat.core.mjs', 'token-goat.mjs'])
+  })
+
+  it('accepts absolute and backslash-separated emitted paths', () => {
+    const kept = write('token-goat-chunk-ABS.mjs')
+    expect(sweepStaleChunks(dir, CORE_CHUNK_PREFIX, [`C:\\build\\dist\\${kept}`])).toEqual([])
+    expect(fs.existsSync(path.join(dir, kept))).toBe(true)
+  })
+
+  it('treats a missing directory as nothing to sweep', () => {
+    expect(sweepStaleChunks(path.join(dir, 'nope'), CORE_CHUNK_PREFIX, [])).toEqual([])
   })
 })
