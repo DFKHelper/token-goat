@@ -123,6 +123,38 @@ describe('todo command', () => {
     expect(parsed.items).toEqual([])
   })
 
+  it('does not report the ordinary English word "note" in prose as a NOTE marker (regression: the marker regex was case-insensitive, so "a note for this" matched; 681 of 800 hits on this repo were prose)', async () => {
+    const src = path.join(tmpDir, 'prose_note.md')
+    fs.writeFileSync(
+      src,
+      'A note for exactly this already existed and was printed elsewhere.\nNothing tested this note on any command.\nPlease note that the hack works here.\n',
+      'utf8',
+    )
+    const r = await run(['todo', src, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { items: Array<{ kind: string }> }
+    expect(parsed.items).toEqual([])
+  })
+
+  it('still reports a lower-case marker that carries a colon, which is a real comment convention', async () => {
+    const src = path.join(tmpDir, 'lower_marker.ts')
+    fs.writeFileSync(src, '// todo: fix this\n// note: the caller retries\n', 'utf8')
+    const r = await run(['todo', src, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { items: Array<{ kind: string; text: string }> }
+    expect(parsed.items.map((i) => i.kind)).toEqual(['TODO', 'NOTE'])
+    expect(parsed.items.map((i) => i.text)).toEqual(['fix this', 'the caller retries'])
+  })
+
+  it('still reports an upper-case marker that carries no colon', async () => {
+    const src = path.join(tmpDir, 'upper_no_colon.ts')
+    fs.writeFileSync(src, '// TODO fix this\n', 'utf8')
+    const r = await run(['todo', src, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { items: Array<{ kind: string; text: string }> }
+    expect(parsed.items).toEqual([{ file: src, line: 1, kind: 'TODO', text: 'fix this' }])
+  })
+
   it('--kinds limits which markers are reported', async () => {
     const src = path.join(tmpDir, 'kinds.ts')
     fs.writeFileSync(src, '// TODO: a\n// FIXME: b\n// HACK: c\n', 'utf8')
