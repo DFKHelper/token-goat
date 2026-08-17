@@ -73,9 +73,13 @@ function compileCacheBytes(script: string): number {
 }
 
 describe('Claude Code hook shim compile cache', () => {
-  // 1 MB: the hook bundle's cache entry measured ~1.3 MB, and nothing else the shim loads is
-  // remotely that size, so this cannot be satisfied by caching the shim itself.
-  const BUNDLE_SCALE_BYTES = 1_000_000
+  // 500 KB: the discriminator here is bundle-scale versus shim-scale, and the shim is well under
+  // 1 KB, so any figure in the hundreds of KB can only be the bundle. It was 1 MB when the entry
+  // measured ~1.3 MB; splitting cli_doctor.ts and text_commands.ts off the hook path (see
+  // symbol_body_probe.ts) took the eagerly compiled set down to ~988 KB, which is the change
+  // working as intended rather than the invariant breaking, so the constant moves with it. Kept
+  // far enough below the current figure that further eager-set trimming does not fail this again.
+  const BUNDLE_SCALE_BYTES = 500_000
 
   it('caches the hook bundle, so it is not recompiled on every tool call', () => {
     expect(compileCacheBytes(CLAUDECODE_HOOK_SCRIPT)).toBeGreaterThan(BUNDLE_SCALE_BYTES)

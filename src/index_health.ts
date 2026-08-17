@@ -9,7 +9,7 @@
 import * as fs from 'fs'
 import { getDb } from './db.js'
 import { projectScopeClause } from './sql_path.js'
-import { detectWalkMode } from './text_commands.js'
+import { detectWalkMode } from './walk_mode.js'
 
 /**
  * Raw indexed file/symbol counts for `dbPath`, scoped to `rootDir` when given. Extracted from
