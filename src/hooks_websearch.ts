@@ -22,7 +22,7 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText } from './hooks_common.js'
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse } from './hooks_common.js'
 import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
@@ -80,6 +80,12 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     if (getToolName(event) !== 'WebSearch' || !event.sessionId) return passOutput()
     const signature = webSearchSignatureInput(getToolInput(event))
     if (signature === null) return passOutput()
+    // An in-band error is a valid response, not a cacheable one. This cache is the one the
+    // pre-hook above denies against, so caching a failed search meant the next identical search
+    // was blocked and the model was pointed at the error message instead of being allowed to
+    // retry -- for the whole dedup window. Exactly the reasoning already written down in
+    // hooks_mcp.ts's isMcpErrorResponse, which WebSearch writes past into the same store.
+    if (isMcpErrorResponse(event.raw)) return passOutput()
     const resultText = extractToolResultText(event.raw)
     if (!resultText) return passOutput()
     storeMcpOutput(event.sessionId, 'WebSearch', signature, resultText)

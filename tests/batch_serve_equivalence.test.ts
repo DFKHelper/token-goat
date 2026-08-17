@@ -18,6 +18,7 @@ import * as path from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
+import { serveOne } from '../src/batch_serve.js'
 import { runBatched, runSpawned, stopBatchCli } from './helpers/batch-cli.js'
 import { tempDir } from './helpers/temp-config.js'
 
@@ -98,5 +99,39 @@ describe('batch-serve is indistinguishable from spawning the bundle', () => {
 
     const ok = await runBatched(['--version'], { cwd: dir })
     expect(ok.status, 'a clean command reported the previous failure as its own status').toBe(0)
+  })
+
+  // The isolation seam itself, driven directly. The two tests above pass an `env` on the request
+  // that does the polluting, and supplying one is exactly what used to make the restore run at
+  // all -- with `env` absent, no snapshot was taken and nothing undid what the command wrote. A
+  // request that omits `env` is the normal case for the CLI (`hook --harness` sets
+  // TOKEN_GOAT_HARNESS_OVERRIDE itself, as does the config layer), and a spawned process drops
+  // that on exit, so the batched path has to as well. serveOne's `runFn` is a real parameter of
+  // the production server, not a test-only seam; what it stands in for here is any command that
+  // writes to process.env, which several do.
+  it('restores the environment after a request that brought none of its own', async () => {
+    const key = 'TG_BATCH_LEAK_PROBE'
+    delete process.env[key]
+
+    const res = await serveOne({ id: 1, argv: ['--version'] }, async () => {
+      process.env[key] = 'leaked'
+      return Promise.resolve()
+    })
+
+    expect(res.status).toBe(0)
+    expect(process.env[key], 'a variable the request set survived into the server process').toBeUndefined()
+  })
+
+  it('still restores a request that brought its own environment', async () => {
+    const key = 'TG_BATCH_LEAK_PROBE_2'
+    delete process.env[key]
+
+    await serveOne({ id: 2, argv: ['--version'], env: { ...process.env, TG_BATCH_SEEDED: '1' } as Record<string, string> }, async () => {
+      process.env[key] = 'leaked'
+      return Promise.resolve()
+    })
+
+    expect(process.env[key]).toBeUndefined()
+    expect(process.env['TG_BATCH_SEEDED'], 'the request\'s own environment outlived the request').toBeUndefined()
   })
 })

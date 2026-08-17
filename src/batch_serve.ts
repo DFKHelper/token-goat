@@ -85,7 +85,14 @@ export async function serveOne(
   runFn: (argv: string[]) => Promise<void>,
 ): Promise<BatchResponse> {
   const cwdBefore = process.cwd()
-  const restoreEnv = req.env === undefined ? (): void => {} : swapEnv(req.env)
+  // Snapshot even when the request brings no environment of its own. A request that omits `env`
+  // still runs commands that write to process.env -- `--harness` sets TOKEN_GOAT_HARNESS_OVERRIDE
+  // (cli.ts) and the config layer sets keys the same way -- and with no snapshot taken there was
+  // nothing to undo them, so the override survived into every later request in this process. A
+  // separate CLI process would have dropped it on exit, and byte-identical equivalence with that
+  // is the whole contract of this mode. Passing the current environment back to swapEnv makes it
+  // a pure save-and-restore.
+  const restoreEnv = swapEnv(req.env ?? ({ ...process.env } as Record<string, string>))
   const cap = captureOutput()
   let status: number
   try {

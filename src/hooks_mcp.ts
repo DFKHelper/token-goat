@@ -13,7 +13,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
@@ -21,20 +21,9 @@ import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 import { redactSecrets } from './secret_redact.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
-/**
- * Return true when a tool_response is an MCP `CallToolResult` carrying an
- * in-band `isError: true` — a genuine tool-level failure ("tool not found",
- * bad params, a downstream API error surfaced through MCP) rather than a hard
- * transport failure. Such a response is still a normal, successful protocol
- * round trip, so {@link extractToolResultText} happily returns its text; the
- * caller must exclude it from caching so a one-off or transient error is not
- * served back to every identical retry until the dedup window ages out.
- */
-export function isMcpErrorResponse(raw: Record<string, unknown>): boolean {
-  const tr = raw['tool_response']
-  if (!tr || typeof tr !== 'object') return false
-  return (tr as Record<string, unknown>)['isError'] === true
-}
+// Defined in hooks_common.ts alongside extractToolResultText, whose output the rule is about, and
+// re-exported here because this module was its only caller for a while.
+export { isMcpErrorResponse } from './hooks_common.js'
 
 function preMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)

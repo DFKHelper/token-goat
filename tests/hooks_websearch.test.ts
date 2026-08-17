@@ -145,6 +145,26 @@ describe('WebSearch caching/dedup hooks (real runHook dispatch)', () => {
     expect(pre.hookType).toBe('deny')
   })
 
+  it('does not cache an in-band error result, so the identical query can be retried (regression: a failed search was cached and every retry denied for the whole dedup window)', async () => {
+    const post = await runHook(
+      buildEvent('post_tool_use', postPayload({ isError: true, content: [{ type: 'text', text: 'rate limited, try again' }] })),
+    )
+    expect(post.hookType).toBe('pass')
+
+    const pre = await runHook(buildEvent('pre_tool_use', prePayload()))
+    expect(pre.hookType).toBe('pass')
+  })
+
+  it('still caches a successful result carrying isError: false', async () => {
+    const post = await runHook(
+      buildEvent('post_tool_use', postPayload({ isError: false, content: [{ type: 'text', text: 'real search result' }] })),
+    )
+    expect(post.hookType).toBe('pass')
+
+    const pre = await runHook(buildEvent('pre_tool_use', prePayload()))
+    expect(pre.hookType).toBe('deny')
+  })
+
   it('ignores a non-WebSearch tool entirely', async () => {
     const pre = await runHook(
       buildEvent('pre_tool_use', { tool_name: 'WebFetch', tool_input: { url: 'https://x.com' }, session_id: sessionId }),
