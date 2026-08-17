@@ -13,6 +13,8 @@
  * Heredoc bodies (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ... EOF`) are masked out entirely
  * so embedded script content (which can itself contain `#`, `=`, and `{`/`}` that would
  * otherwise desync comment stripping and brace-depth tracking) is never misread as real code.
+ * A single line may open several (`cat <<A <<B`), so pending terminators are held as a queue.
+ * A here-string (`<<<`) opens no body at all and is deliberately not matched.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -20,10 +22,13 @@ import { isInsideStringLiteral, stripStringLiterals, makeLineSymbol } from './co
 
 const MAX_SYMBOLS = 500
 
-const FUNC_KEYWORD_RE = /^function\s+([A-Za-z_]\w*)\s*(?:\(\s*\))?/
-const FUNC_POSIX_RE = /^([A-Za-z_]\w*)\s*\(\s*\)/
+// A bash function name is any word that is not a shell metacharacter, so `-`, `.`, `+` and `:` are all legal and all common in the wild (`docker-run()`, `npm.install()`). Restricting the name to `\w` dropped `my-func()` outright and, worse, silently truncated `function other-func` to `other` -- indexed under a name nothing will ever search for. Variable names have no such freedom: `NAME=value` only accepts `\w`, so VAR_RE is left alone.
+const FUNC_NAME = '[A-Za-z_][A-Za-z0-9_.+:-]*'
+const FUNC_KEYWORD_RE = new RegExp(`^function\\s+(${FUNC_NAME})\\s*(?:\\(\\s*\\))?`)
+const FUNC_POSIX_RE = new RegExp(`^(${FUNC_NAME})\\s*\\(\\s*\\)`)
 const VAR_RE = /^(?:(?:export|declare|readonly)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)=/
-const HEREDOC_RE = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/
+// The `<` guards on either side keep `<<<` (a here-string, not a heredoc) out. Without them `cmd <<< "hello"` matched from the second `<`, taking `hello` for a heredoc terminator and masking every following line as heredoc body until a line that happened to read exactly `hello` -- usually never, so the rest of the file was lost.
+const HEREDOC_RE = /(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_]\w*)\1/g
 
 /**
  * Strips a bash `#` line comment, respecting bash's own word-boundary comment rule: `#` only
@@ -44,24 +49,29 @@ function stripBashComment(line: string): string {
   return line
 }
 
-interface HeredocState {
-  readonly terminator: string
-}
-
-/** Finds a real (not-inside-a-string) heredoc redirect on `line`, or null. */
-function findHeredocOpener(line: string): HeredocState | null {
-  const m = HEREDOC_RE.exec(line)
-  if (m === null || m.index === undefined) return null
-  if (isInsideStringLiteral(line, m.index)) return null
-  const terminator = m[2] ?? ''
-  return terminator ? { terminator } : null
+/**
+ * Every real (not-inside-a-string) heredoc terminator opened on `line`, in order. One line may
+ * open several (`cat <<A <<B`), and their bodies then follow one after another, each ended by its
+ * own terminator. Returning only the first left the second body to be scanned as ordinary code.
+ */
+function findHeredocOpeners(line: string): string[] {
+  const terminators: string[] = []
+  HEREDOC_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = HEREDOC_RE.exec(line)) !== null) {
+    if (isInsideStringLiteral(line, m.index)) continue
+    const terminator = m[2] ?? ''
+    if (terminator) terminators.push(terminator)
+  }
+  return terminators
 }
 
 export function extractBash(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
-  let heredoc: HeredocState | null = null
+  // Pending heredoc terminators, oldest first: bodies arrive in the order their redirects were written.
+  const heredocs: string[] = []
   let braceDepth = 0
   let inFunction = false
   let functionBraceDepth = 0
@@ -71,20 +81,19 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    if (heredoc !== null) {
+    if (heredocs.length > 0) {
       // A heredoc terminator must appear alone on its line (leniently, ignoring surrounding
       // whitespace -- real-world scripts are not always strictly POSIX about `<<-` tab-only
       // stripping, and being lenient here only risks closing a heredoc one line early on an
       // unusual body, never desyncing the rest of the file).
-      if (rawLine.trim() === heredoc.terminator) heredoc = null
+      if (rawLine.trim() === heredocs[0]) heredocs.shift()
       continue
     }
 
     const noComment = stripBashComment(rawLine)
     const stripped = noComment.trim()
 
-    const opener = findHeredocOpener(noComment)
-    if (opener !== null) heredoc = opener
+    heredocs.push(...findHeredocOpeners(noComment))
 
     if (!stripped) continue
 
@@ -114,7 +123,8 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
             awaitingFunctionBrace = true
           }
         }
-      } else if (!inFunction) {
+      } else {
+        // No `!inFunction` re-check here: the enclosing branch already requires it.
         const varMatch = VAR_RE.exec(stripped)
         if (varMatch) {
           const vname = varMatch[1] ?? ''
