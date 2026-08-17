@@ -82,6 +82,22 @@ function isInsideStringLiteral(line: string, markerIndex: number): boolean {
   return dqCount % 2 !== 0
 }
 
+/**
+ * Whether an occurrence of a marker word is actually a marker rather than ordinary prose.
+ *
+ * The match is case-insensitive because `// todo: fix` is as real a marker as `// TODO: fix`, but
+ * "NOTE" and "HACK" are also ordinary English words, and matching them in any case turned every
+ * sentence containing "a note for this" or "note that" into a reported marker. On this repo that
+ * was 681 of 800 hits, nearly all of them changelog prose, which buries the real markers this
+ * command exists to surface. Case alone is not enough either (lowercase `note:` in a comment is a
+ * genuine annotation) and the colon alone is not enough (`// TODO fix this` carries none), so a
+ * marker is one or the other: written in upper case, or carrying the colon that marks it as a
+ * label rather than a word in a sentence.
+ */
+function isMarkerOccurrence(matched: string, hasColon: boolean): boolean {
+  return hasColon || matched === matched.toUpperCase()
+}
+
 function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   let text: string
   try {
@@ -97,16 +113,19 @@ function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   // Trailing \b after the kind name prevents a marker from matching as a prefix of a longer
   // identifier/word (e.g. "NOTEBOOK", "TODOLIST", "HACKATHON") -- without it, \s*:?\s* all
   // matches zero-width and the rest of the word gets swallowed into the captured text.
-  const re = new RegExp(`\\b(${kindPattern})\\b\\s*:?\\s*(.*)`, 'i')
+  // The colon is captured rather than skipped because it is half the test for whether a match is
+  // a marker at all -- see the isMarkerOccurrence check below.
+  const re = new RegExp(`\\b(${kindPattern})\\b(\\s*:)?\\s*(.*)`, 'i')
   const items: TodoItem[] = []
   const lines = splitLines(text)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
     const m = re.exec(line)
     if (m === null) continue
+    if (!isMarkerOccurrence(m[1] ?? '', m[2] !== undefined)) continue
     const idx = m.index ?? 0
     if (isInsideStringLiteral(line, idx)) continue
-    items.push({ file: filePath, line: i + 1, kind: m[1]?.toUpperCase() ?? '', text: (m[2] ?? '').trim() })
+    items.push({ file: filePath, line: i + 1, kind: m[1]?.toUpperCase() ?? '', text: (m[3] ?? '').trim() })
   }
   return items
 }
