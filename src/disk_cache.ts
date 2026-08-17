@@ -213,7 +213,28 @@ export function pruneBlobs(
   maxBytes: number = Number.POSITIVE_INFINITY,
   protectedPath?: string,
 ): number {
-  const dir = blobDir(subdir)
+  return pruneBlobDir(blobDir(subdir), maxCount, maxAgeMs, maxBytes, protectedPath)
+}
+
+/**
+ * Same policy as {@link pruneBlobs}, but against an absolute directory rather than a subdir of
+ * the current {@link tokenGoatHome}. Lets a sweep reach cache directories under a *second* root
+ * (see {@link sweepCacheRoots}) without pretending they live under this process's home.
+ *
+ * The age cutoff applies to every file in the directory, not only `.json` blobs: a cache dir also
+ * accumulates companions and debris that no blob id addresses -- `.txt`/`.gz` payloads written by
+ * older versions, `.tmp` files from an interrupted atomic write, `.lock` files whose holder died.
+ * None of those were ever removed by anything, so they survived every prune forever. The count and
+ * byte budgets still consider only `.json` entries, since those are the addressable blobs the
+ * budgets are expressed in.
+ */
+export function pruneBlobDir(
+  dir: string,
+  maxCount: number = DEFAULT_MAX_COUNT,
+  maxAgeMs: number = DEFAULT_MAX_AGE_MS,
+  maxBytes: number = Number.POSITIVE_INFINITY,
+  protectedPath?: string,
+): number {
   let removed = 0
   try {
     if (!fs.existsSync(dir)) return 0
@@ -224,7 +245,6 @@ export function pruneBlobs(
     // below would otherwise treat it.
     let protectedEntry: [string, number, number] | undefined
     for (const file of fs.readdirSync(dir)) {
-      if (!file.endsWith('.json')) continue
       const full = path.join(dir, file)
       let stat: fs.Stats
       try {
@@ -232,6 +252,7 @@ export function pruneBlobs(
       } catch {
         continue
       }
+      if (!stat.isFile()) continue
       if (protectedPath !== undefined && full === protectedPath) {
         protectedEntry = [full, stat.mtimeMs, stat.size]
         continue
@@ -243,7 +264,7 @@ export function pruneBlobs(
         } catch {
           continue
         }
-      } else {
+      } else if (file.endsWith('.json')) {
         kept.push([full, stat.mtimeMs, stat.size])
       }
     }
@@ -284,6 +305,72 @@ export function pruneBlobs(
     }
   } catch {
     return removed
+  }
+  return removed
+}
+
+/**
+ * Every cache subdir a sweep should reap, with the eviction policy that applies to it.
+ *
+ * Named as string literals rather than imported from their owning modules (bash_output_cache,
+ * web_cache, session_store) because those modules all import *this* one -- importing back would
+ * make the cycle. `mcp_outputs` has no current writer: MCP results share `bash_outputs` today,
+ * but older versions wrote their own directory, and those files are still on disk with nothing
+ * that ever removes them.
+ *
+ * `sessions` is deliberately age-only (no count cap). A session blob is not a cache entry that
+ * can be re-fetched: it holds the read-dedup state for a live conversation, and evicting one by
+ * count would silently reset that session's state mid-conversation. The age cutoff is safe on its
+ * own because `saveSessionState` rewrites the file on every hook, so a live session's mtime never
+ * goes stale.
+ */
+const SWEEPABLE_CACHE_SUBDIRS: ReadonlyArray<{ subdir: string; countCapped: boolean }> = [
+  { subdir: 'bash_outputs', countCapped: true },
+  { subdir: 'web_outputs', countCapped: true },
+  { subdir: 'mcp_outputs', countCapped: true },
+  { subdir: 'sessions', countCapped: false },
+]
+
+/**
+ * Apply the standard blob-eviction policy to every cache subdir under `tokenGoatHome()` plus each
+ * of `extraRoots`, and return how many files were removed.
+ *
+ * Nothing invoked eviction for these directories automatically before this: `storeBlob` prunes the
+ * subdir it just wrote, but session state is written outside that funnel (session_store.ts writes
+ * through `sessionPath`, not `storeBlob`), so the sessions directory grew without any bound at all
+ * -- 83k files on the author's own machine, which every hook that lists sibling session states then
+ * had to `readdir` past. `clean-cache`/`prune-cache` could fix it, but only if a human remembered
+ * to run them.
+ *
+ * `extraRoots` exists for a second, older storage root: on Windows the caches used to live under
+ * the data dir (`%LOCALAPPDATA%/dfk-helper/token-goat`) rather than `~/.token-goat`. Rather than
+ * special-case "delete the legacy directory", the same age policy is applied to both roots. If a
+ * root is genuinely still live its files are fresh and survive the cutoff; if it is dead, its
+ * contents age out on their own. That reclaims the stranded copies with no bespoke migration code
+ * and no way to delete data that is still in use.
+ *
+ * Fail-soft throughout: a bad root or subdir is skipped, never thrown.
+ */
+export function sweepCacheRoots(extraRoots: readonly string[] = []): number {
+  let removed = 0
+  const roots = [tokenGoatHome(), ...extraRoots]
+  const seen = new Set<string>()
+  for (const root of roots) {
+    if (!root || seen.has(root)) continue
+    seen.add(root)
+    for (const { subdir, countCapped } of SWEEPABLE_CACHE_SUBDIRS) {
+      try {
+        const defaults = subdirCacheDefaults(subdir)
+        removed += pruneBlobDir(
+          path.join(root, subdir),
+          countCapped ? defaults.maxCount : Number.POSITIVE_INFINITY,
+          DEFAULT_MAX_AGE_MS,
+          countCapped ? defaults.maxBytes : Number.POSITIVE_INFINITY,
+        )
+      } catch {
+        // Best-effort housekeeping: one unreadable root or subdir must not abort the whole sweep.
+      }
+    }
   }
   return removed
 }

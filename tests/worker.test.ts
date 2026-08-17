@@ -31,6 +31,7 @@ import { loadConfig } from '../src/config.js'
 import { store } from '../src/snapshots.js'
 import { foldPath } from '../src/util.js'
 import { pathEqClause } from '../src/sql_path.js'
+import { tokenGoatHome } from '../src/disk_cache.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -2041,4 +2042,37 @@ describe('resolvePollIntervalMs', () => {
       expect(resolvePollIntervalMs()).toBe(2000)
     },
   )
+})
+
+// Regression: the id-keyed disk caches had no automatic reaper. storeBlob prunes the subdir it
+// just wrote, but session state is written outside that funnel (session_store.ts writes through
+// sessionPath, not storeBlob), so ~/.token-goat/sessions grew without any bound -- 83k files on
+// the author's machine, which every hook that lists sibling session states then had to readdir
+// past. runWorkerLoop now calls sweepCacheRoots on the same periodic sweep as the snapshot
+// cleanup. This drives the real default path end-to-end (no injected sweep callback): write a
+// stale session blob, run one real loop cycle, and assert it was actually removed from disk.
+describe('runWorkerLoop cache sweep (regression)', () => {
+  it('ages out a stale session blob via the default periodic loop', async () => {
+    const sessionsDir = path.join(tokenGoatHome(), 'sessions')
+    fs.mkdirSync(sessionsDir, { recursive: true })
+    const stalePath = path.join(sessionsDir, 'worker-loop-stale-session.json')
+    const freshPath = path.join(sessionsDir, 'worker-loop-live-session.json')
+    fs.writeFileSync(stalePath, '{}')
+    fs.writeFileSync(freshPath, '{}')
+    const staleTime = new Date(Date.now() - 25 * 3600 * 1000)
+    fs.utimesSync(stalePath, staleTime, staleTime)
+
+    // Stop after the loop body (drain + sweep) has run exactly once, before it sleeps.
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    await runWorkerLoop(DIR, 5, shouldStop)
+
+    expect(fs.existsSync(stalePath)).toBe(false)
+    // A live session's blob is rewritten on every hook, so a fresh mtime means the conversation is
+    // still going: the sweep must never take it.
+    expect(fs.existsSync(freshPath)).toBe(true)
+  })
 })
