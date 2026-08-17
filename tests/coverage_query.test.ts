@@ -167,6 +167,21 @@ const ISTANBUL_SUMMARY_FIXTURE = {
 }
 
 describe('detectCoverageFormat', () => {
+  it('reads a summary report carrying only its total aggregate as a summary, not an empty final', () => {
+    // A project with nothing instrumented still gets a coverage-summary.json, and it holds only
+    // the `total` key. Filtering `total` out left no entries to match on, so the report came back
+    // under the wrong format name.
+    const metric = { total: 0, covered: 0, skipped: 0, pct: 'Unknown' }
+    const text = JSON.stringify({ total: { lines: metric, statements: metric, functions: metric, branches: metric } })
+    expect(detectCoverageFormat(text)).toBe('istanbul-summary')
+  })
+
+  it('still reads a genuinely empty object as an empty final report', () => {
+    // The other side of the check above: `{}` has no `total` to identify it, and erroring on a
+    // valid-but-contentless report would be worse than picking one of the two empty readings.
+    expect(detectCoverageFormat('{}')).toBe('istanbul-final')
+  })
+
   it('detects LCOV from a TN:/SF: content prefix, not a filename extension', () => {
     // No file extension involved at all here -- this asserts the content-based mechanism
     // actually implemented (a leading TN:/SF: record), not an extension-based one.
@@ -210,6 +225,34 @@ describe('parseLcov', () => {
 
   beforeEach(() => {
     report = parseLcov(LCOV_FIXTURE)
+  })
+
+  it('counts two same-named functions separately instead of collapsing them onto the last one', () => {
+    // Two functions in one file may legitimately share a name -- methods of two classes, or a
+    // nested function shadowing an outer one. Keying by name alone kept only the last FN record,
+    // so the total was undercounted and the earlier one could never be reported as a gap.
+    const dup = parseLcov(['TN:', 'SF:/src/x.js', 'FN:1,foo', 'FN:5,foo', 'FNDA:0,foo', 'FNDA:0,foo', 'DA:1,1', 'DA:5,1', 'end_of_record'].join('\n'))
+    const f = dup.files[0]!
+    expect(f.functionsTotal).toBe(2)
+    expect(f.functionsHit).toBe(0)
+    expect(f.uncoveredFunctions).toEqual([{ name: 'foo', line: 1 }, { name: 'foo', line: 5 }])
+  })
+
+  it('collapses a genuinely repeated FN record, which is one function listed twice', () => {
+    const repeated = parseLcov(['SF:/src/x.js', 'FN:1,foo', 'FN:1,foo', 'FNDA:0,foo', 'DA:1,0', 'end_of_record'].join('\n'))
+    expect(repeated.files[0]!.functionsTotal).toBe(1)
+  })
+
+  it('sums FNDA hits for a shared name, so a covered run is not overwritten by an uncovered one', () => {
+    // LCOV v1 keys hits by name only, so with a shared name it cannot say which function ran.
+    // Overwriting made the answer depend on record order; summing reports the name as covered,
+    // which is the reading that does not invent a gap the report never claimed.
+    // DA:9,0 keeps the file in the report: with the functions all covered it would otherwise have
+    // no gap at all and be dropped by rankAndFilter, leaving nothing to assert the counts on.
+    const shared = parseLcov(['SF:/src/x.js', 'FN:1,foo', 'FN:5,foo', 'FNDA:3,foo', 'FNDA:0,foo', 'DA:1,1', 'DA:9,0', 'end_of_record'].join('\n'))
+    const f = shared.files[0]!
+    expect(f.functionsHit).toBe(2)
+    expect(f.uncoveredFunctions).toEqual([])
   })
 
   it('omits the fully-covered file', () => {
@@ -355,6 +398,37 @@ describe('parseIstanbulFinal', () => {
 
   beforeEach(() => {
     report = parseIstanbulFinal(ISTANBUL_FINAL_FIXTURE)
+  })
+
+  it('reports a function gap at its declaration line, not where its body opens', () => {
+    // Istanbul's `decl` is the declaration itself; `loc` spans the whole function including the
+    // body, and the two differ when the body opens on a later line than the name. The declaration
+    // line is both what this function's docstring promises and the line worth jumping to.
+    const declFirst = parseIstanbulFinal({
+      '/tmp/a.js': {
+        statementMap: { '0': { start: { line: 3, column: 4 }, end: { line: 3, column: 12 } } },
+        fnMap: { '0': { name: 'foo', line: 1, loc: { start: { line: 2, column: 2 }, end: { line: 4, column: 3 } }, decl: { start: { line: 1, column: 6 }, end: { line: 1, column: 9 } } } },
+        branchMap: {},
+        s: { '0': 0 },
+        f: { '0': 0 },
+        b: {},
+      },
+    })
+    expect(declFirst.files[0]!.uncoveredFunctions).toEqual([{ name: 'foo', line: 1 }])
+  })
+
+  it('falls back to the loc line when a function record carries no decl', () => {
+    const noDecl = parseIstanbulFinal({
+      '/tmp/a.js': {
+        statementMap: {},
+        fnMap: { '0': { name: 'bar', loc: { start: { line: 7, column: 0 }, end: { line: 9, column: 1 } } } },
+        branchMap: {},
+        s: {},
+        f: { '0': 0 },
+        b: {},
+      },
+    })
+    expect(noDecl.files[0]!.uncoveredFunctions).toEqual([{ name: 'bar', line: 7 }])
   })
 
   it('omits the fully-covered file', () => {

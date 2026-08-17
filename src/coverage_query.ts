@@ -163,8 +163,25 @@ export function detectCoverageFormat(text: string): CoverageReportFormat {
     )
     if (looksSummary) return 'istanbul-summary'
 
-    // An empty object ({}) is valid but ambiguous -- treat it as an empty coverage-final report
-    // ("0 files, 0 gaps") rather than erroring on a technically-valid-but-contentless input.
+    // No per-file entries left. A `total` key carrying the four aggregate metrics identifies a
+    // coverage-summary.json for a project with nothing instrumented: that shape is only ever
+    // written by the summary reporter, and coverage-final.json has no `total` key at all, so it is
+    // not ambiguous even though no file entry survives to match on above.
+    const total = (parsed as Record<string, unknown>)['total']
+    if (
+      entries.length === 0 &&
+      typeof total === 'object' &&
+      total !== null &&
+      'lines' in total &&
+      'statements' in total &&
+      'functions' in total &&
+      'branches' in total
+    ) {
+      return 'istanbul-summary'
+    }
+
+    // A genuinely empty object ({}) is valid but ambiguous -- treat it as an empty coverage-final
+    // report ("0 files, 0 gaps") rather than erroring on a technically-valid-but-contentless input.
     if (entries.length === 0) return 'istanbul-final'
 
     throw new Error('not a recognized coverage report (JSON does not match Istanbul coverage-final or coverage-summary shape)')
@@ -181,7 +198,15 @@ export function detectCoverageFormat(text: string): CoverageReportFormat {
 interface LcovFileAccumulator {
   filePath: string
   daLines: Map<number, number>
-  fnLines: Map<string, number>
+  /** One entry per distinct `FN:` record, keyed `name\nline`. Two functions in one file may share
+   * a name (methods of two classes, a nested function shadowing an outer one), and keying by name
+   * alone dropped all but the last: the file's function total was undercounted and every earlier
+   * same-named function silently stopped being reportable as a gap. Keyed by name *and* line, so a
+   * genuinely repeated record still collapses to one. */
+  fnRecords: Map<string, { name: string; line: number }>
+  /** Total `FNDA:` hits per function name. LCOV v1 keys hits by name only, so when a name is
+   * shared it cannot say which of them ran; summing treats the name as covered if any run of it
+   * was, which is the reading that does not invent a gap the report does not support. */
   fnHits: Map<string, number>
   brda: Array<{ line: number; hits: number | null }>
 }
@@ -194,9 +219,9 @@ function buildLcovFileGaps(acc: LcovFileAccumulator): FileCoverageGaps {
     .sort((a, b) => a - b)
   const linesHit = linesTotal - uncoveredLineNums.length
 
-  const functionsTotal = acc.fnLines.size
+  const functionsTotal = acc.fnRecords.size
   const uncoveredFunctions: FunctionGap[] = []
-  for (const [name, line] of acc.fnLines) {
+  for (const { name, line } of acc.fnRecords.values()) {
     if ((acc.fnHits.get(name) ?? 0) === 0) uncoveredFunctions.push({ name, line })
   }
   uncoveredFunctions.sort((a, b) => a.line - b.line)
@@ -252,7 +277,7 @@ export function parseLcov(text: string): CoverageGapsReport {
 
     if (line.startsWith('SF:')) {
       closeCurrent()
-      cur = { filePath: line.slice(3).trim(), daLines: new Map(), fnLines: new Map(), fnHits: new Map(), brda: [] }
+      cur = { filePath: line.slice(3).trim(), daLines: new Map(), fnRecords: new Map(), fnHits: new Map(), brda: [] }
       continue
     }
     if (cur === null) continue
@@ -284,7 +309,8 @@ export function parseLcov(text: string): CoverageGapsReport {
         if (comma2 !== -1 && /^\d+$/.test(name.slice(0, comma2))) {
           name = name.slice(comma2 + 1)
         }
-        if (Number.isFinite(lineNo)) cur.fnLines.set(name, lineNo)
+        if (Number.isFinite(lineNo)) cur.fnRecords.set(`${name}
+${lineNo}`, { name, line: lineNo })
       }
       continue
     }
@@ -295,7 +321,8 @@ export function parseLcov(text: string): CoverageGapsReport {
       if (comma !== -1) {
         const hits = Number.parseInt(rest.slice(0, comma), 10)
         const name = rest.slice(comma + 1)
-        if (Number.isFinite(hits)) cur.fnHits.set(name, hits)
+        // Accumulated, not overwritten: see fnHits' own note on shared names.
+        if (Number.isFinite(hits)) cur.fnHits.set(name, (cur.fnHits.get(name) ?? 0) + hits)
       }
       continue
     }
@@ -373,11 +400,14 @@ export function parseIstanbulFinal(data: Record<string, unknown>): CoverageGapsR
     for (const [id, fnInfo] of Object.entries(fnMap)) {
       functionsTotal++
       if (num(f[id]) === 0) {
-        // `?.` only guards the hop immediately before it -- `loc?.start` protects against a
-        // missing `loc`, but not against `loc` being present with no `start` key (seen in some
-        // real coverage-final.json output). Explicit undefined checks, mirroring the
-        // statementMap loop above.
-        const line = (fnInfo.loc?.start !== undefined ? fnInfo.loc.start.line : undefined) ?? (fnInfo.decl?.start !== undefined ? fnInfo.decl.start.line : undefined) ?? 0
+        // `decl` first, then `loc`: Istanbul's `decl` is the declaration itself (the name and
+        // signature) while `loc` spans the whole function including its body, and for a function
+        // whose body opens on a later line than its name the two differ. This reports the
+        // declaration line, which is both what the docstring above promises and the line worth
+        // jumping to. `?.` only guards the hop immediately before it, so `loc?.start` protects
+        // against a missing `loc` but not against `loc` present with no `start` key, which real
+        // coverage-final.json output does contain; hence the explicit undefined checks.
+        const line = (fnInfo.decl?.start !== undefined ? fnInfo.decl.start.line : undefined) ?? (fnInfo.loc?.start !== undefined ? fnInfo.loc.start.line : undefined) ?? 0
         uncoveredFunctions.push({ name: fnInfo.name !== undefined && fnInfo.name !== '' ? fnInfo.name : '(anonymous)', line })
       }
     }
