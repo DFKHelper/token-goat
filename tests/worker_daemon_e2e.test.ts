@@ -30,7 +30,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { BUNDLE, CORE_BUNDLE } from './helpers/bundle.js'
+import { BUNDLE, readCoreBundleText } from './helpers/bundle.js'
 
 interface RunResult {
   status: number | null
@@ -131,7 +131,7 @@ afterEach(() => {
 
 describe('detached worker daemon (built bundle)', () => {
   it('bundle contains the real daemon dispatch, not a tree-shaken/unwired stub', () => {
-    const bundle = fs.readFileSync(CORE_BUNDLE, 'utf8')
+    const bundle = readCoreBundleText()
     // Would be absent from the shipped artifact if runDetachedWorkerDaemon were ever removed
     // or if esbuild tree-shook it out for being unreachable from the entrypoint again.
     expect(bundle).toContain('runDetachedWorkerDaemon')

@@ -1,8 +1,21 @@
 import * as esbuild from 'esbuild'
-import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 
 // Shared by the hook build's chunkNames and its own stale-chunk sweep below.
 const HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
+// Same, for the core build. A distinct prefix keeps the two builds' sweeps from deleting each
+// other's chunks, since both write into dist/.
+const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
+
+/** Remove last build's hashed chunks: their names change with their contents, so stale ones would otherwise pile up in dist/ and ship inside the tarball (package.json's `files` is the whole directory). */
+function sweepStaleChunks(prefix) {
+  // The core sweep now runs before anything has created dist/, so a clean checkout has no
+  // directory to read yet. Nothing to sweep is not an error.
+  if (!existsSync('dist')) return
+  for (const stale of readdirSync('dist').filter((f) => f.startsWith(prefix))) {
+    rmSync(`dist/${stale}`)
+  }
+}
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
@@ -37,13 +50,27 @@ const EXTERNAL_NATIVE_DEPS = [
   'typescript',
 ]
 
+sweepStaleChunks(CORE_CHUNK_PREFIX)
+
+// splitting:true, for the same reason the hook build below uses it: V8 compiles a module in full
+// before running any of it, so code sitting behind a dynamic import is still parsed on every
+// single invocation when esbuild inlines it into one file -- only its *execution* is deferred.
+// Splitting moves it into sibling chunks that are read only if that import actually fires, taking
+// the eagerly loaded set from 3.61 MB to 2.83 MB. Measured on the built launcher with the compile
+// cache warm, over 15 interleaved A/B pairs of `symbol`: 149 ms -> 139 ms, the split build faster
+// in 13 of the 15 pairs. entryNames pins the entry's filename, which the launcher written at the
+// bottom of this file imports by name; outExtension keeps it `.mjs`.
 await esbuild.build({
   entryPoints: ['src/main.ts'],
   bundle: true,
+  splitting: true,
   platform: 'node',
   target: 'node22',
   format: 'esm',
-  outfile: 'dist/token-goat.core.mjs',
+  outdir: 'dist',
+  entryNames: 'token-goat.core',
+  chunkNames: `${CORE_CHUNK_PREFIX}[hash]`,
+  outExtension: { '.js': '.mjs' },
   // Native addons cannot be bundled, and every package here is declared
   // optionalDependencies in package.json — bundling one anyway (as sharp,
   // puppeteer-core, pdfjs-dist, exceljs, fflate, fast-xml-parser, and
@@ -70,6 +97,8 @@ await esbuild.build({
   },
 })
 
+sweepStaleChunks(HOOK_CHUNK_PREFIX)
+
 // Separate library bundle for in-process hook invocation: bridges that either
 // already run inside a long-lived Node host (OpenClaw, opencode, pi) or spawn
 // their own shim process (Codex, Claude Code, Copilot CLI) `import()` this
@@ -78,12 +107,7 @@ await esbuild.build({
 // stay a plain library with zero load-time side effects, unlike
 // dist/token-goat.mjs (whose banner-less src/main.ts entry calls `run()` at
 // import time to parse `process.argv` as CLI args) -- see src/hook_lib.ts.
-// Hashed chunk names change whenever their contents do, so yesterday's chunks would otherwise
-// pile up in dist/ and ship inside the tarball (package.json's `files` is the whole directory).
-for (const stale of readdirSync('dist').filter((f) => f.startsWith(HOOK_CHUNK_PREFIX))) {
-  rmSync(`dist/${stale}`)
-}
-
+//
 // splitting:true, not a single outfile. A hook `import()`s this bundle on nearly every tool call,
 // and V8 parses every byte of it -- including code the hook never runs. The CLI surface reached
 // through skill_version_drift.ts's drift check, the MCP server and zod all sit behind dynamic
