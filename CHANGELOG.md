@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+- **Reindexing no longer reads the whole vector store once per file.** When a file is reindexed its old embeddings are removed first. That removal asked for the vectors belonging to the file with a sub-question ("the ones whose id is in this list"), and the vector store cannot answer a sub-question with a lookup: it read every vector it holds, for every single file, and then kept the few that matched. The ids are now fetched first and each vector removed by its own id, which the store does answer with a direct lookup. Measured on the real index here, 16185 vectors, removing 60 files' vectors went from 152 ms to 23 ms, and the gap grows in step with the size of the index rather than staying fixed. A forced reindex of `src` went from about 8355 ms to about 7915 ms over three alternating builds, the difference being almost exactly the removal cost. The rows removed are unchanged, checked by comparing the full remaining id list from both versions against the same starting database. The sub-question had been chosen to avoid a limit on how many ids one query may name; removing one id at a time never approaches that limit either. See [src/embeddings.ts](src/embeddings.ts), with the statement shape pinned in [tests/embeddings_vector_delete_plan.test.ts](tests/embeddings_vector_delete_plan.test.ts).
+
 ## [2.6.30] - 2026-08-16
 
 ### Changed

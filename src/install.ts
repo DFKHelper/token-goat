@@ -514,7 +514,8 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
       } catch {
         continue
       }
-      if (hasRealBlock(text)) found.push(full)    }
+      if (hasRealBlock(text)) found.push(full)
+    }
   }
 
   walk(root, 0)
