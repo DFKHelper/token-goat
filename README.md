@@ -1252,7 +1252,16 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, `--copilot`, `--grok`, or `--vscode` to also strip those integrations. There is no `--purge` flag — `uninstall` never deletes the data directory (cache, index, models, logs); remove it by hand if you want it gone. It also does not stop a running worker; use `token-goat worker stop` for that. Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, `--copilot`, `--grok`, or `--vscode` to also strip those integrations. It does not stop a running worker; use `token-goat worker stop` for that. Nothing else on the system depends on it.
+
+By default the data directories stay: the index took real time to build and a reinstall wants it back. Add `--purge` to delete them as well, which is what offboarding a machine needs:
+
+```
+token-goat worker stop
+token-goat uninstall --purge
+```
+
+That removes both roots (the data directory holding the index, caches, models and logs, and the home directory holding session state and the OCR cache), naming each one and how much it reclaimed. It refuses while the worker is running, because the worker would rewrite files under a directory being deleted.
 
 ## About
 

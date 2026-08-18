@@ -624,7 +624,9 @@ describe('cli_doctor', () => {
       expect(health.message).toContain('no duplicate MCP launchers')
     })
 
-    it('returns null when the process-list command fails, not an empty list', () => {
+    // Windows-only: off Windows the function returns [] before it ever runs a command, which the
+    // sibling test below pins.
+    it.runIf(process.platform === 'win32')('returns null when the process-list command fails, not an empty list', () => {
       const failed = readWindowsProcesses(() => {
         throw new Error('powershell timed out')
       })
@@ -632,8 +634,16 @@ describe('cli_doctor', () => {
       expect(failed).toBeNull()
     })
 
-    it('returns an empty list when the command answers with nothing, which is not a failure', () => {
+    it.runIf(process.platform === 'win32')('returns an empty list when the command answers with nothing, which is not a failure', () => {
       expect(readWindowsProcesses(() => '')).toEqual([])
+    })
+
+    it.runIf(process.platform !== 'win32')('returns an empty list off Windows without running anything', () => {
+      expect(
+        readWindowsProcesses(() => {
+          throw new Error('must not be called')
+        }),
+      ).toEqual([])
     })
 
     it('returns array of doctor results', () => {
