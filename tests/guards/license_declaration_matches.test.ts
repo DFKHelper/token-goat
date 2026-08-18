@@ -40,6 +40,21 @@ describe('declared license', () => {
     expect(readText('README.md')).toContain('SECURITY.md#dependency-advisories')
   })
 
+  // The supply-chain answer an evaluation asks for -- "how do I know this tarball came from that
+  // repo" -- was true (the workflow publishes with --provenance) but written down nowhere. These
+  // keep the claim and the workflow that backs it from drifting apart: a publish step that loses
+  // --provenance leaves the document promising an attestation that no longer exists.
+  it('documents provenance, and the publish workflow still produces it', () => {
+    const security = readText('SECURITY.md')
+
+    expect(security).toContain('npm audit signatures')
+    expect(readText('.github/workflows/publish.yml')).toContain('--provenance')
+  })
+
+  it('does not claim provenance without the id-token permission that mints it', () => {
+    expect(readText('.github/workflows/publish.yml')).toContain('id-token: write')
+  })
+
   it('still has PolyForm Noncommercial as the actual grant, so the pointer is not stale', () => {
     expect(readText('LICENSE')).toContain('PolyForm Noncommercial License 1.0.0')
   })

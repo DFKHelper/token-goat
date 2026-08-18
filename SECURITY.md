@@ -53,6 +53,20 @@ The following are not treated as security issues unless paired with a working pr
 
 Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
 
+## Verifying what you installed
+
+Every published version is built and pushed by one workflow, [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which runs only when a GitHub release is published (or manually, and then only from `main`). It publishes with npm provenance, so npm holds a signed attestation tying the tarball to the commit and workflow run that produced it. Nothing is ever published from a laptop.
+
+To check a copy you already have:
+
+```
+npm audit signatures
+```
+
+Run in a project that depends on token-goat, it verifies the registry signature and the provenance attestation for every installed package, token-goat included. The package page on npm links the attestation to the exact commit, so you can read the source that produced the bytes you are running.
+
+Every action used by that workflow, and by CI, is pinned to a full commit SHA rather than a tag, so a compromised action repository cannot silently change what runs. That is enforced by a test rather than by review: see [tests/guards/workflow_actions_pinned.test.ts](tests/guards/workflow_actions_pinned.test.ts).
+
 ## License
 
 Token-Goat is source-available under the PolyForm Noncommercial License 1.0.0. Submitting a security report does not grant the reporter any license to Token-Goat's code beyond what PolyForm Noncommercial already permits. See LICENSE for the full terms.
