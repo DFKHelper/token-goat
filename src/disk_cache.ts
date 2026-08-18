@@ -23,7 +23,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
-import { atomicWriteText, sanitizeIdForFilename } from './util.js'
+import { ensureDirSync, atomicWriteText, sanitizeIdForFilename } from './util.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat } from './stats.js'
 
@@ -152,7 +152,7 @@ export function storeBlob(
   if (Number.isFinite(maxBytesPerItem) && Buffer.byteLength(json, 'utf-8') > maxBytesPerItem) return false
   try {
     const dir = path.dirname(p)
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    if (!fs.existsSync(dir)) ensureDirSync(dir)
     atomicWriteText(p, json)
   } catch {
     return false

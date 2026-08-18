@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
 import { resolveIndexPath } from './paths.js'
-import { atomicWriteBytes } from './util.js'
+import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
 import { parseDirtyQueueLines } from './worker.js'
 
@@ -40,7 +40,7 @@ export function appendDirtyPath(normalizedPath: string): void {
   const queuePath = dirtyQueuePath()
   const dir = path.dirname(queuePath)
   try {
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }
@@ -134,7 +134,7 @@ export function preCompactIndexHandler(_event: HookEvent): HookOutput {
     // (a TOCTOU race with appendDirtyPath) with no code left to reindex it.
     const sidecar = path.join(dataDir(), 'queue', 'pending.txt')
     try {
-      fs.mkdirSync(path.dirname(sidecar), { recursive: true })
+      ensureDirSync(path.dirname(sidecar))
       atomicWriteBytes(sidecar, Buffer.from(`${paths.join('\n')}\n`, 'utf8'))
     } catch {
       // best-effort snapshot; failures here must never affect the live queue

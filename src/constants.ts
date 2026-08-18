@@ -7,6 +7,7 @@
  * leaf modules (version.ts), never from anything above.
  */
 
+import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -165,8 +166,56 @@ export function dataDir(): string {
  * when done in-process; mutating the cached binding directly avoids the module registry
  * entirely.
  */
+/**
+ * Whether {@link ensureDataDirPrivate} has already run in this process. The data root's mode does
+ * not change underneath us, so one syscall per process is enough.
+ */
+let dataDirHardened = false
+
+/**
+ * Create the data root, owner-only, before anything writes a child into it.
+ *
+ * Everything token-goat caches lands under this directory: bash output, fetched pages, MCP
+ * results, session state, and the SQLite index of the project's source. Created with a plain
+ * recursive mkdir it took the process umask, which on a stock Linux box means mode 755 -- so on
+ * a shared host every other local user could list and read another user's cached work. The
+ * individual JSON blobs are written 0600 by `atomicWriteText`, but the SQLite databases are
+ * created by the driver at its own default, and the file *names* alone leak which commands ran
+ * and which URLs were fetched.
+ *
+ * Hardening the root rather than each of the ~20 places that create a child is deliberate and
+ * strictly stronger: traversal into a 0700 directory is refused for everyone but the owner, so a
+ * child's own mode stops mattering. Existing installs are fixed too, not just fresh ones -- an
+ * already-created 755 root is chmodded down on the next run.
+ *
+ * No-op on Windows, where Node ignores POSIX modes and the directory inherits the parent ACL.
+ */
+export function ensureDataDirPrivate(): void {
+  if (dataDirHardened) return
+  dataDirHardened = true
+  try {
+    // Two steps, not one recursive call with a mode: `mode` applies to every level the call
+    // creates, and the parents here are shared XDG/AppData directories owned by the user rather
+    // than by token-goat -- a recursive create tightened `~/.local` and `~/.local/share` to 0700
+    // as collateral, which is not ours to change. The parents get the umask default; only the
+    // token-goat directory itself is made owner-only.
+    fs.mkdirSync(path.dirname(DATA_DIR), { recursive: true })
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') {
+      // `mode` only applies to directories this call actually creates, so an install that
+      // predates this hardening keeps its old permissive mode until it is chmodded explicitly.
+      const current = fs.statSync(DATA_DIR).mode & 0o777
+      if ((current & 0o077) !== 0) fs.chmodSync(DATA_DIR, 0o700)
+    }
+  } catch {
+    // Best-effort: a read-only or otherwise unwritable home must not break every command. The
+    // caller's own mkdir runs next and reports the real failure with its own context.
+  }
+}
+
 export function _resetDataDirCacheForTesting(): void {
   DATA_DIR = defaultDataDir()
+  dataDirHardened = false
 }
 
 /** Path to the global SQLite DB. */

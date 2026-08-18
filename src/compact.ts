@@ -10,7 +10,7 @@ import { detectHarness } from './bridges/index.js'
 import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
+import { ensureDirSync, atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import type { FileEntry } from './session.js'
@@ -458,7 +458,7 @@ export function writeSessionManifest(
   if (!safeSessionId) return
   const sessionsDir = path.join(dataDir(), 'projects', projectHash, 'sessions')
   if (!fs.existsSync(sessionsDir)) {
-    fs.mkdirSync(sessionsDir, { recursive: true })
+    ensureDirSync(sessionsDir)
   }
   const dest = path.join(sessionsDir, `${safeSessionId}.json`)
   atomicWriteText(dest, JSON.stringify(manifestJson))

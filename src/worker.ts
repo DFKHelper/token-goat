@@ -22,7 +22,7 @@ import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible }
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
+import { ensureDirSync, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
@@ -255,7 +255,7 @@ function writeDrainHeartbeat(dir: string, force = false): void {
   const now = Date.now()
   if (!force && now - (heartbeatWriteTimes.get(dir) ?? 0) < WORKER_HEARTBEAT_REFRESH_MS) return
   try {
-    fs.mkdirSync(path.dirname(drainHeartbeatPathFor(dir)), { recursive: true })
+    ensureDirSync(path.dirname(drainHeartbeatPathFor(dir)))
     fs.writeFileSync(drainHeartbeatPathFor(dir), `${process.pid}\n`)
     heartbeatWriteTimes.set(dir, now)
   } catch {
@@ -555,7 +555,7 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
 function appendToDirtyQueue(dir: string, absPath: string): void {
   const queuePath = dirtyQueuePathFor(dir)
   try {
-    fs.mkdirSync(path.dirname(queuePath), { recursive: true })
+    ensureDirSync(path.dirname(queuePath))
     let leadingNewline = ''
     try {
       const existing = fs.readFileSync(queuePath, 'utf8')
@@ -966,7 +966,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
     // No marker yet: first check ever for this data dir, proceed.
   }
   try {
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
     fs.writeFileSync(markerPath, '')
   } catch {
     // If we can't even write the marker, don't let that block the liveness check below --
@@ -1122,7 +1122,7 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
   const pollIntervalMs = resolvePollIntervalMs(opts?.pollIntervalMs)
   const dir = opts?.dataDir ?? dataDir()
   try {
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }

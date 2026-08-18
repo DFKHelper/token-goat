@@ -24,7 +24,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
+import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { consumedCurlDownloadKeys, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
@@ -506,7 +506,7 @@ export function saveSessionState(sessionId: string): void {
   if (!p) return
   try {
     const dir = path.dirname(p)
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    if (!fs.existsSync(dir)) ensureDirSync(dir)
     const mem = exportSessionState()
     // saveSessionState is the actual race: every hook call is a fresh OS process, and two concurrent processes for the same session can each read the pre-update disk state, merge it with their own view, and write -- whichever write lands last silently clobbers the other's update, with no error. A short-lived lockfile around just this read-merge-write section serializes concurrent savers, so each one's disk read reflects every write that already landed.
     const writeMerged = (): true => {

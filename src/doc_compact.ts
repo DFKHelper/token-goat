@@ -11,7 +11,7 @@ import * as path from 'path'
 
 import { dataDir } from './constants.js'
 import { fingerprintContent } from './fingerprint.js'
-import { atomicWriteText, foldPath, sanitizeIdForFilename } from './util.js'
+import { ensureDirSync, atomicWriteText, foldPath, sanitizeIdForFilename } from './util.js'
 import { resolveIndexPath } from './paths.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 
@@ -150,7 +150,7 @@ export function writeCompact(
 
   const dir = path.dirname(compactPath)
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
   }
   atomicWriteText(compactPath, fullText)
 }

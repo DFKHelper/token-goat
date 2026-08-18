@@ -11,6 +11,7 @@ import dns from 'node:dns/promises'
 import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
+import { urlPolicyDenialReason } from './url_policy.js'
 import { shrinkImage } from './image_shrink.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { atomicWriteBytes, redactUrlQuery, withExtension } from './util.js'
@@ -254,6 +255,16 @@ export function screenshotUrlRefusal(url: string): string | null {
   const safeUrl = parsed.origin !== 'null' ? parsed.origin + parsed.pathname : redactUrlQuery(url)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return `Rejected screenshot URL scheme "${parsed.protocol}" (only http:/https: are allowed): ${safeUrl}`
+  }
+  // The headless browser is the third way bytes leave this machine, after the WebFetch hook and
+  // performHttpFetch, and it was the one channel webfetch.allow/webfetch.deny never reached: an
+  // install configured to deny everything still rendered whatever URL it was handed. Checking here
+  // rather than at the command entry point is deliberate -- this function is re-applied by the
+  // request-interception hook to every redirect hop and every sub-resource the page loads, so an
+  // allowed page cannot pull an image, script, or iframe from a denied host either.
+  const policyDenial = urlPolicyDenialReason(url, loadConfig().webfetch)
+  if (policyDenial !== null) {
+    return `Rejected screenshot target: ${policyDenial}: ${safeUrl}`
   }
   if (loadConfig().screenshot.block_private_targets && isBlockedLiteralIp(parsed.hostname)) {
     return (
