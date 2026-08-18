@@ -604,7 +604,36 @@ describe('cli_doctor', () => {
       expect(health, 'runDoctor did not run the MCP process-health check at all').toBeDefined()
       // This process is running right now, so a real gather cannot come back empty; an empty list
       // would have produced the "no duplicate MCP launchers" ok message with nothing behind it.
-      expect(readWindowsProcesses().some((p) => p.processId === process.pid)).toBe(true)
+      expect(readWindowsProcesses()?.some((p) => p.processId === process.pid)).toBe(true)
+    })
+
+    it('says the process list could not be read rather than reporting a clean bill of health', () => {
+      // A failed gather used to come back as an empty array, indistinguishable from a machine with
+      // no processes, so doctor printed "no duplicate MCP launchers detected" backed by no data.
+      const health = checkMcpProcessHealth(null)
+
+      expect(health.status).toBe('warn')
+      expect(health.message).toContain('could not read the process list')
+      expect(health.message).not.toContain('no duplicate MCP launchers')
+    })
+
+    it('still reports a genuinely empty process list as ok, not as a failure', () => {
+      const health = checkMcpProcessHealth([])
+
+      expect(health.status).toBe('ok')
+      expect(health.message).toContain('no duplicate MCP launchers')
+    })
+
+    it('returns null when the process-list command fails, not an empty list', () => {
+      const failed = readWindowsProcesses(() => {
+        throw new Error('powershell timed out')
+      })
+
+      expect(failed).toBeNull()
+    })
+
+    it('returns an empty list when the command answers with nothing, which is not a failure', () => {
+      expect(readWindowsProcesses(() => '')).toEqual([])
     })
 
     it('returns array of doctor results', () => {
