@@ -46,6 +46,7 @@
  * `SettingsParseError` strict-mode guard in `../install.ts`.
  */
 
+import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -121,7 +122,7 @@ interface CodexMatcherGroup {
 
 /** The config.toml shape read/written; unknown top-level keys are preserved verbatim. */
 interface CodexConfig {
-  hooks?: Record<string, CodexMatcherGroup[]>
+  hooks?: Record<string, CodexMatcherGroup[] | undefined> & { state?: Record<string, { trusted_hash?: string }> }
   [key: string]: unknown
 }
 
@@ -207,6 +208,58 @@ function anyGroupHasTokenGoat(
 
 // hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
 
+/**
+ * Build the hook command for Codex.
+ *
+ * On Windows, Codex CLI executes hook commands via PowerShell (`powershell.exe -Command ...`).
+ * In PowerShell, adjacent quoted string literals without a call operator fail with a ParserError
+ * ("Unexpected token '...' in expression or statement"). Prefixing with `& ` instructs PowerShell
+ * to invoke the quoted executable path with the trailing arguments (the identical fix
+ * `copilot_cli_install.ts` uses for Copilot CLI's `powershell` hook entry).
+ * On Unix (Linux/macOS), Codex executes hooks via POSIX `sh`, where `&` would be an invalid
+ * background operator, so the bare quoted command is preserved.
+ */
+export function codexHookCommandFor(scriptPath: string, eventArg: string): string {
+  const base = hookCommandFor(scriptPath, eventArg)
+  return process.platform === 'win32' ? `& ${base}` : base
+}
+
+/**
+ * Compute the canonical `trusted_hash` string that Codex CLI uses in `[hooks.state]`
+ * to track whether a hook definition is trusted.
+ *
+ * Codex canonicalizes the hook into:
+ *   {
+ *     event_name: <snake_case_event>,
+ *     hooks: [{ async: false, command: <command>, timeout: 600, type: "command" }],
+ *     matcher?: <matcher>
+ *   }
+ * and hashes the compact JSON representation with SHA-256 (`sha256:<hex>`).
+ */
+export function computeCodexHookHash(
+  eventArg: string,
+  command: string,
+  matcher?: string,
+): string {
+  const norm: Record<string, unknown> = {
+    event_name: eventArg,
+    hooks: [
+      {
+        async: false,
+        command,
+        timeout: 600,
+        type: 'command',
+      },
+    ],
+  }
+  if (matcher !== undefined) {
+    norm['matcher'] = matcher
+  }
+  const serialized = JSON.stringify(norm)
+  const hash = crypto.createHash('sha256').update(serialized).digest('hex')
+  return `sha256:${hash}`
+}
+
 /** Outcome of an {@link installCodex} call. */
 export interface CodexInstallResult {
   readonly configPath: string
@@ -240,12 +293,12 @@ export function installCodex(): CodexInstallResult {
   // before any write (see CodexConfigParseError), not silently proceed as if
   // it were empty and get clobbered below.
   const config = readCodexConfig(configPath, { strict: true })
-  const hooks = config.hooks ?? {}
+  const hooks: NonNullable<CodexConfig['hooks']> = config.hooks ?? {}
 
   let hooksChanged = false
   for (const event of CODEX_HOOK_EVENTS) {
     const eventArg = CODEX_EVENT_ARG[event]
-    const expectedCommand = hookCommandFor(scriptPath, eventArg)
+    const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     const groups = [...(hooks[event] ?? [])]
     for (const matcher of CODEX_MATCHERS) {
       if (groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) continue
@@ -267,7 +320,7 @@ export function installCodex(): CodexInstallResult {
 
   for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
     const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
-    const expectedCommand = hookCommandFor(scriptPath, eventArg)
+    const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     const groups = [...(hooks[event] ?? [])]
 
     if (anyGroupHasTokenGoat(groups, (c) => c === expectedCommand)) {
@@ -284,6 +337,56 @@ export function installCodex(): CodexInstallResult {
   }
 
   const agentsChanged = writeAgentsBlock(agentsPath)
+
+  // Ensure [hooks.state] in config.toml carries the valid trusted_hash for each
+  // installed token-goat hook so Codex CLI never prompts or silently skips the hooks as untrusted.
+  const hooksState = (hooks['state'] as Record<string, { trusted_hash?: string }> | undefined) ?? {}
+  for (const event of CODEX_HOOK_EVENTS) {
+    const eventArg = CODEX_EVENT_ARG[event]
+    const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
+    for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      const g = groups[groupIndex]
+      if (g && g.matcher && CODEX_MATCHERS.includes(g.matcher as (typeof CODEX_MATCHERS)[number])) {
+        const hookList = g.hooks ?? []
+        for (let hookIndex = 0; hookIndex < hookList.length; hookIndex++) {
+          const h = hookList[hookIndex]
+          if (h && isCodexTokenGoatCommand(h.command)) {
+            const stateKey = `${configPath}:${eventArg}:${groupIndex}:${hookIndex}`
+            const hash = computeCodexHookHash(eventArg, h.command, g.matcher)
+            if (hooksState[stateKey]?.trusted_hash !== hash) {
+              hooksState[stateKey] = { ...hooksState[stateKey], trusted_hash: hash }
+              hooksChanged = true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
+    const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
+    const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
+    for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      const g = groups[groupIndex]
+      if (!g) continue
+      const hookList = g.hooks ?? []
+      for (let hookIndex = 0; hookIndex < hookList.length; hookIndex++) {
+        const h = hookList[hookIndex]
+        if (h && isCodexTokenGoatCommand(h.command)) {
+          const stateKey = `${configPath}:${eventArg}:${groupIndex}:${hookIndex}`
+          const hash = computeCodexHookHash(eventArg, h.command)
+          if (hooksState[stateKey]?.trusted_hash !== hash) {
+            hooksState[stateKey] = { ...hooksState[stateKey], trusted_hash: hash }
+            hooksChanged = true
+          }
+        }
+      }
+    }
+  }
+
+  if (Object.keys(hooksState).length > 0) {
+    hooks['state'] = hooksState
+  }
 
   if (hooksChanged) {
     config.hooks = hooks
@@ -318,7 +421,22 @@ export function uninstallCodex(): boolean {
   const hooks = config.hooks
   if (hooks !== undefined) {
     const hooksRemoved = stripOwnHooksFromMap(hooks, isCodexTokenGoatCommand)
-    if (hooksRemoved) {
+    // Strip token-goat's state keys from hooks.state
+    const hooksState = hooks['state'] as Record<string, unknown> | undefined
+    let stateRemoved = false
+    if (hooksState && typeof hooksState === 'object') {
+      const prefix = `${configPath}:`
+      for (const key of Object.keys(hooksState)) {
+        if (key.startsWith(prefix)) {
+          delete hooksState[key]
+          stateRemoved = true
+        }
+      }
+      if (Object.keys(hooksState).length === 0) {
+        delete hooks['state']
+      }
+    }
+    if (hooksRemoved || stateRemoved) {
       if (Object.keys(hooks).length === 0) {
         delete config.hooks
       } else {
@@ -348,23 +466,42 @@ export function uninstallCodex(): boolean {
  * Is the Codex CLI integration currently present?
  *
  * True only when every (event, matcher) pair carries a token-goat hook entry,
- * the shim script exists on disk, and the AGENTS.md delimited block is present.
+ * the shim script exists on disk, the AGENTS.md delimited block is present,
+ * and every hook entry has its trusted_hash recorded under [hooks.state].
  * A partial install (e.g. config.toml wired but the shim script deleted by
- * hand) reads as not installed, so {@link installCodex} will top up what's missing.
+ * hand, or an untrusted/stale hash in hooks.state) reads as not installed, so
+ * {@link installCodex} will top up what's missing.
  */
 export function isCodexInstalled(): boolean {
-  const config = readCodexConfig(codexConfigPath())
+  const configPath = codexConfigPath()
+  const config = readCodexConfig(configPath)
   const hooks = config.hooks
   if (hooks === undefined) return false
+  const scriptPath = codexHookScriptPath()
+  const hooksState = (hooks['state'] as Record<string, { trusted_hash?: string }> | undefined) ?? {}
+
   for (const event of CODEX_HOOK_EVENTS) {
-    for (const matcher of CODEX_MATCHERS) {
-      if (!groupHasTokenGoat(hooks[event], matcher, isCodexTokenGoatCommand)) return false
+    const eventArg = CODEX_EVENT_ARG[event]
+    const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
+    const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
+    for (let i = 0; i < CODEX_MATCHERS.length; i++) {
+      const matcher = CODEX_MATCHERS[i]!
+      if (!groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) return false
+      const stateKey = `${configPath}:${eventArg}:${i}:0`
+      const expectedHash = computeCodexHookHash(eventArg, expectedCommand, matcher)
+      if (hooksState[stateKey]?.trusted_hash !== expectedHash) return false
     }
   }
   for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
-    if (!anyGroupHasTokenGoat(hooks[event])) return false
+    const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
+    const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
+    const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
+    if (!anyGroupHasTokenGoat(groups, (c) => c === expectedCommand)) return false
+    const stateKey = `${configPath}:${eventArg}:0:0`
+    const expectedHash = computeCodexHookHash(eventArg, expectedCommand)
+    if (hooksState[stateKey]?.trusted_hash !== expectedHash) return false
   }
-  if (!fs.existsSync(codexHookScriptPath())) return false
+  if (!fs.existsSync(scriptPath)) return false
 
   let agents: string
   try {
