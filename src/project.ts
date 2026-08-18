@@ -62,7 +62,11 @@ function normalizeShellDrivePrefix(posixStr: string): string {
 }
 
 /**
- * Resolve symlinks, normalize, lowercase the Windows drive letter.
+ * Normalize a path lexically and lowercase the Windows drive letter.
+ *
+ * Deliberately does NOT resolve symlinks: it must produce a stable key for paths that do not
+ * exist (deleted or not-yet-written files still need one). Callers that need link resolution --
+ * {@link isInsideRoot}, which enforces a security boundary -- must call realpath themselves.
  */
 export function canonicalize(inputPath: string | URL, baseDir?: string): string {
   const pathStr = typeof inputPath === 'string' ? inputPath : inputPath.pathname;
@@ -380,18 +384,31 @@ export function resolveProjectRoot(opts?: { project?: string }): string {
 /**
  * Is `target` the same path as `root`, or somewhere beneath it?
  *
- * Both sides go through {@link canonicalize} first, so symlinks, shell-mount spellings
- * (`/mnt/c/...`, `/c/...`), separator direction, drive-letter case, and 8.3 short names all
- * compare equal. The trailing-separator guard is what stops `/srv/project-secrets` from reading
- * as inside `/srv/project`. On Windows the comparison folds case, since the filesystem does.
+ * Both sides are resolved through the real filesystem before comparison, then canonicalized, so
+ * shell-mount spellings (`/mnt/c/...`, `/c/...`), separator direction, drive-letter case and 8.3
+ * short names all compare equal. Resolving links is the load-bearing step: `canonicalize` does
+ * NOT call realpath, so a directory symlink inside the root pointing out of it (`<root>/link` ->
+ * `/other-project`) satisfies a purely lexical prefix test while naming a file the caller was
+ * confined away from. `realpathSync` is best-effort -- a path that does not exist yet has no link
+ * to resolve and falls back to its lexical form, which is the safe direction here since a
+ * nonexistent path cannot be read either way.
+ *
+ * The trailing-separator guard is what stops `/srv/project-secrets` from reading as inside
+ * `/srv/project`. Case is folded via foldPath, which asks the platform rather than assuming
+ * Windows: a default macOS APFS volume is case-insensitive too, and folding only on Windows
+ * rejected `--file /Users/alice/repo/x.ts` under a root git reports as `/Users/alice/Repo`.
  */
 export function isInsideRoot(target: string, root: string): boolean {
-  let t = canonicalize(target);
-  let r = canonicalize(root);
-  if (process.platform === 'win32') {
-    t = t.toLowerCase();
-    r = r.toLowerCase();
-  }
+  const resolve = (p: string): string => {
+    const c = canonicalize(p);
+    try {
+      return canonicalize(fs.realpathSync(c));
+    } catch {
+      return c;
+    }
+  };
+  const t = foldPath(resolve(target));
+  const r = foldPath(resolve(root));
   if (t === r) return true;
   return t.startsWith(r.endsWith('/') ? r : r + '/');
 }

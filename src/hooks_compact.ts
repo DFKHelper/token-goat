@@ -10,7 +10,7 @@
 
 import { spawnSync } from 'node:child_process'
 
-import { getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns, markCompacted } from './session.js'
+import { WEB_FETCH_KEY_SEP, getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns, markCompacted } from './session.js'
 import type { FileEntry } from './session.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -123,14 +123,12 @@ export function buildManifest(sessionId?: string, cwd?: string): string {
     editedFiles.map((entry) => `- ${entry.path}`),
     MAX_ROWS,
   )
-  // The map key is the url+'\x00'+prompt composite (see recordWebFetch in session.ts), so split it back apart for display instead of treating the whole key as the url.
+  // The map key is the redactedUrl + redactedPrompt + digest composite (see webFetchKey in session.ts), so split it back apart for display instead of treating the whole key as the url. Taking only the first two fields drops the trailing digest, which exists for identity and means nothing to a reader.
   appendCappedSection(
     lines,
     '### Web URLs fetched',
     webFetches.map(([key, cacheId]) => {
-      const sep = key.indexOf('\x00')
-      const url = sep === -1 ? key : key.slice(0, sep)
-      const prompt = sep === -1 ? '' : key.slice(sep + 1)
+      const [url = key, prompt = ''] = key.split(WEB_FETCH_KEY_SEP)
       const promptSuffix = prompt ? `, prompt: ${JSON.stringify(prompt)}` : ''
       return `- ${url} (cacheId: ${cacheId}${promptSuffix})`
     }),

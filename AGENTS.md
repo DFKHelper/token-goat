@@ -48,3 +48,7 @@ Three rules follow, and each is enforced by a test:
 Guards: [tests/guards/symbol_body_bound.test.ts](tests/guards/symbol_body_bound.test.ts) (pre-commit, source introspection) and [tests/index_amplification_guard.test.ts](tests/index_amplification_guard.test.ts) (pre-push/CI, real files → real DB; reports `1200.0x` on the pre-fix parser). Runtime: `token-goat doctor` warns past 1 GB and points at `token-goat reclaim-index --rebuild`.
 
 The failure mode to watch for is the **injected-seam trap**: a test always supplies the dependency that the shipping path omits, so the production default is never exercised and the suite stays green over a broken feature. It applies wherever behavior hides behind an injectable callback or a default parameter.
+
+## Security boundaries
+
+Five invariants govern redaction, fencing, persisted keys, and path confinement, each established by a defect that shipped past a green suite. Read them before changing any of those surfaces: `token-goat section "CLAUDE.arch.md::Security Boundaries"`, or the same heading in [CLAUDE.arch.md](CLAUDE.arch.md). A change touching one needs a test that fails when the invariant is removed, not just a green suite.

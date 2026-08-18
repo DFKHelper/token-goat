@@ -44,25 +44,17 @@ function preMcpHandler(event: HookEvent): HookOutput {
 
 function postMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
-  if (!toolName || !event.sessionId || !toolName.startsWith('mcp__')) return passOutput()
+  if (!toolName || !toolName.startsWith('mcp__')) return passOutput()
   const toolInput = getToolInput(event)
-  // An in-band MCP error is a valid response, not a cacheable one — never let a
-  // transient or now-resolved failure block every later identical retry.
-  if (isMcpErrorResponse(event.raw)) return passOutput()
-  const readOnly = isMcpReadOnly(toolName, toolInput)
   const resultText = extractToolResultText(event.raw)
   if (!resultText) return passOutput()
-  // Caching/dedup remains strictly read-only-gated: a mutating or non-idempotent
-  // call (e.g. a browser-automation `take_snapshot`, which trips MUTATING_VERBS_RE's
-  // `snapshot` token even though its result is compressible) must never be served
-  // back to a later identical pre_tool_use call, since its output can legitimately
-  // differ call to call.
   // An MCP result is a remote server's output: the least trusted text in the pipeline, and the
-  // one surface a page-only injection scan never covered. It was scanned nowhere -- not here on
-  // the live path, not on `mcp-output <id>` recall -- so a compromised or hostile server could put
-  // imperative-override text straight into the model's context unmarked. Scanned here because this
-  // is the branch that actually bills: the text reaches the model this turn whether or not the
-  // compression below decides it is worth rewriting.
+  // one surface a page-only injection scan never covered. Scanned before every early return
+  // below, because each of those returns was a way for the same hostile text to reach the model
+  // unmarked: an in-band error response carries text just as a success does, a harness that omits
+  // the session id still shows the model the result, and the read-only dedup return fires on the
+  // SECOND of two identical calls -- whose result a hostile or time-varying server is free to
+  // make different from the first. Caching is what those guards exist to gate; the fence is not.
   let injectionMatches: string[] = []
   try {
     if (loadConfig().injection.enabled) injectionMatches = scanForInjectionPatterns(resultText)
@@ -70,12 +62,27 @@ function postMcpHandler(event: HookEvent): HookOutput {
     injectionMatches = []
   }
   if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
+  const fenced = (): HookOutput => ({
+    hookType: 'rewriteOutput',
+    updatedOutput: fenceUntrustedContent(redactSecrets(resultText).text, injectionMatches, UNTRUSTED_TOOL_TAG),
+  })
+  const passOrFence = (): HookOutput => (injectionMatches.length > 0 ? fenced() : passOutput())
 
+  if (!event.sessionId) return passOrFence()
+  // An in-band MCP error is a valid response, not a cacheable one - never let a
+  // transient or now-resolved failure block every later identical retry.
+  if (isMcpErrorResponse(event.raw)) return passOrFence()
+  const readOnly = isMcpReadOnly(toolName, toolInput)
+  // Caching/dedup remains strictly read-only-gated: a mutating or non-idempotent
+  // call (e.g. a browser-automation `take_snapshot`, which trips MUTATING_VERBS_RE's
+  // `snapshot` token even though its result is compressible) must never be served
+  // back to a later identical pre_tool_use call, since its output can legitimately
+  // differ call to call.
   let id: string | null = null
   if (readOnly) {
     const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
     // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
-    if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
+    if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOrFence()
     id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
   }
   // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts) is gated
@@ -134,13 +141,7 @@ function postMcpHandler(event: HookEvent): HookOutput {
   // Reached when compression did not fire or did not pay off. The fence is a security action,
   // not a compression one, so it must not inherit the size floor, the opt-out env var, or the
   // net-benefit gate above -- a short hostile result is exactly the case those would drop.
-  if (injectionMatches.length > 0) {
-    return {
-      hookType: 'rewriteOutput',
-      updatedOutput: fenceUntrustedContent(redactSecrets(resultText).text, injectionMatches, UNTRUSTED_TOOL_TAG),
-    }
-  }
-  return passOutput()
+  return passOrFence()
 }
 
 // Both handlers no-op unless the tool name starts with `mcp__` (preMcpHandler via

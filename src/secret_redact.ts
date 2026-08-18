@@ -72,6 +72,14 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // one pattern covers all three rather than adding a near-duplicate entry.
   ['stripe_key', /(?:sk_live_|sk_test_|rk_live_)[A-Za-z0-9]{20,}/g],
   ['google_api_key', /AIza[A-Za-z0-9_-]{35}/g],
+  // Presigned-url signatures: AWS SigV4 (X-Amz-Signature), Google Cloud Storage
+  // (X-Goog-Signature), and Azure blob SAS (sig). These are bearer credentials in query-string
+  // clothing -- anyone holding the whole url can read or write the object until it expires, and
+  // none of the prefix-anchored patterns above match them because the signature is a bare hex or
+  // base64 blob with no distinctive prefix of its own. The '[?&]' anchor and the 16-char floor
+  // are what make the short, generic 'sig' name safe to key on: a prose or code mention of "sig"
+  // never sits directly after a query separator followed by that much opaque token.
+  ['presigned_signature', /(?<=[?&](?:X-Amz-Signature|X-Goog-Signature|sig)=)[A-Za-z0-9%+/=_-]{16,}/gi],
   // Generic key=value assignments in .env-file and connection-string/query-string shape. The
   // lookbehind again redacts only the value, and the value's character class deliberately
   // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- that exclusion is

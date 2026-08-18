@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { consumedCurlDownloadKeys, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -158,6 +158,18 @@ function asLineRanges(raw: unknown): Array<[string, Array<[number, number]>]> {
  * Python-format files are transparently migrated to the TS shape on load; the
  * next {@link saveSessionState} call then writes the file in the TS format so
  * subsequent loads use the fast path automatically. */
+/**
+ * Rewrite persisted keys into the current shape as they come off disk.
+ *
+ * Every disk read passes through {@link coerce}, including the fresh re-read the save path does
+ * before merging, so migrating here means no individual caller has to know a key shape ever
+ * changed. A last-write-wins collapse is correct if two legacy keys migrate to the same key: the
+ * new key is a function of the same pair, so a collision means they were the same fetch.
+ */
+function migrateKeys(pairs: Array<[string, string]>, migrate: (key: string) => string): Array<[string, string]> {
+  return pairs.map(([key, value]) => [migrate(key), value])
+}
+
 function coerce(raw: unknown): SerializedSession {
   const o = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const files: FileEntry[] = []
@@ -220,9 +232,9 @@ function coerce(raw: unknown): SerializedSession {
     files,
     hintsShown,
     ...(scheduledPromptCounts.length > 0 ? { scheduledPromptCounts } : {}),
-    webFetches: asStringPairs(o['webFetches']),
+    webFetches: migrateKeys(asStringPairs(o['webFetches']), migrateWebFetchKey),
     bashOutputs: asStringPairs(o['bashOutputs']),
-    curlDownloads: asStringPairs(o['curlDownloads']),
+    curlDownloads: migrateKeys(asStringPairs(o['curlDownloads']), migrateCurlDownloadKey),
     fileLineRanges: asLineRanges(o['fileLineRanges']),
     cliReads,
     bashReruns,

@@ -13,6 +13,7 @@ import { tokenGoatHome } from './disk_cache.js'
 import { ensureDirSync, atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
+import { WEB_FETCH_KEY_SEP } from './session.js'
 import type { FileEntry } from './session.js'
 
 // ---------------------------------------------------------------------------
@@ -648,9 +649,9 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
   if (webFetches.length > 0) {
     lines.push('## Web fetches')
     let sectionTokens = estimateTokens('## Web fetches\n')
-    // webFetches entries are `[url\x00prompt, cacheId]` pairs (see session.ts's
-    // recordWebFetch) — surface the distinct URLs, dropping the prompt suffix.
-    const urls = Array.from(new Set(webFetches.map(([key]) => key.split('\x00')[0] ?? key)))
+    // webFetches keys are redactedUrl + redactedPrompt + digest composites (see webFetchKey in
+    // session.ts) — surface the distinct URLs, dropping the prompt and digest fields.
+    const urls = Array.from(new Set(webFetches.map(([key]) => key.split(WEB_FETCH_KEY_SEP)[0] ?? key)))
     for (const url of urls.slice(0, 10)) {
       if (sectionTokens > budgetRemaining * 0.2) break
       lines.push(`- ${url}`)

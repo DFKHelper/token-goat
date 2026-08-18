@@ -55,14 +55,16 @@ export const UNTRUSTED_WEB_TAG = 'untrusted-web-content'
  * still read as that same closing tag -- tag names are case-insensitive and trailing whitespace
  * inside a tag is ordinary, so the strict form was the only one an attacker had no reason to use.
  * The pattern below therefore ignores case, allows whitespace around the name and the slash, and
- * allows the junk attributes an end tag may carry.
+ * allows the junk attributes an end tag may carry. It also allows a slash immediately BEFORE the
+ * closing bracket: `</untrusted-tool-output/>` is a malformed end tag that HTML parsing still
+ * reads as one, and leaving it unescaped handed an attacker a spelling that closed the fence.
  *
  * A replacer function, not a replacement string: `$&` and friends are substitution sequences in a
  * string replacement, and the matched text here is attacker-controlled.
  */
 function neutralizeFenceMarkers(text: string, tag: string): string {
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?:\\s[^>]*)?\\s*>`, 'gi')
+  const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?:\\s[^>]*)?\\s*/?\\s*>`, 'gi')
   return text.replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
 }
 
