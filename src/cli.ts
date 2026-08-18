@@ -22,6 +22,7 @@ import type { StdioServerTransport as StdioServerTransportClass } from '@modelco
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
+import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1007,7 +1008,35 @@ function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: s
 function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
+  fenceUntrusted = false,
 ): string {
+  // Fetched-page recall only. The injection scan is documented as unconditional for fetched
+  // pages, and a `web-output <id>` recall puts that same attacker-written text in front of the
+  // model -- but only the WebFetch post-hook fenced it, so the copy served from the cache came
+  // back bare. Scanning here rather than at store time means the fence wraps exactly what the
+  // caller sees, so a --grep/--head slice that keeps the payload is fenced and one that drops it
+  // is not. Callers that cache local output (bash-output) or a tool result (mcp-output) leave
+  // this off: neither is a fetched page, and neither is scanned at ingest either.
+  const emit = (text: string): string => {
+    if (!fenceUntrusted || text === '') {
+      out(text)
+      return text
+    }
+    let matches: string[] = []
+    try {
+      if (loadConfig().injection.enabled) matches = scanForInjectionPatterns(text)
+    } catch {
+      matches = []
+    }
+    if (matches.length === 0) {
+      out(text)
+      return text
+    }
+    recordStat('injection_detected', 0, 0, undefined, matches.join(','))
+    const fenced = fenceUntrustedContent(text, matches)
+    out(fenced)
+    return fenced
+  }
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
     if (sectionResult === null) {
@@ -1047,9 +1076,7 @@ function _applyFiltersAndPrint(
   const lines = content.split(/\r?\n/)
   // --full is the only way to get the stored blob back verbatim. The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
-    const printedFull = lines.join('\n')
-    out(printedFull)
-    return printedFull
+    return emit(lines.join('\n'))
   }
   const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
   const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
@@ -1068,9 +1095,7 @@ function _applyFiltersAndPrint(
     result = lines.slice(Math.max(0, lines.length - tailN))
   }
 
-  const printed = result.join('\n')
-  out(printed)
-  return printed
+  return emit(result.join('\n'))
 }
 
 /** Best-effort on-disk size of a file; 0 if it can't be stat'd (never blocks stat recording). */
@@ -1132,7 +1157,7 @@ function cmdWebOutput(
   if (content === null) {
     throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
-  _applyFiltersAndPrint(content, opts)
+  _applyFiltersAndPrint(content, opts, true)
 }
 
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
