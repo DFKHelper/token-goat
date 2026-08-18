@@ -8,6 +8,8 @@
  * the operator's policy means.
  */
 
+import { domainToUnicode } from 'node:url'
+
 /** Build a case-insensitive RegExp from a wildcard pattern where `*` matches any run of characters (including `/`). Deliberately not minimatch/pack.ts's path-glob semantics -- those treat `/` as a segment boundary a bare `*` won't cross, which is wrong for URL patterns like `*.example.com*` that need to span the `://` and path segments of a URL. `?` is escaped along with the other regex metacharacters because it is an ordinary literal in a URL query string: left unescaped it turns the preceding character optional, so `*example.com/?debug=1*` both failed to match the URL it was written for and matched `https://example.com/debug=1`, which it was not -- a deny list that silently does not deny is the exact failure this wiring exists to remove. */
 export function wildcardToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*');
@@ -59,10 +61,21 @@ function urlSpellings(url: string): string[] {
     // The same interchangeability the authority check gets, for the whole-string match: a policy
     // written as `https://example.com:443/*` has to match a URL written without the default port,
     // and the parser has already thrown that port away by the time we see it.
+    // Assigning a default port or a Unicode host is a no-op in the parser, so both spellings below
+    // are built as strings directly rather than by mutating `parsed`.
+    const spellWith = (authority: string): string =>
+      `${parsed.protocol}//${parsed.username === '' && parsed.password === '' ? '' : `${parsed.username}${parsed.password === '' ? '' : `:${parsed.password}`}@`}${authority}${parsed.pathname}${parsed.search}${parsed.hash}`
     const defaultPort = DEFAULT_PORTS[parsed.protocol]
     if (parsed.port === '' && defaultPort !== undefined) {
-      // Assigning the scheme's default port is a no-op in the parser, so build the string directly.
-      const spelled = `${parsed.protocol}//${parsed.username === '' && parsed.password === '' ? '' : `${parsed.username}${parsed.password === '' ? '' : `:${parsed.password}`}@`}${parsed.hostname}:${defaultPort}${parsed.pathname}${parsed.search}${parsed.hash}`
+      const spelled = spellWith(`${parsed.hostname}:${defaultPort}`)
+      if (!out.includes(spelled)) out.push(spelled)
+    }
+    // The parser stores an internationalised host punycode-encoded, because that is what DNS is
+    // asked for. A pattern written in the spelling an operator actually types then matched neither
+    // the host nor the whole string.
+    const unicodeHost = domainToUnicode(parsed.hostname)
+    if (unicodeHost !== '' && unicodeHost !== parsed.hostname) {
+      const spelled = spellWith(parsed.port === '' ? unicodeHost : `${unicodeHost}:${parsed.port}`)
       if (!out.includes(spelled)) out.push(spelled)
     }
   } catch {
@@ -114,6 +127,16 @@ function urlAuthorities(url: string): string[] | null {
     // silently. Offering the explicit spelling as well makes the two forms interchangeable.
     const defaultPort = DEFAULT_PORTS[parsed.protocol];
     if (parsed.port === '' && defaultPort !== undefined) hosts.push(`${parsed.hostname}:${defaultPort}`);
+    // Same interchangeability for an internationalised host. `https://exämple.com/*` as an allow
+    // pattern matched no host at all, because the parser hands back `xn--exmple-cua.com`, so a policy
+    // written in the operator's own spelling refused every URL to that host and said nothing. This is
+    // a decode of that exact hostname, so it can only ever add the same host under its other name.
+    const unicodeHost = domainToUnicode(parsed.hostname);
+    if (unicodeHost !== '' && unicodeHost !== parsed.hostname) {
+      hosts.push(unicodeHost);
+      if (parsed.port !== '') hosts.push(`${unicodeHost}:${parsed.port}`);
+      else if (defaultPort !== undefined) hosts.push(`${unicodeHost}:${defaultPort}`);
+    }
     return hosts;
   } catch {
     return null;

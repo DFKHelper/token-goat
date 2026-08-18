@@ -125,6 +125,7 @@
     "protobufjs": "^8.7.2",
     "deepmerge-ts": "^8.0.1",
     "uuid": "^14.0.1",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "unzipper": "^0.12.5"
   }
 }
