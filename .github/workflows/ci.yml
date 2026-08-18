@@ -1,6 +1,11 @@
 name: CI
 on: [push, pull_request]
 
+# Least privilege by default. CI only ever reads the repository; a job that needs more has to
+# ask for it explicitly, so a future step cannot quietly inherit a writable token.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 

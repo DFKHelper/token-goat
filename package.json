@@ -17,6 +17,7 @@
   },
   "scripts": {
     "build": "node esbuild.config.mjs",
+    "sbom": "npm sbom --sbom-format cyclonedx --omit=dev",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
@@ -51,7 +52,7 @@
     "SECURITY.md",
     "LICENSE"
   ],
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -69,7 +70,7 @@
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.5.0",
     "lefthook": "^2.1.10",
     "tsx": "^4.19.0",
@@ -119,5 +120,11 @@
     "tree-sitter-ruby@0.23.1": true,
     "tree-sitter-rust@0.23.3": true,
     "tree-sitter-typescript@0.23.2": true
+  },
+  "overrides": {
+    "protobufjs": "^8.7.2",
+    "deepmerge-ts": "^8.0.1",
+    "uuid": "^14.0.1",
+    "sharp": "^0.35.3"
   }
 }

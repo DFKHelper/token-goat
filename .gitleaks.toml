@@ -1,0 +1,29 @@
+# Gitleaks configuration.
+#
+# Token-Goat redacts secrets out of command output and cached blobs before they reach a model, so
+# its test suite necessarily contains things shaped like secrets: that is the input the feature
+# exists to handle. A secrets scan over this repository reports 26 hits and every one of them is
+# such a fixture -- AWS's own documented example key `AKIAIOSFODNN7EXAMPLE`, GitHub tokens written
+# as a split string of keyboard runs, PEM blocks whose body is the literal text `first-key-body`.
+#
+# The allowlist below is scoped to paths, not to rules, and deliberately does not cover `src/`. A
+# credential committed anywhere the shipping code lives still fails the scan. That boundary is held
+# by a test rather than by review: see tests/guards/gitleaks_allowlist_scope.test.ts.
+
+title = "token-goat"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Redaction fixtures and directories that are not this project's source"
+paths = [
+  # Fixtures for the redaction feature. Never real credentials: the suite needs no account
+  # anywhere, so there is nothing live for one of these to be.
+  '''^tests/''',
+  # Not our code, and not committed. Dependency risk is covered by SCA, not by a secrets scan.
+  '''^node_modules/''',
+  # Build and coverage output, reproducible from source.
+  '''^dist/''',
+  '''^coverage/''',
+]

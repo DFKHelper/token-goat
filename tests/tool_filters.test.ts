@@ -293,10 +293,12 @@ describe('apply(): redacts secret-shaped values before returning', () => {
   // the same turn. Every other place token-goat persists or serves tool output (bash_output_cache,
   // disk_cache, web_cache, mcp_cache) already redacts secret-shaped values before the text leaves
   // that module; this pipeline is the one live, model-visible path that must do the same.
+  // The key below is a fixture, not a credential: this test exists to prove the filter redacts a
+  // value of that shape, so a literal one has to be present for it to have anything to redact.
   it('redacts an AWS access key id that survives filtering into the final body', () => {
-    const raw = 'AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nsome other output line'
+    const raw = 'AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nsome other output line' // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
     const result = new GenericFilter().apply(raw, '', 0, [])
-    expect(result.text).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(result.text).not.toContain('AKIAABCDEFGHIJKLMNOP') // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
     expect(result.text).toContain('[REDACTED:aws_access_key]')
   })
 
