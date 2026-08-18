@@ -145,9 +145,8 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
 | Hook crash leaves agent waiting for response | Every way the shim can fail prints `{}` and exits 0, leaving the tool call to proceed untouched: an event name it does not know, stdin it cannot read or parse, an in-process load that throws, a token-goat child that exits non-zero or prints nothing, and a catch around the whole run |
 | Concurrent edits lose update counts mid-session | Session CAS + mtime-based retry prevent lost edits in manifest |
-| Dirty queue appends corrupt on concurrent writes | OS file lock (fcntl/msvcrt) prevents torn JSON lines |
+| Dirty queue appends corrupt on concurrent writes | Each entry is one `O_APPEND` line, and an append that finds the file not ending in a newline starts with one, so a line torn by an earlier crash cannot merge with the next path into a single garbage entry |
 | Worker claim file blocks all re-spawns on crash | Mtime staleness check (>60s) auto-recovers zombie claim files |
-| DRY consolidation — 600+ lines duplicated | Tool-response extractor unified; cache helpers (`_safe_join`, `OutputStatDict`) consolidated; dedup-hint template collapsed; CLI output/history commands unified; `humanize_bytes` centralized in `render/ansi` |
 | Compaction hook subprocess ~190 ms cold | Lazy imports of heavy modules in `hooks_session` and `compact`; compaction path ~110 ms cold (~42% faster) |
 | Pre-compact subprocess runs on every session | Compact-skip sentinel on disk: if session file is <5 min old and no edits logged, subprocess exits in <1 ms |
 | Git ops slow manifest build in non-repo dirs | `git diff` / `git log` calls skipped when `cwd` is not inside a git repo (saves 60–100 ms per hook fire) |
@@ -889,7 +888,7 @@ never drift on where `mcp.json` lives or what key name it looks for.
 
 ## What gets installed?
 
-`token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Run `token-goat doctor` at any time to see which of these are currently present.
+`token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Integrations for other harnesses are additive on the way out as well as in, so a plain uninstall does not touch one you installed with `--codex`, `--copilot`, or a sibling flag: rather than undo something you did not ask about, it names each one still present and the flag that removes it. Run `token-goat doctor` at any time to see which of these are currently present.
 
 **Claude Code integration** (`~/.claude/`)
 
