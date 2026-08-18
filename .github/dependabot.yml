@@ -1,0 +1,9 @@
+# Actions are pinned to commit SHAs, which is what supply-chain review asks for and also what
+# stops them ever updating on their own. This keeps the pins current: Dependabot opens a PR that
+# moves the SHA and rewrites the version comment beside it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
