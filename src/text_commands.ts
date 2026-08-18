@@ -1593,6 +1593,11 @@ interface IgnoresReport {
   // map/todo/conflicts/hot --project ignore it entirely.
   blockedRoots: string[]
   excludeTests: boolean
+  // `.tokengoatignore` is read in exactly one place: cmdPack. It never reaches the index, the
+  // worker, or any walk-based command. Reported so the answer is on screen rather than inferred
+  // from its absence -- the file is named "ignore", so a reader keeping a directory out of the
+  // index reaches for it first and is silently wrong.
+  packIgnorePatterns: number
 }
 
 export function cmdIgnores(opts: { json?: boolean }): void {
@@ -1608,6 +1613,7 @@ export function cmdIgnores(opts: { json?: boolean }): void {
     skipDirs: [...SKIP_DIRS].sort(),
     blockedRoots: cfg.worker.blocked_roots,
     excludeTests: cfg.repomap.exclude_tests,
+    packIgnorePatterns: countPackIgnorePatterns(cwd),
   }
 
   if (opts.json === true) {
@@ -1642,4 +1648,24 @@ export function cmdIgnores(opts: { json?: boolean }): void {
     process.stdout.write('Blocked roots (config, enforced by token-goat index / index --walk / worker only): none\n')
   }
   process.stdout.write(`Exclude tests from repomap: ${cfg.repomap.exclude_tests}\n`)
+  process.stdout.write(
+    report.packIgnorePatterns > 0
+      ? `.tokengoatignore: ${report.packIgnorePatterns} pattern${report.packIgnorePatterns === 1 ? '' : 's'}, applied by token-goat pack only -- ` +
+          'it does not exclude anything from the symbol index. To keep a path out of the index, run "token-goat project exclude <path>".\n'
+      : '.tokengoatignore: not present. It would apply to token-goat pack only -- to keep a path out of the symbol index, ' +
+          'run "token-goat project exclude <path>".\n',
+  )
+}
+
+/** Counts the pattern lines in a project's .tokengoatignore, matching cmdPack's own parse: blank and #-comment lines are not patterns. */
+function countPackIgnorePatterns(root: string): number {
+  try {
+    return fs
+      .readFileSync(path.join(root, '.tokengoatignore'), 'utf8')
+      .split('\n')
+      .map((ln) => ln.trim())
+      .filter((ln) => ln.length > 0 && !ln.startsWith('#')).length
+  } catch {
+    return 0
+  }
 }
