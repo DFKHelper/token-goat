@@ -43,17 +43,27 @@ export function scanForInjectionPatterns(text: string): string[] {
 export const UNTRUSTED_WEB_TAG = 'untrusted-web-content'
 
 /**
- * Escape any literal occurrence of `<tag>`/`</tag>` inside untrusted text.
+ * Escape any occurrence of the fence's opening or closing tag inside untrusted text.
  *
- * split/join, not regex replace, so there is no `$`-substitution risk. Unescaped, an attacker
- * whose content contains the literal closing marker could prematurely close the fence and make
- * trailing attacker text appear -- to the model -- as if it sits outside the untrusted boundary,
- * undermining the fence its caller exists to provide.
+ * Unescaped, an attacker whose content contains the closing marker could prematurely close the
+ * fence and make trailing attacker text appear -- to the model -- as if it sits outside the
+ * untrusted boundary, undermining the fence its caller exists to provide.
+ *
+ * Matching has to be as loose as the reading is. An exact, case-sensitive split escaped only the
+ * one spelling `</untrusted-web-content>`, while `</UNTRUSTED-WEB-CONTENT>`,
+ * `</Untrusted-Web-Content>` and `</untrusted-web-content >` all passed through untouched and
+ * still read as that same closing tag -- tag names are case-insensitive and trailing whitespace
+ * inside a tag is ordinary, so the strict form was the only one an attacker had no reason to use.
+ * The pattern below therefore ignores case, allows whitespace around the name and the slash, and
+ * allows the junk attributes an end tag may carry.
+ *
+ * A replacer function, not a replacement string: `$&` and friends are substitution sequences in a
+ * string replacement, and the matched text here is attacker-controlled.
  */
 function neutralizeFenceMarkers(text: string, tag: string): string {
-  return text
-    .split(`<${tag}>`).join(`&lt;${tag}&gt;`)
-    .split(`</${tag}>`).join(`&lt;/${tag}&gt;`)
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?:\\s[^>]*)?\\s*>`, 'gi')
+  return text.replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
 }
 
 /**
