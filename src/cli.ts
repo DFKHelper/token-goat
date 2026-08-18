@@ -155,6 +155,7 @@ import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
+import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
@@ -734,6 +735,7 @@ function cmdUninstall(opts: {
   grok?: boolean
   vscode?: boolean
   local?: boolean
+  purge?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const removed = uninstallHooks(scope)
@@ -793,6 +795,24 @@ function cmdUninstall(opts: {
   if (opts.hermes === true) {
     out('No separate Hermes integration to remove (it shares the Claude Code hook entries).')
   }
+
+  if (opts.purge === true) runPurge()
+}
+
+/**
+ * The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive:
+ * it would rewrite the pid file and re-open the database under the directory being deleted, so
+ * the purge would report success over a directory that grows back.
+ */
+function runPurge(): void {
+  if (isWorkerRunning()) {
+    err('token-goat: the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.')
+    return
+  }
+  const result = purgeDataDirectories()
+  for (const root of result.absent) out(`Nothing to purge at ${root}.`)
+  for (const removed of result.removed) out(`Purged ${removed.path} (${formatBytes(removed.bytes)} reclaimed).`)
+  for (const failure of result.failed) err(`token-goat: could not purge ${failure.path}: ${failure.reason}`)
 }
 
 function cmdWorkerStart(): void {
@@ -3336,6 +3356,7 @@ export function buildProgram(): Command {
     .option('--grok', 'also remove the Grok CLI hook config and shim script')
     .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
+    .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
     .action(guard(cmdUninstall))
 
   program
