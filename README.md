@@ -914,6 +914,10 @@ There is no auto-update mechanism. Updating token-goat is always a manual `npm i
 
 Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, cached skill bodies (5 MB cap, LRU-evicted), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
 
+**What the index actually holds, in plain terms.** The point of a surgical read is returning a function body without the file around it, which means the database stores those bodies. `symbols.body` holds the source text of every indexed symbol, `symbols.docstring` its doc comment, `refs.context` the line around each reference, and `chunks.text` the passages that semantic search embeds. There is also a full-text index over the bodies and docstrings. So the database is not a list of names and line numbers: it is a substantial copy of your source, sitting in a plain unencrypted SQLite file outside the repository, at the path in the table above.
+
+Three things follow, and they are worth knowing before you decide. It never leaves the machine: token-goat sends no telemetry of any kind, and the only outbound requests it makes at all are the ones listed in the security section, none of which carry index content. It is not protected by your repository's access controls any more, so anything on the machine that can read your home directory can read it, and on Linux and macOS that directory sits under a home that backup and sync tools routinely copy. And it outlives an uninstall unless you say otherwise: `token-goat uninstall --purge` deletes both roots and tells you how much it reclaimed.
+
 **With `--codex`** (Codex CLI integration)
 
 | Path | What |
@@ -1269,7 +1273,7 @@ That removes both roots (the data directory holding the index, caches, models an
 
 I built this because long Claude Code and Codex sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable.
 
-This is a solo project. I use it daily on Windows 11. Tests run on Node.js 20 and 22.
+This is a solo project. I use it daily on Windows 11. The full test suite runs on Node.js 22 across Windows, macOS, and Linux, and all three must pass before anything merges.
 
 ## Sister project
 
