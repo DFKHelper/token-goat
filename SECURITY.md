@@ -9,7 +9,7 @@ Email token-goat@dfkhelper.com. This is a private inbox, not a public issue trac
 A useful report contains:
 
 - Affected Token-Goat version (`token-goat --version`)
-- Operating system and Python version
+- Operating system and Node version (`node --version`)
 - Reproduction steps, ideally a minimal command sequence
 - Observed impact and a short severity assessment
 - Suggested fix, if known
