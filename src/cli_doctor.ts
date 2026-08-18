@@ -776,7 +776,16 @@ export function printDoctorResults(results: DoctorResult[]): void {
   }
 
   const hasFailures = results.some((r) => r.status === 'fail')
-  console.log(hasFailures ? '\nFAILURES DETECTED' : '\nAll checks passed')
+  // A warning is not a pass. The verdict counted only failures, so a run that printed several
+  // [WARN] lines -- an oversized database, an empty index for this project, orphaned processes --
+  // still signed off with "All checks passed" directly underneath them. Nothing here changes
+  // what counts as a failure or the exit code; the summary stops contradicting the list above it.
+  const warnings = results.filter((r) => r.status === 'warn').length
+  const clean =
+    warnings === 0
+      ? '\nAll checks passed'
+      : `\nNo failures, but ${warnings} warning${warnings === 1 ? '' : 's'} above`
+  console.log(hasFailures ? '\nFAILURES DETECTED' : clean)
   console.log()
 }
 
