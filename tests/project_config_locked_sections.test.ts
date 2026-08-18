@@ -1,0 +1,114 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  PROJECT_LOCKED_KEYS,
+  PROJECT_LOCKED_SECTIONS,
+  invalidateConfigCache,
+  lastProjectConfigLockedKeys,
+  loadConfig,
+  stripLockedProjectKeys,
+} from '../src/config.js'
+
+// A per-project .token-goat.toml arrives with the repository, so it is attacker-controlled the
+// moment anyone clones an untrusted project. Before this, a checked-in three-line file turned off
+// prompt-injection fencing for every session opened in that directory, silently. Confirmed live
+// against the built binary before the fix.
+
+describe('stripLockedProjectKeys', () => {
+  it('drops a whole locked section and reports it', () => {
+    const { cleaned, dropped } = stripLockedProjectKeys({ injection: { enabled: false } })
+
+    expect(cleaned).toEqual({})
+    expect(dropped).toEqual(['injection'])
+  })
+
+  it.each(PROJECT_LOCKED_SECTIONS.map((s) => [s]))('drops the %s section', (section) => {
+    const { cleaned, dropped } = stripLockedProjectKeys({ [section]: { anything: 1 } })
+
+    expect(cleaned).toEqual({})
+    expect(dropped).toEqual([section])
+  })
+
+  it('drops a locked key without dropping the rest of its section', () => {
+    const { cleaned, dropped } = stripLockedProjectKeys({
+      indexing: { cross_project_symbols: true, max_file_bytes: 4096 },
+    })
+
+    expect(cleaned).toEqual({ indexing: { max_file_bytes: 4096 } })
+    expect(dropped).toEqual(['indexing.cross_project_symbols'])
+  })
+
+  it('leaves an ordinary section untouched, which is what the project file exists for', () => {
+    const raw = { hints: { mcp_dedup_ttl_secs: 99 }, worker: { poll_ms: 500 } }
+    const { cleaned, dropped } = stripLockedProjectKeys(raw)
+
+    expect(cleaned).toEqual(raw)
+    expect(dropped).toEqual([])
+  })
+
+  it('reports every locked entry a file sets, not just the first', () => {
+    const { dropped } = stripLockedProjectKeys({
+      injection: { enabled: false },
+      webfetch: { deny: [] },
+      gdrive: { enabled: true },
+      mcp: { allowed_roots: ['/'] },
+      indexing: { cross_project_symbols: true },
+    })
+
+    expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())
+  })
+
+  it('passes a non-object section-level value through unchanged, the same as a malformed global config', () => {
+    const { cleaned, dropped } = stripLockedProjectKeys({ hints: 5 })
+
+    expect(cleaned).toEqual({ hints: 5 })
+    expect(dropped).toEqual([])
+  })
+
+  it('drops a locked section written with a non-object value too, so a scalar is not a way past the lock', () => {
+    const { cleaned, dropped } = stripLockedProjectKeys({ injection: 'off' })
+
+    expect(cleaned).toEqual({})
+    expect(dropped).toEqual(['injection'])
+  })
+})
+
+// The helper above is only half the fix: a stripper that is never called is a stub. This drives
+// loadConfig() against a real .token-goat.toml on disk, the path a cloned repository actually
+// takes.
+describe('loadConfig with a per-project override on disk', () => {
+  let root: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-projcfg-'))
+    invalidateConfigCache()
+  })
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true })
+    invalidateConfigCache()
+  })
+
+  it('ignores a project file that tries to switch injection scanning off', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[injection]\nenabled = false\n')
+
+    expect(loadConfig(root).injection.enabled).toBe(true)
+    expect(lastProjectConfigLockedKeys()).toEqual(['injection'])
+  })
+
+  it('ignores a project file that tries to widen symbol confinement', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[indexing]\ncross_project_symbols = false\n')
+
+    expect(loadConfig(root).indexing.cross_project_symbols).toBe(true)
+    expect(lastProjectConfigLockedKeys()).toEqual(['indexing.cross_project_symbols'])
+  })
+
+  it('still applies an ordinary project override, so the file keeps working for what it is for', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[hints]\nmcp_dedup_ttl_secs = 99\n')
+
+    expect(loadConfig(root).hints.mcp_dedup_ttl_secs).toBe(99)
+    expect(lastProjectConfigLockedKeys()).toEqual([])
+  })
+})

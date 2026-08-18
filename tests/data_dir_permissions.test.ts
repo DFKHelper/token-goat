@@ -76,12 +76,20 @@ describe('data directory permissions', () => {
   // recursive call tightened the shared XDG parents (~/.local, ~/.local/share) as collateral.
   // Those belong to the user and to every other application, not to token-goat.
   it.runIf(POSIX)('leaves the shared parent directories at the umask default', () => {
+    // The reference directory is made by a plain mkdir in this same process, so it carries
+    // whatever umask the runner has. Comparing against it, rather than against a hardcoded 0755,
+    // keeps the assertion honest under any umask -- an earlier version asserted the group/other
+    // bits were set and failed on CI, where the enclosing mkdtemp root is 0700 by definition.
+    const reference = path.join(root, 'reference')
+    fs.mkdirSync(reference)
+    const rootModeBefore = mode(root)
+
     ensureDataDirPrivate()
 
     const parent = path.dirname(dataDir())
     expect(mode(dataDir())).toBe(0o700)
-    expect(mode(parent) & 0o077).not.toBe(0)
-    expect(mode(path.dirname(parent)) & 0o077).not.toBe(0)
+    expect(mode(parent)).toBe(mode(reference))
+    expect(mode(root)).toBe(rootModeBefore)
   })
 
   it('is idempotent and does not throw on a second call', () => {
