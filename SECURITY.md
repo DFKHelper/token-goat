@@ -63,7 +63,7 @@ To check a copy you already have:
 npm audit signatures
 ```
 
-Run in a project that depends on token-goat, it verifies the registry signature and the provenance attestation for every installed package, token-goat included. The package page on npm links the attestation to the exact commit, so you can read the source that produced the bytes you are running.
+Run from a project that depends on token-goat, that command verifies the registry signature and the provenance attestation for every installed package, token-goat included. The package page on npm links the attestation to the exact commit, so you can read the source that produced the bytes you are running.
 
 Every action used by that workflow, and by CI, is pinned to a full commit SHA rather than a tag, so a compromised action repository cannot silently change what runs. That is enforced by a test rather than by review: see [tests/guards/workflow_actions_pinned.test.ts](tests/guards/workflow_actions_pinned.test.ts).
 
