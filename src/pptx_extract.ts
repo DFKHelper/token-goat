@@ -102,7 +102,7 @@ async function slidePathsInPresentationOrder(entries: Record<string, Uint8Array>
 }
 
 async function listSlideParts(filePath: string): Promise<{ entries: Record<string, Uint8Array>; slidePaths: string[] }> {
-  const entries = await readOoxmlZip(filePath)
+  const entries = await readOoxmlZip(filePath, '.pptx')
   const slidePaths =
     (await slidePathsInPresentationOrder(entries)) ??
     sortNumberedParts(

@@ -40,20 +40,63 @@ const loadXmlParser = createLazyModuleLoader(
 const MAX_OOXML_INPUT_BYTES = 50 * 1024 * 1024
 
 /** Reads a .pptx/.docx file and returns its ZIP entries as path -> decompressed bytes. */
-export async function readOoxmlZip(filePath: string): Promise<Record<string, Uint8Array>> {
+/**
+ * Which of the two answers a failed open deserves. Only a genuinely absent file is "not found":
+ * mapping every errno to that message told someone hitting a permission error to go looking for a
+ * file that was sitting right where they left it. Kept as a function because the alternative is
+ * untestable: node:fs is a frozen namespace, so the non-ENOENT branch cannot be reached by mocking,
+ * and no real probe produces the same errno on every platform (a path leading through a regular
+ * file is ENOTDIR on Linux and ENOENT on Windows; chmod does not deny the owner on Windows at all).
+ */
+export function accessFailureMessage(err: unknown, filePath: string): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code
+  if (code === 'ENOENT') return `File not found: ${filePath}`
+  return `could not read ${filePath} (${code ?? 'unknown error'})`
+}
+
+export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx'): Promise<Record<string, Uint8Array>> {
   const fflate = await loadFflate()
   if (!fflate) throw new Error('fflate is not installed; run `npm install fflate` to enable this command')
-  const size = fs.statSync(filePath).size
-  if (size > MAX_OOXML_INPUT_BYTES) {
-    throw new Error(`${filePath} is ${Math.round(size / (1024 * 1024))}MB, over the ${MAX_OOXML_INPUT_BYTES / (1024 * 1024)}MB limit for OOXML files`)
+  // Every failure below used to escape as the raw Node or fflate error. A missing file surfaced
+  // as Node's ENOENT, which names the path it resolved rather than the one the caller typed, so
+  // asking for a file by its bare name printed the reader's whole home directory back at them. A
+  // directory surfaced as EISDIR, and a non-OOXML file surfaced as fflate's "invalid zip data",
+  // which does not even say which file failed. The sibling xlsx reader already guards exactly
+  // this (see loadWorkbook in xlsx_extract.ts, which stops jszip's internals and a docs URL
+  // reaching the user); the same treatment never reached here. Both readers now answer in the
+  // same two shapes, and every path in the message is the one the caller passed. One funnel, so
+  // this covers docx-outline, docx-text, pptx-outline, pptx-slide, pptx-notes and pptx-text.
+  // Not read off filePath: the caller knows which format it asked for, and the extension does
+  // not. `docx-outline report.txt` used to answer "not a valid .txt file", naming a format
+  // nobody asked about and that this reader cannot read either way.
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(filePath)
+  } catch (err) {
+    throw new Error(accessFailureMessage(err, filePath), { cause: err })
   }
-  const data = fs.readFileSync(filePath)
-  return fflate.unzipSync(new Uint8Array(data))
+  if (!stat.isFile()) throw new Error(`not a valid ${kind} file: ${filePath}`)
+  if (stat.size > MAX_OOXML_INPUT_BYTES) {
+    throw new Error(`${filePath} is ${Math.round(stat.size / (1024 * 1024))}MB, over the ${MAX_OOXML_INPUT_BYTES / (1024 * 1024)}MB limit for OOXML files`)
+  }
+  let data: Buffer
+  try {
+    data = fs.readFileSync(filePath)
+  } catch (err) {
+    // The file can vanish between the stat above and this read. Classified the same way, so the
+    // same situation does not get two different shapes depending on which call happened to see it.
+    throw new Error(accessFailureMessage(err, filePath), { cause: err })
+  }
+  try {
+    return fflate.unzipSync(new Uint8Array(data))
+  } catch (err) {
+    throw new Error(`not a valid ${kind} file: ${filePath}`, { cause: err })
+  }
 }
 
 /** Decodes one ZIP entry as UTF-8 text, or null if the entry doesn't exist. */
-export function decodeZipEntry(entries: Record<string, Uint8Array>, path: string): string | null {
-  const bytes = entries[path]
+export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: string): string | null {
+  const bytes = entries[entryPath]
   if (bytes === undefined) return null
   return new TextDecoder('utf-8').decode(bytes)
 }
