@@ -1787,6 +1787,7 @@ describe('isParseSkipEligible', () => {
     large_file_skip_kb: 1,
     large_file_symbol_only_kb: 1048576,
     embeddings_enabled: true,
+    cross_project_symbols: true,
   }
 
   it('does not skip a file whose size sits exactly at the cap (mutation-testing gap: the boundary check must be strictly greater-than, not greater-than-or-equal)', () => {
@@ -1809,10 +1810,10 @@ describe('isParseSkipEligible', () => {
   })
 
   it('honors indexing.skip_files as configurable, not hardcoded: an empty list re-includes coverage.json (opt-out), and a custom basename excludes a file the default list never covered (opt-in)', () => {
-    const optedOut = {skip_dirs: [], skip_files: [], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576, embeddings_enabled: true}
+    const optedOut = {skip_dirs: [], skip_files: [], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576, embeddings_enabled: true, cross_project_symbols: true}
     expect(isParseSkipEligible('/repo/coverage.json', optedOut)).toBe(false)
 
-    const optedIn = {skip_dirs: [], skip_files: ['lcov.json'], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576, embeddings_enabled: true}
+    const optedIn = {skip_dirs: [], skip_files: ['lcov.json'], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576, embeddings_enabled: true, cross_project_symbols: true}
     expect(isParseSkipEligible('/repo/lcov.json', optedIn)).toBe(true)
     expect(isParseSkipEligible('/repo/coverage.json', optedIn)).toBe(false)
   })
