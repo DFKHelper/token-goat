@@ -99,9 +99,13 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
     expect(textOf(result)).not.toContain(SECRET)
   })
 
-  it('confinement genuinely turns OFF when the REQUEST projectRoot itself sets the override', async () => {
-    // The mirror case: projectRoot's own config disables confinement. This must keep working --
-    // the fix is not a blanket ignore of the setting, only a fix to which root's config is read.
+  // This test previously asserted the opposite: that the request projectRoot's own
+  // .token-goat.toml could turn confinement off. That is now blocked, deliberately. A per-project
+  // file arrives with the repository, so honouring it here meant any cloned project could hand the
+  // MCP server the whole filesystem. `mcp` is one of the sections a project file may not set
+  // (PROJECT_LOCKED_SECTIONS in src/config.ts). The setting itself still works: it comes from the
+  // global config or TOKEN_GOAT_MCP_CONFINE_READS, neither of which a repository can write.
+  it('ignores a request projectRoot that tries to turn confinement off from its own config file', async () => {
     fs.writeFileSync(path.join(projectRoot, '.token-goat.toml'), 'mcp.confine_reads_to_project_root = false\n')
     process.chdir(serverCwd)
 
@@ -112,7 +116,26 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
       name: 'read',
       arguments: { spec: path.join(outsideDir, 'secret.txt'), projectRoot },
     })
-    expect(textOf(result)).not.toContain('is outside the project root. The MCP tools are confined to the workspace.')
-    expect(textOf(result)).toContain(SECRET)
+    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).not.toContain(SECRET)
+  })
+
+  it('still turns confinement off from the environment, which a repository cannot write', async () => {
+    const prev = process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+    process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '0'
+    process.chdir(serverCwd)
+    try {
+      const { client, close } = await connectedClient()
+      cleanup = close
+
+      const result = await client.callTool({
+        name: 'read',
+        arguments: { spec: path.join(outsideDir, 'secret.txt'), projectRoot },
+      })
+      expect(textOf(result)).toContain(SECRET)
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+      else process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = prev
+    }
   })
 })

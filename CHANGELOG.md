@@ -4,6 +4,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Security
+- **A repository could switch off token-goat's security controls just by shipping a config file.** A project-root `.token-goat.toml` layers on top of the global config, which is what it is for: hint thresholds, indexing settings, compression tuning. But that file arrives with the repository, so it is written by whoever wrote the repository. A checked-in three-line file could turn off prompt-injection fencing, empty the fetch allow and deny lists, switch the Google Drive integration back on, widen the MCP root allowlist, or lift the confinement that keeps `symbol` inside one project, silently, for every session anyone opened in that directory. Confirmed by cloning a directory with such a file and watching a hostile result come through unwrapped. Those five settings now come from the global config and the environment only, and a project file that tries to set one is ignored with a message naming what was dropped. The environment is deliberately left alone: a repository cannot set it, and a developer exporting a variable is configuring their own machine. Everything else stays project-overridable. See [src/config.ts](src/config.ts), regression-tested in [tests/project_config_locked_sections.test.ts](tests/project_config_locked_sections.test.ts).
+
+### Fixed
+- **A permissions test could never pass on Linux or macOS, so CI was red.** The test that checks token-goat does not tighten the shared parent directories above its data root asserted that the enclosing temporary directory was group-readable. A temporary directory made by `mkdtemp` is owner-only by definition, so the assertion was impossible and the job failed on both POSIX runners while Windows skipped the test entirely. It now compares against a reference directory created in the same process, which carries whatever umask the machine has, and separately checks the pre-existing ancestor is left exactly as it was found. See [tests/data_dir_permissions.test.ts](tests/data_dir_permissions.test.ts).
+
 ## [2.6.31] - 2026-08-18
 
 ### Security

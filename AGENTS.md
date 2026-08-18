@@ -51,4 +51,4 @@ The failure mode to watch for is the **injected-seam trap**: a test always suppl
 
 ## Security boundaries
 
-Five invariants govern redaction, fencing, persisted keys, and path confinement, each established by a defect that shipped past a green suite. Read them before changing any of those surfaces: `token-goat section "CLAUDE.arch.md::Security Boundaries"`, or the same heading in [CLAUDE.arch.md](CLAUDE.arch.md). A change touching one needs a test that fails when the invariant is removed, not just a green suite.
+Six invariants govern redaction, fencing, persisted keys, untrusted config, and path confinement, each established by a defect that shipped past a green suite. Read them before changing any of those surfaces: `token-goat section "CLAUDE.arch.md::Security Boundaries"`, or the same heading in [CLAUDE.arch.md](CLAUDE.arch.md). A change touching one needs a test that fails when the invariant is removed, not just a green suite.

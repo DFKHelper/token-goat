@@ -840,6 +840,73 @@ export function getLastProjectConfigParseError(): string | null {
   return _lastProjectConfigParseError
 }
 
+/**
+ * Config sections a per-project `.token-goat.toml` may not set.
+ *
+ * The per-project file is not the user's own configuration: it arrives with a repository, so it
+ * is attacker-controlled the moment anyone clones an untrusted project. It merges over the
+ * global config, which meant a checked-in three-line file could turn off prompt-injection
+ * fencing, empty the fetch allow/deny lists, switch the Google Drive integration back on, or
+ * widen the MCP root allowlist, silently, for every session opened in that directory.
+ *
+ * These four sections are the security controls an administrator sets once and expects to hold.
+ * They now come from the global config and the environment only. The environment is left alone
+ * deliberately: a repository cannot set it, and the developer who exports a variable is
+ * configuring their own machine.
+ *
+ * Everything else -- hints, formatting, compression thresholds, worker tuning -- stays
+ * project-overridable, which is what the per-project file exists for.
+ */
+export const PROJECT_LOCKED_SECTIONS: readonly string[] = ['injection', 'webfetch', 'gdrive', 'mcp']
+
+/** Individual `section.key` entries locked without locking their whole section. */
+export const PROJECT_LOCKED_KEYS: readonly string[] = ['indexing.cross_project_symbols']
+
+let _lastProjectConfigLockedKeys: string[] = []
+
+/**
+ * Drop every locked entry from a parsed per-project config, returning the cleaned tree and the
+ * dotted names that were dropped.
+ *
+ * Dropping, not rejecting: an unreadable or hostile project file must never stop token-goat from
+ * running, exactly as a malformed one does not. The dropped names are recorded so a CLI entry
+ * point can say what was ignored rather than leaving the author wondering why a setting had no
+ * effect.
+ */
+export function stripLockedProjectKeys(projectRaw: Record<string, unknown>): {
+  cleaned: Record<string, unknown>
+  dropped: string[]
+} {
+  const cleaned: Record<string, unknown> = {}
+  const dropped: string[] = []
+  for (const [section, value] of Object.entries(projectRaw)) {
+    if (PROJECT_LOCKED_SECTIONS.includes(section)) {
+      dropped.push(section)
+      continue
+    }
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const kept: Record<string, unknown> = {}
+      for (const [key, keyValue] of Object.entries(value as Record<string, unknown>)) {
+        if (PROJECT_LOCKED_KEYS.includes(`${section}.${key}`)) dropped.push(`${section}.${key}`)
+        else kept[key] = keyValue
+      }
+      cleaned[section] = kept
+      continue
+    }
+    cleaned[section] = value
+  }
+  return { cleaned, dropped }
+}
+
+/**
+ * Dotted names the most recent {@link loadConfig} ignored because a per-project `.token-goat.toml`
+ * tried to set a locked security setting, or `[]` if it did not. Intended for a CLI entry point to
+ * surface, the same way {@link getLastProjectConfigParseError} is.
+ */
+export function lastProjectConfigLockedKeys(): readonly string[] {
+  return _lastProjectConfigLockedKeys
+}
+
 /** Dotted `section.key` names set at the top two levels of a raw TOML tree (section-only entries report just the section name). */
 function flattenRawKeys(raw: Record<string, unknown>): string[] {
   const keys: string[] = []
@@ -1218,6 +1285,7 @@ export function loadConfig(projectRoot?: string): Config {
 
 export function invalidateConfigCache(): void {
   _cached = null
+  _lastProjectConfigLockedKeys = []
 }
 
 /**
@@ -1277,8 +1345,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // guards, and the cross-field clamps all see one already-merged raw tree — the exact same
   // validation path the global-only config always went through, with no divergent logic for
   // the project layer.
-  if (Object.keys(projectRaw).length > 0) {
-    raw = mergeRawConfig(raw, projectRaw)
+  const { cleaned: safeProjectRaw, dropped: lockedKeys } = stripLockedProjectKeys(projectRaw)
+  _lastProjectConfigLockedKeys = lockedKeys
+  if (Object.keys(safeProjectRaw).length > 0) {
+    raw = mergeRawConfig(raw, safeProjectRaw)
   }
 
   const ca_raw = section(raw, 'compact_assist')

@@ -155,7 +155,7 @@ import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
-import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError } from './config.js'
+import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -3015,6 +3015,16 @@ export function buildProgram(): Command {
       const projectParseErr = getLastProjectConfigParseError()
       if (projectParseErr !== null) {
         err(`token-goat: .token-goat.toml failed to parse (${projectParseErr}); ignoring project override`)
+      }
+      // A per-project file arrives with the repository, so it may not set the security controls
+      // an administrator configures once. Say which settings were ignored: silently dropping
+      // them would leave a legitimate author wondering why the file had no effect.
+      const lockedKeys = lastProjectConfigLockedKeys()
+      if (lockedKeys.length > 0) {
+        err(
+          `token-goat: .token-goat.toml may not set ${lockedKeys.join(', ')}; ` +
+            'these are security settings and come from the global config or the environment only',
+        )
       }
       try {
         await fn(...(args as never[]))
