@@ -21,7 +21,7 @@ import * as path from 'node:path'
 import { loadConfig } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import { createLazyModuleLoader } from './lazy_module.js'
-import { atomicWriteBytes, toKB } from './util.js'
+import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -255,7 +255,7 @@ function findCachedShrink(originalPath: string, size: number, mtimeMs: number): 
 function writeCachedShrink(originalPath: string, result: ShrinkResult, mtimeMs: number): void {
   try {
     const dir = imageShrinkCacheDir()
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
     const key = shrinkCacheKey(originalPath, result.originalBytes, mtimeMs)
     const ext = result.format === 'jpeg' ? '.jpg' : '.webp'
     atomicWriteBytes(path.join(dir, `token-goat-shrink-${key}${ext}`), result.data)

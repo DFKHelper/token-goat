@@ -18,7 +18,7 @@ import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 
 import { dataDir, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { safeJoin } from './paths.js'
-import { foldCase, foldPath } from './util.js'
+import { ensureDirSync, foldCase, foldPath } from './util.js'
 import { registerReset } from './reset.js'
 
 // ESM has no `require`; build one so we can probe for the optional sqlite-vec package without making it a hard module-resolution dependency.
@@ -421,7 +421,7 @@ export function getDb(dbPath: string): BetterSqlite3Database {
   // Ensure the parent directory exists before SQLite tries to create the file. Retry on Windows race conditions.
   const dir = path.dirname(resolved)
   try {
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }

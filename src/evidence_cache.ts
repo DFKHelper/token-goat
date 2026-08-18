@@ -6,6 +6,7 @@ import { dataDir } from './constants.js'
 import { normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { embedTexts, isAvailable } from './embeddings.js'
+import { ensureDirSync } from './util.js'
 
 const MAX_ENTRIES = 500
 const MAX_TEXT_BYTES = 128 * 1024
@@ -55,7 +56,7 @@ function load(): EvidenceEntry[] {
 
 function save(entries: readonly EvidenceEntry[]): void {
   try {
-    fs.mkdirSync(dataDir(), { recursive: true })
+    ensureDirSync(dataDir())
     fs.writeFileSync(cachePath(), JSON.stringify(entries.slice(0, MAX_ENTRIES)), 'utf8')
   } catch {
     // Evidence caching is an optimization and must never block the caller.

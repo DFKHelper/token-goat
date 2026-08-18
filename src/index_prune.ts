@@ -7,7 +7,7 @@ import { deleteFileEmbeddings } from './embeddings.js'
 import { shortFingerprint } from './fingerprint.js'
 import { deleteFileRows } from './parser.js'
 import { findProject, isUnderSystemTemp } from './project.js'
-import { foldPath } from './util.js'
+import { ensureDirSync, foldPath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
@@ -310,7 +310,7 @@ export function recordKnownRootThrottled(
     // No marker yet: first check ever for this data dir, proceed.
   }
   try {
-    fs.mkdirSync(dir, { recursive: true })
+    ensureDirSync(dir)
     fs.writeFileSync(markerPath, '')
   } catch {
     // If we can't even write the marker, don't let that block the record below -- worst case we

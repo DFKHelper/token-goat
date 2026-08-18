@@ -13,6 +13,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
+import { ensureDataDirPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
 import type { GitResult, RunGitOptions } from './types.js'
 
@@ -160,6 +161,9 @@ function isEExist(err: unknown): boolean {
  * — the directory exists — is already true), while propagating all other errors.
  */
 export function ensureDirSync(dir: string): void {
+  // The data root holds every cached page, command output, and index DB, so it is created
+  // owner-only before any child lands in it. Cheap: memoized to one syscall per process.
+  ensureDataDirPrivate()
   try {
     mkdirSync(dir, { recursive: true })
   } catch (err) {

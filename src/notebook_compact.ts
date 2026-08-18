@@ -11,7 +11,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { fingerprintContent } from './fingerprint.js'
-import { atomicWriteBytes } from './util.js'
+import { ensureDirSync, atomicWriteBytes } from './util.js'
 
 // Minimum bytes saved by output stripping before a redirect is worth emitting.
 export const NB_STRIP_MIN_SAVINGS = 4096
@@ -140,7 +140,7 @@ export function getOrCreateSidecar(
 
   // Create directory with retry for Windows race conditions.
   try {
-    fs.mkdirSync(sidecarDir, { recursive: true })
+    ensureDirSync(sidecarDir)
   } catch (err) {
     if (!fs.existsSync(sidecarDir)) {
       throw err

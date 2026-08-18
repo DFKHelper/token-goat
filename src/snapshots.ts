@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { fingerprintContent } from './fingerprint.js'
-import { foldPath, normalizePath, atomicWriteBytes, sanitizeIdForFilename } from './util.js'
+import { ensureDirSync, foldPath, normalizePath, atomicWriteBytes, sanitizeIdForFilename } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 
 export const MAX_SNAPSHOTS_PER_SESSION = 150
@@ -67,7 +67,7 @@ function writeSnapshotKind(sidecarPath: string, kind: string): boolean {
     const safeKind = VALID_KINDS.has(kind) ? kind : KIND_READ
     const dir = path.dirname(sidecarPath)
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
+      ensureDirSync(dir)
     }
     fs.writeFileSync(sidecarPath, safeKind, 'utf8')
     return true
@@ -159,7 +159,7 @@ export function store(
 
     const dir = path.dirname(p)
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
+      ensureDirSync(dir)
     }
 
     if (isNewEntry) {
