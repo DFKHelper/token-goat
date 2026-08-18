@@ -329,6 +329,100 @@ describe('preFetchHandler', () => {
 
     expect(result.hookType).toBe('pass');
   });
+
+  // The allow list is a security boundary: it is what a user configures to stop an agent sending
+  // data anywhere but a named host. Patterns were matched against the whole URL string, so the
+  // allowed domain only had to appear somewhere in it -- the query is enough, and the request
+  // still goes to the attacker's host.
+  it.each([
+    ['allowed domain in the query string', 'https://evil.example.net/steal?x=.trusted.example.com/'],
+    ['allowed domain in the path', 'https://evil.example.net/.trusted.example.com/'],
+    ['allowed domain as userinfo', 'https://a.trusted.example.com@evil.example.net/.trusted.example.com/'],
+  ])('denies a URL that only contains the allowed domain outside the host (%s)', (_name, url) => {
+    const cfg = defaultConfig();
+    cfg.webfetch.allow = ['https://*.trusted.example.com/*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'allow-bypass',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('deny');
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('webfetch.allow');
+    }
+  });
+
+  // The second pair is why the host check tries both `host` and `hostname`: the pattern's authority
+  // section names no port, and matching it only against `host` would newly deny a URL carrying one
+  // that the pattern itself admits.
+  it.each([
+    ['https://*.trusted.example.com/*', 'https://docs.trusted.example.com/guide'],
+    ['https://*.trusted.example.com*', 'https://docs.trusted.example.com:8443/guide'],
+  ])('still passes a real host under allow pattern %s', (pattern, url) => {
+    const cfg = defaultConfig();
+    cfg.webfetch.allow = [pattern];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'allow-real-host',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  // Userinfo dodges a whole-string deny match while still reaching the denied host.
+  it('denies a host-level deny pattern even when userinfo hides the host from a string match', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.deny = ['https://evil.example.net/*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://not-evil.example.com@evil.example.net/page' },
+      sessionId: 'deny-userinfo',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('deny');
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('webfetch.deny');
+    }
+  });
+
+  // A path-scoped deny names a path deliberately, so it must not widen to the whole host.
+  it('keeps a path-scoped deny pattern scoped to its path', () => {
+    const cfg = defaultConfig();
+    cfg.webfetch.deny = ['https://mixed.example.net/private/*'];
+    saveConfig(cfg);
+    invalidateConfigCache();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://mixed.example.net/public/page' },
+      sessionId: 'deny-path-scope',
+      agentId: undefined,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('pass');
+  });
 });
 
 describe('postFetchHandler', () => {
