@@ -30,6 +30,16 @@ describe('declared license', () => {
     expect(files).toContain('LICENSE')
   })
 
+  // The README links into SECURITY.md for the dependency-advisory disclosure. npm rewrites relative
+  // links on its own page, but the tarball did not carry the file, so anyone reviewing the package
+  // offline followed a link to nothing. It is a few kilobytes and it is the document they came for.
+  it('ships SECURITY.md too, since the README sends the reader there', () => {
+    const files = (JSON.parse(readText('package.json')) as { files?: string[] }).files ?? []
+
+    expect(files).toContain('SECURITY.md')
+    expect(readText('README.md')).toContain('SECURITY.md#dependency-advisories')
+  })
+
   it('still has PolyForm Noncommercial as the actual grant, so the pointer is not stale', () => {
     expect(readText('LICENSE')).toContain('PolyForm Noncommercial License 1.0.0')
   })
