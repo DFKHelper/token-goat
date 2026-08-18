@@ -22,7 +22,7 @@ import type { StdioServerTransport as StdioServerTransportClass } from '@modelco
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
-import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js'
+import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1009,14 +1009,18 @@ function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
   fenceUntrusted = false,
+  fenceTag: string = UNTRUSTED_WEB_TAG,
 ): string {
   // Fetched-page recall only. The injection scan is documented as unconditional for fetched
   // pages, and a `web-output <id>` recall puts that same attacker-written text in front of the
   // model -- but only the WebFetch post-hook fenced it, so the copy served from the cache came
   // back bare. Scanning here rather than at store time means the fence wraps exactly what the
   // caller sees, so a --grep/--head slice that keeps the payload is fenced and one that drops it
-  // is not. Callers that cache local output (bash-output) or a tool result (mcp-output) leave
-  // this off: neither is a fetched page, and neither is scanned at ingest either.
+  // is not. Recall of cached Bash and MCP output is scanned too, under a tag naming tool output rather
+  // than a fetched page. Neither is a page token-goat fetched, but both carry text written by a
+  // third party -- a dependency's build or test output, a remote MCP server's result -- and the
+  // recall channel put it in front of the model unmarked. The fence only appears on a positive
+  // match, so ordinary output is byte-identical to before.
   const emit = (text: string): string => {
     if (!fenceUntrusted || text === '') {
       out(text)
@@ -1033,7 +1037,7 @@ function _applyFiltersAndPrint(
       return text
     }
     recordStat('injection_detected', 0, 0, undefined, matches.join(','))
-    const fenced = fenceUntrustedContent(text, matches)
+    const fenced = fenceUntrustedContent(text, matches, fenceTag)
     out(fenced)
     return fenced
   }
@@ -1129,7 +1133,7 @@ function cmdBashOutput(
       if (e instanceof CliError) throw e
       throw new CliError(`cannot read file: ${opts.file}`)
     }
-    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(content) : content, opts)
+    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(content) : content, opts, true, UNTRUSTED_TOOL_TAG)
     return
   }
 
@@ -1142,7 +1146,7 @@ function cmdBashOutput(
     throw new CliError(`no cached bash output for id: ${id}. If this id is from a background task, recall its output file directly with: token-goat bash-output --file <path-to-output-file>`)
   }
 
-  _applyFiltersAndPrint(entry.output, opts)
+  _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
 }
 
 function cmdWebOutput(
@@ -1175,7 +1179,7 @@ function cmdMcpOutput(
   if (entry === null) {
     throw new CliError(`no cached mcp output for id: ${id}. The cache may have expired; re-run the MCP tool call to repopulate it.`)
   }
-  _applyFiltersAndPrint(entry.output, opts)
+  _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
 }
 
 async function cmdPdfExtract(
