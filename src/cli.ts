@@ -392,6 +392,17 @@ export async function cmdIndex(
     }
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally for every tracked file on every invocation, even ones byte-identical to what was already indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not unchanged" so the file still gets a normal reindex attempt below. Parse and embed freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file whose embedding previously failed still gets re-embedded even when its parse is current. --force bypasses both freshness checks unconditionally -- e.g. after a parser.ts extraction-logic change, every already-indexed file's SHA is untouched and stale symbols/refs would otherwise never get recomputed until each file happens to be edited.
     const sha = fingerprintFile(key)
+    // A git-tracked file deleted from the worktree is still listed by getTrackedFiles, so it
+    // reaches this loop on every run. fingerprintFile returns null for it, indexFileSync
+    // fail-softs on ENOENT without throwing, and the `indexed += 1` at the bottom of the loop
+    // then counted work that never happened -- every run, forever, since deleting the file is
+    // exactly what keeps it in this state. After a rename the effect was the headline symptom:
+    // `Indexed 1 file into the symbol index` printed while the index had just been emptied.
+    // A null sha for a file that DOES exist is a transient read failure (a lock held by an AV
+    // scanner or an open editor) and still deserves the normal reindex attempt below, so the
+    // existence check is what separates the two. The rows are removed by pruneDeletedFiles
+    // after the loop, which is the pass that owns vanished files.
+    if (sha === null && !fs.existsSync(key)) continue
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     const parseUnchanged = !force && sha !== null && entry?.sha === sha
     // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
@@ -424,6 +435,10 @@ export async function cmdIndex(
         }
         continue
       }
+      // indexFileSync fail-softs on ENOENT, so a file deleted during its own parse leaves nothing
+      // written and throws nothing either. Counting it would reintroduce the phantom credit the
+      // pre-parse guard above exists to stop, just through a narrower window.
+      if (!fs.existsSync(key)) continue
     }
     if (!embedUnchanged) {
       paintProgress('embedding')
