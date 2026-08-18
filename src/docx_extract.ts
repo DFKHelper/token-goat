@@ -28,7 +28,7 @@ function headingLevel(styleVal: string | undefined): number | null {
 }
 
 async function loadDocumentBody(filePath: string): Promise<unknown> {
-  const entries = await readOoxmlZip(filePath)
+  const entries = await readOoxmlZip(filePath, '.docx')
   const xml = decodeZipEntry(entries, 'word/document.xml')
   if (xml === null) throw new Error(`no word/document.xml found in ${filePath} (not a valid .docx?)`)
   return parseOoxmlPart(xml)

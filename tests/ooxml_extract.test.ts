@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {
+  accessFailureMessage,
   collectElements,
   collectTextRuns,
   decodeZipEntry,
@@ -10,6 +11,8 @@ import {
   readOoxmlZip,
   sortNumberedParts,
 } from '../src/ooxml_extract.js'
+import { docxOutline } from '../src/docx_extract.js'
+import { pptxOutline } from '../src/pptx_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 describe('readOoxmlZip', () => {
@@ -26,7 +29,7 @@ describe('readOoxmlZip', () => {
   it('reads a normal-sized zip', async () => {
     const file = path.join(dir, 'small.pptx')
     fs.writeFileSync(file, buildPptxFixture([{ title: 'Hello' }]))
-    const entries = await readOoxmlZip(file)
+    const entries = await readOoxmlZip(file, '.docx')
     expect(Object.keys(entries)).toContain('ppt/slides/slide1.xml')
   })
 
@@ -38,7 +41,7 @@ describe('readOoxmlZip', () => {
     const fd = fs.openSync(file, 'w')
     fs.ftruncateSync(fd, 51 * 1024 * 1024)
     fs.closeSync(fd)
-    await expect(readOoxmlZip(file)).rejects.toThrow(/over the 50MB limit/)
+    await expect(readOoxmlZip(file, '.docx')).rejects.toThrow(/over the 50MB limit/)
   })
 })
 
@@ -127,5 +130,125 @@ describe('sortNumberedParts', () => {
 
   it('returns an empty array unchanged', () => {
     expect(sortNumberedParts([], /slide(\d+)\.xml$/)).toEqual([])
+  })
+})
+
+// Every one of these used to escape as the raw underlying error. The missing-file case is the
+// one that mattered most: Node's ENOENT names the path it resolved, so asking for `nope.docx`
+// printed the reader's entire home directory back at them, and it reached the CLI unmodified.
+// The sibling xlsx reader already guarded exactly this shape; ooxml never did. Six commands
+// share this funnel: docx-outline, docx-text, pptx-outline, pptx-slide, pptx-notes, pptx-text.
+describe('readOoxmlZip failure messages', () => {
+  let dir: string
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ooxml-err-'))
+  })
+
+  afterAll(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('reports a missing file without leaking the absolute path it resolved', async () => {
+    const missing = path.join(dir, 'nope.docx')
+
+    const err = await readOoxmlZip(missing, '.docx').then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+
+    expect(err).not.toBeNull()
+    expect(err?.message).toBe(`File not found: ${missing}`)
+    expect(err?.message, 'the raw errno from Node must not reach the caller').not.toMatch(/ENOENT/)
+    expect(err?.message).not.toMatch(/no such file or directory/)
+  })
+
+  it('names the file the caller passed, not one it resolved itself', async () => {
+    // A bare relative name is the case that exposed it: statSync resolves against cwd and puts
+    // the whole absolute path in the message, for a caller who never typed one.
+    const err = await readOoxmlZip('nope-relative.docx', '.docx').then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+
+    expect(err?.message).toBe('File not found: nope-relative.docx')
+    expect(err?.message).not.toContain(process.cwd())
+  })
+
+  it('reports a directory as an invalid file rather than as EISDIR', async () => {
+    const asDir = path.join(dir, 'adir.docx')
+    fs.mkdirSync(asDir, { recursive: true })
+
+    const err = await readOoxmlZip(asDir, '.docx').then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+
+    expect(err?.message).toBe(`not a valid .docx file: ${asDir}`)
+    expect(err?.message).not.toMatch(/EISDIR/)
+  })
+
+  it('names the file when the bytes are not a zip, instead of the bare fflate message', async () => {
+    const bad = path.join(dir, 'bad.pptx')
+    fs.writeFileSync(bad, 'this is not a zip at all')
+
+    const err = await readOoxmlZip(bad, '.pptx').then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+
+    expect(err?.message).toBe(`not a valid .pptx file: ${bad}`)
+    expect(err?.message, 'the original is kept for debugging, not shown').not.toMatch(/invalid zip data/)
+    expect((err?.cause as Error | undefined)?.message).toMatch(/invalid zip data/)
+  })
+
+  // The format comes from the command, not from whatever the file happens to be called.
+  // `docx-outline report.txt` used to answer "not a valid .txt file", naming a format the user
+  // never asked for and that this reader could not have read either way.
+  it('names the format the caller asked for, not the extension on the path', async () => {
+    const bad = path.join(dir, 'report.txt')
+    fs.writeFileSync(bad, 'plain text, not a zip')
+
+    const viaDocx = await docxOutline(bad).then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+    const viaPptx = await pptxOutline(bad).then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+
+    expect(viaDocx?.message).toBe(`not a valid .docx file: ${bad}`)
+    expect(viaPptx?.message).toBe(`not a valid .pptx file: ${bad}`)
+    expect(viaDocx?.message, 'the path extension is not the format that was asked for').not.toContain('.txt file')
+  })
+
+})
+
+// The branch behind these is unreachable from a test that goes through the filesystem: node:fs is
+// a frozen namespace so statSync cannot be mocked, and no real probe gives the same errno on every
+// platform. Asserted on the classifier directly rather than left uncovered.
+describe('accessFailureMessage', () => {
+  it('calls only a genuinely absent file missing', () => {
+    const err = Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
+
+    expect(accessFailureMessage(err, 'a.docx')).toBe('File not found: a.docx')
+  })
+
+  it('does not call a permission error a missing file, since the file is right there', () => {
+    const err = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+
+    expect(accessFailureMessage(err, 'a.docx')).not.toContain('File not found')
+    expect(accessFailureMessage(err, 'a.docx')).toBe('could not read a.docx (EACCES)')
+  })
+
+  it.each([['EISDIR'], ['ENOTDIR'], ['EPERM'], ['EMFILE']])('reports %s as itself', (code) => {
+    const err = Object.assign(new Error(code), { code })
+
+    expect(accessFailureMessage(err, 'a.docx')).toBe(`could not read a.docx (${code})`)
+  })
+
+  it('says something usable when the failure carries no errno at all', () => {
+    expect(accessFailureMessage(new Error('boom'), 'a.docx')).toBe('could not read a.docx (unknown error)')
   })
 })
