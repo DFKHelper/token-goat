@@ -1,6 +1,4 @@
 import * as fs from 'node:fs'
-
-import { shortFingerprint } from '../src/fingerprint.js'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -22,6 +20,13 @@ import {
   type FileEntry,
   type SerializedSession,
 } from '../src/session.js'
+import { shortFingerprint } from '../src/fingerprint.js'
+
+// The persisted key is a digest of the url, not the url itself: a download url routinely carries
+// a credential and this file is written without the redaction pass every other cache gets (see
+// session.ts::curlDownloadKey). The merge semantics below are unchanged and are what these tests
+// are about; `curlKey` just spells the stored key so the assertions stay exact.
+const curlKey = (url: string): string => shortFingerprint(url)
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -61,7 +66,7 @@ describe('save/load round-trip', () => {
       hintsShown: ['hint:1', 'hint:2'],
       webFetches: [['http://x', 'idx']],
       bashOutputs: [['cmdhash', 'outid']],
-      curlDownloads: [['http://dl', '/tmp/f']],
+      curlDownloads: [[curlKey('http://dl'), '/tmp/f']],
       grepQueries: [['["useEffect","/src","content",""]', 12]],
     })
     saveSessionState('sid-1')
@@ -75,7 +80,7 @@ describe('save/load round-trip', () => {
     expect(got.hintsShown.sort()).toEqual(['hint:1', 'hint:2'])
     expect(got.webFetches).toEqual([['http://x', 'idx']])
     expect(got.bashOutputs).toEqual([['cmdhash', 'outid']])
-    expect(got.curlDownloads).toEqual([['http://dl', '/tmp/f']])
+    expect(got.curlDownloads).toEqual([[curlKey('http://dl'), '/tmp/f']])
     expect(got.grepQueries).toEqual([['["useEffect","/src","content",""]', 12]])
     expect(got.files.find((f) => f.path === '/b.ts')?.wasTruncated).toBe(true)
   })
@@ -368,12 +373,6 @@ describe('pendingLargeFileHints merge does not resurrect an untouched carried ke
     ])
   })
 })
-
-// The persisted key is a digest of the url, not the url itself: a download url routinely carries
-// a credential and this file is written without the redaction pass every other cache gets (see
-// session.ts::curlDownloadKey). The merge semantics below are unchanged and are what these tests
-// are about; `curlKey` just spells the stored key so the assertions stay exact.
-const curlKey = (url: string): string => shortFingerprint(url)
 
 describe('curlDownloads merge (cleared downloads stay cleared)', () => {
   it('does not resurrect a curl download this process cleared, even though a fresh disk read at save time still has it (fail-on-buggy: a plain union-of-entries merge restores the deleted key)', () => {

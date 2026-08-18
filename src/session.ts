@@ -381,31 +381,64 @@ export function pendingLargeFileHintsAtLoad(): ReadonlyMap<string, number> {
   return _pendingLargeFileHintsAtLoad
 }
 
-/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`. Keyed on the same
- * url+'\x00'+prompt composite already used for the on-disk cache id (see
- * preFetchHandler/postFetchHandler in hooks_fetch.ts), so two WebFetch calls to the
- * same url with different prompts are tracked as separate entries instead of
- * clobbering each other. */
+/** Field separator inside the composite webFetch session-state key. */
+export const WEB_FETCH_KEY_SEP = '\x00'
+
 /**
- * Strip any credential out of a fetched url before it becomes a session-state key.
+ * Build the session-state key for a fetched url + prompt.
  *
- * Same disk-exposure problem as {@link curlDownloadKey}: the session-state file is written
- * without storeBlob's redaction pass, so a signed url or one with an embedded api key was
- * persisted in full. Redacted rather than digested here because these keys ARE displayed -- the
- * compaction manifest lists the urls fetched this session (see hooks_compact.ts) -- so the key
- * has to stay readable. Applied on both write and read, so the lookup still matches.
+ * The session-state file is written without storeBlob's redaction pass, so a signed url or one
+ * with an embedded api key was persisted in full -- as was the prompt, which can carry a header
+ * or token the caller pasted in. Both halves are redacted here.
+ *
+ * Redaction alone is not a safe key: two urls differing only inside the redacted span collapse
+ * to one entry, silently dropping a fetch from the compaction manifest and breaking the exact
+ * (url, prompt) lookup contract. A digest of the raw pair is appended to restore identity while
+ * the readable, redacted halves stay first -- the manifest displays those (hooks_compact.ts,
+ * compact.ts), and both read only the leading fields.
  */
-function webFetchUrlKey(url: string): string {
-  return redactSecrets(url).text
+function webFetchKey(url: string, prompt: string): string {
+  const digest = shortFingerprint(`${url}${WEB_FETCH_KEY_SEP}${prompt}`)
+  return [redactSecrets(url).text, redactSecrets(prompt).text, digest].join(WEB_FETCH_KEY_SEP)
 }
 
+/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`, so two WebFetch calls to the same
+ * url with different prompts are tracked separately instead of clobbering each other. */
 export function recordWebFetch(url: string, prompt: string, cacheId: string): void {
-  _webFetches.set(`${webFetchUrlKey(url)}\x00${prompt}`, cacheId)
+  _webFetches.set(webFetchKey(url, prompt), cacheId)
 }
 
 /** Return the cache id previously recorded for the (`url`, `prompt`) pair, or null. */
 export function getWebFetchCacheId(url: string, prompt = ''): string | null {
-  return _webFetches.get(`${webFetchUrlKey(url)}\x00${prompt}`) ?? null
+  return _webFetches.get(webFetchKey(url, prompt)) ?? null
+}
+
+/**
+ * Rewrite a persisted session-state key written by an older token-goat into the current shape.
+ *
+ * Old state files on disk hold the pre-redaction spellings: a curl key was the raw url, and a
+ * webFetch key was `url\x00prompt` with both halves unredacted. Left alone those rows are worse
+ * than useless -- they keep a signed url or an embedded api key sitting in the state file for the
+ * life of the session, and every lookup misses because the reader now computes the new key, so a
+ * cached fetch is silently re-fetched and re-billed.
+ *
+ * Migration happens at `coerce()` in session_store.ts, the single boundary every disk read passes
+ * through (including the fresh read the save path performs), so no caller has to remember it.
+ *
+ * Detection is shape-based, not versioned: a current curl key is exactly 16 hex chars, which no
+ * url can be, and a current webFetch key has three separator-delimited fields where the legacy
+ * one had two. A key already in the current shape is returned unchanged.
+ */
+export function migrateCurlDownloadKey(key: string): string {
+  if (/^[0-9a-f]{16}$/.test(key)) return key
+  return curlDownloadKey(key)
+}
+
+/** Legacy two-field `url + separator + prompt` key -> the current three-field key. See {@link migrateCurlDownloadKey}. */
+export function migrateWebFetchKey(key: string): string {
+  const parts = key.split(WEB_FETCH_KEY_SEP)
+  if (parts.length !== 2) return key
+  return webFetchKey(parts[0] ?? '', parts[1] ?? '')
 }
 
 /** Return every web-fetch this session as a `url -> cacheId` map (insertion order). */

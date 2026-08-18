@@ -460,6 +460,35 @@ describe('MCP injection fencing on the live post hook', () => {
     expect(out.hookType).toBe('pass')
   })
 
+  // Findings 3-5 of the Codex review: the scan used to sit BELOW three caching guards, each of
+  // which returned early. A hostile server only had to satisfy one of them -- flag the result as
+  // an error, omit the session id, or simply be called twice -- to get its payload through
+  // unfenced. The scan is now computed before any early return, so a caching guard can no longer
+  // double as a fence bypass.
+  it('fences an error-flagged result, which the caching guard used to return past (finding 3)', async () => {
+    const raw = { ...post(PAYLOAD, { id: 'err' }), tool_response: { isError: true, content: [{ type: 'text', text: PAYLOAD }] } }
+    const out = await runHook(buildEvent('post_tool_use', raw))
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType === 'rewriteOutput') expect(out.updatedOutput).toContain('<untrusted-tool-output>')
+  })
+
+  it('fences a result carrying no session id (finding 4)', async () => {
+    const raw = { tool_name: toolName, tool_input: { id: 'nosid' }, tool_response: PAYLOAD }
+    const out = await runHook(buildEvent('post_tool_use', raw))
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType === 'rewriteOutput') expect(out.updatedOutput).toContain('<untrusted-tool-output>')
+  })
+
+  it('fences the second, deduplicated call as well as the first (finding 5)', async () => {
+    const input = { id: 'dedup' }
+    const first = await runHook(buildEvent('post_tool_use', post(PAYLOAD, input)))
+    expect(first.hookType).toBe('rewriteOutput')
+
+    const second = await runHook(buildEvent('post_tool_use', post(PAYLOAD, input)))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType === 'rewriteOutput') expect(second.updatedOutput).toContain('<untrusted-tool-output>')
+  })
+
   it('does not fence when injection scanning is disabled by config', async () => {
     const prev = process.env['TOKEN_GOAT_INJECTION_ENABLED']
     process.env['TOKEN_GOAT_INJECTION_ENABLED'] = 'false'
