@@ -451,3 +451,36 @@ describe('generated hook shim (the shipping wiring, not a standalone script test
     expect(() => JSON.parse(res.stdout) as unknown).not.toThrow()
   })
 })
+
+// The README's "what gets installed" table is what an evaluator reads before deciding, and it
+// claimed install added a `Bash(token-goat:*)` permission entry to settings.json. It never did.
+// The claim was alarming in the wrong direction -- it reads as the installer granting an agent
+// unprompted shell execution of every subcommand, `write-file` and `fetch-image` included -- and
+// nothing checked the written file against the document. These tests check both halves.
+describe('installed settings.json grants no permissions', () => {
+  it('writes hooks and nothing else, so no permission entry appears', () => {
+    installHooks('user')
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath('user'), 'utf8')) as Record<string, unknown>
+    expect(settings['permissions']).toBeUndefined()
+    expect(Object.keys(settings)).toEqual(['hooks'])
+  })
+
+  it('leaves a permission block the user already had exactly as it was', () => {
+    const target = settingsPath('user')
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    const existing = { permissions: { allow: ['Bash(git:*)'], deny: ['Bash(rm:*)'] } }
+    fs.writeFileSync(target, JSON.stringify(existing))
+
+    installHooks('user')
+
+    const settings = JSON.parse(fs.readFileSync(target, 'utf8')) as typeof existing
+    expect(settings.permissions).toEqual(existing.permissions)
+  })
+
+  it('has a README that no longer promises an allowlist entry install does not write', () => {
+    const readme = fs.readFileSync(path.join(origCwd, 'README.md'), 'utf8')
+
+    expect(readme).not.toContain('Bash(token-goat:*)')
+  })
+})
