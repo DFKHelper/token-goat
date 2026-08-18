@@ -49,14 +49,14 @@ import {
   uninstallSkill,
 } from './install.js'
 import type { HookScope } from './install.js'
-import { installCodex, uninstallCodex } from './bridges/codex_install.js'
-import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
-import { installQwen, uninstallQwen } from './bridges/qwen_install.js'
-import { installPi, uninstallPi } from './bridges/pi_install.js'
-import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
-import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
-import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
-import { installGrok, uninstallGrok } from './bridges/grok_install.js'
+import { installCodex, isCodexInstalled, uninstallCodex } from './bridges/codex_install.js'
+import { installGemini, isGeminiInstalled, uninstallGemini } from './bridges/gemini_install.js'
+import { installQwen, isQwenInstalled, uninstallQwen } from './bridges/qwen_install.js'
+import { installPi, isPiInstalled, uninstallPi } from './bridges/pi_install.js'
+import { installOpencode, isOpencodeInstalled, uninstallOpencode } from './bridges/opencode_install.js'
+import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridges/openclaw_install.js'
+import { installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
+import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured } from './bridges/vscode_install.js'
 import {
   isWorkerRunning,
@@ -778,6 +778,17 @@ function cmdUninstall(opts: {
     out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
   }
 
+  // An integration whose flag was not passed is left wired and, before this, was left silent: a
+  // plain `token-goat uninstall` printed three "Removed" lines while a Codex or Copilot hook still
+  // pointed at the binary about to be deleted. That is the offboarding case, and a Copilot
+  // preToolUse hook whose target is gone fails closed on every call. So each one that is still
+  // present is named here with the exact command that removes it, following the same
+  // report-rather-than-delete rule the stray CLAUDE.md blocks above already use: uninstall does not
+  // silently undo an integration the caller did not ask about.
+  for (const leftover of leftoverIntegrations(opts)) {
+    out(`NOTE: the token-goat ${leftover.label} is still installed. Run "token-goat uninstall ${leftover.flag}" to remove it.`)
+  }
+
   // Cross-scope warning, mirroring installVscode's cross-scope guard (see
   // otherScopeHasManagedServer): uninstall only ever touches the requested scope's
   // mcp.json, so a server registered in the OTHER scope survives silently -- e.g. a
@@ -804,6 +815,54 @@ function cmdUninstall(opts: {
  * it would rewrite the pid file and re-open the database under the directory being deleted, so
  * the purge would report success over a directory that grows back.
  */
+/** An integration still on disk whose removal flag the caller did not pass, so uninstall can name it rather than leave it wired in silence. */
+interface LeftoverIntegration {
+  flag: string
+  label: string
+}
+
+/**
+ * Detects, never removes. Each entry pairs the flag that was not passed with a detector that reads
+ * the harness's own config, so a caller who only ever installed the Claude Code hooks sees nothing.
+ */
+export function leftoverIntegrations(opts: {
+  codex?: boolean
+  gemini?: boolean
+  qwen?: boolean
+  pi?: boolean
+  openclaw?: boolean
+  copilot?: boolean
+  opencode?: boolean
+  grok?: boolean
+}): LeftoverIntegration[] {
+  const candidates: Array<{ skipped: boolean; present: () => boolean; flag: string; label: string }> = [
+    { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
+    { skipped: opts.gemini !== true, present: isGeminiInstalled, flag: '--gemini', label: 'Gemini CLI integration' },
+    { skipped: opts.qwen !== true, present: isQwenInstalled, flag: '--qwen', label: 'Qwen Code integration' },
+    { skipped: opts.pi !== true, present: () => isPiInstalled() || isPiInstalled({ local: true }), flag: '--pi', label: 'pi extension' },
+    { skipped: opts.openclaw !== true, present: isOpenclawInstalled, flag: '--openclaw', label: 'OpenClaw integration' },
+    {
+      skipped: opts.copilot !== true,
+      present: () => isCopilotCliInstalled() || isCopilotCliInstalled({ local: true }),
+      flag: '--copilot',
+      label: 'Copilot CLI integration',
+    },
+    { skipped: opts.opencode !== true, present: isOpencodeInstalled, flag: '--opencode', label: 'opencode plugin' },
+    { skipped: opts.grok !== true, present: isGrokInstalled, flag: '--grok', label: 'Grok CLI integration' },
+  ]
+  const found: LeftoverIntegration[] = []
+  for (const candidate of candidates) {
+    if (!candidate.skipped) continue
+    // A detector reads someone else's config file; a malformed one must not abort the uninstall.
+    try {
+      if (candidate.present()) found.push({ flag: candidate.flag, label: candidate.label })
+    } catch {
+      // Unreadable config: cannot claim it is installed, and cannot claim it is not. Stay quiet.
+    }
+  }
+  return found
+}
+
 function runPurge(): void {
   if (isWorkerRunning()) {
     err('token-goat: the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.')
