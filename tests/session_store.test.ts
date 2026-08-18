@@ -1,4 +1,6 @@
 import * as fs from 'node:fs'
+
+import { shortFingerprint } from '../src/fingerprint.js'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -367,6 +369,12 @@ describe('pendingLargeFileHints merge does not resurrect an untouched carried ke
   })
 })
 
+// The persisted key is a digest of the url, not the url itself: a download url routinely carries
+// a credential and this file is written without the redaction pass every other cache gets (see
+// session.ts::curlDownloadKey). The merge semantics below are unchanged and are what these tests
+// are about; `curlKey` just spells the stored key so the assertions stay exact.
+const curlKey = (url: string): string => shortFingerprint(url)
+
 describe('curlDownloads merge (cleared downloads stay cleared)', () => {
   it('does not resurrect a curl download this process cleared, even though a fresh disk read at save time still has it (fail-on-buggy: a plain union-of-entries merge restores the deleted key)', () => {
     // Process A: a curl -o download is recorded and saved.
@@ -375,7 +383,7 @@ describe('curlDownloads merge (cleared downloads stay cleared)', () => {
     saveSessionState('sid-curl-1')
 
     const diskAfterA = JSON.parse(fs.readFileSync(sessionFile('sid-curl-1'), 'utf8')) as SerializedSession
-    expect(diskAfterA.curlDownloads).toEqual([['http://x/f.zip', '/repo/a/downloads/f.zip']])
+    expect(diskAfterA.curlDownloads).toEqual([[curlKey('http://x/f.zip'), '/repo/a/downloads/f.zip']])
 
     // Process B: a fresh hook process loads that session, clears the download (its saved file
     // is gone), and saves. Nothing else touches the file in between, so the disk read at B's
@@ -401,7 +409,7 @@ describe('curlDownloads merge (cleared downloads stay cleared)', () => {
     // carried along in memory, unconsumed and unmodified.
     importSessionState(empty())
     loadSessionState(sid)
-    expect(exportSessionState().curlDownloads).toEqual([['http://y/g.zip', '/repo/a/downloads/g.zip']])
+    expect(exportSessionState().curlDownloads).toEqual([[curlKey('http://y/g.zip'), '/repo/a/downloads/g.zip']])
     const aSnapshot = exportSessionState()
 
     // Process B: independently loads the same disk snapshot, legitimately clears the URL
@@ -436,8 +444,8 @@ describe('curlDownloads merge (cleared downloads stay cleared)', () => {
 
     const disk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
     expect(disk.curlDownloads.slice().sort()).toEqual([
-      ['http://existing/a.zip', '/repo/downloads/a.zip'],
-      ['http://new/b.zip', '/repo/downloads/b.zip'],
+      [curlKey('http://existing/a.zip'), '/repo/downloads/a.zip'],
+      [curlKey('http://new/b.zip'), '/repo/downloads/b.zip'],
     ])
     expect(getCurlDownloadPath('http://new/b.zip')).toBe('/repo/downloads/b.zip')
   })
