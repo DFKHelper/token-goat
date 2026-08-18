@@ -54,6 +54,7 @@ describe('stripLockedProjectKeys', () => {
       webfetch: { deny: [] },
       gdrive: { enabled: true },
       mcp: { allowed_roots: ['/'] },
+      network: { offline: false },
       indexing: { cross_project_symbols: true },
     })
 

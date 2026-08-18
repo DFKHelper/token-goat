@@ -39,9 +39,11 @@
  */
 
 import { spawn } from 'node:child_process'
+import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
 
+import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 
 /** Result of a successful OCR pass. `confidence` is Tesseract's own 0-100 mean-word-confidence score. */
@@ -59,6 +61,19 @@ export function setOcrTimeoutForTesting(ms: number | undefined): void {
 }
 
 /** Where the language-model cache lives, so `token-goat`'s own installs share the download and it survives across CLI invocations (each hook event is normally its own short-lived process). */
+/** The file tesseract.js writes into its cache directory for the one language this module uses. */
+const OCR_LANG_FILE = 'eng.traineddata'
+
+/**
+ * tesseract.js downloads its language data from a CDN on a cold cache and offers no option to
+ * forbid that, so offline mode checks the cache itself: a machine that already has the file still
+ * does OCR, and one that does not declines instead of reaching cdn.jsdelivr.net.
+ */
+export function ocrBlockedOffline(): boolean {
+  if (!loadConfig().network.offline) return false
+  return !fs.existsSync(path.join(ocrCacheDir(), OCR_LANG_FILE))
+}
+
 function ocrCacheDir(): string {
   return path.join(tokenGoatHome(), 'ocr-cache')
 }
@@ -135,6 +150,8 @@ export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
 
   const entryPath = resolveTesseractEntry()
   if (entryPath === null) return null
+
+  if (ocrBlockedOffline()) return null
 
   return new Promise<OcrResult | null>((resolve) => {
     let settled = false
