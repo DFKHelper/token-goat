@@ -7,7 +7,7 @@ import { deleteFileEmbeddings } from './embeddings.js'
 import { shortFingerprint } from './fingerprint.js'
 import { deleteFileRows } from './parser.js'
 import { findProject, isUnderSystemTemp } from './project.js'
-import { ensureDirSync, foldPath } from './util.js'
+import { ensureDirSync, foldPath, normalizePath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
@@ -29,8 +29,12 @@ function isTooShallowToPrune(rootPrefix: string): boolean {
 }
 
 function foldedBounds(rootPrefix: string): { foldedRootPrefix: string; foldedPrefix: string } {
-  const prefix = rootPrefix.endsWith('/') ? rootPrefix : `${rootPrefix}/`
-  return { foldedRootPrefix: foldPath(rootPrefix), foldedPrefix: foldPath(prefix) }
+  // Normalize before folding: foldPath only lowercases, and a row written from a raw OS path keeps
+  // its backslashes while every root arrives forward-slashed, so folding alone never matches the
+  // two -- the prefix scan comes back empty and every caller reports a clean nothing-to-do.
+  const normalized = normalizePath(rootPrefix)
+  const prefix = normalized.endsWith('/') ? normalized : `${normalized}/`
+  return { foldedRootPrefix: foldPath(normalized), foldedPrefix: foldPath(prefix) }
 }
 
 function allIndexedPaths(dbPath: string): string[] {
@@ -43,7 +47,7 @@ function allIndexedPaths(dbPath: string): string[] {
 function foldedPathsUnderRoot(rootPrefix: string, dbPath: string): string[] {
   const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
   return allIndexedPaths(dbPath).filter((p) => {
-    const foldedP = foldPath(p)
+    const foldedP = foldPath(normalizePath(p))
     return foldedP === foldedRootPrefix || foldedP.startsWith(foldedPrefix)
   })
 }
@@ -100,6 +104,34 @@ export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbP
   if (isTooShallowToPrune(rootPrefix)) return 0
   const db = getDb(dbPath)
   return removeDeletedFilesBestEffort(db, findDeletablePaths(rootPrefix, dbPath)).length
+}
+
+/**
+ * Remove every indexed row under a newly excluded root, whether or not the files still exist.
+ *
+ * `token-goat project exclude <path>` stopped future indexing but left whatever was already
+ * indexed exactly where it was, so a directory of credentials excluded after a first index stayed
+ * readable through `symbol` indefinitely. Existence-based pruning cannot do this job: the files
+ * are still on disk, which is the whole point -- they are excluded, not deleted. Same shape as
+ * {@link pruneSystemTempFiles}, whose rows are also stale regardless of what is on disk.
+ *
+ * Refuses a root shallow enough to span a drive, for the reason {@link isTooShallowToPrune} gives.
+ * Returns the paths removed.
+ */
+export function pruneBlockedRoot(rootPrefix: string, dbPath: string = globalDbPath()): string[] {
+  // The caller is a CLI argument run through path.resolve, so on Windows it arrives with
+  // backslashes while every stored path is normalized. foldPath only lowercases, so without this
+  // the prefix match silently finds nothing and the command reports a clean purge of zero files.
+  const normalized = normalizePath(rootPrefix)
+  if (isTooShallowToPrune(normalized)) return []
+  return removeFilesBestEffort(getDb(dbPath), foldedPathsUnderRoot(normalized, dbPath))
+}
+
+/** The indexed paths {@link pruneBlockedRoot} would remove, without removing them. For a dry run. */
+export function findFilesUnderBlockedRoot(rootPrefix: string, dbPath: string = globalDbPath()): string[] {
+  const normalized = normalizePath(rootPrefix)
+  if (isTooShallowToPrune(normalized)) return []
+  return foldedPathsUnderRoot(normalized, dbPath)
 }
 
 // Scan all indexed files and return the absolute paths that live under the OS system temp directory (see isUnderSystemTemp's docstring), WITHOUT deleting anything. Unlike findDeletablePaths this isn't scoped to a rootPrefix -- system temp is inherently ephemeral, so any indexed row under it is stale regardless of which scratch checkout produced it. Exported so cmdProject's --dry-run can report what would be pruned before committing.

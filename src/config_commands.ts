@@ -19,7 +19,7 @@ import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
-import { findSystemTempFiles, pruneSystemTempFiles } from './index_prune.js'
+import { findSystemTempFiles, pruneBlockedRoot, pruneSystemTempFiles } from './index_prune.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
@@ -569,11 +569,18 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     cfg.worker.blocked_roots = [...cfg.worker.blocked_roots, target]
     saveConfigSafe(cfg)
     invalidateConfigCache()
+    // Excluding a path has to mean it is not readable, not merely that it will not be indexed
+    // again. Anything already indexed under it stays queryable through `symbol` forever otherwise,
+    // which is the opposite of what someone excluding a directory of credentials is asking for.
+    const purged = pruneBlockedRoot(target)
     if (opts.json === true) {
-      emit(JSON.stringify({ excluded: target, blocked_roots: cfg.worker.blocked_roots }, null, 2))
+      emit(JSON.stringify({ excluded: target, purgedFromIndex: purged.length, blocked_roots: cfg.worker.blocked_roots }, null, 2))
       return
     }
     emit(`Excluded: ${target}`)
+    if (purged.length > 0) {
+      emit(`Removed ${purged.length} already-indexed file${purged.length === 1 ? '' : 's'} under it from the index.`)
+    }
     return
   }
 
