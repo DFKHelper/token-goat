@@ -31,6 +31,7 @@ import * as path from 'node:path'
 import { hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
+import { loadConfig } from '../config.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
 export interface CopilotCliScopeOptions {
@@ -129,6 +130,7 @@ function buildCopilotInstructionsBlock(): string {
       endMarker: COPILOT_INSTRUCTIONS_END,
       fallbackToolClause:
         "Copilot CLI's native `view`, `grep`, and `glob` tools (with PowerShell commands `Get-Content`/`Select-String` as search fallbacks)",
+      gdrive: loadConfig().gdrive.enabled,
     }),
   )
 }

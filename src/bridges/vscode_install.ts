@@ -24,6 +24,7 @@ function jsonc(): typeof JsoncParser {
 
 import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
+import { loadConfig } from '../config.js'
 
 const BEGIN = '<!-- token-goat-vscode-begin -->'
 const END = '<!-- token-goat-vscode-end -->'
@@ -205,7 +206,7 @@ export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): Vs
 function writeGuidance(filePath: string): boolean {
   const body = [
     BEGIN,
-    buildGuidanceBody('VS Code’s supported MCP integration and its built-in file-read tools'),
+    buildGuidanceBody('VS Code’s supported MCP integration and its built-in file-read tools', { gdrive: loadConfig().gdrive.enabled }),
     '',
     '**Compressed payloads:** a message containing a token-goat payload block (recognizable by a `recovery: token-goat retrieve <id>` line) is compressed text, not an answer. Call the MCP tool `retrieve_text` with that id to recover the original text, then answer the question the message asks using the recovered text. Never present the raw payload to the user as the response; if the `retrieve_text` tool is unavailable (the MCP server is not running, or the chat is not in Agent mode), say so plainly and ask the user to switch to Agent mode or run `token-goat install --vscode`.',
     '',

@@ -56,6 +56,7 @@ import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCo
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 import { buildGuidanceBlock } from './guidance_block.js'
+import { loadConfig } from '../config.js'
 import { groupHasTokenGoat } from './matcher_group.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
@@ -386,6 +387,7 @@ function buildAgentsBlock(): string {
     endMarker: AGENTS_END,
     fallbackToolClause:
       "Codex's native `shell`, `apply_patch`, and `view_image` tools (shell commands like `cat`/`type` run inside `shell`)",
+    gdrive: loadConfig().gdrive.enabled,
   })
 }
 

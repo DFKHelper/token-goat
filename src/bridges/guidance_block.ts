@@ -32,6 +32,19 @@ export interface GuidanceHarness {
    * after "Your harness's own read-tool rules (…)".
    */
   readonly fallbackToolClause: string
+  /** See {@link GuidanceOptions.gdrive}. */
+  readonly gdrive?: boolean
+}
+
+/** Per-install switches that change which commands the gate advertises. */
+export interface GuidanceOptions {
+  /**
+   * Whether to name `gdrive-sections` in the `Commands:` line. False when an operator has set
+   * `gdrive.enabled = false`, which refuses the command outright: advertising a command the
+   * install will refuse teaches an agent to reach for a dead end, and an organisation that does
+   * not use Google Drive asked not to see the integration at all. Defaults to true.
+   */
+  readonly gdrive?: boolean
 }
 
 /**
@@ -49,7 +62,8 @@ export interface GuidanceHarness {
  * conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob
  * preference rules".
  */
-export function buildGuidanceBody(fallbackToolClause: string): string {
+export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOptions = {}): string {
+  const gdrive = opts.gdrive !== false
   return [
     '## token-goat',
     '',
@@ -75,7 +89,9 @@ export function buildGuidanceBody(fallbackToolClause: string): string {
     '- opening a screenshot, diagram, or scan to read the text in it → `image-text file`',
     '- opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-extract`; Word `docx-outline` then `docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-head`/`xlsx-range`/`xlsx-query`',
     '',
-    'Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`, `json-outline file`/`yaml-outline`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-extract`, `docx-outline`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
+    'Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`, `json-outline file`/`yaml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
+      (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
+      '`image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-extract`, `docx-outline`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
     '',
     'Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.',
     '',
@@ -90,5 +106,5 @@ export function buildGuidanceBody(fallbackToolClause: string): string {
  * vary. Returned as a single string ready to hand to `upsertDelimitedBlock`.
  */
 export function buildGuidanceBlock(h: GuidanceHarness): string {
-  return [h.beginMarker, buildGuidanceBody(h.fallbackToolClause), h.endMarker].join('\n')
+  return [h.beginMarker, buildGuidanceBody(h.fallbackToolClause, h.gdrive === undefined ? {} : { gdrive: h.gdrive }), h.endMarker].join('\n')
 }

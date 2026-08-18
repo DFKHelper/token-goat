@@ -28,6 +28,7 @@ import * as path from 'node:path'
 
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { buildGuidanceBlock, buildGuidanceBody } from './bridges/guidance_block.js'
+import { loadConfig } from './config.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import type { HookEventName } from './types.js'
@@ -421,6 +422,7 @@ function buildClaudeMdBlock(): string {
     beginMarker: CLAUDE_MD_BEGIN,
     endMarker: CLAUDE_MD_END,
     fallbackToolClause: "Claude Code's own Read, Grep, and Glob preference rules",
+    gdrive: loadConfig().gdrive.enabled,
   })
 }
 
@@ -537,21 +539,28 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 // validate every entry against their tool registry and warn on each miss, so a
 // subcommand list here produces one "Unknown tool name in the tool allowlist"
 // warning per entry. token-goat itself runs through the shell tool.
-const SKILL_MD_FRONTMATTER = `---
+function skillMdFrontmatter(gdrive: boolean): string {
+  return `---
 name: token-goat
-description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output, gdrive-sections) return narrow slices of code and docs at a fraction of the token cost.
+description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.
 allowed-tools:
   - Bash
   - Read
   - Grep
   - Glob
 ---`
+}
 
 // The body is the single shared gate (buildGuidanceBody), the same wording
 // upserted into CLAUDE.md/AGENTS.md/copilot-instructions.md -- one source across
 // all four surfaces. This skill ships in ~/.claude/skills, so the fallback clause
 // names Claude Code's own read tools, exactly like the CLAUDE.md block.
-const SKILL_MD_CONTENT = `${SKILL_MD_FRONTMATTER}\n\n${buildGuidanceBody("Claude Code's own Read, Grep, and Glob preference rules")}\n`
+// A function, not a constant: whether the Google Drive integration is named depends on this
+// install's `gdrive.enabled`, which a module-load-time constant would freeze before config is read.
+function skillMdContent(): string {
+  const gdrive = loadConfig().gdrive.enabled
+  return `${skillMdFrontmatter(gdrive)}\n\n${buildGuidanceBody("Claude Code's own Read, Grep, and Glob preference rules", { gdrive })}\n`
+}
 
 /** Absolute path to the token-goat skill directory, `~/.claude/skills/token-goat`. */
 export function skillDir(): string {
@@ -579,9 +588,10 @@ export function installSkill(): SkillInstallResult {
   } catch {
     // Absent; falls through to the write below.
   }
-  if (existing === SKILL_MD_CONTENT) return { path: p, alreadyInstalled: true }
+  const skillContent = skillMdContent()
+  if (existing === skillContent) return { path: p, alreadyInstalled: true }
   ensureDirSync(skillDir())
-  atomicWriteText(p, SKILL_MD_CONTENT)
+  atomicWriteText(p, skillContent)
   return { path: p, alreadyInstalled: false }
 }
 
