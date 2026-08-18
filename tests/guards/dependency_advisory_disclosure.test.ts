@@ -16,6 +16,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 interface Manifest {
   dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
   optionalDependencies?: Record<string, string>
   overrides?: Record<string, string>
   scripts?: Record<string, string>
@@ -43,13 +44,28 @@ describe('dependency advisory disclosure', () => {
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain(name)
   })
 
-  it('keeps html-to-text required, because the document says so rather than claiming an opt-out', () => {
-    expect(Object.keys(pkg.dependencies ?? {})).toContain('html-to-text')
+  // The reverse of what this once asserted. html-to-text is inlined by esbuild at build time and
+  // nothing in dist imports it, so keeping it in `dependencies` shipped deepmerge-ts, htmlparser2,
+  // selderee and dom-serializer to every consumer for nothing. Moving it is what takes the
+  // no-optional install to zero advisories, so a move back would silently reintroduce that chain.
+  it('keeps html-to-text out of the packages a consumer installs', () => {
+    expect(Object.keys(pkg.dependencies ?? {})).not.toContain('html-to-text')
+    expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('html-to-text')
+    expect(Object.keys(pkg.devDependencies ?? {}), 'the build still needs it').toContain('html-to-text')
+  })
+
+  // The document now claims that install is clean rather than carrying one chain. The claim is
+  // only worth making while nothing has been added back to `dependencies` that could break it.
+  it('claims a clean no-optional install, and lists only packages that keep it clean', () => {
+    expect(security).toContain('clean, 46 packages')
+    expect(Object.keys(pkg.dependencies ?? {})).toEqual(
+      expect.arrayContaining(['better-sqlite3', 'commander', 'zod']),
+    )
   })
 
   it('names every package the table discusses, so a rename cannot orphan a row', () => {
     const declared = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})])
-    for (const name of ['@xenova/transformers', 'exceljs', 'html-to-text', 'sharp', 'puppeteer-core']) {
+    for (const name of ['@xenova/transformers', 'exceljs', 'sharp', 'puppeteer-core']) {
       expect(security, `${name} is discussed in SECURITY.md`).toContain(name)
       expect(declared, `${name} is still a dependency`).toContain(name)
     }
@@ -90,15 +106,13 @@ describe('override disclosure', () => {
     expect(pkg.scripts?.['sbom']).toContain('cyclonedx')
   })
 
-  // The reachability argument in the table is specific: two named call sites, both merging options.
-  // If it ever softens back into a general "we do not merge page content", the specificity that
-  // makes it checkable is gone.
-  it('names the call sites that carry the html-to-text reachability argument', () => {
-    expect(security).toContain('composeOptions')
-    expect(security).toContain('mergeDuplicatesPreferLast')
-  })
-
-  it('records why html-to-text is not rolled back to drop deepmerge-ts', () => {
+  // The html-to-text row used to carry a reachability argument for deepmerge-ts. The package is
+  // gone from a consumer install now, so the document explains the removal instead -- including
+  // why it beat the rollback we had considered, which is the part a reader would otherwise ask
+  // about. Naming both packages keeps that explanation from decaying into "we removed it".
+  it('explains the html-to-text removal rather than dropping the subject', () => {
+    expect(security).toContain('deepmerge-ts')
     expect(security).toContain('htmlparser2')
+    expect(security, 'the rollback alternative and why it lost').toContain('9.x')
   })
 })

@@ -9,9 +9,52 @@
  * walks every entry's local header to report its name/size, but a `false` filter result skips
  * decompression, so `zip-list` never inflates member data just to report the table of contents.
  * `zip-read` uses the same `filter` to decompress exactly the one requested entry.
+ *
+ * fflate is an optional dependency, so it is loaded lazily here (the same way ooxml_extract.ts
+ * loads it) rather than imported at module scope. A static import put fflate on the CLI's
+ * startup path, so an `--omit=optional` install -- the very install SECURITY.md recommends for
+ * avoiding the optional native packages' advisories -- could not run any command at all: even
+ * `token-goat --version` died with ERR_MODULE_NOT_FOUND. Loading it here keeps the failure where
+ * it belongs, on the two zip commands that actually need it.
  */
 
-import { unzipSync } from 'fflate'
+import { createLazyModuleLoader } from './lazy_module.js'
+
+interface UnzipFileInfo {
+  name: string
+  size: number
+  originalSize: number
+}
+
+interface FflateModule {
+  unzipSync: (
+    data: Uint8Array,
+    opts?: { filter?: (file: UnzipFileInfo) => boolean },
+  ) => Record<string, Uint8Array>
+}
+
+const loadFflate = createLazyModuleLoader(
+  async () => (await import('fflate')) as unknown as FflateModule,
+  'archive reading disabled (fflate unavailable)',
+)
+
+/** Thrown when fflate cannot be loaded, so the caller can tell "you installed with
+ * --omit=optional" apart from "this file is not a zip" and print the right one. Both used to
+ * surface as "not a valid zip-format file", which sent the reader looking at their archive. */
+export class ArchiveDependencyMissingError extends Error {
+  constructor() {
+    super('fflate is not installed; run `npm install fflate` to enable zip-list/zip-read')
+    this.name = 'ArchiveDependencyMissingError'
+  }
+}
+
+/** Resolves fflate or throws {@link ArchiveDependencyMissingError}. Kept separate so both entry
+ * points report it identically. */
+async function requireFflate(): Promise<FflateModule> {
+  const fflate = await loadFflate()
+  if (!fflate) throw new ArchiveDependencyMissingError()
+  return fflate
+}
 
 export interface ZipEntry {
   path: string
@@ -24,9 +67,10 @@ export interface ZipEntry {
  * flag) without decompressing any member's data. Sorted by path so the listing reads the same
  * regardless of the archive's own central-directory order. Throws on a malformed/corrupt zip --
  * the caller (read_commands.ts) is responsible for catching that and emitting a clean error. */
-export function listZipEntries(data: Uint8Array): ZipEntry[] {
+export async function listZipEntries(data: Uint8Array): Promise<ZipEntry[]> {
+  const fflate = await requireFflate()
   const entries: ZipEntry[] = []
-  unzipSync(data, {
+  fflate.unzipSync(data, {
     filter: (file) => {
       entries.push({
         path: file.name,
@@ -55,7 +99,8 @@ export function formatZipList(entries: readonly ZipEntry[]): string {
  * no entry matches (the caller emits a "not found" + did-you-mean message). Only the matching
  * entry is ever decompressed -- every other member's filter call returns `false`. Throws on a
  * malformed/corrupt zip, same as {@link listZipEntries}. */
-export function extractZipEntry(data: Uint8Array, entryPath: string): Uint8Array | undefined {
-  const result = unzipSync(data, { filter: (file) => file.name === entryPath })
+export async function extractZipEntry(data: Uint8Array, entryPath: string): Promise<Uint8Array | undefined> {
+  const fflate = await requireFflate()
+  const result = fflate.unzipSync(data, { filter: (file) => file.name === entryPath })
   return result[entryPath]
 }

@@ -46,10 +46,10 @@ The following are not treated as security issues unless paired with a working pr
 | What you scan | Command | Result |
 | --- | --- | --- |
 | this repository | `npm audit` | clean, development dependencies included |
-| an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | one chain, `deepmerge-ts` under `html-to-text` |
-| a default install | `npm install token-goat` then `npm audit --omit=dev` | that chain plus the optional packages in the table below |
+| an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 46 packages |
+| a default install | `npm install token-goat` then `npm audit --omit=dev` | the optional packages in the table below |
 
-The repository is clean because [`package.json`](package.json) carries an `overrides` block that pins four transitive packages to patched versions. **npm applies `overrides` only in the root project**, so those pins do not travel to anyone who installs Token-Goat as a dependency. We are saying so plainly rather than letting a clean repository scan stand in for a clean install: if your scanner reads this repository or its lockfile it will report nothing, and that is not the whole picture.
+The repository is clean because [`package.json`](package.json) carries an `overrides` block that pins five transitive packages to patched versions. **npm applies `overrides` only in the root project**, so those pins do not travel to anyone who installs Token-Goat as a dependency. We are saying so plainly rather than letting a clean repository scan stand in for a clean install: if your scanner reads this repository or its lockfile it will report nothing, and that is not the whole picture.
 
 Without the overrides a consumer resolves `protobufjs` at 6.x, which carries more advisories than the 7.x line the repository would otherwise use. Every one of those paths is optional.
 
@@ -57,11 +57,10 @@ Without the overrides a consumer resolves `protobufjs` at 6.x, which carries mor
 | --- | --- | --- | --- |
 | `@xenova/transformers` | [`protobufjs`](https://github.com/advisories/GHSA-xq3m-2v4x-88gg) (critical), `onnx-proto`, `onnxruntime-web`, and its own pinned `sharp` | optional; loaded only when semantic search builds or queries embeddings | not mitigated, so it is the one to weigh. Skip it with `npm install --omit=optional`, or leave `indexing.embeddings_enabled` off, and the code never loads |
 | `exceljs` | [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | optional; loaded only when an `xlsx-*` command opens a workbook | the advisory is a missing bounds check on a caller-supplied `buf` argument; ExcelJS never passes one |
-| `html-to-text` | [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx) | required, and bundled into `dist/token-goat.mjs`; runs when a fetched page is converted to text | the advisory is stack exhaustion while merging a recursive object graph. `html-to-text` reaches `deepmerge-ts` from two call sites only, `composeOptions` and `mergeDuplicatesPreferLast`, and both merge the options object. The only options Token-Goat passes are the fixed literal in `extractCleanText`; page content is never merged |
 
-`npm install --omit=optional` gives you an install without the first two. The `xlsx-*` commands then say ExcelJS is not installed rather than failing oddly, and `semantic` keeps working on keyword search alone: it is the embedding half that goes away, not the command.
+`npm install --omit=optional` gives you an install without either of these, and `npm audit` reports it clean. Every command still starts; the ones that need a package you skipped say so. The `xlsx-*` commands report that ExcelJS is not installed rather than failing oddly, `zip-list`/`zip-read` do the same for fflate, and `semantic` keeps working on keyword search alone: it is the embedding half that goes away, not the command.
 
-`html-to-text` is deliberately not moved back to 9.x to drop `deepmerge-ts`. That version pins `htmlparser2` two majors lower, and `htmlparser2` is what parses fetched pages, so it would trade an advisory in an options merger for an older parser on the one path that handles untrusted input.
+`html-to-text` used to appear in that table, carrying [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx). It is now a development dependency instead. esbuild inlines it into `dist/token-goat.mjs` at build time and nothing in the published bundle imports it, so it was a runtime dependency in name only: moving it removes `html-to-text`, `deepmerge-ts`, `htmlparser2`, `selderee`, and `dom-serializer` from an installed copy while the HTML-to-text output stays byte-for-byte identical. That is what takes the no-optional install to zero, and it is better than the alternative we had considered, rolling `html-to-text` back to 9.x: that version pins `htmlparser2` two majors lower, and `htmlparser2` is what parses fetched pages, so it would have traded an advisory in an options merger for an older parser on the one path that handles untrusted input.
 
 Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
 

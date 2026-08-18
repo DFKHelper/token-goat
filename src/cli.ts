@@ -1632,12 +1632,12 @@ function cmdOpenApiOp(file: string, operation: string, opts: { json?: boolean })
   process.exitCode = runOpenApiOp({ file, operation, ...opts })
 }
 
-function cmdZipList(file: string, opts: { json?: boolean }) {
-  process.exitCode = runZipList({ file, ...opts })
+async function cmdZipList(file: string, opts: { json?: boolean }) {
+  process.exitCode = await runZipList({ file, ...opts })
 }
 
-function cmdZipRead(file: string, entry: string, opts: { json?: boolean }) {
-  process.exitCode = runZipRead({ file, entry, ...opts })
+async function cmdZipRead(file: string, entry: string, opts: { json?: boolean }) {
+  process.exitCode = await runZipRead({ file, entry, ...opts })
 }
 
 function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
