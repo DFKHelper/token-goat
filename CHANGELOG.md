@@ -2,7 +2,7 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.6.32] - 2026-08-18
 
 ### Security
 - **Dependabot proposed a new version the day it was published, and watched only the action pins.** The npm tree was not watched at all, so every dependency advisory here waited on somebody noticing it, and the extension's own lockfile was watched by nobody. Both manifests are now covered, and every entry has a seven-day `cooldown`. That window is the control that matters for npm: the account-takeover pattern is a bad version published, installed by whoever updates first, and yanked hours later. Waiting does not make a package safe, it means somebody else finds out first. See [.github/dependabot.yml](.github/dependabot.yml), held by [tests/guards/dependabot_coverage.test.ts](tests/guards/dependabot_coverage.test.ts).
@@ -2959,7 +2959,8 @@ First public release.
 - Windows 10 and 11 only.
 - Python 3.11, 3.12, 3.13, and 3.14 supported.
 
-[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v2.6.31...HEAD
+[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v2.6.32...HEAD
+[2.6.32]: https://github.com/DFKHelper/token-goat/compare/v2.6.31...v2.6.32
 [2.6.31]: https://github.com/DFKHelper/token-goat/compare/v2.6.30...v2.6.31
 [2.6.30]: https://github.com/DFKHelper/token-goat/compare/v2.6.29...v2.6.30
 [1.9.9]: https://github.com/DFKHelper/token-goat/compare/v1.9.8...v1.9.9
