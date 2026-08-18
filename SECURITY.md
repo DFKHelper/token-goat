@@ -39,6 +39,20 @@ The following are not treated as security issues unless paired with a working pr
 - Social-engineering attacks that require tricking the user into running malicious commands
 - Issues that require an already-compromised local user account
 
+## Dependency advisories
+
+`npm audit --omit=dev` on the published package is not empty, and pretending otherwise would waste your review time. Every runtime advisory that remains traces to one of three packages. All three are already at their latest published version, so there is no forward patch to take: the only version npm offers as a "fix" is an older major that drops features Token-Goat uses.
+
+| Package | Advisories it carries | Where it loads | Why the advisory does not reach you through Token-Goat |
+| --- | --- | --- | --- |
+| `@xenova/transformers` | [`protobufjs`](https://github.com/advisories/GHSA-xq3m-2v4x-88gg) (critical), `onnx-proto`, `onnxruntime-web`, and its own pinned `sharp` | optional; loaded only when semantic search builds or queries embeddings | not mitigated, so it is the one to weigh. Skip it with `npm install --omit=optional`, or leave `indexing.embeddings_enabled` off, and the code never loads |
+| `exceljs` | [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | optional; loaded only when an `xlsx-*` command opens a workbook | the advisory is a missing bounds check on a caller-supplied `buf` argument; ExcelJS never passes one |
+| `html-to-text` | [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx) | required, and bundled into `dist/token-goat.mjs`; runs when a fetched page is converted to text | the advisory is stack exhaustion while merging a recursive object graph. The only object merged is the fixed options literal in `extractCleanText`; page content is never merged |
+
+`npm install --omit=optional` gives you an install without the first two, and the commands that need them say so rather than failing oddly.
+
+Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
+
 ## License
 
 Token-Goat is source-available under the PolyForm Noncommercial License 1.0.0. Submitting a security report does not grant the reporter any license to Token-Goat's code beyond what PolyForm Noncommercial already permits. See LICENSE for the full terms.
