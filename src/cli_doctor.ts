@@ -99,7 +99,16 @@ export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): Doctor
   return { name: 'Global MCP configuration', status: 'ok', message: `no known heavy global MCP launchers configured at ${configPath}` }
 }
 
-export function checkMcpProcessHealth(processes: readonly ProcessInfo[]): DoctorResult {
+export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null): DoctorResult {
+  // `null` means the gather itself failed, which is not the same as "gathered, found nothing".
+  // Reporting the ok message for a failed gather is a clean bill of health backed by no data.
+  if (processes === null) {
+    return {
+      name: 'MCP process health',
+      status: 'warn',
+      message: 'could not read the process list (PowerShell did not answer), so duplicate MCP launchers and orphaned Node processes were not checked',
+    }
+  }
   const byPid = new Set(processes.map((process) => process.processId))
   const nodeProcesses = processes.filter((process) => process.name.toLowerCase() === 'node.exe')
   const chromeLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*chrome-devtools-mcp/i.test(process.commandLine))
@@ -122,16 +131,25 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[]): Doctor
   return { name: 'MCP process health', status: 'ok', message: 'no duplicate MCP launchers or orphaned Node processes detected' }
 }
 
-export function readWindowsProcesses(): ProcessInfo[] {
+function runProcessListCommand(): string {
+  const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
+  return execSync(`powershell.exe -NoProfile -NonInteractive -Command "${command}"`, {
+    encoding: 'utf8',
+    timeout: 20000,
+    maxBuffer: 10 * 1024 * 1024,
+    windowsHide: true,
+  })
+}
+
+/**
+ * `null` when the process list could not be read at all, so a caller can tell that apart from an
+ * empty machine. `runCommand` exists so a test can force that failure; the default is the real
+ * PowerShell call, and the sibling test that supplies no override drives it live.
+ */
+export function readWindowsProcesses(runCommand: () => string = runProcessListCommand): ProcessInfo[] | null {
   if (process.platform !== 'win32') return []
   try {
-    const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
-    const output = execSync(`powershell.exe -NoProfile -NonInteractive -Command "${command}"`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      maxBuffer: 10 * 1024 * 1024,
-      windowsHide: true,
-    }).trim()
+    const output = runCommand().trim()
     if (output === '') return []
     const parsed: unknown = JSON.parse(output)
     const rows = Array.isArray(parsed) ? parsed : [parsed]
@@ -147,7 +165,7 @@ export function readWindowsProcesses(): ProcessInfo[] {
       }]
     })
   } catch {
-    return []
+    return null
   }
 }
 
