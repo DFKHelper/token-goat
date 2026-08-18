@@ -93,6 +93,25 @@ describe('webfetch', () => {
       expect(isPrivateIPv4('169.254.255.255')).toBe(true);
     });
 
+    it.each([
+      ['multicast, all-hosts group', '224.0.0.1'],
+      ['multicast, top of the range', '239.255.255.255'],
+      ['reserved 240.0.0.0/4', '240.0.0.1'],
+      ['limited broadcast', '255.255.255.255'],
+      ['benchmarking 198.18.0.0/15', '198.18.0.1'],
+      ['benchmarking, second half', '198.19.255.255'],
+      ['IETF protocol assignments 192.0.0.0/24', '192.0.0.170'],
+    ])('refuses %s', (_name, ip) => {
+      expect(isPrivateIPv4(ip)).toBe(true);
+    });
+
+    it.each([['198.20.0.1'], ['192.0.1.1'], ['223.255.255.255'], ['8.8.8.8']])(
+      'still allows the public address %s next to those ranges',
+      (ip) => {
+        expect(isPrivateIPv4(ip)).toBe(false);
+      },
+    );
+
     it('should recognize the 0.0.0.0/8 "this network" range (IPV4-MISSING-0000-8)', () => {
       expect(isPrivateIPv4('0.0.0.0')).toBe(true);
       expect(isPrivateIPv4('0.1.2.3')).toBe(true);
@@ -144,6 +163,16 @@ describe('webfetch', () => {
 
     it('should unwrap IPv4-translated addresses (::ffff:0:a.b.c.d) and check the embedded IPv4', () => {
       expect(isPrivateIPv6('::ffff:0:127.0.0.1')).toBe(true);
+      // 6to4 and the well-known NAT64 prefix carry an IPv4 address the same way ::ffff: does, and
+      // were judged only by their own prefix, so a private address inside one was let through.
+      expect(isPrivateIPv6('2002:7f00:1::')).toBe(true); // 6to4 wrapping 127.0.0.1
+      expect(isPrivateIPv6('2002:a9fe:a9fe::')).toBe(true); // 6to4 wrapping 169.254.169.254
+      expect(isPrivateIPv6('2002:808:808::')).toBe(false); // 6to4 wrapping 8.8.8.8 stays reachable
+      expect(isPrivateIPv6('64:ff9b::7f00:1')).toBe(true); // NAT64 wrapping 127.0.0.1
+      expect(isPrivateIPv6('64:ff9b::808:808')).toBe(false); // NAT64 wrapping 8.8.8.8
+      expect(isPrivateIPv6('fec0::1')).toBe(true); // deprecated site-local
+      expect(isPrivateIPv6('ff02::1')).toBe(true); // multicast, all-nodes
+      expect(isPrivateIPv6('2606:4700::1')).toBe(false); // an ordinary public address still resolves
       expect(isPrivateIPv6('::ffff:0:192.168.1.1')).toBe(true);
       expect(isPrivateIPv6('::ffff:0:8.8.8.8')).toBe(false);
     });
@@ -172,8 +201,12 @@ describe('webfetch', () => {
       // fe95:: is inside fe80::/10 but does not start with the literal "fe80:" prefix
       expect(isPrivateIPv6('fe95::1')).toBe(true);
       expect(isPrivateIPv6('febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(true);
-      // just outside the /10 range must stay public
-      expect(isPrivateIPv6('fec0::1')).toBe(false);
+      // Just outside the /10 range must not be caught by it. The marker is below the range rather
+      // than above it because fec0::/10, which used to serve here, is now refused on its own
+      // account as deprecated site-local -- so it no longer distinguishes a working /10 boundary
+      // from a broken one.
+      expect(isPrivateIPv6('fe00::1')).toBe(false);
+      expect(isPrivateIPv6('fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(false);
     });
 
     it('should reject public IPv6 addresses', () => {

@@ -152,6 +152,7 @@ export function isPrivateIPv4(ip: string): boolean {
   if (octets.length !== 4 || octets.some((o) => !Number.isFinite(o))) return false;
   const a = octets[0] as number;
   const b = octets[1] as number;
+  const c = octets[2] as number;
   return (
     a === 0 || // 0.0.0.0/8 ("this network" / unspecified-source range)
     a === 127 || // 127.x.x.x
@@ -159,7 +160,11 @@ export function isPrivateIPv4(ip: string): boolean {
     (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10 (carrier-grade NAT, RFC 6598)
     (a === 172 && b >= 16 && b <= 31) || // 172.16-31.x.x
     (a === 192 && b === 168) || // 192.168.x.x
-    (a === 169 && b === 254) // 169.254.x.x
+    (a === 169 && b === 254) || // 169.254.x.x
+    (a === 192 && b === 0 && c === 0) || // 192.0.0.0/24 (IETF protocol assignments, RFC 6890)
+    (a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15 (benchmarking, RFC 2544)
+    (a >= 224 && a <= 239) || // 224.0.0.0/4 multicast, including the all-hosts group
+    a >= 240 // 240.0.0.0/4 reserved, which is also where 255.255.255.255 broadcast lives
   );
 }
 
@@ -224,6 +229,15 @@ function matchesIPv6Prefix(groups: number[], prefixGroups: number[], prefixBits:
 
 const FC00_PREFIX = [0xfc00, 0, 0, 0, 0, 0, 0, 0]; // fc00::/7 (unique local addresses)
 const FE80_PREFIX = [0xfe80, 0, 0, 0, 0, 0, 0, 0]; // fe80::/10 (link-local addresses)
+const FEC0_PREFIX = [0xfec0, 0, 0, 0, 0, 0, 0, 0]; // fec0::/10 (deprecated site-local, RFC 3879)
+const FF00_PREFIX = [0xff00, 0, 0, 0, 0, 0, 0, 0]; // ff00::/8 (multicast)
+const SIXTOFOUR_PREFIX = [0x2002, 0, 0, 0, 0, 0, 0, 0]; // 2002::/16 (6to4)
+const NAT64_PREFIX = [0x0064, 0xff9b, 0, 0, 0, 0, 0, 0]; // 64:ff9b::/96 (well-known NAT64)
+
+/** The dotted-decimal IPv4 address carried in two 16-bit IPv6 groups. */
+function embeddedIPv4(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
 
 /**
  * True when `ip` is an IPv6 loopback/unique-local/link-local address, or an
@@ -234,7 +248,8 @@ const FE80_PREFIX = [0xfe80, 0, 0, 0, 0, 0, 0, 0]; // fe80::/10 (link-local addr
  * string "looks like" IPv6. fc00::/7 and fe80::/10 are matched as true CIDR
  * ranges (not literal string prefixes), so e.g. fd12:3456:: — which is
  * inside fc00::/7 but does not start with the literal "fc00:" — is still
- * caught.
+ * caught. 6to4 (2002::/16) and the well-known NAT64 prefix (64:ff9b::/96) carry an IPv4 address
+ * too and are judged by the address they carry; fec0::/10 and ff00::/8 are refused outright.
  */
 export function isPrivateIPv6(ip: string): boolean {
   const lower = ip.toLowerCase();
@@ -253,14 +268,25 @@ export function isPrivateIPv6(ip: string): boolean {
   const isIPv4Compatible =
     groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0;
   if (isIPv4Mapped || isIPv4Translated || isIPv4Compatible) {
-    const hi = groups[6] ?? 0;
-    const lo = groups[7] ?? 0;
-    const embedded = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-    return isPrivateIPv4(embedded);
+    return isPrivateIPv4(embeddedIPv4(groups[6] ?? 0, groups[7] ?? 0));
+  }
+
+  // The same rule as the three forms above, applied to the two other standard ways an IPv4
+  // address is carried inside an IPv6 one. 6to4 puts it in the second and third groups, so
+  // 2002:7f00:1:: is 127.0.0.1; the well-known NAT64 prefix puts it in the last two, so
+  // 64:ff9b::7f00:1 is the same address again. Neither was checked, and on a host with either
+  // mechanism configured that is a route to a private address the check above exists to refuse.
+  if (matchesIPv6Prefix(groups, SIXTOFOUR_PREFIX, 16)) {
+    return isPrivateIPv4(embeddedIPv4(groups[1] ?? 0, groups[2] ?? 0));
+  }
+  if (matchesIPv6Prefix(groups, NAT64_PREFIX, 96)) {
+    return isPrivateIPv4(embeddedIPv4(groups[6] ?? 0, groups[7] ?? 0));
   }
 
   if (matchesIPv6Prefix(groups, FC00_PREFIX, 7)) return true; // fc00::/7
   if (matchesIPv6Prefix(groups, FE80_PREFIX, 10)) return true; // fe80::/10
+  if (matchesIPv6Prefix(groups, FEC0_PREFIX, 10)) return true; // fec0::/10
+  if (matchesIPv6Prefix(groups, FF00_PREFIX, 8)) return true; // ff00::/8
   return false;
 }
 
