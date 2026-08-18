@@ -198,6 +198,12 @@ export interface IndexingConfig {
   // artifacts (lcov.json, stats.json, ...) or override this list to re-include a legitimately
   // named file. See isParseSkipEligible in parser.ts.
   skip_files: string[]
+  // Whether a bare-name `symbol` lookup searches the machine-wide index (every project ever
+  // indexed on this machine) or only the project it is run from. True keeps the documented
+  // cross-project default. Set false to confine it: `symbol` then scopes to the current
+  // project root and refuses a --project or --file that points outside it, so an agent working
+  // in one repository cannot read source out of another through the shared index.
+  cross_project_symbols: boolean
   // Whether indexing (token-goat index and the worker's incremental drain) also chunks and
   // embeds file content for `token-goat semantic`, in addition to the always-on syntactic
   // symbols/refs parse. Defaults to true to match the feature's advertised behavior; set
@@ -460,6 +466,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     skip_dirs: [],
     skip_files: ['coverage.json', 'coverage-final.json'],
     embeddings_enabled: true,
+    cross_project_symbols: true,
   },
   compression: {
     profile: 'auto',
@@ -1539,6 +1546,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   ix.skip_files = validatedStrList(ix_raw['skip_files'], ix.skip_files)
   ix.embeddings_enabled = validatedBool(ix_raw['embeddings_enabled'], ix.embeddings_enabled)
   ix.embeddings_enabled = envBool('TOKEN_GOAT_EMBEDDINGS_ENABLED', ix.embeddings_enabled)
+  ix.cross_project_symbols = validatedBool(ix_raw['cross_project_symbols'], ix.cross_project_symbols)
+  ix.cross_project_symbols = envBool('TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', ix.cross_project_symbols)
 
   const cpr_raw = section(raw, 'compression')
   const cpr = getDefaultConfig('compression') as CompressionConfig
@@ -1671,6 +1680,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
+  'indexing.cross_project_symbols': ['TOKEN_GOAT_CROSS_PROJECT_SYMBOLS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
   'gdrive.enabled': ['TOKEN_GOAT_GDRIVE_ENABLED'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
@@ -1830,6 +1840,7 @@ export function saveConfig(config: Config): void {
       skip_dirs: config.indexing.skip_dirs,
       skip_files: config.indexing.skip_files,
       embeddings_enabled: config.indexing.embeddings_enabled,
+      cross_project_symbols: config.indexing.cross_project_symbols,
     },
     compression: {
       profile: config.compression.profile,

@@ -186,6 +186,7 @@ describe('read_commands', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-cmds-'))
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
     // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo
@@ -347,6 +348,7 @@ describe('read_commands', () => {
 
     it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array (regression: JSON mode had no overflow guard at all, unlike the text branch\'s guardText)', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
       const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
@@ -370,6 +372,7 @@ describe('read_commands', () => {
 
     it('uses the same items/truncated/totalCount envelope even when overflow_guard is disabled and nothing was truncated (uniform --json shape regardless of truncation)', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: false, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
       const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
@@ -762,6 +765,7 @@ describe('read_commands', () => {
       // passes through untouched, no marker) and passes once runRead's whole-file emit
       // routes through emitGuarded.
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 50 },
       } as unknown as ReturnType<typeof loadConfig>)
       const f = path.join(tempDir, 'huge.txt')
@@ -773,6 +777,7 @@ describe('read_commands', () => {
 
     it('does not cap the plain-file dump when overflow_guard is disabled (real no-op)', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: false, max_tokens: 50 },
       } as unknown as ReturnType<typeof loadConfig>)
       const f = path.join(tempDir, 'huge2.txt')
@@ -965,6 +970,7 @@ describe('read_commands', () => {
 
     it('caps an oversized symbol body and tags the truncation hint for "symbol" (#52)', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 50 },
       } as unknown as ReturnType<typeof loadConfig>)
       const sym: MockSymbol = { name: 'hugeFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 500, body: 'x'.repeat(2000), docstring: '' }
@@ -1412,6 +1418,7 @@ describe('read_commands', () => {
 
       it('caps an oversized line-range slice and tags the truncation hint for "lines" (#52)', () => {
         mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
           overflow_guard: { enabled: true, max_tokens: 50 },
         } as unknown as ReturnType<typeof loadConfig>)
         const f = path.join(tempDir, 'biglines.txt')
@@ -2346,6 +2353,7 @@ describe('read_commands', () => {
 
     it('caps an oversized section body and tags the truncation hint for "heading" (#52)', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 50 },
       } as unknown as ReturnType<typeof loadConfig>)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2638,6 +2646,7 @@ describe('read_commands', () => {
 
     it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
       const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
@@ -2775,6 +2784,7 @@ describe('read_commands', () => {
 
     it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
       const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
@@ -4360,6 +4370,7 @@ describe('read_commands', () => {
 
     it('caps an oversized text-mode fanned result at overflow_guard.max_tokens', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 20 },
       } as unknown as ReturnType<typeof loadConfig>)
       const items = Array.from({ length: 500 }, (_, i) => ({ id: i, name: `person-${i}-`.repeat(5) }))
@@ -4527,6 +4538,7 @@ describe('read_commands', () => {
 
     it('caps an oversized text-mode fanned result at overflow_guard.max_tokens', () => {
       mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
         overflow_guard: { enabled: true, max_tokens: 20 },
       } as unknown as ReturnType<typeof loadConfig>)
       const lines = ['items:']
@@ -4694,6 +4706,7 @@ describe('read_commands', () => {
 
       it('caps an oversized result at overflow_guard.max_tokens under --json', () => {
         mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
           overflow_guard: { enabled: true, max_tokens: 20 },
         } as unknown as ReturnType<typeof loadConfig>)
         const f = path.join(tempDir, 'big.db')
@@ -6504,6 +6517,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
 
   it('reports the true DB total (ignoring the SQL LIMIT already applied to `results`) in single-symbol --json totalCount, marking truncated even when overflow_guard never kicks in (regression: totalCount used to equal results.length, silently hiding refs beyond --limit)', () => {
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
     mockQueryRefs.mockReturnValue([ref('src/auth.ts', 10, 'login()')])
@@ -6521,6 +6535,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
 
   it('caps a single-symbol --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of an unbounded array', () => {
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 60 },
     } as unknown as ReturnType<typeof loadConfig>)
     mockQueryRefs.mockReturnValue(Array.from({ length: 50 }, (_, i) => ref('src/auth.ts', i + 1, 'x'.repeat(50))))
@@ -6589,6 +6604,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
 
   it('caps a per-symbol entry under --json at overflow_guard.max_tokens, wrapping that entry with items/truncated/totalCount instead of an unbounded array', () => {
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 60 },
     } as unknown as ReturnType<typeof loadConfig>)
     mockQueryRefs.mockImplementation((opts: { name: string }) =>
@@ -6805,7 +6821,8 @@ describe('runRefs --exclude-tests (single-symbol path, additive opt-in)', () => 
     // vi.clearAllMocks() clears calls but not a prior test's mockReturnValue implementation --
     // an earlier describe block in this file leaves mockLoadConfig pinned to a small
     // overflow_guard.max_tokens, which would otherwise truncate this block's small fixtures.
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
   })
 
   it('hides refs whose call site is a test file, leaving default (flag-absent) output byte-identical', () => {
@@ -6858,7 +6875,8 @@ describe('runRefs --exclude-tests (single-symbol path, additive opt-in)', () => 
 describe('runRefs --grep (single-symbol path, filters on call-site file path)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
   })
 
   it('keeps only refs whose call-site file path matches the pattern', () => {
@@ -6990,7 +7008,8 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
 describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
   })
 
   it('filters test-file refs on the distinct runRefsCrossFile path too (not just runRefsSingle), with exact per-symbol counts', () => {
@@ -7278,6 +7297,7 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
   })
@@ -7533,6 +7553,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-refs-typed-'))
@@ -7635,6 +7656,7 @@ describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 20 },
     } as unknown as ReturnType<typeof loadConfig>)
   })
@@ -7750,6 +7772,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
   })
@@ -7851,7 +7874,8 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
 describe('runRefs unknown symbol vs zero-references distinction', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
     // resolveProjectRoot (not mocked in this file) shells out via runGit; the empty-result
     // branch under test now always resolves rootDir (for the existence check), so this must be
     // stubbed here too, matching the outer 'read_commands' describe's own beforeEach.

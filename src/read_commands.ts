@@ -24,7 +24,7 @@ import { readSection, listSections, extractSection, findContainingSection } from
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
-import { getDisplayRoot, resolveProjectRoot } from './project.js'
+import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
@@ -886,6 +886,28 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const excludeTests = opts.excludeTests === true
 
+  // `symbol` is the one read command that searches the machine-wide index by default, which is
+  // documented and useful on a personal machine and a disclosure channel on a shared one: from any
+  // indexed directory, `symbol --grep .` enumerates every symbol of every project ever indexed
+  // here, bodies included, without touching the filesystem -- so a directory sandbox around the
+  // agent does not contain it. `indexing.cross_project_symbols = false` confines the command to
+  // the project it is run from. The confinement has to cover --project and an absolute --file as
+  // well, or the setting is bypassed by the same caller it exists to constrain.
+  const confineToProject = !loadConfig().indexing.cross_project_symbols
+  const confinedRoot = confineToProject ? resolveProjectRoot() : null
+  if (confinedRoot !== null) {
+    const requested = opts.projectRoot
+    if (requested !== undefined && !isInsideRoot(requested, confinedRoot)) {
+      return { text: `--project is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(confinedRoot, requested)}`, code: 1 }
+    }
+    if (opts.file !== undefined) {
+      const resolved = resolveIndexPath(opts.file, requested ?? process.cwd())
+      if (!isInsideRoot(resolved, confinedRoot)) {
+        return { text: `--file is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(confinedRoot, resolved)}`, code: 1 }
+      }
+    }
+  }
+
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
   if (opts.file !== undefined) {
@@ -911,6 +933,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed
   // path there's nothing left to disambiguate across projects.
   if (opts.file === undefined && opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
+  // Confinement supplies the scope the caller left open, so a bare-name lookup with no --project
+  // searches this project instead of the whole machine.
+  if (opts.file === undefined && queryOpts.rootDir === undefined && confinedRoot !== null) queryOpts.rootDir = confinedRoot
 
   const rawResults = querySymbols(queryOpts)
   const preFilterCount = rawResults.length

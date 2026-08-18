@@ -376,3 +376,22 @@ export function resolveProjectRoot(opts?: { project?: string }): string {
   if (project !== null) return project.root;
   return canonicalize(base);
 }
+
+/**
+ * Is `target` the same path as `root`, or somewhere beneath it?
+ *
+ * Both sides go through {@link canonicalize} first, so symlinks, shell-mount spellings
+ * (`/mnt/c/...`, `/c/...`), separator direction, drive-letter case, and 8.3 short names all
+ * compare equal. The trailing-separator guard is what stops `/srv/project-secrets` from reading
+ * as inside `/srv/project`. On Windows the comparison folds case, since the filesystem does.
+ */
+export function isInsideRoot(target: string, root: string): boolean {
+  let t = canonicalize(target);
+  let r = canonicalize(root);
+  if (process.platform === 'win32') {
+    t = t.toLowerCase();
+    r = r.toLowerCase();
+  }
+  if (t === r) return true;
+  return t.startsWith(r.endsWith('/') ? r : r + '/');
+}
