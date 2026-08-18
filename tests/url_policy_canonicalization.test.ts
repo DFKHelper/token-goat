@@ -102,3 +102,45 @@ describe('malformed input', () => {
     expect(matchesDenyPattern('https://example.com/%ZZ', ['https://example.com/*'])).toBe(true)
   })
 })
+
+
+/**
+ * The parser stores an internationalised host punycode-encoded, because that is what DNS is asked
+ * for. Nothing turned it back, so an allow pattern written in the spelling an operator actually
+ * types matched no host at all and the policy refused every URL to that host, silently. Same shape
+ * as the default-port case above, and the same fix: make the two spellings interchangeable.
+ *
+ * The widening decodes that exact hostname, so it can only ever add the same host under its other
+ * name. The negative cases below are what prove it: a look-alike built from a different codepoint
+ * is a different host and stays refused.
+ */
+describe('an internationalised host is interchangeable with its punycode form', () => {
+  const UNICODE_PATTERN = 'https://exämple.com/*'
+  const PUNYCODE_PATTERN = 'https://xn--exmple-cua.com/*'
+
+  it.each([
+    ['pattern and URL both in Unicode', 'https://exämple.com/private/x', UNICODE_PATTERN],
+    ['a Unicode pattern against the punycode URL', 'https://xn--exmple-cua.com/private/x', UNICODE_PATTERN],
+    ['a punycode pattern against the Unicode URL', 'https://exämple.com/private/x', PUNYCODE_PATTERN],
+  ])('allows %s', (_label, url, pattern) => {
+    expect(matchesAllowPattern(url, [pattern])).toBe(true)
+  })
+
+  it('denies the punycode spelling under a Unicode pattern', () => {
+    expect(matchesDenyPattern('https://xn--exmple-cua.com/private/x', [UNICODE_PATTERN])).toBe(true)
+  })
+
+  it.each([
+    ['a look-alike host built from a different codepoint', 'https://exаmple.com/x'],
+    ['another host carrying the allowed one in its query', 'https://evil.com/steal?x=exämple.com/'],
+    ['another host carrying the allowed one as userinfo', 'https://exämple.com@evil.com/x'],
+    ['a subdomain of another host', 'https://xn--exmple-cua.com.evil.com/x'],
+  ])('still refuses %s', (_label, url) => {
+    expect(matchesAllowPattern(url, [UNICODE_PATTERN])).toBe(false)
+  })
+
+  it('leaves an ASCII host alone', () => {
+    expect(matchesAllowPattern('https://example.com/x', ['https://example.com/*'])).toBe(true)
+    expect(matchesAllowPattern('https://evil.com/x', ['https://example.com/*'])).toBe(false)
+  })
+})

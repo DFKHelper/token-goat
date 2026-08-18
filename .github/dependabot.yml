@@ -1,9 +1,44 @@
 # Actions are pinned to commit SHAs, which is what supply-chain review asks for and also what
 # stops them ever updating on their own. This keeps the pins current: Dependabot opens a PR that
 # moves the SHA and rewrites the version comment beside it.
+#
+# `cooldown` is the supply-chain control here. Without it Dependabot proposes a version the day it
+# is published, which is the window a compromised release is live in: the npm account-takeover
+# pattern is a bad version published, installed by whoever updates first, and yanked hours later.
+# Waiting seven days does not make a package safe, but it moves this repository out of the group
+# that finds out first.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
+
+  # The npm tree was not watched at all, so every dependency advisory here waited on someone
+  # noticing. Grouped so a routine week is one pull request rather than twenty, and so the four
+  # gating CI jobs run once over the batch.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm-dependencies:
+        patterns:
+          - '*'
+
+  # The extension carries its own manifest and lockfile, so it needs its own entry: an update to
+  # the root tree never reaches it.
+  - package-ecosystem: npm
+    directory: /vscode-extension
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm-dependencies:
+        patterns:
+          - '*'

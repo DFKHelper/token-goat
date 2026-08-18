@@ -84,3 +84,54 @@ Every action used by that workflow, and by CI, is pinned to a full commit SHA ra
 ## License
 
 Token-Goat is source-available under the PolyForm Noncommercial License 1.0.0. Submitting a security report does not grant the reporter any license to Token-Goat's code beyond what PolyForm Noncommercial already permits. See LICENSE for the full terms.
+
+
+## Dependency licenses
+
+Every production dependency is permissively licensed, but a scan does not read it that way on its
+own. Counted from `package-lock.json`, which lists the packages for every platform rather than only
+the ones this machine installed, 22 entries need a human answer: 7 declare a license a scanner
+cannot resolve, and 15 carry a copyleft term. All 22 arrive through optional dependencies. Install
+with `npm install --omit=optional token-goat` and not one of them is present.
+
+**Declarations a scanner cannot resolve.** Both are upstream mistakes, and both are the same
+mistake this project made in its own manifest and fixed. `SEE LICENSE IN <file>` is npm's form for
+a license that is not on the SPDX list, and `MIT OR Apache` is not a valid expression because the
+identifier is `Apache-2.0`. For the second, `npm sbom` emits no `licenses` field at all rather than
+an unresolvable one.
+
+| Package | Declares | Actually grants | Reached through |
+| --- | --- | --- | --- |
+| `flatbuffers` | `SEE LICENSE IN LICENSE.txt` | Apache-2.0, in its own `LICENSE.txt` | `@xenova/transformers` |
+| `sqlite-vec` and its 5 platform packages | `MIT OR Apache` | MIT or Apache-2.0, your choice | direct optional dependency |
+
+**Copyleft terms.** Two families, and neither puts a copyleft obligation on Token-Goat's own code.
+
+| Package | Declares | Why it is not a problem |
+| --- | --- | --- |
+| `@img/sharp-libvips-<platform>` (10 packages) | `LGPL-3.0-or-later` | libvips, shipped as a prebuilt shared library and used unmodified. LGPL asks that the library stay replaceable, and it is: it is a separate package that `sharp` loads at runtime. |
+| `@img/sharp-<platform>` (4 packages) | `Apache-2.0 AND LGPL-3.0-or-later` | the Apache half is `sharp` itself, the LGPL half is the same libvips |
+| `jszip` | `(MIT OR GPL-3.0-or-later)` | a choice between the two, and the MIT half is taken |
+
+`sharp` and `jszip` are both optional: `sharp` powers image shrinking, `jszip` arrives through
+`exceljs` for the `xlsx-*` commands.
+
+**Three packages with no license at all used to be here.** `buffers@0.1.1` and `chainsaw@0.1.0`
+shipped with neither a `license` field nor a license file, and `traverse@0.3.9` had the file but
+not the field. No grant at all is worse for a review than a copyleft grant, because there is
+nothing to apply policy to. They arrived through `exceljs`, which depends on `unzipper`, which
+depended on `binary`, which depended on all three. `unzipper` dropped `binary` in 0.11, so an
+override to `^0.12.5` removes the sub-chain, and the deprecated `fstream` with it. Token-goat reads
+workbooks through `wb.xlsx.readFile()`, which goes through `jszip`; `unzipper` is only reachable
+through the streaming reader in `exceljs`, which this code never calls.
+
+Reproduce the whole picture:
+
+```bash
+npm run sbom
+```
+
+Like the advisory disclosure above, this is checked by a test rather than by review: see
+[tests/guards/dependency_licenses.test.ts](tests/guards/dependency_licenses.test.ts). Any
+production package that a scanner cannot resolve, or that carries a copyleft term, has to be named
+here or that test fails.
