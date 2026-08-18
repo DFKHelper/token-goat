@@ -570,6 +570,11 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
     toolName: 'view',
     toolArgs: { path: 'doctor-check.txt' },
   })
+  // preToolUseCommand is config.hooks.preToolUse[0].command: the exact string Copilot CLI runs
+  // itself on every tool call. Spawning it here reproduces that, to check it still launches.
+  // Anyone able to write that file already has execution through Copilot, so shell: true adds no
+  // reach; parsing the string instead would break a hook command a user customised by hand.
+  // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const res = spawnSync(preToolUseCommand, {
     input: synthetic,
     encoding: 'utf-8',

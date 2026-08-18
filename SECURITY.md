@@ -41,17 +41,31 @@ The following are not treated as security issues unless paired with a working pr
 
 ## Dependency advisories
 
-`npm audit --omit=dev` on the published package is not empty, and pretending otherwise would waste your review time. Every runtime advisory that remains traces to one of three packages. All three are already at their latest published version, so there is no forward patch to take: the only version npm offers as a "fix" is an older major that drops features Token-Goat uses.
+`npm audit` gives three different answers for Token-Goat depending on what you scan, and the gap between them is the first thing to understand. All three numbers below are reproducible with the commands shown.
+
+| What you scan | Command | Result |
+| --- | --- | --- |
+| this repository | `npm audit` | clean, development dependencies included |
+| an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | one chain, `deepmerge-ts` under `html-to-text` |
+| a default install | `npm install token-goat` then `npm audit --omit=dev` | that chain plus the optional packages in the table below |
+
+The repository is clean because [`package.json`](package.json) carries an `overrides` block that pins four transitive packages to patched versions. **npm applies `overrides` only in the root project**, so those pins do not travel to anyone who installs Token-Goat as a dependency. We are saying so plainly rather than letting a clean repository scan stand in for a clean install: if your scanner reads this repository or its lockfile it will report nothing, and that is not the whole picture.
+
+Without the overrides a consumer resolves `protobufjs` at 6.x, which carries more advisories than the 7.x line the repository would otherwise use. Every one of those paths is optional.
 
 | Package | Advisories it carries | Where it loads | Why the advisory does not reach you through Token-Goat |
 | --- | --- | --- | --- |
 | `@xenova/transformers` | [`protobufjs`](https://github.com/advisories/GHSA-xq3m-2v4x-88gg) (critical), `onnx-proto`, `onnxruntime-web`, and its own pinned `sharp` | optional; loaded only when semantic search builds or queries embeddings | not mitigated, so it is the one to weigh. Skip it with `npm install --omit=optional`, or leave `indexing.embeddings_enabled` off, and the code never loads |
 | `exceljs` | [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | optional; loaded only when an `xlsx-*` command opens a workbook | the advisory is a missing bounds check on a caller-supplied `buf` argument; ExcelJS never passes one |
-| `html-to-text` | [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx) | required, and bundled into `dist/token-goat.mjs`; runs when a fetched page is converted to text | the advisory is stack exhaustion while merging a recursive object graph. The only object merged is the fixed options literal in `extractCleanText`; page content is never merged |
+| `html-to-text` | [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx) | required, and bundled into `dist/token-goat.mjs`; runs when a fetched page is converted to text | the advisory is stack exhaustion while merging a recursive object graph. `html-to-text` reaches `deepmerge-ts` from two call sites only, `composeOptions` and `mergeDuplicatesPreferLast`, and both merge the options object. The only options Token-Goat passes are the fixed literal in `extractCleanText`; page content is never merged |
 
 `npm install --omit=optional` gives you an install without the first two. The `xlsx-*` commands then say ExcelJS is not installed rather than failing oddly, and `semantic` keeps working on keyword search alone: it is the embedding half that goes away, not the command.
 
+`html-to-text` is deliberately not moved back to 9.x to drop `deepmerge-ts`. That version pins `htmlparser2` two majors lower, and `htmlparser2` is what parses fetched pages, so it would trade an advisory in an options merger for an older parser on the one path that handles untrusted input.
+
 Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
+
+For a scanner that ingests a bill of materials rather than a lockfile, `npm run sbom` writes CycloneDX 1.5 to stdout.
 
 ## Verifying what you installed
 

@@ -936,8 +936,10 @@ describe('runTypes integration', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-sfc-class-'))
     try {
       const file = join(dir, 'Fixture.vue')
+      // The script tag is fixture text for the Vue parser, written to a temp path and read back by
+      // the indexer. Nothing renders it, so there is no markup sink here.
       writeFileSync(
-        file,
+        file, // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
         ['<script>', 'export class TypesSfcClassFixture {', '  constructor() {}', '}', '</script>', ''].join('\n'),
       )
       indexFileSync(normalizePath(file))
