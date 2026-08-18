@@ -49,7 +49,7 @@ The following are not treated as security issues unless paired with a working pr
 | `exceljs` | [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | optional; loaded only when an `xlsx-*` command opens a workbook | the advisory is a missing bounds check on a caller-supplied `buf` argument; ExcelJS never passes one |
 | `html-to-text` | [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx) | required, and bundled into `dist/token-goat.mjs`; runs when a fetched page is converted to text | the advisory is stack exhaustion while merging a recursive object graph. The only object merged is the fixed options literal in `extractCleanText`; page content is never merged |
 
-`npm install --omit=optional` gives you an install without the first two, and the commands that need them say so rather than failing oddly.
+`npm install --omit=optional` gives you an install without the first two. The `xlsx-*` commands then say ExcelJS is not installed rather than failing oddly, and `semantic` keeps working on keyword search alone: it is the embedding half that goes away, not the command.
 
 Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
 
