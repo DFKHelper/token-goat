@@ -40,6 +40,12 @@ Restart your AI sessions. Run `token-goat stats` a couple of minutes after your 
 ---
 
 <p align="center">
+  <img src="assets/token-goat-comparison.jpg" alt="Side-by-side comparison: a bloated workflow sends whole files and grows context every round, while token-goat sends only the needed lines and stays lean" width="900">
+  <br>
+  <sub>Same requirements, smarter input: fewer input tokens, shorter answers, and context that stops compounding across rounds</sub>
+</p>
+
+<p align="center">
   <img src="assets/stats_v180.png" alt="token-goat stats display" width="589">
   <br>
   <sub>Stats display — gradient bars, sparklines, and a calendar heatmap in 24-bit color</sub>
