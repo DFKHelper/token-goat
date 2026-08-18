@@ -13,6 +13,8 @@ import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
+import { loadConfig } from './config.js'
+import type { Config } from './config.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
@@ -627,6 +629,86 @@ export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
 }
 
 /**
+ * Reports the security posture in one place, because that is the question an evaluation asks and
+ * there was no command that answered it: what is this allowed to reach, what is it scanning, and
+ * who else on this machine can read what it stored.
+ *
+ * Reporting, not nagging. A line only warns when a protection that ships on has been turned off,
+ * so a default install is quiet. Google Drive is reported either way rather than warned about: it
+ * is opt-out by design, and a warning on the shipped default would train the reader to skip the
+ * whole section.
+ */
+export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorResult[] {
+  const results: DoctorResult[] = []
+
+  results.push({
+    name: 'Security network',
+    status: 'ok',
+    message: cfg.network.offline
+      ? 'offline mode is on: no fetch, model download, OCR data, screenshot, or Drive call'
+      : 'offline mode is off (network.offline)',
+  })
+
+  results.push(
+    cfg.injection.enabled
+      ? { name: 'Security injection', status: 'ok', message: 'fetched and MCP content is scanned and fenced' }
+      : { name: 'Security injection', status: 'warn', message: 'scanning is off (injection.enabled): fetched and MCP content reaches the model unfenced' },
+  )
+
+  results.push({
+    name: 'Security gdrive',
+    status: 'ok',
+    message: cfg.gdrive.enabled ? 'enabled (gdrive.enabled = false turns it off)' : 'disabled',
+  })
+
+  const allow = cfg.webfetch.allow.length
+  const deny = cfg.webfetch.deny.length
+  results.push({
+    name: 'Security fetch policy',
+    status: 'ok',
+    message: allow > 0
+      ? `${allow} allowed host pattern${allow === 1 ? '' : 's'}, ${deny} denied: nothing outside the allow list is fetched`
+      : `no allow list, ${deny} denied pattern${deny === 1 ? '' : 's'}: any host not denied can be fetched`,
+  })
+
+  const extraRoots = cfg.mcp.allowed_roots.length
+  results.push(
+    cfg.mcp.confine_reads_to_project_root
+      ? {
+          name: 'Security mcp roots',
+          status: 'ok',
+          message: extraRoots === 0
+            ? 'reads are confined to the project root'
+            : `reads are confined to the project root plus ${extraRoots} configured root${extraRoots === 1 ? '' : 's'}`,
+        }
+      : { name: 'Security mcp roots', status: 'warn', message: 'confinement is off (mcp.confine_reads_to_project_root): a read can leave the project' },
+  )
+
+  results.push(dataDirPermissionResult(dataDirPath))
+  return results
+}
+
+/** Owner-only is the shipped mode; anything looser means another local user can read the index. */
+function dataDirPermissionResult(dataDirPath: string): DoctorResult {
+  if (process.platform === 'win32') {
+    return { name: 'Security data dir', status: 'ok', message: 'inherits the parent ACL (POSIX modes do not apply on Windows)' }
+  }
+  try {
+    const mode = fs.statSync(dataDirPath).mode & 0o777
+    if ((mode & 0o077) !== 0) {
+      return {
+        name: 'Security data dir',
+        status: 'warn',
+        message: `mode ${mode.toString(8).padStart(3, '0')}: other local users can read the indexed source text`,
+      }
+    }
+    return { name: 'Security data dir', status: 'ok', message: `mode ${mode.toString(8).padStart(3, '0')}: owner only` }
+  } catch {
+    return { name: 'Security data dir', status: 'warn', message: 'could not be read, so its permissions are unknown' }
+  }
+}
+
+/**
  * Runs every diagnostic check and returns the results.
  *
  * `processes` exists so a caller that does not care about MCP process health can skip gathering
@@ -653,6 +735,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))
+
+  for (const result of checkSecurityPosture(loadConfig(rootDir), actualDataDir)) results.push(result)
 
   results.push(checkDiskSpace(actualDataDir))
 
