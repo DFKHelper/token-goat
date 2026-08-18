@@ -143,7 +143,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Recovery hints omit critical paths when space is tight | Skip bash snippet when recall available |
 | AVIF format not supported despite better compression | AVIF image-shrink via sharp (when libvips is built with libaom); WebP fallback; codec auto-detection in docker |
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
-| Hook crash leaves agent waiting for response | Fail-soft barrier catches `BaseException`/`MemoryError`/`SystemExit`; hook always returns `{"continue": true}` |
+| Hook crash leaves agent waiting for response | Every way the shim can fail prints `{}` and exits 0, leaving the tool call to proceed untouched: an event name it does not know, stdin it cannot read or parse, an in-process load that throws, a token-goat child that exits non-zero or prints nothing, and a catch around the whole run |
 | Concurrent edits lose update counts mid-session | Session CAS + mtime-based retry prevent lost edits in manifest |
 | Dirty queue appends corrupt on concurrent writes | OS file lock (fcntl/msvcrt) prevents torn JSON lines |
 | Worker claim file blocks all re-spawns on crash | Mtime staleness check (>60s) auto-recovers zombie claim files |

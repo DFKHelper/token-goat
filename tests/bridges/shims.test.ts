@@ -199,3 +199,69 @@ describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previousl
     expect(parsed.hookSpecificOutput.hookEventName).toBe('AlreadySetByHandler')
   })
 })
+
+// A PreToolUse hook that crashes, exits non-zero, or prints something unparseable is fail-closed in
+// at least one harness: Copilot denies the whole session on it. So "the hook cannot take the
+// developer's tooling down with it" is an availability guarantee, not a nicety, and nothing
+// exercised the generated Claude Code shim against a crash. These run it as the harness does,
+// with the snake_case event names the shim's own allowlist holds -- a PascalCase name here would
+// return '{}' from the unknown-event branch and every case below would pass without ever
+// reaching the guard it names. The final main().catch is not covered: nothing reachable from
+// outside the process makes main() reject, so it stays as defense in depth rather than a
+// tested path.
+describe('the Claude Code shim cannot block a tool call by failing', () => {
+  function runShim(args: string[], stdin: string, env: NodeJS.ProcessEnv = {}): { status: number | null; out: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-shim-fail-'))
+    const shim = join(dir, 'token-goat-shim.js')
+    writeFileSync(shim, CLAUDECODE_HOOK_SCRIPT)
+    const result = spawnSync(process.execPath, [shim, ...args], {
+      input: stdin,
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    })
+    rmSync(dir, { recursive: true, force: true })
+    return { status: result.status, out: result.stdout }
+  }
+
+  it('prints an empty decision and exits zero when the entry path it was given does not exist', () => {
+    const missing = join(tmpdir(), 'tg-does-not-exist', 'token-goat.mjs')
+
+    const { status, out } = runShim(['pre_tool_use', missing], '{"tool_name":"Read","tool_input":{"file_path":"x"}}')
+
+    expect(status).toBe(0)
+    expect(out).toBe('{}')
+  })
+
+  it('does the same on stdin that is not JSON at all, rather than throwing on the parse', () => {
+    const { status, out } = runShim(['pre_tool_use'], 'not json at all')
+
+    expect(status).toBe(0)
+    expect(out.trim()).toBe('{}')
+  })
+
+  it('does the same for an event name it does not recognise', () => {
+    const { status, out } = runShim(['NoSuchEvent'], '{}')
+
+    expect(status).toBe(0)
+    expect(out).toBe('{}')
+  })
+
+  it('does the same when the token-goat process it spawns exits non-zero', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-shim-entry-'))
+    const entry = join(dir, 'token-goat.mjs')
+    // The child prints a decision AND fails. Exiting non-zero with no output would be caught by
+    // the empty-stdout guard too, so this is the only shape that isolates the exit-status check:
+    // a token-goat that crashed halfway through printing must not have its half-decision honoured.
+    const deny = JSON.stringify({ decision: 'deny', reason: 'half-written' })
+    writeFileSync(entry, `process.stdout.write(${JSON.stringify(deny)})
+process.exit(1)
+`)
+
+    const { status, out } = runShim(['pre_tool_use', entry], '{"tool_name":"Read","tool_input":{"file_path":"x"}}')
+    rmSync(dir, { recursive: true, force: true })
+
+    expect(status).toBe(0)
+    expect(out).toBe('{}')
+    expect(out).not.toContain('deny')
+  })
+})
