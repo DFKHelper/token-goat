@@ -2712,6 +2712,12 @@ function cmdInsertSection(file: string, opts: { after: string; contentFrom?: str
 }
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
+  // An organisation that does not use Google Drive can switch the integration off entirely, which
+  // refuses here before any file id is validated or any connection is opened, and also stops the
+  // installed agent guidance from naming the command at all.
+  if (!loadConfig().gdrive.enabled) {
+    throw new CliError('gdrive-sections is disabled by gdrive.enabled = false in this install')
+  }
   const fetchOpts = { fresh: opts.fresh === true }
   // Fetch the whole doc once up front (honoring --fresh) so its raw byte size is available as
   // the "full source" side of the bytes-saved calculation below, mirroring cmdSessionOutline/

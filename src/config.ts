@@ -216,6 +216,12 @@ export interface ContextConfig {
   model_window_tokens: number
 }
 
+/** Config for the Google Drive integration (gdrive.ts, `gdrive-sections`). */
+export interface GdriveConfig {
+  /** When false the `gdrive-sections` command refuses, and the installed agent guidance stops naming it. For an organisation that does not use Google Drive and does not want the integration reachable or visible. */
+  enabled: boolean
+}
+
 export interface InjectionConfig {
   enabled: boolean
 }
@@ -282,6 +288,7 @@ export interface Config {
   compression: CompressionConfig
   context: ContextConfig
   injection: InjectionConfig
+  gdrive: GdriveConfig
   mcp: McpConfig
   hint_stats: HintStatsConfig
   semantic: SemanticConfig
@@ -463,6 +470,9 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   injection: {
     enabled: true,
   },
+  gdrive: {
+    enabled: true,
+  },
   mcp: {
     confine_reads_to_project_root: true,
     allowed_roots: [],
@@ -504,6 +514,7 @@ export function defaultConfig(): Config {
     compression: getDefaultConfig('compression') as CompressionConfig,
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
+    gdrive: getDefaultConfig('gdrive') as GdriveConfig,
     mcp: getDefaultConfig('mcp') as McpConfig,
     hint_stats: getDefaultConfig('hint_stats') as HintStatsConfig,
     semantic: getDefaultConfig('semantic') as SemanticConfig,
@@ -1544,6 +1555,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   inj.enabled = validatedBool(inj_raw['enabled'], inj.enabled)
   inj.enabled = envBool('TOKEN_GOAT_INJECTION_ENABLED', inj.enabled)
 
+  const gd_raw = section(raw, 'gdrive')
+  const gd = getDefaultConfig('gdrive') as GdriveConfig
+  gd.enabled = validatedBool(gd_raw['enabled'], gd.enabled)
+  gd.enabled = envBool('TOKEN_GOAT_GDRIVE_ENABLED', gd.enabled)
+
   const mcp_raw = section(raw, 'mcp')
   const mcp = getDefaultConfig('mcp') as McpConfig
   mcp.confine_reads_to_project_root = validatedBool(mcp_raw['confine_reads_to_project_root'], mcp.confine_reads_to_project_root)
@@ -1584,6 +1600,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     compression: cpr,
     context: ctx,
     injection: inj,
+    gdrive: gd,
     mcp,
     hint_stats: hs,
     semantic: sem,
@@ -1655,6 +1672,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
+  'gdrive.enabled': ['TOKEN_GOAT_GDRIVE_ENABLED'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
   'mcp.allowed_roots': ['TOKEN_GOAT_MCP_ALLOWED_ROOTS'],
   'webfetch.allow': ['TOKEN_GOAT_WEBFETCH_ALLOW'],
@@ -1821,6 +1839,9 @@ export function saveConfig(config: Config): void {
     },
     injection: {
       enabled: config.injection.enabled,
+    },
+    gdrive: {
+      enabled: config.gdrive.enabled,
     },
     mcp: {
       confine_reads_to_project_root: config.mcp.confine_reads_to_project_root,
