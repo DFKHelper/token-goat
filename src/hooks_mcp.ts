@@ -19,6 +19,8 @@ import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 import { redactSecrets } from './secret_redact.js'
+import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { recordStat } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 // Defined in hooks_common.ts alongside extractToolResultText, whose output the rule is about, and
@@ -55,6 +57,20 @@ function postMcpHandler(event: HookEvent): HookOutput {
   // `snapshot` token even though its result is compressible) must never be served
   // back to a later identical pre_tool_use call, since its output can legitimately
   // differ call to call.
+  // An MCP result is a remote server's output: the least trusted text in the pipeline, and the
+  // one surface a page-only injection scan never covered. It was scanned nowhere -- not here on
+  // the live path, not on `mcp-output <id>` recall -- so a compromised or hostile server could put
+  // imperative-override text straight into the model's context unmarked. Scanned here because this
+  // is the branch that actually bills: the text reaches the model this turn whether or not the
+  // compression below decides it is worth rewriting.
+  let injectionMatches: string[] = []
+  try {
+    if (loadConfig().injection.enabled) injectionMatches = scanForInjectionPatterns(resultText)
+  } catch {
+    injectionMatches = []
+  }
+  if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
+
   let id: string | null = null
   if (readOnly) {
     const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
@@ -106,10 +122,22 @@ function postMcpHandler(event: HookEvent): HookOutput {
         if (worthwhile) {
           return {
             hookType: 'rewriteOutput',
-            updatedOutput: `${notice}${redactedBody}`,
+            updatedOutput:
+              injectionMatches.length > 0
+                ? `${notice}${fenceUntrustedContent(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`
+                : `${notice}${redactedBody}`,
           }
         }
       }
+    }
+  }
+  // Reached when compression did not fire or did not pay off. The fence is a security action,
+  // not a compression one, so it must not inherit the size floor, the opt-out env var, or the
+  // net-benefit gate above -- a short hostile result is exactly the case those would drop.
+  if (injectionMatches.length > 0) {
+    return {
+      hookType: 'rewriteOutput',
+      updatedOutput: fenceUntrustedContent(redactSecrets(resultText).text, injectionMatches, UNTRUSTED_TOOL_TAG),
     }
   }
   return passOutput()
