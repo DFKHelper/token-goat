@@ -21,6 +21,8 @@ import * as fs from 'node:fs'
 import { normalizePath } from './paths.js'
 import { registerReset } from './reset.js'
 import { foldPath } from './util.js'
+import { shortFingerprint } from './fingerprint.js'
+import { redactSecrets } from './secret_redact.js'
 
 /**
  * Tracks reads/edits of a single file within the session.
@@ -384,13 +386,26 @@ export function pendingLargeFileHintsAtLoad(): ReadonlyMap<string, number> {
  * preFetchHandler/postFetchHandler in hooks_fetch.ts), so two WebFetch calls to the
  * same url with different prompts are tracked as separate entries instead of
  * clobbering each other. */
+/**
+ * Strip any credential out of a fetched url before it becomes a session-state key.
+ *
+ * Same disk-exposure problem as {@link curlDownloadKey}: the session-state file is written
+ * without storeBlob's redaction pass, so a signed url or one with an embedded api key was
+ * persisted in full. Redacted rather than digested here because these keys ARE displayed -- the
+ * compaction manifest lists the urls fetched this session (see hooks_compact.ts) -- so the key
+ * has to stay readable. Applied on both write and read, so the lookup still matches.
+ */
+function webFetchUrlKey(url: string): string {
+  return redactSecrets(url).text
+}
+
 export function recordWebFetch(url: string, prompt: string, cacheId: string): void {
-  _webFetches.set(`${url}\x00${prompt}`, cacheId)
+  _webFetches.set(`${webFetchUrlKey(url)}\x00${prompt}`, cacheId)
 }
 
 /** Return the cache id previously recorded for the (`url`, `prompt`) pair, or null. */
 export function getWebFetchCacheId(url: string, prompt = ''): string | null {
-  return _webFetches.get(`${url}\x00${prompt}`) ?? null
+  return _webFetches.get(`${webFetchUrlKey(url)}\x00${prompt}`) ?? null
 }
 
 /** Return every web-fetch this session as a `url -> cacheId` map (insertion order). */
@@ -514,18 +529,33 @@ export function consumedOutstandingAgentSpawnKeys(): string[] {
 }
 
 /** Record that a curl -o download saved `url` to `savedPath` this session. */
+/**
+ * Key the curl-download map by a digest of the url rather than the url itself.
+ *
+ * A download url routinely carries a credential -- an `api_key=` query parameter, a signed
+ * link's `X-Amz-Signature` -- and this map is serialized verbatim into the session-state file,
+ * which is written directly rather than through storeBlob's redaction pass. web_cache.ts
+ * already redacts a url for exactly this reason. A digest rather than a redaction because the
+ * only consumer is an exact-match lookup that DENIES a repeat download: two urls differing only
+ * inside a redacted span would collide and block a legitimate fetch of a different resource.
+ * Nothing displays this key, so a digest costs nothing.
+ */
+function curlDownloadKey(url: string): string {
+  return shortFingerprint(url)
+}
+
 export function recordCurlDownload(url: string, savedPath: string): void {
-  _curlDownloads.set(url, savedPath)
+  _curlDownloads.set(curlDownloadKey(url), savedPath)
 }
 
 /** Return the file path where `url` was saved this session via curl -o, or null. */
 export function getCurlDownloadPath(url: string): string | null {
-  return _curlDownloads.get(url) ?? null
+  return _curlDownloads.get(curlDownloadKey(url)) ?? null
 }
 
 /** Forget a recorded curl -o download for `url` (e.g. its saved file is gone). */
 export function clearCurlDownload(url: string): void {
-  _curlDownloads.delete(url)
+  _curlDownloads.delete(curlDownloadKey(url))
 }
 
 /** Snapshot of curl-download entries exactly as they were at hydration time, before this process
