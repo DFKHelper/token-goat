@@ -155,6 +155,29 @@ function capture(fn: () => void): { stdout: string; stderr: string } {
   return { stdout, stderr }
 }
 
+/** Async twin of {@link capture}. The zip commands became async when fflate moved to a lazy
+ * import, and awaiting inside a sync `capture(fn)` would restore the real streams before the
+ * command had written anything. */
+async function captureAsync(fn: () => Promise<void>): Promise<{ stdout: string; stderr: string }> {
+  let stdout = ''
+  let stderr = ''
+  const origOut = process.stdout.write.bind(process.stdout)
+  const origErr = process.stderr.write.bind(process.stderr)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(process.stdout as any).write = (s: string) => { stdout += s; return true }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(process.stderr as any).write = (s: string) => { stderr += s; return true }
+  try {
+    await fn()
+  } finally {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(process.stdout as any).write = origOut
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(process.stderr as any).write = origErr
+  }
+  return { stdout, stderr }
+}
+
 type MockSymbol = {
   name: string
   kind: string
@@ -7788,8 +7811,8 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
       })
       fs.writeFileSync(zipPath, zip)
 
-      const { stdout, stderr } = capture(() => {
-        const code = runZipRead({ file: zipPath, entry: 'sub/' })
+      const { stdout, stderr } = await captureAsync(async () => {
+        const code = await runZipRead({ file: zipPath, entry: 'sub/' })
         expect(code).toBe(1)
       })
       expect(stderr).toContain("Entry 'sub/' is a directory, not a file")
@@ -7810,8 +7833,8 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
       })
       fs.writeFileSync(zipPath, zip)
 
-      const { stdout } = capture(() => {
-        const code = runZipRead({ file: zipPath, entry: 'sub/file.txt' })
+      const { stdout } = await captureAsync(async () => {
+        const code = await runZipRead({ file: zipPath, entry: 'sub/file.txt' })
         expect(code).toBe(0)
       })
       expect(stdout.trim()).toBe('hello')
@@ -7832,8 +7855,8 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
       fs.writeFileSync(zipPath, zip)
 
       // 'sub/config.json' genuinely contains the query as a substring.
-      const { stderr } = capture(() => {
-        const code = runZipRead({ file: zipPath, entry: 'sub/confi' })
+      const { stderr } = await captureAsync(async () => {
+        const code = await runZipRead({ file: zipPath, entry: 'sub/confi' })
         expect(code).toBe(1)
       })
       expect(stderr).toContain("Entry 'sub/confi' not found")
@@ -7856,8 +7879,8 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
       const zip = zipSync({ 'sub/file.txt': strToU8('hello') })
       fs.writeFileSync(zipPath, zip)
 
-      const { stderr } = capture(() => {
-        const code = runZipRead({ file: zipPath, entry: 'zzz_totally_unrelated' })
+      const { stderr } = await captureAsync(async () => {
+        const code = await runZipRead({ file: zipPath, entry: 'zzz_totally_unrelated' })
         expect(code).toBe(1)
       })
       expect(stderr).toContain("Entry 'zzz_totally_unrelated' not found")

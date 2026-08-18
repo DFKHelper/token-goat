@@ -35,7 +35,13 @@ import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
 import { loadAll as loadAllYaml } from 'js-yaml'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
-import { listZipEntries, extractZipEntry, formatZipList } from './archive_query.js'
+import {
+  listZipEntries,
+  extractZipEntry,
+  formatZipList,
+  ArchiveDependencyMissingError,
+  type ZipEntry,
+} from './archive_query.js'
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -3071,18 +3077,25 @@ export interface ZipListCliOptions {
  * (.zip/.jar/.whl/.vsix/.nupkg are all zip containers under the hood) instead of a raw Read
  * or an unzip -l shell-out. Reads the archive's central directory only -- no member is
  * decompressed just to list it. */
-export function runZipList(opts: ZipListCliOptions): number {
+/** One message for both zip commands: a missing optional dependency reads differently from a
+ * corrupt archive, and saying the wrong one sends the reader to the wrong place. */
+function archiveReadFailure(err: unknown, file: string): string {
+  if (err instanceof ArchiveDependencyMissingError) return err.message
+  return `Failed to read archive (not a valid zip-format file): ${file}`
+}
+
+export async function runZipList(opts: ZipListCliOptions): Promise<number> {
   const data = readFileBytes(opts.file)
   if (data === null) {
     emitErr(`Could not read: ${opts.file}`)
     return 1
   }
 
-  let entries: ReturnType<typeof listZipEntries>
+  let entries: ZipEntry[]
   try {
-    entries = listZipEntries(data)
-  } catch {
-    emitErr(`Failed to read archive (not a valid zip-format file): ${opts.file}`)
+    entries = await listZipEntries(data)
+  } catch (err) {
+    emitErr(archiveReadFailure(err, opts.file))
     return 1
   }
 
@@ -3110,20 +3123,20 @@ export interface ZipReadCliOptions {
  * member (content that isn't valid UTF-8 text) is reported with the same
  * `[binary content elided by token-goat]` marker filters.ts uses for binary output elsewhere in
  * this codebase, rather than dumping raw bytes or crashing on the utf-8 decode. */
-export function runZipRead(opts: ZipReadCliOptions): number {
+export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
   const data = readFileBytes(opts.file)
   if (data === null) {
     emitErr(`Could not read: ${opts.file}`)
     return 1
   }
 
-  let entries: ReturnType<typeof listZipEntries>
+  let entries: ZipEntry[]
   let content: Uint8Array | undefined
   try {
-    entries = listZipEntries(data)
-    content = extractZipEntry(data, opts.entry)
-  } catch {
-    emitErr(`Failed to read archive (not a valid zip-format file): ${opts.file}`)
+    entries = await listZipEntries(data)
+    content = await extractZipEntry(data, opts.entry)
+  } catch (err) {
+    emitErr(archiveReadFailure(err, opts.file))
     return 1
   }
 

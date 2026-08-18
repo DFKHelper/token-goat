@@ -1,7 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 
-import { listZipEntries, extractZipEntry, formatZipList, type ZipEntry } from '../src/archive_query.js'
+import {
+  listZipEntries,
+  extractZipEntry,
+  formatZipList,
+  ArchiveDependencyMissingError,
+  type ZipEntry,
+} from '../src/archive_query.js'
 
 function makeZip(files: Record<string, string>): Uint8Array {
   const zippable: Record<string, Uint8Array> = {}
@@ -12,14 +18,14 @@ function makeZip(files: Record<string, string>): Uint8Array {
 }
 
 describe('listZipEntries', () => {
-  it('lists every entry path and size, sorted by path', () => {
+  it('lists every entry path and size, sorted by path', async () => {
     const zip = makeZip({
       'src/index.ts': 'export const x = 1\n',
       'README.md': '# hello\n',
       'src/util.ts': 'export const y = 2\n',
     })
 
-    const entries = listZipEntries(zip)
+    const entries = await listZipEntries(zip)
     const paths = entries.map((e) => e.path)
     expect(paths).toEqual(['README.md', 'src/index.ts', 'src/util.ts'])
 
@@ -28,7 +34,7 @@ describe('listZipEntries', () => {
     expect(readme.isDirectory).toBe(false)
   })
 
-  it('sorts by ordinal path comparison without calling localeCompare (deterministic across locales/ICU builds)', () => {
+  it('sorts by ordinal path comparison without calling localeCompare (deterministic across locales/ICU builds)', async () => {
     const spy = vi.spyOn(String.prototype, 'localeCompare')
     const zip = makeZip({
       'src/zzz.ts': 'z\n',
@@ -36,20 +42,20 @@ describe('listZipEntries', () => {
       'README.md': '# hello\n',
     })
 
-    const entries = listZipEntries(zip)
+    const entries = await listZipEntries(zip)
     expect(entries.map((e) => e.path)).toEqual(['README.md', 'src/aaa.ts', 'src/zzz.ts'])
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
   })
 
-  it('returns an empty array for an empty archive', () => {
+  it('returns an empty array for an empty archive', async () => {
     const zip = zipSync({})
-    expect(listZipEntries(zip)).toEqual([])
+    expect(await listZipEntries(zip)).toEqual([])
   })
 
-  it('throws on a malformed/corrupt zip', () => {
+  it('throws on a malformed/corrupt zip', async () => {
     const garbage = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
-    expect(() => listZipEntries(garbage)).toThrow()
+    await expect(listZipEntries(garbage)).rejects.toThrow()
   })
 })
 
@@ -72,31 +78,49 @@ describe('formatZipList', () => {
 })
 
 describe('extractZipEntry', () => {
-  it('extracts exactly the requested entry\'s decompressed bytes', () => {
+  it('extracts exactly the requested entry\'s decompressed bytes', async () => {
     const zip = makeZip({
       'a.txt': 'hello world\n',
       'b.txt': 'goodbye\n',
     })
 
-    const content = extractZipEntry(zip, 'a.txt')
+    const content = await extractZipEntry(zip, 'a.txt')
     expect(content).toBeDefined()
     expect(Buffer.from(content as Uint8Array).toString('utf-8')).toBe('hello world\n')
   })
 
-  it('returns undefined for a missing entry', () => {
+  it('returns undefined for a missing entry', async () => {
     const zip = makeZip({ 'a.txt': 'hello\n' })
-    expect(extractZipEntry(zip, 'does-not-exist.txt')).toBeUndefined()
+    expect(await extractZipEntry(zip, 'does-not-exist.txt')).toBeUndefined()
   })
 
-  it('extracts binary member content byte-for-byte', () => {
+  it('extracts binary member content byte-for-byte', async () => {
     const binary = new Uint8Array([0x00, 0xff, 0x10, 0x8f, 0x01])
     const zip = zipSync({ 'blob.bin': binary })
-    const content = extractZipEntry(zip, 'blob.bin')
+    const content = await extractZipEntry(zip, 'blob.bin')
     expect(content).toEqual(binary)
   })
 
-  it('throws on a malformed/corrupt zip', () => {
+  it('throws on a malformed/corrupt zip', async () => {
     const garbage = new Uint8Array([9, 8, 7, 6, 5])
-    expect(() => extractZipEntry(garbage, 'a.txt')).toThrow()
+    await expect(extractZipEntry(garbage, 'a.txt')).rejects.toThrow()
+  })
+})
+
+// fflate is an optional dependency. When it is absent the two zip commands must say so, because
+// the message they used to give -- "not a valid zip-format file" -- sent the reader to inspect an
+// archive that was fine. The error type is what read_commands.ts branches on.
+describe('ArchiveDependencyMissingError', () => {
+  it('names the package and the command it enables, not the archive', () => {
+    const err = new ArchiveDependencyMissingError()
+
+    expect(err.message).toContain('fflate is not installed')
+    expect(err.message).toContain('zip-list/zip-read')
+    expect(err.message).not.toContain('not a valid zip')
+  })
+
+  it('is an Error subclass an instanceof check can branch on across the module boundary', () => {
+    expect(new ArchiveDependencyMissingError()).toBeInstanceOf(Error)
+    expect(new ArchiveDependencyMissingError().name).toBe('ArchiveDependencyMissingError')
   })
 })
