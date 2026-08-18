@@ -491,6 +491,9 @@ async function captureOnce(url: string, ctx: CaptureContext): Promise<{ buffer: 
 
 export async function takeScreenshot(url: string, destPath: string, opts?: ScreenshotOptions): Promise<ScreenshotResult> {
   validateScreenshotUrl(url)
+  if (loadConfig().network.offline) {
+    throw new Error(`Offline mode is on (network.offline): refusing to navigate to ${url}`)
+  }
   const puppeteer = await loadPuppeteer()
   if (!puppeteer) {
     throw new Error('puppeteer-core is not installed; run `npm install puppeteer-core` to enable screenshot')

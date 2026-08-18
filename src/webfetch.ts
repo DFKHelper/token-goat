@@ -353,6 +353,13 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
       return;
     }
 
+    // Offline mode is checked here rather than at each command, because this is the one function
+    // every fetch token-goat performs itself goes through, redirects included.
+    if (loadConfig().network.offline) {
+      rejectPromise(new Error(`Offline mode is on (network.offline): refusing to fetch ${truncateUrl(targetUrl)}`));
+      return;
+    }
+
     // webfetch.allow/webfetch.deny is the operator's egress policy, and it used to be enforced in
     // exactly one place: the WebFetch pre-hook, which gates the harness's fetch tool. Every fetch
     // token-goat performs itself -- `fetch-image`, `gdrive-sections` -- comes through here instead

@@ -27,6 +27,14 @@ function ensureTransformerLoaded(): void {
   _transformerLoadAttempted = true
   try {
     _transformer = _require('@xenova/transformers')
+    // Offline mode refuses the download rather than the feature: a machine with the model already
+    // cached keeps working, and a cold cache fails with the library's own "model not found"
+    // instead of reaching huggingface.co. Guarding the download this way rather than refusing
+    // outright is what makes an air-gapped install with a pre-seeded cache still useful.
+    if (loadConfig().network.offline) {
+      const env = (_transformer as { env?: Record<string, unknown> }).env
+      if (env) env['allowRemoteModels'] = false
+    }
   } catch (e) {
     _transformerError = e instanceof Error ? e : new Error(String(e))
   }

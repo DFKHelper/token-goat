@@ -228,6 +228,12 @@ export interface GdriveConfig {
   enabled: boolean
 }
 
+/** Config for offline mode: the single switch that guarantees token-goat opens no outbound connection of its own. */
+export interface NetworkConfig {
+  /** When true every network path token-goat can initiate refuses instead of connecting: its own HTTP fetches (`fetch-image`, `gdrive-sections`, image URLs a read hook shrinks), the embedding-model download, the OCR language-data download, and `screenshot`. Nothing is silently degraded -- each path says it is offline. For an air-gapped install, or an evaluation that needs one lever rather than an audit of five. */
+  offline: boolean
+}
+
 export interface InjectionConfig {
   enabled: boolean
 }
@@ -295,6 +301,7 @@ export interface Config {
   context: ContextConfig
   injection: InjectionConfig
   gdrive: GdriveConfig
+  network: NetworkConfig
   mcp: McpConfig
   hint_stats: HintStatsConfig
   semantic: SemanticConfig
@@ -480,6 +487,9 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   gdrive: {
     enabled: true,
   },
+  network: {
+    offline: false,
+  },
   mcp: {
     confine_reads_to_project_root: true,
     allowed_roots: [],
@@ -522,6 +532,7 @@ export function defaultConfig(): Config {
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
     gdrive: getDefaultConfig('gdrive') as GdriveConfig,
+    network: getDefaultConfig('network') as NetworkConfig,
     mcp: getDefaultConfig('mcp') as McpConfig,
     hint_stats: getDefaultConfig('hint_stats') as HintStatsConfig,
     semantic: getDefaultConfig('semantic') as SemanticConfig,
@@ -857,7 +868,7 @@ export function getLastProjectConfigParseError(): string | null {
  * Everything else -- hints, formatting, compression thresholds, worker tuning -- stays
  * project-overridable, which is what the per-project file exists for.
  */
-export const PROJECT_LOCKED_SECTIONS: readonly string[] = ['injection', 'webfetch', 'gdrive', 'mcp']
+export const PROJECT_LOCKED_SECTIONS: readonly string[] = ['injection', 'webfetch', 'gdrive', 'mcp', 'network']
 
 /** Individual `section.key` entries locked without locking their whole section. */
 export const PROJECT_LOCKED_KEYS: readonly string[] = ['indexing.cross_project_symbols']
@@ -1639,6 +1650,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   gd.enabled = validatedBool(gd_raw['enabled'], gd.enabled)
   gd.enabled = envBool('TOKEN_GOAT_GDRIVE_ENABLED', gd.enabled)
 
+  const net_raw = section(raw, 'network')
+  const net = getDefaultConfig('network') as NetworkConfig
+  net.offline = validatedBool(net_raw['offline'], net.offline)
+  net.offline = envBool('TOKEN_GOAT_OFFLINE', net.offline)
+
   const mcp_raw = section(raw, 'mcp')
   const mcp = getDefaultConfig('mcp') as McpConfig
   mcp.confine_reads_to_project_root = validatedBool(mcp_raw['confine_reads_to_project_root'], mcp.confine_reads_to_project_root)
@@ -1680,6 +1696,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     context: ctx,
     injection: inj,
     gdrive: gd,
+    network: net,
     mcp,
     hint_stats: hs,
     semantic: sem,
@@ -1753,6 +1770,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'indexing.cross_project_symbols': ['TOKEN_GOAT_CROSS_PROJECT_SYMBOLS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
   'gdrive.enabled': ['TOKEN_GOAT_GDRIVE_ENABLED'],
+  'network.offline': ['TOKEN_GOAT_OFFLINE'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
   'mcp.allowed_roots': ['TOKEN_GOAT_MCP_ALLOWED_ROOTS'],
   'webfetch.allow': ['TOKEN_GOAT_WEBFETCH_ALLOW'],
@@ -1923,6 +1941,9 @@ export function saveConfig(config: Config): void {
     },
     gdrive: {
       enabled: config.gdrive.enabled,
+    },
+    network: {
+      offline: config.network.offline,
     },
     mcp: {
       confine_reads_to_project_root: config.mcp.confine_reads_to_project_root,
