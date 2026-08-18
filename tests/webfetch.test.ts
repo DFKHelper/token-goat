@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import type * as HttpModule from 'http';
+import type * as HttpsModule from 'https';
 import type * as DnsModule from 'dns';
 import { resolve } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 
 const httpRequestMock = vi.hoisted(() => vi.fn());
+const httpsRequestMock = vi.hoisted(() => vi.fn());
 const dnsLookupMock = vi.hoisted(() => vi.fn());
 
 // Fake http.ClientRequest/IncomingMessage stand-ins for httpRequestMock's mocked return value: a plain EventEmitter has none of Node's http-specific members, so these widen it just enough for the request/response fakes built throughout this file to typecheck without pulling in the full real classes.
@@ -22,6 +24,12 @@ function makeFakeRes(): FakeIncomingMessage {
 vi.mock('http', async (importOriginal) => {
   const actual = await importOriginal<typeof HttpModule>();
   return { ...actual, request: httpRequestMock };
+});
+
+// Only the scheme-downgrade test below fetches an https URL; every other test in this file is http.
+vi.mock('https', async (importOriginal) => {
+  const actual = await importOriginal<typeof HttpsModule>();
+  return { ...actual, request: httpsRequestMock };
 });
 
 vi.mock('dns', async (importOriginal) => {
@@ -626,6 +634,40 @@ describe('webfetch', () => {
       expect(capturedHeaders).toHaveLength(2);
       expect(capturedHeaders[0]?.['Authorization']).toBe('Bearer secret-token');
       expect(capturedHeaders[1]?.['Authorization']).toBe('Bearer secret-token');
+    });
+
+    // Same host, different scheme: the old check compared `host`, which carries no protocol, so
+    // this counted as same-origin and put the bearer token on the wire in cleartext at a
+    // destination the responding server picks.
+    it('drops requestHeaders when the redirect downgrades https to http on the same host', async () => {
+      const capturedHeaders: Record<string, unknown>[] = [];
+      httpsRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = makeFakeReq();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 302, { location: 'http://same-host.example.test/y' });
+        return fakeReq;
+      });
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = makeFakeReq();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 200, {});
+        return fakeReq;
+      });
+
+      const result = await performHttpFetch('https://same-host.example.test/x', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1000,
+        requestHeaders: { Authorization: 'Bearer secret-token' },
+        redirectsLeft: 5,
+      });
+
+      expect(result.status).toBe(200);
+      expect(capturedHeaders).toHaveLength(2);
+      expect(capturedHeaders[0]?.['Authorization']).toBe('Bearer secret-token');
+      expect(capturedHeaders[1]?.['Authorization']).toBeUndefined();
     });
   });
 

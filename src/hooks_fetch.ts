@@ -17,9 +17,63 @@ function wildcardToRegExp(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, 'i');
 }
 
-/** True when `url` matches at least one wildcard pattern in `patterns` (see {@link wildcardToRegExp}). Empty `patterns` never matches anything, so callers gate the allow-list branch on a non-empty list themselves. */
-function matchesAnyPattern(url: string, patterns: string[]): boolean {
-  return patterns.some((pat) => wildcardToRegExp(pat).test(url));
+/** The authority (`host[:port]`) section of a wildcard pattern: everything after an optional `scheme://` and before the first `/`, `?` or `#`. `''` when the pattern has no authority to speak of. */
+function authorityPatternOf(pattern: string): string {
+  const afterScheme = pattern.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '');
+  const end = afterScheme.search(/[/?#]/);
+  return end === -1 ? afterScheme : afterScheme.slice(0, end);
+}
+
+/** True when the pattern constrains only the host, so its authority section describes every URL it was written to match. `https://evil.com/private/*` is path-scoped and does not qualify; `https://evil.com`, `https://evil.com/*` and `https://evil.com*` all do. */
+function isHostLevelPattern(pattern: string): boolean {
+  const afterScheme = pattern.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '');
+  const end = afterScheme.search(/[/?#]/);
+  if (end === -1) return true; // nothing after the authority to scope with
+  const rest = afterScheme.slice(end);
+  return rest === '/' || rest === '/*';
+}
+
+/** The host of a URL as the runtime will actually resolve it, or `null` when it does not parse. Both spellings are returned because a pattern may or may not name a port: `*.example.com` has to match `a.example.com:8443`, and `example.com:8443` has to match it too. */
+function urlAuthorities(url: string): string[] | null {
+  try {
+    const parsed = new URL(url);
+    return [parsed.host, parsed.hostname];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the URL's real host matches the pattern's authority section.
+ *
+ * This is the check that makes the whole-string match below mean what it appears to mean. A
+ * pattern is matched against the entire URL string, so `https://*.example.com/*` is satisfied by
+ * `https://evil.com/steal?x=.example.com/` -- the allowed domain sits in the query, the request
+ * goes to evil.com, and an allow-list configured to stop exactly that exfiltration lets it
+ * through. Userinfo does the same for a deny list: `https://x@evil.com/` fetches evil.com while
+ * dodging a `https://evil.com/*` deny pattern. Both are closed by asking the parsed URL what host
+ * it will really contact, rather than trusting where a substring happens to appear in the text.
+ */
+function matchesAuthority(authorities: string[] | null, pattern: string): boolean {
+  if (authorities === null) return false;
+  const auth = authorityPatternOf(pattern);
+  if (auth === '') return false;
+  const re = wildcardToRegExp(auth);
+  return authorities.some((host) => re.test(host));
+}
+
+/** True when `url` is allowed by at least one pattern: the whole-string match AND the host match, so a pattern can only ever admit a URL that really goes to the host the pattern names. Empty `patterns` never matches anything, so callers gate the allow-list branch on a non-empty list themselves. */
+function matchesAllowPattern(url: string, patterns: string[]): boolean {
+  const authorities = urlAuthorities(url);
+  return patterns.some((pat) => wildcardToRegExp(pat).test(url) && matchesAuthority(authorities, pat));
+}
+
+/** True when `url` is blocked by at least one pattern: the whole-string match OR, for a host-level pattern, the host match. Deny is the direction where matching more is the safe error, so the host check adds to it instead of narrowing it -- but only for patterns that name no path, since widening `https://evil.com/private/*` to the whole host would block URLs the user deliberately left out. */
+function matchesDenyPattern(url: string, patterns: string[]): boolean {
+  const authorities = urlAuthorities(url);
+  return patterns.some(
+    (pat) => wildcardToRegExp(pat).test(url) || (isHostLevelPattern(pat) && matchesAuthority(authorities, pat)),
+  );
 }
 
 function extractToolResponse(raw: Record<string, unknown>): string {
@@ -62,10 +116,10 @@ export function preFetchHandler(event: HookEvent): HookOutput {
     const urlOnlyCtx = resolveWebFetchUrl(event);
     if (urlOnlyCtx !== null) {
       const wfCfg = loadConfig().webfetch;
-      if (wfCfg.deny.length > 0 && matchesAnyPattern(urlOnlyCtx.url, wfCfg.deny)) {
+      if (wfCfg.deny.length > 0 && matchesDenyPattern(urlOnlyCtx.url, wfCfg.deny)) {
         return denyOutput(`WebFetch blocked: URL matches a configured webfetch.deny pattern.`);
       }
-      if (wfCfg.allow.length > 0 && !matchesAnyPattern(urlOnlyCtx.url, wfCfg.allow)) {
+      if (wfCfg.allow.length > 0 && !matchesAllowPattern(urlOnlyCtx.url, wfCfg.allow)) {
         return denyOutput(`WebFetch blocked: URL does not match any configured webfetch.allow pattern.`);
       }
     }

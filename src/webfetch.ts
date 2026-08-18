@@ -390,10 +390,14 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
           rejectPromise(new Error(`Invalid redirect location fetching ${truncateUrl(targetUrl)}`));
           return;
         }
-        // Only forward requestHeaders to the redirect target when the host is unchanged --
+        // Only forward requestHeaders to the redirect target when the origin is unchanged --
         // otherwise a caller-supplied Authorization/API-key header would silently leak to
-        // whatever cross-origin host the server redirects to.
-        const sameOrigin = nextParsed.host === parsed.host;
+        // whatever cross-origin host the server redirects to. Protocol is part of that test:
+        // `host` is only host:port, so an https -> http redirect to the same host compared equal
+        // and kept the headers, putting the credential on the wire in cleartext at a destination
+        // the responding server chooses via Location. Comparing origin covers scheme, host and
+        // port together, which is what "same origin" means everywhere else.
+        const sameOrigin = nextParsed.origin === parsed.origin;
         const nextOpts: HttpFetchOpts = {
           ...opts,
           redirectsLeft: opts.redirectsLeft - 1,
