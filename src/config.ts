@@ -1496,6 +1496,12 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const wf = getDefaultConfig('webfetch') as WebFetchConfig
   wf.allow = validatedStrList(wf_raw['allow'], wf.allow)
   wf.deny = validatedStrList(wf_raw['deny'], wf.deny)
+  // Comma-separated rather than path.delimiter: these are URL patterns, and on Windows the path
+  // delimiter is ';', which is a legal character in a URL. Every other list-valued setting gets an
+  // env override so a container or CI job can set policy without shipping a TOML, and an egress
+  // policy is the one an operator is most likely to want to pin that way.
+  wf.allow = envStrList('TOKEN_GOAT_WEBFETCH_ALLOW', wf.allow, ',')
+  wf.deny = envStrList('TOKEN_GOAT_WEBFETCH_DENY', wf.deny, ',')
   wf.max_file_count = validatedInt(wf_raw['max_file_count'], wf.max_file_count, ...boundsOf('webfetch.max_file_count'))
   wf.max_file_count = envInt('TOKEN_GOAT_WEB_CACHE_MAX_FILES', wf.max_file_count, ...boundsOf('webfetch.max_file_count'))
   wf.max_bytes = validatedInt(wf_raw['max_bytes'], wf.max_bytes, ...boundsOf('webfetch.max_bytes'))
@@ -1651,6 +1657,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
   'mcp.allowed_roots': ['TOKEN_GOAT_MCP_ALLOWED_ROOTS'],
+  'webfetch.allow': ['TOKEN_GOAT_WEBFETCH_ALLOW'],
+  'webfetch.deny': ['TOKEN_GOAT_WEBFETCH_DENY'],
   'indexing.embeddings_enabled': ['TOKEN_GOAT_EMBEDDINGS_ENABLED'],
 }
 

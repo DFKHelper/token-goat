@@ -7,6 +7,8 @@ import { URL } from 'url';
 import { promisify } from 'util';
 import { lookup as dnsLookup, type LookupOptions } from 'dns';
 import { dataDir } from './constants.js';
+import { loadConfig } from './config.js';
+import { urlPolicyDenialReason } from './url_policy.js';
 
 const dnsLookupAsync = promisify(dnsLookup);
 
@@ -348,6 +350,19 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
     }
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       rejectPromise(new Error(`URL blocked by SSRF safety check: ${truncateUrl(targetUrl)}`));
+      return;
+    }
+
+    // webfetch.allow/webfetch.deny is the operator's egress policy, and it used to be enforced in
+    // exactly one place: the WebFetch pre-hook, which gates the harness's fetch tool. Every fetch
+    // token-goat performs itself -- `fetch-image`, `gdrive-sections` -- comes through here instead
+    // and ignored the policy completely, so an install configured to deny everything still had two
+    // commands that reached the network. Enforcing at this function covers both, plus any caller
+    // added later, and because redirects recurse into performHttpFetch each hop is checked too:
+    // an allowed host cannot redirect the request onward to a denied one.
+    const policyDenial = urlPolicyDenialReason(targetUrl, loadConfig().webfetch);
+    if (policyDenial !== null) {
+      rejectPromise(new Error(`${policyDenial}: ${truncateUrl(targetUrl)}`));
       return;
     }
 
