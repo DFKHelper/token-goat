@@ -178,6 +178,44 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain('A'.repeat(27))
   })
 
+  // The keyword had to sit immediately before the separator, so any name that merely contains
+  // it -- the standard spelling of an AWS secret access key among them -- leaked in full.
+  it.each([
+    ['AWS_SECRET_ACCESS_KEY=', 'wJalrXUtnFEMIKfakeDENGbPxRfiCYEXAMPLEKEY'],
+    ['SECRET_KEY=', 'django-insecure-9f8s7df98s7df98sdf'],
+    ['DB_PASSWORD_HASH=', 'abc123def456fake'],
+    ['CLIENT_SECRET_VALUE=', 'abcdef123456fake'],
+  ])('redacts a generic %s assignment where the keyword is a prefix of a longer key name', (key, value) => {
+    const { text, count } = redactSecrets(`${key}${value}`)
+    expect(count).toBe(1)
+    expect(text).toBe(`${key}[REDACTED:generic_secret_assignment]`)
+    expect(text).not.toContain(value)
+  })
+
+  // apikey/api-key are the same key spelled without the underscore, and were uncovered.
+  it.each([
+    ['apikey=', 'abcdef123456fake'],
+    ['api-key=', 'abcdef123456fake'],
+    ['APIKEY=', 'abcdef123456fake'],
+  ])('redacts a generic %s assignment spelled without an underscore', (key, value) => {
+    const { text, count } = redactSecrets(`${key}${value}`)
+    expect(count).toBe(1)
+    expect(text).toBe(`${key}[REDACTED:generic_secret_assignment]`)
+  })
+
+  it('still leaves prose that merely contains a keyword alone, since the keyword must reach a separator', () => {
+    const prose = 'The secret to good code is clarity, and the password policy is documented elsewhere.'
+    const { text, count } = redactSecrets(prose)
+    expect(count).toBe(0)
+    expect(text).toBe(prose)
+  })
+
+  it('does not re-match its own placeholder when the key name has a keyword prefix', () => {
+    const { text, count } = redactSecrets('SECRET_KEY=abcdef123456fake')
+    expect(count).toBe(1)
+    expect(text).toBe('SECRET_KEY=[REDACTED:generic_secret_assignment]')
+  })
+
   it('does not exhibit catastrophic backtracking on adversarial input for the generic assignment pattern (ReDoS safety after removing its upper length bound)', () => {
     const adversarial = `api_key=${'a'.repeat(200000)}!`
     const start = Date.now()

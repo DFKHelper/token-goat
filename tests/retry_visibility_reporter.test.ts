@@ -159,8 +159,10 @@ describe('reporter against the real vitest API', () => {
 
     const res = spawnSync(
       process.execPath,
-      [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', 'zz_generated_flaky_probe', '--retry=1'],
-      { encoding: 'utf8', env: { ...process.env, CI: '' } },
+      [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', TMP_FLAKY, '--retry=1'],
+      // The bundle build this config runs in globalSetup would race the outer run's readers of
+      // the same artifact, which on Windows fails the build and with it this whole spawn.
+      { encoding: 'utf8', env: { ...process.env, CI: '', TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' } },
     )
     const combined = `${res.stdout ?? ''}${res.stderr ?? ''}`
 

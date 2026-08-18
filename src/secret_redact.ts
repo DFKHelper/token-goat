@@ -87,7 +87,13 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // this cannot backtrack catastrophically -- there is no nested or overlapping quantifier for
   // the engine to explore multiple ways of matching, so removing the upper bound does not
   // introduce a ReDoS risk.
-  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api_key)\s*[:=]\s*)[^\s&;#'"[\]:]{4,}/gi],
+  // The keyword may be a prefix of a longer key name rather than the whole of it, so the
+  // trailing identifier class below is load-bearing: without it the lookbehind required the
+  // keyword to sit immediately before the separator, and AWS_SECRET_ACCESS_KEY=,
+  // SECRET_KEY=, and DB_PASSWORD_HASH= all passed through in full. That class matches
+  // identifier characters only, so prose that merely mentions a keyword still never reaches
+  // a separator and stays unredacted. api[_-]?key covers the apikey and api-key spellings too.
+  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api[_-]?key)[a-z0-9_-]*\s*[:=]\s*)[^\s&;#'"[\]:]{4,}/gi],
 ]
 
 export interface RedactResult {

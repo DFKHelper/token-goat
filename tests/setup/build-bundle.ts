@@ -8,7 +8,14 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 // vitest globalSetup: build the shipping bundle (dist/token-goat.mjs) exactly once per `vitest` invocation, before any test file runs. The e2e and CLI smoke tests spawn this prebuilt artifact, so without this each of them rebuilt it in its own beforeAll - six redundant esbuild runs that also raced on the same output path. One build here replaces all of them. Note: in watch mode this runs once at startup and not on source edits, so a bundle-spawning test will see stale dist until the watcher is restarted; the gating path (`vitest run` in CI and pre-push) rebuilds fresh on every invocation.
 export default function setup(): void {
-  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
+  // A nested `vitest run` spawned from inside a test (retry_visibility_reporter.test.ts) inherits
+  // this config and so would rebuild the bundle while the outer run's workers are reading and
+  // spawning it. On Windows that contention makes esbuild fail outright, failing the nested run
+  // for a reason unrelated to what it tests. Such a run sets this and skips the build: it never
+  // touches the bundle, so it has nothing to build.
+  if (process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD'] !== '1') {
+    execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
+  }
   enableCompileCache()
 }
 
