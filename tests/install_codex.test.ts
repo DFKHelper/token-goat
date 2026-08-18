@@ -25,6 +25,8 @@ import {
   CodexConfigParseError,
   codexAgentsPath,
   codexConfigPath,
+  codexHookCommandFor,
+  computeCodexHookHash,
   installCodex,
   isCodexInstalled,
   uninstallCodex,
@@ -63,6 +65,46 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
+describe('codexHookCommandFor', () => {
+  const realPlatform = process.platform
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+  })
+
+  it('prefixes with "& " on Windows (win32) so PowerShell does not throw a ParserError on adjacent string literals', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    const cmd = codexHookCommandFor('C:\\path\\to\\shim.js', 'pre_compact')
+    expect(cmd.startsWith('& ')).toBe(true)
+    expect(cmd).toContain('pre_compact')
+    expect(cmd).toContain('"C:\\path\\to\\shim.js"')
+  })
+
+  it('does not prefix with "& " on non-Windows (linux/darwin) so POSIX sh does not treat it as a background operator', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    const cmd = codexHookCommandFor('/path/to/shim.js', 'pre_compact')
+    expect(cmd.startsWith('& ')).toBe(false)
+    expect(cmd.startsWith('"')).toBe(true)
+    expect(cmd).toContain('pre_compact')
+  })
+})
+
+describe('computeCodexHookHash', () => {
+  it('computes the canonical sha256 hash matching Codex CLIs [hooks.state] format for matcher-scoped hooks', () => {
+    const cmd = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\.codex\\hooks\\token-goat-shim.js" pre_tool_use "C:\\Users\\user\\dist\\token-goat.mjs"'
+    const hash = computeCodexHookHash('pre_tool_use', cmd, 'view_image|Bash')
+    expect(hash.startsWith('sha256:')).toBe(true)
+    expect(hash).toHaveLength(71) // 'sha256:' (7) + 64 hex chars
+  })
+
+  it('computes the canonical sha256 hash matching Codex CLIs [hooks.state] format for global matcher-less hooks', () => {
+    const cmd = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\.codex\\hooks\\token-goat-shim.js" pre_compact "C:\\Users\\user\\dist\\token-goat.mjs"'
+    const hash = computeCodexHookHash('pre_compact', cmd)
+    expect(hash.startsWith('sha256:')).toBe(true)
+    expect(hash).toHaveLength(71)
+  })
+})
+
 describe('installCodex', () => {
   it('writes the config.toml hooks block and the AGENTS.md delimited block on a fresh install', () => {
     const result = installCodex()
@@ -88,6 +130,14 @@ describe('installCodex', () => {
     expect(agents).toContain('Codex\'s native `shell`, `apply_patch`, and `view_image` tools')
     expect(agents).toContain('shell commands like `cat`/`type` run inside `shell`')
     expect(agents).toContain('Fallback clauses may name')
+
+    // Verifies all token-goat hooks have trusted_hash set in [hooks.state]
+    const state = (config.hooks?.['state'] as unknown as Record<string, { trusted_hash?: string }>) ?? {}
+    expect(Object.keys(state).length).toBeGreaterThanOrEqual(9) // 3 PreToolUse + 3 PostToolUse + 3 global
+    for (const [key, val] of Object.entries(state)) {
+      expect(key.startsWith(result.configPath)).toBe(true)
+      expect(val.trusted_hash?.startsWith('sha256:')).toBe(true)
+    }
 
     expect(isCodexInstalled()).toBe(true)
   })

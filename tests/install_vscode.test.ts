@@ -1,13 +1,19 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { installVscode, uninstallVscode, vscodeDecoderConfigured, vscodeUserMcpPath } from '../src/bridges/vscode_install.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
 const savedUserProfile = process.env['USERPROFILE']
+let defaultUserDir: string
+
+beforeEach(() => {
+  defaultUserDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-default-userdir-'))
+  isolateVscodeUserDir(defaultUserDir)
+})
 
 afterEach(() => {
   if (savedAppData === undefined) delete process.env['APPDATA']
@@ -16,6 +22,9 @@ afterEach(() => {
   else process.env['HOME'] = savedHome
   if (savedUserProfile === undefined) delete process.env['USERPROFILE']
   else process.env['USERPROFILE'] = savedUserProfile
+  if (defaultUserDir && fs.existsSync(defaultUserDir)) {
+    fs.rmSync(defaultUserDir, { recursive: true, force: true })
+  }
 })
 
 // vscodeUserConfigDir() derives the user-scope path from APPDATA on win32 but from

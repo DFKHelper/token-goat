@@ -39,7 +39,14 @@ export let homeBase: string // fake OS home dir -- keeps `install`'s uncondition
 export const tempDirs: string[] = []
 
 export function tgEnv(dir: string): NodeJS.ProcessEnv {
-  return { ...process.env, LOCALAPPDATA: dir, XDG_DATA_HOME: dir, HOME: homeBase, USERPROFILE: homeBase }
+  return {
+    ...process.env,
+    LOCALAPPDATA: dir,
+    XDG_DATA_HOME: dir,
+    HOME: homeBase,
+    USERPROFILE: homeBase,
+    APPDATA: path.join(homeBase, 'AppData', 'Roaming'),
+  }
 }
 
 export function mkIsolated(prefix: string): string {

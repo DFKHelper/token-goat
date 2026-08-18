@@ -18,12 +18,29 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { leftoverIntegrations } from '../src/cli.js'
 
 let root: string
-const ENV_KEYS = ['HOME', 'USERPROFILE', 'CODEX_HOME', 'TOKEN_GOAT_HOME', 'XDG_DATA_HOME', 'LOCALAPPDATA'] as const
+const ENV_KEYS = [
+  'HOME',
+  'USERPROFILE',
+  'CODEX_HOME',
+  'TOKEN_GOAT_HOME',
+  'XDG_DATA_HOME',
+  'LOCALAPPDATA',
+  'APPDATA',
+  'XDG_CONFIG_HOME',
+] as const
 let saved: Record<string, string | undefined>
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-leftover-'))
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
+  process.env['HOME'] = root
+  process.env['USERPROFILE'] = root
+  process.env['CODEX_HOME'] = path.join(root, '.codex')
+  process.env['TOKEN_GOAT_HOME'] = path.join(root, 'home')
+  process.env['XDG_DATA_HOME'] = path.join(root, 'share')
+  process.env['LOCALAPPDATA'] = path.join(root, 'share')
+  process.env['APPDATA'] = path.join(root, 'appdata')
+  delete process.env['XDG_CONFIG_HOME']
 })
 
 afterEach(() => {
@@ -44,6 +61,7 @@ function env(): NodeJS.ProcessEnv {
     TOKEN_GOAT_HOME: path.join(root, 'home'),
     XDG_DATA_HOME: path.join(root, 'share'),
     LOCALAPPDATA: path.join(root, 'share'),
+    APPDATA: path.join(root, 'appdata'),
   }
 }
 
