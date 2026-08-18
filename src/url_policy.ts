@@ -30,11 +30,91 @@ function isHostLevelPattern(pattern: string): boolean {
   return rest === '/' || rest === '/*';
 }
 
+/**
+ * Every spelling of `url` a pattern may legitimately be matched against: the string as written,
+ * plus the form the request will actually take.
+ *
+ * Matching the raw string alone let four different rewrites of the same request slip past a deny
+ * pattern, because each one names the denied resource in a way the literal text does not:
+ * `https://example.com./private/x` (a trailing dot on the host, which DNS resolves identically),
+ * `https://example.com/a/../private/x` and `https://example.com/./private/x` (dot segments, which
+ * the URL parser collapses before the request goes out), and `https://example.com:443/private/x`
+ * (the scheme's default port written out). All four reach exactly the resource a pattern like
+ * `https://example.com/private/*` was written to block, and all four were permitted. The failure
+ * landed on precisely the careful, narrowly-written patterns: a loose `*example.com*` still
+ * matched, so the more specific an operator's policy was, the easier it was to step around.
+ *
+ * The canonical form is what the server will see, so it is the honest thing to test. The raw
+ * string is kept alongside it because normalisation is lossy in the other direction too -- a
+ * pattern written as `https://example.com:443/*` matches the raw text and not the canonical form
+ * -- and dropping it would silently break policies that work today.
+ */
+function urlSpellings(url: string): string[] {
+  const out = [url]
+  try {
+    const parsed = new URL(url)
+    // A single trailing dot is a fully-qualified hostname: same DNS answer, different string.
+    if (parsed.hostname.endsWith('.')) parsed.hostname = parsed.hostname.replace(/\.+$/, '')
+    if (!out.includes(parsed.href)) out.push(parsed.href)
+    // The same interchangeability the authority check gets, for the whole-string match: a policy
+    // written as `https://example.com:443/*` has to match a URL written without the default port,
+    // and the parser has already thrown that port away by the time we see it.
+    const defaultPort = DEFAULT_PORTS[parsed.protocol]
+    if (parsed.port === '' && defaultPort !== undefined) {
+      // Assigning the scheme's default port is a no-op in the parser, so build the string directly.
+      const spelled = `${parsed.protocol}//${parsed.username === '' && parsed.password === '' ? '' : `${parsed.username}${parsed.password === '' ? '' : `:${parsed.password}`}@`}${parsed.hostname}:${defaultPort}${parsed.pathname}${parsed.search}${parsed.hash}`
+      if (!out.includes(spelled)) out.push(spelled)
+    }
+  } catch {
+    // Unparseable: the raw string is all there is, and matchesAuthority already refuses it.
+  }
+  return out
+}
+
+/**
+ * Additional spellings that only a deny list is matched against.
+ *
+ * `https://example.com/%70rivate/x` is served by most origins as `/private/x`, so a deny pattern
+ * naming that path should catch it -- but percent-decoding is not something the URL parser does,
+ * and decoding it for an *allow* list would be the unsafe direction (admitting a URL because a
+ * decoded form of it happens to match). Deny is where matching more is the safe error, which is
+ * the same asymmetry {@link matchesDenyPattern} already relies on for host-level patterns.
+ */
+function denyOnlySpellings(url: string): string[] {
+  const out: string[] = []
+  for (const spelling of urlSpellings(url)) {
+    try {
+      const decoded = decodeURI(spelling)
+      if (decoded !== spelling) out.push(decoded)
+    } catch {
+      // Malformed percent-escape: nothing to add, the undecoded spellings still apply.
+    }
+  }
+  return out
+}
+
+/** Ports the URL parser treats as implicit for their scheme, and so removes from `URL.host`. */
+const DEFAULT_PORTS: Readonly<Record<string, string>> = {
+  'http:': '80',
+  'https:': '443',
+  'ws:': '80',
+  'wss:': '443',
+  'ftp:': '21',
+};
+
 /** The host of a URL as the runtime will actually resolve it, or `null` when it does not parse. Both spellings are returned because a pattern may or may not name a port: `*.example.com` has to match `a.example.com:8443`, and `example.com:8443` has to match it too. */
 function urlAuthorities(url: string): string[] | null {
   try {
     const parsed = new URL(url);
-    return [parsed.host, parsed.hostname];
+    const hosts = [parsed.host, parsed.hostname];
+    // The URL parser drops a port that is the scheme's default, so `https://example.com:443/x`
+    // yields only `example.com` here -- and a pattern whose authority spells that port out
+    // (`https://example.com:443/*`) then matched no host at all. An allow list written that way
+    // refused every URL and a deny list written that way stopped widening to the host, both
+    // silently. Offering the explicit spelling as well makes the two forms interchangeable.
+    const defaultPort = DEFAULT_PORTS[parsed.protocol];
+    if (parsed.port === '' && defaultPort !== undefined) hosts.push(`${parsed.hostname}:${defaultPort}`);
+    return hosts;
   } catch {
     return null;
   }
@@ -62,14 +142,20 @@ function matchesAuthority(authorities: string[] | null, pattern: string): boolea
 /** True when `url` is allowed by at least one pattern: the whole-string match AND the host match, so a pattern can only ever admit a URL that really goes to the host the pattern names. Empty `patterns` never matches anything, so callers gate the allow-list branch on a non-empty list themselves. */
 export function matchesAllowPattern(url: string, patterns: string[]): boolean {
   const authorities = urlAuthorities(url);
-  return patterns.some((pat) => wildcardToRegExp(pat).test(url) && matchesAuthority(authorities, pat));
+  const spellings = urlSpellings(url);
+  return patterns.some(
+    (pat) => spellings.some((s) => wildcardToRegExp(pat).test(s)) && matchesAuthority(authorities, pat),
+  );
 }
 
 /** True when `url` is blocked by at least one pattern: the whole-string match OR, for a host-level pattern, the host match. Deny is the direction where matching more is the safe error, so the host check adds to it instead of narrowing it -- but only for patterns that name no path, since widening `https://evil.com/private/*` to the whole host would block URLs the user deliberately left out. */
 export function matchesDenyPattern(url: string, patterns: string[]): boolean {
   const authorities = urlAuthorities(url);
+  const spellings = [...urlSpellings(url), ...denyOnlySpellings(url)];
   return patterns.some(
-    (pat) => wildcardToRegExp(pat).test(url) || (isHostLevelPattern(pat) && matchesAuthority(authorities, pat)),
+    (pat) =>
+      spellings.some((s) => wildcardToRegExp(pat).test(s)) ||
+      (isHostLevelPattern(pat) && matchesAuthority(authorities, pat)),
   );
 }
 
