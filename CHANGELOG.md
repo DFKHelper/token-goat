@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+- **Excluding a directory left everything already indexed under it readable.** `token-goat project exclude <path>` stopped future indexing and did nothing about what was already there, so a directory of credentials excluded after a first index kept its symbol bodies in the database and kept answering `symbol` queries. Pruning could not have caught it either: pruning removes rows for files that are gone from disk, and an excluded file is still on disk, which is the whole point. Excluding a path now removes what was indexed under it and says how many files went, and a full `index` run purges a blocked file rather than quietly skipping past the rows it left behind. Confirmed by indexing a directory, excluding it, and watching the body come straight back. See [src/index_prune.ts](src/index_prune.ts), tested in [tests/blocked_root_purge.test.ts](tests/blocked_root_purge.test.ts).
+- **Prune matched paths by case but not by separator.** Every root arrives forward-slashed while a row written from a raw operating-system path keeps its backslashes, and the comparison lowercased both without normalizing either, so such a row was invisible to every prefix-scoped scan and reported as nothing to do. See [src/index_prune.ts](src/index_prune.ts).
+
+
 ## [2.6.31] - 2026-08-18
 
 ### Security
