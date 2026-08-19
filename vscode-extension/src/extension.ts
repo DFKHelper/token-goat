@@ -1,4 +1,3 @@
-import * as nodeFs from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -217,62 +216,44 @@ let savingsBar: vscode.StatusBarItem | undefined
 let savingsContext: vscode.ExtensionContext | undefined
 let lastSavingsRefresh = 0
 let lastParsedStats: StatsJson | null = null
-const SAVINGS_REFRESH_MIN_INTERVAL_MS = 2000
-const SAVINGS_REFRESH_INTERVAL_MS = 30 * 1000
+export const SAVINGS_REFRESH_MIN_INTERVAL_MS = 30 * 1000
+export const SAVINGS_REFRESH_INTERVAL_MS = 30 * 1000
 let savingsRefreshTimer: ReturnType<typeof setInterval> | undefined
 let refreshDebounceTimer: ReturnType<typeof setTimeout> | undefined
-let dbWatcher: nodeFs.FSWatcher | undefined
+let isRefreshing = false
 
-function getDataDir(): string {
-  const platform = process.platform
-  if (platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA ?? process.env.LocalAppData ?? ''
-    if (localAppData) return path.join(localAppData, 'dfk-helper', 'token-goat')
-    return path.join(os.homedir(), 'AppData', 'Local', 'dfk-helper', 'token-goat')
-  }
-  if (platform === 'darwin') {
-    const xdg = process.env.XDG_DATA_HOME ?? ''
-    if (xdg) return path.join(xdg, 'token-goat')
-    return path.join(os.homedir(), 'Library', 'Application Support', 'token-goat')
-  }
-  const xdg = process.env.XDG_DATA_HOME ?? ''
-  if (xdg) return path.join(xdg, 'token-goat')
-  return path.join(os.homedir(), '.local', 'share', 'token-goat')
+export function setSavingsBarForTests(bar?: vscode.StatusBarItem): void {
+  savingsBar = bar
 }
 
-function scheduleRefresh(): void {
-  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer)
+export function resetSavingsRefreshStateForTests(): void {
+  lastSavingsRefresh = 0
+  lastParsedStats = null
+  previousTokensSaved = null
+  isRefreshing = false
+  if (refreshDebounceTimer) {
+    clearTimeout(refreshDebounceTimer)
+    refreshDebounceTimer = undefined
+  }
+  if (savingsRefreshTimer) {
+    clearInterval(savingsRefreshTimer)
+    savingsRefreshTimer = undefined
+  }
+  if (animationTimer) {
+    clearTimeout(animationTimer)
+    animationTimer = undefined
+  }
+}
+
+export function scheduleRefresh(): void {
+  if (refreshDebounceTimer) return
+  const now = Date.now()
+  const elapsed = now - lastSavingsRefresh
+  const delay = Math.max(0, SAVINGS_REFRESH_MIN_INTERVAL_MS - elapsed)
   refreshDebounceTimer = setTimeout(() => {
-    void refreshSavingsBar(true)
-  }, 500)
-}
-
-function startDbWatcher(context: vscode.ExtensionContext): void {
-  const dir = getDataDir()
-  try {
-    if (!nodeFs.existsSync(dir)) {
-      nodeFs.mkdirSync(dir, { recursive: true })
-    }
-    dbWatcher = nodeFs.watch(dir, (_eventType, filename) => {
-      if (!filename || filename.startsWith('global.db')) {
-        scheduleRefresh()
-      }
-    })
-    context.subscriptions.push({
-      dispose: () => {
-        if (dbWatcher) {
-          try {
-            dbWatcher.close()
-          } catch {
-            // ignore close error
-          }
-          dbWatcher = undefined
-        }
-      },
-    })
-  } catch {
-    // If watching fails, periodic timer + window/editor focus events still keep status bar current.
-  }
+    refreshDebounceTimer = undefined
+    void refreshSavingsBar()
+  }, Math.max(delay, 500))
 }
 
 let previousTokensSaved: number | null = null
@@ -308,17 +289,20 @@ function triggerSavingsBumpAnimation(delta: number, stats: StatsJson): void {
   }, 1800)
 }
 
-// Throttled: this can be triggered after every compress operation (a user action, not a hot path) plus background timer and file watcher, so a minimum interval keeps rapid-fire actions from shelling out repeatedly.
-async function refreshSavingsBar(force = false): Promise<void> {
-  if (!savingsBar) return
+// Throttled: strictly limited to at most once per 30 seconds to prevent background process churn and extension host freezing.
+export async function refreshSavingsBar(): Promise<void> {
+  if (!savingsBar || isRefreshing) return
   const now = Date.now()
-  if (!force && now - lastSavingsRefresh < SAVINGS_REFRESH_MIN_INTERVAL_MS) return
+  if (now - lastSavingsRefresh < SAVINGS_REFRESH_MIN_INTERVAL_MS) return
+  isRefreshing = true
   lastSavingsRefresh = now
   let stats: StatsJson | null = null
   try {
     stats = parseStatsJson(await runTokenGoat(['stats', '--json']))
   } catch {
     // stats already null from its initializer above; nothing to reset.
+  } finally {
+    isRefreshing = false
   }
   lastParsedStats = stats
   const rendered = formatSavingsBar(stats)
@@ -337,7 +321,7 @@ async function refreshSavingsBar(force = false): Promise<void> {
 }
 
 async function displaySavingsStatus(): Promise<void> {
-  await refreshSavingsBar(true)
+  await refreshSavingsBar()
   const rendered = formatSavingsBar(lastParsedStats)
   const choice = await vscode.window.showInformationMessage(
     rendered.tooltip,
@@ -356,7 +340,7 @@ function contextRadius(): number {
 
 // compress-text prints original_bytes/compact_bytes/tokens_saved headers (tokens_saved can be negative when the encoding swap costs more than it saves); surface that real figure, not a bytes÷4 guess.
 function showStats(payload: string): void {
-  void refreshSavingsBar()
+  scheduleRefresh()
   if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('showStats', true)) return
   const original = /^original_bytes: (\d+)$/m.exec(payload)
   const compact = /^compact_bytes: (\d+)$/m.exec(payload)
@@ -612,21 +596,11 @@ export function activate(context: vscode.ExtensionContext): void {
   savingsBar.tooltip = formatSavingsBar(null).tooltip
   savingsBar.command = 'token-goat.showStats'
   savingsBar.show()
-  void refreshSavingsBar(true)
+  void refreshSavingsBar()
   savingsRefreshTimer = setInterval(() => void refreshSavingsBar(), SAVINGS_REFRESH_INTERVAL_MS)
-  startDbWatcher(context)
 
   context.subscriptions.push(
     savingsBar,
-    vscode.window.onDidChangeWindowState((e) => {
-      if (e.focused) void refreshSavingsBar(true)
-    }),
-    vscode.window.onDidChangeActiveTextEditor(() => {
-      scheduleRefresh()
-    }),
-    vscode.workspace.onDidSaveTextDocument(() => {
-      scheduleRefresh()
-    }),
     vscode.commands.registerCommand('token-goat.showStats', () => displaySavingsStatus().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSelection', () => sendSelection().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSurgicalRead', () => sendSurgicalRead().catch(reportError)),
@@ -653,32 +627,26 @@ export function activate(context: vscode.ExtensionContext): void {
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
     try {
       await ensureDecoderSetup()
-      // Compressing shells out to the CLI (and for /file or /paste can read a whole document first), so without this the panel sits blank for the entire round trip with no sign anything is happening.
       if (request.command) stream.progress('Compressing…')
-      // A chat participant's reply is shown as the final answer — it never
-      // reaches the Copilot model, so streaming a compressed payload here
-      // would just display the blob. Instead, prefill the input box and let
-      // the user send it to the Copilot agent, which can decode it.
-      const handoff = async (question: string): Promise<void> => {
-        await openChat(question)
-        stream.markdown('Compressed and ready — press Enter in the input box to send it to Copilot (use Agent mode so it can decode the payload).')
+      const reply = (content: string): void => {
+        stream.markdown(`${content}\n\n*Compressed with token-goat. Send this to Copilot in Agent mode to decode.*`)
       }
       if (request.command === 'selection') {
-        await handoff(`Use this local token-goat compressed selection when useful:\n${await compressSelectionPayload()}`)
+        reply(`Use this local token-goat compressed selection when useful:\n${await compressSelectionPayload()}`)
       } else if (request.command === 'context') {
-        await handoff(await compressSurgicalPayload())
+        reply(await compressSurgicalPayload())
       } else if (request.command === 'symbol') {
-        await handoff(await compressSymbolPayload())
+        reply(await compressSymbolPayload())
       } else if (request.command === 'file') {
-        await handoff(await compressFilePayload())
+        reply(await compressFilePayload())
       } else if (request.command === 'diff') {
-        await handoff(await compressDiffPayload())
+        reply(await compressDiffPayload())
       } else if (request.command === 'paste') {
-        await handoff(await compressClipboardPayload())
+        reply(await compressClipboardPayload())
       } else if (request.command === 'errors') {
-        await handoff(await compressErrorsPayload())
+        reply(await compressErrorsPayload())
       } else if (request.command && request.command in CANNED_PROMPTS) {
-        await handoff(await cannedPromptPayload(request.command))
+        reply(await cannedPromptPayload(request.command))
       } else {
         stream.markdown(
           'Ask me to shrink something before it goes into chat. Subcommands: ' +
@@ -705,12 +673,4 @@ export function deactivate(): void {
   if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer)
   if (animationTimer) clearTimeout(animationTimer)
   if (savingsBar) savingsBar.color = undefined
-  if (dbWatcher) {
-    try {
-      dbWatcher.close()
-    } catch {
-      // ignore close error
-    }
-    dbWatcher = undefined
-  }
 }

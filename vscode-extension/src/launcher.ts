@@ -154,6 +154,7 @@ export async function resolveNodeExecutable(): Promise<string> {
       return found
     }
   }
+  cachedNodeExecutable = process.execPath
   return process.execPath
 }
 

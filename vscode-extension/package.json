@@ -245,7 +245,6 @@
         "id": "token-goat-vscode.tokenGoat",
         "name": "token-goat",
         "description": "Compress your selection or the lines around your cursor so chat costs fewer tokens.",
-        "isSticky": true,
         "commands": [
           {
             "name": "selection",
