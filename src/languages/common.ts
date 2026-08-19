@@ -1245,6 +1245,7 @@ export function findMatchingBraceEndLine(
   openBraceIndex: number,
   totalLines: number,
   lineIndex: readonly number[],
+  lineCommentPrefix?: string,
 ): number {
   let depth = 0
   let quote: string | null = null
@@ -1253,6 +1254,12 @@ export function findMatchingBraceEndLine(
     if (quote !== null) {
       if (ch === '\\') { i++; continue }
       if (ch === quote) quote = null
+      continue
+    }
+    // Opt-in, because the callers that pass already-stripped content must not pay for a second
+    // pass, and a prefix that is not a comment marker in their language would corrupt the walk.
+    if (lineCommentPrefix !== undefined && content.startsWith(lineCommentPrefix, i)) {
+      while (i < content.length && content[i] !== '\n') i++
       continue
     }
     if (ch === '"' || ch === "'") { quote = ch; continue }

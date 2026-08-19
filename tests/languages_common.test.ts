@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
+import { buildLineIndex, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
 
 // ---------------------------------------------------------------------------
 // stripBlockCommentSpan (and the private isInsideStringLiteral it delegates
@@ -160,5 +160,27 @@ SELECT * FROM orders -- comment line 2`
     expect(lines).toHaveLength(2)
     expect(lines[0]).toContain('SELECT * FROM users')
     expect(lines[1]).toContain('SELECT * FROM orders')
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// findMatchingBraceEndLine's line-comment awareness is opt-in. Its long-standing
+// callers (proto_idx, terraform_idx) hand it content whose comments are already
+// stripped, so switching the walk on for everyone would make it pay for a second
+// pass and, worse, would apply one language's comment marker to another's code.
+// r.ts walks the raw file and does pass a marker.
+// ---------------------------------------------------------------------------
+
+describe('findMatchingBraceEndLine line comments', () => {
+  const src = ['f <- function(x) {', '  # a closing } in prose', '  x', '}', ''].join('\n')
+  const open = src.indexOf('{')
+
+  it('ignores a closing brace inside a comment when given the marker', () => {
+    expect(findMatchingBraceEndLine(src, open, 5, buildLineIndex(src), '#')).toBe(4)
+  })
+
+  it('still counts that brace when no marker is given, so existing callers are unchanged', () => {
+    expect(findMatchingBraceEndLine(src, open, 5, buildLineIndex(src))).toBe(2)
   })
 })
