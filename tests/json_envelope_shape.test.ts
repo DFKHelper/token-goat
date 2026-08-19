@@ -18,8 +18,7 @@
  *    the list itself.
  */
 
-import { readdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
@@ -29,6 +28,7 @@ import { buildProgram } from '../src/cli.js'
 import { buildCommandManifest, type CommandManifestEntry } from '../src/cli_commands.js'
 import { runSymbol, runRefs, runOutline, runSkeleton, runSemantic } from '../src/read_commands.js'
 import { runTypes, runCallers, runDead, runTestFor, runCallChain, runDeps } from '../src/graph_commands.js'
+import { indexSrcTree, WHOLE_SRC_INDEX_TIMEOUT_MS } from './helpers/index-src-tree.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 
 /** Commands whose `--json` payload is a row list and MUST carry the shared envelope. */
@@ -101,17 +101,10 @@ function expectEnvelope(raw: string, label: string): unknown[] {
 // ambient global.db, which is an isolated per-run temp DB under tests/setup/isolate-home.ts, so
 // it is empty until something seeds it. Seed the repo's own src tree plus one test file, so
 // `test-for` has a referencing test file to find rather than depending on ambient index state.
-// Explicit per-hook timeout: this hook tree-sitter-parses the repo's whole src tree (213 files, ~4.2MB) from scratch, which measures 20-32s even on a fast many-core machine and roughly doubles on a 4-vCPU CI runner -- past the 30s global hookTimeout, which is sized for ordinary hooks. Scoped here rather than raising that global bound, so every other hook keeps the tighter hang detection.
-const WHOLE_SRC_INDEX_TIMEOUT_MS = 120_000
-
+// The walk, and the per-hook timeout it needs, live in tests/helpers/index-src-tree.ts, shared with
+// graph_commands.test.ts.
 beforeAll(() => {
-  const walk = (dir: string): string[] =>
-    readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-      const child = join(dir, e.name)
-      if (e.isDirectory()) return walk(child)
-      return child.endsWith('.ts') && !child.endsWith('.d.ts') ? [child] : []
-    })
-  for (const file of walk(resolve('src'))) indexFileSync(normalizePath(file))
+  indexSrcTree()
   indexFileSync(normalizePath(resolve('tests', 'graph_commands.test.ts')))
 }, WHOLE_SRC_INDEX_TIMEOUT_MS)
 
