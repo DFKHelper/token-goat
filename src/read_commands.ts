@@ -23,7 +23,7 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } fr
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -299,8 +299,10 @@ function readFileText(p: string): string | null {
       verifyStillAbsent(p)
       return null
     }
-    if (pinned !== undefined) return redactIfDotenv(p, readPinnedBytes(p, pinned).toString('utf-8'))
-    return redactIfDotenv(p, fs.readFileSync(p, 'utf-8'))
+    // decodeSource, not a plain utf-8 read: a UTF-16 file (what PowerShell 5.1 writes by default)
+    // decodes to NUL-interleaved mojibake that is twice the size and useless to a reader.
+    if (pinned !== undefined) return redactIfDotenv(p, decodeSource(readPinnedBytes(p, pinned)))
+    return redactIfDotenv(p, decodeSource(fs.readFileSync(p)))
   } catch (err) {
     if (err instanceof ConfinementIdentityError) throw err
     return null

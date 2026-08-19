@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
+import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -1238,7 +1238,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
     try {
       const cwd = getCwd(event) ?? process.cwd()
       const project = findProject(cwd) ?? makeProjectAt(cwd)
-      const source = fs.readFileSync(normalized, 'utf8')
+      const source = decodeSource(fs.readFileSync(normalized))
       recordEvidence({ projectRoot: project.root, source: normalized, representation: 'file', text: source })
     } catch {
       // Evidence is best-effort; it must never affect the completed Read.

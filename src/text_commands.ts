@@ -21,7 +21,7 @@ import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { resolveBody } from './read_commands.js'
 import { getSessionFiles } from './session.js'
-import { foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
+import { decodeSource, foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
 import { detectWalkMode } from './walk_mode.js'
 
 // ── Shared utilities ────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ function isMarkerOccurrence(matched: string, hasColon: boolean): boolean {
 function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   let text: string
   try {
-    text = fs.readFileSync(filePath, 'utf8')
+    text = decodeSource(fs.readFileSync(filePath))
   } catch {
     return []
   }
