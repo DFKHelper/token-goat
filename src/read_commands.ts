@@ -355,18 +355,62 @@ export function resolveBody(entry: { body: string; filePath: string; lineStart: 
 const STALE_WARNING =
   "⚠ STALE: index is older than the file on disk (worker hasn't reindexed yet — retry shortly, or read the file directly)"
 
+// Prepended instead of STALE_WARNING when the file is not on disk at all. fingerprintFile returns
+// null for "deleted" and for "there but unreadable right now" alike, and staleWarning used to treat
+// both as "nothing to say" -- so a read of a deleted file returned its indexed body, byte-identical
+// to a live read, exit 0, with no sign the file was gone. That is the worst shape this tool can
+// take: the caller goes on to edit or quote a file that no longer exists. Only a genuine absence
+// gets this line; a lock or permission error still falls through silently, because that file really
+// is still there and the index really may still match it.
+const DELETED_WARNING =
+  '⚠ DELETED: this file is no longer on disk — what follows is what the index last saw of it'
+
+// The same fact as a suffix rather than a banner, for surfaces that render one line per match and
+// cannot put a whole-output warning at the top without it applying to every hit. Shares the
+// '⚠ DELETED' prefix so callers (and tests) have one marker to look for.
+const DELETED_TAG = '⚠ DELETED: file no longer on disk'
+
+/**
+ * Is `absPath` gone from disk? Used to tag index rows that outlived their file.
+ *
+ * Absolute paths only. A bare `symbol NAME` searches every indexed project, so a relative path
+ * would be resolved against whatever directory the command happened to run in -- a live file
+ * belonging to another project would then read as missing and get labelled deleted. Indexed rows
+ * store absolute paths, so this costs nothing in practice; it only refuses to guess when a caller
+ * hands over a path whose meaning depends on the current directory. Saying nothing is the right
+ * answer there: a false "this file is gone" is worse than the silence this whole change replaces.
+ */
+function fileIsGone(absPath: string): boolean {
+  if (!path.isAbsolute(absPath)) return false
+  // statSync with throwIfNoEntry:false, not existsSync: existsSync answers false for a permission
+  // or I/O error too, which would report a file that is very much still there as deleted. Here
+  // undefined means ENOENT and nothing else, and a throw (EACCES on a parent directory, a
+  // disconnected share) is caught and treated as "present, cannot say" -- the same silence a
+  // momentarily unreadable file already gets.
+  try {
+    return fs.statSync(absPath, { throwIfNoEntry: false }) === undefined
+  } catch {
+    return false
+  }
+}
+
 /**
  * Returns the STALE_WARNING line (plus trailing newline) when `resolvedPath`'s current on-disk
- * SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, or
- * '' when they match, the file isn't indexed, or the on-disk file can't be read. Cheap by design:
- * a single fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/
- * skeleton/symbol lookup.
+ * SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, the
+ * DELETED_WARNING line when the file is gone from disk entirely, or '' when they match, the file
+ * isn't indexed, or the file is present but momentarily unreadable. Cheap by design: a single
+ * fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/skeleton/symbol
+ * lookup.
  */
 function staleWarning(resolvedPath: string): string {
   const entry = getFileEntry(resolvedPath)
   if (entry === null || entry.sha === '') return ''
   const diskSha = fingerprintFile(resolvedPath)
-  if (diskSha === null || diskSha === entry.sha) return ''
+  if (diskSha === null) {
+    // Separate the two reasons fingerprintFile gives up. Gone from disk is a fact worth saying out loud; unreadable-right-now is transient and stays quiet as before.
+    return fileIsGone(resolvedPath) ? `${DELETED_WARNING}\n` : ''
+  }
+  if (diskSha === entry.sha) return ''
   return `${STALE_WARNING}\n`
 }
 
@@ -1073,6 +1117,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const items = capped.items.map((s) => ({
       ...s,
       filePath: toDisplayPath(symbolDisplayRoot, s.filePath),
+      // Only present when true, so a result set of live files stays byte-identical to what this
+      // command has always emitted and only the genuinely-gone rows grow a field.
+      ...(fileIsGone(s.filePath) ? { deleted: true } : {}),
       ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
     }))
     const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
@@ -1084,7 +1131,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
   const blocks = results.map((sym) => {
     const statsStr = formatStatsSuffix(refCounts, sym)
-    const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}${statsStr}`
+    // Per match, not one banner for the whole result set: a bare `symbol NAME` searches every
+    // indexed project, so one hit can be a live file and the next one a checkout that was deleted
+    // months ago. A single header line would have to lie about one of them.
+    const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
+    const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}${statsStr}${goneTag}`
     const body = resolveBody(sym)
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
@@ -1638,6 +1689,9 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
       {
         ...match,
         body: resolveBody(match),
+        // The text branch below prepends staleWarning's DELETED line; without this the JSON form
+        // would be the one surface that still passes a deleted file's body off as a live read.
+        ...(fileIsGone(match.filePath) ? { deleted: true } : {}),
         ...(refCounts !== undefined ? { refCount: refCounts.get(match.name) ?? 0 } : {}),
       },
       null,
@@ -2638,6 +2692,10 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       items: capped.items,
       truncated: capped.truncated || symbolsTruncated,
       totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
+      // Envelope-level, not per row: this listing is one named file, so the fact belongs to the
+      // whole payload. Only added when true, so live output keeps the exact three-key shape
+      // tests/json_envelope_shape.test.ts pins.
+      ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('stub_view', fullSourceBytes, text, opts.file)
@@ -2706,6 +2764,8 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       items: capped.items,
       truncated: capped.truncated || symbolsTruncated,
       totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
+      // Same envelope-level flag, and same reason, as runSkeleton's payload above.
+      ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('outline', fullSourceBytes, text, opts.file)
