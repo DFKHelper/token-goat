@@ -792,6 +792,30 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Alice')
     expect(r.stdout).not.toContain('Bob')
   },
+  'xml-outline': () => {
+    const dir = mkIsolated('tg-matrix-xmloutline-')
+    const xmlPath = path.join(dir, 'people.xml')
+    fs.writeFileSync(
+      xmlPath,
+      '<people><person id="1"><name>Alice</name><status>active</status></person><person id="2"><name>Bob</name><status>inactive</status></person></people>',
+    )
+    const r = run(['xml-outline', xmlPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('people')
+    expect(r.stdout).toContain('person')
+  },
+  'xml-query': () => {
+    const dir = mkIsolated('tg-matrix-xmlquery-')
+    const xmlPath = path.join(dir, 'people.xml')
+    fs.writeFileSync(
+      xmlPath,
+      '<people><person id="1"><name>Alice</name><status>active</status></person><person id="2"><name>Bob</name><status>inactive</status></person></people>',
+    )
+    const r = run(['xml-query', xmlPath, 'people/person[@id=1]/name'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+    expect(r.stdout).not.toContain('Bob')
+  },
   'openapi-outline': () => {
     const dir = mkIsolated('tg-matrix-openapioutline-')
     const specPath = path.join(dir, 'openapi.json')

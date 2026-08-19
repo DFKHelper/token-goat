@@ -34,6 +34,14 @@ import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './gr
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
+import {
+  outlineXml,
+  formatXmlOutline,
+  queryXml,
+  xmlNodeToJson,
+  serializeXmlNode,
+  type XmlOutlineSummary,
+} from './xml_query.js'
 import { loadAll as loadAllYaml } from 'js-yaml'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
 import {
@@ -2993,6 +3001,163 @@ export function runYamlOutline(opts: JsonOutlineCliOptions): number {
 /** Handle ``token-goat yaml-query file path``: extract one value or a projected/filtered subset from a YAML document by dot-path, reusing json_query.ts's queryJson (same grammar as json-query). */
 export function runYamlQuery(opts: JsonQueryCliOptions): number {
   return runQueryCommand(opts, parseYamlDocument, 'YAML', 'yaml-query', 'yaml_query')
+}
+
+export interface XmlOutlineCliOptions {
+  file: string
+  json?: boolean
+  maxDepth?: number
+}
+
+/** Handle ``token-goat xml-outline file``: structural summary of an XML document
+ * (element hierarchy, attribute names, child counts) without a raw Read. */
+export function runXmlOutline(opts: XmlOutlineCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let summary: XmlOutlineSummary
+  try {
+    summary = outlineXml(text, { ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}) })
+  } catch (e) {
+    emitErr(`Failed to parse XML: ${opts.file}\n${extractErrorMessage(e)}`)
+    return 1
+  }
+
+  const fullSourceBytes = sumFileSizes([opts.file])
+  if (opts.json === true) {
+    const jsonText = JSON.stringify(summary, null, 2)
+    emit(jsonText)
+    recordReadStat('xml_outline', fullSourceBytes, jsonText, opts.file)
+  } else {
+    const outlineText = formatXmlOutline(summary)
+    emitGuarded(outlineText, 'xml-outline')
+    recordReadStat('xml_outline', fullSourceBytes, outlineText, opts.file)
+  }
+  return 0
+}
+
+export interface XmlQueryCliOptions {
+  file: string
+  path: string
+  head?: string
+  json?: boolean
+}
+
+/** Handle ``token-goat xml-query file path``: extract elements or attributes from an XML document
+ * by tag path / selector instead of a raw Read. */
+export function runXmlQuery(opts: XmlQueryCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+
+  try {
+    const result = queryXml(text, opts.path)
+    const fullSourceBytes = sumFileSizes([opts.file])
+
+    if (result.attributeValues !== undefined) {
+      if (result.attributeValues.length === 0) {
+        if (opts.json === true) {
+          const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+          emit(jsonText)
+          recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+        } else {
+          emit(`No attributes matched path: '${opts.path}'`)
+        }
+        return 0
+      }
+
+      if (!result.fanned) {
+        const val = result.attributeValues[0] ?? ''
+        const outText = opts.json === true ? JSON.stringify(val) : val
+        emit(outText)
+        recordReadStat('xml_query', fullSourceBytes, outText, opts.file)
+        return 0
+      }
+
+      const totalCount = result.attributeValues.length
+      const limited = head !== undefined ? result.attributeValues.slice(0, head) : result.attributeValues
+      const headTruncated = limited.length < totalCount
+
+      if (opts.json === true) {
+        const capped = guardJsonRows(limited)
+        const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+        emit(jsonText)
+        recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        const lines = limited.map((item) => item)
+        if (headTruncated) {
+          lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+        }
+        const plainText = lines.join('\n')
+        emitGuarded(plainText, 'xml-query')
+        recordReadStat('xml_query', fullSourceBytes, plainText, opts.file)
+      }
+      return 0
+    }
+
+    if (result.items.length === 0) {
+      if (opts.json === true) {
+        const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+        emit(jsonText)
+        recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        emit(`No elements matched path: '${opts.path}'`)
+      }
+      return 0
+    }
+
+    if (!result.fanned) {
+      const node = result.items[0]!
+      if (opts.json === true) {
+        const jsonVal = xmlNodeToJson(node)
+        const jsonText = JSON.stringify(jsonVal, null, 2)
+        emit(jsonText)
+        recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        const xmlText = serializeXmlNode(node)
+        emitGuarded(xmlText, 'xml-query')
+        recordReadStat('xml_query', fullSourceBytes, xmlText, opts.file)
+      }
+      return 0
+    }
+
+    const totalCount = result.items.length
+    const limited = head !== undefined ? result.items.slice(0, head) : result.items
+    const headTruncated = limited.length < totalCount
+
+    if (opts.json === true) {
+      const jsonItems = limited.map(xmlNodeToJson)
+      const capped = guardJsonRows(jsonItems)
+      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+      emit(jsonText)
+      recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+    } else {
+      const blocks = limited.map((node) => serializeXmlNode(node))
+      if (headTruncated) {
+        blocks.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+      }
+      const plainText = blocks.join('\n')
+      emitGuarded(plainText, 'xml-query')
+      recordReadStat('xml_query', fullSourceBytes, plainText, opts.file)
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
 }
 
 export interface OpenApiOutlineCliOptions {

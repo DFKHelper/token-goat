@@ -193,7 +193,7 @@ describe('installSkill', () => {
 
     const commandsLine = sharedBody.split('\n').find((l) => l.startsWith('Commands: '))
     expect(commandsLine).toBeDefined()
-    for (const cmd of ['json-query', 'yaml-query', 'json-outline', 'yaml-outline']) {
+    for (const cmd of ['json-query', 'yaml-query', 'xml-query', 'json-outline', 'yaml-outline', 'xml-outline']) {
       expect(commandsLine).toContain(cmd)
     }
   })

@@ -96,6 +96,8 @@ import {
   runJsonQuery,
   runYamlOutline,
   runYamlQuery,
+  runXmlOutline,
+  runXmlQuery,
   runOpenApiOutline,
   runOpenApiOp,
   runZipList,
@@ -1657,6 +1659,18 @@ function cmdYamlOutline(file: string, opts: { json?: boolean }) {
 
 function cmdYamlQuery(file: string, yamlPath: string, opts: { head?: string; json?: boolean }) {
   process.exitCode = runYamlQuery({ file, path: yamlPath, ...opts })
+}
+
+function cmdXmlOutline(file: string, opts: { json?: boolean; maxDepth?: string }) {
+  process.exitCode = runXmlOutline({
+    file,
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.maxDepth !== undefined ? { maxDepth: requireNonNegativeInt('--max-depth', opts.maxDepth) } : {}),
+  })
+}
+
+function cmdXmlQuery(file: string, xmlPath: string, opts: { head?: string; json?: boolean }) {
+  process.exitCode = runXmlQuery({ file, path: xmlPath, ...opts })
 }
 
 function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
@@ -4451,6 +4465,25 @@ export function buildProgram(): Command {
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
     .action(guard(cmdYamlQuery))
+
+  program
+    .command('xml-outline <file>')
+    .description('structural summary of an XML document (element hierarchy / attribute names / child counts) instead of a raw Read')
+    .option('--json', 'emit the outline as JSON instead of text')
+    .option('--max-depth <n>', 'max depth of element hierarchy to show')
+    .action(guard(cmdXmlOutline))
+
+  program
+    .command('xml-query <file> <path>')
+    .description(
+      "extract elements or attributes from an XML document by tag path instead of a raw Read\n\n" +
+        "path grammar: slash- or dot-separated tag names with optional bracket segments and attribute selectors -- " +
+        "[n] index, [*] wildcard, [@attr] or [@attr=value] filter, and trailing @attr to extract attribute value. " +
+        "Examples: root.child, catalog/book[@id=101]/title, /feed/entry[*]/@href",
+    )
+    .option('--head <n>', 'limit a matching result list to the first N items')
+    .option('--json', 'emit the result as JSON instead of text')
+    .action(guard(cmdXmlQuery))
 
   program
     .command('openapi-outline <file>')
