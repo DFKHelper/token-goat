@@ -1064,6 +1064,13 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
     return false
   }
   // Stale, dead, or unreadable: reclaim the slot.
+  if (existingPid !== null && pidAlive(existingPid) && existingPid !== pid && existingPid !== process.pid) {
+    try {
+      process.kill(existingPid, 'SIGTERM')
+    } catch {
+      // best-effort
+    }
+  }
   try {
     fs.rmSync(pidPath, { force: true })
   } catch {
