@@ -19,7 +19,7 @@ import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
-import { normalizePath } from './paths.js'
+import { displaySafePath, normalizePath } from './paths.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
@@ -146,7 +146,8 @@ function isSessionArtifactFile(filePath: string): boolean {
  * so a bare `bash-output --tail N` (no id/path) or `bash-output <id>` (id is not
  * a cache key) both error. `--file <path>` reads the file and applies the slice.
  */
-function sessionArtifactRecall(filePath: string): string {
+function sessionArtifactRecall(rawPath: string): string {
+  const filePath = displaySafePath(rawPath)
   return 'Use `token-goat bash-output --file "' + filePath + '" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'
 }
 
@@ -266,7 +267,8 @@ function estimateRequestedSlice(event: HookEvent, absPath: string): RequestedSli
 }
 
 /** Phrases the retry advice for a large-file deny based on whether/how offset/limit would help. */
-function describeSliceAdvice(slice: RequestedSlice, absPath: string): string {
+function describeSliceAdvice(slice: RequestedSlice, rawAbsPath: string): string {
+  const absPath = displaySafePath(rawAbsPath)
   if (slice.kind === 'nearSingleLine') {
     return BYTE_RANGE_ADVICE(absPath)
   }
@@ -574,6 +576,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (filePath === undefined) return passOutput()
 
   const normalized = normalizePath(filePath)
+  const shown = displaySafePath(normalized)
 
   if (isNodeModulesPath(normalized)) {
     return denyOutput(
@@ -604,7 +607,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   if (isLockFile(basename)) {
     return denyOutput(
-      'Lock files are rarely useful to read in full. Use `token-goat section "' + normalized + '::<section>"` ' +
+      'Lock files are rarely useful to read in full. Use `token-goat section "' + shown + '::<section>"` ' +
       'to extract a specific dependency, or read the relevant manifest instead.',
     )
   }
@@ -633,16 +636,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     return quietContextOutput(
-      'Already read ' + basename + '. Use `token-goat section "' + normalized + '::compilerOptions"` ' +
-      'to extract compiler options, or `token-goat config-get ' + normalized + ' compilerOptions.target` for a single value.',
+      'Already read ' + basename + '. Use `token-goat section "' + shown + '::compilerOptions"` ' +
+      'to extract compiler options, or `token-goat config-get ' + shown + ' compilerOptions.target` for a single value.',
     )
   }
 
   if (isManifestFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     return quietContextOutput(
-      'You\'ve already read ' + basename + '. Use `token-goat section "' + normalized + '::<field>"` ' +
-      'or `token-goat config-get ' + normalized + ' <key>` to extract just the value you need.',
+      'You\'ve already read ' + basename + '. Use `token-goat section "' + shown + '::<field>"` ' +
+      'or `token-goat config-get ' + shown + ' <key>` to extract just the value you need.',
     )
   }
 
@@ -687,8 +690,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'Serving the extractive compact sidecar in place of the full file ' +
           '(source unchanged since the last `compact-doc` build):\n\n' +
           fenceUntrustedFileContent(compactBody) +
-          '\n\nUse `token-goat compact-doc "' + normalized + '" --force` to rebuild it, ' +
-          'or `token-goat compact-doc "' + normalized + '" --show` to view it directly. ' +
+          '\n\nUse `token-goat compact-doc "' + shown + '" --force` to rebuild it, ' +
+          'or `token-goat compact-doc "' + shown + '" --show` to view it directly. ' +
           editAnywayHint(normalized),
         )
       }
@@ -761,7 +764,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           wellKnown.length > 0
             ? '\nQuick access: ' +
               wellKnown
-                .map(s => 'token-goat section "' + normalized + '::' + s + '"')
+                .map(s => 'token-goat section "' + shown + '::' + s + '"')
                 .join(' | ')
             : ''
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
@@ -814,7 +817,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     return denyOutput(
       isMainMemory
         ? "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'."
-        : normalized + ' was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + normalized + '::SectionHeading"` to extract one section.',
+        : shown + ' was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + shown + '::SectionHeading"` to extract one section.',
     )
   }
 
@@ -832,8 +835,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(
-      normalized + ' was already read this session. Environment files rarely change mid-session. ' +
-      'Use `token-goat config-get ' + normalized + ' KEY_NAME` to extract a specific variable.',
+      shown + ' was already read this session. Environment files rarely change mid-session. ' +
+      'Use `token-goat config-get ' + shown + ' KEY_NAME` to extract a specific variable.',
     )
   }
 
@@ -868,7 +871,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
       return denyOutput(
-        normalized + ' was already read this session. ' + sessionArtifactRecall(normalized),
+        shown + ' was already read this session. ' + sessionArtifactRecall(normalized),
       )
     }
     // First read of tasks/*.output or tool-results/*.txt — size-gated like every other first-read intercept in this function. A small file is a cheap advisory pass; at/above TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through bash-output --file/--tail instead of one free unsized full dump. Both artifact kinds share this gate -- tool-results/*.txt previously fell through to the lenient generic 100KB threshold with no advisory at all, unlike tasks/*.output.
@@ -953,7 +956,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
             'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
-            'or use `token-goat read ' + normalized + '::SymbolName` for a narrower slice instead of a full re-read.',
+            'or use `token-goat read ' + shown + '::SymbolName` for a narrower slice instead of a full re-read.',
           )
         }
       }
@@ -1014,7 +1017,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
         recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
         return denyOutput(
-          'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
+          'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.' +
           ' ' + editAnywayHint(normalized),
         )
       }
@@ -1025,19 +1028,19 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('read_count_deny', rereadCredit, Math.round(rereadCredit / 4))
         recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
         return denyOutput(
-          'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
+          'Read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.' +
           ' ' + editAnywayHint(normalized),
         )
       }
     }
 
     const hint = _isDocFile(normalized)
-      ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
+      ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
       recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
       return denyOutput(
-        normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
+        shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
         ' ' + editAnywayHint(normalized),
       )
     }
@@ -1050,7 +1053,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
     }
     return quietContextOutput(
-      'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
+      'Note: ' + shown + ' was already read this session (' + reads + ' ' + plural + '). ' +
         hint,
     )
   }
@@ -1076,7 +1079,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const kb = toKB(size)
     const config = loadConfig()
     const hint = _isDocFile(normalized)
-      ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
+      ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
     if (gateSize >= largeFileDenyBytes()) {
       // The read is blocked outright, so it never actually happened — don't record it
@@ -1086,7 +1089,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const denyCredit = Math.min(size, PER_FILE_COUNTERFACTUAL_CEILING)
       recordStat('session_hint', denyCredit, Math.round(denyCredit / 4))
       return denyOutput(
-        normalized + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
+        shown + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
         ' ' + editAnywayHint(normalized),
       )
     }
@@ -1106,7 +1109,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
     }
     return quietContextOutput(
-      'Note: ' + normalized + ' is large (' + kb + 'KB). ' +
+      'Note: ' + shown + ' is large (' + kb + 'KB). ' +
         hint + contextPressureAdvisorySuffix(),
     )
   }
@@ -1190,13 +1193,15 @@ function estimateTruncatedLineCount(normalized: string): number {
   return Infinity
 }
 
-function editAnywayHint(normalized: string): string {
+function editAnywayHint(rawPath: string): string {
+  const normalized = displaySafePath(rawPath)
   return (
     'To edit it anyway, use `token-goat replace "' + normalized + '" --old-b64 <base64> --new-b64 <base64>` (preferred — no temp files needed) or `--old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --b64 <base64>` (or `--from <newfile>`) to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
   )
 }
 
-function truncatedReadDenyMessage(normalized: string): string {
+function truncatedReadDenyMessage(rawPath: string): string {
+  const normalized = displaySafePath(rawPath)
   return (
     'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
     ' ' + editAnywayHint(normalized)
@@ -1214,6 +1219,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   const normalized = normalizePath(filePath)
+  const shown = displaySafePath(normalized)
   const respText = extractReadOutput(event.raw)
   if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) {
     markFileTruncated(normalized)
@@ -1287,7 +1293,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
           // Advisory only -- the read is not blocked, so nothing was saved here either.
           recordStat('session_hint', 0, 0)
           return quietContextOutput(
-            normalized + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + normalized + '"` or `token-goat outline "' + normalized + '"` for structural navigation instead of a future full re-read.',
+            shown + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + shown + '"` or `token-goat outline "' + shown + '"` for structural navigation instead of a future full re-read.',
           )
         }
       }

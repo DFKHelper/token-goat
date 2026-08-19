@@ -22,7 +22,7 @@ import { passOutput, contextOutput } from './hooks_common.js'
 import { applyHintTracking, classifyEditHint, meetsSavingsFloor } from './hint_stats.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './index_prune.js'
-import { normalizePath } from './paths.js'
+import { displaySafePath, normalizePath } from './paths.js'
 import { extractErrorMessage } from './util.js'
 import { recordFileEdit } from './session.js'
 import { isUnderSystemTemp } from './project.js'
@@ -87,9 +87,12 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
       // best-effort; treat as eligible for the hint below on stat failure
     }
     if (meetsSavingsFloor(editedSize)) {
-      const escapedPath = normalized.replace(/`/g, '\\`').replace(/"/g, '\\"')
+      // displaySafePath first: the backtick/quote escaping below is about not breaking the
+      // markdown span, and does nothing about a newline in the file name, which would end the
+      // hint line and let the rest of the name read as a note of token-goat's own.
+      const escapedPath = displaySafePath(normalized).replace(/`/g, '\\`').replace(/"/g, '\\"')
       return contextOutput(
-        editedBasename +
+        displaySafePath(editedBasename) +
           ' was edited. Use `token-goat section "' +
           escapedPath +
           '::HeadingName"` to re-read a specific section rather than the full file.',
