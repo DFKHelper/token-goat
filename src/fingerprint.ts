@@ -52,3 +52,26 @@ export function fingerprintFile(filePath: string): string | null {
   }
   return fingerprintContent(data)
 }
+
+/**
+ * Is there genuinely no file at `filePath`?
+ *
+ * `true` only for ENOENT. A file that is present but cannot be examined right now -- a Windows
+ * ACL denial, EACCES on a parent directory, a disconnected network share -- answers `false`,
+ * because "I cannot tell" is not the same as "it is gone", and every caller here does something
+ * destructive or user-visible with a `true`.
+ *
+ * This is what `fs.existsSync` cannot give: existsSync is a stat inside a bare catch, so it
+ * answers `false` for a permission or I/O error exactly as it does for a missing file. Measured
+ * on Windows against a directory with a deny ACE for the current user: `existsSync` returned
+ * false for a file that was still there, while `statSync(p, { throwIfNoEntry: false })` threw
+ * EPERM. `throwIfNoEntry: false` returns `undefined` for ENOENT and only ENOENT, and throws for
+ * everything else, which is precisely the distinction.
+ */
+export function fileIsAbsent(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath, { throwIfNoEntry: false }) === undefined
+  } catch {
+    return false
+  }
+}

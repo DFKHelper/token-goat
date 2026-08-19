@@ -18,7 +18,7 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
 import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
 import { getDb } from './db.js'
-import { fingerprintFile } from './fingerprint.js'
+import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
@@ -381,17 +381,9 @@ const DELETED_TAG = '⚠ DELETED: file no longer on disk'
  * answer there: a false "this file is gone" is worse than the silence this whole change replaces.
  */
 function fileIsGone(absPath: string): boolean {
+  // A relative path would be resolved against the current directory, which for a symbol search spanning every indexed project is the wrong one -- so it is never judged. Past that, fileIsAbsent answers ENOENT and only ENOENT: a file that is present but unreadable stays silent, the same as before.
   if (!path.isAbsolute(absPath)) return false
-  // statSync with throwIfNoEntry:false, not existsSync: existsSync answers false for a permission
-  // or I/O error too, which would report a file that is very much still there as deleted. Here
-  // undefined means ENOENT and nothing else, and a throw (EACCES on a parent directory, a
-  // disconnected share) is caught and treated as "present, cannot say" -- the same silence a
-  // momentarily unreadable file already gets.
-  try {
-    return fs.statSync(absPath, { throwIfNoEntry: false }) === undefined
-  } catch {
-    return false
-  }
+  return fileIsAbsent(absPath)
 }
 
 /**

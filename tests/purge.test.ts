@@ -10,6 +10,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { sealDirectory, unsealDirectory } from './helpers/seal-directory.js'
 import { directorySize, formatBytes, purgeDataDirectories, purgeRoots } from '../src/purge.js'
 
 const ENV_KEYS = ['TOKEN_GOAT_HOME', 'XDG_DATA_HOME', 'LOCALAPPDATA'] as const
@@ -93,6 +94,34 @@ describe('purgeDataDirectories', () => {
 
     expect(result.removed).toEqual([])
     expect(result.absent.length).toBe(2)
+  })
+
+  it('reports a root it cannot reach as failed, not as absent', async (ctx) => {
+    // A root behind a permission wall looks exactly like a missing one to fs.existsSync, and
+    // "already gone" is the one answer this command must never give about data that is still
+    // there. The wall goes on the parent, because what a sealed directory hides is its contents,
+    // not its own entry.
+    const walled = path.join(root, 'walled')
+    const home = path.join(walled, 'home')
+    seed(home, 'session.json', 40)
+    process.env['TOKEN_GOAT_HOME'] = home
+    const constants = await import('../src/constants.js')
+    constants._resetDataDirCacheForTesting()
+    // ctx.skip rather than a bare return, so a runner that ignores the permission change (root,
+    // or an elevated shell) reports a skipped test instead of a passing one.
+    if (!sealDirectory(walled)) ctx.skip()
+    try {
+      if (fs.existsSync(home)) ctx.skip()
+
+      const result = purgeDataDirectories()
+
+      expect(result.absent, 'a root that is still on disk was reported as already gone').not.toContain(
+        home,
+      )
+      expect(result.failed.map((f) => f.path)).toContain(home)
+    } finally {
+      unsealDirectory(walled)
+    }
   })
 
   it('does not touch anything outside the two roots', () => {
