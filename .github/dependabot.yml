@@ -29,6 +29,17 @@ updates:
       npm-dependencies:
         patterns:
           - '*'
+    # TypeScript 7 is the native port, and its main entry no longer exports the compiler API:
+    # `require('typescript')` on 7.0.2 yields exactly two symbols, `version` and
+    # `versionMajorMinor`. Everything src/ts_refs.ts and src/dep_docs.ts rely on --
+    # createProgram, createCompilerHost, JSDocParsingMode, readConfigFile, findConfigFile and
+    # the rest -- moved behind `typescript/unstable/*`, which upstream labels unstable. Taking
+    # the major would mean rewriting the type-resolved reference tier against an API that is
+    # not promised to hold still. Minor and patch updates on 6.x still come through.
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   # The extension carries its own manifest and lockfile, so it needs its own entry: an update to
   # the root tree never reaches it.
@@ -42,3 +53,14 @@ updates:
       npm-dependencies:
         patterns:
           - '*'
+    # TypeScript 7 is the native port, and its main entry no longer exports the compiler API:
+    # `require('typescript')` on 7.0.2 yields exactly two symbols, `version` and
+    # `versionMajorMinor`. Everything src/ts_refs.ts and src/dep_docs.ts rely on --
+    # createProgram, createCompilerHost, JSDocParsingMode, readConfigFile, findConfigFile and
+    # the rest -- moved behind `typescript/unstable/*`, which upstream labels unstable. Taking
+    # the major would mean rewriting the type-resolved reference tier against an API that is
+    # not promised to hold still. Minor and patch updates on 6.x still come through.
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
