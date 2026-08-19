@@ -34,6 +34,25 @@ export interface XmlOutlineElement {
   textLength: number
 }
 
+// XML Names are Unicode, not ASCII: `<café>` and `<数据>` are as legal as `<item>`, and an
+// ASCII-only class truncated the first at its first non-ASCII character and dropped the second from
+// the tree entirely. These follow the NameStartChar/NameChar productions of XML 1.0; the surrogate
+// range is included so a name from an astral plane matches as its two code units.
+const XML_NAME_START = 'A-Za-z_:\u00C0-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFDF0-\uFFFD'
+const XML_NAME_REST = 'A-Za-z_:\u00C0-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFDF0-\uFFFD0-9.\u00B7\u0300-\u036F\u203F-\u2040-'
+const XML_NAME = `[${XML_NAME_START}][${XML_NAME_REST}]*`
+
+// The region between a tag name and its closing `>`. A `>` is legal inside a quoted attribute
+// value -- only `<` and `&` are forbidden there -- so a scan that stops at the first `>` ends the
+// start tag in the middle of a value. Quoted spans are consumed whole; the bare-quote alternative
+// is last so an unpaired quote in a malformed document still parses rather than dropping the
+// element silently.
+const XML_ATTR_REGION = `(?:[^>"']|"[^"]*"|'[^']*'|["'])*?`
+
+// Same rule for a doctype: a SystemLiteral is quoted and may contain `>`, and stopping at the
+// first one let a document hide an element inside one and have it read as the root.
+const XML_DOCTYPE_TOKEN = `<!DOCTYPE(?:[^>"']|"[^"]*"|'[^']*')*>`
+
 /** Decodes standard XML entities and numeric character references. */
 export function decodeXmlEntities(text: string): string {
   return text.replace(/&(?:quot|apos|lt|gt|amp|#x([0-9a-fA-F]+)|#([0-9]+));/g, (match, hex, dec) => {
@@ -75,6 +94,13 @@ export function escapeXmlAttr(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;')
+    // A tab, newline or carriage return left raw here still round-trips through token-goat's own
+    // parser, but any conforming XML reader normalises whitespace in an attribute value to spaces,
+    // so serialized output meant something different from the document it came from. Numeric
+    // references survive that normalisation.
+    .replace(/\n/g, '&#xA;')
+    .replace(/\r/g, '&#xD;')
+    .replace(/\t/g, '&#x9;')
 }
 
 /**
@@ -95,7 +121,12 @@ export function parseXmlTree(xmlText: string): {
   doctype: string | null
   totalElements: number
 } {
+  // `line` is reported against the document the caller passed, so the prefix trimmed off here
+  // has to be counted rather than forgotten: an element three blank lines down was reported as
+  // being on line 1.
+  const leadingTrim = xmlText.length - xmlText.trimStart().length
   let text = xmlText.trim()
+  let lineOffset = (xmlText.slice(0, leadingTrim).match(/\n/g) ?? []).length
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1) // Strip BOM
 
   let doctype: string | null = null
@@ -103,14 +134,22 @@ export function parseXmlTree(xmlText: string): {
   let totalElements = 0
 
   // Match DOCTYPE if present
-  const doctypeMatch = /<!DOCTYPE\s+([^>[\]]+(?:\[[\s\S]*?\])?\s*)>/i.exec(text)
+  const doctypeMatch = new RegExp(
+    `<!DOCTYPE\\s+((?:[^>[\\]"']|"[^"]*"|'[^']*'|\\[[\\s\\S]*?\\])*)\\s*>`,
+    'i',
+  ).exec(text)
   if (doctypeMatch) {
     doctype = doctypeMatch[1]?.trim() ?? null
   }
 
   function parseAttributes(attrString: string): Record<string, string> {
     const attrs: Record<string, string> = {}
-    const attrRegex = /([a-zA-Z0-9_:.\\-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g
+    // The rule below guards against a class that can match half a grapheme, which is exactly what
+    // an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F
+    // and the zero-width joiner U+200D as name characters in their own right, and an astral name
+    // matches as its two code units. Matching per code unit is the intent, not an oversight.
+    // eslint-disable-next-line no-misleading-character-class
+    const attrRegex = new RegExp(`(${XML_NAME})(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+)))?`, 'g')
     let m: RegExpExecArray | null
     while ((m = attrRegex.exec(attrString)) !== null) {
       const name = m[1]!
@@ -125,13 +164,25 @@ export function parseXmlTree(xmlText: string): {
   }
 
   // Tokenize elements, comments, CDATA, and processing instructions
-  const tagRegex =
-    /<(\/)?([a-zA-Z0-9_:.\\-]+)([^>]*?)(\/)?>|<!--[\s\S]*?-->|<!\[CDATA\[([\s\S]*?)\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>/gi
+  // The rule below guards against a class that can match half a grapheme, which is exactly what
+  // an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F
+  // and the zero-width joiner U+200D as name characters in their own right, and an astral name
+  // matches as its two code units. Matching per code unit is the intent, not an oversight.
+  const tagRegex = new RegExp(
+    // eslint-disable-next-line no-misleading-character-class
+    `<(\\/)?(${XML_NAME})(${XML_ATTR_REGION})(\\/)?>` +
+      `|<!--[\\s\\S]*?-->` +
+      `|<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>` +
+      `|<\\?[\\s\\S]*?\\?>` +
+      `|${XML_DOCTYPE_TOKEN}`,
+    'gi',
+  )
 
   const stack: XmlNode[] = []
   let rootNode: XmlNode | null = null
   let match: RegExpExecArray | null
   let lastIndex = 0
+  let lineScan = 0
 
   while ((match = tagRegex.exec(text)) !== null) {
     const fullMatch = match[0]!
@@ -143,15 +194,20 @@ export function parseXmlTree(xmlText: string): {
 
     // Capture text preceding the tag
     if (stack.length > 0 && match.index > lastIndex) {
-      const textChunk = decodeXmlEntities(text.slice(lastIndex, match.index).trim())
-      if (textChunk) {
-        stack[stack.length - 1]!.text += (stack[stack.length - 1]!.text ? ' ' : '') + textChunk
+      // Verbatim, and with no separator invented between chunks. Trimming each chunk and joining
+      // with a space turned `a<!--x-->b` into `a b` and threw away the spaces in
+      // `<![CDATA[ a ]]>`, which is the one thing CDATA exists to keep. A chunk that is nothing
+      // but whitespace is dropped, because that is the indentation of a pretty-printed document
+      // rather than content anybody asked for.
+      const raw = text.slice(lastIndex, match.index)
+      if (raw.trim()) {
+        stack[stack.length - 1]!.text += decodeXmlEntities(raw)
       }
     }
 
     if (cdataContent !== undefined) {
       if (stack.length > 0) {
-        stack[stack.length - 1]!.text += (stack[stack.length - 1]!.text ? ' ' : '') + cdataContent.trim()
+        stack[stack.length - 1]!.text += cdataContent
       }
       lastIndex = tagRegex.lastIndex
       continue
@@ -163,7 +219,14 @@ export function parseXmlTree(xmlText: string): {
       continue
     }
 
-    const line = (text.slice(0, match.index).match(/\n/g) || []).length + 1
+    // Counted forward from the previous tag rather than by rescanning the whole prefix each
+    // time: the rescan made an otherwise ordinary large document quadratic, so doubling the
+    // element count quadrupled the time.
+    while (lineScan < match.index) {
+      if (text.charCodeAt(lineScan) === 10) lineOffset++
+      lineScan++
+    }
+    const line = lineOffset + 1
 
     if (isClosing) {
       if (stack.length > 0) {
