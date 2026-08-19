@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **Kimi Code support.** `token-goat install --kimi` wires token-goat into Moonshot AI's Kimi Code CLI: `[[hooks]]` entries in `~/.kimi-code/config.toml` for `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, and `SessionStart`, a routing block in `~/.kimi-code/AGENTS.md`, and a skill at `~/.kimi-code/skills/token-goat/SKILL.md`. Kimi Code sends the same snake_case payload Claude Code does, but it reads a different answer: only a top-level `message` and `hookSpecificOutput.permissionDecision`. Sending token-goat's own reply would have been read as "allow" every time, so the install writes a shim that translates it, and writes nothing at all for a no-op, because Kimi Code puts raw hook stdout into the model's context on `UserPromptSubmit`. Its read tool names its argument `path`, not `file_path`, so the payload is renamed on the way in as well. `Notification` and `Stop` are not wired: token-goat has no handler for them. Input and output rewriting are not wired either, because Kimi Code offers no channel for them. See [src/bridges/kimi_install.ts](src/bridges/kimi_install.ts) and [src/bridges/kimi.ts](src/bridges/kimi.ts), held by [tests/install_kimi.test.ts](tests/install_kimi.test.ts) and [tests/wire_format_kimi.test.ts](tests/wire_format_kimi.test.ts).
+
 ## [2.6.32] - 2026-08-18
 
 ### Security

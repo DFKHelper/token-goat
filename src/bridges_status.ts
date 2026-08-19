@@ -152,6 +152,13 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ],
   },
   {
+    harness: 'kimi',
+    label: 'Kimi Code CLI',
+    sourceFile: 'src/bridges/kimi_install.ts (KIMI_EVENT_ARG), src/bridges/kimi.ts (KIMI_HOOK_SCRIPT)',
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
+    reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
+  },
+  {
     harness: 'opencode',
     label: 'opencode',
     sourceFile: 'src/bridges/opencode.ts',

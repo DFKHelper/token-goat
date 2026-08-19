@@ -45,7 +45,7 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
   it('covers exactly the real bridge modules -- excludes hermes (no install-writer) and generic (fallback, not a harness)', () => {
     const harnesses = BRIDGE_CAPABILITY_MATRIX.map((r) => r.harness).sort()
     expect(harnesses).toEqual(
-      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'openclaw', 'opencode', 'pi', 'qwen'].sort(),
+      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'kimi', 'openclaw', 'opencode', 'pi', 'qwen'].sort(),
     )
     expect(harnesses).not.toContain('hermes')
     expect(harnesses).not.toContain('generic')
@@ -173,12 +173,12 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 7/8 score for copilot_cli, 6/8 for claudecode, 5/8 for codex/grok/qwen, 3/8 for opencode/gemini/openclaw/pi', () => {
+  it('shows a 7/8 score for copilot_cli, 6/8 for claudecode/kimi, 5/8 for codex/grok/qwen, 3/8 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
     // copilot_cli overtakes claudecode here: it wires session_start (like claudecode) *and*
     // stop via its agentStop mapping, which claudecode's settings.json wiring does not.
     expect(text).toMatch(/copilot_cli\s+.*\s7\/8/)
-    for (const harness of ['claudecode']) {
+    for (const harness of ['claudecode', 'kimi']) {
       expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s6\\/8`))
     }
     for (const harness of ['codex', 'grok', 'qwen']) {
