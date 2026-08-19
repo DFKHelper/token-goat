@@ -223,6 +223,64 @@ describe('normalizePayload', () => {
     })
   })
 
+  // Kimi is the reason remapToolName() keys its input-key map off the EFFECTIVE tool name rather
+  // than off a successful rename: Kimi's Read is already spelled `Read`, but its path argument is
+  // `path`, not `file_path`. Remapping only on a rename would leave every path-scoped handler
+  // seeing no path at all.
+  it('renames Kimi Read\'s `path` argument to file_path even though the tool name needs no rename', () => {
+    const payload: HookPayload = {
+      tool_name: 'Read',
+      tool_input: { path: '/tmp/test.txt' },
+    }
+    const result = normalizePayload(payload, 'kimi')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['tool_input']).toEqual({ file_path: '/tmp/test.txt' })
+    expect(result['_tg_harness']).toBe('kimi')
+  })
+
+  it('renames Kimi ReadMediaFile to Read and its `path` argument to file_path', () => {
+    const payload: HookPayload = {
+      tool_name: 'ReadMediaFile',
+      tool_input: { path: '/tmp/shot.png' },
+    }
+    const result = normalizePayload(payload, 'kimi')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['tool_input']).toEqual({ file_path: '/tmp/shot.png' })
+  })
+
+  it('renames Kimi FetchURL to WebFetch and leaves its input alone (no key map entry)', () => {
+    const payload: HookPayload = {
+      tool_name: 'FetchURL',
+      tool_input: { url: 'https://example.com' },
+    }
+    const result = normalizePayload(payload, 'kimi')
+    expect(result['tool_name']).toBe('WebFetch')
+    expect(result['tool_input']).toEqual({ url: 'https://example.com' })
+  })
+
+  it('leaves an unmapped Kimi tool name and its input untouched', () => {
+    const payload: HookPayload = {
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hello' },
+    }
+    const result = normalizePayload(payload, 'kimi')
+    expect(result['tool_name']).toBe('Bash')
+    expect(result['tool_input']).toEqual({ command: 'echo hello' })
+  })
+
+  // Generalizing remapToolName's key lookup must not start remapping keys for the other harnesses:
+  // grok's own tool vocabulary is snake_case, so a raw `read_file` still routes through the rename
+  // and an unrelated grok tool never collides with the PascalCase GROK_INPUT_KEY_MAP entries.
+  it('still remaps grok read_file target_file to file_path after the shared-helper generalization', () => {
+    const payload: HookPayload = {
+      toolName: 'read_file',
+      toolInput: { target_file: '/tmp/test.txt' },
+    }
+    const result = normalizePayload(payload, 'grok')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['tool_input']).toEqual({ file_path: '/tmp/test.txt' })
+  })
+
   it('round-trip: normalizePayload then back works for Claude', () => {
     const original: HookPayload = {
       tool_name: 'Bash',

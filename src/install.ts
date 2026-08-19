@@ -27,7 +27,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
-import { buildGuidanceBlock, buildGuidanceBody } from './bridges/guidance_block.js'
+import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './bridges/guidance_block.js'
 import { loadConfig } from './config.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
@@ -527,12 +527,10 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 // --- token-goat skill writer ---
 // README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form". Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
 
-// The frontmatter `description` is DELIBERATELY exempt from the gate wording: it
-// is a relevance trigger the harness reads to decide *whether to load the skill*
-// at all, not guidance the agent acts on mid-task. It must stay a plain,
-// keyword-dense one-liner. Do NOT "fix" it into the gate phrasing for
-// consistency with the body below -- doing so degrades skill-loading recall for
-// no benefit. Only the body (rendered from the shared builder) is the gate.
+// The frontmatter `description` comes from the shared skillDescriptionLine()
+// (bridges/guidance_block.ts), so the Claude Code and Kimi Code skills cannot
+// drift apart; see that function for why its wording is exempt from the gate
+// phrasing. Only the body (rendered from the shared builder) is the gate.
 // The allowed-tools frontmatter keeps Copilot-style loaders from body-scanning the
 // skill prose and mistaking quoted command names for implicit tool identifiers. It
 // MUST list real harness tool identifiers, not token-goat subcommands: loaders
@@ -542,7 +540,7 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 function skillMdFrontmatter(gdrive: boolean): string {
   return `---
 name: token-goat
-description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.
+${skillDescriptionLine(gdrive)}
 allowed-tools:
   - Bash
   - Read

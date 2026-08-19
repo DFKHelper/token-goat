@@ -70,26 +70,14 @@
  * shell parser. On any error the shim writes nothing and exits 0, which Kimi
  * treats as "allow" (its fail-open design, `docs/en/customization/hooks.md`).
  */
+import { SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+
 export const KIMI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Kimi Code hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then rewrites the response into Kimi's own contract: permissionDecision "deny" for a block, top-level "message" for a hint, empty stdout for a no-op.
 'use strict'
-const { spawnSync } = require('node:child_process')
-const path = require('node:path')
-const { pathToFileURL } = require('node:url')
+${SHIM_REQUIRES}
 
-// Keep in sync with HOOK_EVENTS in src/types.ts. eventName is validated against this closed
-// set before being concatenated into a shell command string, so a hostile argv (e.g.
-// 'pre_tool_use & calc.exe') can never reach the shell parser.
-const VALID_HOOK_EVENTS = new Set([
-  'pre_tool_use',
-  'post_tool_use',
-  'notification',
-  'stop',
-  'pre_compact',
-  'user_prompt_submit',
-  'subagent_stop',
-  'session_start',
-])
+${SHIM_VALID_HOOK_EVENTS}
 
 // Kimi Code publishes no ambient per-session env var identifying its own hook
 // subprocesses, so the harness identity has to be injected here for
@@ -124,23 +112,7 @@ function toKimi(parsed) {
   return ''
 }
 
-// Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of
-// the baked token-goat entry path, built with zero load-time side effects) and calls its
-// exported relayInProcess() directly, avoiding a second node process spawn entirely.
-// Returns undefined (triggering the spawnSync fallback below) when entryPath is absent,
-// the sibling file doesn't exist, or anything else goes wrong -- this must never throw.
-async function tryInProcess(entryPath, eventName, input) {
-  if (!entryPath) return undefined
-  try {
-    const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
-    if (!require('node:fs').existsSync(hookLibPath)) return undefined
-    const mod = await import(pathToFileURL(hookLibPath).href)
-    const payload = JSON.parse(input)
-    return await mod.relayInProcess(eventName, payload)
-  } catch {
-    return undefined
-  }
-}
+${SHIM_TRY_IN_PROCESS}
 
 async function main() {
   const eventName = process.argv[2] || ''
@@ -160,13 +132,7 @@ async function main() {
   const entryPath = process.argv[3]
   let stdout = await tryInProcess(entryPath, eventName, input)
   if (stdout === undefined) {
-    const res = entryPath
-      ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
-          input,
-          encoding: 'utf8',
-          timeout: 3000,
-          killSignal: 'SIGKILL',
-        })
+${SHIM_SPAWN_LADDER}
       : spawnSync('token-goat hook ' + eventName, {
           input,
           encoding: 'utf8',

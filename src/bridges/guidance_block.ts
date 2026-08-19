@@ -100,6 +100,22 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
 }
 
 /**
+ * The `description:` frontmatter line every token-goat SKILL.md declares.
+ *
+ * Shared by the Claude Code skill writer (`skillMdFrontmatter` in ../install.ts)
+ * and the Kimi Code one (`kimiSkillContent` in ./kimi_install.ts), which shipped
+ * byte-identical copies of it. It is the relevance trigger a harness reads to
+ * decide *whether to load the skill at all*, so it is DELIBERATELY exempt from
+ * the gate wording {@link buildGuidanceBody} renders: it must stay a plain,
+ * keyword-dense one-liner. Do NOT "fix" it into the gate phrasing for
+ * consistency with the body -- that degrades skill-loading recall for no
+ * benefit. Returned without the trailing newline so each caller can place it.
+ */
+export function skillDescriptionLine(gdrive: boolean): string {
+  return `description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.`
+}
+
+/**
  * Render the shared token-goat routing gate for one harness, wrapped in the
  * harness's begin/end markers. The body is identical across harnesses (see
  * {@link buildGuidanceBody}); only the markers and the fallback-tool clause

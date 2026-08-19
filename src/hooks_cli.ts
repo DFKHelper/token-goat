@@ -200,24 +200,31 @@ function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, s
   return newInput
 }
 
-// Shared by the grok/gemini normalizePayload branches: both rename tool_name via a per-harness map, then remap tool_input's keys via a second per-harness map keyed off the mapped (canonical) tool name.
+// Shared by the grok/gemini/kimi normalizePayload branches: all three rename tool_name via a
+// per-harness map, then remap tool_input's keys via a second per-harness map.
+//
+// The input-key map is keyed off the EFFECTIVE tool name -- the renamed one when nameMap has an
+// entry, otherwise the name the harness sent verbatim. Keying it off the rename alone would skip
+// the case Kimi depends on: a tool whose name already matches token-goat's canonical spelling
+// (`Read`) but whose path argument does not (`path`, not `file_path`). Callers whose harness never
+// sends a canonical name are unaffected -- grok and gemini both send snake_case, so an unmapped
+// name can never collide with their PascalCase input-key-map entries.
+//
+// `toolName` is guaranteed a non-empty string by normalizePayload's guard above, so assigning
+// tool_name unconditionally is identical to assigning it only on a rename.
 function remapToolName(
   obj: Record<string, unknown>,
   toolName: string,
   nameMap: Record<string, string>,
   inputKeyMap: Record<string, Record<string, string>>,
 ): Record<string, unknown> {
-  const mapped = nameMap[toolName]
+  const mapped = nameMap[toolName] ?? toolName
   const result = { ...obj }
-  if (mapped) {
-    result['tool_name'] = mapped
-    const rawInput = obj['tool_input']
-    if (typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
-      const keyMap = inputKeyMap[mapped]
-      if (keyMap) {
-        result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
-      }
-    }
+  result['tool_name'] = mapped
+  const rawInput = obj['tool_input']
+  const keyMap = inputKeyMap[mapped]
+  if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
+    result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
   }
   return result
 }
@@ -296,19 +303,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   if (harness === 'kimi') {
-    // Deliberately NOT remapToolName(): that helper only applies its input-key
-    // map when the tool NAME was also renamed, and Kimi's most important case
-    // is a tool whose name already matches (`Read`) but whose path argument
-    // does not (`path`, not `file_path`). Keying the input remap off the
-    // effective tool name instead is what makes that rename actually happen.
-    const mapped = KIMI_TOOL_NAME_MAP[toolName] ?? toolName
-    const result = { ...obj }
-    result['tool_name'] = mapped
-    const rawInput = obj['tool_input']
-    const keyMap = KIMI_INPUT_KEY_MAP[mapped]
-    if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
-      result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
-    }
+    const result = remapToolName(obj, toolName, KIMI_TOOL_NAME_MAP, KIMI_INPUT_KEY_MAP)
     result['_tg_harness'] = harness
     return result
   }
