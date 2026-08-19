@@ -1135,7 +1135,62 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
   recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
-  return { text, code: 0 }
+  // Under a client-side filter the count is only as complete as the FIND_SCAN_LIMIT window the rows
+  // were drawn from, so a scan that filled reports its count as a floor rather than as a total.
+  const symbolTotal = (): TruncationTotal =>
+    anyClientFilter ? { count: filtered.length, exact: rawResults.length < FIND_SCAN_LIMIT } : { count: countSymbols(queryOpts), exact: true }
+  return { text: text + truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit'), code: 0 }
+}
+
+/**
+ * The "you are not seeing all of it" line for a text-mode result set, or an empty string when
+ * nothing was dropped.
+ *
+ * `--json` has always carried an honest `totalCount`; text mode rendered exactly `limit` rows and
+ * stopped, which is indistinguishable from "that is all there is" -- `symbol dup` printed 20
+ * definitions of 40 with nothing on stdout or stderr to say so. Same no-silent-caps rule the
+ * `refs --top` summary and `json-outline`'s `--head` note already follow.
+ *
+ * `total` is a thunk because computing it costs another count query, and it is only worth paying
+ * when the page came back full: a result set shorter than the limit cannot have been truncated.
+ * Appended after `guardText`, so the overflow guard cannot trim off the very line that explains
+ * the trimming.
+ */
+function truncationFooter(shown: number, limit: number, total: () => TruncationTotal, plural: string, flag: string): string {
+  const notice = truncationNotice(shown, limit, total, plural, flag)
+  return notice === null ? '' : `\n\ntoken-goat: ${notice}`
+}
+
+/**
+ * The honest total behind a truncated page. `exact: false` means the count came from a bounded
+ * client-side scan (`--grep`, `--exclude-tests`) that itself filled up, so `count` is a floor and
+ * not a total: saying "of 20000" there would trade one silent cap for a confident wrong number.
+ */
+interface TruncationTotal {
+  count: number
+  exact: boolean
+}
+
+/**
+ * The honest reference total for a page of `refs` output.
+ *
+ * `countRefs` reruns the SQL filters with no LIMIT, which is exact. `--exclude-tests`/`--grep` have
+ * no SQL equivalent, so their total is the post-filter count of the REFS_TOP_SCAN_LIMIT window the
+ * rows came from -- exact only while that window had room to spare, a floor once it filled.
+ */
+function refsTotal(clientFiltered: boolean, filteredTotal: number | undefined, shown: number, countExact: () => number, preScanCount: number): TruncationTotal {
+  if (!clientFiltered) return { count: countExact(), exact: true }
+  return { count: filteredTotal ?? shown, exact: preScanCount < REFS_TOP_SCAN_LIMIT }
+}
+
+/** The sentence {@link truncationFooter} wraps, or null when nothing was dropped. See its doc comment. */
+function truncationNotice(shown: number, limit: number, total: () => TruncationTotal, plural: string, flag: string): string | null {
+  if (shown < limit) return null
+  const { count, exact } = total()
+  if (count <= shown) return null
+  return exact
+    ? `showing ${shown} of ${count} ${plural}; rerun with ${flag} ${count} to see them all`
+    : `showing ${shown} of at least ${count} ${plural}; rerun with ${flag} ${count} and a narrower filter to see more`
 }
 
 // ---- read (symbol body) -----------------------------------------------------
@@ -2093,7 +2148,9 @@ export function runRefs(opts: RefsOptions): number {
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
-    let results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
+    const scanned = queryRefs(queryOpts)
+    const preScanCount = scanned.length
+    let results = applyTypedRefsTier(sym, file, scanned)
     let suppressed = 0
     if (opts.excludeTests === true) {
       const f = applyExcludeTestsFilter(results)
@@ -2152,6 +2209,18 @@ export function runRefs(opts: RefsOptions): number {
       if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`)
       for (const ref of results) lines.push(...renderRefLines(ref, opts.context ?? 0))
     }
+    // Per symbol, not once for the whole call: each name has its own total, and a single footer
+    // under the last block would read as applying to all of them. `--top` renders its own note.
+    if (opts.top === undefined) {
+      const notice = truncationNotice(
+        results.length,
+        opts.limit ?? 100,
+        () => refsTotal(opts.excludeTests === true || matchesGrep !== undefined, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount),
+        'references',
+        '--limit',
+      )
+      if (notice !== null) lines.push(`  token-goat: ${notice}`)
+    }
   }
   const fullSourceBytes = sumFileSizes(refFilePaths)
   if (opts.json === true) {
@@ -2184,7 +2253,9 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
-    let results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
+    const scanned = queryRefs(queryOpts)
+    const preScanCount = scanned.length
+    let results = applyTypedRefsTier(symbol, file, scanned)
     let suppressed = 0
     if (opts.excludeTests === true) {
       const f = applyExcludeTestsFilter(results)
@@ -2234,6 +2305,17 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
       if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`)
       for (const ref of results) lines.push(...renderRefLines(ref, opts.context ?? 0))
     }
+    // Per pair, for the same reason runRefs's loop reports per symbol.
+    if (opts.top === undefined) {
+      const notice = truncationNotice(
+        results.length,
+        opts.limit ?? 100,
+        () => refsTotal(opts.excludeTests === true || matchesGrep !== undefined, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount),
+        'references',
+        '--limit',
+      )
+      if (notice !== null) lines.push(`  token-goat: ${notice}`)
+    }
   }
   const fullSourceBytes = sumFileSizes(refFilePaths)
   if (opts.json === true) {
@@ -2265,7 +2347,11 @@ function runRefsSingle(opts: RefsOptions): number {
   else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
   if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
 
-  let results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
+  const scanned = queryRefs(queryOpts)
+  // How full the query window came back, so a client-side filter drawn from a window that filled
+  // can report its count as a floor rather than as a total. See {@link refsTotal}.
+  const preScanCount = scanned.length
+  let results = applyTypedRefsTier(symName, defFileHint, scanned)
   let suppressed = 0
   if (opts.excludeTests === true) {
     const f = applyExcludeTestsFilter(results)
@@ -2361,9 +2447,15 @@ function runRefsSingle(opts: RefsOptions): number {
       : opts.callers === true
         ? [...(opts.excludeTests === true && suppressed > 0 ? [`${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`] : []), ...renderCallerGroups(results, opts.context ?? 0)]
         : [...(opts.excludeTests === true && suppressed > 0 ? [`${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`] : []), ...results.flatMap((ref) => renderRefLines(ref, opts.context ?? 0, ''))]
+  // `--top` renders its own elision note; the per-reference modes printed exactly `limit` lines and
+  // stopped, so 100 of 150 references read as "these are all of them". Same honest total the --json
+  // branch above computes, and only paid when the page came back full.
+  const refsFooter = opts.top !== undefined ? '' : truncationFooter(results.length, opts.limit ?? 100, () => refsTotal(opts.excludeTests === true || matchesGrep !== undefined, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount), 'references', '--limit')
   const text = lines.join('\n')
-  emitGuarded(text, 'symbol')
-  recordReadStat('symbol_read', fullSourceBytes, text, symName)
+  // Guarded first, footer after: the overflow guard must not be able to trim off the very line
+  // that says how much was left out.
+  emit(guardText(text, 'symbol') + refsFooter)
+  recordReadStat('symbol_read', fullSourceBytes, text + refsFooter, symName)
   return 0
 }
 
@@ -4139,8 +4231,14 @@ export function runFind(opts: FindOptions): number {
     // Ordered by the ranking, not by index order, so the closest name's files come first.
     ? fuzzyNames.flatMap((n) => rawSymbols.filter((s) => s.name === n))
     : symbols
-  const files = [...new Set(matched.map((s) => s.filePath))].slice(0, opts.limit ?? 50)
-  const truncated = rawSymbols.length === FIND_SCAN_LIMIT
+  const allFiles = [...new Set(matched.map((s) => s.filePath))]
+  const files = allFiles.slice(0, opts.limit ?? 50)
+  // Two independent ways this answer can be partial, and until now only the first was reported:
+  // the symbol scan hit FIND_SCAN_LIMIT, or `--limit` cut the deduplicated file list. A search
+  // matching 150 files answered with 50 and `truncated: false`, which told a consumer the list was
+  // complete when a third of it was missing.
+  const limitDropped = allFiles.length - files.length
+  const truncated = rawSymbols.length === FIND_SCAN_LIMIT || limitDropped > 0
 
   if (files.length === 0) {
     emitErr(`No indexed files match '${opts.pattern}'`)
@@ -4166,7 +4264,12 @@ export function runFind(opts: FindOptions): number {
     emit(toDisplayPath(rootDir, f))
   }
 
-  if (truncated) {
+  // Two causes, two messages: naming the scan limit for a list that `--limit` cut would send the
+  // caller looking for a problem in the index instead of raising the flag they set themselves.
+  if (limitDropped > 0) {
+    emitErr(`Showing ${files.length} of ${allFiles.length} matching files; rerun with --limit ${allFiles.length} to see them all`)
+  }
+  if (rawSymbols.length === FIND_SCAN_LIMIT) {
     emitErr(`Results may be incomplete; index scan hit limit of ${FIND_SCAN_LIMIT} symbols`)
   }
 
