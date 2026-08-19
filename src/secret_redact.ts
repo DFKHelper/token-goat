@@ -27,10 +27,19 @@
  * cached tool output. That list is also module-private. This module keeps a
  * separate, narrower set tuned for automatic in-place redaction.
  *
- * All patterns are single-pass, non-backtracking (fixed-width, bounded, or a
- * single unbounded negated-class quantifier with no nesting or overlap) so a
- * redaction pass over arbitrarily large cached blobs stays linear in input
- * size — no ReDoS risk.
+ * All patterns are single-pass and non-backtracking: fixed-width, bounded, or a
+ * single negated-class quantifier whose alternatives are disjoint, so nothing here
+ * has a nested or overlapping quantifier for the engine to explore two ways.
+ *
+ * Every quantifier inside a lookbehind is bounded, which is a stronger requirement
+ * than the rest of the pattern needs and is not decoration. A variable-length
+ * lookbehind is re-evaluated at each start position, so an unbounded run inside one
+ * turns the pass quadratic even though no single match backtracks: the generic
+ * assignment pattern below once held `\s*` around its separator, and the literal
+ * input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at
+ * n=80000 -- four times the work for twice the input, on a path that runs over every
+ * command output before it reaches the model. Bounding the run made the same input
+ * 0.5 ms and 1.9 ms. Keep quantifiers inside a lookbehind bounded.
  */
 
 const SECRET_PATTERNS: Array<[string, RegExp]> = [
@@ -60,8 +69,13 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // Redacts only the token itself, not the "Authorization: Bearer " prefix -- the lookbehind
   // anchors on the header name and scheme so the surrounding request-log line stays readable,
   // matching how AWS_ACCESS_KEY_ID=... above keeps its own prefix intact.
-  ['auth_bearer_token', /(?<=Authorization:\s*Bearer\s)[A-Za-z0-9\-._~+/]{10,}=*/gi],
-  ['auth_basic_token', /(?<=Authorization:\s*Basic\s)[A-Za-z0-9+/]{6,}=*/gi],
+  // The optional quotes on either side of the colon are what let this see a header carried in
+  // JSON rather than in raw wire format. Without them the lookbehind demanded the colon sit
+  // directly against the header name and the scheme directly against the space, so a body like
+  // {"Authorization": "Bearer <token>"} -- the shape any logged fetch or MCP result arrives in
+  // -- matched nothing and the token was cached verbatim.
+  ['auth_bearer_token', /(?<=Authorization["']?[ \t]{0,8}:[ \t]{0,8}["']?[ \t]{0,8}Bearer[ \t])[A-Za-z0-9\-._~+/]{10,}=*/gi],
+  ['auth_basic_token', /(?<=Authorization["']?[ \t]{0,8}:[ \t]{0,8}["']?[ \t]{0,8}Basic[ \t])[A-Za-z0-9+/]{6,}=*/gi],
   // JWTs have no distinctive prefix of their own, but the base64url encoding of the smallest
   // realistic header ('{"alg":' or similar) always starts with "eyJ", so that's the practical
   // anchor here -- each of the three dot-separated segments requires a minimum length to avoid
@@ -80,6 +94,13 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // are what make the short, generic 'sig' name safe to key on: a prose or code mention of "sig"
   // never sits directly after a query separator followed by that much opaque token.
   ['presigned_signature', /(?<=[?&](?:X-Amz-Signature|X-Goog-Signature|sig)=)[A-Za-z0-9%+/=_-]{16,}/gi],
+  // A password inside a connection url. `postgres://user:hunter2@db.internal` carries the
+  // credential in the authority section, where there is no `key=value` separator for the
+  // generic pattern below to anchor on, so a DATABASE_URL echoed by a failing migration or a
+  // psql error went through untouched. The anchors are what keep this narrow: a scheme's `://`,
+  // a userinfo segment, the colon, and a following `@`. `http://host:8080/path` has no `@` and
+  // is left alone; so is any url without credentials.
+  ['url_credentials', /(?<=:\/\/[^\s:@/]{1,64}:)[^\s:@/]{1,256}(?=@)/g],
   // Generic key=value assignments in .env-file and connection-string/query-string shape. The
   // lookbehind again redacts only the value, and the value's character class deliberately
   // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- that exclusion is
@@ -95,13 +116,19 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // this cannot backtrack catastrophically -- there is no nested or overlapping quantifier for
   // the engine to explore multiple ways of matching, so removing the upper bound does not
   // introduce a ReDoS risk.
+  // Quotes are permitted around the separator, but never inside the value class. A quoted value
+  // is the ordinary way secrets are written -- .env files, JSON, YAML, TOML all quote by default
+  // -- and the lookbehind used to stop dead at the opening quote, so `API_KEY="..."` passed
+  // through in full while the bare `API_KEY=...` was caught. The closing quote of the key name
+  // blocked it from the other side too, which is what kept every JSON body unredacted. Keeping
+  // quotes out of the value class is still what stops the match running past the closing quote.
   // The keyword may be a prefix of a longer key name rather than the whole of it, so the
   // trailing identifier class below is load-bearing: without it the lookbehind required the
   // keyword to sit immediately before the separator, and AWS_SECRET_ACCESS_KEY=,
   // SECRET_KEY=, and DB_PASSWORD_HASH= all passed through in full. That class matches
   // identifier characters only, so prose that merely mentions a keyword still never reaches
   // a separator and stays unredacted. api[_-]?key covers the apikey and api-key spellings too.
-  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api[_-]?key)[a-z0-9_-]*\s*[:=]\s*)[^\s&;#'"[\]:]{4,}/gi],
+  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)[a-z0-9_-]{0,64}["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:\\[^\n]|[^\s\\&;#'"[\],{}:]){4,}/gi],
 ]
 
 export interface RedactResult {
