@@ -11,6 +11,7 @@ import * as path from 'node:path'
 
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
+import { fileIsAbsent } from './fingerprint.js'
 
 export interface PurgeResult {
   /** Roots that were deleted, with the bytes each held. */
@@ -60,7 +61,12 @@ export function purgeRoots(): string[] {
 export function purgeDataDirectories(): PurgeResult {
   const result: PurgeResult = { removed: [], absent: [], failed: [] }
   for (const root of purgeRoots()) {
-    if (!fs.existsSync(root)) {
+    // fileIsAbsent, not fs.existsSync: existsSync answers false for a directory it has no
+    // permission to look at, and reporting "already gone" for a root that is still there, still
+    // holding the index, is the one answer this command must never give. Anything other than a
+    // plain ENOENT now falls through to the delete, so a permission problem is reported as a
+    // failure with the reason attached rather than as a success.
+    if (fileIsAbsent(root)) {
       result.absent.push(root)
       continue
     }

@@ -17,7 +17,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
-import { fingerprintFile } from './fingerprint.js'
+import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
@@ -665,8 +665,8 @@ export function processDirtyBatch(
     writeDrainHeartbeat(dir)
     // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from reindexing entirely -- skip before the existence/sha checks so a blocked path is never touched, not even pruned from the index if it happens to have been deleted underneath it.
     if (isUnderBlockedRoot(p, blockedRoots)) continue
-    // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever.
-    if (!fs.existsSync(p)) {
+    // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever. fileIsAbsent, not fs.existsSync: existsSync answers false for a locked or permission-denied file exactly as it does for a missing one, so a file held open by an AV scanner or sitting behind a deny ACE would have had its symbols, references, sections and embedding chunks deleted while it was still on disk -- silently, and with no way back until something edited it again. That is the same class of transient failure the fingerprint branch immediately below already logs and requeues, so an unreadable file now falls through to it instead of being pruned.
+    if (fileIsAbsent(p)) {
       remove(p)
       continue
     }

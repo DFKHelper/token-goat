@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file the indexer could not read was deleted from the index as though it were gone.** The worker's drain loop decided a queued file had been deleted with `fs.existsSync`, and on a false it dropped that file's symbols, references, sections and embedding chunks. `fs.existsSync` is a stat wrapped in a bare catch: it answers false for a permission or I/O error exactly as it does for a missing file. So a file held open by an antivirus scanner, sitting behind a deny rule, or on a share that blinked, was erased from the index while still sitting on disk, and `symbol Foo` found nothing afterwards until something edited the file again. The branch directly below it already treated this same failure as transient, logging it and putting the path back on the queue, so an unreadable file now falls through to that instead. Measured on Windows against a directory with a deny rule: the old build erased the symbol, the new one logs "transient read failure -- requeued for retry" and leaves the rows alone. The check that tells "gone" from "cannot tell" is now one function, [fileIsAbsent](src/fingerprint.ts), shared with the deleted-file marker added alongside it. Held by [tests/guards/unreadable_file_is_not_pruned.test.ts](tests/guards/unreadable_file_is_not_pruned.test.ts), which takes the permission away for real rather than stubbing it, and checks the database after a drain through the worker's own default path rather than through injected callbacks.
+- **`uninstall --purge` called a directory it could not open "already gone".** Same check, and the wrong answer here is a report that data was never there when it is still on disk. A root that cannot be reached is now attempted and reported as a failure with the reason attached. See [src/purge.ts](src/purge.ts), held by [tests/purge.test.ts](tests/purge.test.ts).
+
 ## [2.6.33] - 2026-08-19
 
 ### Added
