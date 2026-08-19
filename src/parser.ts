@@ -22,6 +22,7 @@ import { globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
 import type { IndexingConfig } from './config.js'
+import { redactIfDotenv } from './dotenv_redact.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
 import { isEmbeddableDocument, extractEmbeddableDocumentText } from './doc_embed_extract.js'
@@ -2769,6 +2770,11 @@ export async function indexFileEmbeddings(
   } catch {
     return
   }
+  // A dotenv file's values are secret by the file's nature, and this is the one indexing path that
+  // persists raw file text: the symbol table already stores env keys with empty bodies, but chunks
+  // held the whole file, so `semantic` served the password. Redact before chunking, not at search
+  // time, so nothing sensitive is written to disk in the first place. See dotenv_redact.ts.
+  content = redactIfDotenv(filePath, content)
   if (detectLanguage(filePath) === 'ipynb') {
     // Embedding boundaries below are line ranges taken from the symbols table, which indexFileSync populated from the SAME virtual document -- must transform content identically here or chunk text would be sliced from the wrong (raw JSON) place. A non-Python-kernel/unparseable notebook is a deliberate terminal never-embed, same shape as the profile-meta.xml/oversized-metadata skips below.
     const virtual = ipynbToVirtualSource(content)

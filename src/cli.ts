@@ -123,6 +123,7 @@ import {
   rankSimilarNames,
   filterSimilarHeadings,
 } from './read_commands.js'
+import { redactIfDotenv } from './dotenv_redact.js'
 import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
 import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
@@ -1245,7 +1246,10 @@ function cmdBashOutput(
       if (st.isFIFO() || st.isSocket()) {
         throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
       }
-      content = fs.readFileSync(opts.file, 'utf-8')
+      // `bash-output --file` is a general "show me this file's text" recall path, so a caller can
+      // point it straight at a .env. Its values are secret by the file's nature; redact them here
+      // the same way every other read path does. See dotenv_redact.ts.
+      content = redactIfDotenv(opts.file, fs.readFileSync(opts.file, 'utf-8'))
     } catch (e) {
       if (e instanceof CliError) throw e
       throw new CliError(`cannot read file: ${opts.file}`)

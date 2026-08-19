@@ -10,6 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
+import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { indexFileSync } from './parser.js'
@@ -273,6 +274,16 @@ function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
   indexFileSync(resolvedPath, dbPath, bytes)
 }
 
+/**
+ * Read a file's text for display.
+ *
+ * Every read command that prints file content comes through here, which is why the dotenv
+ * redaction sits at this seam rather than in each command: `read`, `symbol` and the rest print a
+ * slice of a live disk read, and the symbol table they slice against stores env keys with empty
+ * bodies precisely because the values are not the model's business. A future read command gets
+ * the same protection without having to remember it. Nothing here writes back to disk, so
+ * redacting the returned text cannot corrupt a file. See dotenv_redact.ts.
+ */
 function readFileText(p: string): string | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
@@ -280,8 +291,8 @@ function readFileText(p: string): string | null {
       verifyStillAbsent(p)
       return null
     }
-    if (pinned !== undefined) return readPinnedBytes(p, pinned).toString('utf-8')
-    return fs.readFileSync(p, 'utf-8')
+    if (pinned !== undefined) return redactIfDotenv(p, readPinnedBytes(p, pinned).toString('utf-8'))
+    return redactIfDotenv(p, fs.readFileSync(p, 'utf-8'))
   } catch (err) {
     if (err instanceof ConfinementIdentityError) throw err
     return null

@@ -596,7 +596,10 @@ describe('readSection', () => {
     expect(listSections(file)).toEqual(['FOO', 'TOKEN', 'PLAIN'])
     const foo = readSection(file, 'FOO')
     expect(foo?.heading).toBe('FOO')
-    expect(foo?.content).toBe('export FOO=bar')
+    // The key is what this test is about: an `export `-prefixed line must still be found and
+    // named. Its value is no longer printed, because a dotenv value is secret by the file's nature
+    // and is redacted at every read seam -- see src/dotenv_redact.ts and the guard test beside it.
+    expect(foo?.content).toBe('export FOO=[REDACTED:dotenv_value]')
   })
 
   it('does not treat a `[section]`-looking line inside a triple-quoted TOML string as a phantom table header (regression: the live table header finder had no multi-line-string tracking, unlike the toml indexer, so text quoted inside a `"""..."""` description was misread as a real table and truncated the enclosing one)', () => {

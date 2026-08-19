@@ -6,15 +6,26 @@
  * opt into a bounded directory walk instead — but that walk has none of git's
  * exclusions, so this module re-adds the safety that matters: it refuses roots
  * broad enough to scan the whole machine, caps the file count, and drops files
- * git would have ignored (`.env*` secrets, generated `.d.ts`). It deliberately
- * reuses {@link walkProject} (the same bounded walker `map` uses) rather than a
- * second tree-walk implementation.
+ * git would usually have ignored (`.env*` secrets, generated `.d.ts`). It
+ * deliberately reuses {@link walkProject} (the same bounded walker `map` uses)
+ * rather than a second tree-walk implementation.
+ *
+ * "Usually" is load-bearing, and used not to be. git ignores only what
+ * `.gitignore` says to ignore, so a tracked `.env` is not hypothetical:
+ * `.env.example` and friends are committed on purpose and a real one gets
+ * committed by accident all the time. This module's `.env*` rule was the only
+ * protection anywhere, so on the git path -- the default -- those values were
+ * indexed and served. Secrecy of dotenv values is now enforced where it belongs,
+ * for both paths at once, by redacting the values while keeping the keys: see
+ * `dotenv_redact.ts`. The exclusion below stays as the belt to that braces,
+ * since a walk has no reason to spend budget on these files either way.
  */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { isDotenvPath } from './dotenv_redact.js'
 import { MAX_FILES_SCANNED, walkProject } from './baseline.js'
 import { foldPath, normalizePath } from './util.js'
 
@@ -25,8 +36,12 @@ import { foldPath, normalizePath } from './util.js'
  * (generated type-declaration noise).
  */
 function isWalkExcluded(file: string): boolean {
+  // Routed through the shared predicate rather than a second filename test. The two had already
+  // drifted: `startsWith('.env.')` matched a file named exactly `.env.`, which `detectLanguage`
+  // does not classify as a dotenv file, so that one name was dropped from the walk while every
+  // other path treated it as ordinary text.
+  if (isDotenvPath(file)) return true
   const base = path.basename(file).toLowerCase()
-  if (base === '.env' || base.startsWith('.env.')) return true
   if (base.endsWith('.d.ts')) return true
   return false
 }

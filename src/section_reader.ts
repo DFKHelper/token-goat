@@ -14,6 +14,7 @@
 
 import { readFileSync } from 'node:fs'
 
+import { redactIfDotenv } from './dotenv_redact.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
@@ -547,7 +548,11 @@ function readTextForSections(filePath: string, readFn?: (p: string) => string | 
   if (text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1)
   }
-  return text
+  // A dotenv section is its key and its value, and the value is the secret. Applied here rather
+  // than only in the readFn branch so the plain CLI path (`token-goat section ".env::API_KEY"`,
+  // which passes no readFn) is covered too. Redacting after the BOM strip keeps both transforms
+  // in one place and line-for-line. See dotenv_redact.ts.
+  return redactIfDotenv(filePath, text)
 }
 
 export function readSection(

@@ -4,6 +4,7 @@ import path from 'node:path'
 
 import { dataDir } from './constants.js'
 import { normalizePath } from './paths.js'
+import { redactIfDotenv } from './dotenv_redact.js'
 import { redactSecrets } from './secret_redact.js'
 import { embedTexts, isAvailable } from './embeddings.js'
 import { ensureDirSync } from './util.js'
@@ -71,7 +72,11 @@ export function recordEvidence(input: {
 }): EvidenceEntry | null {
   if (Buffer.byteLength(input.text, 'utf8') > MAX_TEXT_BYTES) return null
   const contentHash = hash(input.text)
-  const text = redactSecrets(input.text).text
+  // redactSecrets is keyword-driven, so on a dotenv file it catches `API_KEY=...` and misses
+  // `DEBUG=true` or any value whose key name does not look like a secret -- a partial redaction,
+  // which reads as handled and is not. Apply the file-type rule first: in a dotenv file every
+  // value is secret regardless of its key. See dotenv_redact.ts.
+  const text = redactSecrets(redactIfDotenv(input.source, input.text)).text
   const projectRoot = normalizePath(input.projectRoot)
   const source = input.representation === 'file' ? normalizePath(input.source) : input.source
   const id = hash(`${projectRoot}\0${source}\0${input.representation}\0${contentHash}`).slice(0, 24)
