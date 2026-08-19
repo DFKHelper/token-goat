@@ -40,6 +40,18 @@ updates:
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
+      # better-sqlite3 13 dropped the `install` script that earlier majors used
+      # (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to
+      # skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on
+      # Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on
+      # Windows needs a full Visual Studio C++ toolchain. That failed CI on windows-latest with
+      # Node 22, which is also the plain `npm install -g token-goat` path for Windows users -- the
+      # platform this tool exists for. 12.x still carries the prebuild-install script and installs
+      # from a binary everywhere, so we stay on it. Minor and patch updates on 12.x still come
+      # through.
+      - dependency-name: better-sqlite3
+        update-types:
+          - version-update:semver-major
 
   # The extension carries its own manifest and lockfile, so it needs its own entry: an update to
   # the root tree never reaches it.
@@ -62,5 +74,17 @@ updates:
     # not promised to hold still. Minor and patch updates on 6.x still come through.
     ignore:
       - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+      # better-sqlite3 13 dropped the `install` script that earlier majors used
+      # (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to
+      # skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on
+      # Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on
+      # Windows needs a full Visual Studio C++ toolchain. That failed CI on windows-latest with
+      # Node 22, which is also the plain `npm install -g token-goat` path for Windows users -- the
+      # platform this tool exists for. 12.x still carries the prebuild-install script and installs
+      # from a binary everywhere, so we stay on it. Minor and patch updates on 12.x still come
+      # through.
+      - dependency-name: better-sqlite3
         update-types:
           - version-update:semver-major

@@ -57,7 +57,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^12.11.1",
     "commander": "^15.0.0",
     "csv-parse": "^7.0.1",
     "js-yaml": "^5.2.1",
@@ -100,26 +100,6 @@
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
     "typescript": "^6.0.3"
-  },
-  "allowScripts": {
-    "esbuild@0.24.2": true,
-    "esbuild@0.28.1": true,
-    "sharp@0.32.6": true,
-    "sharp@0.33.5": true,
-    "better-sqlite3@11.10.0": true,
-    "lefthook@2.1.10": true,
-    "protobufjs@6.11.6": true,
-    "tesseract.js@6.0.1": true,
-    "tree-sitter@0.22.4": true,
-    "tree-sitter-c@0.23.6": true,
-    "tree-sitter-cpp@0.23.4": true,
-    "tree-sitter-go@0.23.4": true,
-    "tree-sitter-java@0.23.5": true,
-    "tree-sitter-javascript@0.23.1": true,
-    "tree-sitter-python@0.23.6": true,
-    "tree-sitter-ruby@0.23.1": true,
-    "tree-sitter-rust@0.23.3": true,
-    "tree-sitter-typescript@0.23.2": true
   },
   "overrides": {
     "protobufjs": "^8.7.2",
