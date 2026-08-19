@@ -731,6 +731,16 @@ describe('read_commands', () => {
         expect(mockQueryRefCounts).not.toHaveBeenCalled()
       })
 
+      it('a relative filePath is never labelled deleted, because it would be resolved against the wrong directory', () => {
+        // `symbol NAME` searches every indexed project. Resolving a relative row against the
+        // current directory would report another project's live file as gone, so the deleted tag
+        // is only claimed for absolute paths. This path does not exist relative to the repo root.
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/nowhere-at-all.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        expect(runSymbol({ name: 'myFn' }).text).not.toContain('DELETED')
+      })
+
       it('JSON mode: refCount and hasDoc are present with --stats, absent without it', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
