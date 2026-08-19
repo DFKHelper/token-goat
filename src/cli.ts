@@ -52,6 +52,7 @@ import type { HookScope } from './install.js'
 import { installCodex, isCodexInstalled, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, isGeminiInstalled, uninstallGemini } from './bridges/gemini_install.js'
 import { installQwen, isQwenInstalled, uninstallQwen } from './bridges/qwen_install.js'
+import { installKimi, isKimiInstalled, uninstallKimi } from './bridges/kimi_install.js'
 import { installPi, isPiInstalled, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, isOpencodeInstalled, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridges/openclaw_install.js'
@@ -544,6 +545,7 @@ async function cmdInstall(opts: {
   codex?: boolean
   gemini?: boolean
   qwen?: boolean
+  kimi?: boolean
   pi?: boolean
   opencode?: boolean
   hermes?: boolean
@@ -609,6 +611,16 @@ async function cmdInstall(opts: {
       out(`Qwen Code integration already installed → ${qwenResult.settingsPath}`)
     } else {
       out(`Installed token-goat Qwen Code integration → ${qwenResult.settingsPath}`)
+    }
+  }
+
+  // --kimi is additive, exactly like --qwen above.
+  if (opts.kimi === true) {
+    const kimiResult = installKimi()
+    if (kimiResult.alreadyInstalled) {
+      out(`Kimi Code integration already installed → ${kimiResult.configPath}`)
+    } else {
+      out(`Installed token-goat Kimi Code integration → ${kimiResult.configPath}, ${kimiResult.hookScriptPath}, ${kimiResult.agentsPath}, ${kimiResult.skillPath}`)
     }
   }
 
@@ -734,6 +746,7 @@ function cmdUninstall(opts: {
   codex?: boolean
   gemini?: boolean
   qwen?: boolean
+  kimi?: boolean
   pi?: boolean
   opencode?: boolean
   hermes?: boolean
@@ -772,6 +785,7 @@ function cmdUninstall(opts: {
     { flag: opts.codex === true, run: uninstallCodex, label: 'Codex CLI integration' },
     { flag: opts.gemini === true, run: uninstallGemini, label: 'Gemini CLI integration' },
     { flag: opts.qwen === true, run: uninstallQwen, label: 'Qwen Code integration' },
+    { flag: opts.kimi === true, run: uninstallKimi, label: 'Kimi Code integration' },
     { flag: opts.pi === true, run: () => (opts.local === true ? uninstallPi({ local: true }) : uninstallPi()), label: 'pi extension' },
     { flag: opts.openclaw === true, run: uninstallOpenclaw, label: 'OpenClaw integration' },
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
@@ -836,6 +850,7 @@ export function leftoverIntegrations(opts: {
   codex?: boolean
   gemini?: boolean
   qwen?: boolean
+  kimi?: boolean
   pi?: boolean
   openclaw?: boolean
   copilot?: boolean
@@ -846,6 +861,7 @@ export function leftoverIntegrations(opts: {
     { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
     { skipped: opts.gemini !== true, present: isGeminiInstalled, flag: '--gemini', label: 'Gemini CLI integration' },
     { skipped: opts.qwen !== true, present: isQwenInstalled, flag: '--qwen', label: 'Qwen Code integration' },
+    { skipped: opts.kimi !== true, present: isKimiInstalled, flag: '--kimi', label: 'Kimi Code integration' },
     { skipped: opts.pi !== true, present: () => isPiInstalled() || isPiInstalled({ local: true }), flag: '--pi', label: 'pi extension' },
     { skipped: opts.openclaw !== true, present: isOpenclawInstalled, flag: '--openclaw', label: 'OpenClaw integration' },
     {
@@ -3397,6 +3413,7 @@ export function buildProgram(): Command {
     .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
     .option('--qwen', 'also patch Qwen Code (~/.qwen/settings.json)')
+    .option('--kimi', 'also register a Kimi Code hook config, shim, instructions block and skill ($KIMI_CODE_HOME or ~/.kimi-code: config.toml, hooks/token-goat-shim.js, AGENTS.md, skills/token-goat/SKILL.md)')
     .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
     .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
@@ -3414,6 +3431,7 @@ export function buildProgram(): Command {
     .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
     .option('--qwen', 'also strip the Qwen Code integration (~/.qwen/settings.json)')
+    .option('--kimi', 'also strip the Kimi Code integration (config.toml hooks, hooks/token-goat-shim.js, the AGENTS.md block and skills/token-goat under $KIMI_CODE_HOME or ~/.kimi-code)')
     .option('--pi', 'also remove the pi (pi-coding-agent) extension')
     .option('--opencode', 'also remove the opencode plugin')
     .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')

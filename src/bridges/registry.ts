@@ -34,6 +34,7 @@ export const KNOWN_HARNESS_NAMES = new Set<string>([
   'copilot_cli',
   'grok',
   'qwen',
+  'kimi',
   'generic',
 ])
 
@@ -73,6 +74,13 @@ export const KNOWN_HARNESS_NAMES = new Set<string>([
  * `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking `token-goat
  * hook`, the same workaround `pi` uses for the same reason (see PI_EXTENSION_SCRIPT
  * in src/bridges/pi.ts).
+ *
+ * `kimi` (Kimi Code CLI) has no branch here either, for the same reason: every
+ * environment variable Kimi documents (`KIMI_CODE_HOME`,
+ * `KIMI_DISABLE_TELEMETRY`, the `KIMI_MODEL_*` family, and the provider
+ * credential names) is a user-set input rather than a signal the CLI exports
+ * into each hook subprocess. Its shim (KIMI_HOOK_SCRIPT in src/bridges/kimi.ts)
+ * sets `TOKEN_GOAT_HARNESS_OVERRIDE=kimi` itself.
  */
 export function detectHarness(): HarnessName {
   const env = process.env

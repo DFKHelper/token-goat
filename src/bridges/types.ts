@@ -25,6 +25,7 @@ export type HarnessName =
   | 'copilot_cli'
   | 'grok'
   | 'qwen'
+  | 'kimi'
   | 'generic'
 
 /** Static description of how one harness's hooks are wired. */
