@@ -9,6 +9,8 @@ permalink: /
 
 ![Token-Goat](assets/logo.png)
 
+***Give the model what it needs, not everything you have.***
+
 **85%** smaller reads · **97.4%** image compression · **180+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
 
 **Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**

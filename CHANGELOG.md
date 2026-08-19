@@ -25,6 +25,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **The six Word and PowerPoint readers passed Node and fflate errors straight through to the user.** Pointing `docx-outline` at a file that was not a zip printed `invalid zip data`, a missing file printed `ENOENT: no such file or directory, stat` followed by the full absolute path the command had resolved on its own, and a directory printed `EISDIR`. Each now says what happened in the caller's own terms: `File not found: report.docx`, or `not a valid .docx file: report.docx`, keeping the original error attached underneath for debugging. The `.xlsx` reader already answered this way, so the two families now agree. See [src/ooxml_extract.ts](src/ooxml_extract.ts), held by [tests/ooxml_extract.test.ts](tests/ooxml_extract.test.ts).
 - **The format named in those messages was read off the filename, not off the command.** `docx-outline report.txt` answered `not a valid .txt file`, naming a format nobody had asked about and that the reader could not have read either way. The command knows which format it wants, so it now says so: the same call answers `not a valid .docx file`.
 - **Any failure to open the file was reported as a missing file.** A permission error told the reader to go looking for a file that was sitting exactly where they left it. Only a genuinely absent file is now called missing; anything else names the error it actually hit.
+
+### Documentation
+
+- **The README says what Token-Goat is for before it says how much it saves.** The page opened on a row of numbers. It now opens with the idea behind all of them: give the model what it needs, not everything you have. See [README.md](README.md).
+
 ## [2.6.32] - 2026-08-18
 
 ### Security
