@@ -17,6 +17,7 @@ import Database from 'better-sqlite3'
 import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 
 import { dataDir, SYMBOL_BODY_CHAR_CAP } from './constants.js'
+import { isDotenvPath } from './dotenv_redact.js'
 import { safeJoin } from './paths.js'
 import { ensureDirSync, foldCase, foldPath } from './util.js'
 import { registerReset } from './reset.js'
@@ -293,7 +294,7 @@ END;
 `
 
 // Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above). v6 -> v7: added skill_version_snapshots (skill_version_drift.ts's one-shot "token-goat was upgraded since you loaded this skill" nudge). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v6 database, so no MIGRATIONS[6] step is needed (same reasoning as v5 -> v6 above). v7 -> v8: added notes (token-goat note-add/note-get/note-list -- file/symbol-attached architecture notes with a staleness fingerprint, see notes.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v7 database, so no MIGRATIONS[7] step is needed (same reasoning as v6 -> v7 above). v8 -> v9: added symbols.parent, separating the "parent container name" the regex adapters used to overload into symbols.docstring from the symbol's real doc comment (see precedingDocComment in parser.ts and makeLineSymbol/makeSpanSymbol/makeSymbolEmitter in languages/common.ts). A pre-existing v8 database's `symbols` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive like v3 -> v8 above. v9 -> v10: added hint_emissions.bytes_emitted, the per-emission spend (byte length of the hint text actually injected into context) recorded alongside the pre-existing bytes-saved figures already tracked in the `stats` table, so `token-goat hint-stats` can answer "are hints net-positive" instead of only measuring their benefit (see applyHintTracking/logHintEmission in hint_stats.ts). Left nullable with no default rather than defaulted to 0, so a pre-existing v9 database's rows -- which predate spend tracking entirely -- read as genuinely unknown spend, not a fake measured zero. A pre-existing v9 database's `hint_emissions` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive like v3 -> v8 above.
-export const SCHEMA_VERSION = 10 as const
+export const SCHEMA_VERSION = 11 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 
@@ -303,6 +304,45 @@ function alterTableIdempotent(conn: BetterSqlite3Database, sql: string): void {
     conn.exec(sql)
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
+}
+
+/**
+ * Delete every chunk (and matching vector) belonging to a dotenv file, and clear those files'
+ * `embed_sha` so they are re-embedded through the redacting path.
+ *
+ * Paths are filtered in JS with the same {@link isDotenvPath} predicate the redaction uses, rather
+ * than with a `LIKE '%.env%'` pattern, so this covers exactly the file set the fix covers and
+ * cannot drift from it. `chunk_vectors` is the optional sqlite-vec virtual table: on a build
+ * without the native extension the statement throws at prepare time, which is not a reason to fail
+ * the migration -- the chunk rows carrying the secret text are deleted either way, and a vector
+ * with no chunk row is unreadable (searchSemantic joins them by rowid).
+ */
+function purgeDotenvEmbeddings(conn: BetterSqlite3Database): void {
+  let paths: string[]
+  try {
+    paths = (conn.prepare('SELECT DISTINCT file_path FROM chunks').all() as { file_path: string }[])
+      .map((r) => r.file_path)
+      .filter(isDotenvPath)
+  } catch {
+    // No `chunks` table yet (a database created before embeddings existed): nothing to purge.
+    return
+  }
+  if (paths.length === 0) return
+
+  for (const p of paths) {
+    try {
+      conn.prepare('DELETE FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)').run(p)
+    } catch {
+      // sqlite-vec not loaded on this build; the chunk rows below are still removed.
+    }
+    conn.prepare('DELETE FROM chunks WHERE file_path = ?').run(p)
+    try {
+      conn.prepare('UPDATE files SET embed_sha = NULL WHERE path = ?').run(p)
+    } catch {
+      // Older shape without the column; the v1 -> v2 step adds it, and a file with no embed_sha is
+      // never treated as fresh anyway.
+    }
   }
 }
 
@@ -316,6 +356,14 @@ const MIGRATIONS: Record<number, Migration> = {
   8: (conn) => alterTableIdempotent(conn, "ALTER TABLE symbols ADD COLUMN parent TEXT NOT NULL DEFAULT ''"),
   // v9 -> v10: adds hint_emissions.bytes_emitted (see SCHEMA_VERSION comment above for why). A pre-existing v9 database's `hint_emissions` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, same pattern as v1 -> v2 / v2 -> v3 / v8 -> v9 above.
   9: (conn) => alterTableIdempotent(conn, 'ALTER TABLE hint_emissions ADD COLUMN bytes_emitted INTEGER'),
+  // v10 -> v11: purge chunks (and their vectors) for dotenv files. Until this version, a tracked
+  // `.env` was chunked and embedded verbatim on the git path, so `semantic` returned its values --
+  // see dotenv_redact.ts. Redacting from now on is not enough on its own: the embed-freshness gate
+  // (isEmbedFresh in parser.ts) skips a file whose bytes have not changed, so an already-indexed
+  // .env would have kept serving its pre-fix chunks indefinitely. Deleting the rows here both
+  // removes the stored secrets and, by clearing embed_sha, makes the next drain re-embed the file
+  // through the redacting path.
+  10: purgeDotenvEmbeddings,
 }
 
 // Walks a database from its stamped version up to (but not including) `toVersion`, applying each registered migration step in order. Does not itself touch PRAGMA user_version -- the caller stamps that once every step has run.
