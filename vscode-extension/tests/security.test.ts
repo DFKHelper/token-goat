@@ -7,7 +7,9 @@ import {
   parseShimScriptPath,
   resetEntrypointCacheForTests,
   resetGitExecutableCacheForTests,
+  resetNodeExecutableCacheForTests,
   resolveGitExecutable,
+  resolveNodeExecutable,
   resolveTokenGoatEntrypoint,
   runGitDiff,
   runTokenGoat,
@@ -116,6 +118,7 @@ async function setUpFakeTokenGoatOnPath(): Promise<string> {
 afterEach(async () => {
   restorePath()
   resetEntrypointCacheForTests()
+  resetNodeExecutableCacheForTests()
 })
 
 describe('resolveTokenGoatEntrypoint (shipping default, no injected seam)', () => {
@@ -180,7 +183,7 @@ describe('runTokenGoat (post-fix)', () => {
     // quoting step: array argv is passed straight to execve/CreateProcess, never through a shell that
     // would parse metacharacters.
     expect(capturedArgs).toContain(spec)
-    expect(capturedFile).toBe(process.execPath)
+    expect(capturedFile).toBe(await resolveNodeExecutable())
     // The command never resembles a single joined string containing the hostile payload.
     expect(capturedArgs?.join(' ')).not.toContain('token-goat.cmd')
   })

@@ -41,6 +41,12 @@
     ],
     "commands": [
       {
+        "command": "token-goat.showStats",
+        "title": "Show Token Savings",
+        "category": "token-goat",
+        "icon": "$(graph)"
+      },
+      {
         "command": "token-goat.sendSelection",
         "title": "Send Selection to Chat (Compressed)",
         "category": "token-goat",

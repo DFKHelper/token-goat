@@ -40,7 +40,7 @@ export function parseStatsJson(raw: string): StatsJson | null {
 export function formatSavingsBar(stats: StatsJson | null): SavingsBarContent {
   if (!stats) {
     return {
-      text: '$(gist-secret) token-goat',
+      text: '🐐 token-goat',
       tooltip: 'token-goat is ready. Run `token-goat stats` in a terminal to see savings once the ledger has events.',
     }
   }
@@ -48,20 +48,20 @@ export function formatSavingsBar(stats: StatsJson | null): SavingsBarContent {
   const days = stats.window_days
   if (tokens === 0) {
     return {
-      text: '$(gist-secret) token-goat: 0 tokens saved',
+      text: '🐐 token-goat: 0 tokens saved',
       tooltip: `No net token savings recorded in the last ${days} day(s) yet.`,
     }
   }
   if (tokens < 0) {
     const magnitude = Math.abs(tokens).toLocaleString()
     return {
-      text: `$(gist-secret) token-goat: -${magnitude} tokens (net loss, ${days}d)`,
+      text: `🐐 token-goat: -${magnitude} tokens (net loss, ${days}d)`,
       tooltip: `token-goat cost more tokens than it saved over the last ${days} day(s): a net loss of ${magnitude} tokens, from the local ledger (\`token-goat stats\`).`,
     }
   }
   const magnitude = tokens.toLocaleString()
   return {
-    text: `$(gist-secret) token-goat: ${magnitude} tokens saved (${days}d)`,
+    text: `🐐 token-goat: ${magnitude} tokens saved (${days}d)`,
     tooltip: `${magnitude} tokens saved over the last ${days} day(s), across all sources (reads, hints, bash, images, compression), from the local ledger (\`token-goat stats\`).`,
   }
 }

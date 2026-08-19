@@ -125,7 +125,11 @@ function mkIsolated(prefix: string): string {
 
 afterEach(() => {
   for (const d of tempDirs.splice(0)) {
-    fs.rmSync(d, { recursive: true, force: true })
+    try {
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    } catch {
+      // Best-effort cleanup on Windows if daemon process still has handles
+    }
   }
 })
 
