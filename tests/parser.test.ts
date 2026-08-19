@@ -549,6 +549,95 @@ describe('parseFile', () => {
     // Abstract class method signature (abstract_method_signature) -- dropped pre-fix.
     expect(names).toContain('run')
   })
+  // Why didn't a test catch this: the test above asserts only the positive direction -- that an
+  // interface's members reach the index -- and its fixture contains no inline type literal at all,
+  // so the same kind-map entry over-firing on every anonymous object type had nothing to show up
+  // in. tree-sitter uses property_signature/method_signature for both, and 1438 phantom symbols in
+  // src/ were the result. This asserts the negative direction on the shapes that produce one.
+  it('does not index members of an anonymous type literal (return/parameter/cast/variable annotations use the same property_signature node as an interface body, so the kind-map entry swept them in as top-level vars that no declaration backs)', async () => {
+    const file = write(
+      'anon.ts',
+      [
+        '/** Doc for pair. */',
+        'export function pair(x: string): { alpha: string; beta: number } {',
+        '  return { alpha: x, beta: 1 }',
+        '}',
+        'export function param(o: { pIn: string }): void { void o }',
+        'export function cast(v: unknown): string[] {',
+        "  return (v as { gamma: string }[]).map((r) => r.gamma)",
+        '}',
+        "const typed: { rho: string } = { rho: '' }",
+        'export type Alias = { kept: string; keptFn(): void }',
+        'type Nested = { outer: { inner: string } }',
+        'export interface Iface { ifaceProp: string }',
+        'export const use = [typed, pair, param, cast]',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.map((s) => s.name)
+
+    // Members of a named type are still definitions and stay indexed.
+    expect(names).toContain('ifaceProp')
+    expect(names).toContain('kept')
+    expect(names).toContain('keptFn')
+    // The declarations themselves are unaffected.
+    expect(names).toContain('pair')
+    expect(names).toContain('Alias')
+    expect(names).toContain('Iface')
+
+    // Anonymous literals: a return annotation, a parameter, a cast, and a variable's type.
+    for (const phantom of ['alpha', 'beta', 'pIn', 'gamma', 'rho']) {
+      expect(names).not.toContain(phantom)
+    }
+    // A literal nested inside a named alias is anonymous too: its container is the inner literal.
+    expect(names).not.toContain('inner')
+    expect(names).toContain('outer')
+
+    // The phantoms also inherited the enclosing function's doc comment, because the docstring
+    // lookup walks up from the member's own line -- so `symbol alpha` printed pair's documentation.
+    // Nothing but pair itself may carry it now.
+    const withPairDoc = result.symbols.filter((sym) => (sym.docstring ?? '').includes('Doc for pair'))
+    expect(withPairDoc.map((sym) => sym.name)).toEqual(['pair'])
+  })
+  // A first cut of the rule above matched only `interface_body` and an `object_type` sitting
+  // directly under a `type_alias_declaration`. That dropped three shapes that are declarations:
+  // an overload/ambient class method signature (parent `class_body`), and any alias whose literal
+  // sits behind a type wrapper -- parentheses, a union, an array. The rule now climbs wrappers.
+  it('keeps type members that a wrapper or a class body separates from their declaration (parenthesized, union, intersection, array and generic aliases, plus class overload and ambient method signatures)', async () => {
+    const file = write(
+      'wrapped.ts',
+      [
+        'export type Paren = ({ pField: string })',
+        'export type Union = { uA: string } | { uB: string }',
+        'export type Inter = { iA: string } & { iB: string }',
+        'export type Arr = { aField: string }[]',
+        'export type Gen = Promise<{ gField: string }>',
+        'export declare class Ambient { ambientM(): number }',
+        'export class Overloaded {',
+        '  over(x: string): void',
+        '  over(x: unknown): void { void x }',
+        '}',
+        'export function ret(): ({ retParen: string }) { return { retParen: 1 as never } }',
+        "export const castParen = {} as ({ castField: string })",
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.map((s) => s.name)
+
+    // Behind a wrapper, but still declared by a named alias.
+    for (const kept of ['pField', 'uA', 'uB', 'iA', 'iB', 'aField', 'gField']) {
+      expect(names).toContain(kept)
+    }
+    // Declared class members: an ambient method and an overload signature.
+    expect(names).toContain('ambientM')
+    expect(names).toContain('over')
+
+    // Still anonymous: the wrapper chain ends at an annotation or an expression, not a declaration.
+    expect(names).not.toContain('retParen')
+    expect(names).not.toContain('castField')
+  })
   it('indexes TypeScript namespace declarations (internal_module, kind namespace) -- no TSJS_KIND_BY_TYPE entry meant the namespace itself was invisible even though members nested inside it still indexed', async () => {
     const file = write(
       'ns.ts',

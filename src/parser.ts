@@ -408,6 +408,61 @@ const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['module', 'namespace'],
 ])
 
+/**
+ * TS/JS node types that name a member of a type rather than a value. tree-sitter uses the same node
+ * types for an interface's members and for the members of an anonymous type literal written inline,
+ * so {@link isNamedTypeMember} decides which of the two a given node is.
+ */
+const TSJS_TYPE_MEMBER_TYPES: ReadonlySet<string> = new Set(['property_signature', 'method_signature'])
+
+/**
+ * Type nodes that wrap a type without changing whose type it is. A literal inside any chain of
+ * these still belongs to whatever declaration the chain ends at, so {@link isNamedTypeMember}
+ * climbs through them: `type A = ({ x } | { y })[]` declares `x` and `y` just as `type A = { x }`
+ * declares `x`. Anything not listed stops the climb, so an unfamiliar wrapper denies rather than
+ * silently admitting a literal from an annotation or expression position.
+ */
+const TSJS_TYPE_WRAPPER_TYPES: ReadonlySet<string> = new Set([
+  'parenthesized_type',
+  'union_type',
+  'intersection_type',
+  'array_type',
+  'readonly_type',
+  'tuple_type',
+  'optional_type',
+  'rest_type',
+  'generic_type',
+  'type_arguments',
+])
+
+/**
+ * Is this type member declared by something -- an `interface` body, a class body, or a
+ * `type X = ...` alias -- rather than by an anonymous type literal written inline?
+ *
+ * The `property_signature`/`method_signature` kind-map entries above exist so interface members are
+ * visible to the index, which is right: `I.field` is a definition someone looks up. But tree-sitter
+ * emits those same node types for every inline object type -- a return annotation
+ * `function f(): { q: string }`, a parameter type, a cast `x as { g: string }[]`, a typed const --
+ * and each member was indexed as a top-level `var`. Those are not definitions. Nothing declares
+ * them, `symbol` resolves them to a spot inside someone else's signature, and because the doc
+ * comment lookup walks up from the member's own line they inherit the enclosing function's
+ * docstring, so the entry shows another symbol's documentation. In this repository that was 1438
+ * phantom symbols against 1755 real ones, 431 of them from `cli.ts` alone.
+ *
+ * `class_body` is a keep: an overload signature (`foo(x: string): void` above its implementation)
+ * and a method on a `declare class` both parse as `method_signature`, and both are declared members.
+ * A class *property* never reaches here -- it parses as `public_field_definition`, not a signature.
+ */
+function isNamedTypeMember(node: TsNode): boolean {
+  const parent = node.parent
+  if (parent === null) return false
+  if (parent.type === 'interface_body' || parent.type === 'class_body') return true
+  if (parent.type !== 'object_type') return false
+  let owner = parent.parent
+  while (owner !== null && TSJS_TYPE_WRAPPER_TYPES.has(owner.type)) owner = owner.parent
+  return owner !== null && owner.type === 'type_alias_declaration'
+}
+
 // TS/JS class-member decorators (`@Override`, `@Input()`, ...) are wrapped as a `decorator` field
 // on `public_field_definition`/`field_definition` itself, but tree-sitter-typescript parses a
 // decorator on a `method_definition` as a standalone `decorator` sibling immediately preceding it
@@ -491,7 +546,10 @@ function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly stri
     const kind = TSJS_KIND_BY_TYPE.get(node.type)
     // A local `function` declaration nested inside a function body is a local, exactly like a
     // local const/let/var below -- exclude it from the top-level index the same way.
-    if (kind !== undefined && !(insideFunction && node.type === 'function_declaration')) {
+    const isLocalFunction = insideFunction && node.type === 'function_declaration'
+    // A member of an inline type literal is not a definition either -- see isNamedTypeMember.
+    const isAnonymousTypeMember = TSJS_TYPE_MEMBER_TYPES.has(node.type) && !isNamedTypeMember(node)
+    if (kind !== undefined && !isLocalFunction && !isAnonymousTypeMember) {
       const name = nodeName(node)
       if (name !== null && name !== '') {
         const decorators = leadingTsDecorators(node)
