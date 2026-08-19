@@ -61,7 +61,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'compact-doc', 'fetch-image', 'history', 'changed', 'diff', 'log', 'pdf-outline', 'pdf-meta',
   'image-meta', 'image-text',
   'xlsx-sheets', 'pptx-outline', 'docx-outline', 'transcript-outline', 'csv-query',
-  'json-outline', 'json-query', 'yaml-outline', 'yaml-query', 'openapi-outline', 'openapi-op',
+  'json-outline', 'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'openapi-outline', 'openapi-op',
   'zip-list', 'zip-read', 'pr-slice', 'sqlite-schema', 'sqlite-query', 'coverage-report-gaps',
   'conflicts', 'note-get', 'note-list',
 ] as const

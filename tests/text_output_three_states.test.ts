@@ -65,7 +65,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
       ['csv-profile', 'csv-query', 'pdf-extract', 'pdf-meta', 'pdf-outline', 'image-meta', 'image-text', 'xlsx-head',
         'xlsx-query', 'xlsx-range', 'xlsx-sheets', 'pptx-notes', 'pptx-outline', 'pptx-slide',
         'pptx-text', 'docx-outline', 'docx-text', 'zip-list', 'zip-read', 'json-outline',
-        'json-query', 'yaml-outline', 'yaml-query', 'openapi-op', 'openapi-outline',
+        'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'openapi-op', 'openapi-outline',
         'sqlite-query', 'sqlite-schema', 'coverage-report-gaps', 'transcript',
         'transcript-outline', 'video-chapters', 'logfold', 'trace', 'todo', 'lockdeps',
         'gdrive-sections', 'dep-docs', 'compress', 'compress-text', 'pack'],
