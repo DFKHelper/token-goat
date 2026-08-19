@@ -33,7 +33,7 @@ describe('vscode-extension savings display', () => {
 
   it('renders the full-window total, not a bytes-derived approximation', () => {
     const rendered = formatSavingsBar(statsFixture())
-    expect(rendered.text).toBe('$(gist-secret) token-goat: 1,086,245,675 tokens saved (30d)')
+    expect(rendered.text).toBe('🐐 token-goat: 1,086,245,675 tokens saved (30d)')
     expect(rendered.tooltip).toContain('1,086,245,675 tokens saved over the last 30 day(s)')
   })
 
@@ -45,18 +45,18 @@ describe('vscode-extension savings display', () => {
 
   it('renders zero savings without hiding the ledger state', () => {
     const rendered = formatSavingsBar(statsFixture({ total_tokens_saved: 0 }))
-    expect(rendered.text).toBe('$(gist-secret) token-goat: 0 tokens saved')
+    expect(rendered.text).toBe('🐐 token-goat: 0 tokens saved')
   })
 
   it('renders a negative total as a loss, never clamped to zero', () => {
     const rendered = formatSavingsBar(statsFixture({ total_tokens_saved: -500 }))
-    expect(rendered.text).toBe('$(gist-secret) token-goat: -500 tokens (net loss, 30d)')
+    expect(rendered.text).toBe('🐐 token-goat: -500 tokens (net loss, 30d)')
     expect(rendered.tooltip).toContain('net loss of 500 tokens')
   })
 
   it('falls back to a placeholder when stats is null (CLI missing, exec failure, or unparseable output)', () => {
     const rendered = formatSavingsBar(null)
-    expect(rendered.text).toBe('$(gist-secret) token-goat')
+    expect(rendered.text).toBe('🐐 token-goat')
     expect(rendered.tooltip).toContain('token-goat is ready')
   })
 

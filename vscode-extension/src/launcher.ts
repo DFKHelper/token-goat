@@ -133,6 +133,30 @@ export async function resolveGitExecutable(): Promise<string> {
   )
 }
 
+// Resolved absolute path to node executable, cached after the first successful lookup.
+let cachedNodeExecutable: string | null = null
+
+// Exposed for tests only: resets the module-level node-executable cache between cases.
+export function resetNodeExecutableCacheForTests(): void {
+  cachedNodeExecutable = null
+}
+
+// Prefer a real Node runtime on PATH over process.execPath (Electron in VS Code).
+// Native addons (like better-sqlite3) fail under Electron when run with ELECTRON_RUN_AS_NODE
+// due to Node ABI version mismatch between Electron and native npm modules.
+export async function resolveNodeExecutable(): Promise<string> {
+  if (cachedNodeExecutable !== null) return cachedNodeExecutable
+  const candidates = process.platform === 'win32' ? ['node.exe'] : ['node']
+  for (const name of candidates) {
+    const found = await findOnPath(name)
+    if (found !== null) {
+      cachedNodeExecutable = found
+      return found
+    }
+  }
+  return process.execPath
+}
+
 export type ExecFileLike = (
   file: string,
   args: readonly string[],
@@ -143,10 +167,10 @@ export type ExecFileLike = (
 // projectRoot conveys a project root to token-goat's own --cwd flag (an explicit argument) rather than by setting the spawned process's working directory to it: an attacker-controlled workspace directory must never be a directory a launcher resolves a binary name against, and this way it never is one — the process cwd stays wherever the extension host itself runs from. execFileImpl is injectable so tests can assert on the constructed call without actually spawning a process.
 export function runTokenGoat(args: string[], projectRoot?: string, execFileImpl: ExecFileLike = execFile): Promise<string> {
   return new Promise((resolve, reject) => {
-    void resolveTokenGoatEntrypoint().then((entrypoint) => {
+    void Promise.all([resolveTokenGoatEntrypoint(), resolveNodeExecutable()]).then(([entrypoint, nodePath]) => {
       const fullArgs = projectRoot !== undefined ? ['--cwd', projectRoot, ...args] : args
       execFileImpl(
-        process.execPath,
+        nodePath,
         [entrypoint, ...fullArgs],
         {
           encoding: 'utf8',

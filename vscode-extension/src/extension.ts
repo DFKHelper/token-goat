@@ -1,8 +1,9 @@
+import * as nodeFs from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
-import { assertSafeArgSegment, resolveTokenGoatEntrypoint, runGitDiff, runTokenGoat } from './launcher'
+import { assertSafeArgSegment, resolveNodeExecutable, resolveTokenGoatEntrypoint, runGitDiff, runTokenGoat } from './launcher'
 import { formatSavingsBar, parseStatsJson, type StatsJson } from './savings'
 
 // Workspace Trust is the only barrier stopping a hostile repo's file/symbol content from reaching token-goat's argv (see package.json's untrustedWorkspaces capability, which keeps the extension from activating at all in an untrusted workspace) — this is the belt-and-suspenders check for any call site that still consumes workspace-derived input after that gate.
@@ -133,7 +134,7 @@ export function registerMcpDecoderProvider(context: vscode.ExtensionContext): vo
   context.subscriptions.push(
     vscode.lm.registerMcpServerDefinitionProvider('token-goat', {
       provideMcpServerDefinitions: async () => [
-        new vscode.McpStdioServerDefinition('token-goat', process.execPath, [await resolveTokenGoatEntrypoint(), 'mcp-serve'], {
+        new vscode.McpStdioServerDefinition('token-goat', await resolveNodeExecutable(), [await resolveTokenGoatEntrypoint(), 'mcp-serve'], {
           ELECTRON_RUN_AS_NODE: '1',
         }),
       ],
@@ -215,11 +216,99 @@ export async function ensureDecoderSetup(): Promise<boolean> {
 let savingsBar: vscode.StatusBarItem | undefined
 let savingsContext: vscode.ExtensionContext | undefined
 let lastSavingsRefresh = 0
-const SAVINGS_REFRESH_MIN_INTERVAL_MS = 30000
-const SAVINGS_REFRESH_INTERVAL_MS = 5 * 60 * 1000
+let lastParsedStats: StatsJson | null = null
+const SAVINGS_REFRESH_MIN_INTERVAL_MS = 2000
+const SAVINGS_REFRESH_INTERVAL_MS = 30 * 1000
 let savingsRefreshTimer: ReturnType<typeof setInterval> | undefined
+let refreshDebounceTimer: ReturnType<typeof setTimeout> | undefined
+let dbWatcher: nodeFs.FSWatcher | undefined
 
-// Throttled: this can be triggered after every compress operation (a user action, not a hot path) plus a background timer, so a minimum interval keeps rapid-fire actions from shelling out repeatedly.
+function getDataDir(): string {
+  const platform = process.platform
+  if (platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA ?? process.env.LocalAppData ?? ''
+    if (localAppData) return path.join(localAppData, 'dfk-helper', 'token-goat')
+    return path.join(os.homedir(), 'AppData', 'Local', 'dfk-helper', 'token-goat')
+  }
+  if (platform === 'darwin') {
+    const xdg = process.env.XDG_DATA_HOME ?? ''
+    if (xdg) return path.join(xdg, 'token-goat')
+    return path.join(os.homedir(), 'Library', 'Application Support', 'token-goat')
+  }
+  const xdg = process.env.XDG_DATA_HOME ?? ''
+  if (xdg) return path.join(xdg, 'token-goat')
+  return path.join(os.homedir(), '.local', 'share', 'token-goat')
+}
+
+function scheduleRefresh(): void {
+  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer)
+  refreshDebounceTimer = setTimeout(() => {
+    void refreshSavingsBar(true)
+  }, 500)
+}
+
+function startDbWatcher(context: vscode.ExtensionContext): void {
+  const dir = getDataDir()
+  try {
+    if (!nodeFs.existsSync(dir)) {
+      nodeFs.mkdirSync(dir, { recursive: true })
+    }
+    dbWatcher = nodeFs.watch(dir, (_eventType, filename) => {
+      if (!filename || filename.startsWith('global.db')) {
+        scheduleRefresh()
+      }
+    })
+    context.subscriptions.push({
+      dispose: () => {
+        if (dbWatcher) {
+          try {
+            dbWatcher.close()
+          } catch {
+            // ignore close error
+          }
+          dbWatcher = undefined
+        }
+      },
+    })
+  } catch {
+    // If watching fails, periodic timer + window/editor focus events still keep status bar current.
+  }
+}
+
+let previousTokensSaved: number | null = null
+let animationTimer: ReturnType<typeof setTimeout> | undefined
+
+function triggerSavingsBumpAnimation(delta: number, stats: StatsJson): void {
+  if (!savingsBar) return
+  if (animationTimer) clearTimeout(animationTimer)
+
+  const days = stats.window_days
+  const magnitude = stats.total_tokens_saved.toLocaleString()
+  const deltaStr = delta.toLocaleString()
+
+  // Frame 1: Green highlight with up-arrow and delta
+  savingsBar.color = new vscode.ThemeColor('charts.green')
+  savingsBar.text = `🐐 $(arrow-up) +${deltaStr} tokens saved! (${magnitude})`
+
+  // Frame 2: Transition to green up-arrow with current total
+  animationTimer = setTimeout(() => {
+    if (!savingsBar) return
+    savingsBar.color = new vscode.ThemeColor('charts.green')
+    savingsBar.text = `🐐 $(arrow-up) ${magnitude} tokens saved (${days}d)`
+
+    // Frame 3: Settle back to standard status bar text and default color
+    animationTimer = setTimeout(() => {
+      if (!savingsBar) return
+      savingsBar.color = undefined
+      const rendered = formatSavingsBar(stats)
+      savingsBar.text = rendered.text
+      savingsBar.tooltip = rendered.tooltip
+      animationTimer = undefined
+    }, 1500)
+  }, 1800)
+}
+
+// Throttled: this can be triggered after every compress operation (a user action, not a hot path) plus background timer and file watcher, so a minimum interval keeps rapid-fire actions from shelling out repeatedly.
 async function refreshSavingsBar(force = false): Promise<void> {
   if (!savingsBar) return
   const now = Date.now()
@@ -231,9 +320,34 @@ async function refreshSavingsBar(force = false): Promise<void> {
   } catch {
     // stats already null from its initializer above; nothing to reset.
   }
+  lastParsedStats = stats
   const rendered = formatSavingsBar(stats)
-  savingsBar.text = rendered.text
   savingsBar.tooltip = rendered.tooltip
+
+  if (stats && previousTokensSaved !== null && stats.total_tokens_saved > previousTokensSaved) {
+    const delta = stats.total_tokens_saved - previousTokensSaved
+    previousTokensSaved = stats.total_tokens_saved
+    triggerSavingsBumpAnimation(delta, stats)
+  } else {
+    if (stats) previousTokensSaved = stats.total_tokens_saved
+    if (!animationTimer) {
+      savingsBar.text = rendered.text
+    }
+  }
+}
+
+async function displaySavingsStatus(): Promise<void> {
+  await refreshSavingsBar(true)
+  const rendered = formatSavingsBar(lastParsedStats)
+  const choice = await vscode.window.showInformationMessage(
+    rendered.tooltip,
+    'Run `token-goat stats --full` in Terminal',
+  )
+  if (choice) {
+    const terminal = vscode.window.activeTerminal ?? vscode.window.createTerminal('token-goat')
+    terminal.show()
+    terminal.sendText('token-goat stats --full')
+  }
 }
 
 function contextRadius(): number {
@@ -496,12 +610,24 @@ export function activate(context: vscode.ExtensionContext): void {
   savingsBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
   savingsBar.text = formatSavingsBar(null).text
   savingsBar.tooltip = formatSavingsBar(null).tooltip
+  savingsBar.command = 'token-goat.showStats'
   savingsBar.show()
   void refreshSavingsBar(true)
   savingsRefreshTimer = setInterval(() => void refreshSavingsBar(), SAVINGS_REFRESH_INTERVAL_MS)
+  startDbWatcher(context)
 
   context.subscriptions.push(
     savingsBar,
+    vscode.window.onDidChangeWindowState((e) => {
+      if (e.focused) void refreshSavingsBar(true)
+    }),
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      scheduleRefresh()
+    }),
+    vscode.workspace.onDidSaveTextDocument(() => {
+      scheduleRefresh()
+    }),
+    vscode.commands.registerCommand('token-goat.showStats', () => displaySavingsStatus().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSelection', () => sendSelection().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSurgicalRead', () => sendSurgicalRead().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSymbol', () => sendSymbol().catch(reportError)),
@@ -576,4 +702,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   if (savingsRefreshTimer) clearInterval(savingsRefreshTimer)
+  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer)
+  if (animationTimer) clearTimeout(animationTimer)
+  if (savingsBar) savingsBar.color = undefined
+  if (dbWatcher) {
+    try {
+      dbWatcher.close()
+    } catch {
+      // ignore close error
+    }
+    dbWatcher = undefined
+  }
 }

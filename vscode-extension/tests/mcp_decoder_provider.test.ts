@@ -52,14 +52,16 @@ vi.mock('vscode', () => ({
   McpStdioServerDefinition: StdioDefinition,
 }))
 
-const { runTokenGoat, resolveTokenGoatEntrypoint } = vi.hoisted(() => ({
+const { runTokenGoat, resolveTokenGoatEntrypoint, resolveNodeExecutable } = vi.hoisted(() => ({
   runTokenGoat: vi.fn(),
   resolveTokenGoatEntrypoint: vi.fn(),
+  resolveNodeExecutable: vi.fn().mockResolvedValue(process.execPath),
 }))
 
 vi.mock('../src/launcher', () => ({
   runTokenGoat,
   resolveTokenGoatEntrypoint,
+  resolveNodeExecutable,
   assertSafeArgSegment: vi.fn(),
   runGitDiff: vi.fn(),
 }))
