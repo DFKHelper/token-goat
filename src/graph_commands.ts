@@ -21,7 +21,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
+import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
@@ -956,7 +956,7 @@ const SOURCE_EXTENSIONS = [
 export function runDeps(opts: DepsOptions): number {
   let text: string
   try {
-    text = fs.readFileSync(opts.file, 'utf-8')
+    text = decodeSource(fs.readFileSync(opts.file))
   } catch {
     emitErr(`Could not read: ${opts.file}`)
     return 1

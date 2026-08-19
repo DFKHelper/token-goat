@@ -66,7 +66,7 @@ import {
 } from './languages/salesforce_frontend.js'
 import { extractVue, extractSvelte, extractAstro } from './languages/sfc_idx.js'
 import { ipynbToVirtualSource } from './languages/ipynb_idx.js'
-import { foldPath } from './util.js'
+import { decodeSource, foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
 /** Result of parsing one file: extracted symbols, refs, language, timing. */
@@ -2309,7 +2309,7 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
 
   let content: string
   try {
-    content = await fs.promises.readFile(filePath, 'utf8')
+    content = decodeSource(await fs.promises.readFile(filePath))
   } catch {
     return { symbols: [], refs: [], language, duration: Date.now() - start }
   }
@@ -2661,7 +2661,7 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath(),
       throw err
     }
   }
-  const content = raw.toString('utf8')
+  const content = decodeSource(raw)
   const { symbols, refs } = parseContent(content, filePath, language)
   writeParseResult(filePath, raw, { symbols, refs, language, duration: 0 }, dbPath)
 }
@@ -2824,7 +2824,7 @@ export async function indexFileEmbeddings(
   }
   let content: string
   try {
-    content = await fs.promises.readFile(filePath, 'utf8')
+    content = decodeSource(await fs.promises.readFile(filePath))
   } catch {
     return
   }

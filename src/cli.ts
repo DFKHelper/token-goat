@@ -157,7 +157,7 @@ import {
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
@@ -1251,7 +1251,7 @@ function cmdBashOutput(
       // `bash-output --file` is a general "show me this file's text" recall path, so a caller can
       // point it straight at a .env. Its values are secret by the file's nature; redact them here
       // the same way every other read path does. See dotenv_redact.ts.
-      content = redactIfDotenv(opts.file, fs.readFileSync(opts.file, 'utf-8'))
+      content = redactIfDotenv(opts.file, decodeSource(fs.readFileSync(opts.file)))
     } catch (e) {
       if (e instanceof CliError) throw e
       throw new CliError(`cannot read file: ${opts.file}`)
@@ -1829,7 +1829,7 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
     throw new CliError(`skill '${name}' not found`)
   }
 
-  const body = fs.readFileSync(filePath, 'utf-8')
+  const body = decodeSource(fs.readFileSync(filePath))
   if (opts.compact === true) {
     out(extractCompactFromMarker(body) ?? body)
   } else {
@@ -1850,7 +1850,7 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
     for (const skill of skills) {
       const filePath = await getSkillFilePath(skill.name)
       if (!filePath) continue
-      const body = fs.readFileSync(filePath, 'utf-8')
+      const body = decodeSource(fs.readFileSync(filePath))
       const compact = extractCompactFromMarker(body)
       if (compact === null) continue
       const sourceSha = contentHash(body)
@@ -2092,7 +2092,7 @@ async function cmdSkillSection(nameHeading: string, headingArg?: string): Promis
   if (!filePath) {
     throw new CliError(`skill '${skillName}' not found`)
   }
-  const body = fs.readFileSync(filePath, 'utf-8')
+  const body = decodeSource(fs.readFileSync(filePath))
   const extracted = extractNamedSection(body, heading)
   if (!extracted) {
     process.exitCode = 1
@@ -2805,13 +2805,18 @@ function cmdInsertSection(file: string, opts: { after: string; contentFrom?: str
     throw new CliError(messages.join('\n'))
   }
 
-  let rawText: string
+  let rawBytes: Buffer
   try {
-    rawText = fs.readFileSync(file, 'utf-8')
+    rawBytes = fs.readFileSync(file)
   } catch (e) {
     mapFsError(e, undefined, file)
   }
-  if (rawText.charCodeAt(0) === 0xfeff) rawText = rawText.slice(1)
+  // Read and write in the file's own encoding. Section resolution above is BOM-aware, so on a
+  // UTF-16 file it now finds the heading it used to miss -- and a plain utf-8 read here would
+  // splice the new content into mojibake and write the whole file back converted, turning a
+  // one-section insert into a silent re-encoding of everything.
+  const sourceEncoding = detectSourceEncoding(rawBytes)
+  const rawText = decodeSource(rawBytes)
 
   const eol = detectDominantEol(Buffer.from(rawText, 'utf8'))
   // Collapse to LF-only for splicing (avoids ever joining an already-CRLF-terminated line with
@@ -2841,7 +2846,7 @@ function cmdInsertSection(file: string, opts: { after: string; contentFrom?: str
   }
 
   try {
-    atomicWriteBuffer(file, Buffer.from(mergedText, 'utf8'))
+    atomicWriteBuffer(file, encodeSource(mergedText, sourceEncoding))
   } catch (e) {
     mapFsError(e, undefined, file)
   }

@@ -18,6 +18,7 @@ import { redactIfDotenv } from './dotenv_redact.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
+import { decodeSource } from './util.js'
 import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta } from './parser.js'
 import { _detectOpenQuote as envDetectOpenQuote, _lineClosesQuote as envLineClosesQuote } from './languages/ini_idx.js'
 
@@ -538,7 +539,10 @@ function readTextForSections(filePath: string, readFn?: (p: string) => string | 
     text = read
   } else {
     try {
-      text = readFileSync(filePath, 'utf-8')
+      // decodeSource, not a utf-8 read: a UTF-16 file has no headings at all once its bytes are
+      // read as UTF-8, so `section --list` on a PowerShell-written document answered "No sections
+      // found" for a document full of them.
+      text = decodeSource(readFileSync(filePath))
     } catch {
       return null
     }

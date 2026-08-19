@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as minimatch from 'minimatch'
 import { redactIfDotenv } from './dotenv_redact.js'
+import { decodeSource } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 
 const LANG_MAP: Record<string, string> = {
@@ -437,7 +438,7 @@ export function collectFiles(
       try {
         // A pack glob sweeps whole directories, so a tracked .env lands in the bundle without
         // anyone naming it. Redact its values, keeping the keys. See dotenv_redact.ts.
-        content = redactIfDotenv(p, fs.readFileSync(fd, 'utf8'))
+        content = redactIfDotenv(p, decodeSource(fs.readFileSync(fd)))
       } catch {
         result.skipped.push(`${rel} (unreadable)`)
         continue
