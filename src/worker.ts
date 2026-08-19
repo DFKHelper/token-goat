@@ -287,11 +287,46 @@ function pidFileIsWithinStartupGrace(dir: string): boolean {
  * dedupes on the same case-folded key as the real reindex drain rather than an exact-string match
  * that missed case-variant duplicates on Windows/macOS.
  */
+/**
+ * Marks a queue line whose path could not survive the plain one-path-per-line format.
+ *
+ * A raw line is an absolute normalized path, which always begins with a slash or a drive letter, so
+ * a leading `!` cannot collide with one. The decoder also requires what follows to parse as a JSON
+ * string, so a hand-written or legacy line that happens to start with `!` is left alone rather than
+ * discarded.
+ */
+const ENCODED_LINE_MARKER = '!'
+
+/**
+ * Render one path as a queue line.
+ *
+ * Almost every path is written as itself: that keeps the file byte-identical to what earlier builds
+ * produced, which matters because a queue left behind by an older build is read by this one. Only a
+ * path the format genuinely cannot hold is encoded -- one containing a line break, which would
+ * become two entries, or one whose first or last character is whitespace, which the reader's trim
+ * would quietly turn into a different path.
+ */
+export function encodeDirtyQueueLine(absPath: string): string {
+  const needsEncoding = /[\r\n]/.test(absPath) || absPath !== absPath.trim()
+  return needsEncoding ? ENCODED_LINE_MARKER + JSON.stringify(absPath) : absPath
+}
+
+/** Undo {@link encodeDirtyQueueLine}, leaving anything that is not a well-formed encoded line as it is. */
+function decodeDirtyQueueLine(line: string): string {
+  if (!line.startsWith(ENCODED_LINE_MARKER)) return line
+  try {
+    const decoded: unknown = JSON.parse(line.slice(ENCODED_LINE_MARKER.length))
+    return typeof decoded === 'string' ? decoded : line
+  } catch {
+    return line
+  }
+}
+
 export function parseDirtyQueueLines(raw: string): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
+    const trimmed = decodeDirtyQueueLine(line.trim())
     if (trimmed === '') continue
     // On case-insensitive filesystems (Windows/macOS), deduplicate by case-folded form so "C:\Projects\file.ts" and "c:\projects\file.ts" are recognized as the same entry. normalizePath only lowercases the drive letter, so we fold the entire normalized path for dedup.
     const normalized = normalizePath(trimmed)
@@ -563,7 +598,7 @@ function appendToDirtyQueue(dir: string, absPath: string): void {
     } catch {
       // File doesn't exist yet -- nothing to guard against.
     }
-    fs.appendFileSync(queuePath, `${leadingNewline}${absPath}\n`)
+    fs.appendFileSync(queuePath, `${leadingNewline}${encodeDirtyQueueLine(absPath)}\n`)
   } catch {
     // best-effort -- see doc comment above.
   }
