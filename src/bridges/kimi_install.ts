@@ -52,10 +52,10 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
-import { buildGuidanceBlock, buildGuidanceBody } from './guidance_block.js'
+import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 
 /**
@@ -201,26 +201,22 @@ function kimiSkillContent(): string {
   const frontmatter = [
     '---',
     'name: token-goat',
-    `description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.`,
+    skillDescriptionLine(gdrive),
     '---',
   ].join('\n')
   const body = buildGuidanceBody("Kimi Code's own Read, Grep, and Glob preference rules", { gdrive })
   return `${frontmatter}\n\n${body}\n`
 }
 
+/**
+ * Write (or refresh) the skill, returning false when it was already up to date.
+ *
+ * `writeIfDifferent` already does the read-compare-mkdir-atomic-write dance,
+ * including creating the parent directory, so there is nothing skill-specific
+ * left to hand-roll here.
+ */
 function writeKimiSkill(): boolean {
-  const p = kimiSkillPath()
-  const content = kimiSkillContent()
-  let existing: string | null = null
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    // Absent; falls through to the write below.
-  }
-  if (existing === content) return false
-  ensureDirSync(kimiSkillDir())
-  atomicWriteText(p, content)
-  return true
+  return writeIfDifferent(kimiSkillPath(), kimiSkillContent())
 }
 
 /** Outcome of an {@link installKimi} call. */
