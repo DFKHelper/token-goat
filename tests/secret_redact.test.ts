@@ -377,3 +377,145 @@ describe('redactSecrets — performance', () => {
     expect(elapsedMs).toBeLessThan(2000) // soft bound — linear-scan patterns over ~5 MiB should be near-instant
   })
 })
+
+// Regression: a quoted secret was never redacted. The value class deliberately excludes quote
+// characters so a match cannot run past the closing quote, but the lookbehind ended at the
+// separator, so an opening quote stopped the match before it began -- and the closing quote of a
+// quoted key name blocked it from the other side. `API_KEY=<value>` was caught while
+// `API_KEY="<value>"` passed through in full, and every JSON body passed through in full.
+// Quoting is the ordinary way secrets are written: .env, JSON, YAML and TOML all quote by
+// default, so the common shape leaked while the uncommon one was covered. Nothing in the 47
+// tests already here used a quote anywhere, which is exactly why it survived.
+describe('redactSecrets — quoted values', () => {
+  const value = 'abcd1234efgh5678ijkl'
+
+  it.each([
+    ['double-quoted env', `API_KEY="${value}"`],
+    ['single-quoted env', `API_KEY='${value}'`],
+    ['json key and value', `{"api_key": "${value}"}`],
+    ['json with no spaces', `{"password":"${value}"}`],
+    ['yaml', `password: "${value}"`],
+    ['toml with spaces around =', `secret = "${value}"`],
+  ])('redacts a %s', (_label, input) => {
+    const { text, count } = redactSecrets(input)
+
+    expect(count).toBe(1)
+    expect(text, 'the secret itself must not survive anywhere in the output').not.toContain(value)
+    expect(text).toContain('[REDACTED:generic_secret_assignment]')
+  })
+
+  // The quotes themselves stay: they are part of the surrounding document, and the value class
+  // still excludes them, so the match cannot swallow the rest of the line.
+  it('leaves the quotes and the key name readable', () => {
+    expect(redactSecrets(`API_KEY="${value}"`).text).toBe('API_KEY="[REDACTED:generic_secret_assignment]"')
+  })
+
+  it('redacts a bearer token carried in a JSON body, not just a raw header line', () => {
+    const token = 'abc123def456ghi789'
+
+    const { text, count } = redactSecrets(`{"Authorization": "Bearer ${token}"}`)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain(token)
+    expect(text).toBe('{"Authorization": "Bearer [REDACTED:auth_bearer_token]"}')
+  })
+
+  it('redacts a basic credential carried the same way', () => {
+    const { text } = redactSecrets('{"Authorization": "Basic dXNlcjpwYXNz"}')
+
+    expect(text).not.toContain('dXNlcjpwYXNz')
+  })
+
+  // The quote allowance must not turn prose or an empty value into a false positive, and it must
+  // not let the pattern re-match its own placeholder on a second pass over already-redacted text.
+  it.each([
+    ['prose that only mentions the word', 'the password field is required'],
+    ['an empty quoted value', 'password: ""'],
+    ['an empty query parameter', 'https://example.test/a?password=&next=/home'],
+    ['text that was already redacted', 'API_KEY=[REDACTED:generic_secret_assignment]'],
+  ])('leaves %s alone', (_label, input) => {
+    expect(redactSecrets(input)).toEqual({ text: input, count: 0 })
+  })
+})
+
+// A backslash is the one character the value class cannot simply accept or reject. Accepting it
+// stopped the match at the quote it was escaping, so `{"API_KEY":"abcd\\\"efghijkl"}` redacted
+// `abcd\` and left `efghijkl` sitting in plain text -- a partial redaction, which reads as
+// handled and is not. Rejecting it outright would have stopped the match at the backslash instead.
+// The escape branch consumes the pair, and excludes a newline so a trailing backslash cannot pull
+// the following line into the match.
+describe('redactSecrets — backslashes in a value', () => {
+  const BS = String.fromCharCode(92)
+
+  it('consumes an escaped quote instead of stopping at it', () => {
+    const { text } = redactSecrets(`{"API_KEY":"abcd${BS}"efghijkl"}`)
+
+    expect(text, 'the tail after the escape must not survive').not.toContain('efghijkl')
+    expect(text).toBe('{"API_KEY":"[REDACTED:generic_secret_assignment]"}')
+  })
+
+  it('does not let a trailing backslash swallow the next line', () => {
+    const { text } = redactSecrets(`API_KEY=abcdefgh${BS}
+NEXT_VAR=publicvalue`)
+
+    expect(text).toContain('NEXT_VAR=publicvalue')
+  })
+})
+
+// The value class excludes whitespace, '&', ';' and '#' so a match cannot run into the next
+// key=value pair or a trailing comment. It did not exclude ',' or braces, so the separators used
+// by an inline env list and by unquoted JSON were swallowed along with the secret: redacting
+// `API_KEY=<value>,OTHER=public` also deleted `,OTHER=public`. Over-redaction is the safe
+// direction for the secret itself and the wrong direction for the structure around it.
+describe('redactSecrets — structure around the value', () => {
+  it.each([
+    ['a following comma-separated pair', 'API_KEY=abcd1234efgh5678ijkl,OTHER=public', ',OTHER=public'],
+    ['a closing brace', 'API_KEY=abcd1234efgh5678ijkl}', '}'],
+  ])('leaves %s intact', (_label, input, survivor) => {
+    const { text } = redactSecrets(input)
+
+    expect(text).toContain('[REDACTED:generic_secret_assignment]')
+    expect(text.endsWith(survivor), `expected ${JSON.stringify(text)} to keep ${survivor}`).toBe(true)
+  })
+})
+
+// OAuth token names are not spelled with any of the original four keywords, so an access or
+// refresh token -- the credential most often present in a logged token-endpoint response -- was
+// cached verbatim.
+describe('redactSecrets — oauth token names', () => {
+  it.each([
+    ['access_token', '{"access_token":"abcdefghijklmnop"}'],
+    ['refresh_token', 'refresh_token=abcdefghijklmnop'],
+    ['id_token', 'id_token: "abcdefghijklmnop"'],
+  ])('redacts %s', (_label, input) => {
+    const { text, count } = redactSecrets(input)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain('abcdefghijklmnop')
+  })
+})
+
+// A connection url carries its password in the authority section, where there is no `key=value`
+// separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration
+// went through untouched.
+describe('redactSecrets — credentials in a url', () => {
+  it.each([
+    ['postgres', 'postgres://user:supersecret@db.example', 'supersecret'],
+    ['mysql with a port and path', 'mysql://root:hunter2hunter2@127.0.0.1:3306/app', 'hunter2hunter2'],
+  ])('redacts the password in a %s url', (_label, input, secret) => {
+    const { text, count } = redactSecrets(input)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain(secret)
+    expect(text).toContain('[REDACTED:url_credentials]')
+  })
+
+  // The '@' is what separates a credential from a port. Without requiring it, every `host:port`
+  // in every url in the output would be redacted as a password.
+  it.each([
+    ['a url with a port but no credentials', 'http://example.com:8080/path'],
+    ['a plain url', 'https://example.com/a/b'],
+  ])('leaves %s alone', (_label, input) => {
+    expect(redactSecrets(input)).toEqual({ text: input, count: 0 })
+  })
+})
