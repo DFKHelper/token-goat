@@ -66,7 +66,8 @@ import {
 } from './languages/salesforce_frontend.js'
 import { extractVue, extractSvelte, extractAstro } from './languages/sfc_idx.js'
 import { ipynbToVirtualSource } from './languages/ipynb_idx.js'
-import { decodeSource, foldPath } from './util.js'
+import { decodeSource, foldPath, isCaseInsensitiveFs } from './util.js'
+import { normalizePath } from './paths.js'
 const _require = createRequire(import.meta.url)
 
 /** Result of parsing one file: extracted symbols, refs, language, timing. */
@@ -2729,6 +2730,60 @@ export const UNAVAILABLE_EMBED_SHA_PREFIX = 'unavailable:'
 /** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when embedding deps are absent. */
 export function unavailableEmbedSha(sha: string): string {
   return UNAVAILABLE_EMBED_SHA_PREFIX + sha
+}
+
+/**
+ * True when the index's stored spelling of `absPath` no longer matches the file's real spelling
+ * on disk.
+ *
+ * Only ever true on a case-insensitive filesystem, which is where the problem lives.
+ * {@link getFileEntry} finds a row by folded path, so after `mv b.ts B.ts` the lookup still hits
+ * and the content is byte-identical -- the sha gate skips the file, and the row goes on saying
+ * `b.ts` forever. Nothing else corrects it: the file still exists, so the deletion sweep leaves
+ * it alone, and only a later change to the file's *content* rewrites the row. Until then every
+ * `symbol`, `read`, `refs` and `map` answer names the path with a spelling it no longer has,
+ * which is the one thing this tool exists to get right.
+ *
+ * The real spelling is read from the filesystem rather than taken from the caller, because no
+ * caller's spelling is authoritative: the walk reports the dirent's, git reports the one in its
+ * own index (still the old one until the rename is staged), and the edit hook reports whatever
+ * the editor passed. Trusting the caller would let two of them rewrite the row back and forth on
+ * alternate runs.
+ *
+ * Deliberately narrowed to a pure case difference, by the fold comparison against the resolved
+ * spelling on the last line. `realpathSync` also resolves symlinks and Windows junctions, so a
+ * project reached through a link resolves to a structurally different path -- without that
+ * comparison every file in such a project would read as stale on every run and the whole tree
+ * would reindex forever. The identical fold check earlier is a cheap filter for a caller naming a
+ * structurally different path, not a second correctness guard. This costs one realpath per file
+ * per index run, which is noise beside the full-file read and hash `fingerprintFile` already
+ * performs for the same file on the same pass.
+ */
+export function indexedPathSpellingIsStale(storedPath: string, absPath: string): boolean {
+  if (!isCaseInsensitiveFs()) return false
+  // Both sides go through normalizePath, and the stored side is not exempt: the incremental
+  // worker writes the dirty queue's own spelling straight through, so a row indexed by the
+  // daemon can carry an upper-case drive letter (`C:/...`) where the bulk `index` command's rows
+  // carry the lower-case one normalizePath produces. Comparing a raw stored value against a
+  // normalized candidate makes that difference look like a stale spelling, and the file then
+  // reindexes on every single drain, forever.
+  const stored = normalizePath(storedPath)
+  const candidate = normalizePath(path.resolve(absPath))
+  // Cheap structural filter only. Deliberately NOT `storedPath === candidate`: the caller's own
+  // spelling agreeing with the stored one proves nothing, because the caller may simply be
+  // repeating the same stale spelling the row already holds -- git reports the name in its own
+  // index, which still says `readme.md` until a case rename is staged, and an editor hook
+  // reports whatever the editor passed. Short-circuiting on that agreement is how the row would
+  // stay stale forever in exactly the cases that never reach a filesystem walk.
+  if (foldPath(stored) !== foldPath(candidate)) return false
+  let real: string
+  try {
+    real = normalizePath(fs.realpathSync.native(absPath))
+  } catch {
+    // Unreadable or gone right now: leave the row alone rather than guess at a spelling.
+    return false
+  }
+  return real !== stored && foldPath(real) === foldPath(stored)
 }
 
 /**

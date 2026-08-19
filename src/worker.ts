@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
@@ -599,7 +599,11 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       const entry = getFileEntry(absPath, dbPath)
       // Skip the syntactic reparse when content is byte-identical to what's already indexed
       // (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed.
-      const parseUnchanged = entry?.sha === sha
+      // ...and not when the row's own spelling has gone stale under a case-only rename, which
+      // leaves the content identical and would otherwise pin the old spelling in place forever.
+      // See indexedPathSpellingIsStale.
+      const parseUnchanged =
+        entry?.sha === sha && !(entry !== null && indexedPathSpellingIsStale(entry.filePath, absPath))
       if (!parseUnchanged) {
         indexFileSync(absPath, dbPath)
       }
