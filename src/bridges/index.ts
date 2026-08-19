@@ -34,6 +34,20 @@ export {
   uninstallCopilotCli,
 } from './copilot_cli_install.js'
 export type { CopilotCliInstallResult, CopilotCliScopeOptions } from './copilot_cli_install.js'
+export { KIMI_HOOK_SCRIPT } from './kimi.js'
+export {
+  KimiConfigParseError,
+  KIMI_HOOK_EVENTS,
+  installKimi,
+  isKimiInstalled,
+  kimiAgentsPath,
+  kimiConfigPath,
+  kimiHome,
+  kimiHookScriptPath,
+  kimiSkillPath,
+  uninstallKimi,
+} from './kimi_install.js'
+export type { KimiInstallResult } from './kimi_install.js'
 export { GROK_HOOK_SCRIPT } from './grok.js'
 export {
   grokConfigPath,

@@ -19,7 +19,7 @@ permalink: /
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
-Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
+Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command:**
 
@@ -392,6 +392,14 @@ token-goat install --qwen
 ```
 
 This writes hook entries into `~/.qwen/settings.json`. Unlike Gemini CLI (its own ancestor, with a custom `BeforeTool`/`AfterTool`/`PreCompress` event/matcher scheme), Qwen Code's hooks system diverged and now mirrors Claude Code's own natively — `PreToolUse`/`PostToolUse`/`PreCompact`/`UserPromptSubmit`/`SubagentStop` event names and snake_case stdin JSON — so token-goat wires all five events with no wire-format translation needed. Qwen Code's own tool-name taxonomy is only partially documented, so token-goat uses a catch-all matcher per event rather than an incomplete per-tool list. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. This bridge was built from QwenLM/qwen-code's published docs, not dogfooded against a live Qwen Code install — if hooks aren't firing, `token-goat doctor` and the settings.json contents are the first things to check. To remove: `token-goat uninstall --qwen`.
+
+### Kimi Code users
+
+```
+token-goat install --kimi
+```
+
+This writes `[[hooks]]` entries into `~/.kimi-code/config.toml` (or `$KIMI_CODE_HOME/config.toml`), covering Kimi Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, and `SessionStart` events. Kimi Code sends a Claude-Code-shaped snake_case payload on stdin, but it reads a different response: only a top-level `message` and `hookSpecificOutput.permissionDecision` / `permissionDecisionReason`. So the install also writes a small shim at `~/.kimi-code/hooks/token-goat-shim.js` that translates token-goat's answer into that contract, turns a hint into `message`, and writes nothing at all for a no-op. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. `Notification` and `Stop` are not wired, because token-goat has no handler for them. Input and output rewriting are not wired either: Kimi Code offers no channel to replace a tool's input or its result. This bridge was built from MoonshotAI/kimi-code's own source and docs, not dogfooded against a live Kimi Code install, so if hooks are not firing, `token-goat doctor` and the `config.toml` contents are the first things to check. To remove: `token-goat uninstall --kimi`.
 
 ### opencode users
 
@@ -936,6 +944,15 @@ Three things follow, and they are worth knowing before you decide. It never leav
 | Path | What |
 |------|------|
 | `~/.qwen/settings.json` | Hook entries under Qwen Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, and `SubagentStop` events (Claude-Code-native names and payload shape, not Gemini's), using a catch-all matcher per event. Existing hooks preserved; a timestamped `.bak` is written before any change. |
+
+**With `--kimi`** (Kimi Code integration)
+
+| Path | What |
+|------|------|
+| `~/.kimi-code/config.toml` | `[[hooks]]` entries for Kimi Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, and `SessionStart` events. Each entry carries only `event` and `command`, the keys Kimi Code's strict schema accepts. Existing hooks and other config keys preserved; a timestamped `.bak` is written before any change. |
+| `~/.kimi-code/hooks/token-goat-shim.js` | The hook script those commands invoke. Rewrites a token-goat block into `hookSpecificOutput.permissionDecision` and a hint into a top-level `message`, and writes empty stdout for a no-op. Regenerated on every `install --kimi` run. |
+| `~/.kimi-code/AGENTS.md` | A delimited block (`<!-- token-goat-kimi-begin -->` ... `<!-- token-goat-kimi-end -->`) with the routing guidance, adapted for Kimi Code tool names. |
+| `~/.kimi-code/skills/token-goat/SKILL.md` | The same guidance as a Kimi Code skill. |
 
 **With `--opencode`** (opencode plugin)
 

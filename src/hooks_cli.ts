@@ -26,7 +26,7 @@ const _LOG = {
  * Harness identifier: the Claude Code harness variant token-goat is running under.
  * Determines payload/response shape translation.
  */
-export type Harness = 'claude' | 'codex' | 'gemini' | 'grok'
+export type Harness = 'claude' | 'codex' | 'gemini' | 'grok' | 'kimi'
 
 /**
  * Hook payload: unstructured dict from harness stdin.
@@ -130,6 +130,41 @@ const GROK_TOOL_NAME_MAP: Record<string, string> = {
  */
 const GROK_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   Read: { target_file: 'file_path' },
+}
+
+/**
+ * Kimi Code tool name -> internal PascalCase tool name.
+ *
+ * Kimi's built-in tool vocabulary (`docs/en/reference/tools.md` in
+ * MoonshotAI/kimi-code) already matches token-goat's canonical names for
+ * `Read`, `Write`, `Edit`, `Grep`, `Glob`, `Bash`, and `WebSearch`, so those
+ * need no entry here. Only the two that differ are mapped: Kimi calls its URL
+ * fetcher `FetchURL` (Claude Code's `WebFetch`) and its image/video reader
+ * `ReadMediaFile` (Claude Code reads media through `Read`). Kimi's `Agent`
+ * tool is deliberately left unmapped: it is the sub-agent spawner, not Claude
+ * Code's generic `Task`, and no handler in this codebase filters on it.
+ */
+const KIMI_TOOL_NAME_MAP: Record<string, string> = {
+  FetchURL: 'WebFetch',
+  ReadMediaFile: 'Read',
+}
+
+/**
+ * Kimi tool_input key -> internal key, per remapped tool.
+ *
+ * Kimi's v2 tools name their path argument `path`, not Claude Code's
+ * `file_path` (`ReadInputSchema` in
+ * `packages/agent-core-v2/src/agent/tools/os/read/readTool.ts` reads
+ * `args.path`; `packages/acp-server/src/events-map.ts` states "v2 tools use
+ * `path`"). getFilePath() in hooks_common.ts reads `file_path`, so Read/Write/
+ * Edit/ReadMediaFile need that rename or every path-scoped handler silently
+ * sees no path at all. Grep and Glob already send `pattern`/`path`, the keys
+ * their handlers read, and Bash already sends `command`, so none is remapped.
+ */
+const KIMI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
+  Read: { path: 'file_path' },
+  Write: { path: 'file_path' },
+  Edit: { path: 'file_path' },
 }
 
 /**
@@ -255,6 +290,24 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     const result = { ...obj }
     if (mapped) {
       result['tool_name'] = mapped
+    }
+    result['_tg_harness'] = harness
+    return result
+  }
+
+  if (harness === 'kimi') {
+    // Deliberately NOT remapToolName(): that helper only applies its input-key
+    // map when the tool NAME was also renamed, and Kimi's most important case
+    // is a tool whose name already matches (`Read`) but whose path argument
+    // does not (`path`, not `file_path`). Keying the input remap off the
+    // effective tool name instead is what makes that rename actually happen.
+    const mapped = KIMI_TOOL_NAME_MAP[toolName] ?? toolName
+    const result = { ...obj }
+    result['tool_name'] = mapped
+    const rawInput = obj['tool_input']
+    const keyMap = KIMI_INPUT_KEY_MAP[mapped]
+    if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
+      result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
     }
     result['_tg_harness'] = harness
     return result

@@ -85,6 +85,7 @@ describe('leftoverIntegrations', () => {
       codex: true,
       gemini: true,
       qwen: true,
+      kimi: true,
       pi: true,
       openclaw: true,
       copilot: true,

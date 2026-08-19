@@ -140,6 +140,16 @@ function qwenEvents(): HookEventName[] {
   return extractKnownEvents(m[1], 'src/bridges/qwen_install.ts QWEN_EVENT_ARG')
 }
 
+/** Kimi Code's KIMI_EVENT_ARG (src/bridges/kimi_install.ts): Kimi event key -> internal event arg. */
+function kimiEvents(): HookEventName[] {
+  const src = readSrc('bridges/kimi_install.ts')
+  const m = src.match(/const KIMI_EVENT_ARG:[^\r\n]*\r?\n([\s\S]*?)\r?\n\}/)
+  if (!m || m[1] === undefined) {
+    throw new Error('KIMI_EVENT_ARG not found in src/bridges/kimi_install.ts -- update the matrix derivation')
+  }
+  return extractKnownEvents(m[1], 'src/bridges/kimi_install.ts KIMI_EVENT_ARG')
+}
+
 /** Copilot CLI's COPILOT_TO_TG_EVENT (src/bridges/copilot_cli.ts): Copilot event name -> internal event, already the value passed as the CLI event arg. */
 function copilotCliEvents(): HookEventName[] {
   const src = readSrc('bridges/copilot_cli.ts')
@@ -186,6 +196,7 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   codex: codexEvents(),
   gemini: geminiEvents(),
   qwen: qwenEvents(),
+  kimi: kimiEvents(),
   pi: callHookEvents(PI_EXTENSION_SCRIPT, 'PI_EXTENSION_SCRIPT'),
   opencode: callHookEvents(OPENCODE_PLUGIN_SCRIPT, 'OPENCODE_PLUGIN_SCRIPT'),
   openclaw: callHookEvents(OPENCLAW_PLUGIN_SCRIPT, 'OPENCLAW_PLUGIN_SCRIPT'),
@@ -207,6 +218,7 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   codex: ['pre_tool_use', 'post_tool_use'],
   gemini: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   qwen: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
+  kimi: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
   pi: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   opencode: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   openclaw: ['pre_tool_use', 'post_tool_use', 'pre_compact'],

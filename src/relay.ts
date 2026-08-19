@@ -128,6 +128,8 @@ function harnessForNormalization(): Harness {
   if (detected === 'codex') return 'codex'
   if (detected === 'gemini') return 'gemini'
   if (detected === 'grok') return 'grok'
+  // Kimi Code's shim (src/bridges/kimi.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=kimi before dispatching, so detectHarness() resolves 'kimi' here for a real Kimi install. Its payload needs remapping because Kimi's v2 tools name their path argument `path` rather than `file_path` (and its URL fetcher is `FetchURL`, not `WebFetch`).
+  if (detected === 'kimi') return 'kimi'
   return 'claude'
 }
 

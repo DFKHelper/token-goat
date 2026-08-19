@@ -196,8 +196,8 @@ describe('harness detection', () => {
         expect(detectHarness()).toBe('openclaw')
       })
 
-      it('accepts every canonical harness name, including openclaw, pi, copilot_cli, grok, qwen, and hermes', () => {
-        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'pi', 'copilot_cli', 'grok', 'qwen', 'generic']) {
+      it('accepts every canonical harness name, including openclaw, pi, copilot_cli, grok, qwen, kimi, and hermes', () => {
+        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'pi', 'copilot_cli', 'grok', 'qwen', 'kimi', 'generic']) {
           process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = name
           expect(detectHarness()).toBe(name)
         }
