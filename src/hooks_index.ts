@@ -22,7 +22,7 @@ import { passOutput } from './hooks_common.js'
 import { resolveIndexPath } from './paths.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
-import { parseDirtyQueueLines } from './worker.js'
+import { encodeDirtyQueueLine, parseDirtyQueueLines } from './worker.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
 export function dirtyQueuePath(): string {
@@ -54,7 +54,7 @@ export function appendDirtyPath(normalizedPath: string): void {
   } catch {
     // File doesn't exist yet (first append) -- nothing to guard against.
   }
-  fs.appendFileSync(queuePath, `${leadingNewline}${normalizedPath}\n`)
+  fs.appendFileSync(queuePath, `${leadingNewline}${encodeDirtyQueueLine(normalizedPath)}\n`)
   // Deliberately NOT calling resetTransientRetryCount here anymore: doing so unconditionally
   // opened a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
   // load attempt) via getDb() on every single edit hook invocation -- and could even create
