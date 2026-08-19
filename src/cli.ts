@@ -27,7 +27,7 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
@@ -407,7 +407,12 @@ export async function cmdIndex(
     // after the loop, which is the pass that owns vanished files.
     if (sha === null && !fs.existsSync(key)) continue
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
-    const parseUnchanged = !force && sha !== null && entry?.sha === sha
+    // A case-only rename (`mv b.ts B.ts`) leaves the content byte-identical, so the sha gate below
+    // would skip the file and the row would keep the old spelling indefinitely -- see
+    // indexedPathSpellingIsStale. Reindexing rewrites the row under the spelling the file
+    // actually has.
+    const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, key)
+    const parseUnchanged = !force && !spellingStale && sha !== null && entry?.sha === sha
     // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
