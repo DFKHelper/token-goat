@@ -35,7 +35,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { serializeOutput } from '../src/hook_registry.js'
-import { preBashHandler, postBashHandler } from '../src/hooks_bash.js'
+import { preBashHandler, postBashHandler, stripTrailingStderrRedirect } from '../src/hooks_bash.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -165,6 +165,55 @@ describe('preBashHandler: compression rewrite', () => {
     invalidateConfigCache()
     const result = preBashHandler(preEvent({ command: 'cargo build' }))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('wraps a command with a trailing 2>&1, and the wrapped command keeps the redirect so interleaving survives', () => {
+    const result = preBashHandler(preEvent({ command: 'npm test 2>&1' }))
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      const wrapped = result.updatedInput['command']
+      expect(wrapped).toContain('token-goat compress')
+      expect(wrapped).toContain('2>&1')
+    }
+  })
+
+  it('does not wrap a command with both a file redirect and a trailing 2>&1', () => {
+    const result = preBashHandler(preEvent({ command: 'npm test > out.txt 2>&1' }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not wrap a non-trailing stderr redirect (2>/dev/null)', () => {
+    const result = preBashHandler(preEvent({ command: 'npm test 2>/dev/null' }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not wrap a stdout-to-stderr redirect (1>&2)', () => {
+    const result = preBashHandler(preEvent({ command: 'npm test 1>&2' }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not wrap a piped command even when the pipe follows a trailing-looking 2>&1', () => {
+    const result = preBashHandler(preEvent({ command: 'npm test 2>&1 | tail -5' }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not wrap a chained command with && after 2>&1', () => {
+    const result = preBashHandler(preEvent({ command: 'npm test && echo done' }))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('stripTrailingStderrRedirect', () => {
+  it('strips a trailing 2>&1', () => {
+    expect(stripTrailingStderrRedirect('npm test 2>&1')).toBe('npm test')
+  })
+
+  it('leaves a command with no trailing 2>&1 unchanged', () => {
+    expect(stripTrailingStderrRedirect('npm test')).toBe('npm test')
+  })
+
+  it('falls back to the original string when stripping would empty it', () => {
+    expect(stripTrailingStderrRedirect('2>&1')).toBe('2>&1')
   })
 })
 
