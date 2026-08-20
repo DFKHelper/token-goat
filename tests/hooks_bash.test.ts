@@ -1700,6 +1700,76 @@ describe('preBashHandler — sed line-range interception', () => {
   })
 })
 
+/**
+ * `awk 'NR>=A && NR<=B' file` and `awk 'NR==A,NR==B' file` print exactly the lines
+ * `sed -n 'A,Bp' file` prints, bypass the read hooks identically, and cost the same context. Only
+ * the sed spelling was recognized, so the awk one drew no surgical-read hint and, worse, no overlap
+ * dedup -- a file read by both spellings looked like two unrelated files, so the second read was
+ * never reported as already served.
+ *
+ * Why didn't a test catch this: every case in the sed block above spells the command `sed`, because
+ * the block was written to cover that extractor's own patterns (quoting, multi-range, the -n guard).
+ * Nothing asked whether a different tool could express the same read, so the gap was in the command
+ * vocabulary, not in any tested branch. These cases pin both awk spellings, the shared dedup ledger
+ * across the two tools, and the programs that must still be left alone.
+ */
+describe('preBashHandler — awk line-range interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits a line-range read hint for the NR>= && NR<= spelling', () => {
+    const result = preBashHandler(makeBashEvent("awk 'NR>=10 && NR<=50' src/hooks_read.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat read')
+      expect(result.context).toContain('src/hooks_read.ts@10-50')
+      expect(result.context, 'the hint must name the command actually run').toContain('`awk`')
+      expect(result.context, 'it must not tell the agent it ran sed').not.toContain('`sed -n`')
+    }
+  })
+
+  it('emits a line-range read hint for the NR==A,NR==B spelling', () => {
+    const result = preBashHandler(makeBashEvent("awk 'NR==100,NR==200' README.md"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('README.md@100-200')
+    }
+  })
+
+  it('tolerates the unspaced && form', () => {
+    const result = preBashHandler(makeBashEvent("awk 'NR>=3&&NR<=7' src/cli.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain('src/cli.ts@3-7')
+  })
+
+  it('shares one dedup ledger with the sed spelling of the same range', () => {
+    const ev = makeBashEvent("sed -n '10,50p' src/shared_ledger_probe.ts")
+    expect(preBashHandler(ev).hookType).toBe('context')
+    const second = preBashHandler({ ...ev, toolInput: { command: "awk 'NR>=10 && NR<=50' src/shared_ledger_probe.ts" } })
+    expect(second.hookType).toBe('context')
+    if (second.hookType === 'context') {
+      expect(second.context, 'the same lines read twice by two tools is still one file read twice').toContain('already read lines 10-50')
+      // The ledger records ranges, not which command served each, so the recall line must not
+      // name a tool: an awk read followed by a sed read once claimed the lines came "via an
+      // earlier `sed`", which was the current command rather than the one that served them.
+      expect(second.context, 'the recall line must not attribute the prior read to a tool it cannot know').not.toContain('via an earlier `sed`')
+      expect(second.context).toContain('via an earlier line-range read')
+    }
+  })
+
+  it('leaves an awk program that does more than show a span alone', () => {
+    expect(preBashHandler(makeBashEvent("awk 'NR>=10 && NR<=50 {print $2}' src/cli.ts")).hookType).toBe('pass')
+    expect(preBashHandler(makeBashEvent("awk '{print $1}' src/cli.ts")).hookType).toBe('pass')
+    expect(preBashHandler(makeBashEvent("awk '/needle/' src/cli.ts")).hookType).toBe('pass')
+  })
+
+  it('rejects a backwards or zero-based range rather than describing it wrongly', () => {
+    expect(preBashHandler(makeBashEvent("awk 'NR>=50 && NR<=10' src/cli.ts")).hookType).toBe('pass')
+    expect(preBashHandler(makeBashEvent("awk 'NR>=0 && NR<=10' src/cli.ts")).hookType).toBe('pass')
+  })
+})
+
 describe('preBashHandler — rg indented def patterns', () => {
   beforeEach(() => {
     clearModuleCaches()
