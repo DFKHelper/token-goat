@@ -52,9 +52,11 @@ describe('language adapters never emit inverted symbol ranges', () => {
     const fn = symbols.find((s) => s.kind === 'sql_function' && s.name === 'foo')
     expect(table).toBeDefined()
     expect(fn).toBeDefined()
-    // The table statement is entirely on line 1; the function body runs through line 5.
+    // The table statement is entirely on line 1; the function body runs through
+    // line 5, which is the last line the fixture actually has. The `6` this
+    // asserted before was the phantom line a trailing newline used to add.
     expect(table?.lineEnd).toBe(1)
-    expect(fn?.lineEnd).toBe(6)
+    expect(fn?.lineEnd).toBe(5)
   })
 
   it('SQL: a fully single-line function statement does not absorb unrelated trailing statements (regression: the flat model extended whichever same-line statement happened to sort last -- by PATTERNS processing order, not textual position -- all the way to the next distinct line/EOF, even when that statement had already terminated with its own `;` on its own start line)', () => {

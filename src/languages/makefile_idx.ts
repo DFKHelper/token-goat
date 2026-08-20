@@ -8,7 +8,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { assignFlatEndLines, buildLineIndex, makeSymbolEmitter, offsetToLine, propagateEndLinesToSymbols } from './common.js'
+import { assignFlatEndLines, buildLineIndex, makeSymbolEmitter, offsetToLine, propagateEndLinesToSymbols, countContentLines } from './common.js'
 
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 120
@@ -131,7 +131,7 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
   const stripped = stripComments(content)
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(stripped)
 
   const { noContinuation: strippedNoContinuation, forTargets: strippedForTargets } = maskContinuationAndDefines(stripped)

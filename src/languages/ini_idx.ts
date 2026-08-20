@@ -7,7 +7,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { assignFlatEndLines, propagateEndLinesToSymbols, makeLineSymbol } from './common.js'
+import { assignFlatEndLines, propagateEndLinesToSymbols, makeLineSymbol, countContentLines } from './common.js'
 
 const MAX_SECTIONS = 200
 const MAX_HEADING_LEN = 200
@@ -24,7 +24,7 @@ export function extractIni(content: string, filePath: string): SymbolEntry[] {
   const sections: MiniSection[] = []
   const seen = new Set<string>()
   const lines = content.split(/\r?\n/)
-  const totalLines = lines.length
+  const totalLines = countContentLines(content)
 
   for (let i = 0; i < lines.length; i++) {
     if (symbols.length >= MAX_SECTIONS) break

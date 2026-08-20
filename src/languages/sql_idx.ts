@@ -13,6 +13,7 @@ import {
   makeSymbolEmitter,
   offsetToLine,
   propagateEndLinesToSymbols,
+  countContentLines,
 } from './common.js'
 
 const MAX_SYMBOLS = 500
@@ -352,7 +353,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   const seen = new Set<string>()
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   // Blanks string literals, `--` line comments, AND `/* */` block comments in one linear scan
   // over the raw content, so neither comment marker is ever mistaken for real syntax while

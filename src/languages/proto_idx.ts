@@ -17,6 +17,7 @@ import {
   propagateEndLinesToSymbols,
   stripCstyleComments,
   stripLineComment,
+  countContentLines,
 } from './common.js'
 
 const MAX_SYMBOLS = 500
@@ -111,7 +112,7 @@ export function extractProto(
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
   const stripped = stripComments(content)
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(stripped)
 
   // name+lineStart -> true end line for block kinds whose opening `{` offset is known, so

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineIndex, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
+import { buildLineIndex, countContentLines, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
+import { extractGraphql } from '../src/languages/graphql_idx.js'
+import { extractHtml } from '../src/languages/html.js'
+import { extractIni } from '../src/languages/ini_idx.js'
+import { extractLiquid } from '../src/languages/liquid.js'
+import { extractMakefile } from '../src/languages/makefile_idx.js'
+import { extractProto } from '../src/languages/proto_idx.js'
+import { extractSql } from '../src/languages/sql_idx.js'
+import { extractTerraform } from '../src/languages/terraform_idx.js'
 
 // ---------------------------------------------------------------------------
 // stripBlockCommentSpan (and the private isInsideStringLiteral it delegates
@@ -182,5 +190,129 @@ describe('findMatchingBraceEndLine line comments', () => {
 
   it('still counts that brace when no marker is given, so existing callers are unchanged', () => {
     expect(findMatchingBraceEndLine(src, open, 5, buildLineIndex(src))).toBe(2)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// countContentLines and the flat-section span ceiling.
+//
+// Every adapter that lays sections out flat (no brace nesting to close a span)
+// hands assignFlatEndLines a `totalLines` figure, and the last section in the
+// file inherits it verbatim as its end line. Eight adapters computed that
+// figure as `content.split('\n').length`, which counts a phantom final element
+// for any file that ends in a newline - i.e. essentially every real file. The
+// result was a last symbol whose span ran exactly one line past EOF, and a
+// `skeleton` line count reported one line too high.
+//
+// Why no test caught it: the adapter suites all asserted on the symbols a
+// fixture produced - names, kinds, start lines - and their fixtures were
+// written as inline template literals that mostly did not end in a newline, so
+// the off-by-one never fired. Nothing asserted the invariant that binds every
+// adapter at once: no symbol may end past the last line that actually exists.
+// These cases assert that invariant directly, on newline-terminated input, for
+// all eight adapters.
+// ---------------------------------------------------------------------------
+
+describe('countContentLines', () => {
+  it('does not count the phantom element a trailing newline leaves behind', () => {
+    expect(countContentLines('a\nb\nc\n')).toBe(3)
+  })
+
+  it('counts the last line of content that does not end in a newline', () => {
+    expect(countContentLines('a\nb\nc')).toBe(3)
+  })
+
+  it('reports an empty string as zero lines', () => {
+    expect(countContentLines('')).toBe(0)
+  })
+
+  it('counts a lone newline as one line', () => {
+    expect(countContentLines('a\n')).toBe(1)
+  })
+
+  it('counts CRLF-terminated content without the phantom element', () => {
+    expect(countContentLines('a\r\nb\r\n')).toBe(2)
+  })
+})
+
+describe('flat-section adapters never end a symbol past EOF', () => {
+  /**
+   * The highest end line anything the adapter extracted claims, or 0 when it
+   * found nothing. Adapters surface flat spans either as symbols or as a
+   * separate sections array, and both inherit `totalLines` on the last entry,
+   * so both count.
+   */
+  function maxEnd(spans: ReadonlyArray<{ lineEnd?: number; lineStart?: number; endLine?: number; line?: number }>): number {
+    let hi = 0
+    for (const span of spans) {
+      const end = span.lineEnd ?? span.endLine ?? span.lineStart ?? span.line ?? 0
+      if (end > hi) hi = end
+    }
+    return hi
+  }
+
+  const cases: Array<{ lang: string; content: string; extract: (c: string) => ReadonlyArray<{ lineEnd?: number; lineStart?: number; endLine?: number; line?: number }> }> = [
+    {
+      lang: 'html',
+      content: '<html>\n<body>\n<h1 id="top">Title</h1>\n<h2>Sub</h2>\n</body>\n</html>\n',
+      extract: (c) => [...extractHtml(c, 'a.html').symbols, ...extractHtml(c, 'a.html').sections],
+    },
+    {
+      lang: 'liquid',
+      content: '{% comment %}x{% endcomment %}\n<h1>One</h1>\n{% assign a = 1 %}\n<h2>Two</h2>\n',
+      extract: (c) => extractLiquid(c, 'b.liquid').sections,
+    },
+    {
+      lang: 'graphql',
+      content: 'type Query {\n  a: String\n}\n\ntype Mutation {\n  b: String\n}\n',
+      extract: (c) => extractGraphql(c, 'c.graphql').symbols,
+    },
+    {
+      lang: 'makefile',
+      content: 'all:\n\techo one\n\nclean:\n\techo two\n',
+      extract: (c) => extractMakefile(c, 'Makefile'),
+    },
+    {
+      lang: 'ini',
+      content: '[first]\nkey = 1\n\n[second]\nother = 2\n',
+      extract: (c) => extractIni(c, 'd.ini'),
+    },
+    {
+      // A trailing statement with no closing brace or semicolon leaves the span
+      // to `totalLines`, which is what makes this case discriminating.
+      lang: 'sql',
+      content: 'CREATE TABLE a (id INT);\n\nCREATE VIEW v AS SELECT 1\n',
+      extract: (c) => extractSql(c, 'e.sql'),
+    },
+    {
+      // Terraform and proto close their last symbol at a brace, so `totalLines`
+      // never reaches a span here and these two stay green on both sides of the
+      // fix. They are kept as invariant guards: a future adapter change that
+      // starts leaning on `totalLines` would be caught without new test work.
+      lang: 'terraform',
+      content: 'resource "aws_s3_bucket" "one" {\n  bucket = "x"\n}\n\nvariable "two" {\n  type = string\n}\n',
+      extract: (c) => extractTerraform(c, 'f.tf'),
+    },
+    {
+      lang: 'proto',
+      content: 'message One {\n  string a = 1;\n}\n\nmessage Two {\n  string b = 1;\n}\n',
+      extract: (c) => extractProto(c, 'g.proto').symbols,
+    },
+  ]
+
+  for (const { lang, content, extract } of cases) {
+    it(`keeps every ${lang} symbol inside the file (fail-on-buggy: split('\\n').length counts a phantom line for newline-terminated input)`, () => {
+      const real = countContentLines(content)
+      const symbols = extract(content)
+      expect(symbols.length).toBeGreaterThan(0)
+      expect(maxEnd(symbols)).toBeLessThanOrEqual(real)
+    })
+  }
+
+  it('still spans the final line when the file does not end in a newline', () => {
+    const content = '[first]\nkey = 1\n\n[second]\nother = 2'
+    const symbols = extractIni(content, 'h.ini')
+    expect(maxEnd(symbols)).toBe(countContentLines(content))
   })
 })

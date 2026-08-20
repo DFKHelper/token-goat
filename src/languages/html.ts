@@ -14,7 +14,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, AdapterImport } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches, countContentLines } from './common.js'
 
 export interface HtmlSection {
   readonly heading: string
@@ -94,7 +94,7 @@ export function extractHtml(
 
   // Sort and assign end-lines
   sections.sort((a, b) => a.line - b.line)
-  const totalLines = code.split('\n').length
+  const totalLines = countContentLines(code)
   assignFlatEndLines(sections, totalLines)
 
   // id and class attributes. Deduped by (kind, name, line) - first occurrence wins within its

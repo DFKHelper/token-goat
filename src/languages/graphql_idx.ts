@@ -19,6 +19,7 @@ import {
   stripHashComments,
   stripMultilineStringSpan,
   stripStringLiterals,
+  countContentLines,
 } from './common.js'
 
 // Finds the index of the first `#` on `line` that isn't sitting inside an open single- or
@@ -165,7 +166,7 @@ export function extractGraphql(
   // whole description span - `#` characters included - is already blanked to spaces before
   // stripHashComments ever sees it, so there is no comment marker left inside it to misread.
   const stripped = stripHashComments(descriptionsStripped)
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(stripped)
 
   // type / interface / input / enum / union / scalar (+ extend variants)
