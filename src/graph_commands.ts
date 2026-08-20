@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
+import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
@@ -1327,6 +1327,14 @@ export function runScope(opts: ScopeOptions): number {
   const line = Number.parseInt(lineStr, 10)
   if (!Number.isFinite(line) || line < 1) {
     emitErr(`Invalid line number: ${lineStr}`)
+    return 1
+  }
+
+  // `scope --json` renders each enclosing symbol's full indexed BODY, so it discloses exactly what
+  // the other index-backed reads do and answers to the same confinement.
+  const confined = fileConfinementRefusal('This file', file, undefined)
+  if (confined !== null) {
+    emitErr(confined)
     return 1
   }
 
