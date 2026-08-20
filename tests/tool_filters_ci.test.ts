@@ -63,6 +63,24 @@ describe('GhRunLogFilter dispatch', () => {
     expect(f.matches(['gh', 'pr', 'view', '42'])).toBe(false)
   })
 
+  // `--log-failed` is the spelling CI triage actually reaches for. `argv.includes('--log')`
+  // is a whole-token test, so it never matched, and the command fell through to GhFilter --
+  // which strips no job/step column prefix, leaving its ^-anchored step regexes matching
+  // nothing. The bug was invisible because every existing case spelled the flag `--log`.
+  it('matches gh run view with --log-failed', () => {
+    expect(f.matches(['gh', 'run', 'view', '123456789', '--log-failed'])).toBe(true)
+  })
+
+  it('selectFilter routes --log-failed to GhRunLogFilter, not GhFilter', () => {
+    expect(selectFilter(['gh', 'run', 'view', '123456789', '--log-failed'])).toBeInstanceOf(
+      GhRunLogFilter,
+    )
+  })
+
+  it('does not match an unrelated flag that merely starts with --log', () => {
+    expect(f.matches(['gh', 'run', 'view', '123456789', '--logo'])).toBe(false)
+  })
+
   it('selectFilter returns GhRunLogFilter for gh run view --log', () => {
     expect(selectFilter(['gh', 'run', 'view', '123456789', '--log'])).toBeInstanceOf(
       GhRunLogFilter,
