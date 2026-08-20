@@ -146,4 +146,43 @@ describe('symbols.docstring storage cap', () => {
     const last = body.charCodeAt(body.length - 1)
     expect(last >= 0xd800 && last <= 0xdbff, 'stored value ends in a lone high surrogate').toBe(false)
   })
+  it('elides a destructuring declaration whose bindings would multiply it past the cap, and still reads it back complete', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-destructure-'))
+    try {
+      const file = join(root, 'many.ts')
+      const names = Array.from({ length: 900 }, (_, i) => 'v' + i)
+      const source = 'const [' + names.join(',') + '] = source\n'
+      // Each name on its own is far under the cap. What passes it is the declarator's
+      // text stored once per bound name: 900 x ~4.4 KB.
+      expect(source.length).toBeLessThan(MAX_SYMBOL_BODY_CHARS)
+      expect(source.length * names.length).toBeGreaterThan(MAX_SYMBOL_BODY_CHARS)
+      writeFileSync(file, source)
+      indexFileSync(normalizePath(file))
+
+      const stored = querySymbols({ filePath: normalizePath(file), name: 'v0' })
+      expect(stored.length).toBeGreaterThan(0)
+      expect(stored[0]!.body).toBe('')
+
+      // Elided in the row, complete on the way out.
+      const { text } = runRead({ spec: file + '::v0' })
+      expect(text).toContain('v899')
+      expect(text).toContain('= source')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves a small destructuring declaration\'s body alone', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-destructure-small-'))
+    try {
+      const file = join(root, 'few.ts')
+      writeFileSync(file, 'const { alpha, beta } = source\n')
+      indexFileSync(normalizePath(file))
+      const stored = querySymbols({ filePath: normalizePath(file), name: 'alpha' })
+      expect(stored.length).toBeGreaterThan(0)
+      expect(stored[0]!.body).toBe('const { alpha, beta } = source')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

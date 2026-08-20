@@ -1907,3 +1907,101 @@ describe('isParseSkipEligible', () => {
     expect(isParseSkipEligible('/repo/coverage.json', optedIn)).toBe(false)
   })
 })
+
+describe("a stored body says the same thing as the span it is stored with", () => {
+  // `read "file::symbol"` prints a header derived from the span and text taken from the
+  // body. If those two disagree the command serves text the file does not contain at the
+  // lines it claims. Measured on a real index before the fix: 4,394 of 11,391 symbols
+  // dropped real source from the span's first line -- 1,811 of them losing `export`, so a
+  // reader was told an exported symbol was module-private.
+  const cases: Array<[string, string, string, string]> = [
+    ['exported const', 'a.ts', 'export const alpha = 1\n', 'alpha'],
+    ['plain const', 'b.ts', 'const beta = 2\n', 'beta'],
+    ['let', 'c.ts', 'let gamma = 3\n', 'gamma'],
+    ['exported type alias', 'd.ts', 'export type Delta = string | number\n', 'Delta'],
+    ['exported arrow function', 'e.ts', 'export const eps = (n: number) => n + 1\n', 'eps'],
+    ['javascript exported const', 'f.js', 'export const zeta = 4\n', 'zeta'],
+    ['ambient declare', 'i.ts', 'declare const iota: string\n', 'iota'],
+    ['exported ambient declare', 'j.ts', 'export declare const kappa: number\n', 'kappa'],
+  ]
+
+  for (const [label, name, source, symbolName] of cases) {
+    it('keeps the whole first line of the span in the body: ' + label, async () => {
+      const file = write(name, source)
+      const syms = (await parseFile(file)).symbols
+      const sym = syms.find((x) => x.name === symbolName)
+      expect(sym, 'symbol ' + symbolName + ' was not extracted at all').toBeDefined()
+      const fileLines = source.split(/\r?\n/)
+      const span = fileLines.slice((sym?.lineStart ?? 1) - 1, sym?.lineEnd ?? 1).join('\n')
+      expect(sym?.body).toBe(span)
+      // The point of the span agreeing: the declaration keyword survives.
+      expect(sym?.body.split('\n')[0]).toBe(fileLines[(sym?.lineStart ?? 1) - 1])
+    })
+  }
+
+  // Non-discriminating on its own: a decorated_definition node already starts at the
+  // decorator, so this case passed before the fix too. It is kept as an invariant guard --
+  // it fails if a future change narrows the span or widens the node out of step.
+  it('keeps a python decorator inside the body it spans', async () => {
+    const source = '@decorator\ndef handler():\n    return 1\n'
+    const file = write('g.py', source)
+    const syms = (await parseFile(file)).symbols
+    const sym = syms.find((x) => x.name === 'handler')
+    expect(sym).toBeDefined()
+    const fileLines = source.split(/\r?\n/)
+    expect(sym?.body).toBe(fileLines.slice((sym?.lineStart ?? 1) - 1, sym?.lineEnd ?? 1).join('\n'))
+    expect(sym?.body).toContain('@decorator')
+  })
+  it('does not give every declarator the whole declaration when one line holds many', async () => {
+    // The widening is deliberately skipped here. A minified bundle puts hundreds of
+    // declarators on one line, and handing each of them the whole declaration is the
+    // quadratic storage blow-up tests/index_amplification_guard.test.ts exists to catch.
+    const source = 'const one = 1, two = 2, three = 3\n'
+    const file = write('h.ts', source)
+    const syms = (await parseFile(file)).symbols
+    for (const name of ['one', 'two', 'three']) {
+      const sym = syms.find((x) => x.name === name)
+      expect(sym, name + ' was not extracted').toBeDefined()
+      expect(sym?.body).not.toContain('const ')
+      expect(sym?.body.length).toBeLessThan(source.length)
+    }
+  })
+  it('keeps `export` on a decorated class, and invents no newline for a same-line decorator', async () => {
+    const multi = write('k.ts', '@dec\nexport class Deco {}\n')
+    const a = (await parseFile(multi)).symbols.find((x) => x.name === 'Deco')
+    expect(a?.body).toBe('@dec\nexport class Deco {}')
+    expect(a?.lineStart).toBe(1)
+    expect(a?.lineEnd).toBe(2)
+
+    // Glueing the decorator and the node together used to put a newline here that the
+    // file does not contain, and lose the `export` sitting between them.
+    const same = write('l.ts', '@dec export class Same {}\n')
+    const b = (await parseFile(same)).symbols.find((x) => x.name === 'Same')
+    expect(b?.body).toBe('@dec export class Same {}')
+    expect(b?.lineStart).toBe(1)
+    expect(b?.lineEnd).toBe(1)
+  })
+
+  it('keeps `export default` when it sits on its own line above the declaration', async () => {
+    const file = write('m.ts', '// doc\nexport default\nfunction later() {}\n')
+    const sym = (await parseFile(file)).symbols.find((x) => x.name === 'later')
+    expect(sym?.body).toBe('export default\nfunction later() {}')
+    expect(sym?.lineStart).toBe(2)
+    expect(sym?.lineEnd).toBe(3)
+  })
+
+  it('keeps go declaration keywords, but not for a grouped declaration', async () => {
+    const file = write('n.go', 'package main\n\nvar gx = 1\n\nconst gy = 2\n\ntype GT struct{}\n')
+    const syms = (await parseFile(file)).symbols
+    expect(syms.find((x) => x.name === 'gx')?.body).toBe('var gx = 1')
+    expect(syms.find((x) => x.name === 'gy')?.body).toBe('const gy = 2')
+    expect(syms.find((x) => x.name === 'GT')?.body).toBe('type GT struct{}')
+
+    // A grouped `var ( ... )` holds several specs, so widening each of them to the whole
+    // group is the same fan-out the multi-declarator case avoids.
+    const grouped = write('o.go', 'package main\n\nvar (\n\tp = 1\n\tq = 2\n)\n')
+    const g = (await parseFile(grouped)).symbols
+    expect(g.find((x) => x.name === 'p')?.body).toBe('p = 1')
+    expect(g.find((x) => x.name === 'q')?.body).toBe('q = 2')
+  })
+})

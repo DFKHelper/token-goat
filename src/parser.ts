@@ -396,6 +396,12 @@ const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['method_signature', 'method'],
   ['property_signature', 'var'],
   ['abstract_method_signature', 'method'],
+  // `declare function f(): void` parses as a `function_signature` inside an
+  // ambient_declaration -- a distinct node type from `function_declaration`, which always
+  // carries a body. Without an entry here every ambient function in a .d.ts file was
+  // missing from the index entirely, the same container-drop shape as the module entries
+  // below rather than a wrong span.
+  ['function_signature', 'function'],
   // `namespace Foo { ... }` (and the legacy `module Foo { ... }` synonym) parses as
   // `internal_module`; `declare module "some-string" { ... }` (an ambient module declaration,
   // common in .d.ts files) parses as `module` -- a distinct node type from either. Neither had a
@@ -492,6 +498,62 @@ function nodeName(node: TsNode): string | null {
 // `lines`/`style` are optional so a future extractor with no doc-comment support wired yet can
 // keep calling makeSymbol exactly as before and get `docstring: ''`, matching every extractor's
 // behavior prior to this change.
+// Declaration nodes whose single spec/declarator child is the node a symbol is built from.
+// Widening from the spec to its declaration is what puts `const`, `let`, `var` and Go's
+// `var`/`const`/`type` back on the front of a stored body.
+const SPEC_DECLARATION_OWNER = new Map<string, ReadonlySet<string>>([
+  ['variable_declarator', new Set(['lexical_declaration', 'variable_declaration'])],
+  ['var_spec', new Set(['var_declaration'])],
+  ['const_spec', new Set(['const_declaration'])],
+  ['type_spec', new Set(['type_declaration'])],
+])
+
+// Nodes that wrap exactly one declaration and contribute only a keyword prefix to it.
+const PREFIX_WRAPPER_TYPES: ReadonlySet<string> = new Set(['export_statement', 'ambient_declaration'])
+
+// A tree-sitter node often starts partway into its own first line. `export const x = 1`
+// builds its symbol from the `variable_declarator`, which starts at `x`, while lineStart
+// comes from that node's row and so names the whole line. The stored body and the stored
+// span then disagree about where the symbol begins: `read "file::symbol"` prints a header
+// taken from the span and text taken from the body, so it serves text the file does not
+// contain at those lines, with `export`, `const`, `let` or `declare` missing from the
+// front. Widening the node to the declaration that owns it puts the two back in step.
+//
+// Widening stops at a declaration holding more than one declarator. `const a = 1, b = 2`
+// would otherwise give both symbols the whole declaration, and a minified bundle can put
+// hundreds of them on a single line -- the quadratic blow-up tests/index_amplification_guard
+// exists to catch. Those keep the narrow declarator body, which is the honest thing to
+// store for a line that genuinely holds many symbols.
+function widenToDeclaration(node: TsNode): TsNode {
+  let widened = node
+  const owner = SPEC_DECLARATION_OWNER.get(widened.type)
+  if (owner !== undefined) {
+    const decl = widened.parent
+    if (decl === null || !owner.has(decl.type)) return widened
+    // Only when this declaration holds exactly one spec, and holds it on its own opening
+    // row. `const a = 1, b = 2` and Go's grouped `var ( p = 1\n q = 2 )` both put several
+    // symbols in one declaration; giving each of them the whole thing is the quadratic
+    // storage blow-up tests/index_amplification_guard.test.ts exists to catch.
+    let specs = 0
+    for (const c of decl.namedChildren) if (c.type === widened.type) specs++
+    if (specs !== 1) return widened
+    if (decl.startPosition.row !== widened.startPosition.row) return widened
+    widened = decl
+  }
+  // Walk out through the wrappers that add only a keyword prefix. `declare const x` nests
+  // the declaration inside an ambient_declaration, and `export declare const x` nests that
+  // inside an export_statement in turn, so a single step would still leave `declare` (or
+  // `export declare`) off the front. No row guard: `export default` may sit on its own
+  // line above the function it exports, and that line belongs to the symbol. These
+  // wrappers add no fan-out -- each holds exactly one declaration -- so widening through
+  // them adds the prefix once per symbol and cannot amplify storage.
+  for (;;) {
+    const parent = widened.parent
+    if (parent === null || !PREFIX_WRAPPER_TYPES.has(parent.type)) return widened
+    widened = parent
+  }
+}
+
 function makeSymbol(
   filePath: string,
   name: string,
@@ -500,14 +562,15 @@ function makeSymbol(
   lines?: readonly string[],
   style?: DocCommentStyle,
 ): SymbolEntry {
-  const lineStart = node.startPosition.row + 1
+  const ranged = widenToDeclaration(node)
+  const lineStart = ranged.startPosition.row + 1
   return {
     filePath,
     name,
     kind,
     lineStart,
-    lineEnd: node.endPosition.row + 1,
-    body: node.text,
+    lineEnd: ranged.endPosition.row + 1,
+    body: ranged.text,
     docstring:
       lines !== undefined && style !== undefined ? precedingDocComment(lines, lineStart, style) : '',
       parent: '',
@@ -560,13 +623,28 @@ function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly stri
           // The doc comment (if any) sits above the leading decorator, not above the decorated
           // node itself -- look up from the same widened lineStart used for the range below.
           const lineStart = decorators[0]!.startPosition.row + 1
+          // The decorated node may itself sit inside `export`/`declare`, whose keywords
+          // fall between the decorator and the node.
+          const decoratedEnd = widenToDeclaration(node).endPosition.row + 1
           out.push({
             filePath,
             name,
             kind,
             lineStart,
-            lineEnd: node.endPosition.row + 1,
-            body: [...decorators, node].map((n) => n.text).join('\n'),
+            lineEnd: decoratedEnd,
+            // Read the body off the file rather than gluing the decorator and the node
+            // together with a newline: `@dec export class X {}` has no newline between
+            // them, and the glued form both invents one and drops the `export` that sits
+            // between the two nodes. A decorated declaration yields one symbol, so taking
+            // its whole span cannot fan out.
+            // The trailing replace keeps a convention the rest of the index follows: a
+            // tree-sitter node never carries the indentation of its own first line,
+            // because it starts at the first real character. Reading the span off the
+            // file would otherwise make decorated symbols the one shape that does.
+            body: lines
+              .slice(lineStart - 1, decoratedEnd)
+              .join('\n')
+              .replace(/^[ \t]+/, ''),
             docstring: precedingDocComment(lines, lineStart, 'c'),
             parent: '',
           })
@@ -596,8 +674,20 @@ function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly stri
           out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child, lines, 'c'))
         } else {
           // Destructuring pattern: emit one variable symbol per bound identifier (not a single junk symbol named after the whole `{ ... }` / `[ ... ]`).
-          for (const bound of collectPatternBindings(name)) {
-            out.push(makeSymbol(filePath, bound, 'variable', child, lines, 'c'))
+          const bindings = collectPatternBindings(name)
+          // One declarator can bind hundreds of names, and each of them would otherwise
+          // store the whole declarator's text: `const [v0, ..., v899] = source` turned a
+          // 4.4 KB line into 3.9 MB of stored bodies, roughly 900x, which is the same
+          // quadratic growth MAX_SYMBOL_BODY_CHARS bounds for a single oversized row but
+          // spread across many small ones instead. Store the body elided once the
+          // declaration's total contribution would pass that same cap. Elided means the
+          // empty string, not a truncated copy, because resolveBody re-slices an empty
+          // body from the file at read time -- so `read` still serves the whole thing.
+          const elideBodies =
+            bindings.length > 1 && bindings.length * child.text.length > MAX_SYMBOL_BODY_CHARS
+          for (const bound of bindings) {
+            const sym = makeSymbol(filePath, bound, 'variable', child, lines, 'c')
+            out.push(elideBodies ? { ...sym, body: '' } : sym)
           }
         }
       }

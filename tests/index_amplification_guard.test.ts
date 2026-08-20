@@ -98,6 +98,14 @@ const FIXTURES: readonly Fixture[] = [
     content: minifiedTs(900),
   },
   {
+    name: 'destructured.ts',
+    why: 'one declarator, 900 bound names -- the fan-out a declarator count cannot see',
+    content:
+      'const [' +
+      Array.from({ length: 900 }, (_, i) => 'v' + i).join(',') +
+      '] = source\n',
+  },
+  {
     name: 'longnames.json',
     why: 'huge repeated identifiers -- proves name/context stay linear (each occurs once in source)',
     content: `{${Array.from(
