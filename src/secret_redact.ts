@@ -59,13 +59,42 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // contain '_' and could otherwise partially match the classic pattern.
   ['github_token', /github_pat_[A-Za-z0-9_]{22,}/g],
   ['github_token', /gh[oprsu]_[A-Za-z0-9]{36,}/g],
+  // xapp- is Slack's app-level token (Socket Mode), a bearer credential in its own right that
+  // the xox[baprs]- prefix does not cover. It gets its own entry rather than joining the
+  // alternation above because it needs the full segmented shape (xapp-<ver>-<app id>-<digits>-
+  // <hex>) to be safe: a bare /xapp-[A-Za-z0-9-]+/ redacted ordinary identifiers like
+  // "xapp-config" and the css class "xapp-container", mangling normal source. The xox* prefixes
+  // are distinctive enough on their own; "xapp-" is not.
   ['slack_token', /xox[baprs]-[A-Za-z0-9-]+/g],
+  ['slack_token', /xapp-\d-[A-Za-z0-9]{6,}-\d{8,}-[A-Za-z0-9]{16,}/g],
   // Matches the full block (BEGIN marker through its matching END marker), not just the
   // header -- the actual secret material is the base64 body between them, so redacting only
   // the header line would leave the key bytes themselves fully readable in the cached blob.
-  // The lazy [\s\S]*? is bounded by the very next END marker (private key blocks don't nest),
-  // so this stays linear in practice despite the lazy quantifier.
-  ['private_key_block', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g],
+  // The body is lazy and additionally refuses to cross a following BEGIN marker. Both halves
+  // matter. The laziness bounds a successful match at the very next END marker; the negative
+  // lookahead bounds a *failing* one, because a BEGIN with no END of its own would otherwise
+  // scan to end-of-input, and a blob full of such markers made the pass quadratic -- 6 ms, 20 ms
+  // and 78 ms for 2000, 4000 and 8000 of them, four times the work for twice the input, the same
+  // shape as the lookbehind incident described above. Private key blocks do not nest, so
+  // refusing to cross a BEGIN costs nothing in correctness.
+  // The algorithm and ` BLOCK` groups are backreferenced in the END marker rather than repeated,
+  // so a BEGIN only ever pairs with its own END spelling. Written as two independent optional
+  // groups, `BEGIN PGP PRIVATE KEY` would happily close on a distant `END RSA PRIVATE KEY BLOCK`
+  // and redact everything in between. A non-participating group backreferences as the empty
+  // string in JS, which is exactly what the unprefixed `BEGIN PRIVATE KEY` form needs.
+  // The algorithm list covers every armored private-key header openssl, ssh-keygen and gpg
+  // actually emit, not just the ones a first draft happened to think of. ENCRYPTED is the
+  // PKCS#8 passphrase-protected form (`openssl genpkey -aes256`, `ssh-keygen -m PKCS8`) and is
+  // the most common shape of all; DSA is legacy but still written verbatim; PGP carries the
+  // ` BLOCK` suffix, which is why that suffix is optional here. All three used to fall through
+  // to disk in full. An encrypted key is still key material: the passphrase can be attacked
+  // offline once the bytes are cached, so it is redacted like any other.
+  // PuTTY `.ppk` files are deliberately not matched. They have no END marker -- the private
+  // section is a `Private-Lines: N` count followed by exactly N base64 lines -- so bounding a
+  // match would take a stateful parse rather than a regex, on a path that runs over every
+  // command output. A regex guess at where the body ends is exactly the over-eager match this
+  // module's header warns against.
+  ['private_key_block', /-----BEGIN (RSA |DSA |EC |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY( BLOCK)?-----(?:(?!-----BEGIN )[\s\S])*?-----END \1PRIVATE KEY\2-----/g],
   // Redacts only the token itself, not the "Authorization: Bearer " prefix -- the lookbehind
   // anchors on the header name and scheme so the surrounding request-log line stays readable,
   // matching how AWS_ACCESS_KEY_ID=... above keeps its own prefix intact.

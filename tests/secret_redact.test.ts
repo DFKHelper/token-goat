@@ -81,6 +81,82 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC-secret-body')
   })
 
+  it.each([
+    ['ENCRYPTED PRIVATE KEY', 'openssl genpkey -aes256 / ssh-keygen -m PKCS8 with a passphrase'],
+    ['DSA PRIVATE KEY', 'legacy openssl dsa'],
+  ])('redacts a %s block, body included (%s)', (label) => {
+    const body = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC-secret-body'
+    const pem = `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`
+    const { text, count } = redactSecrets(pem)
+    expect(count).toBe(1)
+    expect(text).toBe('[REDACTED:private_key_block]')
+    expect(text).not.toContain(body)
+    expect(text).not.toContain(label)
+  })
+
+  it('redacts a PGP private key block, whose header carries a trailing BLOCK word', () => {
+    const body = 'lQOYBGX1secret-gpg-key-material-here'
+    const pem = `-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n${body}\n-----END PGP PRIVATE KEY BLOCK-----`
+    const { text, count } = redactSecrets(pem)
+    expect(count).toBe(1)
+    expect(text).toBe('[REDACTED:private_key_block]')
+    expect(text).not.toContain(body)
+  })
+
+  it('redacts a Slack app-level (xapp-) token, not just the xox* family', () => {
+    const fake = 'xapp-1-A01234567-1234567890123-abcdef0123456789abcdef0123456789'
+    const { text, count } = redactSecrets(`SLACK_APP_TOKEN=${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('SLACK_APP_TOKEN=[REDACTED:slack_token]')
+    expect(text).not.toContain(fake)
+  })
+
+  it('leaves an armored certificate or public key alone: only PRIVATE KEY blocks are redacted', () => {
+    const cert = '-----BEGIN CERTIFICATE-----\nMIIDdzCCAl-ordinary-public-cert\n-----END CERTIFICATE-----'
+    const pub = '-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq-ordinary-public-key\n-----END PUBLIC KEY-----'
+    const { text, count } = redactSecrets(`${cert}\n\n${pub}`)
+    expect(count).toBe(0)
+    expect(text).toBe(`${cert}\n\n${pub}`)
+  })
+
+  it.each(['xapp-container', 'xapp-config', 'xapp-1', 'xapp-feature-flag-enabled'])(
+    'leaves the ordinary identifier %s alone: xapp- alone is not a Slack token',
+    (ident) => {
+      const line = `className={styles["${ident}"]}`
+      const { text, count } = redactSecrets(line)
+      expect(count).toBe(0)
+      expect(text).toBe(line)
+    },
+  )
+
+  it.each([
+    ['-----BEGIN PGP PRIVATE KEY-----', '-----END PGP PRIVATE KEY BLOCK-----'],
+    ['-----BEGIN RSA PRIVATE KEY-----', '-----END EC PRIVATE KEY-----'],
+    ['-----BEGIN PRIVATE KEY-----', '-----END ENCRYPTED PRIVATE KEY-----'],
+  ])('does not pair %s with the mismatched %s', (begin, end) => {
+    const between = 'ORDINARY UNRELATED TEXT THAT MUST SURVIVE'
+    const { text, count } = redactSecrets(`${begin}\n${between}\n${end}`)
+    expect(count).toBe(0)
+    expect(text).toContain(between)
+  })
+
+  it('stays linear on a blob of unterminated BEGIN markers', () => {
+    const marker = '-----BEGIN RSA PRIVATE KEY-----\nx\n'
+    const time = (n: number): number => {
+      const blob = marker.repeat(n)
+      const start = performance.now()
+      redactSecrets(blob)
+      return performance.now() - start
+    }
+    time(4000)
+    const small = Math.max(time(4000), 1)
+    const large = time(16000)
+    // Four times the input. Linear scaling lands near 4x; the quadratic shape this guards
+    // against was ~16x. A generous ceiling keeps the test from flaking on a loaded machine
+    // while still failing hard if the negative lookahead bounding the body is ever removed.
+    expect(large / small).toBeLessThan(10)
+  })
+
   it('redacts each block independently when multiple private keys appear in one blob', () => {
     const pem1 = '-----BEGIN RSA PRIVATE KEY-----\nfirst-key-body\n-----END RSA PRIVATE KEY-----'
     const pem2 = '-----BEGIN EC PRIVATE KEY-----\nsecond-key-body\n-----END EC PRIVATE KEY-----'
