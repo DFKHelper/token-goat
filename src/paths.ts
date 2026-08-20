@@ -217,29 +217,29 @@ export function safeJoin(base: string, ...parts: string[]): string {
 }
 
 /**
- * Render a path for a message the model will read, with every control character escaped.
+ * Render text for a message the model will read, with every control character escaped.
  *
- * A file name is untrusted input for the same reason a per-project config file is: it arrives
- * with the repository, so it is written by whoever wrote the repository. Newlines are legal in
- * file names on Linux and macOS, and a hint that interpolates such a name raw does not merely
- * look odd -- the injected line lands in `additionalContext` looking exactly like a genuine
- * token-goat note, because that is the only thing distinguishing one line of the hint from the
- * next. Escaping is a no-op for every ordinary path, and idempotent, so it is safe to apply more
- * than once along a call chain.
+ * Anything taken out of a file is untrusted for the same reason a per-project config file is: it
+ * arrives with the repository or the archive, so it is written by whoever wrote that. A file name,
+ * a CSV cell, a JSON key and a zip entry name may all hold a newline, and a summary that
+ * interpolates one raw does not merely look odd -- the injected line lands in the model's context
+ * looking exactly like a genuine token-goat line, because a line break is the only thing
+ * distinguishing one from the next. Escaping is a no-op for ordinary text, and idempotent, so it
+ * is safe to apply more than once along a call chain.
  *
  * The set is wider than the C0/C1 controls: U+2028 and U+2029 are line terminators in their
  * own right, and the Unicode format characters (bidi overrides and isolates, the zero-width
  * marks, the byte-order mark) reorder or hide text without ending the line -- a name that
  * renders backwards is as misleading as one that adds a line.
  *
- * Deliberately not injective: a name that literally contains the four characters `\x1b` comes out
+ * Deliberately not injective: text that literally contains the four characters `\x1b` comes out
  * unchanged and reads the same as an escaped ESC. Escaping backslashes too would fix that at the
  * cost of idempotency and of mangling every Linux path with a backslash in it, and buys nothing
- * here, because this output is only ever read -- nothing decodes it back into a path.
+ * here, because this output is only ever read -- nothing decodes it back.
  */
-export function displaySafePath(p: string): string {
+export function displaySafeText(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return p.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\p{Cf}/gu, ch => {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\p{Cf}/gu, ch => {
     if (ch === '\n') return '\\n'
     if (ch === '\r') return '\\r'
     if (ch === '\t') return '\\t'
@@ -250,4 +250,14 @@ export function displaySafePath(p: string): string {
       ? '\\x' + code.toString(16).padStart(2, '0')
       : '\\u' + code.toString(16).padStart(4, '0')
   })
+}
+
+/**
+ * A file path with the same escaping applied, for a hook hint or any other line the model reads.
+ *
+ * Kept as its own name because the callers are about paths and read better for saying so; the rule
+ * itself is not path-specific, which is why {@link displaySafeText} is the one that does the work.
+ */
+export function displaySafePath(p: string): string {
+  return displaySafeText(p)
 }

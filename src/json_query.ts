@@ -12,6 +12,8 @@
  * for querying JSON data files rather than config.
  */
 
+import { displaySafeText } from './paths.js'
+
 export type JsonValueType = 'null' | 'string' | 'number' | 'boolean' | 'array' | 'object'
 
 export function jsonType(value: unknown): JsonValueType {
@@ -103,14 +105,16 @@ export function formatJsonOutline(outline: JsonOutline): string {
 
   if (outline.kind === 'object') {
     if (outline.fields.length === 0) return '(empty object)'
-    return outline.fields.map((f) => `${f.name}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`).join('\n')
+    // A JSON object key may hold a newline, and this listing is one entry per line: unescaped, a
+    // key could add a line of its own that reads exactly like another field of the document.
+    return outline.fields.map((f) => `${displaySafeText(f.name)}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`).join('\n')
   }
 
   const lines = [`array of ${outline.length} element${outline.length === 1 ? '' : 's'} (${outline.elementType})`]
   if (outline.sampleKeys !== undefined) {
     lines.push(outline.heterogeneous === true ? 'keys (from first elements, shape varies across sample):' : 'keys (from first elements):')
     for (const f of outline.sampleKeys) {
-      lines.push(`  ${f.name}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`)
+      lines.push(`  ${displaySafeText(f.name)}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`)
     }
   }
   return lines.join('\n')

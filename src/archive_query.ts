@@ -18,6 +18,8 @@
  * it belongs, on the two zip commands that actually need it.
  */
 
+import { displaySafeText } from './paths.js'
+
 import { createLazyModuleLoader } from './lazy_module.js'
 
 interface UnzipFileInfo {
@@ -92,7 +94,9 @@ export async function listZipEntries(data: Uint8Array): Promise<ZipEntry[]> {
 /** Compact "size  path" listing, one line per entry (directories included, size 0). */
 export function formatZipList(entries: readonly ZipEntry[]): string {
   if (entries.length === 0) return '(no entries found)'
-  return entries.map((e) => `${String(e.size).padStart(10)}  ${e.path}`).join('\n')
+  // An entry name is whatever whoever built the archive put there, and a zip name may hold a
+  // newline: unescaped, one entry could print a second line that reads like another entry.
+  return entries.map((e) => `${String(e.size).padStart(10)}  ${displaySafeText(e.path)}`).join('\n')
 }
 
 /** Decompresses exactly one entry's bytes by its exact in-archive path. Returns `undefined` if
