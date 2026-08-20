@@ -33,6 +33,11 @@ function stripCdPrefix(cmd: string): string {
   return stripped.trim() || cmd
 }
 
+export function stripTrailingStderrRedirect(cmd: string): string {
+  const stripped = cmd.replace(/\s*2>&1\s*$/, '')
+  return stripped.trim() || cmd
+}
+
 function hasTestRunScopeOrBudget(cmd: string): boolean {
   const hasTimeout = /(?:^|\s)(?:timeout(?:\.exe)?\s+\S+|--(?:test)?timeout(?:=|\s)\S+)/i.test(cmd)
   const hasSelector = /(?:\s::\S+|\s(?:-k|-t|-run|--(?:testNamePattern|last-failed|test|project))(?:=|\s)|\b(?:tests?|spec)\S*\.(?:[cm]?[jt]sx?|py|go|rs)\b|(?:^|\s)\.\/\S+)/i.test(cmd)
@@ -1524,11 +1529,12 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
   if (!canRunWrappedShell()) return null
 
   // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly.
-  const detected = detectFromCommand(cmd, getCwd(event))
+  const gateCmd = stripTrailingStderrRedirect(cmd)
+  const detected = detectFromCommand(gateCmd, getCwd(event))
   let filterName: string
   if (detected !== null) {
     filterName = detected.filter.name
-  } else if (isCompressibleSingleCommand(cmd)) {
+  } else if (isCompressibleSingleCommand(gateCmd)) {
     filterName = 'generic'
   } else {
     return null
@@ -2192,7 +2198,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.
-  if (!isBuildCommand(cmd) && detectFromCommand(cmd, preHookCwd ?? undefined) === null) return passOutput()
+  // isBuildCommand's patterns are prefix-anchored so a trailing `2>&1` never breaks them, but detectFromCommand rejects any redirect outright (hasRedirect) — so a command recognized only via detectFromCommand (e.g. `npm test`, resolved through its package-manager-script dispatch, not a BUILD_COMMAND_PATTERNS entry) needs the same trailing-`2>&1` allowance maybeCompressRewrite applies below, or it never reaches that function at all.
+  if (!isBuildCommand(cmd) && detectFromCommand(stripTrailingStderrRedirect(cmd), preHookCwd ?? undefined) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
   const cmdHash = shortFingerprint(stripOutputPipeline(cmd))
