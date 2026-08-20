@@ -667,13 +667,50 @@ function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonl
   return { filePath, ranges }
 }
 
+/**
+ * `awk` spelling of the same line-range read `extractSedRange` handles: `awk 'NR>=A && NR<=B' file`
+ * and `awk 'NR==A,NR==B' file` show exactly the lines a `sed -n 'A,Bp' file` would, bypass the read
+ * hooks the same way, and cost the same context -- but matched none of the sed patterns, so they
+ * drew neither the surgical-read hint nor the overlap dedup the sed spelling has had all along.
+ * Recognized here so both spellings of one read reach the same machinery, including sharing a dedup
+ * ledger: reading lines 1-40 with `sed` and then with `awk` is one file read twice, not two files.
+ */
+function extractAwkRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
+  const m = /^awk\s+(?:'([^']+)'|"([^"]+)")\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
+  if (!m) return null
+  const program = m[1] ?? m[2]
+  if (program === undefined) return null
+  // Two spellings of one range, and nothing else: a program carrying an action block or any further
+  // condition is doing more than showing a span, so it is left alone rather than described wrongly.
+  const cmp = /^\s*NR\s*>=\s*(\d+)\s*&&\s*NR\s*<=\s*(\d+)\s*$/.exec(program)
+  const rng = /^\s*NR\s*==\s*(\d+)\s*,\s*NR\s*==\s*(\d+)\s*$/.exec(program)
+  const hit = cmp ?? rng
+  if (!hit) return null
+  const start = parseInt(hit[1] as string, 10)
+  const end = parseInt(hit[2] as string, 10)
+  if (start < 1 || end < start) return null
+  const filePath = m[3] ?? m[4] ?? m[5]
+  if (filePath === undefined) return null
+  if (isTempPath(filePath)) return null
+  return { filePath, ranges: [[start, end]] }
+}
+
+/** The line-range read this command is, whichever tool spells it, or null when it is neither. */
+function extractLineRangeRead(cmd: string): { filePath: string; ranges: Array<readonly [number, number]>; tool: 'sed' | 'awk' } | null {
+  const sed = extractSedRange(cmd)
+  if (sed !== null) return { ...sed, tool: 'sed' }
+  const awk = extractAwkRange(cmd)
+  if (awk !== null) return { ...awk, tool: 'awk' }
+  return null
+}
+
 // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
 const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
   'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'swift', 'scala', 'lua', 'elixir', 'dart', 'zig', 'r', 'sql', 'graphql', 'proto', 'terraform', 'bash', 'powershell', 'apex', 'salesforce_metadata', 'salesforce_markup',
 ])
 
 // Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`), tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range per requested range.
-function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, number]>): string {
+function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, number]>, tool: 'sed' | 'awk'): string {
   const lang = detectLanguage(filePath)
   // One token-goat read per requested range so the agent can fetch each independently. Combined
   // into one inline list with `and` for two ranges and Oxford-comma for three or more.
@@ -683,7 +720,7 @@ function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, 
     : rangeReads.length >= 3
       ? rangeReads.slice(0, -1).join(', ') + ', and ' + rangeReads[rangeReads.length - 1]
       : rangeReads[0]!
-  const prefix = '`sed -n` line-range reads bypass read hooks. '
+  const prefix = '`' + (tool === 'awk' ? 'awk' : 'sed -n') + '` line-range reads bypass read hooks. '
   if (lang === 'markdown') {
     return prefix + 'For Markdown, `token-goat section "' + filePath + '::<heading>"` extracts a whole section by name (robust to line shifts); or ' + allReads + ' for exactly those lines.'
   }
@@ -710,9 +747,9 @@ function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start
   return best
 }
 
-// Builds the recall hint when a sed range overlaps one already served this session: name the prior range and point at a `read "file@delta"` for only the not-yet-seen lines.
+// Builds the recall hint when a line range overlaps one already served this session: name the prior range and point at a `read "file@delta"` for only the not-yet-seen lines. Deliberately does not name the tool that served the prior range: the ledger stores ranges, not the command behind each, so an `awk` read followed by a `sed` read of the same span would otherwise be told it had already read them "via an earlier `sed`".
 function sedOverlapHint(filePath: string, prior: readonly [number, number], start: number, end: number): string {
-  const base = 'You already read lines ' + prior[0] + '-' + prior[1] + ' of ' + filePath + ' via an earlier `sed` this session; this read (' + start + '-' + end + ') overlaps. '
+  const base = 'You already read lines ' + prior[0] + '-' + prior[1] + ' of ' + filePath + ' via an earlier line-range read this session; this read (' + start + '-' + end + ') overlaps. '
   // The never-served portion of [start, end] is whatever falls outside [prior[0], prior[1]]: a leading segment when the new request starts before the prior range, a trailing segment when it ends after, or both when the new request straddles the prior range on both sides.
   const segments: Array<readonly [number, number]> = []
   if (start < prior[0]) segments.push([start, Math.min(end, prior[0] - 1)])
@@ -1539,9 +1576,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range
-  const sedRange = extractSedRange(cmd)
+  const sedRange = extractLineRangeRead(cmd)
   if (sedRange !== null) {
-    const { filePath, ranges } = sedRange
+    const { filePath, ranges, tool } = sedRange
     // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve
     // against the directory cd would actually leave the shell in, matching every other path-carrying
     // hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd
@@ -1564,7 +1601,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       }
     }
     const hints = [...overlapHints]
-    if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges))
+    if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges, tool))
     return contextOutput(hints.join(' '))
   }
 
