@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   assertSafeArgSegment,
+  findOnPath,
   parseShimScriptPath,
   resetEntrypointCacheForTests,
   resetGitExecutableCacheForTests,
@@ -219,7 +220,7 @@ describe('runGitDiff (post-fix)', () => {
     // The command is never a single joined string like 'git diff HEAD' handed to a shell -- that string form
     // is exactly what let a hostile git.cmd/git.exe planted at the workspace root (the old spawn cwd) get
     // picked up by cmd.exe's cwd-before-PATH search order. The repo path travels as an explicit -C argument.
-    expect(capturedArgs).toEqual(['-C', hostileWorkspaceRoot, 'diff', 'HEAD'])
+    expect(capturedArgs).toEqual(['-C', hostileWorkspaceRoot, 'diff', '--no-ext-diff', '--no-textconv', 'HEAD'])
     expect(capturedFile).not.toBe('git')
     expect(capturedFile).not.toMatch(/^git(\.cmd|\.exe)?$/i)
     expect(path.isAbsolute(capturedFile ?? '')).toBe(true)
@@ -331,6 +332,43 @@ describe('parseShimScriptPath', () => {
     const result = parseShimScriptPath(shimText, 'C:\\proj\\node_modules\\.bin')
     expect(result).toBe('C:\\proj\\node_modules\\fakebin\\bin.js')
   })
+
+  // The shim's launch line names the script relative to the shim's own directory, so the
+  // directory is substituted into it. That substitution went through String.replace with a
+  // plain string as the replacement, and JavaScript expands $-sequences inside a replacement
+  // string: `$&` re-inserts the matched `%dp0%` and `$$` collapses to one `$`. A global npm
+  // prefix whose own path contains either sequence therefore resolved to a path that does not
+  // exist, and the extension failed on every command with "points at a script that does not
+  // exist" naming a path the user could see was wrong but not why.
+  //
+  // Why didn't a test catch this: every fixture above uses an ordinary directory name, so the
+  // replacement was only ever exercised on input the $-expansion happens to leave alone. The gap
+  // was in the input domain, not the logic.
+  const LAUNCH_LINE = [
+    '@IF EXIST "%~dp0\\node.exe" (',
+    '  "%~dp0\\node.exe"  "%~dp0\\tg.mjs" %*',
+    ')',
+    '',
+  ].join('\r\n')
+
+  it('keeps a $& in the bin directory instead of re-inserting the %dp0% it matched', () => {
+    expect(parseShimScriptPath(LAUNCH_LINE, 'C:\\bin$&x')).toBe('C:\\bin$&x\\tg.mjs')
+  })
+
+  it('keeps a doubled $ in the bin directory instead of collapsing it to one', () => {
+    expect(parseShimScriptPath(LAUNCH_LINE, 'C:\\bin$$x')).toBe('C:\\bin$$x\\tg.mjs')
+  })
+
+  it('keeps the remaining $-sequences a replacement string would have eaten', () => {
+    expect(parseShimScriptPath(LAUNCH_LINE, "C:\\bin$`x")).toBe("C:\\bin$`x\\tg.mjs")
+    expect(parseShimScriptPath(LAUNCH_LINE, 'C:\\bin$' + "'" + 'x')).toBe('C:\\bin$' + "'" + 'x\\tg.mjs')
+  })
+
+  // The counterweight: the replacement still has to happen at all, and a directory with no
+  // $ in it must resolve exactly as it always did.
+  it('still resolves an ordinary bin directory', () => {
+    expect(parseShimScriptPath(LAUNCH_LINE, 'C:\\bin')).toBe('C:\\bin\\tg.mjs')
+  })
 })
 
 describe('resolveTokenGoatEntrypoint POSIX non-JS shim (issue #76 A3)', () => {
@@ -410,5 +448,58 @@ describe('assertSafeArgSegment', () => {
   it('accepts an ordinary symbol name, including one containing shell metacharacters, since no shell ever parses it', () => {
     expect(() => assertSafeArgSegment('a"&calc&"b', 'name')).not.toThrow()
     expect(() => assertSafeArgSegment('normalSymbolName', 'name')).not.toThrow()
+  })
+})
+
+// Codex review of the consolidated launcher surfaced these three. Each is a way the module's own
+// promise, or the program it launches, escapes the guarantees the rest of the file establishes.
+describe('launcher failure modes the shell:false guarantee does not cover', () => {
+  // git reads diff.<name>.textconv and diff.external out of the repository's own .git/config and
+  // runs the program named there while producing the diff. Resolving git's absolute path and
+  // launching it with shell:false does nothing about that, because it is git doing the launching.
+  it('tells git not to run the programs the repository configures', async () => {
+    let captured: readonly string[] = []
+    const fakeExec: ExecFileLike = (_file, args, _options, callback) => {
+      captured = args
+      callback(null, '', '')
+    }
+    await runGitDiff('C:\\repo', fakeExec)
+    expect(captured, 'git was left free to run a program the repository named').toContain('--no-ext-diff')
+    expect(captured).toContain('--no-textconv')
+  })
+
+  // execFile validates its arguments synchronously and throws for a NUL byte rather than calling
+  // back. Thrown inside the resolution callback, that throw rejected a promise nobody held, so the
+  // caller waited on one that could never settle while the failure surfaced as an unhandled
+  // rejection somewhere else entirely.
+  it('rejects rather than hanging when the spawn throws synchronously', async () => {
+    const throwingExec: ExecFileLike = () => {
+      throw new Error('EINVAL: argument contains a NUL byte')
+    }
+    const settled = await Promise.race([
+      runGitDiff('C:\\repo', throwingExec).then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('still pending'), 250)),
+    ])
+    expect(settled, 'the promise never settled, so the caller waits forever').toBe('rejected')
+  })
+
+  // fs.access answers yes for a directory, so a PATH entry holding a directory named like the
+  // executable ended the scan and was handed back as the binary, and the real one further along
+  // PATH was never reached.
+  it('skips a directory that shares the executable name and keeps scanning PATH', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-pathscan-'))
+    const decoy = path.join(root, 'decoy')
+    const real = path.join(root, 'real')
+    await fs.mkdir(path.join(decoy, 'thing.exe'), { recursive: true })
+    await fs.mkdir(real, { recursive: true })
+    await fs.writeFile(path.join(real, 'thing.exe'), 'x')
+    const found = await findOnPath('thing.exe', [decoy, real].join(path.delimiter))
+    expect(found, 'a directory was returned as the executable').toBe(path.join(real, 'thing.exe'))
+  })
+
+  it('still finds an ordinary file on the first PATH entry that has it', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-pathscan-ok-'))
+    await fs.writeFile(path.join(root, 'thing.exe'), 'x')
+    expect(await findOnPath('thing.exe', root)).toBe(path.join(root, 'thing.exe'))
   })
 })
