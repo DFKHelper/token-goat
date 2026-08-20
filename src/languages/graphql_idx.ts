@@ -19,8 +19,8 @@ import {
   stripHashComments,
   stripMultilineStringSpan,
   stripStringLiterals,
-  countContentLines,
 } from './common.js'
+import { countContentLines } from '../util.js'
 
 // Finds the index of the first `#` on `line` that isn't sitting inside an open single- or
 // double-quoted string literal on that same line - i.e. a real line-comment start. Used by

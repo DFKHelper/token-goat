@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineIndex, countContentLines, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
+import { buildLineIndex, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
+import { countContentLines } from '../src/util.js'
+import { extractR } from '../src/languages/r.js'
+import { extractLwcJavaScript } from '../src/languages/salesforce_frontend.js'
+import { extractAstro, extractSvelte, extractVue } from '../src/languages/sfc_idx.js'
 import { extractGraphql } from '../src/languages/graphql_idx.js'
 import { extractHtml } from '../src/languages/html.js'
 import { extractIni } from '../src/languages/ini_idx.js'
@@ -227,8 +231,12 @@ describe('countContentLines', () => {
     expect(countContentLines('')).toBe(0)
   })
 
-  it('counts a lone newline as one line', () => {
+  it('counts a single line that ends in a newline as one line', () => {
     expect(countContentLines('a\n')).toBe(1)
+  })
+
+  it('counts a lone newline as one line', () => {
+    expect(countContentLines('\n')).toBe(1)
   })
 
   it('counts CRLF-terminated content without the phantom element', () => {
@@ -309,6 +317,51 @@ describe('flat-section adapters never end a symbol past EOF', () => {
       expect(maxEnd(symbols)).toBeLessThanOrEqual(real)
     })
   }
+
+  // Vue, Svelte, Astro and LWC emit a symbol for the whole component, spanning
+  // line 1 to the end of the file, so the phantom line landed on every single
+  // file those adapters saw rather than only on the last section of some.
+  const wholeFileCases: Array<{ lang: string; file: string; content: string; extract: (c: string, f: string) => ReadonlyArray<{ lineEnd?: number; lineStart?: number }> }> = [
+    {
+      lang: 'vue',
+      file: 'Card.vue',
+      content: '<template>\n  <div>hi</div>\n</template>\n\n<script setup>\nconst a = 1\n</script>\n',
+      extract: (c, f) => extractVue(c, f).symbols,
+    },
+    {
+      lang: 'svelte',
+      file: 'Card.svelte',
+      content: '<script>\n  let a = 1\n</script>\n\n<div>{a}</div>\n',
+      extract: (c, f) => extractSvelte(c, f).symbols,
+    },
+    {
+      lang: 'astro',
+      file: 'Card.astro',
+      content: '---\nconst a = 1\n---\n\n<div>{a}</div>\n',
+      extract: (c, f) => extractAstro(c, f).symbols,
+    },
+    {
+      lang: 'lwc',
+      file: 'accountCard/accountCard.js',
+      content: "import { LightningElement, api } from 'lwc'\n\nexport default class AccountCard extends LightningElement {\n  @api recordId\n}\n",
+      extract: (c, f) => extractLwcJavaScript(c, f).symbols,
+    },
+  ]
+
+  for (const { lang, file, content, extract } of wholeFileCases) {
+    it(`keeps the whole-file ${lang} symbol inside the file (fail-on-buggy: the component span was taken straight from split('\\n').length)`, () => {
+      const symbols = extract(content, file)
+      expect(symbols.length).toBeGreaterThan(0)
+      expect(maxEnd(symbols)).toBe(countContentLines(content))
+    })
+  }
+
+  it('keeps an R body with no closing brace inside the file (fail-on-buggy: the unterminated-body fallback end line was the phantom line)', () => {
+    const content = 'f <- function(x) {\n  x + 1\n'
+    const symbols = extractR(content, 'a.R').symbols
+    expect(symbols.length).toBeGreaterThan(0)
+    expect(maxEnd(symbols)).toBeLessThanOrEqual(countContentLines(content))
+  })
 
   it('still spans the final line when the file does not end in a newline', () => {
     const content = '[first]\nkey = 1\n\n[second]\nother = 2'

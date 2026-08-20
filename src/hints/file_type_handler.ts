@@ -149,7 +149,10 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     const htmlResult = handleHtml(filePath, content, contentLengthHint)
     if (htmlResult.shouldBlock) return htmlResult
   }
+  // Drop the empty piece a trailing newline leaves behind, so the reported
+  // total is the real line count and the last-5 preview is not a blank line.
   const lines = content.split('\n')
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const preview = [
     '--- first 5 lines ---',
     ...lines.slice(0, 5),

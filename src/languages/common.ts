@@ -1172,21 +1172,6 @@ export function makeSymbolEmitter(
 // ---------------------------------------------------------------------------
 
 /**
- * Count the lines of content actually present in `content`.
- *
- * `content.split('\n').length` counts a phantom final element for any file that
- * ends in a newline, which the flat-section adapters then hand to
- * {@link assignFlatEndLines} as `totalLines`. That made the last section of
- * every newline-terminated file span one line past EOF, and `skeleton` reports
- * that inflated number back to the user as the file's line count.
- */
-export function countContentLines(content: string): number {
-  if (content === '') return 0
-  const n = content.split('\n').length
-  return content.endsWith('\n') ? n - 1 : n
-}
-
-/**
  * Assign `endLine` to each section in a sorted flat list.
  * Each section ends at the line before the next section starts, or at
  * `totalLines` for the last one. When two sections share a start line (e.g. an

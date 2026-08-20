@@ -199,3 +199,12 @@ describe('overflow_guard', () => {
   })
 
 })
+
+describe('capped-output line total', () => {
+  it('counts the real lines of newline-terminated output, not the empty piece past the last one (fail-on-buggy: split by newline counts one element too many)', () => {
+    const text = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+    const capped = trimToBudget(text, 200, 'cat big.txt')
+    expect(capped).toContain('of 500 lines')
+    expect(capped).not.toContain('of 501 lines')
+  })
+})

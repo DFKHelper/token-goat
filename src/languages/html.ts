@@ -14,7 +14,8 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, AdapterImport } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches, countContentLines } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches} from './common.js'
+import { countContentLines } from '../util.js'
 
 export interface HtmlSection {
   readonly heading: string

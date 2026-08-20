@@ -13,8 +13,8 @@ import {
   makeSymbolEmitter,
   offsetToLine,
   propagateEndLinesToSymbols,
-  countContentLines,
 } from './common.js'
+import { countContentLines } from '../util.js'
 
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 128

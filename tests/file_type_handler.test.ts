@@ -151,6 +151,20 @@ describe('handleTxt', () => {
     expect(result.shouldBlock).toBe(false)
   })
 
+  it('reports the real line count of a newline-terminated file, and does not end the preview on a blank line (fail-on-buggy: split by newline counts an empty piece past the last line)', () => {
+    // 40 real lines, the last of them long enough to cross the block threshold,
+    // and the whole thing newline-terminated the way a real file is.
+    const lines = Array.from({ length: 39 }, (_, i) => `line ${i + 1}`)
+    lines.push(`line 40 ${makeStr(FILE_TYPE_THRESHOLDS.txt)}`)
+    const result = handleTxt('/path/to/big.txt', lines.join('\n') + '\n')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toMatch(/\b40 lines\b/)
+    expect(result.message).not.toMatch(/\b41 lines\b/)
+    // The last previewed line is real content, not the empty piece past it.
+    const preview = result.message.split('--- last 5 lines ---')[1] ?? ''
+    expect(preview.split('\n').filter((l) => l.startsWith('line ')).length).toBeGreaterThan(0)
+  })
+
   it('blocks large txt and includes line count and preview', () => {
     const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`)
     const content = lines.join('\n')
