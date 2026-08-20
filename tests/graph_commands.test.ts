@@ -39,6 +39,8 @@ import {
   runSimilar,
   runTestFor,
   runTypes,
+  TYPE_KINDS as TYPE_KINDS_FOR_TEST,
+  CORE_SYMBOL_KINDS as CORE_SYMBOL_KINDS_FOR_TEST,
 } from '../src/graph_commands.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { indexSrcTree, WHOLE_SRC_INDEX_TIMEOUT_MS } from './helpers/index-src-tree.js'
@@ -1686,19 +1688,69 @@ describe('runDead integration', () => {
 
   it('still consults the index for a real kind the static list does not name', () => {
     // The union exists for kinds a language adapter emits that CORE_SYMBOL_KINDS never listed --
-    // 'heading' from the markdown adapter is one. Rejecting it would be a false "unrecognized
-    // kind" error, so the fallback must fire exactly when the static check comes up short.
+    // this uses a made-up kind name specifically because it must NOT be one of CORE_SYMBOL_KINDS's
+    // own entries (real adapter kinds like 'heading' are now in that static list -- see the
+    // documentation/markup-kinds fix below -- so using one here would exercise the static-list
+    // path instead of the fallback this test targets). Rejecting a real-but-unlisted kind would be
+    // a false "unrecognized kind" error, so the fallback must fire exactly when the static check
+    // comes up short.
     vi.mocked(distinctSymbolKinds).mockClear()
-    // Stubbed rather than relying on this suite's index, which holds only src/*.ts and so has no
-    // markdown headings in it: the point here is the wiring, that a kind the static list misses
-    // is looked up and then accepted, not which kinds this particular fixture happens to contain.
-    vi.mocked(distinctSymbolKinds).mockReturnValueOnce(['heading'])
+    // Stubbed rather than relying on this suite's index: the point here is the wiring, that a kind
+    // the static list misses is looked up and then accepted, not which kinds this fixture holds.
+    vi.mocked(distinctSymbolKinds).mockReturnValueOnce(['newly_added_kind_not_yet_static'])
     vi.mocked(querySymbols).mockReturnValueOnce([])
     const errCaptured = captureStderr(() => {
-      expect(runDead({ kind: 'heading' })).toBe(0)
+      expect(runDead({ kind: 'newly_added_kind_not_yet_static' })).toBe(0)
     })
     expect(errCaptured).not.toContain('Unrecognized kind')
     expect(vi.mocked(distinctSymbolKinds)).toHaveBeenCalledTimes(1)
+  })
+
+  it('CORE_SYMBOL_KINDS is a superset of TYPE_KINDS (invariant, not a mirror of either list)', () => {
+    // The bug this test closes: CORE_SYMBOL_KINDS was an independent hand-maintained literal that
+    // silently drifted 22 entries behind TYPE_KINDS in the same file, rejecting real adapter kinds
+    // (e.g. 'var') as typos. Deriving this test's expectation from the two constants themselves
+    // (rather than hardcoding either list's contents here) is what makes it fail automatically on
+    // future drift instead of mirroring whatever the implementation currently says.
+    const missing = TYPE_KINDS_FOR_TEST.filter((k) => !CORE_SYMBOL_KINDS_FOR_TEST.includes(k))
+    expect(missing).toEqual([])
+  })
+
+  it('recognizes a representative sample of real adapter kinds as known, not typos, in a project with none of them', () => {
+    // Regression for the reported bug: `dead --kind var` in a real Python-only project (which has
+    // zero 'var' symbols) was rejected as "Unrecognized kind: 'var' Did you mean: - variable" --
+    // a misleading suggestion, since 'var' and 'variable' are different kinds. distinctSymbolKinds
+    // is stubbed to return none of these (this project truly has none), so any kind that passes
+    // must be recognized via the static CORE_SYMBOL_KINDS list, not the index fallback.
+    // Both stubs are persistent (not ...Once) because a statically-recognized kind never reaches
+    // distinctSymbolKinds at all, so a one-shot value would be left unconsumed and would leak into
+    // whichever later test called it first. mockReset in the finally puts both back to the real
+    // implementation vi.fn(actual.x) was constructed with, keeping the leak inside this test.
+    vi.mocked(distinctSymbolKinds).mockReturnValue([])
+    vi.mocked(querySymbols).mockReturnValue([])
+    try {
+      const sample = ['var', 'apex_class', 'proto_message', 'graphql_type']
+      for (const kind of sample) {
+        const errCaptured = captureStderr(() => {
+          expect(runDead({ kind })).toBe(0)
+        })
+        expect(errCaptured).not.toContain('Unrecognized kind')
+      }
+    } finally {
+      vi.mocked(distinctSymbolKinds).mockReset()
+      vi.mocked(querySymbols).mockReset()
+    }
+  })
+
+  it('negative control: a genuinely nonexistent kind is still rejected as unrecognized', () => {
+    // Without this, widening CORE_SYMBOL_KINDS to accept everything would pass the two tests
+    // above too -- this is what proves the fix widens the list rather than disabling the check.
+    vi.mocked(distinctSymbolKinds).mockReturnValueOnce([])
+    const errCaptured = captureStderr(() => {
+      expect(runDead({ kind: 'bogusnonsense' })).toBe(1)
+    })
+    expect(errCaptured).toContain('Unrecognized kind')
+    expect(errCaptured).toContain('bogusnonsense')
   })
 
   it('rejects an unrecognized --kind instead of silently reporting a false-clean "no dead symbols" result', () => {
