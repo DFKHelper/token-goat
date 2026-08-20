@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { runHintStatsCommand } from '../src/cli_hint_stats.js'
 import { logHintEmission, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
+import { defaultConfig, saveConfig } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -77,6 +78,48 @@ describe('runHintStatsCommand — human output', () => {
     expect(line).toContain('1')
     expect(line).toContain('100%')
   })
+
+  // A bare "yes" in the suppressed column covered two opposite states: throttled but able to
+  // earn its way back on a probe occasion, and off until someone runs --reset. A reader of this
+  // table once took the second for a broken suppression path and had to trace four source files
+  // and two databases to find out otherwise. The table has to say which one it is.
+  function suppressOneCategory(thresholds: number[]): void {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 100
+    cfg.hints.backoff_thresholds = thresholds
+    saveConfig(cfg)
+    clearModuleCaches()
+    logHintEmission('bash_redirect', nonce(), null)
+  }
+
+  it('marks a permanently-suppressed category and names the action that clears it', () => {
+    suppressOneCategory([])
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).toContain('yes (permanent)')
+    expect(output).toContain('hints.backoff_thresholds is empty')
+    expect(output).toContain('bash_redirect')
+    expect(output).toContain('token-goat hint-stats --reset')
+  })
+
+  it('leaves a recoverable suppression reading plainly "yes", with no permanence note', () => {
+    suppressOneCategory([1, 3, 10, 30])
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).toContain('yes')
+    expect(output).not.toContain('yes (permanent)')
+    expect(output).not.toContain('backoff_thresholds is empty')
+  })
+
+  it('adds no permanence note when nothing is suppressed, even with probes disabled', () => {
+    const cfg = defaultConfig()
+    cfg.hints.backoff_thresholds = []
+    saveConfig(cfg)
+    clearModuleCaches()
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).not.toContain('yes (permanent)')
+    expect(output).not.toContain('backoff_thresholds is empty')
+  })
+
 })
 
 describe('runHintStatsCommand — spend/net (bytes emitted)', () => {

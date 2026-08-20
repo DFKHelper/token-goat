@@ -552,6 +552,15 @@ export interface CategoryEfficacy {
   actedOn: number
   efficacyPct: number | null
   suppressed: boolean
+  /**
+   * True only when this category is suppressed *and* `hints.backoff_thresholds` is empty, so no
+   * probe occasion will ever let it through again and the suppression can only be lifted by a
+   * manual `token-goat hint-stats --reset`. False when the category is not suppressed, and also
+   * when it is suppressed but probes are configured, where suppression is a self-healing throttle
+   * rather than an off switch. Those two states are operationally opposite and used to render
+   * identically; see the config comment on `backoff_thresholds` for why `[]` is a supported value.
+   */
+  suppressionPermanent: boolean
   manualEffective: number
   manualIneffective: number
   /** Sum of bytes_emitted across this category's tracked (non-legacy) emissions -- `null` when none of its emissions carry a spend figure (either zero emissions, or every one predates spend tracking; see `legacyEmissions`), never a fake 0. */
@@ -627,15 +636,18 @@ function manualMarks(category: HintCategory): { effective: number; ineffective: 
 
 /** Full per-category summary for `token-goat hint-stats`, one row per known category (even categories never emitted this harness get a zeroed row, so the report is a stable, complete shape). */
 export function getHintStatsSummary(): CategoryEfficacy[] {
+  const probeThresholds = loadConfig().hints.backoff_thresholds.filter((t) => t > 0)
   return HINT_CATEGORIES.map((category) => {
     const { emitted, actedOn, bytesEmitted, legacyEmissions } = categoryStats(category)
     const marks = manualMarks(category)
+    const suppressed = shouldSuppress(category, '')
     return {
       category,
       emitted,
       actedOn: actedOn ?? 0,
       efficacyPct: emitted === 0 ? null : Math.round((1000 * (actedOn ?? 0)) / emitted) / 10,
-      suppressed: shouldSuppress(category, ''),
+      suppressed: suppressed,
+      suppressionPermanent: suppressed && probeThresholds.length === 0,
       manualEffective: marks.effective,
       manualIneffective: marks.ineffective,
       bytesEmitted,
