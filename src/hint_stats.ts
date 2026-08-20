@@ -65,9 +65,12 @@
  * been about to do it anyway). This is disclosed here and in the CLI output rather than
  * asserted as certainty. When no correlator can be extracted from a hint's text (a small
  * minority of branches with no path/id in their message, e.g. the "collapse grep|grep" or
- * "unbalanced shell quoting, use Write tool" hints), the emission is logged with `acted_on`
- * fixed at 0/resolved immediately -- honestly counted as "no signal available" rather than
- * invented. `token-goat hint-stats --mark-effective/--mark-ineffective <category>` exists as a
+ * "unbalanced shell quoting, use Write tool" hints), the emission is logged as resolved
+ * immediately -- honestly counted as "no signal available" rather than invented. Which way that
+ * no-signal row is booked depends on the category's polarity: a redirect hint books 0, because
+ * the substitute command it named was never seen; a suppression hint books 1, because the
+ * re-read it warned against was never seen either, and those are the same absence. See
+ * {@link isSuppressionCategory}. `token-goat hint-stats --mark-effective/--mark-ineffective <category>` exists as a
  * human override/supplement for exactly this gap; it is tracked as a SEPARATE counter
  * (hint_manual_marks) and never blended into the automatic acted_on/emitted percentage, so the
  * two signals are never silently conflated.
@@ -341,10 +344,13 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
   try {
     const db = getDb(globalDbPath())
     const resolved = correlator === null ? 1 : 0
+    // A suppression hint resolved on the spot for want of a correlator was never contradicted; see
+    // SUPPRESSION_HINT_CATEGORIES for why an unobservable row must not be booked as a failure.
+    const actedOn = resolved === 1 && isSuppressionCategory(category) ? 1 : 0
     const window = ACTED_ON_WINDOW + (compensateSelfResolve ? 1 : 0)
     db.prepare(
       `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
-       VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, 0, @callsRemaining, @bytesEmitted)`,
+       VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, @actedOn, @callsRemaining, @bytesEmitted)`,
     ).run({
       category,
       sessionId,
@@ -352,6 +358,7 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
       correlator,
       emittedAt: Date.now(),
       resolved,
+      actedOn,
       callsRemaining: correlator === null ? 0 : window,
       bytesEmitted,
     })
@@ -392,6 +399,60 @@ function commandMentionsCorrelator(command: string, correlator: string): boolean
   return false
 }
 
+/**
+ * Categories whose hint asks the agent NOT to do something ("you already read this file, recall it
+ * instead of re-reading"). Compliance with one of these is an *absence*: the agent reads nothing and
+ * moves on, so there is no command to observe. The redirect categories are the opposite -- they name
+ * a cheaper command to run instead, and running it is the observable proof.
+ *
+ * Measuring both with the same presence test made these two structurally unable to score: every row
+ * resolved `acted_on = 0` no matter how well the hint worked, efficacy sat at exactly 0%, and
+ * `shouldSuppress` muted the category for good once `min_sample_size` rows had accrued. So the
+ * hints that save the most -- the ones that stop a whole re-read -- were the first to turn
+ * themselves off, on evidence that could not exist. Polarity is therefore inverted for these:
+ * assume compliance, and count only observed defiance against them.
+ */
+const SUPPRESSION_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>([
+  'read_reread_dedup',
+  'edit_reread_suggest',
+])
+
+/** True when this category's hint asks for an absence rather than a substitute command. */
+export function isSuppressionCategory(category: HintCategory): boolean {
+  return SUPPRESSION_HINT_CATEGORIES.has(category)
+}
+
+/** Tool-input keys that name the file a non-Bash read/edit tool is about, across harnesses. */
+const EVENT_PATH_KEYS = ['file_path', 'filePath', 'notebook_path', 'path'] as const
+
+/**
+ * The text of this event that a correlator can be looked for in: the Bash command, or the file path
+ * a Read/Edit-shaped tool was pointed at. A suppression hint is defied by a plain `Read` just as
+ * much as by a `cat`, so both shapes have to be visible here.
+ */
+function eventTargetText(event: HookEvent): string {
+  if (event.toolName === 'Bash') {
+    const c = event.toolInput['command']
+    return typeof c === 'string' ? c : ''
+  }
+  for (const key of EVENT_PATH_KEYS) {
+    const v = event.toolInput[key]
+    if (typeof v === 'string' && v !== '') return v
+  }
+  return ''
+}
+
+/**
+ * True when this event re-reads the very path a suppression hint just said was already in hand,
+ * by a route that costs the full file. A token-goat invocation is excluded: taking the surgical
+ * route is following the hint, not defying it.
+ */
+function isDefiance(correlator: string, target: string): boolean {
+  if (target === '') return false
+  if (TOKEN_GOAT_INVOCATION_RE.test(target)) return false
+  return commandMentionsCorrelator(target, correlator)
+}
+
 /** True when a subsequent Bash `command` honestly demonstrates the agent followed this specific hint's pointer: it invokes token-goat AND mentions the exact correlator the hint text gave. */
 function isActedOn(category: HintCategory, correlator: string, command: string): boolean {
   if (!TOKEN_GOAT_INVOCATION_RE.test(command)) return false
@@ -413,13 +474,38 @@ export function resolvePendingHintsForEvent(event: HookEvent): void {
   try {
     const db = getDb(globalDbPath())
     const command = event.toolName === 'Bash' && typeof event.toolInput['command'] === 'string' ? event.toolInput['command'] : ''
+    const target = eventTargetText(event)
     const pending = db
       .prepare(`SELECT id, category, correlator, calls_remaining FROM hint_emissions WHERE session_id = ? AND resolved = 0`)
       .all(event.sessionId) as Array<{ id: number; category: string; correlator: string | null; calls_remaining: number }>
 
     for (const row of pending) {
       if (!isHintCategory(row.category) || row.correlator === null) {
-        db.prepare(`UPDATE hint_emissions SET resolved = 1 WHERE id = ?`).run(row.id)
+        // Nothing observable to wait for. A suppression hint that named no path was never
+        // contradicted, so resolving it as a failure would be the same false negative this
+        // category's inverted polarity exists to avoid.
+        const unobservable = isHintCategory(row.category) && isSuppressionCategory(row.category) ? 1 : 0
+        db.prepare(`UPDATE hint_emissions SET acted_on = ?, resolved = 1 WHERE id = ?`).run(unobservable, row.id)
+        continue
+      }
+      if (isSuppressionCategory(row.category)) {
+        // Inverted polarity: a re-read of the named path is the only thing that counts against
+        // this hint. Anything else -- including the window simply running out because the agent
+        // read nothing -- is the compliance the hint asked for.
+        if (isDefiance(row.correlator, target)) {
+          db.prepare(`UPDATE hint_emissions SET acted_on = 0, resolved = 1 WHERE id = ?`).run(row.id)
+          continue
+        }
+        if (command !== '' && isActedOn(row.category, row.correlator, command)) {
+          db.prepare(`UPDATE hint_emissions SET acted_on = 1, resolved = 1 WHERE id = ?`).run(row.id)
+          continue
+        }
+        const left = row.calls_remaining - 1
+        if (left <= 0) {
+          db.prepare(`UPDATE hint_emissions SET acted_on = 1, resolved = 1 WHERE id = ?`).run(row.id)
+        } else {
+          db.prepare(`UPDATE hint_emissions SET calls_remaining = ? WHERE id = ?`).run(left, row.id)
+        }
         continue
       }
       if (command !== '' && isActedOn(row.category, row.correlator, command)) {
