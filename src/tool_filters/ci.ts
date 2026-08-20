@@ -358,7 +358,12 @@ export class GhRunLogFilter extends ToolFilter {
       positionals.length >= 2 &&
       positionals[0] === 'run' &&
       positionals[1] === 'view' &&
-      argv.includes('--log')
+      // `--log-failed` is the CI-triage spelling and emits the identical
+      // job/step/timestamp column format, so it needs this filter too. A plain
+      // `argv.includes('--log')` is a whole-token test and never matches it,
+      // which sent it to GhFilter -- whose pass-step regex anchors at line
+      // start and so matches nothing while the column prefix is still present.
+      (argv.includes('--log') || argv.includes('--log-failed'))
     )
   }
 
