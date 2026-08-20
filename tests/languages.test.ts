@@ -3838,7 +3838,10 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     const sym = symbols.find((s) => s.name === 'a;b')
     expect(sym).toBeDefined()
     expect(sym?.lineStart).toBe(1)
-    expect(sym?.lineEnd).toBe(5)
+    // The fixture has four lines; the `5` this asserted before was the phantom
+    // line a trailing newline used to add. Four still proves the subject here,
+    // which is that the statement is not truncated to line 1.
+    expect(sym?.lineEnd).toBe(4)
   })
 
   it('does not let a /*/ opener close its own comment against its trailing asterisk (comment overlap off-by-one)', () => {

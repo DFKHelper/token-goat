@@ -23,6 +23,7 @@ import {
   propagateEndLinesToSymbols,
   stripCstyleComments,
   stripLineComment,
+  countContentLines,
 } from './common.js'
 
 const MAX_SYMBOLS = 500
@@ -161,7 +162,7 @@ export function extractTerraform(content: string, filePath: string): SymbolEntry
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
   const stripped = stripComments(maskHeredocs(content))
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(stripped)
 
   const blockEndLines = new Map<string, number>()

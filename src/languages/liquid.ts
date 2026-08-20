@@ -16,7 +16,7 @@
 import * as path from 'node:path'
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, AdapterImport } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches, countContentLines } from './common.js'
 
 export interface LiquidSection {
   readonly heading: string
@@ -93,7 +93,7 @@ export function extractLiquid(
   }
 
   // HTML headings
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   for (const hm of findHtmlHeadingMatches(content)) {
     if (hm.heading) {
       const line = offsetToLine(lineIndex, hm.offset)
