@@ -2,6 +2,7 @@ import * as path from 'node:path'
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import { stripJsComments, stripXmlComments } from './common.js'
+import { countContentLines } from '../util.js'
 
 export interface SalesforceFrontendResult {
   readonly symbols: SymbolEntry[]
@@ -49,8 +50,8 @@ export function extractLwcJavaScript(content: string, filePath: string): Salesfo
   const sourceLines = lines(content)
   const bundle = bundleName(filePath)
   const symbols: SymbolEntry[] = [
-    symbol(filePath, bundle, 'lwc_bundle', 1, sourceLines.length),
-    symbol(filePath, lwcTagAlias(bundle), 'lwc_component_alias', 1, sourceLines.length),
+    symbol(filePath, bundle, 'lwc_bundle', 1, countContentLines(content)),
+    symbol(filePath, lwcTagAlias(bundle), 'lwc_component_alias', 1, countContentLines(content)),
   ]
   const refs: RefEntry[] = []
 
@@ -186,10 +187,9 @@ function attributeRefs(
 export function extractSalesforceMarkup(content: string, filePath: string): SalesforceFrontendResult {
   const normalized = filePath.replaceAll('\\', '/')
   const extension = path.posix.extname(normalized).toLowerCase()
-  const sourceLines = lines(content)
   const kind = MARKUP_KIND[extension] ?? 'salesforce_markup'
   const symbols: SymbolEntry[] = [
-    symbol(filePath, markupArtifactName(normalized, extension), kind, 1, sourceLines.length),
+    symbol(filePath, markupArtifactName(normalized, extension), kind, 1, countContentLines(content)),
   ]
   const refs: RefEntry[] = []
   const isAura = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens'].includes(extension)

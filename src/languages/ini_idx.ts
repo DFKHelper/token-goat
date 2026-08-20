@@ -7,7 +7,8 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { assignFlatEndLines, propagateEndLinesToSymbols, makeLineSymbol, countContentLines } from './common.js'
+import { assignFlatEndLines, propagateEndLinesToSymbols, makeLineSymbol} from './common.js'
+import { countContentLines } from '../util.js'
 
 const MAX_SECTIONS = 200
 const MAX_HEADING_LEN = 200

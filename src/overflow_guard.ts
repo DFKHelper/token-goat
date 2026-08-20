@@ -37,6 +37,9 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   }
 
   const lines = text.split('\n')
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  // A trailing newline leaves an empty piece behind. Counting it inflates the
+  // "of N lines" total, and keeping it can spend budget on a blank line.
   const totalLines = lines.length
 
   const bodyBudget = Math.max(1, budgetTokens - markerMarginTokens)

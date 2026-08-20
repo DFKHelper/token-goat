@@ -146,7 +146,9 @@ describe('vue adapter', () => {
     const { symbols, refs } = extractVue(VUE_CONTENT, 'MyButtonPanel.vue')
 
     const component = symbols.find((s) => s.kind === 'vue_component')
-    expect(component).toMatchObject({ name: 'MyButtonPanel', lineStart: 1, lineEnd: 32 })
+    // 31 is the fixture's real length. The 32 this asserted before counted the
+    // empty piece the closing newline leaves behind when the content is split.
+    expect(component).toMatchObject({ name: 'MyButtonPanel', lineStart: 1, lineEnd: 31 })
 
     const byName = (name: string) => symbols.find((s) => s.name === name)
     expect(byName('count')).toMatchObject({ kind: 'sfc_script_const', lineStart: 5, lineEnd: 5 })
@@ -204,7 +206,7 @@ describe('svelte adapter', () => {
     const { symbols, refs } = extractSvelte(SVELTE_CONTENT, 'Counter.svelte')
 
     const component = symbols.find((s) => s.kind === 'svelte_component')
-    expect(component).toMatchObject({ name: 'Counter', lineStart: 1, lineEnd: 28 })
+    expect(component).toMatchObject({ name: 'Counter', lineStart: 1, lineEnd: 27 })
 
     const byName = (name: string) => symbols.find((s) => s.name === name)
     expect(byName('MODULE_CONST')).toMatchObject({ kind: 'sfc_script_const', lineStart: 2 })
@@ -248,7 +250,7 @@ describe('astro adapter', () => {
     const { symbols, refs } = extractAstro(ASTRO_CONTENT, 'Home.astro')
 
     const component = symbols.find((s) => s.kind === 'astro_component')
-    expect(component).toMatchObject({ name: 'Home', lineStart: 1, lineEnd: 22 })
+    expect(component).toMatchObject({ name: 'Home', lineStart: 1, lineEnd: 21 })
 
     const byName = (name: string) => symbols.find((s) => s.name === name)
     expect(byName('title')).toMatchObject({ kind: 'sfc_script_const', lineStart: 4 })

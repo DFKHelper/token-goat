@@ -19,6 +19,7 @@ import {
   type AdapterImport,
   makeSpanSymbol,
 } from './common.js'
+import { countContentLines } from '../util.js'
 
 // `foo <- function(...)`, `bar = function(...)` (R uses both <- and = for assignment),
 // and R 4.1's (2021) native backslash-lambda shorthand `baz <- \(...)`. The `\` form is now
@@ -131,7 +132,7 @@ export function extractR(
   // Offsets into the raw `content`, not into any per-line copy: a body span is the one thing here
   // that cannot be decided from a single line.
   const lineIndex = buildLineIndex(content)
-  const totalLines = lines.length
+  const totalLines = countContentLines(content)
   // The stored body is what `read` prints, so it has to be the whole span rather than the
   // signature line: a span that says four lines and a body that holds one is worse than either.
   const spanBody = (startLine: number, endLine: number): string =>

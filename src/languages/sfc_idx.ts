@@ -50,6 +50,7 @@ import {
   stripStringLiterals,
   stripXmlComments,
 } from './common.js'
+import { countContentLines } from '../util.js'
 
 export interface SfcResult {
   readonly symbols: SymbolEntry[]
@@ -251,7 +252,7 @@ function componentSymbol(filePath: string, name: string, kind: string, totalLine
  * visited since only `<script>`/`<template>` blocks are extracted by name).
  */
 export function extractVue(content: string, filePath: string): SfcResult {
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   const name = componentName(filePath)
   const symbols: SymbolEntry[] = [componentSymbol(filePath, name, 'vue_component', totalLines)]
@@ -280,7 +281,7 @@ export function extractVue(content: string, filePath: string): SfcResult {
  * (mirrors `maskHtmlNoise`'s masking discipline).
  */
 export function extractSvelte(content: string, filePath: string): SfcResult {
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   const name = componentName(filePath)
   const symbols: SymbolEntry[] = [componentSymbol(filePath, name, 'svelte_component', totalLines)]
@@ -346,7 +347,7 @@ function detectAstroFrontmatter(content: string): AstroFrontmatter | null {
  * frontmatter fence itself is needed for Astro.
  */
 export function extractAstro(content: string, filePath: string): SfcResult {
-  const totalLines = content.split('\n').length
+  const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   const name = componentName(filePath)
   const symbols: SymbolEntry[] = [componentSymbol(filePath, name, 'astro_component', totalLines)]

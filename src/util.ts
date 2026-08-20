@@ -818,6 +818,21 @@ export function excludeTestsHiddenNote(count: number): string {
   return `${count} in test ${count === 1 ? 'file' : 'files'} hidden by --exclude-tests`
 }
 
+/**
+ * Count the lines of content actually present in `content`.
+ *
+ * `content.split('\n').length` counts a phantom final element for any file that
+ * ends in a newline, and essentially every real file does. Anything that hands
+ * that number on as a line count -- a symbol's end line, a "N lines total"
+ * preview, an "showing X of N lines" marker -- then claims one line that does
+ * not exist.
+ */
+export function countContentLines(content: string): number {
+  if (content === '') return 0
+  const n = content.split('\n').length
+  return content.endsWith('\n') ? n - 1 : n
+}
+
 /** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
