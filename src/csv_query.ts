@@ -5,6 +5,8 @@
  * equality filter -- matches the project's "no premature abstraction" bar.
  */
 
+import { displaySafeText } from './paths.js'
+
 import { parse } from 'csv-parse/sync'
 
 export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
@@ -280,9 +282,15 @@ export function profileCsv(content: string, opts: { delimiter?: string; noHeader
 export function formatCsvProfile(profiles: CsvColumnProfile[]): string {
   return profiles
     .map((p) => {
-      const lines = [`${p.name}  (${p.inferredType})`, `  nulls: ${p.nullCount}  distinct: ${p.distinctCount}`]
-      if (p.min !== undefined) lines.push(`  range: ${p.min} .. ${p.max}`)
-      if (p.topValues !== undefined) lines.push(`  values: ${p.topValues.map((t) => `${t.value} (${t.count})`).join(', ')}`)
+      // Every one of these comes out of the file, and this summary is prose, not CSV: a cell holding
+      // a newline would otherwise end the line and start one that reads exactly like a column of
+      // token-goat's own. Escaped rather than dropped, so the value is still shown.
+      const lines = [
+        `${displaySafeText(p.name)}  (${p.inferredType})`,
+        `  nulls: ${p.nullCount}  distinct: ${p.distinctCount}`,
+      ]
+      if (p.min !== undefined) lines.push(`  range: ${displaySafeText(p.min)} .. ${displaySafeText(p.max ?? '')}`)
+      if (p.topValues !== undefined) lines.push(`  values: ${p.topValues.map((t) => `${displaySafeText(t.value)} (${t.count})`).join(', ')}`)
       return lines.join('\n')
     })
     .join('\n\n')
