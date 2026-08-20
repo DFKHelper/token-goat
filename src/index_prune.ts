@@ -146,6 +146,85 @@ export function pruneSystemTempFiles(dbPath: string = globalDbPath()): string[] 
 }
 
 /**
+ * Every distinct `chunks.file_path` with no matching row in `files`, without deleting anything.
+ *
+ * Chunks are only ever written after their file's `files` row exists (the worker indexes
+ * synchronously first, then fires the embed), so a chunk without a file row is always damage --
+ * a crash between the two deletes in an older, non-transactional `removeFileFromIndex`, a prune
+ * racing a lagging embed for a path just deleted, or any other half-applied removal.
+ *
+ * Such a row is unreachable by every existing prune, because {@link allIndexedPaths} enumerates
+ * `SELECT DISTINCT path FROM files`: once the file row is gone, no sweep can even name the path,
+ * so {@link pruneDeletedFiles}, {@link pruneBlockedRoot} and {@link pruneSystemTempFiles} all
+ * report a clean nothing-to-do while the chunk keeps its text and its vector and keeps being
+ * served by `semantic`. Only `reclaim --rebuild`, which wipes the entire index, cleared them.
+ */
+export function findOrphanedChunkPaths(dbPath: string = globalDbPath()): string[] {
+  return orphanedChunkGroups(getDb(dbPath)).map((g) => g.representative)
+}
+
+/**
+ * One orphaned file, with every raw `chunks.file_path` spelling that belongs to it.
+ *
+ * Grouped by folded-and-normalized path rather than by raw spelling for two separate reasons.
+ * Reporting: on a case-insensitive filesystem `C:/x.ts` and `c:/x.ts` are one file, and counting
+ * both made `project prune` claim two files where it had cleared one. Deletion: {@link
+ * deleteFileEmbeddings} folds the spelling it is handed but does not normalize it, so a row
+ * written with backslashes and a row written with forward slashes are two different deletes even
+ * though they are the same file. Deleting only the representative would leave the other spelling
+ * behind, and it would come back as an orphan on every future sweep, forever.
+ */
+function orphanedChunkGroups(db: DbHandle): Array<{ representative: string; spellings: string[] }> {
+  const known = new Set(
+    (db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>).map((r) =>
+      foldPath(normalizePath(r.path)),
+    ),
+  )
+  const rows = db.prepare('SELECT DISTINCT file_path FROM chunks').all() as Array<{ file_path: string }>
+  const byFolded = new Map<string, { representative: string; spellings: string[] }>()
+  for (const { file_path: raw } of rows) {
+    const folded = foldPath(normalizePath(raw))
+    if (known.has(folded)) continue
+    const group = byFolded.get(folded)
+    if (group === undefined) byFolded.set(folded, { representative: raw, spellings: [raw] })
+    else group.spellings.push(raw)
+  }
+  return [...byFolded.values()]
+}
+
+/**
+ * Delete the chunks and vectors {@link findOrphanedChunkPaths} finds. Returns the paths cleared.
+ *
+ * The scan and the deletes run inside one `BEGIN IMMEDIATE` transaction, taking the write lock
+ * before reading rather than after. Reading first and deleting after -- the shape {@link
+ * removeDeletedFilesBestEffort} is stuck with, because its condition lives on disk where no
+ * database lock can cover it -- leaves a window in which another process reindexes a path this
+ * one just observed as orphaned, restoring its `files` row and rewriting its chunks, and then
+ * this delete wipes the live rows it never looked at. That window is real here: the worker fires
+ * embeddings without awaiting them, so a rewrite can land at any moment. This condition lives
+ * entirely in the same database as the delete, so unlike the disk case it can simply be made
+ * atomic instead of merely narrowed.
+ */
+export function pruneOrphanedChunks(dbPath: string = globalDbPath()): string[] {
+  const db = getDb(dbPath)
+  const removed: string[] = []
+  const run = db.transaction(() => {
+    for (const group of orphanedChunkGroups(db)) {
+      try {
+        for (const spelling of group.spellings) deleteFileEmbeddings(db, spelling)
+        removed.push(group.representative)
+      } catch {
+        // Best-effort, same contract as removeFilesBestEffort: one path's failure must not abort
+        // the rest. Caught here rather than allowed to propagate, so one bad row cannot roll back
+        // every good delete in the batch.
+      }
+    }
+  })
+  run.immediate()
+  return removed
+}
+
+/**
  * Record that `filePath`'s project root was just observed alive (an edit was made under it).
  *
  * Feeds {@link sweepKnownRoots}: without a registry of which roots have ever been indexed, the
@@ -179,6 +258,8 @@ export interface KnownRootsSweepResult {
   readonly prunedRows: number
   readonly prunedRoots: readonly string[]
   readonly flaggedRoots: readonly string[]
+  /** Paths whose embedding chunks outlived their `files` row -- see {@link findOrphanedChunkPaths}. */
+  readonly prunedOrphanChunkPaths: readonly string[]
 }
 
 /**
@@ -263,7 +344,13 @@ export function sweepKnownRoots(
     prunedRoots.push(root)
   }
 
-  return { prunedRows, prunedRoots, flaggedRoots }
+  // Unscoped, like pruneSystemTempFiles: an orphaned chunk has no file row, so it belongs to no
+  // known root and no per-root branch above could ever reach it. Runs last so any file row the
+  // loop just deleted has already released its chunks through removeFileFromIndex's transaction,
+  // leaving only genuinely half-applied leftovers for this pass to clear.
+  const prunedOrphanChunkPaths = pruneOrphanedChunks(dbPath)
+
+  return { prunedRows, prunedRoots, flaggedRoots, prunedOrphanChunkPaths }
 }
 
 /** Minimum time between {@link recordKnownRootThrottled} writes for the SAME parent directory, so a burst of edit-hook calls (e.g. a multi-file refactor within one folder) doesn't hit the DB on every single one -- roots don't change often enough to need per-edit tracking. */

@@ -19,7 +19,7 @@ import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
-import { findSystemTempFiles, pruneBlockedRoot, pruneSystemTempFiles } from './index_prune.js'
+import { findOrphanedChunkPaths, findSystemTempFiles, pruneBlockedRoot, pruneOrphanedChunks, pruneSystemTempFiles } from './index_prune.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
@@ -597,10 +597,14 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     // blocked_roots existence check above: pruned by content of the `files` table itself, not by
     // whether a config-listed root still exists on disk.
     const staleTempFiles = findSystemTempFiles()
+    // A third, independent kind of staleness: embedding chunks whose `files` row is already gone.
+    // Neither check above can see them -- both enumerate paths out of `files` -- so without this
+    // they stay searchable through `semantic` forever. See findOrphanedChunkPaths' docstring.
+    const orphanChunkPaths = findOrphanedChunkPaths()
 
     if (opts.dryRun === true) {
       if (opts.json === true) {
-        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, blocked_roots: before }, null, 2))
+        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, blocked_roots: before }, null, 2))
         return
       }
       if (removed === 0) {
@@ -615,6 +619,12 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
         emit(`Would prune ${staleTempFiles.length} stale indexed temp-dir file(s):`)
         for (const p of staleTempFiles) emit(`  ${p}`)
       }
+      if (orphanChunkPaths.length === 0) {
+        emit('Would prune 0 orphaned embedding chunk file(s). Nothing to do.')
+      } else {
+        emit(`Would prune orphaned embedding chunks for ${orphanChunkPaths.length} file(s):`)
+        for (const p of orphanChunkPaths) emit(`  ${p}`)
+      }
       return
     }
 
@@ -622,12 +632,14 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     saveConfigSafe(cfg)
     invalidateConfigCache()
     const prunedTempFiles = pruneSystemTempFiles()
+    const prunedOrphanChunks = pruneOrphanedChunks()
     if (opts.json === true) {
-      emit(JSON.stringify({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length }, null, 2))
+      emit(JSON.stringify({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length }, null, 2))
       return
     }
     emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
     emit(`Pruned ${prunedTempFiles.length} stale indexed temp-dir file(s).`)
+    emit(`Pruned orphaned embedding chunks for ${prunedOrphanChunks.length} file(s).`)
     return
   }
 
