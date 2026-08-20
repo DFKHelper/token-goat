@@ -50,7 +50,7 @@ import * as fs from 'node:fs'
 
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
-import { indexFileSync } from '../src/parser.js'
+import { indexFileSync, deleteFileRows } from '../src/parser.js'
 import {
   pruneDeletedFiles,
   removeFileFromIndex,
@@ -59,6 +59,8 @@ import {
   sweepKnownRoots,
   findSystemTempFiles,
   pruneSystemTempFiles,
+  findOrphanedChunkPaths,
+  pruneOrphanedChunks,
 } from '../src/index_prune.js'
 import * as embeddingsModule from '../src/embeddings.js'
 
@@ -667,4 +669,168 @@ describe('sweepKnownRoots', () => {
     expect(row?.first_missing_ms).toBeNull()
   })
 })
+})
+
+// An embedding chunk whose `files` row is already gone. Every existing prune enumerates paths
+// with `SELECT DISTINCT path FROM files`, so once the file row goes, no sweep can even name the
+// path -- the chunk keeps its text and its vector and keeps being served by `semantic` forever.
+// The live global index had 14 such rows, all under system temp, all holding the full source of
+// files deleted long ago, and `project prune` reported a clean nothing-to-do on every one.
+describe('orphaned embedding chunks (files row gone, chunks row left behind)', () => {
+  let dir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-orphanchunk-'))
+    dbPath = path.join(dir, 'test.db')
+  })
+
+  afterEach(() => {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Windows may still hold a lock on the DB file.
+    }
+  })
+
+  // Reproduce the half-applied removal exactly: deleteFileRows drops symbols/refs/files and
+  // leaves chunks untouched, which is what an interrupted removeFileFromIndex (or a prune racing
+  // a lagging embed for the same path) leaves behind.
+  function seedOrphanChunk(): string {
+    const filePath = path.join(dir, 'gone.ts')
+    fs.writeFileSync(filePath, 'export function secretHandlerAlpha(x: string): string { return x }\n')
+    const key = normalizePath(filePath)
+    indexFileSync(key, dbPath)
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)').run(
+      key,
+      1,
+      1,
+      'export function secretHandlerAlpha(x: string): string { return x }',
+      'symbol',
+    )
+    deleteFileRows(db, key)
+    fs.rmSync(filePath)
+    return key
+  }
+
+  function chunkCount(key: string): number {
+    const db = getDb(dbPath)
+    const row = db.prepare('SELECT COUNT(*) AS n FROM chunks WHERE file_path = ?').get(key) as { n: number }
+    return row.n
+  }
+
+  it('findOrphanedChunkPaths names a chunk path with no files row', () => {
+    const key = seedOrphanChunk()
+    expect(chunkCount(key)).toBe(1)
+    expect(findOrphanedChunkPaths(dbPath)).toContain(key)
+  })
+
+  it('leaves a chunk alone while its files row is still present', () => {
+    const filePath = path.join(dir, 'alive.ts')
+    fs.writeFileSync(filePath, 'export const aliveSym = 1\n')
+    const key = normalizePath(filePath)
+    indexFileSync(key, dbPath)
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)').run(key, 1, 1, 'export const aliveSym = 1', 'symbol')
+    expect(findOrphanedChunkPaths(dbPath)).not.toContain(key)
+    expect(pruneOrphanedChunks(dbPath)).toEqual([])
+    expect(chunkCount(key)).toBe(1)
+  })
+
+  it('pruneOrphanedChunks deletes the orphaned chunk row', () => {
+    const key = seedOrphanChunk()
+    expect(pruneOrphanedChunks(dbPath)).toEqual([key])
+    expect(chunkCount(key)).toBe(0)
+    expect(findOrphanedChunkPaths(dbPath)).not.toContain(key)
+  })
+
+  // The repair has to be reachable without the user knowing to run anything: the worker's
+  // periodic sweep is the only thing that runs on its own, and before this it could not see the
+  // row at all, so `reclaim --rebuild` (which wipes the whole index) was the only cure.
+  // A chunk's vector lives in a separate virtual table keyed by the chunk id. Deleting the chunk
+  // row alone leaves the vector behind, still reachable by the nearest-neighbour scan, so the
+  // search hit survives the clean-up meant to remove it. Skipped where sqlite-vec is not
+  // installed, since the table does not exist on those builds at all.
+  it('clears the vector as well as the chunk row', () => {
+    const key = seedOrphanChunk()
+    const db = getDb(dbPath)
+    const hasVectors = (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'chunk_vectors'").get() as { n: number }).n > 0
+    if (!hasVectors) return
+    const id = db.prepare('SELECT id FROM chunks WHERE file_path = ?').pluck().get(key) as number
+    // Written through the production helper: vec0 rejects a plain JS number for its rowid, and insertChunkVector is where the conversion lives. 384 floats matches the vec0 column db.ts declares.
+    embeddingsModule.insertChunkVector(db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)'), id, Array(384).fill(0))
+    const vectorCount = (): number => (db.prepare('SELECT COUNT(*) AS n FROM chunk_vectors_rowids WHERE rowid = ?').get(id) as { n: number }).n
+    expect(vectorCount()).toBe(1)
+    expect(pruneOrphanedChunks(dbPath)).toEqual([key])
+    expect(vectorCount()).toBe(0)
+  })
+
+  // Same file, two spellings that differ by separator rather than by case. deleteFileEmbeddings
+  // folds the spelling it is handed but does not normalize it, so these are two different deletes.
+  // Reporting them as one file is right; deleting only one of them is not -- the survivor comes
+  // back as an orphan on every future sweep and is never cleared.
+  it('clears every stored spelling of one orphaned file', () => {
+    const key = seedOrphanChunk()
+    const db = getDb(dbPath)
+    const backslashed = key.split('/').join(String.fromCharCode(92))
+    expect(backslashed).not.toBe(key)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)').run(backslashed, 1, 1, 'export function secretHandlerAlpha(x: string): string { return x }', 'symbol')
+    expect(findOrphanedChunkPaths(dbPath)).toHaveLength(1)
+    expect(pruneOrphanedChunks(dbPath)).toHaveLength(1)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM chunks').get() as { n: number }).n).toBe(0)
+  })
+
+  // The scan that decides a path is orphaned and the delete that acts on it must be one atomic
+  // step: another process reindexing that path in between restores its files row and rewrites its
+  // chunks, and a delete that never re-reads would wipe live rows. Only a second process can
+  // actually interleave there, so what this pins is the property that makes such an interleave
+  // impossible -- the deletes run inside a transaction, which pruneOrphanedChunks opens with the
+  // write lock already held. It does not, and cannot in one process, demonstrate the race itself.
+  it('runs its deletes inside a transaction', () => {
+    seedOrphanChunk()
+    const db = getDb(dbPath)
+    const real = embeddingsModule.deleteFileEmbeddings
+    const seenInTransaction: boolean[] = []
+    const spy = vi.spyOn(embeddingsModule, 'deleteFileEmbeddings').mockImplementation((handle, filePath) => {
+      seenInTransaction.push(db.inTransaction)
+      real(handle, filePath)
+    })
+    try {
+      expect(pruneOrphanedChunks(dbPath)).toHaveLength(1)
+      expect(seenInTransaction).toEqual([true])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  // The same file can be stored under two spellings that differ only by case, and
+  // deleteFileEmbeddings folds -- so clearing one clears both. Counting both spellings reported
+  // "2 files" for one file cleared once, which is how the dogfood run first surfaced it. Forces
+  // the case-insensitive fold on every platform so the assertion means the same thing on Linux CI.
+  it('counts two spellings of one folded path as one file', () => {
+    const prior = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    try {
+      const key = seedOrphanChunk()
+      const db = getDb(dbPath)
+      const otherSpelling = key.replace('gone.ts', 'GONE.ts')
+      expect(otherSpelling).not.toBe(key)
+      db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)').run(otherSpelling, 1, 1, 'export function secretHandlerAlpha(x: string): string { return x }', 'symbol')
+      expect(findOrphanedChunkPaths(dbPath)).toHaveLength(1)
+      expect(pruneOrphanedChunks(dbPath)).toHaveLength(1)
+      const left = db.prepare('SELECT COUNT(*) AS n FROM chunks').get() as { n: number }
+      expect(left.n).toBe(0)
+    } finally {
+      if (prior === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+      else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = prior
+    }
+  })
+
+  it('the periodic sweep clears it with no known root registered', () => {
+    const key = seedOrphanChunk()
+    const result = sweepKnownRoots(dbPath)
+    expect(result.prunedOrphanChunkPaths).toEqual([key])
+    expect(chunkCount(key)).toBe(0)
+  })
 })

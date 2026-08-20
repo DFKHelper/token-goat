@@ -12,8 +12,9 @@ export default defineConfig({
     // Never pick up test copies inside agent worktrees (.claude/worktrees/...).
     exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
     // Vitest's 5s default was inherited, never chosen for this suite, and it is too tight here: a full run is 311 files with ~29s of transform and ~62s of prepare, so a test doing ordinary work (a cold module-graph import, one real SQLite round-trip) can blow 5s purely from contention and fail while passing standalone. Two different tests failed that way on consecutive runs, which is a property of the bound rather than of either test. Raising it does not weaken hang detection: nothing here relies on the global bound to catch a hang -- tests that genuinely care about latency assert their own tighter bound explicitly (see cli_statusline.test.ts, which asserts elapsed < 3000ms), and a real hang still fails, just later.
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // The suite has since grown from those 311 files to 430, with ~95s of transform and ~200s of setup, and the bound started biting again at exactly the same place: across six consecutive full runs, two runs each failed one test with "Test timed out in 30000ms" and no assertion failure anywhere -- `parser_markdown_closing_hash.test.ts` in one, `languages.test.ts > csharp adapter` in another. Both are one `parseFile` call over a few lines of fixture, both complete in about 1.6s standalone, and both were the first call in their worker to load their language's grammar. Confirmed as a property of the bound rather than of this change by reverting the change entirely and reproducing the same shape in a different unrelated file. Same reasoning as the 5s -> 30s raise above, same evidence, one size larger.
+    testTimeout: 60000,
+    hookTimeout: 60000,
     // CI-only: rerun a failing test once before reporting it. Absorbs a genuinely transient
     // infra-level flake (a shared runner's fork/worker RPC losing a heartbeat under load,
     // surfacing as "[vitest-worker]: Timeout calling 'onTaskUpdate'" with no assertion failure
