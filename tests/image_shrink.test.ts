@@ -389,6 +389,77 @@ describe('preReadImageHandler shrink cache', () => {
     expect(entriesAfter.length).toBe(2)
   })
 
+  it('invalidates the cache when image_shrink.jpeg_quality changes, so the setting still reaches an already-cached image (regression: quality, not just path+size+mtime, must be part of the key)', async () => {
+    const shrunkPayload = (out: Awaited<ReturnType<typeof preReadImageHandler>>): string => {
+      expect(out.hookType).toBe('context')
+      if (out.hookType !== 'context') return ''
+      const m = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(out.context)
+      expect(m).not.toBeNull()
+      return (m as RegExpExecArray)[1] as string
+    }
+    const decodedBytes = (payload: string): number => Buffer.from(payload, 'base64').length
+    const setQuality = (q: number): void => {
+      fs.writeFileSync(_testConfigPath, '[image_shrink]\njpeg_quality = ' + String(q) + '\n', 'utf8')
+      invalidateConfigCache()
+    }
+
+    setQuality(90)
+    const high = shrunkPayload(await preReadImageHandler(makeEvent(filePath)))
+
+    // Same file, untouched on disk -- only the configured quality changed. Before the key
+    // carried the quality this served the warm entry verbatim, which made the setting dead
+    // config for every image already in the cache.
+    setQuality(10)
+    const low = shrunkPayload(await preReadImageHandler(makeEvent(filePath)))
+
+    expect(decodedBytes(low)).toBeLessThan(decodedBytes(high))
+
+    // And the low-quality result is byte-for-byte what a cold cache produces at that quality --
+    // proving the second call re-encoded rather than serving anything stale. Compared on the
+    // encoded payload, not its length, so two different encodes of equal size cannot pass.
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+    resetShrinkCachePruneThrottleForTests()
+    expect(shrunkPayload(await preReadImageHandler(makeEvent(filePath)))).toBe(low)
+
+    // Two live keys for the one file: one per quality, neither overwriting the other.
+    setQuality(90)
+    await preReadImageHandler(makeEvent(filePath))
+    expect(fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-')).length).toBe(2)
+  })
+
+  it('encodes at the quality it built the cache key from, even if the config changes while it is probing a stale entry (regression: shrinkImage must not re-resolve jpeg_quality on its own)', async () => {
+    const payloadOf = (out: Awaited<ReturnType<typeof preReadImageHandler>>): string => {
+      expect(out.hookType).toBe('context')
+      if (out.hookType !== 'context') return ''
+      const m = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(out.context)
+      expect(m).not.toBeNull()
+      return (m as RegExpExecArray)[1] as string
+    }
+    const writeQuality = (q: number): void => {
+      fs.writeFileSync(_testConfigPath, '[image_shrink]\njpeg_quality = ' + String(q) + '\n', 'utf8')
+      invalidateConfigCache()
+    }
+    const entries = (): string[] => fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+
+    // Reference: a plain quality-90 shrink of this file, cold cache.
+    writeQuality(90)
+    const cold90 = payloadOf(await preReadImageHandler(makeEvent(filePath)))
+
+    // Corrupt the cached entry. The handler now resolves the quality, finds that entry, and
+    // awaits a decode probe of it -- the probe fails, so it falls through to a fresh encode.
+    // That await is a real suspension point between the quality it captured and the encode,
+    // so rewriting the config here lands strictly between the two. No timers, no spies.
+    fs.writeFileSync(path.join(cacheDir, entries()[0] as string), Buffer.from([0x00, 0x01, 0x02]))
+    const pending = preReadImageHandler(makeEvent(filePath))
+    writeQuality(10)
+    const served = payloadOf(await pending)
+
+    // Byte-for-byte the quality-90 encode the key was built from. When shrinkImage resolved the
+    // quality itself it produced the quality-10 encode here and stored it under the quality-90
+    // key -- a permanently stale entry, the same defect the key change fixes.
+    expect(served).toBe(cold90)
+  })
+
   it('treats a corrupt/truncated cache entry as a miss, deletes it, and still returns a valid shrink', async () => {
     await preReadImageHandler(makeEvent(filePath))
     const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
