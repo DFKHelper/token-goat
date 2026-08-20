@@ -465,9 +465,14 @@ describe('efficacy calculation', () => {
     const n1 = nonce()
     const n2 = nonce()
     const n3 = nonce()
-    logHintEmission('read_reread_dedup', n1, 'C:/repo/a.ts')
-    logHintEmission('read_reread_dedup', n2, 'C:/repo/b.ts')
-    logHintEmission('read_reread_dedup', n3, 'C:/repo/c.ts')
+    // A redirect category is the right vehicle for this arithmetic: it is the polarity where a
+    // hint that times out unfollowed genuinely means "not acted on", so the 1-of-3 split the
+    // percentage is checked against is real. A suppression category would give 3 of 3 here,
+    // because leaving b.ts and c.ts unread is precisely what those hints asked for -- see
+    // 'acted-on polarity for suppression-shaped hints' below.
+    logHintEmission('bash_redirect', n1, 'C:/repo/a.ts')
+    logHintEmission('bash_redirect', n2, 'C:/repo/b.ts')
+    logHintEmission('bash_redirect', n3, 'C:/repo/c.ts')
     resolvePendingHintsForEvent(bashEvent(n1, 'token-goat read "C:/repo/a.ts::Foo"'))
     // n2 and n3 time out unresolved (not acted on).
     for (let i = 0; i < 6; i++) {
@@ -476,7 +481,7 @@ describe('efficacy calculation', () => {
     }
 
     const summary = getHintStatsSummary()
-    const row = summary.find((r) => r.category === 'read_reread_dedup')
+    const row = summary.find((r) => r.category === 'bash_redirect')
     expect(row?.emitted).toBe(3)
     expect(row?.actedOn).toBe(1)
     expect(row?.efficacyPct).toBeCloseTo(33.3, 1)
@@ -941,5 +946,149 @@ describe('config isolation (regression #50)', () => {
 
   it('confirms the prior test\'s afterEach already deleted the shared config.toml', () => {
     expect(fs.existsSync(configPath())).toBe(false)
+  })
+})
+
+/**
+ * Polarity regression: a hint that asks for an absence must be scored on that absence.
+ *
+ * `read_reread_dedup` and `edit_reread_suggest` say "you already have this file, don't read it
+ * again." Doing what they ask means issuing no command at all, but `isActedOn` credits follow-through
+ * only when a later Bash command invokes token-goat AND names the correlator. So every one of those
+ * rows resolved `acted_on = 0` however well the hint worked, the two categories sat at exactly 0%
+ * efficacy, and `shouldSuppress` muted each for good once `min_sample_size` (default 5) rows had
+ * accrued -- the hints that save a whole file read were the first to switch themselves off, on
+ * evidence that could not exist. Observed live: those two categories at 0.0% on 5 emissions each and
+ * both suppressed, while all three redirect categories scored above zero.
+ *
+ * Why didn't a test catch this: every existing case in this file drives the acted-on path with a
+ * follow-up `token-goat ...` command, which is the redirect categories' compliance shape. No case
+ * ever let a suppression hint's window simply expire and then asked what that meant, because the
+ * expiry branch looked like uninteresting bookkeeping shared by all five categories. The gap was in
+ * which category was fed to the shared branch, not in the branch's logic, so exercising the existing
+ * cases harder could never reach it.
+ *
+ * Both polarities are asserted here, so a fix that flipped the default globally -- making every
+ * unfollowed redirect hint look effective -- fails just as loudly as the original bug.
+ */
+describe('acted-on polarity for suppression-shaped hints', () => {
+  /** Run the window down with unrelated tool calls, one call per turn. */
+  function idleOut(sessionId: string, turns = 6): void {
+    for (let i = 0; i < turns; i++) resolvePendingHintsForEvent(bashEvent(sessionId, `echo idle-${i}`))
+  }
+
+  function rowFor(sessionId: string): { resolved: number; acted_on: number } | undefined {
+    return getDb(globalDbPath())
+      .prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?')
+      .get(sessionId) as { resolved: number; acted_on: number } | undefined
+  }
+
+  it('credits a re-read dedup hint when the window expires with no re-read', () => {
+    const n = nonce()
+    logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
+    idleOut(n)
+    const row = rowFor(n)
+    expect(row?.resolved, 'the hint never resolved').toBe(1)
+    expect(row?.acted_on, 'not re-reading the file is the compliance this hint asked for').toBe(1)
+  })
+
+  it('credits an edit re-read suggestion the same way', () => {
+    const n = nonce()
+    logHintEmission('edit_reread_suggest', n, 'C:/repo/docs/guide.md')
+    idleOut(n)
+    expect(rowFor(n)?.acted_on).toBe(1)
+  })
+
+  it('counts a plain Read of the named file against the dedup hint', () => {
+    const n = nonce()
+    logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
+    resolvePendingHintsForEvent(readEvent(n, 'C:/repo/src/big.ts'))
+    const row = rowFor(n)
+    expect(row?.resolved, 'defiance must resolve the row immediately').toBe(1)
+    expect(row?.acted_on, 're-reading the file is exactly what the hint warned against').toBe(0)
+  })
+
+  it('counts a shell re-read of the named file against the dedup hint', () => {
+    const n = nonce()
+    logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
+    resolvePendingHintsForEvent(bashEvent(n, 'cat C:/repo/src/big.ts'))
+    const row = rowFor(n)
+    // Resolution is the discriminating half: before the fix a `cat` of the named file merely
+    // decremented the window like any unrelated call, so acted_on alone read 0 either way.
+    expect(row?.resolved, 'the re-read must settle the row there and then').toBe(1)
+    expect(row?.acted_on).toBe(0)
+  })
+
+  it('does not count a surgical token-goat read of that file as defiance', () => {
+    const n = nonce()
+    logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
+    // Green on both sides of the fix by design: this guards the new isDefiance path from
+    // over-classifying the surgical route as a re-read, which would invert the fix's own benefit.
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat read "C:/repo/src/big.ts::parse"'))
+    const row = rowFor(n)
+    expect(row?.resolved).toBe(1)
+    expect(row?.acted_on, 'taking the cheap route is following the hint, not defying it').toBe(1)
+  })
+
+  it('leaves a read of some other file alone until the window runs out', () => {
+    const n = nonce()
+    logHintEmission('read_reread_dedup', n, 'C:/repo/src/big.ts')
+    resolvePendingHintsForEvent(readEvent(n, 'C:/repo/src/unrelated.ts'))
+    expect(rowFor(n)?.resolved, 'an unrelated read must not resolve the row').toBe(0)
+    idleOut(n)
+    expect(rowFor(n)?.acted_on).toBe(1)
+  })
+
+  it('still books an unfollowed redirect hint as not acted on', () => {
+    const n = nonce()
+    logHintEmission('bash_redirect', n, 'C:/repo/src/big.ts')
+    idleOut(n)
+    const row = rowFor(n)
+    expect(row?.resolved).toBe(1)
+    expect(row?.acted_on, 'a redirect hint names a command to run; silence is not compliance').toBe(0)
+  })
+
+  it('books a correlator-less hint by its own polarity', () => {
+    const sup = nonce()
+    logHintEmission('read_reread_dedup', sup, null)
+    expect(rowFor(sup)?.acted_on, 'an unobservable suppression hint was never contradicted').toBe(1)
+
+    const red = nonce()
+    logHintEmission('bash_redirect', red, null)
+    expect(rowFor(red)?.acted_on, 'an unobservable redirect hint was never followed either').toBe(0)
+  })
+
+  it('lets a category already muted by pre-fix rows recover on its next obeyed probe', () => {
+    // The shape this machine was actually found in: read_reread_dedup at 0 acted-on across 5
+    // emissions and suppressed, every one of those zeros produced by the rule this fix replaced.
+    // Recovery does not need those rows rewritten -- the backoff probe schedule already exists to
+    // let a muted category earn its way back, and it could not work while compliance was
+    // unobservable. One probe the agent obeys is now enough to clear the threshold.
+    saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, min_sample_size: 5 } })
+    invalidateConfigCache()
+    for (let i = 0; i < 5; i++) {
+      const stale = nonce()
+      logHintEmission('read_reread_dedup', stale, `C:/repo/src/old${i}.ts`)
+      resolvePendingHintsForEvent(readEvent(stale, `C:/repo/src/old${i}.ts`))
+    }
+    expect(shouldSuppress('read_reread_dedup', nonce()), 'setup: the category must start muted').toBe(true)
+
+    const probe = nonce()
+    logHintEmission('read_reread_dedup', probe, 'C:/repo/src/new.ts')
+    idleOut(probe)
+    expect(shouldSuppress('read_reread_dedup', nonce()), 'one obeyed probe must lift the mute').toBe(false)
+  })
+
+  it('keeps a consistently obeyed dedup category out of auto-suppression', () => {
+    saveConfig({ ...defaultConfig(), hint_stats: { suppress_threshold_pct: 15, min_sample_size: 5 } })
+    invalidateConfigCache()
+    for (let i = 0; i < 6; i++) {
+      const n = nonce()
+      logHintEmission('read_reread_dedup', n, `C:/repo/src/file${i}.ts`)
+      idleOut(n)
+    }
+    const summary = getHintStatsSummary().find((r) => r.category === 'read_reread_dedup')
+    expect(summary?.emitted, 'the sample must be past min_sample_size for this to mean anything').toBeGreaterThanOrEqual(5)
+    expect(shouldSuppress('read_reread_dedup', nonce()), 'an obeyed category muted itself').toBe(false)
   })
 })
