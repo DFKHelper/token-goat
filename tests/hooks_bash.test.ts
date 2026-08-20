@@ -3803,6 +3803,202 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   })
 })
 
+// Regression: the git-mutation block above only fires for commands that move HEAD, and
+// hooks_edit.ts::postEditHandler only ever sees Edit/Write/NotebookEdit events (it reads
+// tool_input.file_path, which a Bash event does not carry). So every working-tree rewrite that
+// neither moves HEAD nor goes through the Edit tool -- `git restore`, `git stash pop|apply`,
+// `sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix` -- used to
+// reach queue/dirty.txt through NO path at all, leaving the index silently serving pre-mutation
+// symbols. See enqueueNonHeadMovingRewrites in hooks_bash.ts.
+describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+    clearDirtyQueue()
+  })
+
+  const gitIn =
+    (dir: string) =>
+    (args: string[]): void => {
+      execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: dir, stdio: 'ignore' })
+    }
+
+  it('enqueues the file rewritten by `git restore <path>` (HEAD never moves, so no reflog diff base exists)', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      // The real mutation: a.txt is dirty, `git restore` puts the committed content back.
+      writeFileSync(join(dir, 'a.txt'), 'locally edited\n')
+      gitIn(dir)(['restore', 'a.txt'])
+
+      await postBashHandler(makePostBashEvent('git restore a.txt', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('expands a directory pathspec through git for `git restore -- .`', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'locally edited\n')
+      gitIn(dir)(['restore', '--', '.'])
+
+      await postBashHandler(makePostBashEvent('git restore -- .', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue for an index-only `git restore --staged <path>` (working-tree content is untouched)', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent('git restore --staged a.txt', '', dir))
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues the file restored by `git stash pop` (the stash entry is gone by post-hook time, so the working-tree status is the surviving record)', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      const git = gitIn(dir)
+      writeFileSync(join(dir, 'a.txt'), 'stashed change\n')
+      git(['stash', 'push', '-m', 'wip'])
+      git(['stash', 'pop'])
+
+      await postBashHandler(makePostBashEvent('git stash pop', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues a file rewritten in place by `sed -i`', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'two\n')
+      await postBashHandler(makePostBashEvent("sed -i 's/one/two/' a.txt", '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues a `sed -i` target even when the script contains a `|` (the segment split must be quote-aware)', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent("sed -i -E 's/one|two/three/' a.txt", '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues the target of a `>>` output redirection', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent('echo more >> a.txt', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues a `tee` target inside a pipeline', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent('echo hi | tee a.txt', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to the working-tree status sweep for `git apply`, whose file set lives in the patch body rather than the command line', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      // The patch body is what actually names a.txt -- nothing on the command line does.
+      writeFileSync(join(dir, 'a.txt'), 'patched\n')
+      await postBashHandler(makePostBashEvent('git apply /tmp/change.patch', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT sweep for an inspect-only `git apply --check`', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'dirty but not by this command\n')
+      await postBashHandler(makePostBashEvent('git apply --check /tmp/change.patch', '', dir))
+
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to the status sweep for `prettier --write`', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'formatted\n')
+      await postBashHandler(makePostBashEvent('npx prettier --write .', '', dir))
+
+      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue for a read-only command that names a file', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent('grep -n one a.txt', '', dir))
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue when the in-place write failed (non-zero exit)', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      const cmd = "sed -i 's/one/two/' a.txt"
+      const event = makeHookEvent({
+        eventName: 'post_tool_use',
+        toolName: 'Bash',
+        toolInput: { command: cmd },
+        sessionId: 'test-session',
+        agentId: undefined,
+        raw: { tool_name: 'Bash', tool_input: { command: cmd }, tool_response: { output: '', exit_code: 1 }, cwd: dir },
+      })
+      await postBashHandler(event)
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue a redirection target that never landed on disk', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent('echo hi > never-created.txt', '', dir))
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('postBashHandler — feeds Bash file dumps into the session read-cache', () => {
   beforeEach(() => {
     clearModuleCaches()
