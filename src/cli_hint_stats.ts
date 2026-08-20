@@ -25,11 +25,24 @@ function formatSpentCell(row: CategoryEfficacy): string {
   return row.legacyEmissions > 0 ? `${row.bytesEmitted} (${row.legacyEmissions} legacy)` : String(row.bytesEmitted)
 }
 
+/**
+ * Renders the suppressed cell so the two opposite meanings of "suppressed" are distinguishable.
+ * With probe occasions configured, a suppressed category still emits on those occasions and can
+ * earn its way back, so it is throttled. With `hints.backoff_thresholds = []` it never emits
+ * again until someone runs `hint-stats --reset`, so it is off. Both used to print a bare 'yes',
+ * which is how a reader of this table concluded the suppression path was broken when it was in
+ * fact a supported setting doing exactly what it says.
+ */
+function suppressedCell(row: CategoryEfficacy): string {
+  if (!row.suppressed) return 'no'
+  return row.suppressionPermanent ? 'yes (permanent)' : 'yes'
+}
+
 function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {
     process.stdout.write(text)
   }
-  w(pad('category', 22) + pad('emitted', 9) + pad('acted-on', 10) + pad('efficacy', 10) + pad('suppressed', 12) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
+  w(pad('category', 22) + pad('emitted', 9) + pad('acted-on', 10) + pad('efficacy', 10) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
   for (const row of rows) {
     const pct = row.efficacyPct === null ? 'n/a' : `${row.efficacyPct}%`
     w(
@@ -37,7 +50,7 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
         pad(String(row.emitted), 9) +
         pad(String(row.actedOn), 10) +
         pad(pct, 10) +
-        pad(row.suppressed ? 'yes' : 'no', 12) +
+        pad(suppressedCell(row), 17) +
         pad(String(row.manualEffective), 9) +
         pad(String(row.manualIneffective), 9) +
         formatSpentCell(row) +
@@ -92,5 +105,14 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
   printSummary(rows)
+  // A permanently-suppressed category emits nothing at all, so its efficacy can never rise and
+  // the table above will look identical forever. Name the one action that changes it, rather than
+  // leaving a reader to trace four source files and two databases to find out -- which is what
+  // happened once, and produced a wrong diagnosis on the way.
+  const permanent = rows.filter((r) => r.suppressionPermanent)
+  if (permanent.length > 0) {
+    const names = permanent.map((r) => r.category).join(', ')
+    process.stdout.write(`\nhints.backoff_thresholds is empty, so suppression here is permanent rather than a self-healing throttle: ${names} will not emit again on any occasion. Set backoff_thresholds to re-enable probe emissions, or run \`token-goat hint-stats --reset\` to clear the ledger.\n`)
+  }
   printTotals(getHintStatsTotals())
 }

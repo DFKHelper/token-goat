@@ -1091,4 +1091,39 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     expect(summary?.emitted, 'the sample must be past min_sample_size for this to mean anything').toBeGreaterThanOrEqual(5)
     expect(shouldSuppress('read_reread_dedup', nonce()), 'an obeyed category muted itself').toBe(false)
   })
+
+  // Regression: `suppressed: true` used to mean two operationally opposite things -- throttled
+  // and self-healing (probes configured), or off until a manual reset (backoff_thresholds = [],
+  // a documented, supported value). They rendered identically, which is how a reader of this
+  // table once concluded the suppression path was broken when it was working as specified.
+  it.each([
+    [[1, 3, 10, 30], false, 'probes configured: suppression is a self-healing throttle'],
+    [[], true, 'no probes: suppression is permanent until a manual reset'],
+    [[0], true, 'only non-positive thresholds: no usable probe occasion, same as empty'],
+  ])('backoff_thresholds %s gives suppressionPermanent=%s (%s)', (thresholds, expected) => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 100
+    cfg.hints.backoff_thresholds = thresholds as number[]
+    saveConfig(cfg)
+
+    logHintEmission('bash_redirect', nonce(), null)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+
+    const row = getHintStatsSummary().find((r) => r.category === 'bash_redirect')
+    expect(row?.suppressed).toBe(true)
+    expect(row?.suppressionPermanent).toBe(expected)
+  })
+
+  it('never reports suppressionPermanent for a category that is not suppressed at all', () => {
+    const cfg = defaultConfig()
+    cfg.hints.backoff_thresholds = []
+    saveConfig(cfg)
+
+    // bash_recall has no emissions, so it is below min_sample_size and cannot be suppressed.
+    // Empty backoff_thresholds must not make an unsuppressed category look permanently off.
+    const row = getHintStatsSummary().find((r) => r.category === 'bash_recall')
+    expect(row?.suppressed).toBe(false)
+    expect(row?.suppressionPermanent).toBe(false)
+  })
 })
