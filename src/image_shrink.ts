@@ -215,10 +215,16 @@ function imageShrinkCacheDir(): string {
 }
 
 /**
- * Cache key for a shrunk re-encode: sha256 of `path:size:mtimeMs`, truncated to 16 hex chars
- * (64 bits). mtime is part of the key -- not just path + size -- so a content change that
+ * Cache key for a shrunk re-encode: sha256 of `path:size:mtimeMs:quality`, truncated to 16 hex
+ * chars (64 bits). mtime is part of the key -- not just path + size -- so a content change that
  * happens to preserve the exact byte length (e.g. regenerating a same-dimension screenshot)
- * still busts the cache instead of silently serving a stale shrink. 64 bits of hash keeps
+ * still busts the cache instead of silently serving a stale shrink. The encode quality is part of
+ * it for the same reason from the other direction: it is the one input that changes the bytes
+ * without changing the source file at all, so a key without it made `image_shrink.jpeg_quality`
+ * dead config for every image already in the cache -- measured at a 23x spread (64 KB at quality
+ * 10 against 1.5 MB at quality 95 for the same screenshot) that a warm cache flattened to a
+ * single stale encode. Entries written under the old key are simply never found again and age out
+ * on the existing prune. 64 bits of hash keeps
  * collisions negligible for this cache's realistic working set: entries are pruned after
  * DEFAULT_MAX_AGE_MS, so the live set at any moment is bounded by how many distinct images get
  * read in that window, not by the process's lifetime total -- nowhere close to the ~2^32 items a
@@ -226,19 +232,19 @@ function imageShrinkCacheDir(): string {
  * domain-separates by full source path, so a collision would additionally require two different
  * paths to also match on size+mtime.
  */
-function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number): string {
-  return createHash('sha256').update(`${originalPath}:${size}:${mtimeMs}`).digest('hex').slice(0, 16)
+function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, quality: number): string {
+  return createHash('sha256').update(`${originalPath}:${size}:${mtimeMs}:${quality}`).digest('hex').slice(0, 16)
 }
 
 /**
- * Look for an already-cached re-encode of this exact (path, size, mtime), in either output
+ * Look for an already-cached re-encode of this exact (path, size, mtime, quality), in either output
  * format {@link shrinkImage} can produce -- the format isn't known ahead of time (shrinkImage
  * picks WEBP or JPEG based on content), so both candidate extensions are checked. Checked BEFORE
  * running the shrink so a repeat Read of an unchanged image can skip the sharp re-encode
  * entirely instead of always re-running it.
  */
-function findCachedShrink(originalPath: string, size: number, mtimeMs: number): { filePath: string; format: 'webp' | 'jpeg' } | null {
-  const key = shrinkCacheKey(originalPath, size, mtimeMs)
+function findCachedShrink(originalPath: string, size: number, mtimeMs: number, quality: number): { filePath: string; format: 'webp' | 'jpeg' } | null {
+  const key = shrinkCacheKey(originalPath, size, mtimeMs, quality)
   const dir = imageShrinkCacheDir()
   const candidates: Array<{ ext: string; format: 'webp' | 'jpeg' }> = [
     { ext: '.webp', format: 'webp' },
@@ -252,11 +258,11 @@ function findCachedShrink(originalPath: string, size: number, mtimeMs: number): 
 }
 
 /** Write a shrink result's bytes to the cache, keyed by the source (path, size, mtime). Atomic (temp file + rename), so a reader never observes a partially-written cache entry. Best-effort: a write failure (permissions, disk full, ...) must never block returning the shrink result the caller already computed. */
-function writeCachedShrink(originalPath: string, result: ShrinkResult, mtimeMs: number): void {
+function writeCachedShrink(originalPath: string, result: ShrinkResult, mtimeMs: number, quality: number): void {
   try {
     const dir = imageShrinkCacheDir()
     ensureDirSync(dir)
-    const key = shrinkCacheKey(originalPath, result.originalBytes, mtimeMs)
+    const key = shrinkCacheKey(originalPath, result.originalBytes, mtimeMs, quality)
     const ext = result.format === 'jpeg' ? '.jpg' : '.webp'
     atomicWriteBytes(path.join(dir, `token-goat-shrink-${key}${ext}`), result.data)
   } catch {
@@ -393,7 +399,13 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   // truncated cache entry (unexpected external interference; atomicWriteBytes itself never
   // leaves a partial file) is detected by re-probing it with sharp -- an undecodable cached file
   // is deleted and treated as a miss, never served.
-  const cached = findCachedShrink(filePath, stat.size, stat.mtimeMs)
+  // The quality the shrink would be produced at right now, read once and then threaded through
+  // the lookup, the encode and the write alike. Reading it here rather than letting each of those
+  // three reload the config independently is what stops them disagreeing if the config changed
+  // partway through -- bytes encoded at one quality stored under another quality's key would be a
+  // permanently stale entry, the same defect this key change fixes.
+  const quality = loadConfig().image_shrink.jpeg_quality
+  const cached = findCachedShrink(filePath, stat.size, stat.mtimeMs, quality)
   if (cached !== null) {
     let cachedData: Buffer | null
     try {
@@ -458,7 +470,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     }
   }
 
-  const result = await shrinkImage(input, { sizeThresholdBytes: 0 })
+  const result = await shrinkImage(input, { quality, sizeThresholdBytes: 0 })
   if (result === null) {
     // Qualified for a shrink attempt (over the size/dimension threshold) but shrinkImage
     // declined -- either the re-encode never beat the original ("never enlarge") or the
@@ -469,7 +481,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     return passOutput()
   }
 
-  writeCachedShrink(filePath, result, stat.mtimeMs)
+  writeCachedShrink(filePath, result, stat.mtimeMs, quality)
 
   return finalizeShrinkResult(result, filePath)
 }
