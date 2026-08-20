@@ -657,7 +657,16 @@ describe('mcp numeric param bounds', () => {
     ]) {
       const result = await client.callTool(call)
       expect(result.isError).toBe(true)
-      expect(textOf(result)).toContain('too_big')
+      const text = textOf(result)
+      // Assert the *behaviour* (an over-limit value is rejected, naming the offending param),
+      // not the validation library's internal issue code. Older stacks render this as a flattened
+      // issue object carrying the literal code `too_big`; newer ones humanize it to
+      // `Too big: expected number to be <=1000 at limit`. Pinning the code string alone made this
+      // test fail on a routine dependency bump even though the bound still rejected correctly.
+      expect(text).toMatch(/too[_ ]?big/i)
+      const param = Object.keys(call.arguments).find((k) => typeof (call.arguments as Record<string, unknown>)[k] === 'number')
+      expect(param).toBeDefined()
+      expect(text).toContain(param as string)
     }
   })
 })
