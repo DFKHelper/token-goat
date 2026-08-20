@@ -956,18 +956,14 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // agent does not contain it. `indexing.cross_project_symbols = false` confines the command to
   // the project it is run from. The confinement has to cover --project and an absolute --file as
   // well, or the setting is bypassed by the same caller it exists to constrain.
-  const confineToProject = !loadConfig().indexing.cross_project_symbols
-  const confinedRoot = confineToProject ? resolveProjectRoot() : null
+  const confinedRoot = confinedProjectRoot()
   if (confinedRoot !== null) {
     const requested = opts.projectRoot
-    if (requested !== undefined && !isInsideRoot(requested, confinedRoot)) {
-      return { text: `--project is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(confinedRoot, requested)}`, code: 1 }
-    }
+    const projectDenial = requested === undefined ? null : confinementRefusal('--project', requested, confinedRoot)
+    if (projectDenial !== null) return { text: projectDenial, code: 1 }
     if (opts.file !== undefined) {
-      const resolved = resolveIndexPath(opts.file, requested ?? process.cwd())
-      if (!isInsideRoot(resolved, confinedRoot)) {
-        return { text: `--file is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(confinedRoot, resolved)}`, code: 1 }
-      }
+      const fileDenial = confinementRefusal('--file', resolveIndexPath(opts.file, requested ?? process.cwd()), confinedRoot)
+      if (fileDenial !== null) return { text: fileDenial, code: 1 }
     }
   }
 
@@ -1385,6 +1381,7 @@ function runLineRange(
  */
 type SymbolResolution =
   | { kind: 'ok'; entry: SymbolEntry }
+  | { kind: 'confined'; message: string }
   | { kind: 'ambiguous'; symbol: string; file: string; candidates: SymbolEntry[] }
   | { kind: 'none' }
 
@@ -1501,6 +1498,34 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   return lines.join('\n')
 }
 
+/**
+ * The confining project root when `indexing.cross_project_symbols = false`, else null. Resolved
+ * once per command so every index-backed lookup answers to the same root.
+ */
+function confinedProjectRoot(): string | null {
+  return loadConfig().indexing.cross_project_symbols ? null : resolveProjectRoot()
+}
+
+/**
+ * The refusal message for an index-backed lookup at `resolved` when confinement is on, or null
+ * when the lookup is allowed. Shared by every command that answers out of the index, so they all
+ * refuse with one wording: the index holds symbol bodies for every project ever indexed on this
+ * machine and serves them without touching the filesystem, so a directory sandbox around the
+ * agent cannot contain it -- each command has to enforce the setting itself or the setting is
+ * bypassed by whichever command forgot.
+ */
+function confinementRefusal(label: string, resolved: string, root: string | null): string | null {
+  if (root === null || isInsideRoot(resolved, root)) return null
+  return `${label} is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(root, resolved)}`
+}
+
+/** {@link confinementRefusal} for a caller-supplied file spec, resolved the same way the lookup itself resolves it. */
+export function fileConfinementRefusal(label: string, file: string, projectRoot: string | undefined): string | null {
+  const root = confinedProjectRoot()
+  if (root === null) return null
+  return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
+}
+
 function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol: rawSymbol } = parseReadSpec(spec)
   if (rawSymbol === undefined || rawSymbol === '') return { kind: 'none' }
@@ -1517,6 +1542,10 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
   const lineAnchor = anchorMatch !== null ? parseInt(anchorMatch[2]!, 10) : undefined
 
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
+  // Refuse before any index work: the resolution below reads bodies straight out of the shared
+  // index, so the check has to happen here rather than at each caller's rendering step.
+  const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
+  if (confined !== null) return { kind: 'confined', message: confined }
   if (forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
@@ -1674,6 +1703,8 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   }
 
   const resolution = resolveSymbolSpec(opts.spec, opts.forceRefresh, opts.projectRoot)
+
+  if (resolution.kind === 'confined') return { text: resolution.message, code: 1 }
 
   if (resolution.kind === 'ambiguous') {
     // Genuine same-file ambiguity (a bare name matching several classes' methods, or a
@@ -2109,6 +2140,25 @@ function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: 
 }
 
 /** Handle ``token-goat refs <spec>``. A comma-separated spec (`a,b,c` or `file::a,b`) merges the references of several symbols into one call, each group headed by its symbol name; a single symbol keeps the original behavior verbatim via {@link runRefsSingle}. */
+/**
+ * The root every `refs` query is scoped to. `refs` searches the whole index by symbol NAME, so
+ * unlike the file-spec commands it cannot be gated by one path: leaving `rootDir` unset returns
+ * reference sites -- path, line and surrounding source context -- from every project on the
+ * machine. Falling back to the confining root scopes the search the same way `symbol`'s bare-name
+ * path already does.
+ */
+function refsRootDir(opts: { projectRoot?: string }): string | undefined {
+  return opts.projectRoot ?? confinedProjectRoot() ?? undefined
+}
+
+/** Every file named by a `refs` spec: the cross-file form's per-pair files, or the single file of a `file::symbol` spec. A bare symbol name contributes none, and is confined by {@link refsRootDir} instead. */
+function refsSpecFiles(spec: string): string[] {
+  const crossFile = parseCrossFileMultiSpec(spec)
+  if (crossFile !== null) return [...new Set(crossFile.map((p) => p.file))]
+  const { file } = parseMultiRefsSpec(spec)
+  return file === undefined ? [] : [file]
+}
+
 export function runRefs(opts: RefsOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
   // rows regardless of whether references exist -- silently reporting "no references found"
@@ -2124,6 +2174,25 @@ export function runRefs(opts: RefsOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
     emitErr(`--top must be a positive number, got: ${opts.top}`)
     return 1
+  }
+
+  // Same confinement the file-spec read commands enforce, applied before any query: an explicit
+  // --project or an out-of-root file in the spec would otherwise re-open the channel that
+  // refsRootDir closes for the bare-name form.
+  const confinedRoot = confinedProjectRoot()
+  if (confinedRoot !== null) {
+    const projectDenial = opts.projectRoot === undefined ? null : confinementRefusal('--project', opts.projectRoot, confinedRoot)
+    if (projectDenial !== null) {
+      emitErr(projectDenial)
+      return 1
+    }
+    for (const file of refsSpecFiles(opts.spec)) {
+      const denial = confinementRefusal('This file', resolveIndexPath(file, opts.projectRoot ?? process.cwd()), confinedRoot)
+      if (denial !== null) {
+        emitErr(denial)
+        return 1
+      }
+    }
   }
 
   // Cross-file multi-spec `src/a.ts::fnA,src/b.ts::fnB`. Checked before the single-file `::` handling below for the same reason runRead/runSection check it first (see parseCrossFileMultiSpec) -- parseMultiRefsSpec's findSpecSeparator is a lastIndexOf('::'), so a spec crossing a file boundary would otherwise fold into one bogus file/symbol-list pair and silently miss every symbol but the last (the reported bug: `refs "a.ts::x,b.ts::y"` parsed as file=`a.ts::x,b.ts` symbol=`y`, that nonexistent file matched nothing, and a referenced symbol was reported as unreferenced). parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::a,b` multi-symbol form.
@@ -2149,7 +2218,8 @@ export function runRefs(opts: RefsOptions): number {
     if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
-    if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
+    const rootDir = refsRootDir(opts)
+    if (rootDir !== undefined) queryOpts.rootDir = rootDir
     const scanned = queryRefs(queryOpts)
     const preScanCount = scanned.length
     let results = applyTypedRefsTier(sym, file, scanned)
@@ -2254,7 +2324,8 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
-    if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
+    const rootDir = refsRootDir(opts)
+    if (rootDir !== undefined) queryOpts.rootDir = rootDir
     const scanned = queryRefs(queryOpts)
     const preScanCount = scanned.length
     let results = applyTypedRefsTier(symbol, file, scanned)
@@ -2347,7 +2418,8 @@ function runRefsSingle(opts: RefsOptions): number {
   if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
   else if (opts.limit !== undefined) queryOpts.limit = opts.limit
   else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
-  if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
+  const rootDir = refsRootDir(opts)
+  if (rootDir !== undefined) queryOpts.rootDir = rootDir
 
   const scanned = queryRefs(queryOpts)
   // How full the query window came back, so a client-side filter drawn from a window that filled
@@ -2645,8 +2717,11 @@ function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefi
 function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
+): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+  // Same reason as resolveSymbolSpec's check: the listing below comes out of the shared index.
+  const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
+  if (confined !== null) return { kind: 'confined', text: confined }
   if (opts.forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
@@ -2756,7 +2831,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file, includeFilePath: true }), opts.json === true)
 
   const prep = prepareSymbolListing(opts.file, opts)
-  if (prep.kind === 'empty') {
+  if (prep.kind === 'confined' || prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
   const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
@@ -2828,7 +2903,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file, includeFilePath: true }), opts.json === true)
 
   const prep = prepareSymbolListing(opts.file, opts)
-  if (prep.kind === 'empty') {
+  if (prep.kind === 'confined' || prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
   const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
@@ -3967,6 +4042,7 @@ interface BriefResult {
 /** Core of ``token-goat brief "file::symbol"``: bundles the symbol body, its resolved callers (enclosing-function-aware, via graph_commands.ts's real caller-resolution logic), and its containing doc section (if the file has heading structure) into one response -- cutting the common "understand this function" pattern from 2-3 round-trips to 1. Returns text+code instead of emitting directly so {@link runBrief} can both dispatch to {@link runBriefMulti} for a comma-separated spec and reuse this exact single-symbol path for each sub-call, mirroring runRead/runSection's core-vs-dispatcher split. Note that --limit validation deliberately lives in {@link runBrief}, not here: it is a whole-invocation flag, so validating per sub-call would repeat one usage error once per symbol and frame it as a per-symbol resolution failure. */
 function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
+  if (resolution.kind === 'confined') return { text: resolution.message, code: 1 }
   if (resolution.kind === 'ambiguous') {
     return {
       // Name the command explicitly: formatAmbiguity defaults to 'read', so brief's retry lines would otherwise tell the user to run `token-goat read`, which answers a different question than the one they asked.
@@ -4691,6 +4767,11 @@ export function resolveSymbolSpecOrEmitError(
   }
 
   const resolution = resolveSymbolSpec(spec, undefined, projectRoot)
+
+  if (resolution.kind === 'confined') {
+    emitErr(resolution.message)
+    return null
+  }
 
   if (resolution.kind === 'ambiguous') {
     // Same hard-refuse shape as runRead's ambiguous branch -- never guess which candidate the
@@ -5522,6 +5603,12 @@ function runPerFileEmitting(files: string[], label: string, run: (file: string) 
 export function runExports(opts: ImportsExportsOptions): number {
   const multiFiles = parseMultiFileSpec(opts.file)
   if (multiFiles !== null) return runPerFileEmitting(multiFiles, 'Exports', (file) => runExports({ ...opts, file }))
+
+  const confined = fileConfinementRefusal('This file', opts.file, opts.projectRoot)
+  if (confined !== null) {
+    emitErr(confined)
+    return 1
+  }
 
   const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
   const symbols = querySymbols({ filePath: resolveIndexPath(diskPath), limit: 500 })
