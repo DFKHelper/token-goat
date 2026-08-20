@@ -551,6 +551,44 @@ describe('compressMcpResultWithPacks', () => {
     const text = JSON.stringify(githubPrList(30))
     expect(compressMcpResultWithPacks('mcp__some-other-server__list_things', text)).toBeNull()
   })
+
+  it('strips a large inline base64 data URL for a server with no matching pack, preserving mime type and byte count', () => {
+    const payload = 'A'.repeat(500)
+    const text = `{"snapshot":"<img src=\\"data:image/png;base64,${payload}\\">"}`
+    const compressed = compressMcpResultWithPacks('mcp__some-other-server__take_screenshot', text)
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    expect(compressed).not.toContain(payload)
+    expect(compressed).toContain('data:image/png;base64,<stripped 500 bytes>')
+  })
+
+  it('leaves a literal "$" elsewhere in the text untouched by the base64 replacement (replacer-function, not replacement-string)', () => {
+    const payload = 'B'.repeat(500)
+    const text = `{"price":"$1 costs $$ and this is $& weird","img":"data:image/png;base64,${payload}"}`
+    const compressed = compressMcpResultWithPacks('mcp__some-other-server__take_screenshot', text)
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    // A replacement *string* containing "$&"/"$1"/"$$" would have corrupted
+    // this untouched literal text if used as the second arg to replace().
+    expect(compressed).toContain('$1 costs $$ and this is $& weird')
+  })
+
+  it('leaves a short base64 data URL below the strip threshold untouched', () => {
+    const text = '{"icon":"data:image/png;base64,AAAA"}'
+    expect(compressMcpResultWithPacks('mcp__some-other-server__get_icon', text)).toBeNull()
+  })
+
+  it('strips base64 data URLs ahead of the GitHub pack, so both run on a github tool result', () => {
+    const payload = 'C'.repeat(500)
+    const list = githubPrList(30)
+    list[0].body = `Description with an embedded image: data:image/png;base64,${payload}`
+    const text = JSON.stringify(list)
+    const compressed = compressMcpResultWithPacks('mcp__plugin_github_github__list_pull_requests', text)
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    expect(compressed).not.toContain(payload)
+    expect(compressed).not.toContain('node_id')
+  })
 })
 
 // --- integration: packs run through postMcpHandler, full output still recoverable by id ---

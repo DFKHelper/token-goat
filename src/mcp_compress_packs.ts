@@ -406,6 +406,44 @@ export function compressGWorkspaceMcpResult(toolName: string, resultText: string
   return finishWithGenericPass(resultText, summarized)
 }
 
+// --- Inline base64 data-URL stripping -----------------------------------------
+
+/**
+ * Matches `data:<mime>/<subtype>;base64,<payload>` blobs. Not server-specific:
+ * any MCP server can embed a screenshot or other binary asset this way
+ * (browser-automation accessibility snapshots are the common case, but the
+ * shape isn't unique to them), so this runs ahead of the per-server packs
+ * below rather than being folded into one of them.
+ */
+const DATA_URL_BASE64_RE = /data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)/g
+
+/** Payloads shorter than this are left alone; not worth the placeholder overhead. */
+const MIN_BASE64_PAYLOAD_LEN = 100
+
+/**
+ * Replace base64 data-URL payloads above {@link MIN_BASE64_PAYLOAD_LEN} with a
+ * short placeholder that preserves the mime type and original byte count, so
+ * the model can still see an image was present without paying to have its
+ * unreadable bytes billed as text.
+ *
+ * Uses a replacer *function*, not a replacement string: `String.replace`
+ * interprets `$&`/`$1`/`$$` in a replacement *string* even for a plain-text
+ * search, and base64 payloads / surrounding attribute text can legitimately
+ * contain `$`. A function's return value is inserted verbatim.
+ *
+ * Returns `null` (not the unmodified text) when nothing qualified, matching
+ * the fails-closed-per-pack contract the other functions in this file use.
+ */
+function stripBase64DataUrls(resultText: string): string | null {
+  let changed = false
+  const out = resultText.replace(DATA_URL_BASE64_RE, (match, mime: string, payload: string) => {
+    if (payload.length < MIN_BASE64_PAYLOAD_LEN) return match
+    changed = true
+    return `data:${mime};base64,<stripped ${payload.length} bytes>`
+  })
+  return changed ? out : null
+}
+
 // --- Dispatch ----------------------------------------------------------------
 
 /**
@@ -413,11 +451,19 @@ export function compressGWorkspaceMcpResult(toolName: string, resultText: string
  * {@link hooks_mcp.ts}'s `postMcpHandler` calls this before the generic
  * pass; a `null` here means neither pack matched or paid off, and the caller
  * should fall through to {@link compressMcpResult} on the untransformed text.
+ *
+ * Base64 data-URL stripping runs first and unconditionally (see
+ * {@link stripBase64DataUrls}), on the raw text, before any pack tries to
+ * `JSON.parse` it -- so a stripped payload is what every downstream pack
+ * (and the generic pass, if no pack matches) actually sees.
  */
 export function compressMcpResultWithPacks(toolName: string, resultText: string): string | null {
+  const base64Stripped = stripBase64DataUrls(resultText)
+  const text = base64Stripped ?? resultText
   return (
-    compressGithubMcpResult(toolName, resultText) ??
-    compressBrowserMcpResult(toolName, resultText) ??
-    compressGWorkspaceMcpResult(toolName, resultText)
+    compressGithubMcpResult(toolName, text) ??
+    compressBrowserMcpResult(toolName, text) ??
+    compressGWorkspaceMcpResult(toolName, text) ??
+    base64Stripped
   )
 }
