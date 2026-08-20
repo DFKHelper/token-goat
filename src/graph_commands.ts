@@ -767,11 +767,29 @@ function hasAncestorDispatchRef(methodName: string, scopeName: string, classFile
   return false
 }
 
-// Symbol `kind` values every language adapter in this repo is known to emit (collected from the language adapter source, not the runtime index) -- used by `dead --kind` to recognize a genuinely valid kind that just happens to have zero instances in the current project, distinct from a typo/nonexistent kind. Not exhaustive by construction (a future adapter can add a new kind), which is fine: distinctSymbolKinds(rootDir) still covers anything actually indexed, and this list only widens what counts as "known" rather than narrowing it.
-const CORE_SYMBOL_KINDS: ReadonlyArray<string> = [
-  'function', 'method', 'class', 'interface', 'enum', 'type', 'variable', 'const',
-  'struct', 'trait', 'namespace', 'module', 'property', 'field', 'constructor',
-  'macro', 'union', 'alias', 'directive', 'extension', 'mixin', 'protocol',
+// Generic (non-type-specific) symbol `kind` values every language adapter in this repo is known
+// to emit, plus every adapter-specific kind not already covered by TYPE_KINDS below (Apex,
+// GraphQL/proto siblings aside, this also covers Salesforce/Liquid/LWC bundle kinds, doc/markup
+// kinds like 'heading'/'section', and config-file kinds like 'env_key'/'key'). CORE_SYMBOL_KINDS
+// itself is assembled as a union with TYPE_KINDS further down so the two lists cannot drift apart
+// the way they did before this fix (see CORE_SYMBOL_KINDS's own comment).
+const GENERIC_SYMBOL_KINDS: ReadonlyArray<string> = [
+  'function', 'method', 'class', 'variable', 'const', 'namespace', 'module', 'property',
+  'field', 'constructor', 'macro', 'alias', 'directive', 'var', 'impl',
+]
+// Adapter-specific kinds not already covered by GENERIC_SYMBOL_KINDS or TYPE_KINDS -- doc/markup
+// kinds ('heading', 'section', 'selector', 'html_class', 'html_id'), config-file kinds ('env_key',
+// 'key'), and the Salesforce/Liquid/LWC family ('apex_method', 'sf_*', 'liquid_*', 'lwc_*'). Kept
+// deliberately in this list rather than folded into GENERIC_SYMBOL_KINDS above: `dead --kind
+// property` already returns rows from package.json/package-lock.json today, so `dead` already
+// operates on non-code kinds in practice -- excluding these doc/markup/config kinds here would be
+// an inconsistent carve-out, not a principled one, so they're included for the same reason.
+const OTHER_ADAPTER_SYMBOL_KINDS: ReadonlyArray<string> = [
+  'heading', 'selector', 'env_key', 'key', 'section', 'html_class', 'html_id',
+  'apex_method', 'sf_record_type', 'sf_apex_class', 'sf_flow', 'sf_flow_record_lookup',
+  'sf_flow_action', 'sf_flow_subflow', 'sf_mystery_type', 'sf_lightning_component_bundle',
+  'sf_lwc_target', 'sf_lwc_property', 'liquid_schema', 'liquid_section_file',
+  'lwc_bundle', 'lwc_component_alias', 'lwc_api_property', 'lwc_api_method', 'lwc_ref',
 ]
 
 export interface DeadOptions {
@@ -1076,7 +1094,7 @@ export function runDeps(opts: DepsOptions): number {
 // code path that emits 'class'/'struct'/'protocol' (already in this list), but neither was ever
 // added here. 'actor' (Swift) is the same gap again -- TYPE_HEADER_RE emits it alongside
 // 'class'/'struct'/'protocol'/'extension' from the identical match, but it alone was omitted.
-const TYPE_KINDS: ReadonlyArray<string> = [
+export const TYPE_KINDS: ReadonlyArray<string> = [
   'type',
   'interface',
   'enum',
@@ -1153,6 +1171,21 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   // opaque, Dart mixin/extension, proto message/enum/service, Apex class/interface/enum, and
   // Kotlin/Scala object.
   'graphql_extend',
+]
+
+// Symbol `kind` values every language adapter in this repo is known to emit (collected from the
+// language adapter source, not the runtime index) -- used by `dead --kind` to recognize a
+// genuinely valid kind that just happens to have zero instances in the current project, distinct
+// from a typo/nonexistent kind. Built as a deduplicated union of GENERIC_SYMBOL_KINDS, TYPE_KINDS,
+// and OTHER_ADAPTER_SYMBOL_KINDS rather than as an independent hand-maintained literal, so
+// TYPE_KINDS entries (Rust/Swift/Zig/Dart/proto/Apex/GraphQL/Kotlin/Scala/SFC type kinds) cannot
+// silently drift out of this list the way they previously did -- CORE_SYMBOL_KINDS is meant to be
+// a superset of TYPE_KINDS by definition, and this construction makes that structurally true
+// instead of merely documented. Not exhaustive by construction (a future adapter can add a new
+// kind), which is fine: distinctSymbolKinds(rootDir) still covers anything actually indexed, and
+// this list only widens what counts as "known" rather than narrowing it.
+export const CORE_SYMBOL_KINDS: ReadonlyArray<string> = [
+  ...new Set([...GENERIC_SYMBOL_KINDS, ...TYPE_KINDS, ...OTHER_ADAPTER_SYMBOL_KINDS]),
 ]
 
 export interface TypesOptions {
