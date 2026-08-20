@@ -388,11 +388,183 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
   return { filePath, ...flags }
 }
 
+/**
+ * The Python snippet inside `text`, paired with a copy of it that has string contents blanked out.
+ *
+ * The guards below look for `open(` and `.write(`, and a snippet is free to carry either as
+ * ordinary text inside a string, so they scan a masked copy. But masking only makes sense on
+ * Python. What arrives here is usually a shell command line with the snippet inside the shell's
+ * own quotes, and masking that as it stands treats the shell's opening quote as the start of a
+ * Python string and blanks the whole snippet, leaving the guards nothing to find. So the snippet
+ * is lifted out of `python -c` first. A command whose snippet cannot be lifted cleanly (a
+ * pipeline, a trailing `&&`) is scanned unmasked, which is what these guards did before. A heredoc
+ * body is already Python and is masked as it stands. `source` and `masked` always share offsets,
+ * so a caller can find an opener in `masked` and read the real arguments out of `source`.
+ */
+function pythonScanText(text: string): { source: string; masked: string } {
+  const dashC = /^python3?\s+-c\s*(['"])([\s\S]*)\1\s*$/.exec(text)
+  if (dashC) {
+    const source = dashC[2] ?? ''
+    return { source, masked: maskPythonStrings(source) }
+  }
+  if (/^python3?\b/.test(text)) return { source: text, masked: text }
+  return { source: text, masked: maskPythonStrings(text) }
+}
+
+/**
+ * The same text with the contents of every Python string literal replaced by spaces, quotes and
+ * length left alone.
+ *
+ * The guards below look for `open(` and `.write(` in a one-liner, and a one-liner is free to carry
+ * either of those as ordinary text inside a string. Searching the raw command let
+ * `print(open('src/cli.ts').read()); note='logger.write('` look like a file write and escape the
+ * read check entirely. Offsets are preserved so a caller can find an opener in this masked copy
+ * and then read the real arguments, quotes and all, out of the original: the mode a call asks for
+ * is itself a string literal, so it cannot be masked away.
+ */
+function maskPythonStrings(text: string): string {
+  const out = text.split('')
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch !== "'" && ch !== '"') { i += 1; continue }
+    const triple = text.slice(i, i + 3)
+    const delim = triple === ch + ch + ch ? triple : ch
+    let j = i + delim.length
+    while (j < text.length) {
+      if (text[j] === '\\') { j += 2; continue }
+      if (text.slice(j, j + delim.length) === delim) break
+      out[j] = ' '
+      j += 1
+    }
+    i = j + delim.length
+  }
+  return out.join('')
+}
+
+/** One `open(...)` call found in a Python snippet. */
+interface PythonOpenCall {
+  /** The first argument's string literal, or null when the path is a variable or an expression. */
+  pathLiteral: string | null
+  /** True when the call passes a mode at all, positionally or as `mode=`. */
+  hasMode: boolean
+  /** The mode's string literal, or null when a mode is passed but is not written out literally. */
+  modeLiteral: string | null
+}
+
+/**
+ * Every `open(...)` call in `text`, with its path and mode as far as they can be read off.
+ *
+ * The arguments are walked with a depth counter rather than matched with a regex, because the
+ * argument list is not a flat span: the span this replaces was `open\s*\([^)]*,\s*['"][wa]`, and
+ * `[^)]*` cannot reach past a nested call, so `open(os.path.join(d, name), 'w')` never looked like
+ * a write and a command that only ever created a file was denied as if it were reading one. The
+ * walk ignores commas inside quotes and inside a nested call, so the top-level arguments come out
+ * whole.
+ */
+function pythonOpenCalls(text: string): PythonOpenCall[] {
+  const { source, masked } = pythonScanText(text)
+  const calls: PythonOpenCall[] = []
+  for (const opener of masked.matchAll(/\bopen\s*\(/g)) {
+    const start = (opener.index ?? 0) + opener[0].length
+    const args: string[] = []
+    let current = ''
+    let depth = 0
+    let quote = ''
+    let closed = false
+    for (let i = start; i < source.length; i++) {
+      const ch = source[i] ?? ''
+      if (quote !== '') {
+        // A backslash inside a quote escapes the next character, so an escaped quote does not end
+        // the string and its commas stay part of this argument.
+        if (ch === '\\') { current += ch + (source[i + 1] ?? ''); i += 1; continue }
+        if (ch === quote) quote = ''
+        current += ch
+        continue
+      }
+      if (ch === "'" || ch === '"') { quote = ch; current += ch; continue }
+      if (ch === '(' || ch === '[' || ch === '{') { depth += 1; current += ch; continue }
+      if (ch === ')' && depth === 0) { args.push(current); closed = true; break }
+      if (ch === ')' || ch === ']' || ch === '}') { depth -= 1; current += ch; continue }
+      if (ch === ',' && depth === 0) { args.push(current); current = ''; continue }
+      current += ch
+    }
+    // An unterminated call says nothing either way; skip it rather than guess at its arguments.
+    if (!closed) continue
+    const literalOf = (arg: string): string | null => {
+      const m = /^\s*r?(['"])([^'"]*)\1\s*$/.exec(arg)
+      return m?.[2] ?? null
+    }
+    const keyword = args.find((a) => /^\s*mode\s*=/.test(a))
+    // `open(p, encoding='utf-8')` puts a keyword argument in the slot a positional mode would use;
+    // reading it as an unreadable mode would call a plain read a write.
+    const positional = args[1] !== undefined && /^\s*[A-Za-z_]\w*\s*=[^=]/.test(args[1]) ? undefined : args[1]
+    const modeArg = keyword !== undefined ? keyword.replace(/^\s*mode\s*=/, '') : positional
+    calls.push({
+      pathLiteral: args.length > 0 ? literalOf(args[0] ?? '') : null,
+      hasMode: modeArg !== undefined,
+      modeLiteral: modeArg === undefined ? null : literalOf(modeArg),
+    })
+  }
+  return calls
+}
+
+/**
+ * True when any `open(...)` in `text` asks for a mode that creates or modifies a file.
+ *
+ * A mode that is passed but not written out as a literal (`open(p, m)`, `open(p, mode=m)`) counts
+ * as writing. The two mistakes are not equal: denying a write blocks a command outright and hands
+ * back advice to extract a symbol from a file that is about to be created, while letting a read
+ * past only costs the hint. When the mode cannot be read, the harmless answer is the one to give.
+ */
+function pythonOpenWritesAFile(text: string): boolean {
+  return pythonOpenCalls(text).some(
+    (call) => call.hasMode && (call.modeLiteral === null || /[wax+]/.test(call.modeLiteral)),
+  )
+}
+
+/**
+ * True when `text` writes through a file object, as opposed to a standard stream.
+ *
+ * `.write(` alone used to be the signal, and it exempted the command from the whole-file-read
+ * check. A standard stream has a .write too, so `sys.stdout.write(open('src/cli.ts').read())` put
+ * exactly as much of a file into the conversation as the `print` spelling of the same read and
+ * only the second one was caught. Writing to a stream is output, not a file write. The receiver is
+ * read back off the text rather than required to be a plain name, so a write straight onto the
+ * result of a call (`open(p, m).write(...)`) still counts as one.
+ */
+function pythonWritesThroughFileObject(text: string): boolean {
+  const { masked } = pythonScanText(text)
+  for (const call of masked.matchAll(/\.write(?:lines)?\s*\(/g)) {
+    const receiver = masked.slice(0, call.index ?? 0)
+    // `.buffer` is how the byte-level half of a standard stream is reached; it is the same stream.
+    if (/(?:^|[^\w.])(?:sys\s*\.\s*)?(?:stdout|stderr|stdin)(?:\s*\.\s*buffer)?$/.test(receiver)) continue
+    return true
+  }
+  return false
+}
+
+
+/**
+ * True when every `open(...)` in `text` names its file with a plain string literal.
+ *
+ * The indirect branches below exist for `open(path_variable)`, where the file being read can only
+ * be guessed at from a literal somewhere else in the command. That guess is wrong whenever the
+ * command already says outright what it opens: `path='src/cli.ts'; print(open('notes').read())`
+ * opens `notes`, which has no source extension and is not the hook's business, yet the scan found
+ * `src/cli.ts` elsewhere in the line and denied the command naming a file it never touched. When
+ * every call already names its own path, there is nothing left to infer.
+ */
+function pythonOpenPathsAreAllLiteral(text: string): boolean {
+  const calls = pythonOpenCalls(text)
+  return calls.length > 0 && calls.every((call) => call.pathLiteral !== null)
+}
+
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
 function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean; isTranscript: boolean } | null {
   if (!/^python3?\b/.test(cmd)) return null
   // Return null when the command shows write intent — these are edits, not reads
-  if (/open\s*\([^)]*,\s*['"][wa]/i.test(cmd) || /\.write\s*\(/.test(cmd)) return null
+  if (pythonOpenWritesAFile(cmd) || pythonWritesThroughFileObject(cmd)) return null
 
   // .output files are subagent/task JSONL transcripts, not source — route to the transcript-recall command rather than a symbol read
   const outputOpen = /open\s*\(\s*r?['"]([^'"]+\.output)['"]/i.exec(cmd)
@@ -409,11 +581,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
   if (heredocMatch) {
     const body = heredocMatch[2] ?? ''
     // Write-mode exclusion in the heredoc body
-    if (
-      /open\s*\([^)]*,\s*['"][wa]/i.test(body) ||
-      /\.write\s*\(/.test(body) ||
-      /\.writelines\s*\(/.test(body)
-    ) return null
+    if (pythonOpenWritesAFile(body) || pythonWritesThroughFileObject(body)) return null
     // Direct: open(r'path.ext') or open("path.ext") in body
     const heredocOpen = /open\s*\(\s*r?['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(body)
     if (heredocOpen?.[1]) {
@@ -423,7 +591,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
       return { filePath, isDoc, isTranscript: false }
     }
     // Indirect: open(var, ...) where a string literal with known ext appears in the body
-    if (/open\s*\(/.test(body)) {
+    if (/open\s*\(/.test(body) && !pythonOpenPathsAreAllLiteral(body)) {
       const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(body)
       if (literal?.[1]) {
         const filePath = literal[1]
@@ -447,7 +615,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
     return { filePath, isDoc, isTranscript: false }
   }
   // Indirect: open(var, ...) where a string literal with a known extension appears elsewhere in the cmd
-  if (/open\s*\(/.test(cmd)) {
+  if (/open\s*\(/.test(cmd) && !pythonOpenPathsAreAllLiteral(cmd)) {
     const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
     if (literal) {
       const filePath = literal[1] ?? ''
