@@ -1251,6 +1251,103 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  // Every write fixture above spells the mode as the second positional argument, directly after a
+  // flat string-literal path, and pairs it with a `.write(` the guard also matches on its own. The
+  // guard's own span for the mode was `open\\s*\\([^)]*,\\s*['"][wa]`, and none of those fixtures ever
+  // asked it to reach past a nested call, read a keyword argument, or recognise a mode outside
+  // `w`/`a`. These three do, and each one was denied before: the caller was told to extract a
+  // symbol from a file the command was about to create.
+  it('passes through a write whose path argument is itself a call', () => {
+    const event = makeBashEvent("python3 -c \"import json; json.dump(d, open(os.path.join(t,'out.json'),'w'))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
+  })
+
+  it('passes through a write that names its mode with the mode= keyword', () => {
+    const event = makeBashEvent("python3 -c \"import json; json.dump(d, open('out.json', mode='w'))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
+  })
+
+  it("passes through a write in exclusive-creation mode 'x'", () => {
+    const event = makeBashEvent("python3 -c \"import json; json.dump(d, open('out.json','x'))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType, 'a pure write was denied as a read').not.toBe('deny')
+  })
+
+  // The counterweight: reading is still what the mode says it is, in each of the same shapes, so
+  // the wider guard cannot be satisfied by any open() call at all.
+  it('still denies a read whose path argument is itself a call', () => {
+    const event = makeBashEvent("python3 -c \"import json; d=json.load(open(os.path.join(t,'out.json'), 'r'))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('still denies a read that names its mode with the mode= keyword', () => {
+    const event = makeBashEvent("python3 -c \"import json; d=json.load(open('out.json', mode='r'))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  // `.write(` on its own used to exempt a command from the read check, and a standard stream has a
+  // .write too. These two commands put the same whole file into the conversation; only the print
+  // one was ever caught.
+  it('denies a whole-file read piped to sys.stdout.write, as it does the print spelling', () => {
+    const viaPrint = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts').read())\""))
+    const viaStdout = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stdout.write(open('src/cli.ts').read())\""))
+    expect(viaPrint.hookType, 'the control read stopped being denied').toBe('deny')
+    expect(viaStdout.hookType, 'writing to a stream is not a file write').toBe('deny')
+  })
+
+  it('denies a whole-file read piped to sys.stderr.write', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stderr.write(open('src/cli.ts').read())\""))
+    expect(result.hookType, 'writing to a stream is not a file write').toBe('deny')
+  })
+
+  // The counterweight: a write through a real file object is still a write, so narrowing the
+  // receiver has not turned every write back into a denied read.
+  it('still passes through a write made through a file-object variable', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"f = something(); f.write(open('src/cli.ts').read())\""))
+    expect(result.hookType, 'a real file write was denied as a read').not.toBe('deny')
+  })
+
+  // `.buffer` is how the byte half of a standard stream is reached. It is the same stream, so a
+  // read sent through it puts just as much of the file into the conversation as the print spelling.
+  it('denies a whole-file read piped to sys.stdout.buffer.write', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"import sys; sys.stdout.buffer.write(open('src/cli.ts','rb').read())\""))
+    expect(result.hookType, 'writing to a stream buffer is not a file write').toBe('deny')
+  })
+
+  // The guards search for `open(` and `.write(` as text, and a snippet can carry either inside a
+  // string. This one only reads, but the trailing literal used to look like a write and exempt it.
+  it('denies a whole-file read that mentions .write( inside a string literal', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts').read()); note='logger.write('\""))
+    expect(result.hookType, 'a string literal was read as a file write').toBe('deny')
+  })
+
+  // A mode that is passed but not written out cannot be read, and the harmless answer is to let it
+  // past: denying a write blocks the command and advises extracting a symbol from a file that does
+  // not exist yet, while letting a read past only costs the hint.
+  it('passes through a write whose mode is held in a variable', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"m='w'; open('src/out.ts', m).write('x')\""))
+    expect(result.hookType, 'an unreadable mode was treated as a read').not.toBe('deny')
+  })
+
+  // `encoding=` sits in the slot a positional mode would use. Reading it as an unreadable mode
+  // would call this plain read a write and drop the hint entirely.
+  it('still denies a read that names a keyword argument where the mode would go', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"print(open('src/cli.ts', encoding='utf-8').read())\""))
+    expect(result.hookType, 'a keyword argument was read as a write mode').toBe('deny')
+  })
+
+  // The indirect branch guesses the file from any literal in the command, for `open(path_var)`.
+  // Here the call already names its own file, one with no source extension, so there is nothing to
+  // guess: the command was denied naming a file it never opens.
+  it('does not deny a read of an unrelated file because a source path appears elsewhere', () => {
+    const result = preBashHandler(makeBashEvent("python3 -c \"path='src/cli.ts'; print(open('notes').read())\""))
+    expect(result.hookType, 'denied naming a file the command never opens').not.toBe('deny')
+  })
+
   it('still denies pure python read with no write', () => {
     const event = makeBashEvent("python3 -c \"with open('src/lib/auth.ts') as f: print(f.read())\"")
     const result = preBashHandler(event)
