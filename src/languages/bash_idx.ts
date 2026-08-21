@@ -54,16 +54,63 @@ function stripBashComment(line: string): string {
  * open several (`cat <<A <<B`), and their bodies then follow one after another, each ended by its
  * own terminator. Returning only the first left the second body to be scanned as ordinary code.
  */
-function findHeredocOpeners(line: string): string[] {
+/**
+ * Blanks out every arithmetic span on `line` -- `$(( ... ))` and the bare `(( ... ))` command --
+ * replacing their contents with spaces so character offsets, and therefore
+ * {@link isInsideStringLiteral}, still line up with the original.
+ *
+ * Inside arithmetic, `<<` is the left-shift operator, not a heredoc redirect. With a bare
+ * identifier on the right (`$(( 1 << shift ))`, `(( x << bits ))`) {@link HEREDOC_RE} read that
+ * identifier as a terminator, and `extractBash` then masked every following line as heredoc body
+ * waiting for a line reading exactly `shift` -- which never came, so every function and variable
+ * below it vanished from the index. Nothing failed; `symbol`, `read` and `outline` simply
+ * returned nothing for them.
+ *
+ * The sibling scanner in hooks_bash.ts already skips `$(( ... ))` for this exact reason. This is
+ * the same guard on the indexer's side, extended to the bare `(( ... ))` form the other one does
+ * not need to handle.
+ */
+function maskArithmeticSpans(line: string, carryDepth: number): { masked: string; depth: number } {
+  const chars = line.split('')
+  let depth = carryDepth
+  for (let i = 0; i < chars.length; i++) {
+    // Continuation of a span opened on an earlier line: blank through to its closing paren.
+    if (depth > 0) {
+      if (chars[i] === '(') depth++
+      else if (chars[i] === ')') depth--
+      chars[i] = ' '
+      continue
+    }
+    const isDollar = chars[i] === '$' && chars[i + 1] === '(' && chars[i + 2] === '('
+    const isBare = chars[i] === '(' && chars[i + 1] === '('
+    if (!isDollar && !isBare) continue
+    // A `((` inside a quoted word is literal text, not arithmetic. Without this check
+    // `echo '(( literal' <<EOF` blanked its own heredoc opener, and every line of the body was
+    // then read as ordinary code -- turning whatever the heredoc contained into indexed symbols.
+    if (isInsideStringLiteral(line, i)) continue
+    const open = isDollar ? i + 1 : i
+    for (let j = open; j < chars.length; j++) {
+      if (chars[j] === '(') depth++
+      else if (chars[j] === ')') depth--
+      chars[j] = ' '
+      i = j
+      if (depth === 0) break
+    }
+  }
+  return { masked: chars.join(''), depth }
+}
+
+function findHeredocOpeners(line: string, carryDepth: number): { terminators: string[]; depth: number } {
   const terminators: string[] = []
+  const { masked, depth } = maskArithmeticSpans(line, carryDepth)
   HEREDOC_RE.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = HEREDOC_RE.exec(line)) !== null) {
+  while ((m = HEREDOC_RE.exec(masked)) !== null) {
     if (isInsideStringLiteral(line, m.index)) continue
     const terminator = m[2] ?? ''
     if (terminator) terminators.push(terminator)
   }
-  return terminators
+  return { terminators, depth }
 }
 
 export function extractBash(content: string, filePath: string): SymbolEntry[] {
@@ -72,6 +119,8 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
 
   // Pending heredoc terminators, oldest first: bodies arrive in the order their redirects were written.
   const heredocs: string[] = []
+  // Unclosed `$(( ` / `(( ` nesting carried over from the previous line.
+  let arithmeticDepth = 0
   let braceDepth = 0
   let inFunction = false
   let functionBraceDepth = 0
@@ -93,7 +142,12 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
     const noComment = stripBashComment(rawLine)
     const stripped = noComment.trim()
 
-    heredocs.push(...findHeredocOpeners(noComment))
+    const opened = findHeredocOpeners(noComment, arithmeticDepth)
+    // An arithmetic span may span lines (`MASK=$((` … `))`), so its depth carries forward. Without
+    // this, only the opening line was blanked and a `<<` on a continuation line was read as a
+    // heredoc opener again -- the same silent index loss, one line further down.
+    arithmeticDepth = opened.depth
+    heredocs.push(...opened.terminators)
 
     if (!stripped) continue
 
