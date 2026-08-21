@@ -1307,7 +1307,7 @@ function extractCurlUrl(cmd: string): string | null {
 
 /** Match a `token-goat symbol|read|section|skill-body|skill-compact|map <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact/map dedup on the raw remainder (map's remainder is just an optional `--compact` flag, or empty). `stats` is intentionally excluded -- its output changes as the session progresses, so deduping it would suppress a legitimately different result. `cwd` is the bash command's working directory (from the hook event), used to resolve a relative file path the same way the CLI itself would. */
 function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; spec: string; filePath: string | null } | null {
-  const m = /^token-goat\s+(symbol|read|section|skill-body|skill-compact|map)(?:\s+(.*))?$/.exec(cmd)
+  const m = /^(?:token-goat|tg)\s+(symbol|read|section|skill-body|skill-compact|map)(?:\s+(.*))?$/.exec(cmd)
   if (!m) return null
   const sub = m[1]!
   const rest = (m[2] ?? '').trim()
@@ -1553,7 +1553,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
  */
 function unwrapCompressCommand(executed: string): string | null {
   const t = executed.trim()
-  if (!/^token-goat\s+compress\b/.test(t)) return null
+  if (!/^(?:token-goat|tg)\s+compress\b/.test(t)) return null
   let argv: string[]
   try {
     argv = shlexSplit(t)
