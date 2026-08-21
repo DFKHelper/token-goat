@@ -361,6 +361,43 @@ public class MyTestClass {
     expect(result.language).toBe('apex')
     expect(result.symbols.map((s) => s.name)).toEqual(expect.arrayContaining(['ExampleService', 'run']))
   })
+
+  // Why no test caught this: every existing apex case is a short, well-formed declaration, so
+  // METHOD_RE's cost was never observable. These three assert the cost itself, not just the result.
+  it('rejects a long modifier run with no parameter list in bounded time (regression: METHOD_RE had no literal keyword after the modifier group -- unlike TYPE_DECL_RE, which anchors on class|interface|enum -- so RETURN_TYPE, whose character class contains a space and is followed by [ \\t]+, made every modifier boundary a candidate split point and the engine retried all of them, costing O(n^2): 84ms at N=2000, 335ms at N=4000, 1346ms at N=8000. With indexing.large_file_skip_kb defaulting to 2048 a 2MB .cls was accepted, wedging the synchronously-draining worker for roughly half an hour on one file)', () => {
+    const content = `${'static '.repeat(24000)}x\n`
+    const started = Date.now()
+    const { symbols } = extractApex(content, 'Pathological.cls')
+    const elapsed = Date.now() - started
+    expect(symbols).toEqual([])
+    // Post-fix this line costs well under a millisecond; pre-fix it costs ~12s at this size.
+    expect(elapsed).toBeLessThan(4000)
+  })
+
+  it('rejects the same long modifier run in bounded time when an unrelated annotation supplies a same-line paren (regression: the same-line "(" guard was first placed BEFORE the annotation group, where `@A() ` + a long modifier run satisfied it on the annotation\'s own parentheses and left the quadratic path fully reachable -- still 336ms at N=4000 versus 0.05ms with the guard placed after the annotation group)', () => {
+    const content = `@A() ${'static '.repeat(24000)}x\n`
+    const started = Date.now()
+    const { symbols } = extractApex(content, 'PathologicalAnnotated.cls')
+    const elapsed = Date.now() - started
+    expect(symbols).toEqual([])
+    expect(elapsed).toBeLessThan(4000)
+  })
+
+  it('still extracts a method whose only leading parenthesis belongs to its annotation argument list, so the same-line guard did not narrow real matching', () => {
+    const { symbols } = extractApex(
+      `public class Guarded {
+    @AuraEnabled(cacheable=true) public static String go(Id recordId) {
+        return null;
+    }
+    @IsTest
+    static void coversIt() {
+    }
+}
+`,
+      'Guarded.cls',
+    )
+    expect(symbols.map((s) => s.name)).toEqual(expect.arrayContaining(['Guarded', 'go', 'coversIt']))
+  })
 })
 
 describe('salesforce metadata adapter', () => {
