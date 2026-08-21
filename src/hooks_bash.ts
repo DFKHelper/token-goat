@@ -18,7 +18,7 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { detectFromCommand, hasBareBackgroundOrNewline, shlexSplit } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -1653,6 +1653,66 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
 }
 
 /**
+ * Structurally compress the output of a compound/piped/redirect command in the POST hook.
+ *
+ * Single commands are wrapped by the pre-hook into `token-goat compress` and so get generic
+ * structural compression (dedup + token cap) by default. A compound command
+ * (`grep … | sort`, `a && b`, `cmd > file`) can't be wrapped -- its shell operators would break
+ * the `-c` argument, which is exactly why {@link isCompressibleSingleCommand} rejects it -- so its
+ * output has always escaped that compression. But the wrapping problem only exists *before* the
+ * command runs: here in the post hook the output is already captured, so the same generic filter
+ * can be applied to it directly, with no shell involved.
+ *
+ * Reuses the single-command primitives verbatim ({@link compressOutput} + the
+ * {@link CompressedOutput} net-benefit gate + the `bash_compress:generic` stat) so the two paths
+ * can't drift. The full output is cached first, so the capped view stays fully recallable via
+ * `bash-output <id>` -- unlike the single-command wrapper, which discards the original.
+ *
+ * Returns a `rewriteOutput` HookOutput, or null when compression is disabled, the command is a
+ * single (already-wrapped) command, the output is below the size floor, or the net-benefit gate
+ * declines the rewrite.
+ */
+async function maybeCompressCompoundOutput(
+  cmd: string,
+  output: string,
+  exitCode: number | null,
+  cwd: string | null,
+  cacheMinBytes: number,
+): Promise<HookOutput | null> {
+  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  // Single commands are handled by the pre-hook's wrapper; only compound ones reach here unwrapped.
+  if (isCompressibleSingleCommand(cmd)) return null
+  // Don't compact a command that reported a non-zero exit: a failing compound pipeline's
+  // diagnostics must reach the model in full on its first read, not behind a `--full` recall.
+  // An unknown exit (null -- common on harnesses that do not report one) is treated as
+  // non-failure, matching the success gates elsewhere in this handler.
+  if (exitCode !== null && exitCode !== 0) return null
+  let cfg: { enabled: boolean; disabled_filters: string[]; max_lines: number; max_bytes: number }
+  try {
+    cfg = loadConfig().bash_compress
+  } catch {
+    return null
+  }
+  if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
+  if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
+  const filter = filterByName('generic')
+  if (filter === null) return null
+  // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout.
+  const compressed = compressOutput(filter, output, '', exitCode ?? 0, [], {
+    maxLines: cfg.max_lines,
+    maxBytes: cfg.max_bytes,
+  })
+  const minNet = resolveMinNetSavingsBytes()
+  if (!compressed.worthApplying(minNet)) return null
+  const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+  recordStat('bash_compress:generic', compressed.bytesSaved, compressed.tokensSaved)
+  // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies
+  // head/tail elision, so it would return a truncated view, not the complete original.
+  const body = compressed.withMarker(minNet) + '\n[token-goat] full output: bash-output ' + id + ' --full'
+  return { hookType: 'rewriteOutput', updatedOutput: body }
+}
+
+/**
  * Recover the original command from a `token-goat compress … -c <cmd>` wrapper
  * (the rewrite emitted by {@link maybeCompressRewrite}) so the post-hook keys its
  * output cache on the original command — identical to the hash the pre-hook
@@ -2588,7 +2648,14 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
-    if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) return passOutput()
+    if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) {
+      // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
+      // for compression) gets its already-captured output compressed here instead. Single
+      // commands were already handled upstream and are skipped inside the helper.
+      const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes)
+      if (compound !== null) return compound
+      return passOutput()
+    }
 
     if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return passOutput()
 

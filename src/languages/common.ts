@@ -1240,13 +1240,29 @@ export function propagateEndLinesToSymbols(
  * character inside a quoted value (e.g. `default = "{}"`, `option (x) = "{"`) is never miscounted
  * as real nesting. Returns `totalLines` if the brace is never closed.
  */
+/** Opt-in extras for {@link findMatchingBraceEndLine}. Both default to the pre-existing behaviour,
+ *  so the many callers that pass neither are byte-for-byte unaffected. */
+export interface BraceScanOpts {
+  /** Block-comment delimiters, e.g. `['/*', '*\/']` for C-style or `['<#', '#>']` for PowerShell.
+   *  When set, a brace inside such a span is ignored -- the same reason line comments are skipped.
+   *  Without this, a stray `{` or `}` in a `/* ... *\/` comment corrupts the depth walk (a comment
+   *  brace on the signature line made the whole symbol fail to widen). */
+  blockComment?: readonly [string, string]
+  /** Value to return when no matching close brace is found before end-of-content. Defaults to
+   *  `totalLines`, which every existing caller relies on. {@link assignBraceBlockSpans} passes `-1`
+   *  so an unbalanced brace yields no span at all rather than a bogus span running to EOF. */
+  noMatchValue?: number
+}
+
 export function findMatchingBraceEndLine(
   content: string,
   openBraceIndex: number,
   totalLines: number,
   lineIndex: readonly number[],
   lineCommentPrefix?: string,
+  opts?: BraceScanOpts,
 ): number {
+  const block = opts?.blockComment
   let depth = 0
   let quote: string | null = null
   for (let i = openBraceIndex; i < content.length; i++) {
@@ -1254,6 +1270,13 @@ export function findMatchingBraceEndLine(
     if (quote !== null) {
       if (ch === '\\') { i++; continue }
       if (ch === quote) quote = null
+      continue
+    }
+    // Block comments before line comments: the two openers never overlap, but a `{`/`}` inside a
+    // block comment must be skipped before the brace-depth checks below ever see it.
+    if (block !== undefined && content.startsWith(block[0], i)) {
+      const close = content.indexOf(block[1], i + block[0].length)
+      i = close === -1 ? content.length : close + block[1].length - 1
       continue
     }
     // Opt-in, because the callers that pass already-stripped content must not pay for a second
@@ -1271,5 +1294,149 @@ export function findMatchingBraceEndLine(
       }
     }
   }
-  return totalLines
+  return opts?.noMatchValue ?? totalLines
+}
+
+/**
+ * Give single-line symbols their real block span.
+ *
+ * The heuristic (non-tree-sitter) adapters -- C#, Kotlin, Swift, Scala, Dart, PHP, Zig,
+ * PowerShell, Bash -- all emit symbols through {@link makeLineSymbol}, which stores
+ * `lineEnd === lineStart` and a signature-only `body`. That is fine for genuinely one-line
+ * symbols (a `const`, an `env_key`) but wrong for anything with a brace block: `read
+ * "Foo.kt::greet"` then returns just `fun greet(): String` instead of the function, and callers
+ * that wanted the body have no option left but to read the whole file -- exactly the token burn
+ * these commands exist to avoid. Span-based languages (the tree-sitter extractors) never had
+ * this problem, so the same command was quietly worth far less on these nine languages.
+ *
+ * Only symbols still at `lineEnd === lineStart` are considered, so an adapter that already
+ * computed a real span keeps it. Two guards keep a declaration from swallowing the block that
+ * merely follows it (`const X = 5;` sitting above `function foo() {`):
+ *
+ *  - the search for the opening brace stops before the next symbol's start line, so a brace
+ *    belonging to a later sibling is never reachable, and
+ *  - a `;` before the brace ends the search, because a statement terminator means the
+ *    declaration closed and any later brace opens something else.
+ *
+ * The brace search still spans several lines, so a multi-line signature (parameters broken
+ * across lines, with the brace on the closing line) is matched. Nesting needs no special
+ * handling: {@link findMatchingBraceEndLine} walks the real brace depth, so a class span
+ * naturally encloses its methods and each method keeps its own narrower span.
+ */
+export function assignBraceBlockSpans(
+  symbols: readonly SymbolEntry[],
+  content: string,
+  lineCommentPrefix?: string,
+): SymbolEntry[] {
+  if (symbols.length === 0) return [...symbols]
+  const lines = content.split('\n')
+  const totalLines = lines.length
+  const lineIndex = buildLineIndex(content)
+  // Sorted start lines let each symbol find the next one that begins strictly after it, which is
+  // the boundary the brace search must not cross. Built once rather than per symbol.
+  const starts = [...new Set(symbols.map((s) => s.lineStart))].sort((a, b) => a - b)
+  // Block-comment delimiters for the two comment styles these callers use, so a brace inside a
+  // `/* ... */` (C-style) or `<# ... #>` (PowerShell) comment never derails the brace search.
+  const blockComment: readonly [string, string] | undefined =
+    lineCommentPrefix === '//' ? ['/*', '*/'] : lineCommentPrefix === '#' ? ['<#', '#>'] : undefined
+  return symbols.map((sym) => {
+    if (sym.lineEnd !== sym.lineStart) return sym
+    const nextStart = starts.find((s) => s > sym.lineStart)
+    // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
+    const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
+    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment)
+    if (openIndex === null) return sym
+    // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
+    const endLine = findMatchingBraceEndLine(content, openIndex, totalLines, lineIndex, lineCommentPrefix,
+      blockComment === undefined ? { noMatchValue: -1 } : { blockComment, noMatchValue: -1 })
+    // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
+    if (endLine <= sym.lineStart) return sym
+    return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
+  })
+}
+
+/**
+ * How far past a symbol's start line {@link assignBraceBlockSpans} will look for the brace that
+ * opens its body. Generous enough for a signature whose parameters are broken across lines, while
+ * still bounding the damage when a symbol genuinely has no block and no later sibling caps the
+ * search.
+ */
+const BRACE_SEARCH_MAX_LINES = 10
+
+/**
+ * Offset of the brace that opens `startLine`'s block, or null when there is none to find within
+ * `lastSearchLine`. Skips braces inside quoted strings and line comments for the same reason
+ * {@link findMatchingBraceEndLine} does, and stops at a `;` because a closed statement cannot be
+ * the thing the following brace belongs to.
+ */
+function findBlockOpenBrace(
+  content: string,
+  lineIndex: readonly number[],
+  startLine: number,
+  lastSearchLine: number,
+  lineCommentPrefix?: string,
+  blockComment?: readonly [string, string],
+): number | null {
+  const from = lineIndex[startLine - 1]
+  if (from === undefined) return null
+  // One past the last searchable line, so the scan covers lastSearchLine in full.
+  const to = lineIndex[lastSearchLine] ?? content.length
+  let quote: string | null = null
+  // Round/square-bracket depth, so a keyword inside a multi-line parameter list or call is not
+  // mistaken for the start of a new statement (see the keyword stop below).
+  let parenDepth = 0
+  // Lines consumed past `startLine`, and whether we are at the first non-space char of a line.
+  let linesSeen = 0
+  let atLineStart = false
+  for (let i = from; i < to; i++) {
+    const ch = content[i]
+    if (ch === undefined) break
+    if (quote !== null) {
+      if (ch === '\\') { i++; continue }
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '\n') { linesSeen++; atLineStart = true; continue }
+    if (blockComment !== undefined && content.startsWith(blockComment[0], i)) {
+      const close = content.indexOf(blockComment[1], i + blockComment[0].length)
+      if (close === -1) return null
+      i = close + blockComment[1].length - 1
+      continue
+    }
+    if (lineCommentPrefix !== undefined && content.startsWith(lineCommentPrefix, i)) {
+      // Advance to just before the newline so the loop's own `\n` handling still runs for it.
+      while (i + 1 < to && content[i + 1] !== '\n') i++
+      continue
+    }
+    if (atLineStart && !/\s/.test(ch)) {
+      atLineStart = false
+      // A continuation line (one past the declaration) that begins with a block-opening control
+      // keyword, at bracket depth 0, means the declaration already ended and the next brace opens
+      // that statement -- not this symbol's body. Stop so a `val x = 10` above a bare `if (...) {}`
+      // does not swallow the if-block (semicolon-optional languages have no `;` to mark the end).
+      if (parenDepth === 0 && linesSeen >= 1 && startsWithBlockKeyword(content, i, to)) return null
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '(' || ch === '[') parenDepth++
+    else if (ch === ')' || ch === ']') { if (parenDepth > 0) parenDepth-- }
+    else if (ch === ';') return null
+    else if (ch === '{') return i
+  }
+  return null
+}
+
+/** Control-flow keywords that open their own `{ ... }` block. A declaration followed by one of
+ *  these has ended; the brace after belongs to the statement, not the declaration. */
+const BLOCK_OPENING_KEYWORDS = new Set([
+  'if', 'for', 'while', 'do', 'switch', 'when', 'match', 'try', 'foreach', 'loop', 'guard', 'repeat', 'unless', 'until',
+])
+
+/** True if the identifier starting at `i` (bounded by `to`) is exactly a {@link BLOCK_OPENING_KEYWORDS}
+ *  entry. Consumes a full `[A-Za-z0-9_]` run so `if2`/`iffy` never match the keyword `if`. */
+function startsWithBlockKeyword(content: string, i: number, to: number): boolean {
+  const first = content[i]
+  if (first === undefined || !/[A-Za-z_]/.test(first)) return false
+  let j = i + 1
+  while (j < to && /[A-Za-z0-9_]/.test(content[j]!)) j++
+  return BLOCK_OPENING_KEYWORDS.has(content.slice(i, j))
 }

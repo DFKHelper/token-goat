@@ -21,6 +21,10 @@ interface FunctionFrame {
   // stack balanced against its own `end` -- it must never be reported as a parent, so
   // parent lookup walks past these to the nearest real function frame.
   isBlock: boolean
+  // Index in `symbols` of the function this frame opened, so its one-line placeholder span can
+  // be widened to the real body when the matching `end` pops the frame. Undefined for block
+  // frames and for a function that hit MAX_SYMBOLS and so has no row to widen.
+  symbolIndex?: number
 }
 
 /** Nearest enclosing real function name, skipping past control-flow block frames. */
@@ -168,7 +172,7 @@ export function extractLua(
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200)))
       }
       if (!lineClosesItself(stripped)) {
-        funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false })
+        funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       }
       continue
     }
@@ -184,7 +188,7 @@ export function extractLua(
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
       }
       if (!lineClosesItself(stripped)) {
-        funcStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
+        funcStack.push({ name: fname, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       }
       continue
     }
@@ -206,7 +210,7 @@ export function extractLua(
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200)))
       }
       if (!lineClosesItself(stripped)) {
-        funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false })
+        funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       }
       continue
     }
@@ -259,7 +263,17 @@ export function extractLua(
     if (/^(?:\bend\b[\s),;}]*)+$/.test(stripped)) {
       const popCount = (stripped.match(/\bend\b/g) ?? []).length
       for (let k = 0; k < popCount && funcStack.length > 0; k++) {
-        funcStack.pop()
+        const popped = funcStack.pop()
+        // Widen the function's one-line placeholder span to its real body, now that its matching
+        // `end` is known. Block frames carry no symbolIndex, so control flow closing on this line
+        // never rewrites a symbol. Uses this loop's own frame accounting rather than a second
+        // scan for `end`, so a nested block's `end` cannot be mistaken for the function's.
+        if (popped !== undefined && popped.symbolIndex !== undefined) {
+          const open = symbols[popped.symbolIndex]
+          if (open !== undefined && lineNum > open.lineStart) {
+            symbols[popped.symbolIndex] = { ...open, lineEnd: lineNum, body: lines.slice(open.lineStart - 1, lineNum).join('\n') }
+          }
+        }
       }
     }
   }

@@ -23,6 +23,10 @@ interface ModuleFrame {
   // own `end` -- it must never be reported as a parent, so parent lookup walks past these to
   // the nearest real def/defmodule frame. Mirrors lua.ts's isBlock/nearestFunctionName fix.
   isBlock: boolean
+  // Index in `symbols` of the def/defmodule this frame opened, so its one-line placeholder span
+  // can be widened to the real body when the matching `end` pops the frame. Undefined for block
+  // frames, which own no symbol.
+  symbolIndex?: number
 }
 
 /** Nearest enclosing real def/defmodule name, skipping past non-def block frames. */
@@ -109,7 +113,7 @@ export function extractElixir(
     if (modM) {
       const modName = modM[1] ?? ''
       symbols.push(makeLineSymbol(filePath, modName, 'class', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
-      moduleStack.push({ name: modName, endKeywordNeeded: true, isBlock: false })
+      moduleStack.push({ name: modName, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       continue
     }
 
@@ -119,7 +123,7 @@ export function extractElixir(
     if (protoM) {
       const protoName = protoM[1] ?? ''
       symbols.push(makeLineSymbol(filePath, protoName, 'protocol', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
-      moduleStack.push({ name: protoName, endKeywordNeeded: true, isBlock: false })
+      moduleStack.push({ name: protoName, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       continue
     }
 
@@ -139,7 +143,7 @@ export function extractElixir(
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
       if (opensDoBlock) {
-        moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
+        moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       }
       continue
     }
@@ -155,7 +159,7 @@ export function extractElixir(
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
       if (opensDoBlock) {
-        moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
+        moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
       }
       continue
     }
@@ -178,10 +182,19 @@ export function extractElixir(
       continue
     }
 
-    // Pop finished frames when we see `end` keyword
+    // Pop finished frames when we see `end` keyword. Widen the popped def/defmodule's
+    // placeholder span to its real body (its `end` line) so `read "mod.ex::fn"` returns the
+    // whole function, not just its signature line. Block frames carry no symbolIndex and are
+    // skipped. Guarded on lineNum so a malformed source cannot produce an inverted span.
     if (stripped === 'end' || /^end\s/.test(stripped) || /^end$/.test(stripped)) {
       if (moduleStack.length > 0) {
-        moduleStack.pop()
+        const popped = moduleStack.pop()
+        if (popped !== undefined && popped.symbolIndex !== undefined) {
+          const open = symbols[popped.symbolIndex]
+          if (open !== undefined && lineNum > open.lineStart) {
+            symbols[popped.symbolIndex] = { ...open, lineEnd: lineNum, body: lines.slice(open.lineStart - 1, lineNum).join('\n') }
+          }
+        }
       }
     }
   }

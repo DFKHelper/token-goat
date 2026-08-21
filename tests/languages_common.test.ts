@@ -197,6 +197,33 @@ describe('findMatchingBraceEndLine line comments', () => {
   })
 })
 
+describe('findMatchingBraceEndLine block comments (opt-in)', () => {
+  it('ignores a closing brace inside a /* */ block comment when given the delimiters', () => {
+    const src = ['void f() {', '  /* a stray } in a comment */', '  x;', '}', ''].join('\n')
+    const open = src.indexOf('{')
+    expect(findMatchingBraceEndLine(src, open, 5, buildLineIndex(src), '//', { blockComment: ['/*', '*/'] })).toBe(4)
+  })
+
+  it('still counts that brace when no block-comment delimiters are given, so existing callers are unchanged', () => {
+    const src = ['void f() {', '  /* a stray } in a comment */', '  x;', '}', ''].join('\n')
+    const open = src.indexOf('{')
+    // Without the opt-in, the `}` inside the comment closes the block early (line 2).
+    expect(findMatchingBraceEndLine(src, open, 5, buildLineIndex(src), '//')).toBe(2)
+  })
+
+  it('returns the noMatchValue when the brace never closes, instead of totalLines', () => {
+    const src = ['void f() {', '  x;', '  // no closing brace', ''].join('\n')
+    const open = src.indexOf('{')
+    expect(findMatchingBraceEndLine(src, open, 4, buildLineIndex(src), '//', { noMatchValue: -1 })).toBe(-1)
+  })
+
+  it('defaults noMatchValue to totalLines so existing callers are unchanged', () => {
+    const src = ['void f() {', '  x;', '  // no closing brace', ''].join('\n')
+    const open = src.indexOf('{')
+    expect(findMatchingBraceEndLine(src, open, 4, buildLineIndex(src), '//')).toBe(4)
+  })
+})
+
 
 // ---------------------------------------------------------------------------
 // countContentLines and the flat-section span ceiling.

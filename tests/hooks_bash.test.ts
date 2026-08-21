@@ -208,6 +208,89 @@ describe('postBashHandler', () => {
     }
   })
 
+  // Compound/piped commands escape the pre-hook's `token-goat compress` wrapper (their shell
+  // operators would break the -c arg), so before this their large output was shown raw. The post
+  // hook now applies the same generic compressor to the already-captured output and caches the
+  // full text for recall. Pre-fix, all three of these compound cases returned hookType 'pass'.
+  it('compresses a compound/piped command output and caches the full text for recall', async () => {
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      // The rewritten view is far smaller than the raw output (3000 identical lines → ~1).
+      expect(result.updatedOutput.length).toBeLessThan(dup.length / 10)
+      // A recall pointer to the full output must be present, and it must use --full: a bare
+      // `bash-output <id>` elides head/tail, so only --full genuinely returns the complete output.
+      expect(result.updatedOutput).toContain('--full')
+      const m = result.updatedOutput.match(/bash-output (\S+)/)
+      expect(m).not.toBeNull()
+      // ...and it must actually recall the complete, uncompressed original (non-destructive).
+      const entry = getBashOutput(m![1]!)
+      expect(entry).not.toBeNull()
+      expect(entry!.output).toBe(dup)
+    }
+  })
+
+  it('does NOT compress a single (non-compound) command — that is the pre-hook wrapper\'s job', async () => {
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    // Same large, highly-compressible output, but a single command with no shell operators.
+    const result = await postBashHandler(makePostBashEvent('grep pattern app.log', dup))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not compress compound output when TOKEN_GOAT_BASH_COMPRESS=0', async () => {
+    const prev = process.env['TOKEN_GOAT_BASH_COMPRESS']
+    process.env['TOKEN_GOAT_BASH_COMPRESS'] = '0'
+    try {
+      const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+      const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
+      expect(result.hookType).toBe('pass')
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_BASH_COMPRESS']
+      else process.env['TOKEN_GOAT_BASH_COMPRESS'] = prev
+    }
+  })
+
+  it('does NOT compact a failing compound command — its diagnostics must reach the model in full', async () => {
+    // A non-zero exit means the pipeline failed; the model needs the whole error on its first read,
+    // not a compacted view behind a --full recall. Pre-fix (no exit-code gate) this compacted like
+    // any other compound command.
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    const event = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: 'grep pattern app.log | sort' },
+      sessionId: 'test-session',
+      agentId: undefined,
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: 'grep pattern app.log | sort' },
+        tool_response: { output: dup, exit_code: 1 },
+      },
+    })
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still compacts a succeeding compound command reported with exit_code 0', async () => {
+    // The exit-code gate must only skip confirmed failures; an explicit success still compacts.
+    const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
+    const event = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: 'grep pattern app.log | sort' },
+      sessionId: 'test-session',
+      agentId: undefined,
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: 'grep pattern app.log | sort' },
+        tool_response: { output: dup, exit_code: 0 },
+      },
+    })
+    const result = await postBashHandler(event)
+    expect(result.hookType).toBe('rewriteOutput')
+  })
+
   it('never throws — swallows errors silently', async () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',

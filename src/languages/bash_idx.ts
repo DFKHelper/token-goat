@@ -125,6 +125,13 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
   let inFunction = false
   let functionBraceDepth = 0
   let awaitingFunctionBrace = false
+  // Index in `symbols` of the function whose body is currently open, so its one-line placeholder
+  // span can be widened to the real body once the closing brace is seen. Null while no function is
+  // open. The end line is taken from this loop's own brace accounting rather than a second pass
+  // over the raw text, because only this loop knows which braces are inside a masked heredoc body
+  // -- a `{` in a heredoc is not real nesting, and matching braces naively runs a function's span
+  // to end-of-file and swallows every function below it.
+  let openFunctionIndex: number | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -157,7 +164,9 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
       const funcMatch = kwMatch ?? posixMatch
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
+        let pushedIndex: number | null = null
         if (fname && symbols.length < MAX_SYMBOLS) {
+          pushedIndex = symbols.length
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
         }
         if (fname) {
@@ -171,10 +180,12 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
             } else if (openCount > closeCount) {
               inFunction = true
               functionBraceDepth = braceDepth
+              openFunctionIndex = pushedIndex
             }
           } else {
             // Allman-style: `{` follows on a later line.
             awaitingFunctionBrace = true
+            openFunctionIndex = pushedIndex
           }
         }
       } else {
@@ -198,6 +209,16 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
 
     if (inFunction && braceDepth <= functionBraceDepth) {
       inFunction = false
+      if (openFunctionIndex !== null) {
+        const open = symbols[openFunctionIndex]
+        // Widen the placeholder span to the real body so `read "script.sh::fn"` returns the
+        // function instead of just its `fn() {` line. Guarded on lineNum so a malformed script
+        // that somehow closes on the opening line cannot produce an inverted span.
+        if (open !== undefined && lineNum > open.lineStart) {
+          symbols[openFunctionIndex] = { ...open, lineEnd: lineNum, body: lines.slice(open.lineStart - 1, lineNum).join('\n') }
+        }
+        openFunctionIndex = null
+      }
     }
   }
 
