@@ -349,8 +349,8 @@ For archive/document work specifically, token-goat's bounded SQLite, XLSX, and P
 brew install ast-grep uv ruff ripgrep fd bat eza git-delta jq yq sd miller sqlite gh hyperfine fzf lazygit
 
 # Debian / Ubuntu — note the binary renames: rg=ripgrep, fd=fdfind, bat=batcat
-sudo apt install -y ripgrep fd-find bat jq sqlite3 fzf
-curl -LsSf https://astral.sh/uv/install.sh | sh   # uv, then: uv tool install ruff
+sudo apt install -y ripgrep fd-find bat jq sqlite3 fzf pipx
+pipx install uv                                   # uv, then: uv tool install ruff
 npm install -g @ast-grep/cli
 ```
 
