@@ -100,6 +100,18 @@ describe('indexedPathSpellingIsStale', () => {
     expect(indexedPathSpellingIsStale(rawDriveSpelling, abs), 'an un-normalized stored drive letter reads as a stale spelling, reindexing forever').toBe(false)
   })
 
+  it('is false for an ambient directory prefix that merely differs in case from realpathSync', () => {
+    const abs = join(projectDir, 'beta.ts')
+    const stored = normalizePath(abs)
+    // Flip case of a parent directory segment in stored and candidate together (mimicking %TEMP% or cwd casing differences)
+    const segments = stored.split('/')
+    if (segments.length > 2) {
+      segments[1] = segments[1]!.toUpperCase()
+      const ambientCased = segments.join('/')
+      expect(indexedPathSpellingIsStale(ambientCased, ambientCased)).toBe(false)
+    }
+  })
+
   it.skipIf(!hostFsIsCaseInsensitive())('is true when the caller repeats the stale spelling the row already holds', () => {
     const real = join(projectDir, 'Repeated.ts')
     writeFileSync(real, 'export const repeated = 1\n')
