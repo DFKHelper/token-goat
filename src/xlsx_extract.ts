@@ -1,69 +1,14 @@
 /**
- * Excel (.xlsx) narrow-slice reader, via ExcelJS (`exceljs` on npm). Uses
- * `createLazyModuleLoader` (see lazy_module.ts) for the optional-dependency import: cached
- * lazy load, a clear "not installed" error on first real use rather than a crash.
+ * Excel (.xlsx) narrow-slice reader. Reads the OOXML container directly through
+ * `xlsx_reader.ts`, which shares the zip+XML core in `ooxml_extract.ts` with the .docx and
+ * .pptx readers -- so the size cap, the not-a-file guard and the path-leak-safe error messages
+ * are one implementation rather than three.
  */
 
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
-import { createLazyModuleLoader } from './lazy_module.js'
-import { extractErrorMessage } from './util.js'
+import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
 
-interface ExcelCell {
-  value: unknown
-  text: string
-  formula?: string
-}
-
-interface ExcelRow {
-  values: unknown[]
-  eachCell: (opts: { includeEmpty: boolean }, cb: (cell: ExcelCell, colNumber: number) => void) => void
-}
-
-interface ExcelWorksheet {
-  name: string
-  rowCount: number
-  columnCount: number
-  actualRowCount: number
-  getRow: (r: number) => ExcelRow
-  getCell: (addr: string) => ExcelCell
-}
-
-interface ExcelWorkbook {
-  worksheets: ExcelWorksheet[]
-  getWorksheet: (name: string) => ExcelWorksheet | undefined
-  xlsx: {
-    readFile: (path: string) => Promise<unknown>
-  }
-}
-
-interface ExcelJSModule {
-  Workbook: new () => ExcelWorkbook
-}
-
-const loadExcelJs = createLazyModuleLoader(async () => {
-  const mod = (await import('exceljs')) as unknown as { default?: ExcelJSModule } & ExcelJSModule
-  return mod.default ?? mod
-}, 'xlsx reading disabled (exceljs package unavailable)')
-
-async function requireExcelJs(): Promise<ExcelJSModule> {
-  const mod = await loadExcelJs()
-  if (!mod) throw new Error('exceljs is not installed; run `npm install exceljs` to enable this command')
-  return mod
-}
-
-async function loadWorkbook(filePath: string): Promise<ExcelWorkbook> {
-  const ExcelJS = await requireExcelJs()
-  const wb = new ExcelJS.Workbook()
-  try {
-    await wb.xlsx.readFile(filePath)
-  } catch (err) {
-    // ExcelJS's own "File not found: <path>" message (thrown before it ever touches the underlying jszip parser) is already clean and useful -- pass it through unchanged. Anything else here is jszip's raw internal parse error surfacing through ExcelJS for a non-.xlsx or corrupt file (e.g. "Can't find end of central directory : is this a zip file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html"), which leaks library internals and a docs URL straight to the CLI user instead of a clear message. Shared by every xlsx-* command (listSheets, headSheet, rangeSheet, querySheet all call loadWorkbook), so this one fix covers all four.
-    const msg = extractErrorMessage(err)
-    if (msg.startsWith('File not found:')) throw err
-    throw new Error(`not a valid .xlsx file: ${filePath}`, { cause: err })
-  }
-  return wb
-}
+const loadWorkbook: (filePath: string) => Promise<ExcelWorkbook> = readXlsxWorkbook
 
 function requireSheet(wb: ExcelWorkbook, sheetName: string): ExcelWorksheet {
   const ws = wb.getWorksheet(sheetName)

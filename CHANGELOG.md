@@ -2,6 +2,13 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Changed
+
+- **Reading `.xlsx` no longer needs ExcelJS, and a default install drops 55 packages.** `exceljs` was an optional dependency used only to read spreadsheets, and it was the single source of every deprecated package in the tree: `inflight` (which carries a known memory leak), `lodash.isequal`, `bluebird`, `unzipper`, an old `glob`, `tmp`, `fs-extra`, and eleven separate `lodash.*` micro-packages. An `.xlsx` file is a zip of XML parts exactly like `.docx` and `.pptx`, both of which this project already read with `fflate` and `fast-xml-parser`, so the spreadsheet reader now does the same. The install tree goes from 301 packages to 246 and the deprecated count goes to zero. Output from `xlsx-sheets`, `xlsx-head`, `xlsx-range` and `xlsx-query` is unchanged. `exceljs` stays on as a development dependency, where the tests use it to write the spreadsheets they then read back. See [src/xlsx_reader.ts](src/xlsx_reader.ts) and [src/xlsx_extract.ts](src/xlsx_extract.ts).
+  Why no test caught it: nothing was broken, so there was nothing for a test to catch. The risk in a swap like this is the opposite one, that the replacement quietly reads some workbooks differently. Two things now hold it. The existing spreadsheet tests were left exactly as they were and still write their fixtures with ExcelJS, so the reference implementation produces the files and the new reader has to agree with it. On top of that, [tests/xlsx_reader.test.ts](tests/xlsx_reader.test.ts) builds workbooks by hand from literal XML to cover the shapes ExcelJS never writes and so could never have proven: inline strings, boolean and error cells, a builtin date format code, the 1904 date epoch, the 1900 leap-year gap either side of the day that does not exist, a worksheet stored under a name other than `sheet1.xml`, and text whose leading and trailing spaces are meant to survive.
+
 ## [2.6.34] - 2026-08-20
 
 ### Added

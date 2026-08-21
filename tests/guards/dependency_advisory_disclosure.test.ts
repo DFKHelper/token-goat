@@ -1,7 +1,8 @@
 /**
- * SECURITY.md tells an evaluator that three packages carry the residual `npm audit` findings, and
- * that two of them are optional so an install can simply not have them. That claim is only true
- * while the manifest agrees. Promoting `@xenova/transformers` or `exceljs` to a required dependency
+ * SECURITY.md tells an evaluator which packages carry the residual `npm audit` findings, that
+ * `@xenova/transformers` is optional so an install can simply not have it, and that `exceljs` is
+ * not installed at all any more. That claim is only true while the manifest agrees. Promoting
+ * either one back into a shipped section
  * would silently turn a documented "you can opt out" into a lie, and no other test reads the
  * manifest for this. The two forward-patched majors are pinned here for the same reason: the
  * document says they were moved across a major to clear their advisories, so a revert must fail.
@@ -39,9 +40,20 @@ describe('dependency advisory disclosure', () => {
     expect(security).toContain('## Dependency advisories')
   })
 
-  it.each([['@xenova/transformers'], ['exceljs']])('keeps %s optional, which is what the document promises', (name) => {
+  it.each([['@xenova/transformers']])('keeps %s optional, which is what the document promises', (name) => {
     expect(Object.keys(pkg.optionalDependencies ?? {})).toContain(name)
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain(name)
+  })
+
+  // exceljs went further than optional: the xlsx-* commands read the container directly with
+  // fflate and fast-xml-parser now, so it is a test fixture writer and nothing else. That is what
+  // takes the install tree from 301 packages to 246 and clears every deprecated package out of it,
+  // so putting it back into either shipped section would quietly undo all of that while the
+  // document still claimed it.
+  it('keeps exceljs out of the packages a consumer installs', () => {
+    expect(Object.keys(pkg.dependencies ?? {})).not.toContain('exceljs')
+    expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('exceljs')
+    expect(Object.keys(pkg.devDependencies ?? {}), 'the tests still write fixtures with it').toContain('exceljs')
   })
 
   // The reverse of what this once asserted. html-to-text is inlined by esbuild at build time and
@@ -65,7 +77,7 @@ describe('dependency advisory disclosure', () => {
 
   it('names every package the table discusses, so a rename cannot orphan a row', () => {
     const declared = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})])
-    for (const name of ['@xenova/transformers', 'exceljs', 'sharp', 'puppeteer-core']) {
+    for (const name of ['@xenova/transformers', 'sharp', 'puppeteer-core']) {
       expect(security, `${name} is discussed in SECURITY.md`).toContain(name)
       expect(declared, `${name} is still a dependency`).toContain(name)
     }
