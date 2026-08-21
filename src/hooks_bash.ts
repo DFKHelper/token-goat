@@ -1296,13 +1296,119 @@ function extractGrepPipeChain(cmd: string): boolean {
 }
 
 /**
- * Returns the first https?:// URL found in a curl command, or null when none is present.
- * Used to key the bash-output cache on the URL rather than the full command string so that
- * `curl -s <url> | jq …` and `curl -s <url> | python3 …` share the same cache entry.
+ * Splits a command into shell-ish words, honouring single and double quotes and dropping the
+ * quote characters, so a flag value that contains spaces stays one word.
+ */
+function splitCommandWords(cmd: string): string[] {
+  const words: string[] = []
+  let cur = ''
+  let quote: string | null = null
+  let started = false
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i] as string
+    if (quote !== null) {
+      // Inside double quotes a backslash still escapes the quote character, so `"X: \" y"` is one
+      // word holding a literal `"`. Reading it as the closing quote split the word there and left
+      // the rest of the command parsed as if it were positional arguments.
+      if (ch === '\\' && quote === '"' && i + 1 < cmd.length) {
+        cur += cmd[i + 1] as string
+        i++
+        continue
+      }
+      if (ch === quote) quote = null
+      else cur += ch
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) {
+      cur += cmd[i + 1] as string
+      i++
+      started = true
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      started = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (started) words.push(cur)
+      cur = ''
+      started = false
+      continue
+    }
+    cur += ch
+    started = true
+  }
+  if (started) words.push(cur)
+  return words
+}
+
+/**
+ * curl flags whose next word is a value rather than the request target. A URL sitting in one of
+ * these is not what curl fetches -- `-H 'Referer: https://cdn…'` and `-A 'Bot https://bot…'` both
+ * carry one -- so the target has to be picked by argument position, not by "first URL in the
+ * string".
+ */
+const CURL_VALUE_FLAGS = new Set([
+  '-H', '--header', '-A', '--user-agent', '-e', '--referer', '-b', '--cookie', '-c', '--cookie-jar',
+  '-o', '--output', '--output-dir', '-u', '--user', '-U', '--proxy-user', '-x', '--proxy', '-X',
+  '--request', '-d', '--data', '--data-raw', '--data-binary', '--data-urlencode', '-F', '--form',
+  '-T', '--upload-file', '-K', '--config', '-w', '--write-out', '-m', '--max-time', '--connect-to',
+  '--resolve', '--retry', '--cacert', '-E', '--cert', '--key', '--range', '-r', '--interface',
+  // Options whose own value is a URL or a host. Leaving these out was the same defect as reading
+  // the first URL in the string: `curl --doh-url https://doh/ -o f https://target` answered with
+  // the DoH resolver rather than the file being fetched. `--url-query` belongs here too -- it
+  // appends query data to the request, it does not name the request target.
+  '--url-query', '--doh-url', '--preproxy', '--proxy1.0', '--socks4', '--socks4a', '--socks5',
+  '--socks5-hostname', '--proxy-header', '--noproxy', '--dns-servers', '--aws-sigv4', '--proxy-cacert',
+  '--proxy-cert', '--proxy-key', '--oauth2-bearer', '--hsts', '--alt-svc', '--etag-save',
+  '--etag-compare', '--trace', '--trace-ascii', '--dump-header', '-D',
+])
+
+/**
+ * The URL curl actually requests: the first bare (non-flag-value) `https?://` argument, or the
+ * value of an explicit `--url`. Returns null when none is present.
+ *
+ * Used to key the bash-output cache and the download-recall map on the URL rather than the full
+ * command string, so `curl -s <url> | jq …` and `curl -s <url> | python3 …` share one entry.
+ * Reading the first URL anywhere in the string instead made every command carrying a URL in a
+ * header collapse onto that header's URL: two genuinely different downloads shared one key, and
+ * the second was refused as "already downloaded" to the first one's file.
  */
 function extractCurlUrl(cmd: string): string | null {
-  const m = /(https?:\/\/[^\s'"]+)/.exec(cmd)
-  return m?.[1] ?? null
+  const words = splitCommandWords(cmd)
+  let positional: string | null = null
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] as string
+    if (w === '--url') {
+      const next = words[i + 1]
+      if (next !== undefined && /^https?:\/\//.test(next)) return next
+      i++
+      continue
+    }
+    const eq = w.indexOf('=')
+    if (w.startsWith('--') && eq > 0) {
+      // `--header=...` / `--url=...`: the value rides on the same word.
+      if (w.slice(0, eq) === '--url' && /^https?:\/\//.test(w.slice(eq + 1))) return w.slice(eq + 1)
+      continue
+    }
+    if (CURL_VALUE_FLAGS.has(w)) {
+      i++
+      continue
+    }
+    // A short flag written glued to its value (`-H'Referer: …'`, `-ohttps://x`) carries no
+    // positional argument of its own.
+    if (w.startsWith('-') && w !== '-') continue
+    if (/^https?:\/\//.test(w)) return w
+    // The target written through a substitution or a variable (`"$(printf https://x)"`,
+    // `"${BASE}/a"`) is still a positional argument, so the URL inside it is the one being
+    // fetched. Only positionals are searched this way: a URL inside a header value was skipped
+    // above as a flag value and never reaches here.
+    // `)` and `}` end the enclosing substitution rather than belonging to the URL.
+    positional ??= /https?:\/\/[^\s'")}`]+/.exec(w)?.[0] ?? null
+  }
+  if (positional !== null) return positional
+  return null
 }
 
 /** Match a `token-goat symbol|read|section|skill-body|skill-compact|map <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact/map dedup on the raw remainder (map's remainder is just an optional `--compact` flag, or empty). `stats` is intentionally excluded -- its output changes as the session progresses, so deduping it would suppress a legitimately different result. `cwd` is the bash command's working directory (from the hook event), used to resolve a relative file path the same way the CLI itself would. */
@@ -1441,10 +1547,11 @@ export function extractCurlDownload(cmd: string): { url: string; outputPath: str
   const outputPath = outputMatch[1] ?? outputMatch[2] ?? outputMatch[3]
   if (!outputPath) return null
   if (curlHasUnsafeFlags(cmd)) return null
-  // Extract URL (first https?:// argument)
-  const urlMatch = /(https?:\/\/[^\s'"]+)/.exec(cmd)
-  if (!urlMatch?.[1]) return null
-  return { url: urlMatch[1], outputPath }
+  // The request target, picked by argument position -- a URL inside a header or user-agent value
+  // is not what is being downloaded, and keying on it made two different downloads collide.
+  const url = extractCurlUrl(cmd)
+  if (url === null) return null
+  return { url, outputPath }
 }
 
 /** True when the command is a TypeScript compiler invocation. */
@@ -1625,6 +1732,37 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
         if (cmd[j] === '(') depth++
         else if (cmd[j] === ')') depth--
         j++
+      }
+      i = j
+      continue
+    }
+
+    // ANSI-C quoting `$'...'`: unlike a plain `'...'` string, a backslash here escapes the next
+    // character, so `$'it\'s'` is one complete string, not an opening quote followed by stray
+    // text. Reading it with the plain-single-quote rule below closed the string at the escaped
+    // apostrophe, left the real closing quote to open a second string that never closed, and
+    // reported "an unclosed single quote" on a command that was perfectly valid -- telling the
+    // model to abandon it for the Write tool. Skipped as one opaque span, like `$(( ... ))` above.
+    if (ch === '$' && cmd[i + 1] === "'") {
+      let j = i + 2
+      let closed = false
+      while (j < cmd.length) {
+        if (cmd[j] === '\\') {
+          j += 2
+          continue
+        }
+        if (cmd[j] === "'") {
+          j++
+          closed = true
+          break
+        }
+        j++
+      }
+      // A `$'` that never closes is still a genuinely unclosed single quote, and is reported as
+      // one rather than silently swallowed.
+      if (!closed) {
+        inSingle = true
+        break
       }
       i = j
       continue

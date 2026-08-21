@@ -56,6 +56,31 @@ describe('parseOoxmlPart / collectTextRuns', () => {
     const parsed = await parseOoxmlPart(xml)
     expect(collectTextRuns(parsed, 'w:t').join('')).toBe('Hello world')
   })
+
+  // fast-xml-parser's parseTagValue defaults to true, which rewrites any element whose whole
+  // text looks numeric into a JavaScript number. Every part these extractors read holds document
+  // text, so that turned a cell or paragraph reading `007` into `7` and `1.50` into `1.5` --
+  // silent corruption of zip codes, part numbers, invoice ids and version strings, with nothing
+  // in the output to show the value had been altered. Each spelling below is a separate way the
+  // coercion fires, so one surviving spelling still fails here.
+  it.each([
+    ['a leading zero', '007'],
+    ['a zip code', '01234'],
+    ['exponent notation', '1e5'],
+    ['a leading plus', '+12'],
+    ['a hex literal', '0x1A'],
+    ['a trailing decimal zero', '1.50'],
+    ['a negative zero', '-0'],
+    ['a number wider than a float', '12345678901234567890'],
+  ])('keeps %s as the text it was written as, not a number', async (_label, text) => {
+    const parsed = await parseOoxmlPart(`<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`)
+    expect(collectTextRuns(parsed, 'w:t').join('')).toBe(text)
+  })
+
+  it('still reads an ordinary number-shaped value as its own text (control)', async () => {
+    const parsed = await parseOoxmlPart('<w:p><w:r><w:t>42</w:t></w:r></w:p>')
+    expect(collectTextRuns(parsed, 'w:t').join('')).toBe('42')
+  })
 })
 
 describe('collectElements', () => {
