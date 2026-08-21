@@ -38,12 +38,21 @@ const workerScope = `${process.pid}-${Date.now().toString(36)}-${Math.random().t
 // win. A TOKEN_GOAT_HOME left in process.env by a PREVIOUS test file in this same reused fork
 // must not -- that is the leak. The sentinel distinguishes the two, which a bare presence check
 // cannot.
+// Both directories below used to be created straight in os.tmpdir() and removed from a process.on("exit")
+// handler. Vitest kills its workers instead of letting them exit, so that handler almost never fires and
+// they accumulated without bound -- 946,101 of the 1,407,592 entries in this machine's %TEMP% were these
+// two prefixes. globalSetup (build-bundle.ts) now creates one root per run and deletes it from the main
+// process, which does exit normally, so anything left behind here goes with it. The exit handlers stay:
+// when they do fire they keep the run root small while the run is still going.
+function runRoot(): string {
+  return process.env['TG_TEST_RUN_ROOT'] ?? os.tmpdir()
+}
 if (process.env['TG_TEST_HOME_MANAGED'] === '1') {
   delete process.env['TOKEN_GOAT_HOME']
 }
 if (!process.env['TOKEN_GOAT_HOME']) {
   process.env['TG_TEST_HOME_MANAGED'] = '1'
-  const dir = path.join(os.tmpdir(), `tg-test-home-${workerScope}`)
+  const dir = path.join(runRoot(), `tg-test-home-${workerScope}`)
   try {
     fs.mkdirSync(dir, { recursive: true })
   } catch {
@@ -66,7 +75,7 @@ for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE'] as co
   if (real !== undefined && !process.env[`TG_REAL_${key}`]) process.env[`TG_REAL_${key}`] = real
 }
 
-const dataHome = path.join(os.tmpdir(), `tg-test-data-${workerScope}`)
+const dataHome = path.join(runRoot(), `tg-test-data-${workerScope}`)
 try {
   fs.mkdirSync(dataHome, { recursive: true })
 } catch {

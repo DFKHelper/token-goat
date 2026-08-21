@@ -2581,9 +2581,21 @@ function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs
     // Test-only seam: widens the read->re-stat window so a regression test can deterministically force a concurrent modification to land inside it, instead of relying on OS timing jitter. No-op unless a test explicitly sets this env var; never set in normal operation.
     const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
     if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
-      // Deterministic readiness signal for the regression test: emitted only under the same test-only env var, right as the delay window opens, so the test can land its concurrent write inside the window instead of guessing at CLI startup latency.
+      // Deterministic readiness signal for the regression test: emitted right as the delay window opens.
       process.stderr.write('TOKEN_GOAT_TEST_REPLACE_DELAY_READY\n')
-      sleepSync(testDelayMs)
+      // The test names a sentinel path and creates it once its concurrent write has landed, so the window
+      // closes on that event rather than on the clock. A fixed sleep made the window wall-clock bounded:
+      // under full-suite worker contention the test's write could land after the window had already shut,
+      // replace would correctly see an unchanged file, exit 0, and fail an assertion expecting 1 -- a flake
+      // in the test's timing, not in the guard. testDelayMs stays on as the upper bound so a test that
+      // never creates its sentinel still terminates.
+      const until = process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_UNTIL']
+      const deadline = Date.now() + testDelayMs
+      if (until !== undefined && until !== '') {
+        while (Date.now() < deadline && !fs.existsSync(until)) sleepSync(5)
+      } else {
+        sleepSync(testDelayMs)
+      }
     }
     let preRenameStat: fs.Stats | undefined
     try {

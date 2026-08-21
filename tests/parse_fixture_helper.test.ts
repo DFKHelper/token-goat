@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { parseFixture, fixtureFile } from './helpers/parse-fixture.js'
+import { parserWarmupParses, parseFixture, fixtureFile } from './helpers/parse-fixture.js'
 
 describe('parseFixture', () => {
   it('routes on the full basename, not a synthesised name with the same extension', async () => {
@@ -29,5 +29,16 @@ describe('parseFixture', () => {
     expect(fs.existsSync(before)).toBe(true)
     await parseFixture('keep.md', '# Kept\n')
     expect(fs.existsSync(before)).toBe(true)
+  })
+
+  // The first parseFile call in a worker pays a one-time lazy init of roughly a second, and every
+  // later call costs 1-11ms. Unwarmed, that second lands inside whichever test runs first, and under
+  // full-suite worker contention it stretched past the 60s testTimeout and failed that test -- always
+  // the first of the file, in this file and in parser_markdown_closing_hash.test.ts. The helper now
+  // pays it at module evaluation, where no per-test timeout applies. Asserted structurally rather than
+  // by timing, because a threshold tight enough to separate cold from warm would flake under the same
+  // contention it is meant to defend against.
+  it('is already warm before any test body runs, so no test is billed for the parser cold start', () => {
+    expect(parserWarmupParses()).toBeGreaterThan(0)
   })
 })
