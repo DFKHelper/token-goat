@@ -458,6 +458,34 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.acted_on).toBe(0)
     expect(row.resolved).toBe(0) // still pending, window merely decremented -- not falsely resolved as acted-on
   })
+
+  it('credits acted_on when the CLI is invoked by its short "tg" alias rather than the full name (regression: TOKEN_GOAT_INVOCATION_RE matched only "token-goat", so once "tg" shipped as a second bin entry every hint the agent followed via the alias still read as unfollowed -- efficacy would drift toward zero and shouldSuppress would progressively switch off the very hints that were working, with no failure anywhere to signal it)', () => {
+    const n = nonce()
+    const correlator = 'abc123def456'
+    logHintEmission('bash_redirect', n, correlator)
+    resolvePendingHintsForEvent(bashEvent(n, `tg bash-output ${correlator}`))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as {
+      resolved: number
+      acted_on: number
+    }
+    expect(row.acted_on).toBe(1)
+  })
+
+  it('does not credit acted_on for a longer command that merely starts with "tg", so widening the pattern did not weaken its token boundary', () => {
+    const n = nonce()
+    const correlator = 'abc123def456'
+    logHintEmission('bash_redirect', n, correlator)
+    resolvePendingHintsForEvent(bashEvent(n, `tgx bash-output ${correlator}`))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as {
+      resolved: number
+      acted_on: number
+    }
+    expect(row.acted_on).toBe(0)
+  })
 })
 
 describe('efficacy calculation', () => {

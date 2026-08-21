@@ -373,7 +373,7 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
 // project's own working directory is literally named "token-goat", so a naive `.includes('token-goat')`
 // would be trivially satisfied by any command whose target path lies inside this repo, defeating the
 // whole point of checking that the CLI was actually invoked.
-const TOKEN_GOAT_INVOCATION_RE = /(?:^|[\s;&|])token-goat(?=[\s]|$)/
+const TOKEN_GOAT_INVOCATION_RE = /(?:^|[\s;&|])(?:token-goat|tg)(?=[\s]|$)/
 
 /** True when `command` contains `correlator` as a whole path/id token, not merely as a prefix or
  * suffix of a longer, unrelated one (e.g. correlator `foo.ts` must not match `foo.tsx`, id `ab12`

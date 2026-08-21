@@ -398,9 +398,9 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
     recallHint: '--tail 50',
   },
   // token-goat section/outline/symbol repeat calls — output is stable until the file changes
-  { pattern: /^token-goat\s+section\s+["'][^"']+["']/, recallHint: '' },
-  { pattern: /^token-goat\s+outline\s+\S+/, recallHint: '' },
-  { pattern: /^token-goat\s+symbol\s+\S+/, recallHint: '' },
+  { pattern: /^(?:token-goat|tg)\s+section\s+["'][^"']+["']/, recallHint: '' },
+  { pattern: /^(?:token-goat|tg)\s+outline\s+\S+/, recallHint: '' },
+  { pattern: /^(?:token-goat|tg)\s+symbol\s+\S+/, recallHint: '' },
 ]
 
 /**

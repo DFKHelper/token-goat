@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./dist/token-goat.mjs",
   "bin": {
-    "token-goat": "./dist/token-goat.mjs"
+    "token-goat": "./dist/token-goat.mjs",
+    "tg": "./dist/token-goat.mjs"
   },
   "repository": {
     "type": "git",
