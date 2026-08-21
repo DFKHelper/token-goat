@@ -9,6 +9,7 @@ import { envBool, envInt, envStr, envStrList, TRUTHY_ENV_VALUES, FALSY_ENV_VALUE
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
+import { registerReset } from './reset.js'
 
 // ---------------------------------------------------------------------------
 // Section interfaces
@@ -1193,6 +1194,15 @@ export function resolveConfigProjectRoot(): string {
   _projectRootCache = { cwd, root }
   return root
 }
+
+// Registered so batch_serve, which runs many requests in one process and calls clearModuleCaches()
+// after each, does not hand a later request a root cached by an earlier one. The memoization note
+// above is accurate for the CLI but not for that mode, which is neither one-shot nor fixed-cwd:
+// keying on cwd covers a request that runs somewhere else, not a project root at a fixed path
+// changing shape between two requests.
+registerReset(() => {
+  _projectRootCache = null
+})
 
 /**
  * Whether the user has explicitly set `compact_assist.auto_trigger_multiplier` in their raw

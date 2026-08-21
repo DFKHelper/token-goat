@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import { shortFingerprint } from './fingerprint.js';
 import { extractErrorMessage, foldPath, runGit } from './util.js';
 import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, WSL_PATH_RE, MSYS_PATH_RE } from './paths.js';
+import { registerReset } from './reset.js';
 
 /**
  * Windows drive prefixes that resolve to the same NTFS location.
@@ -310,6 +311,15 @@ export function getDisplayRoot(explicitRoot?: string): string | undefined {
   _displayRootCache = { cwd, root };
   return root;
 }
+
+// Registered so batch_serve, which runs many requests in one process and calls clearModuleCaches()
+// after each, does not hand a later request a root cached by an earlier one. The memoization note
+// above is accurate for the CLI but not for that mode, which is neither one-shot nor fixed-cwd:
+// keying on cwd covers a request that runs somewhere else, not a project root at a fixed path
+// changing shape between two requests.
+registerReset(() => {
+  _displayRootCache = null;
+});
 
 /**
  * True when `filePath` lives inside the OS system temp directory (`os.tmpdir()`), including any
