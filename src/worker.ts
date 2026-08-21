@@ -1248,6 +1248,8 @@ export async function runWorkerLoop(
   // Local to this loop invocation (not module-level) so each call starts its own fresh throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across tests in the same process).
   let lastSnapshotCleanupMs = 0
   let lastKnownRootsSweepMs = 0
+  // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
+  let ownedPidFile = false
   while (!shouldStop()) {
     // Self-terminate once this daemon's own data dir no longer exists: a caller that spawned a
     // detached daemon against an ephemeral/scratch data dir (e.g. `token-goat index --walk` in a
@@ -1258,6 +1260,23 @@ export async function runWorkerLoop(
     // runs forever (confirmed in practice: 524 stray `--worker-daemon` processes accumulated over
     // two weeks of dogfooding/test scratch-dir cleanup with no corresponding `worker stop`).
     if (!fs.existsSync(dir)) break
+    // Self-terminate once another daemon has taken over this data dir's pid file. claimWorkerPidFile's
+    // reclaim path SIGTERMs the prior daemon and then takes the pid file, but that SIGTERM is
+    // best-effort (a kill that fails, that lands on a reused pid, or a race in which the prior daemon
+    // outlives it): when it does not land, the superseded daemon otherwise keeps draining the same
+    // queue forever, because the existsSync check above never fires while the shared data dir still
+    // exists -- exactly how several stray daemons accumulate over successive sessions. Once we have
+    // observed the pid file naming our own pid, a later poll that finds it naming a *different* pid
+    // means we lost ownership, so exit and leave the current owner as the sole drainer. We only act
+    // on a concrete different pid, never on readPidFile returning null: null also covers a transient
+    // read failure or a mid-write empty file (pid-file replacement is not atomic to a concurrent
+    // reader), and treating that as lost ownership would let a single filesystem hiccup terminate the
+    // sole legitimate daemon -- a self-inflicted version of the very leak this check exists to stop. A
+    // genuinely removed pid file leaves us running until either fs.existsSync(dir) fires or a real
+    // successor writes its own pid, which is the safe direction.
+    const pidOwner = readPidFile(dir)
+    if (pidOwner === process.pid) ownedPidFile = true
+    else if (ownedPidFile && pidOwner !== null) break
     try {
       drainOnce(dir)
     } catch {
