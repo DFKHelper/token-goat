@@ -213,6 +213,28 @@ describe('extractR spans', () => {
     })
   })
 
+  // A backtick quotes a name in a function BODY too, and such a name may contain a brace. The body
+  // walk has to treat the whole backtick span as text, exactly as the parameter walk already does --
+  // otherwise a `}` inside it ends the span early and a `{` inside it makes it run on too far.
+  it('does not end the body at a closing brace inside a backtick-quoted name', () => {
+    const src = 'backtick_close <- function() {\n  `a}b` <- 1\n  return(2)\n}\n'
+    expect(symbolNamed(src, 'backtick_close'), 'a brace in a quoted body name closed the body early').toEqual({
+      lineStart: 1,
+      lineEnd: 4,
+    })
+  })
+
+  it('does not run the body on past its close when a backtick-quoted name holds an open brace', () => {
+    // A trailing symbol after the function is what makes this discriminate: without the fix the open
+    // brace inside the backtick inflates the depth so the closing `}` never reaches zero and the span
+    // runs to end of file (line 5), not the correct close on line 4.
+    const src = 'backtick_open <- function() {\n  `x{y` <- 1\n  return(2)\n}\nafter <- 5\n'
+    expect(symbolNamed(src, 'backtick_open'), 'an open brace in a quoted body name pushed the span past its close').toEqual({
+      lineStart: 1,
+      lineEnd: 4,
+    })
+  })
+
   it('still finds a setClass assigned to a variable', () => {
     expect(symbolNamed(SOURCE, 'Assigned')).toEqual({ lineStart: 55, lineEnd: 55 })
   })

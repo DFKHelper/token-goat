@@ -1240,8 +1240,8 @@ export function propagateEndLinesToSymbols(
  * character inside a quoted value (e.g. `default = "{}"`, `option (x) = "{"`) is never miscounted
  * as real nesting. Returns `totalLines` if the brace is never closed.
  */
-/** Opt-in extras for {@link findMatchingBraceEndLine}. Both default to the pre-existing behaviour,
- *  so the many callers that pass neither are byte-for-byte unaffected. */
+/** Opt-in extras for {@link findMatchingBraceEndLine}. Each defaults to the pre-existing behaviour,
+ *  so the many callers that pass none are byte-for-byte unaffected. */
 export interface BraceScanOpts {
   /** Block-comment delimiters, e.g. `['/*', '*\/']` for C-style or `['<#', '#>']` for PowerShell.
    *  When set, a brace inside such a span is ignored -- the same reason line comments are skipped.
@@ -1252,6 +1252,12 @@ export interface BraceScanOpts {
    *  `totalLines`, which every existing caller relies on. {@link assignBraceBlockSpans} passes `-1`
    *  so an unbalanced brace yields no span at all rather than a bogus span running to EOF. */
   noMatchValue?: number
+  /** Treat a backtick as a string/identifier delimiter, alongside `"` and `'`. R quotes identifiers
+   *  with backticks and such a name may legally contain `{`, `}`, or `#`; without this a `}` inside a
+   *  backtick identifier decrements the brace depth and ends the span early. Opt-in because in most
+   *  languages a backtick is not a delimiter (e.g. a JS template literal has its own `${}` nesting a
+   *  plain scan cannot handle), so only callers whose language uses backtick this way should set it. */
+  backtickQuote?: boolean
 }
 
 export function findMatchingBraceEndLine(
@@ -1263,6 +1269,7 @@ export function findMatchingBraceEndLine(
   opts?: BraceScanOpts,
 ): number {
   const block = opts?.blockComment
+  const backtick = opts?.backtickQuote === true
   let depth = 0
   let quote: string | null = null
   for (let i = openBraceIndex; i < content.length; i++) {
@@ -1285,7 +1292,7 @@ export function findMatchingBraceEndLine(
       while (i < content.length && content[i] !== '\n') i++
       continue
     }
-    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '"' || ch === "'" || (backtick && ch === '`')) { quote = ch; continue }
     if (ch === '{') depth++
     else if (ch === '}') {
       depth--

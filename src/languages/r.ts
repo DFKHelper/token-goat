@@ -103,7 +103,10 @@ function bracedBodyEndLine(
     j++
   }
   if (content[j] !== '{') return fallback
-  return findMatchingBraceEndLine(content, j, totalLines, lineIndex, '#')
+  // backtickQuote: R quotes identifiers with backticks and such a name may contain `{`, `}`, or `#`
+  // (e.g. `` `a}b` <- 1 `` in a body); without it the `}` ends the span early. matchingParenIndex
+  // already handles backticks in the signature for the same reason.
+  return findMatchingBraceEndLine(content, j, totalLines, lineIndex, '#', { backtickQuote: true })
 }
 
 /**
