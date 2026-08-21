@@ -1,5 +1,7 @@
 # Coupled-registry audit — 2026-05-24
 
+> **This file is a historical record, not current documentation.** It catalogues coupled registries as they stood in the Python codebase on 2026-05-24. The project was fully rewritten from Python to TypeScript afterwards, so the file paths, module names, and commands below no longer exist. It is kept because [CHANGELOG-ARCHIVE.md](../CHANGELOG-ARCHIVE.md) cites it. For the current architecture see [CLAUDE.arch.md](../CLAUDE.arch.md).
+
 Catalog of places in the codebase where related state is split across N files that must stay in sync, with nothing enforcing it. The bug class: adding (or renaming) an entry in registry A silently leaves B/C/D stale; production breaks, often with no test failure.
 
 Patterns are ranked by **risk** and **fix-now-vs-defer** so future iterations can pick them up in priority order.
