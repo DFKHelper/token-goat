@@ -88,3 +88,10 @@ updates:
       - dependency-name: better-sqlite3
         update-types:
           - version-update:semver-major
+      # @types/vscode must never lead engines.vscode: the typings decide which APIs the extension
+      # compiles against, so a version above the declared engine floor lets it build against APIs
+      # that are missing in the oldest VS Code it claims to support, and the break only shows up on
+      # a user's machine. It was already ahead (1.125 typings against an ^1.101 engine floor) and is
+      # now pinned to the floor exactly. Raising it is a decision about which VS Code versions this
+      # extension still supports, taken together with engines.vscode, not a routine version bump.
+      - dependency-name: '@types/vscode'
