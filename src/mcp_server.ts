@@ -205,7 +205,52 @@ function forCompare(p: string): string {
  * value -- one resolution site is the only way to guarantee the two agree.
  */
 function resolveToolRoot(projectRoot: string | undefined): string {
-  return resolveProjectRoot(projectRoot !== undefined ? { project: projectRoot } : {})
+  const resolved = resolveProjectRoot(projectRoot !== undefined ? { project: projectRoot } : {})
+  assertRootAllowed(resolved)
+  return resolved
+}
+
+/**
+ * Thrown when a caller-supplied `projectRoot` resolves outside every entry in `mcp.allowed_roots`.
+ * The MCP SDK turns a handler throw into an error result for the caller, so the refusal still
+ * reaches whoever asked, and every tool gets it without each one remembering to ask.
+ */
+class RootNotAllowedError extends Error {}
+
+/**
+ * Refuse a resolved root that the operator has not allowed.
+ *
+ * This check used to live inside {@link confineTargets}, which meant two things it should not
+ * have. Four tools -- `semantic`, `index_status`, `map` and `changed` -- resolve a caller-supplied
+ * root but read no individual file path, so they never call that function and were never checked
+ * at all: naming any directory on the machine returned its file inventory, headline symbols,
+ * indexed content chunks, or changed symbols and diff hunks, straight past the allowlist. And
+ * `confineTargets` returns early when `confine_reads_to_project_root` is off, so turning off the
+ * traversal guard silently voided the root allowlist for the other thirteen tools too, even though
+ * they are separate operator policies answering separate questions.
+ *
+ * Sitting on the one function that resolves a caller's root instead means a tool is covered by
+ * construction rather than by remembering, and the allowlist holds whatever the traversal guard is
+ * set to.
+ *
+ * Deliberately loadConfig() with NO argument -- the server's own config, never the caller-chosen
+ * root's -- which is the exact INVERSE of what mcp_server_confine_reads_config_scoping.test.ts
+ * pins for `confine_reads_to_project_root`. That is intentional: `confine_reads_to_project_root`
+ * is a workspace's policy about ITSELF, so it must be read from that workspace, while
+ * `allowed_roots` is the operator's policy about WHICH workspaces may be named at all, so reading
+ * it from the resolved root would let the root being restricted supply the setting that restricts
+ * it -- a repo could ship a project config listing itself and the allowlist would authorise the
+ * very root it exists to reject.
+ */
+function assertRootAllowed(resolvedRoot: string): void {
+  const allowedRoots = loadConfig().mcp.allowed_roots
+  if (allowedRoots.length === 0) return
+  if (allowedRoots.some((allowed) => checkWithinProjectRoot(resolvedRoot, allowed).inside)) return
+  throw new RootNotAllowedError(
+    `refused: "${resolvedRoot}" is not inside any root listed in mcp.allowed_roots. ` +
+      'A caller-supplied projectRoot is untrusted input, so this deployment pins which roots may be named; ' +
+      'add the root to mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to permit it.',
+  )
 }
 
 /**
@@ -287,21 +332,10 @@ const NO_PINS: ReadonlyMap<string, string> = new Map<string, string>()
  * here would (as it did) validate a different string than the one that gets read.
  */
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {
+  // The allowlist is NOT checked here any more -- it moved to assertRootAllowed, called from
+  // resolveToolRoot, so it applies to every tool and is independent of this setting. See its
+  // doc comment for what that early return used to void.
   if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets, pins: NO_PINS }
-  // Deliberately loadConfig() with NO argument -- the server's own config, never the caller-chosen root's -- which is the exact INVERSE of the line above and of what mcp_server_confine_reads_config_scoping.test.ts pins for `confine_reads_to_project_root`. That is intentional, not a reintroduction of that bug: the two settings answer different questions. `confine_reads_to_project_root` is a workspace's policy about ITSELF, so it must be read from that workspace. `allowed_roots` is the operator's policy about WHICH workspaces may be named at all, so reading it from `resolvedRoot` would let the root being restricted supply the setting that restricts it -- a repo could ship a project config listing itself and the allowlist would authorise the very root it exists to reject.
-  const allowedRoots = loadConfig().mcp.allowed_roots
-  if (allowedRoots.length > 0 && !allowedRoots.some((allowed) => checkWithinProjectRoot(resolvedRoot, allowed).inside)) {
-    return {
-      ok: false,
-      refusal: toCallToolResult({
-        text:
-          `refused: "${resolvedRoot}" is not inside any root listed in mcp.allowed_roots. ` +
-          'A caller-supplied projectRoot is untrusted input, so this deployment pins which roots may be named; ' +
-          'add the root to mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to permit it.',
-        code: 1,
-      }),
-    }
-  }
   const checked: string[] = []
   const pins = new Map<string, string>()
   for (const raw of targets) {

@@ -114,4 +114,63 @@ describe('mcp allowed_roots', () => {
     expect(textOf(result)).not.toContain('mcp.allowed_roots')
     expect(textOf(result)).toContain('INSIDE-CONTENT')
   })
+
+  // Regression: the allowlist check lived inside confineTargets, which only these tools reach --
+  // the ones that validate an individual file path. `semantic`, `index_status`, `map` and
+  // `changed` resolve a caller-supplied root and read no path of their own, so they never called
+  // it and were never checked: naming any directory on the machine returned that directory's
+  // inventory, symbols, indexed chunks or diff hunks straight past the operator's allowlist. The
+  // check now sits on the one function that resolves a caller's root, so a tool is covered by
+  // construction rather than by remembering to ask.
+  it.each(['semantic', 'index_status', 'map', 'changed'])(
+    'refuses a projectRoot outside the allowlist for the path-less tool %s',
+    async (tool) => {
+      process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = allowedRoot
+      invalidateConfigCache()
+      const { client, close } = await connectedClient()
+      cleanup = close
+      const args: Record<string, unknown> = { projectRoot: otherRoot }
+      if (tool === 'semantic') args['query'] = 'anything at all'
+      const result = await client.callTool({ name: tool, arguments: args })
+      expect(
+        textOf(result),
+        `${tool} answered for a root outside mcp.allowed_roots instead of refusing`,
+      ).toContain('mcp.allowed_roots')
+    },
+  )
+
+  it.each(['semantic', 'index_status', 'map', 'changed'])(
+    'still answers for an allowed root for the path-less tool %s',
+    async (tool) => {
+      process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = allowedRoot
+      invalidateConfigCache()
+      const { client, close } = await connectedClient()
+      cleanup = close
+      const args: Record<string, unknown> = { projectRoot: allowedRoot }
+      if (tool === 'semantic') args['query'] = 'anything at all'
+      const result = await client.callTool({ name: tool, arguments: args })
+      expect(textOf(result)).not.toContain('mcp.allowed_roots')
+    },
+  )
+
+  // The allowlist and the traversal guard are separate operator policies. They shared a function,
+  // so turning the traversal guard off returned early and voided the allowlist for every tool.
+  it('still refuses an out-of-allowlist root when confine_reads_to_project_root is off', async () => {
+    process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = allowedRoot
+    process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '0'
+    invalidateConfigCache()
+    const { client, close } = await connectedClient()
+    cleanup = close
+    try {
+      const result = await client.callTool({ name: 'grep', arguments: { pattern: 'OUTSIDE-CONTENT', path: [otherRoot], projectRoot: otherRoot } })
+      expect(
+        textOf(result),
+        'turning off the traversal guard also turned off the root allowlist',
+      ).toContain('mcp.allowed_roots')
+      expect(textOf(result)).not.toContain('OUTSIDE-CONTENT')
+    } finally {
+      delete process.env['TOKEN_GOAT_MCP_CONFINE_READS']
+      invalidateConfigCache()
+    }
+  })
 })

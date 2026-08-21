@@ -314,6 +314,17 @@ export async function embedTexts(
           `Dimension mismatch: model returned ${vec.length}-dim vector, expected ${expectedDim}`,
         )
       }
+      // The length was the only thing checked here, so a vector holding a NaN or an infinity was
+      // stored as readily as a real one. sqlite-vec then reports no distance at all for that row,
+      // which reads as nearer than everything else and puts it at the top of every search. Refuse
+      // the vector instead: the file is left unembedded and retried later, which is the same
+      // outcome as any other embedding failure and far better than one poisoned row.
+      const badIndex = vec.findIndex((component) => !Number.isFinite(component))
+      if (badIndex !== -1) {
+        throw new Error(
+          `Non-finite embedding component at index ${badIndex}: model returned ${String(vec[badIndex])}`,
+        )
+      }
 
       vecs.push(vec)
     }
@@ -336,6 +347,17 @@ export function packVec(vec: number[]): Buffer {
   const view = new Float32Array(vec.length)
   for (const [i, val] of vec.entries()) {
     view[i] = val
+    // Checked here, after the narrowing, rather than only on the way out of the model. A value
+    // that is a perfectly finite JavaScript number but too large for a 32-bit float -- 1e39, or
+    // Number.MAX_VALUE -- becomes Infinity the moment it is written into this array, so a guard
+    // that only asks Number.isFinite(val) upstream lets it through and stores the poisoned vector
+    // anyway. This is the one place every stored vector passes through (insertChunkVector and
+    // upsertChunks both pack here), so it is where the guarantee belongs.
+    if (!Number.isFinite(view[i])) {
+      throw new Error(
+        `Non-finite embedding component at index ${i}: ${String(val)} is not representable as a 32-bit float`,
+      )
+    }
   }
   return Buffer.from(view.buffer)
 }
@@ -732,7 +754,13 @@ export function fetchScopedHits(
     if (!row) {
       continue
     }
-    if (row.distance <= maxDistance) {
+    // A distance that is not a finite number never passes. vec0 hands back SQL NULL for a row whose
+    // stored vector holds a NaN component, and JavaScript reads that as `null`, which compares as 0
+    // against the threshold and then subtracts as 0 in the re-ranking below -- so a single such row
+    // would clear any threshold and sort ahead of every genuine match, in every project sharing the
+    // database. Writing one is now refused outright (see embedTexts), and a row already stored by an
+    // earlier build is ignored here rather than trusted.
+    if (typeof row.distance === 'number' && Number.isFinite(row.distance) && row.distance <= maxDistance) {
       const chunk = (
         scopeParams !== undefined ? chunkStmt.get(row.rowid, ...scopeParams) : chunkStmt.get(row.rowid)
       ) as { file_path: string; start_line: number; end_line: number; text: string; kind: string } | null | undefined
