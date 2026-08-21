@@ -1998,6 +1998,80 @@ describe('runWorkerLoop self-terminates when its data dir is deleted (regression
   })
 })
 
+// Regression: runWorkerLoop only self-terminated when its data dir was deleted, never when another
+// daemon took over the pid file. claimWorkerPidFile's reclaim path SIGTERMs the prior daemon and
+// takes the pid file, but that kill is best-effort; when it does not land (a reused pid, a failed or
+// raced kill) the superseded daemon kept draining the same live dir forever, which is how several
+// stray daemons pile up across sessions. The loop now exits once it has owned the pid file and then
+// sees it naming a different pid. `shouldStop` stays false and the dir is never deleted, so the only
+// thing that can end this loop is the new ownership check.
+describe('runWorkerLoop self-terminates when another daemon takes over its pid file (regression)', () => {
+  it('exits once the pid file it owned names a different pid, with the dir still present', async () => {
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-takeover-'))
+    try {
+      // Claim ownership as this process before starting: the first poll then confirms `ownedPidFile`.
+      fs.writeFileSync(workerPidPath(scratchDir), `${process.pid}\n`)
+      const loopPromise = runWorkerLoop(scratchDir, 5, () => false)
+      // Let the loop run a few polls so it observes the pid file naming its own pid.
+      await new Promise<void>((resolve) => setTimeout(resolve, 40))
+      // A different daemon reclaims the slot: overwrite the pid file with a pid that is not ours.
+      const otherPid = process.pid === 424242 ? 424243 : 424242
+      fs.writeFileSync(workerPidPath(scratchDir), `${otherPid}\n`)
+
+      const timeout = new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 2000))
+      const result = await Promise.race([loopPromise.then(() => 'stopped'), timeout])
+      // Release the global.db handle the first-iteration known-roots sweep opened, so the temp dir
+      // removal in finally does not EPERM on Windows -- same reason as the data-dir test above.
+      closeDb(path.join(scratchDir, 'global.db'))
+      expect(result).toBe('stopped')
+    } finally {
+      closeDb(path.join(scratchDir, 'global.db'))
+      try {
+        fs.rmSync(scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+      } catch {
+        // ignore
+      }
+    }
+  })
+
+  // Guard the takeover check against a transient read: readPidFile collapses a missing, empty, or
+  // mid-write pid file to null (pid-file replacement is not atomic to a concurrent reader). The loop
+  // must NOT read that null as lost ownership, or a single filesystem hiccup would terminate the sole
+  // legitimate daemon -- the exact leak this check exists to prevent, self-inflicted. Only a concrete
+  // different pid ends the loop; an emptied pid file leaves an owner running until shouldStop or a real
+  // successor writes its own pid.
+  it('keeps running when the pid file it owned is emptied (transient null is not a takeover)', async () => {
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-nullpid-'))
+    let stop = false
+    try {
+      fs.writeFileSync(workerPidPath(scratchDir), `${process.pid}\n`)
+      const loopPromise = runWorkerLoop(scratchDir, 5, () => stop)
+      // Let the loop observe the pid file naming its own pid, so ownedPidFile is set.
+      await new Promise<void>((resolve) => setTimeout(resolve, 40))
+      // Simulate a transient empty pid file (mid-write / read glitch): a null read, not a real pid.
+      fs.writeFileSync(workerPidPath(scratchDir), '')
+      // Race the loop against a window several poll intervals wide. The loop must still be running:
+      // the timer wins ('running'). If it exits here ('stopped'), the null was wrongly treated as a
+      // takeover -- which is the pre-fix behavior of `else if (ownedPidFile) break`.
+      const stillRunning = new Promise<string>((resolve) => setTimeout(() => resolve('running'), 300))
+      const midResult = await Promise.race([loopPromise.then(() => 'stopped'), stillRunning])
+      expect(midResult).toBe('running')
+      // Now shut it down cleanly through the real stop path and confirm it does terminate.
+      stop = true
+      await loopPromise
+      closeDb(path.join(scratchDir, 'global.db'))
+    } finally {
+      stop = true
+      closeDb(path.join(scratchDir, 'global.db'))
+      try {
+        fs.rmSync(scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+      } catch {
+        // ignore
+      }
+    }
+  })
+})
+
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called
 // them -- session_snapshots/<sessionId>/ directories accumulated forever. runWorkerLoop now
 // sweeps stale session snapshots on the same periodic loop as the dirty-queue drain. This drives
