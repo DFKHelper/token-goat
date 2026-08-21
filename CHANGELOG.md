@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- **The README no longer tells you to pipe a downloaded script straight into a shell.** Its optional-tooling section suggested installing `uv` on Debian and Ubuntu with `curl ... | sh`, which runs whatever the server hands back at that moment with no chance to read it first. Security review flags that shape on sight, and rightly so. The block now installs `uv` through `pipx`, with `pipx` coming from `apt` alongside the other tools listed beside it. That is also the form that works on current Debian and Ubuntu, where installing into the system Python directly is refused. To be clear about what was flagged: `uv` is not a token-goat dependency and never has been, and nothing token-goat installs or ships fetches a script and runs it. It is one of the companion command-line tools the README suggests you have on hand. See [README.md](README.md).
+
 ### Fixed
 
 - **Reading an R function no longer cuts its body off, or runs it past its end, when a name inside the body is written in backticks.** R lets you quote an identifier in backticks so it can hold characters a plain name cannot, and that includes a brace: `` `a}b` <- 1 `` is a valid assignment inside a function. The walker that finds where an R function ends counts braces to know when the body closes, and it was counting the brace inside such a name. A `` `}` `` in a backtick name closed the function early, so `read "file::func"` returned only the first part of the body; a `` `{` `` in one kept the count from ever reaching zero, so the span ran on to the end of the file and swallowed whatever followed. The brace walker already knew to skip a brace inside a `"` or `'` string, so it now skips one inside a backtick name the same way. The parenthesis walk that reads the parameter list already handled backticks, for the same reason. See [src/languages/r.ts](src/languages/r.ts) and [src/languages/common.ts](src/languages/common.ts).
