@@ -51,7 +51,8 @@
     "dist/",
     "README.md",
     "SECURITY.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/install-git-hooks.mjs"
   ],
   "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {

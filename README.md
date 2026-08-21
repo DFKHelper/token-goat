@@ -350,7 +350,9 @@ brew install ast-grep uv ruff ripgrep fd bat eza git-delta jq yq sd miller sqlit
 
 # Debian / Ubuntu — note the binary renames: rg=ripgrep, fd=fdfind, bat=batcat
 sudo apt install -y ripgrep fd-find bat jq sqlite3 fzf pipx
-pipx install uv                                   # uv, then: uv tool install ruff
+pipx install uv && pipx ensurepath     # pipx puts uv in ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"   # this shell; ensurepath covers later ones
+uv tool install ruff
 npm install -g @ast-grep/cli
 ```
 
