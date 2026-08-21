@@ -4517,19 +4517,37 @@ function buildChangedRefHint(cwd: string, ref: string): string | null {
 }
 
 /** Handle ``token-goat changed`` (plain file list, or `--symbol` for changed symbols). */
+/**
+ * Is `ref` safe to hand git as a positional revision?
+ *
+ * A ref lands in argv where git expects a revision, but git's own parser still reads a leading `-`
+ * there as an option -- so a caller-supplied `--output=<path>` turns `git diff` or `git log` into
+ * an arbitrary-file-write primitive (it writes to that path, truncating whatever was there), and
+ * `-O<file>` into a read primitive. Neither goes anywhere near the confinement gate, and
+ * `--no-ext-diff`/`--no-textconv` in runGit do not cover them: those close the diff-driver
+ * command-execution vector, not option injection. Reachable unauthenticated over MCP, where `ref`
+ * is a bare optional string. No legitimate revision starts with `-` (git check-ref-format forbids
+ * it), so refusing the whole shape costs nothing and closes every flag rather than blacklisting
+ * the two that are known to bite.
+ *
+ * Shared by every command that puts a caller's ref in argv rather than repeated at each one. It
+ * lived inline in runChanged, and `diff` and `log` -- which build the same argv shape from the same
+ * untrusted string -- were each written without it. One helper means the next ref-taking command
+ * cannot omit it by being written the same way.
+ */
+function refIsSafe(ref: string): boolean {
+  return !ref.startsWith('-')
+}
+
+/** Report a refused ref on stderr, in one wording for every caller. */
+function emitUnsafeRef(ref: string): void {
+  emitErr(`Refusing a git ref that starts with '-': ${ref}`)
+}
+
 export function runChanged(opts: ChangedOptions = {}): number {
   const ref = opts.ref ?? 'HEAD~5'
-  // `ref` lands in argv as a positional where git expects a revision, but git's own parser still
-  // reads a leading `-` as an option there -- so a caller-supplied `--output=<path>` turns
-  // `git diff` into an arbitrary-file-write primitive (it writes the diff to that path, truncating
-  // whatever was there), and `-O<file>` into a read primitive. Neither goes anywhere near the
-  // confinement gate, and `--no-ext-diff`/`--no-textconv` in runGit do not cover them: those close
-  // the diff-driver command-execution vector, not option injection. Reachable unauthenticated over
-  // MCP, where `ref` is a bare optional string. No legitimate revision starts with `-`
-  // (git check-ref-format forbids it), so refusing the whole shape costs nothing and closes every
-  // flag rather than blacklisting the two that are known to bite.
-  if (ref.startsWith('-')) {
-    emitErr(`Refusing a git ref that starts with '-': ${ref}`)
+  if (!refIsSafe(ref)) {
+    emitUnsafeRef(ref)
     return 1
   }
   const cwd = opts.projectRoot ?? process.cwd()
@@ -4807,6 +4825,10 @@ export function resolveSymbolSpecOrEmitError(
 }
 
 export function runDiff(opts: DiffOptions): number {
+  if (opts.ref !== undefined && !refIsSafe(opts.ref)) {
+    emitUnsafeRef(opts.ref)
+    return 1
+  }
   const match = resolveSymbolSpecOrEmitError('diff', opts.spec, opts.projectRoot)
   if (match === null) return 1
   const cwd = opts.projectRoot ?? process.cwd()
@@ -4960,6 +4982,10 @@ function parseLogDashLOutput(stdout: string): LogEntry[] {
  * than intersecting per-commit diffs against a fixed range after the fact.
  */
 export function runLog(opts: LogOptions): number {
+  if (opts.ref !== undefined && !refIsSafe(opts.ref)) {
+    emitUnsafeRef(opts.ref)
+    return 1
+  }
   const match = resolveSymbolSpecOrEmitError('log', opts.spec, opts.projectRoot)
   if (match === null) return 1
   const cwd = opts.projectRoot ?? process.cwd()

@@ -13,6 +13,7 @@ import {
   ensureWorkerAlive,
   getDirtyPathsFor,
   isWorkerRunning,
+  pendingEmbeddings,
   processDirtyBatch,
   resetTransientRetryCount,
   resolvePollIntervalMs,
@@ -1801,6 +1802,122 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     // Let the remaining in-flight calls settle so this test's own promises don't dangle.
     pendingResolvers.get(files[1])!()
     pendingResolvers.get(files[2])!()
+    await Promise.resolve()
+  })
+
+  // Regression: the release closure attached to an already-dispatched embed survived the reset
+  // that zeroed the counter it decrements. When that stale call settled it took the fresh counter
+  // negative, and a negative count means `activeEmbedSlots < limit` stays true for one extra
+  // caller per stale task -- so the global cap this gate exists to enforce was quietly loosened
+  // for the rest of the process. Drives the real drain path with only indexFileEmbeddings spied.
+  it('a pre-reset embed settling later does not loosen the cap for work dispatched after the reset', async () => {
+    clearModuleCaches()
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [], max_pool_workers: 1 },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const files = ['epoch-a.ts', 'epoch-b.ts', 'epoch-c.ts'].map((name, i) => {
+      const p = path.join(DIR, name)
+      fs.writeFileSync(p, `export function epochFn${i}(): number {
+  return ${i}
+}
+`)
+      return normalizePath(p)
+    })
+
+    const invoked: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((filePath) => {
+      invoked.push(filePath)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(filePath, resolve)
+      })
+    })
+
+    // One embed in flight, holding the only slot.
+    writeQueue(DIR, [files[0] as string])
+    expect(drainOnce(DIR)).toBe(1)
+    expect(invoked).toEqual([files[0]])
+
+    clearModuleCaches()
+
+    // The stale call settles after the reset. Its release must be a no-op now.
+    pendingResolvers.get(files[0] as string)!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Two fresh files, cap of 1: exactly one may dispatch. A counter left at -1 by the stale
+    // release would admit both.
+    writeQueue(DIR, [files[1] as string, files[2] as string])
+    expect(drainOnce(DIR)).toBe(2)
+    expect(
+      invoked.slice(1),
+      'the cap admitted more than max_pool_workers after a pre-reset embed settled',
+    ).toEqual([files[1]])
+
+    pendingResolvers.get(files[1] as string)!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(invoked.slice(1)).toEqual([files[1], files[2]])
+    pendingResolvers.get(files[2] as string)!()
+    await Promise.resolve()
+  })
+
+  // Regression: the reset registered beside the slot counter cleared the counter and the waiter
+  // queue but not inFlightEmbeddings. A call queued behind the cap returns a promise whose only
+  // way to settle is the closure sitting in that queue, so discarding the queue orphaned the
+  // promise: its cleanup never ran, its map entry never cleared, and pendingEmbeddings() -- which
+  // waits on exactly those values -- never resolved. A later test awaiting it hung until the
+  // suite timeout, which reads as a flake rather than as this test leaving state behind. Drives
+  // the real drain path, same as the cap test above; only indexFileEmbeddings is mocked.
+  it('clearModuleCaches leaves pendingEmbeddings resolvable after discarding a queued embed call', async () => {
+    clearModuleCaches()
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [], max_pool_workers: 1 },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const files = ['reset-a.ts', 'reset-b.ts'].map((name, i) => {
+      const p = path.join(DIR, name)
+      fs.writeFileSync(p, `export function resetFn${i}(): number {
+  return ${i}
+}
+`)
+      return normalizePath(p)
+    })
+
+    const invoked: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((filePath) => {
+      invoked.push(filePath)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(filePath, resolve)
+      })
+    })
+
+    writeQueue(DIR, files)
+    expect(drainOnce(DIR)).toBe(2)
+    // With a cap of 1 the second file is queued, never dispatched -- exactly the state whose
+    // tracking the reset has to drop along with the queue it depends on.
+    expect(invoked).toEqual([files[0]])
+
+    clearModuleCaches()
+
+    const outcome = await Promise.race([
+      pendingEmbeddings().then(() => 'resolved'),
+      new Promise((resolve) => {
+        setTimeout(() => resolve('hung'), 2000)
+      }),
+    ])
+    expect(
+      outcome,
+      'pendingEmbeddings() never resolved: the reset dropped the waiter queue but kept the map entry waiting on it',
+    ).toBe('resolved')
+
+    pendingResolvers.get(files[0])!()
     await Promise.resolve()
   })
 })
