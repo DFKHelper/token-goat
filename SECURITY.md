@@ -56,9 +56,10 @@ Without the overrides a consumer resolves `protobufjs` at 6.x, which carries mor
 | Package | Advisories it carries | Where it loads | Why the advisory does not reach you through Token-Goat |
 | --- | --- | --- | --- |
 | `@xenova/transformers` | [`protobufjs`](https://github.com/advisories/GHSA-xq3m-2v4x-88gg) (critical), `onnx-proto`, `onnxruntime-web`, and its own pinned `sharp` | optional; loaded only when semantic search builds or queries embeddings | not mitigated, so it is the one to weigh. Skip it with `npm install --omit=optional`, or leave `indexing.embeddings_enabled` off, and the code never loads |
-| `exceljs` | [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | optional; loaded only when an `xlsx-*` command opens a workbook | the advisory is a missing bounds check on a caller-supplied `buf` argument; ExcelJS never passes one |
 
-`npm install --omit=optional` gives you an install without either of these, and `npm audit` reports it clean. Every command still starts; the ones that need a package you skipped say so. The `xlsx-*` commands report that ExcelJS is not installed rather than failing oddly, `zip-list`/`zip-read` do the same for fflate, and `semantic` keeps working on keyword search alone: it is the embedding half that goes away, not the command.
+`npm install --omit=optional` gives you an install without it, and `npm audit` reports it clean. Every command still starts; the ones that need a package you skipped say so. The `xlsx-*`, `docx-*` and `pptx-*` commands report that fflate is not installed rather than failing oddly, `zip-list`/`zip-read` do the same, and `semantic` keeps working on keyword search alone: it is the embedding half that goes away, not the command.
+
+`exceljs` used to appear in that table, carrying [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq). It is now a development dependency instead. The `xlsx-*` commands read the workbook container directly with `fflate` and `fast-xml-parser`, the same two packages the `.docx` and `.pptx` readers already used, so `exceljs` is only a test fixture writer now. That removes 55 packages from a default install, including every deprecated one in the tree.
 
 `html-to-text` used to appear in that table, carrying [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx). It is now a development dependency instead. esbuild inlines it into `dist/token-goat.mjs` at build time and nothing in the published bundle imports it, so it was a runtime dependency in name only: moving it removes `html-to-text`, `deepmerge-ts`, `htmlparser2`, `selderee`, and `dom-serializer` from an installed copy while the HTML-to-text output stays byte-for-byte identical. That is what takes the no-optional install to zero, and it is better than the alternative we had considered, rolling `html-to-text` back to 9.x: that version pins `htmlparser2` two majors lower, and `htmlparser2` is what parses fetched pages, so it would have traded an advisory in an options merger for an older parser on the one path that handles untrusted input.
 
@@ -89,8 +90,8 @@ Token-Goat is source-available under the PolyForm Noncommercial License 1.0.0. S
 
 Every production dependency is permissively licensed, but a scan does not read it that way on its
 own. Counted from `package-lock.json`, which lists the packages for every platform rather than only
-the ones this machine installed, 22 entries need a human answer: 7 declare a license a scanner
-cannot resolve, and 15 carry a copyleft term. All 22 arrive through optional dependencies. Install
+the ones this machine installed, 21 entries need a human answer: 7 declare a license a scanner
+cannot resolve, and 14 carry a copyleft term. All 21 arrive through optional dependencies. Install
 with `npm install --omit=optional token-goat` and not one of them is present.
 
 **Declarations a scanner cannot resolve.** Both are upstream mistakes, and both are the same
@@ -110,19 +111,19 @@ an unresolvable one.
 | --- | --- | --- |
 | `@img/sharp-libvips-<platform>` (10 packages) | `LGPL-3.0-or-later` | libvips, shipped as a prebuilt shared library and used unmodified. LGPL asks that the library stay replaceable, and it is: it is a separate package that `sharp` loads at runtime. |
 | `@img/sharp-<platform>` (4 packages) | `Apache-2.0 AND LGPL-3.0-or-later` | the Apache half is `sharp` itself, the LGPL half is the same libvips |
-| `jszip` | `(MIT OR GPL-3.0-or-later)` | a choice between the two, and the MIT half is taken |
 
-`sharp` and `jszip` are both optional: `sharp` powers image shrinking, `jszip` arrives through
-`exceljs` for the `xlsx-*` commands.
+`sharp` is optional: it powers image shrinking. `jszip` used to be listed here too; it arrived
+through `exceljs`, which is no longer a dependency a consumer installs.
 
 **Three packages with no license at all used to be here.** `buffers@0.1.1` and `chainsaw@0.1.0`
 shipped with neither a `license` field nor a license file, and `traverse@0.3.9` had the file but
 not the field. No grant at all is worse for a review than a copyleft grant, because there is
 nothing to apply policy to. They arrived through `exceljs`, which depends on `unzipper`, which
 depended on `binary`, which depended on all three. `unzipper` dropped `binary` in 0.11, so an
-override to `^0.12.5` removes the sub-chain, and the deprecated `fstream` with it. Token-goat reads
-workbooks through `wb.xlsx.readFile()`, which goes through `jszip`; `unzipper` is only reachable
-through the streaming reader in `exceljs`, which this code never calls.
+override to `^0.12.5` removes the sub-chain, and the deprecated `fstream` with it. `exceljs` is now
+a development dependency, so none of that chain reaches an installed copy either way; the override
+stays because it is what keeps this repository's own `npm audit`, which includes development
+dependencies, clean.
 
 Reproduce the whole picture:
 

@@ -39,7 +39,7 @@ const loadXmlParser = createLazyModuleLoader(
 // protection needs streaming decompression with an abort threshold, out of scope here).
 const MAX_OOXML_INPUT_BYTES = 50 * 1024 * 1024
 
-/** Reads a .pptx/.docx file and returns its ZIP entries as path -> decompressed bytes. */
+/** Reads a .pptx/.docx/.xlsx file and returns its ZIP entries as path -> decompressed bytes. */
 /**
  * Which of the two answers a failed open deserves. Only a genuinely absent file is "not found":
  * mapping every errno to that message told someone hitting a permission error to go looking for a
@@ -54,7 +54,7 @@ export function accessFailureMessage(err: unknown, filePath: string): string {
   return `could not read ${filePath} (${code ?? 'unknown error'})`
 }
 
-export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx'): Promise<Record<string, Uint8Array>> {
+export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '.xlsx'): Promise<Record<string, Uint8Array>> {
   const fflate = await loadFflate()
   if (!fflate) throw new Error('fflate is not installed; run `npm install fflate` to enable this command')
   // Every failure below used to escape as the raw Node or fflate error. A missing file surfaced

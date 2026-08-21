@@ -7,7 +7,8 @@
  * override removes.
  *
  * What is left cannot be removed, so it has to be disclosed instead: seven packages whose
- * declaration no scanner can resolve, and fifteen carrying a copyleft term. This test is the thing
+ * declaration no scanner can resolve, and fourteen carrying a copyleft term. (`jszip` used to be a
+ * fifteenth; it arrived through `exceljs`, which is no longer a dependency a consumer installs.) This test is the thing
  * that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because
  * the lockfile lists every platform's packages while an install only holds one platform's -- a
  * `node_modules` sweep on Windows never sees the ten Linux and macOS libvips builds.
@@ -56,7 +57,6 @@ const FAMILIES: { match: RegExp; documentedAs: string }[] = [
   { match: /^@img\/sharp-/, documentedAs: '`@img/sharp-<platform>`' },
   { match: /^sqlite-vec/, documentedAs: '`sqlite-vec`' },
   { match: /^flatbuffers$/, documentedAs: '`flatbuffers`' },
-  { match: /^jszip$/, documentedAs: '`jszip`' },
 ]
 
 describe('dependency licenses', () => {

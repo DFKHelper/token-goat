@@ -23,7 +23,6 @@ const EXTERNAL_NATIVE_DEPS = [
   'puppeteer-core',
   'pdfjs-dist',
   'pdfjs-dist/*',
-  'exceljs',
   'fflate',
   'fast-xml-parser',
   '@modelcontextprotocol/sdk',
@@ -65,7 +64,7 @@ const coreResult = await esbuild.build({
   outExtension: { '.js': '.mjs' },
   // Native addons cannot be bundled, and every package here is declared
   // optionalDependencies in package.json — bundling one anyway (as sharp,
-  // puppeteer-core, pdfjs-dist, exceljs, fflate, fast-xml-parser, and
+  // puppeteer-core, pdfjs-dist, fflate, fast-xml-parser, and
   // @modelcontextprotocol/sdk previously were, via their `await import(...)`
   // call sites) defeats "optional": esbuild statically resolves and inlines
   // even a dynamic `import('literal')`, so the feature only worked at runtime
