@@ -2873,7 +2873,30 @@ export function indexedPathSpellingIsStale(storedPath: string, absPath: string):
     // Unreadable or gone right now: leave the row alone rather than guess at a spelling.
     return false
   }
-  return real !== stored && foldPath(real) === foldPath(stored)
+  if (real === stored) return false
+  if (foldPath(real) !== foldPath(stored)) return false
+
+  // Both real and stored have the same folded path, but real was canonicalized from the filesystem
+  // root by fs.realpathSync.native (expanding canonical case for all parent directories, e.g.
+  // C:/Windows/Temp vs C:/WINDOWS/TEMP), whereas stored/candidate may share an ambient directory
+  // prefix. Compare segments: if the filename (last segment) differs, the file was renamed.
+  const storedSegments = stored.split('/')
+  const realSegments = real.split('/')
+  if (storedSegments.length !== realSegments.length) return real !== stored
+
+  const storedBase = storedSegments[storedSegments.length - 1]
+  const realBase = realSegments[realSegments.length - 1]
+  if (storedBase !== realBase) return true
+
+  for (let i = storedSegments.length - 2; i >= 0; i--) {
+    if (storedSegments[i] !== realSegments[i]) {
+      if (storedSegments.slice(0, i + 1).join('/') === candidate.split('/').slice(0, i + 1).join('/')) {
+        continue
+      }
+      return true
+    }
+  }
+  return false
 }
 
 /**
