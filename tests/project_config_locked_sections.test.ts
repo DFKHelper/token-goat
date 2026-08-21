@@ -17,6 +17,36 @@ import {
 // against the built binary before the fix.
 
 describe('stripLockedProjectKeys', () => {
+
+  // Every other assertion here iterates the two lists, so it can only ever check that the
+  // entries present behave correctly -- deleting one deletes its own test along with it and
+  // the file still passes. `worker.blocked_roots` was missing from the list for exactly that
+  // reason. These literals are the half that fails when an entry goes away.
+  it('names every locked entry literally, so removing one fails here rather than vanishing quietly', () => {
+    expect([...PROJECT_LOCKED_SECTIONS].sort()).toEqual([
+      'gdrive',
+      'injection',
+      'mcp',
+      'network',
+      'webfetch',
+    ])
+    expect([...PROJECT_LOCKED_KEYS].sort()).toEqual([
+      'indexing.cross_project_symbols',
+      'worker.blocked_roots',
+    ])
+  })
+
+  // The list entry is only half the protection; this is the behaviour it buys. An empty array
+  // is a real value that replaces rather than merges, so a repository's own file could hand
+  // back a folder the user had excluded from the index with `token-goat project exclude`.
+  it('drops worker.blocked_roots while leaving the rest of the worker section overridable', () => {
+    const { cleaned, dropped } = stripLockedProjectKeys({
+      worker: { blocked_roots: [], poll_ms: 500 },
+    })
+
+    expect(cleaned).toEqual({ worker: { poll_ms: 500 } })
+    expect(dropped).toEqual(['worker.blocked_roots'])
+  })
   it('drops a whole locked section and reports it', () => {
     const { cleaned, dropped } = stripLockedProjectKeys({ injection: { enabled: false } })
 
@@ -56,6 +86,7 @@ describe('stripLockedProjectKeys', () => {
       mcp: { allowed_roots: ['/'] },
       network: { offline: false },
       indexing: { cross_project_symbols: true },
+      worker: { blocked_roots: [] },
     })
 
     expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())

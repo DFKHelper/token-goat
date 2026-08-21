@@ -5722,6 +5722,38 @@ AFTER_HEREDOC=ok
     expect(symbols.map((s) => s.name)).toEqual(['real'])
   })
 
+  it('reads `<<` inside an arithmetic expansion as a left shift, not a heredoc opener (regression: `$(( 1 << shift ))` captured `shift` as a terminator and masked every following line as heredoc body waiting for a line reading exactly `shift`, so every declaration below it was dropped from the index with no error)', () => {
+    const content = `flag() {\n  echo hi\n}\nMASK=$(( 1 << shift ))\nAFTER=2\nfoo() {\n  echo foo\n}\nBAR=3\n`
+    const symbols = extractBash(content, 'shift.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['flag', 'MASK', 'AFTER', 'foo', 'BAR'])
+  })
+
+  it('does the same for the bare `(( ... ))` command, which lost the whole file rather than its tail', () => {
+    const content = `(( x << bits ))\nZ=9\nfn() {\n  echo\n}\n`
+    const symbols = extractBash(content, 'shift2.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['Z', 'fn'])
+  })
+
+  it('still masks a real heredoc opened on a line that also carries an arithmetic expansion, so the guard did not blank out too much', () => {
+    const content = `head() {\n  echo 1\n}\ncat <<EOF $(( 1 << 2 ))\nghost() {\n  echo nope\n}\nEOF\ntail() {\n  echo 2\n}\n`
+    const symbols = extractBash(content, 'both.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['head', 'tail'])
+  })
+
+  it('carries an unclosed arithmetic span onto the following lines, so a shift written across several lines is still not a heredoc opener', () => {
+    const content = `MASK=$((\n  1 << bits\n))\nAFTER=2\nfn() {\n  echo\n}\n`
+    const symbols = extractBash(content, 'multiline.sh')
+    expect(symbols.map((s) => s.name)).toEqual(['MASK', 'AFTER', 'fn'])
+  })
+
+  it('ignores a `((` inside a quoted word, which would otherwise blank out a real heredoc opener on the same line and index the heredoc body as code', () => {
+    const content = `echo '(( literal' <<EOF\nFAKE=1\nEOF\nREAL=2\n`
+    const symbols = extractBash(content, 'quotedparen.sh')
+    expect(symbols.map((s) => s.name), 'FAKE lives inside the heredoc body and is not a real declaration').toEqual([
+      'REAL',
+    ])
+  })
+
   it('indexes a function whose name contains a hyphen or dot under its full name (regression: the name pattern allowed only \\w, so `my-func()` matched nothing and was dropped outright while `function other-func` truncated to `other` -- stored under a name nothing would ever search for)', () => {
     const content = `my-func() {\n  echo a\n}\nfunction other-func {\n  echo b\n}\nnpm.install() {\n  echo c\n}\n`
     const symbols = extractBash(content, 'names.sh')

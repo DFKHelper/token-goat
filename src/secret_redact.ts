@@ -103,7 +103,13 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // directly against the header name and the scheme directly against the space, so a body like
   // {"Authorization": "Bearer <token>"} -- the shape any logged fetch or MCP result arrives in
   // -- matched nothing and the token was cached verbatim.
-  ['auth_bearer_token', /(?<=Authorization["']?[ \t]{0,8}:[ \t]{0,8}["']?[ \t]{0,8}Bearer[ \t])[A-Za-z0-9\-._~+/]{10,}=*/gi],
+  // `token` is the second scheme spelling in wide use -- it is what curl and gh examples pass for
+  // GitHub and many other APIs -- and an opaque value behind it carries exactly the same authority
+  // as one behind `Bearer`. The trailing gap is `{1,8}` rather than a single space for the same
+  // reason every other gap in this lookbehind already is: a hand-aligned or reformatted header
+  // ("Authorization:  Bearer  <token>") is ordinary, and demanding exactly one space there made
+  // this the one position in the pattern that a second space defeated.
+  ['auth_bearer_token', /(?<=Authorization["']?[ \t]{0,8}:[ \t]{0,8}["']?[ \t]{0,8}(?:Bearer|token)[ \t]{1,8})[A-Za-z0-9\-._~+/]{10,}=*/gi],
   ['auth_basic_token', /(?<=Authorization["']?[ \t]{0,8}:[ \t]{0,8}["']?[ \t]{0,8}Basic[ \t])[A-Za-z0-9+/]{6,}=*/gi],
   // JWTs have no distinctive prefix of their own, but the base64url encoding of the smallest
   // realistic header ('{"alg":' or similar) always starts with "eyJ", so that's the practical
@@ -157,7 +163,22 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // SECRET_KEY=, and DB_PASSWORD_HASH= all passed through in full. That class matches
   // identifier characters only, so prose that merely mentions a keyword still never reaches
   // a separator and stays unredacted. api[_-]?key covers the apikey and api-key spellings too.
-  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)[a-z0-9_-]{0,64}["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:\\[^\n]|[^\s\\&;#'"[\],{}:]){4,}/gi],
+  // `& ; # , :` play two incompatible roles. They separate one field from the next (a query
+  // string, a cookie header, an inline env list), and they are also perfectly ordinary password
+  // characters. Rejecting them outright got the first role right and the second badly wrong: the
+  // match stopped at the first one and left everything after it in plain text, so
+  // `password=corr&horse&battery` redacted four characters and printed the rest, and
+  // `DB_PASSWORD=Aa1:xyz` matched nothing at all because the run before the `:` was under the
+  // four-character floor. A tail left sitting in the open is the outcome this module's header
+  // calls worse than no redaction, because it reads as handled.
+  //
+  // So the separator role is decided by what follows rather than assumed: one of these characters
+  // ends the value only when the next thing along is another `name=` / `name:` pair, which is what
+  // an actual field separator is always followed by. `,OTHER=public` and `; other=1` still end it;
+  // the `&` in the middle of a passphrase does not. Whitespace, quotes and brackets are unchanged
+  // -- they end a value unconditionally, which is also what keeps this pattern from re-matching
+  // the `[REDACTED:...]` placeholder it just wrote.
+  ['generic_secret_assignment', /(?<=(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)[a-z0-9_-]{0,64}["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?:\\[^\n]|[^\s\\&;#,:'"[\]{}]|[&;#,:](?![ \t]*[A-Za-z_][A-Za-z0-9_.-]*[ \t]*[:=])){4,}/gi],
 ]
 
 export interface RedactResult {

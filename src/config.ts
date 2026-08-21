@@ -871,8 +871,19 @@ export function getLastProjectConfigParseError(): string | null {
  */
 export const PROJECT_LOCKED_SECTIONS: readonly string[] = ['injection', 'webfetch', 'gdrive', 'mcp', 'network']
 
-/** Individual `section.key` entries locked without locking their whole section. */
-export const PROJECT_LOCKED_KEYS: readonly string[] = ['indexing.cross_project_symbols']
+/**
+ * Individual `section.key` entries locked without locking their whole section.
+ *
+ * `worker.blocked_roots` is the exclusion list a user builds with `token-goat project exclude`,
+ * and `cmdIndex` / `processDirtyBatch` consult it to keep a path out of the index entirely --
+ * symbols, bodies and embeddings. The rest of the `worker` section is ordinary tuning, so the
+ * whole section stays project-overridable, but an empty list here is a real value that replaces
+ * rather than merges: three lines in a repository's own `.token-goat.toml` were enough to put a
+ * folder the user had deliberately excluded back into the index, where `symbol`, `read` and
+ * `semantic` then served it. That is a protection being switched off by a checked-in file, which
+ * is exactly what this list exists to prevent.
+ */
+export const PROJECT_LOCKED_KEYS: readonly string[] = ['indexing.cross_project_symbols', 'worker.blocked_roots']
 
 let _lastProjectConfigLockedKeys: string[] = []
 

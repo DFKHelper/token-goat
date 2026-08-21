@@ -595,3 +595,66 @@ describe('redactSecrets — credentials in a url', () => {
     expect(redactSecrets(input)).toEqual({ text: input, count: 0 })
   })
 })
+
+// `& ; # , :` are separator characters and they are also ordinary password characters. Rejecting
+// them outright treated every occurrence as a separator, so a value containing one was cut at it
+// and the tail printed in full -- or, when the run before it was under the four-character floor,
+// the whole value went unmatched and `count` reported 0. Both write a live credential to disk via
+// storeBlob; the first also reads as handled, which this module's header calls the worse outcome.
+describe('redactSecrets — separator characters inside a value', () => {
+  it.each([
+    ['a colon, where the leading run is under the length floor', 'DB_PASSWORD=Aa1:xyz123secret', 'Aa1:xyz123secret'],
+    ['a hash', 'password=p@ss#word123', 'p@ss#word123'],
+    ['ampersands', 'ADMIN_PASSWORD=corr&horse&battery', 'corr&horse&battery'],
+    ['a semicolon', 'SECRET_KEY=abcd;efghijkl', 'abcd;efghijkl'],
+    ['commas inside a quoted value', '{"api_key": "abc,def,ghi123"}', 'abc,def,ghi123'],
+  ])('redacts a value containing %s in full', (_label, input, secret) => {
+    const { text, count } = redactSecrets(input)
+
+    expect(count, `expected ${JSON.stringify(input)} to be redacted at all`).toBe(1)
+    expect(text, 'no part of the value may survive').not.toContain(secret)
+    for (const fragment of secret.split(/[&;#,:]/)) {
+      if (fragment.length > 0) {
+        expect(text, `the fragment ${JSON.stringify(fragment)} was left in plain text`).not.toContain(fragment)
+      }
+    }
+  })
+
+  // The other half of the same rule: a separator that really is separating one field from the
+  // next still ends the value, which is what keeps the structure around a secret readable.
+  it.each([
+    ['a comma-separated pair', 'API_KEY=abcd1234efgh5678ijkl,OTHER=public', ',OTHER=public'],
+    ['a cookie-style semicolon', 'Cookie: api_key=abcd1234efgh; other=1', '; other=1'],
+    ['a query-string ampersand', 'https://x.test/a?api_key=abcd1234efgh&other=1', '&other=1'],
+  ])('still stops at %s', (_label, input, survivor) => {
+    const { text, count } = redactSecrets(input)
+
+    expect(count).toBe(1)
+    expect(text).toContain('[REDACTED:generic_secret_assignment]')
+    expect(text, `expected ${JSON.stringify(text)} to keep ${survivor}`).toContain(survivor)
+  })
+})
+
+// The lookbehind allows up to eight spaces at every gap except the one immediately before the
+// token, which demanded exactly one -- so a header aligned with two spaces went straight through.
+// `token` is the other scheme spelling in wide use (curl and gh pass it for GitHub); a value
+// behind it carries the same authority as one behind `Bearer` and was cached verbatim.
+describe('redactSecrets — Authorization header spellings', () => {
+  it.each([
+    ['two spaces after the scheme', 'Authorization: Bearer  abcdefghijklmnop'],
+    ['the token scheme', 'Authorization: token abcdefghijklmnop'],
+    ['the Token scheme capitalised', 'Authorization: Token abcdefghijklmnop'],
+  ])('redacts a header written with %s', (_label, input) => {
+    const { text, count } = redactSecrets(input)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain('abcdefghijklmnop')
+    expect(text).toContain('[REDACTED:auth_bearer_token]')
+  })
+
+  it('leaves the header name and scheme readable, so a request log still makes sense', () => {
+    const { text } = redactSecrets('Authorization: token abcdefghijklmnop')
+
+    expect(text).toBe('Authorization: token [REDACTED:auth_bearer_token]')
+  })
+})
