@@ -1,5 +1,7 @@
 # Token-Savings Benchmark Baseline — 2026-05-24
 
+> **This file is a historical record, not current documentation.** It records token-savings measurements taken against the Python codebase on 2026-05-24; the numbers do not describe the current implementation. The project was fully rewritten from Python to TypeScript afterwards, so the file paths, module names, and commands below no longer exist. It is kept because [CHANGELOG-ARCHIVE.md](../CHANGELOG-ARCHIVE.md) cites it. For the current architecture see [CLAUDE.arch.md](../CLAUDE.arch.md).
+
 **Date:** 2026-05-24  
 **Git revision:** 78e1af1 (`chore(dev): add pytest-xdist for parallel test execution`)  
 **Python version:** 3.12.3  

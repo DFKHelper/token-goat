@@ -1,5 +1,7 @@
 # Test-speed deferrals — 2026-05-24
 
+> **This file is a historical record, not current documentation.** It defers two test-speed items in the Python `pytest` suite as of 2026-05-24; both refer to test files that no longer exist. The project was fully rewritten from Python to TypeScript afterwards, so the file paths, module names, and commands below no longer exist. It is kept because [CHANGELOG-ARCHIVE.md](../CHANGELOG-ARCHIVE.md) cites it. For the current architecture see [CLAUDE.arch.md](../CLAUDE.arch.md).
+
 Two test-speed items came up multiple times across improvement loops. Both are
 now formally DEFERRED with measurements, so the next person can stop spending
 iterations on them.
