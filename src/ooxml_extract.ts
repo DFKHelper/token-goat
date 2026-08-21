@@ -110,7 +110,21 @@ export async function parseOoxmlPart(xmlText: string): Promise<unknown> {
   // two <w:r> runs split at a formatting boundary) down to an empty string with no #text key
   // at all -- silently gluing the words on either side together. Disable it so inter-run
   // spaces survive; callers already trim() at the paragraph/title level where it matters.
-  const parser = new fxp.XMLParser({ ignoreAttributes: false, preserveOrder: false, trimValues: false })
+  // parseTagValue defaults to true, which rewrites any element whose whole text looks numeric
+  // into a JavaScript number before the extractors ever see it. Every OOXML part these commands
+  // read holds document *text*, so that conversion is pure corruption: a spreadsheet cell or a
+  // Word paragraph reading `007` came back as `7`, `01234` as `1234`, `1.50` as `1.5`, `+12` as
+  // `12`, `1e5` as `100000` and `0x1A` as `26` -- zip codes, part numbers, invoice ids, SKUs and
+  // version strings all silently altered, with no error and nothing to show the value had changed.
+  // Numbers that really are numbers are unaffected: every numeric read in these extractors goes
+  // through its own Number()/parseInt() on the string, and attributes were never coerced here
+  // (parseAttributeValue stays at its default of false).
+  const parser = new fxp.XMLParser({
+    ignoreAttributes: false,
+    preserveOrder: false,
+    trimValues: false,
+    parseTagValue: false,
+  })
   return parser.parse(xmlText)
 }
 

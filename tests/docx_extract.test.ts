@@ -53,4 +53,16 @@ describe('docxText', () => {
     expect(text).toContain('The budget is $50,000.')
     expect(text.split('\n\n')).toHaveLength(6)
   })
+
+  // A paragraph whose whole text is digits was being handed back as a number: an order number
+  // reading `007` printed as `7`, a version reading `1.50` as `1.5`. Mixed text was untouched,
+  // so the corruption only hit the short standalone values most likely to be an identifier.
+  it('returns a numeric-looking paragraph as the text it was written as', async () => {
+    const f = path.join(dir, 'numeric.docx')
+    fs.writeFileSync(
+      f,
+      buildDocxFixture([{ text: 'Order 007' }, { text: '007' }, { text: '1.50' }, { text: '0x1A' }, { text: '1e5' }]),
+    )
+    expect(await docxText(f)).toBe('Order 007\n\n007\n\n1.50\n\n0x1A\n\n1e5')
+  })
 })

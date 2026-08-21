@@ -192,6 +192,46 @@ describe('part resolution and whitespace', () => {
     expect(ws?.getCell('A1').value).toBe('  padded  ')
   })
 
+  // A text cell holding digits is ordinary spreadsheet content -- a zip code, a part number, an
+  // invoice id, a version string. The XML parser was converting any such value to a number before
+  // the reader saw it, so the cell came back altered: `007` as `7`, `01234` as `1234`, `1.50` as
+  // `1.5`. Nothing reported it; the wrong value was simply served.
+  it.each([
+    ['007'],
+    ['01234'],
+    ['1e5'],
+    ['+12'],
+    ['0x1A'],
+    ['1.50'],
+    ['-0'],
+  ])('serves a shared string of %s exactly as written', async (text) => {
+    const file = buildXlsx({
+      sharedStrings: `<?xml version="1.0" encoding="UTF-8"?>\n<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1"><si><t>${text}</t></si></sst>`,
+      sheets: [{ name: 'S', target: 'worksheets/sheet1.xml', xml: sheetXml('<row r="1"><c r="A1" t="s"><v>0</v></c></row>') }],
+    })
+    const ws = (await readXlsxWorkbook(file)).getWorksheet('S')
+    expect(ws?.getCell('A1').value).toBe(text)
+    expect(ws?.getCell('A1').text).toBe(text)
+  })
+
+  it('serves an inline string of 007 exactly as written', async () => {
+    const file = buildXlsx({
+      sheets: [
+        { name: 'S', target: 'worksheets/sheet1.xml', xml: sheetXml('<row r="1"><c r="A1" t="inlineStr"><is><t>007</t></is></c></row>') },
+      ],
+    })
+    const ws = (await readXlsxWorkbook(file)).getWorksheet('S')
+    expect(ws?.getCell('A1').value).toBe('007')
+  })
+
+  it('still reads a genuinely numeric cell as a number (control)', async () => {
+    const file = buildXlsx({
+      sheets: [{ name: 'S', target: 'worksheets/sheet1.xml', xml: sheetXml('<row r="1"><c r="A1"><v>42.5</v></c></row>') }],
+    })
+    const ws = (await readXlsxWorkbook(file)).getWorksheet('S')
+    expect(ws?.getCell('A1').value).toBe(42.5)
+  })
+
   it('joins rich-text runs in a shared string and ignores the phonetic guide', async () => {
     const file = buildXlsx({
       sharedStrings: `<?xml version="1.0" encoding="UTF-8"?>\n<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><r><t>bold</t></r><r><t xml:space="preserve"> plain</t></r><rPh sb="0" eb="4"><t>PRONOUNCE</t></rPh></si></sst>`,

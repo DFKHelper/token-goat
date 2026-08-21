@@ -348,6 +348,34 @@ describe('preBashHandler — unbalanced shell quoting false positives (detectUnb
     }
   })
 
+  // Inside ANSI-C quoting a backslash escapes the next character, so the apostrophe in `it\'s`
+  // does not end the string. Reading it with the plain-single-quote rule closed the string early
+  // and reported an unclosed quote on a command that runs fine.
+  it('does not false-positive on an escaped apostrophe inside ANSI-C quoting', () => {
+    const result = preBashHandler(makeBashEvent("echo $'it\\'s a test'"))
+    expect(result.hookType, 'ANSI-C $\'...\' with an escaped apostrophe is a complete, valid command').toBe('pass')
+  })
+
+  it('does not false-positive on two escaped apostrophes inside ANSI-C quoting', () => {
+    const result = preBashHandler(makeBashEvent("printf $'a\\'b\\'c'"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not false-positive on ANSI-C quoting with no escapes at all', () => {
+    const result = preBashHandler(makeBashEvent("echo $'no escape here'"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  // The guard must not swallow the real thing it was added next to: a `$'` that never closes is
+  // still an unclosed single quote and must still be reported.
+  it('still flags an ANSI-C quote that is never closed', () => {
+    const result = preBashHandler(makeBashEvent("echo $'never closed"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('unclosed single quote')
+    }
+  })
+
   it('does not false-positive on a valid heredoc with CRLF line endings', () => {
     const crlfCommand = 'cat <<EOF\r\nhello\r\nworld\r\nEOF\r\n'
     const result = preBashHandler(makeBashEvent(crlfCommand))
@@ -2327,6 +2355,82 @@ describe('extractCurlDownload', () => {
 
   it('returns null for curl with auth and -o', () => {
     expect(extractCurlDownload('curl -H "Authorization: Bearer tok" https://example.com -o /tmp/out')).toBeNull()
+  })
+
+  // A URL is a perfectly ordinary thing to put in a Referer or User-Agent header, and neither
+  // makes the request unsafe to cache, so curlHasUnsafeFlags lets these through. Reading the
+  // target as "first https:// in the string" then picked the header's URL instead of the file
+  // being downloaded -- so two different downloads got the same key and the second was refused
+  // as already done. Each case below names the URL that curl actually fetches.
+  it('takes the download target by argument position, not the first URL in a header value', () => {
+    const a = extractCurlDownload('curl -H "Referer: https://cdn.example.com/track" -o f1.zip https://real1.example.com/a.zip')
+    const b = extractCurlDownload('curl -H "Referer: https://cdn.example.com/track" -o f2.zip https://real2.example.com/b.zip')
+    expect(a?.url).toBe('https://real1.example.com/a.zip')
+    expect(b?.url).toBe('https://real2.example.com/b.zip')
+    // The point of the fix: two genuinely different downloads must not collapse onto one key.
+    expect(a?.url).not.toBe(b?.url)
+  })
+
+  it('ignores a URL inside a user-agent value', () => {
+    const r = extractCurlDownload('curl -A "Bot https://ua.example.com/x" -o f3.zip https://real3.example.com/c.zip')
+    expect(r?.url).toBe('https://real3.example.com/c.zip')
+  })
+
+  it('ignores a URL inside a --header=value spelling', () => {
+    const r = extractCurlDownload("curl --header='Referer: https://cdn.example.com/t' -o f4.zip https://real4.example.com/d.zip")
+    expect(r?.url).toBe('https://real4.example.com/d.zip')
+  })
+
+  it('ignores a URL passed as the -e referer value', () => {
+    const r = extractCurlDownload('curl -o f7.zip -e https://ref.example.com/p https://real7.example.com/g.zip')
+    expect(r?.url).toBe('https://real7.example.com/g.zip')
+  })
+
+  it('honours an explicit --url target', () => {
+    const r = extractCurlDownload('curl --url https://viaflag.example.com/f.zip -o f6.zip')
+    expect(r?.url).toBe('https://viaflag.example.com/f.zip')
+  })
+
+  // --url-query appends data to the query string; it does not name the request target. Reading it
+  // as an explicit target keyed the download on the query service rather than the file fetched.
+  it('does not read --url-query as the target', () => {
+    const r = extractCurlDownload('curl --url-query https://query.example.com/q -o f7.zip https://target7.example.com/a.zip')
+    expect(r?.url).toBe('https://target7.example.com/a.zip')
+  })
+
+  // Options whose own value is a URL or host: each one left out of the value-flag set reproduced
+  // the original defect exactly, just through a different flag.
+  it.each([
+    ['--doh-url', 'https://doh.example.com/dns-query'],
+    ['--preproxy', 'https://proxy.example.com:8080'],
+    ['--proxy1.0', 'https://proxy.example.com:8080'],
+    ['--socks5-hostname', 'https://socks.example.com:1080'],
+  ])('does not read %s as the target', (flag, value) => {
+    const r = extractCurlDownload(`curl ${flag} "${value}" -o f8.zip https://target8.example.com/a.zip`)
+    expect(r?.url).toBe('https://target8.example.com/a.zip')
+  })
+
+  // A backslash still escapes a double quote inside double quotes. Closing the word at that quote
+  // ran the rest of the command into the header value and the target went with it.
+  it('keeps a backslash-escaped quote inside a header value', () => {
+    const r = extractCurlDownload('curl -H "X: \\" https://header9.example.com/h" -o f9.zip https://target9.example.com/a.zip')
+    expect(r?.url).toBe('https://target9.example.com/a.zip')
+  })
+
+  // A target written through a substitution or a variable is still the target. Requiring the word
+  // to *start* with the scheme silently turned dedup off for that shape.
+  it.each([
+    'curl -o f10.zip "$(printf https://target10.example.com/a.zip)"',
+    'curl -o f10.zip "${BASE}https://target10.example.com/a.zip"',
+  ])('finds the target inside a substituted positional: %s', (cmd) => {
+    expect(extractCurlDownload(cmd)?.url).toBe('https://target10.example.com/a.zip')
+  })
+
+  // The over-fix guard: the substitution fallback must not resurrect the header-URL bug it sits
+  // next to, so a header URL still loses to the real positional target.
+  it('still prefers the positional target over a header URL', () => {
+    const r = extractCurlDownload('curl -H "Referer: https://cdn11.example.com/t" -o f11.zip https://target11.example.com/a.zip')
+    expect(r?.url).toBe('https://target11.example.com/a.zip')
   })
 })
 
