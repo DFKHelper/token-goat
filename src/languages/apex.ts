@@ -46,8 +46,10 @@ const STATEMENT_KEYWORD_GUARD = '(?!(?:return|throw|new|yield|else|do|try|finall
 // whole class of run-on impossible. The two return-type groups are captured (rather than
 // non-capturing as before) purely so the emit site can tell a constructor from a method: a
 // constructor is the branch that matched no return type at all.
+// The `` lookahead is a backtracking guard, not a matching rule -- it accepts exactly what the pattern already accepted. Every match below ends in `(IDENT)[ \t]*\(`, and `[ \t]*` cannot cross a newline, so the parameter list's `(` is always on the same physical line the match starts on; a line with no `(` at all can therefore never match. Without the guard such a line is quadratic: unlike TYPE_DECL_RE above (anchored on the literal `class|interface|enum`) and the sibling Swift/Scala extractors (anchored on literal `func`/`class`), nothing literal follows the modifier run here -- RETURN_TYPE does, and its character class contains a space and is then followed by `[ \t]+`, so every modifier boundary is also a candidate return-type split. The engine retries all of them, each retry costing another scan. Measured on `'static '.repeat(N) + 'x'`: N=2000 84ms, N=4000 335ms, N=8000 1346ms -- 4x per doubling. Since indexing.large_file_skip_kb defaults to 2048, a 2MB .cls was accepted and wedged the worker (which drains synchronously) for roughly half an hour on one file. With the guard the same input is ~0.05ms.
+// Placement matters: this sits AFTER the annotation group, not before it. Before it, a line opening with an unrelated annotation (`@A() static static static ...`) satisfies the lookahead on the annotation's own parentheses and the quadratic path is reachable again -- measured still 336ms at N=4000, versus 0.05ms with the guard placed here.
 const METHOD_RE = new RegExp(
-  `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*` +
+  `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?=[^\\n]*\\()` +
     `(?:(?:${MODIFIER}[ \\t]+)+(${RETURN_TYPE})?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}(${RETURN_TYPE}))` +
     `(${IDENT})[ \\t]*\\([^;{}]*\\)[ \\t\\r\\n]*(?:\\{|;)`,
   'gm',
