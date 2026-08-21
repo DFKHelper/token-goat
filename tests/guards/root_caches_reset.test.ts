@@ -42,18 +42,33 @@ describe('project-root caches are cleared by clearModuleCaches', () => {
   })
 
   it('resolveConfigProjectRoot picks up a project marker created after the first lookup', () => {
+    // The baseline marker MUST live in the parent dir, not be absent. resolveConfigProjectRoot falls
+    // back to cwd when findProject finds nothing, and findProject stops walking at the os.tmpdir()
+    // boundary -- so with no ancestor marker, `before` resolves to `nested` itself, which is exactly
+    // the value the post-marker lookup returns too. The assertion then can't fire regardless of
+    // whether the cache was cleared: it only "passed" on Windows/macOS by an incidental path-spelling
+    // difference between the cwd fallback and findProject's canonicalized root, and was deterministically
+    // red on Linux. Seeding a parent marker makes `before` a genuinely distinct, marker-backed path so
+    // the guard measures cache-clearing on every platform: without the reset, the post-marker lookup
+    // returns the cached parent root instead of the closer `nested` marker.
     const dir = tempDir()
     const nested = path.join(dir, 'nested')
     fs.mkdirSync(nested, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}', 'utf8')
     process.chdir(nested)
     clearModuleCaches()
 
     const before = resolveConfigProjectRoot()
+    // `before` must have resolved to the parent marker, not the cwd fallback -- otherwise the baseline
+    // is meaningless and the divergence below could be incidental.
+    expect(path.basename(before)).not.toBe('nested')
 
     fs.writeFileSync(path.join(nested, 'package.json'), '{}', 'utf8')
     clearModuleCaches()
 
-    expect(resolveConfigProjectRoot()).not.toBe(before)
+    const after = resolveConfigProjectRoot()
+    expect(after).not.toBe(before)
+    expect(path.basename(after)).toBe('nested')
   })
 
 })
