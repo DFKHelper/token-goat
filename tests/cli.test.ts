@@ -824,9 +824,14 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
       const oldB64 = Buffer.from('beta', 'utf8').toString('base64')
       const newB64 = Buffer.from('delta', 'utf8').toString('base64')
+      const sentinel = `${tmp}.concurrent-write-landed`
       try {
         const child = spawn(process.execPath, [BUNDLE, 'replace', tmp, '--old-b64', oldB64, '--new-b64', newB64], {
-          env: { ...process.env, TOKEN_GOAT_TEST_REPLACE_DELAY_MS: '500' },
+          env: {
+            ...process.env,
+            TOKEN_GOAT_TEST_REPLACE_DELAY_MS: '30000',
+            TOKEN_GOAT_TEST_REPLACE_DELAY_UNTIL: sentinel,
+          },
           stdio: ['ignore', 'pipe', 'pipe'],
         })
         let stdout = ''
@@ -844,12 +849,16 @@ describe('token-goat CLI', () => {
         })
         child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
 
-        // Wait for the child's deterministic readiness signal (emitted right as its delay
-        // window opens), then land a concurrent write to an UNRELATED part of the file --
-        // guaranteed to land after the child's initial read/stat but before its re-stat+rename,
-        // regardless of how long CLI startup itself takes.
+        // Wait for the child's deterministic readiness signal (emitted right as its delay window
+        // opens), then land a concurrent write to an UNRELATED part of the file. The child holds the
+        // window open until the sentinel below appears, so the write is guaranteed to land after its
+        // initial read/stat and before its re-stat+rename no matter how loaded the machine is.
         await readyPromise
         fs.writeFileSync(tmp, 'alpha beta gamma -- concurrent edit', 'utf8')
+        // Close the child's window on this event rather than on the clock: a fixed sleep let a
+        // contended worker's write land after the window had shut, so replace saw an unchanged file
+        // and exited 0 against an assertion expecting 1.
+        fs.writeFileSync(sentinel, '', 'utf8')
 
         const exitCode: number | null = await new Promise((resolve, reject) => {
           child.on('error', reject)
@@ -864,8 +873,9 @@ describe('token-goat CLI', () => {
         void stdout
       } finally {
         fs.rmSync(tmp, { force: true })
+        fs.rmSync(sentinel, { force: true })
       }
-    }, 15_000)
+    }, 60_000)
 
     // regression: atomicWriteBuffer always created its temp file at 0o600 and renamed it
     // over dest, so a `replace` against a committed executable (chmod +x hook script, binary)
