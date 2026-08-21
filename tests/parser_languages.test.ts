@@ -781,6 +781,255 @@ COPY . .
     })
   })
 
+  // Line-based (non-tree-sitter) adapters used to give every symbol a one-line placeholder span
+  // (lineEnd === lineStart, body === the signature line), so `read "file::symbol"` returned only
+  // the declaration, not the body. These assert the real block span now reaches the closing
+  // brace/`end`, WITHOUT over-running into the next sibling, and that a brace hidden inside a
+  // string or heredoc never closes (C#) or opens (bash/elixir) a span. Each asserts
+  // lineEnd > lineStart first: that structural half is what goes red on the pre-fix code, where
+  // every span was a single line. Run through the real parseFile dispatch, so the C-style case
+  // exercises the production assignBraceBlockSpans wrapper rather than a direct extractor call.
+  describe('block spans for line-based languages', () => {
+    it('gives a C# method a real block span via the dispatch wrapper, quote-aware', async () => {
+      const content = [
+        'public class Widget',
+        '{',
+        '    public int Add(int a, int b)',
+        '    {',
+        '        var s = "}";',
+        '        return a + b;',
+        '    }',
+        '',
+        '    public int Sub(int a, int b)',
+        '    {',
+        '        return a - b;',
+        '    }',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Widget.cs', content)
+      const add = result.symbols.find((s) => s.name === 'Add')
+      expect(add).toBeDefined()
+      expect(add?.lineStart).toBe(3)
+      expect(add?.lineEnd).toBe(7)
+      expect(add?.lineEnd).toBeGreaterThan(add?.lineStart ?? 0)
+      expect(add?.body).toContain('return a + b')
+      // The `"}"` string literal on line 5 must not have closed the span early.
+      expect(add?.body).toContain('var s = "}"')
+      // The span must not have run on into the next method.
+      expect(add?.body).not.toContain('Sub')
+    })
+
+    it('gives a bash function a real block span, masking a brace inside a heredoc', async () => {
+      const content = [
+        'emit() {',
+        "  cat <<'INNER'",
+        '  this heredoc has an unbalanced { brace',
+        'INNER',
+        '  echo done',
+        '}',
+        '',
+        'second() {',
+        '  echo hi',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('s.sh', content)
+      const emit = result.symbols.find((s) => s.name === 'emit')
+      expect(emit).toBeDefined()
+      expect(emit?.lineStart).toBe(1)
+      expect(emit?.lineEnd).toBe(6)
+      expect(emit?.lineEnd).toBeGreaterThan(emit?.lineStart ?? 0)
+      expect(emit?.body).toContain('echo done')
+      // The `{` inside the heredoc must not have run the span to end-of-file and swallowed `second`.
+      expect(emit?.body).not.toContain('second()')
+      const second = result.symbols.find((s) => s.name === 'second')
+      expect(second?.lineStart).toBe(8)
+      expect(second?.lineEnd).toBe(10)
+    })
+
+    it('gives a lua function a real block span that ends at its own `end`', async () => {
+      const content = [
+        'local function outer(x)',
+        '  local y = x + 1',
+        '  return y',
+        'end',
+        '',
+        'function M.method(a)',
+        '  return a * 2',
+        'end',
+        '',
+      ].join('\n')
+      const result = await parseFixture('m.lua', content)
+      const outer = result.symbols.find((s) => s.name === 'outer')
+      expect(outer).toBeDefined()
+      expect(outer?.lineStart).toBe(1)
+      expect(outer?.lineEnd).toBe(4)
+      expect(outer?.lineEnd).toBeGreaterThan(outer?.lineStart ?? 0)
+      expect(outer?.body).toContain('return y')
+      expect(outer?.body).not.toContain('M.method')
+    })
+
+    it('gives an elixir def a real block span, masking a fake def in a @moduledoc heredoc', async () => {
+      const content = [
+        'defmodule Calc do',
+        '  @moduledoc """',
+        '  def not_a_real_function(x) do',
+        '    x',
+        '  end',
+        '  """',
+        '',
+        '  def add(a, b) do',
+        '    sum = a + b',
+        '    sum',
+        '  end',
+        '',
+        '  defp helper(x) do',
+        '    x * 2',
+        '  end',
+        'end',
+        '',
+      ].join('\n')
+      const result = await parseFixture('calc.ex', content)
+      // The `def not_a_real_function` inside the @moduledoc heredoc must not be indexed at all.
+      expect(result.symbols.map((s) => s.name)).not.toContain('not_a_real_function')
+      const add = result.symbols.find((s) => s.name === 'add')
+      expect(add).toBeDefined()
+      expect(add?.lineStart).toBe(8)
+      expect(add?.lineEnd).toBe(11)
+      expect(add?.lineEnd).toBeGreaterThan(add?.lineStart ?? 0)
+      expect(add?.body).toContain('sum = a + b')
+      // The span must end at its own `end`, not swallow the private helper below it.
+      expect(add?.body).not.toContain('helper')
+    })
+
+    it('widens a C# method whose signature line carries a block comment holding stray braces', async () => {
+      // A `/* { } */` comment on the signature line must not derail the brace search: without
+      // block-comment skipping, findBlockOpenBrace grabs the comment's `{` and
+      // findMatchingBraceEndLine closes on the comment's `}` at the same line, so the method never
+      // widens (stays lineEnd === lineStart) and `read Cmt.cs::Compute` returns only its signature.
+      const content = [
+        'public class Widget',
+        '{',
+        '    public int Compute() /* returns { the } value */',
+        '    {',
+        '        return 42;',
+        '    }',
+        '    public int Other()',
+        '    {',
+        '        return 7;',
+        '    }',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Cmt.cs', content)
+      const compute = result.symbols.find((s) => s.name === 'Compute')
+      expect(compute).toBeDefined()
+      expect(compute?.lineStart).toBe(3)
+      expect(compute?.lineEnd).toBe(6)
+      expect(compute?.lineEnd).toBeGreaterThan(compute?.lineStart ?? 0)
+      expect(compute?.body).toContain('return 42')
+      // Must not have run on into the next method.
+      expect(compute?.body).not.toContain('Other')
+    })
+
+    it('does not let a semicolon-less declaration swallow a following control-flow block', async () => {
+      // Scala has no `;` statement terminator, so a `val` above a bare `if (...) {}` used to have
+      // its span widened to include the unrelated if-block. The keyword stop must keep `base` a
+      // one-line symbol while the real method below still widens normally.
+      const content = [
+        'class Calc {',
+        '  val base = 10',
+        '  if (base > 5) {',
+        '    println("big")',
+        '  }',
+        '  def add(x: Int): Int = {',
+        '    x + base',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Sc2.scala', content)
+      const base = result.symbols.find((s) => s.name === 'base')
+      expect(base).toBeDefined()
+      expect(base?.lineStart).toBe(2)
+      // The if-block on lines 3-5 must NOT have been attached to `base`.
+      expect(base?.lineEnd).toBe(2)
+      expect(base?.body).not.toContain('println')
+      const add = result.symbols.find((s) => s.name === 'add')
+      expect(add?.lineStart).toBe(6)
+      expect(add?.lineEnd).toBe(8)
+      expect(add?.body).toContain('x + base')
+    })
+
+    it('still widens an Allman-brace multi-line signature (keyword stop must not misfire)', async () => {
+      // The brace opens on its own line after a `)` at depth 0. That line starts with `{`, not a
+      // control keyword, so the finding-1 keyword stop must leave this legitimate widening intact.
+      const content = [
+        'public class Svc',
+        '{',
+        '    public int Sum(',
+        '        int a,',
+        '        int b)',
+        '    {',
+        '        return a + b;',
+        '    }',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Allman.cs', content)
+      const sum = result.symbols.find((s) => s.name === 'Sum')
+      expect(sum).toBeDefined()
+      expect(sum?.lineStart).toBe(3)
+      expect(sum?.lineEnd).toBe(8)
+      expect(sum?.body).toContain('return a + b')
+    })
+
+    it('widens a PowerShell function despite a <# #> block comment with stray braces', async () => {
+      const content = [
+        'function Get-Thing <# opens { a brace #> {',
+        '    return 1',
+        '}',
+        'function Get-Other {',
+        '    return 2',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Ps.ps1', content)
+      const thing = result.symbols.find((s) => s.name === 'Get-Thing')
+      expect(thing).toBeDefined()
+      expect(thing?.lineStart).toBe(1)
+      expect(thing?.lineEnd).toBe(3)
+      expect(thing?.body).toContain('return 1')
+      expect(thing?.body).not.toContain('Get-Other')
+    })
+
+    it('does not stretch a symbol to end-of-file when its brace never closes', async () => {
+      // An unbalanced/unclosed brace (a file being edited) must yield no widening rather than a
+      // span running to EOF: findMatchingBraceEndLine returns -1 (noMatchValue) and the symbol is
+      // left at its signature line.
+      const content = [
+        'public class Broken',
+        '{',
+        '    public void Leak()',
+        '    {',
+        '        if (x)',
+        '        {',
+        '            // never closed',
+        '            work();',
+        '            more();',
+        '            evenmore();',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Broken.cs', content)
+      const leak = result.symbols.find((s) => s.name === 'Leak')
+      expect(leak).toBeDefined()
+      expect(leak?.lineStart).toBe(3)
+      // No matching close brace, so the symbol must NOT span to the end of the file.
+      expect(leak?.lineEnd).toBe(3)
+    })
+  })
+
   describe('language detection', () => {
     it('detects ruby files', async () => {
       const result = await parseFixture('test.rb', 'def hello\n  puts "world"\nend\n')

@@ -49,7 +49,7 @@ import { extractZig } from './languages/zig.js'
 import { extractR } from './languages/r.js'
 import { extractGraphql } from './languages/graphql_idx.js'
 import { extractSql } from './languages/sql_idx.js'
-import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
+import { assignBraceBlockSpans, stripCstyleComments, stripStringLiterals } from './languages/common.js'
 import { extractIni, extractEnv } from './languages/ini_idx.js'
 import { extractBash } from './languages/bash_idx.js'
 import { extractMakefile } from './languages/makefile_idx.js'
@@ -2530,8 +2530,8 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   toml: extractTomlSymbols,
   css: extractCssSymbols,
   dockerfile: extractDockerfileSymbols,
-  csharp: (content, filePath) => extractCsharp(content, filePath).symbols,
-  php: (content, filePath) => extractPhp(content, filePath).symbols,
+  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, '//'),
+  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, '//'),
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
@@ -2540,13 +2540,13 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
     const r = extractLiquid(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
-  kotlin: (content, filePath) => extractKotlin(content, filePath).symbols,
-  swift: (content, filePath) => extractSwift(content, filePath).symbols,
-  scala: (content, filePath) => extractScala(content, filePath).symbols,
+  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, '//'),
+  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, '//'),
+  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, '//'),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
-  dart: (content, filePath) => extractDart(content, filePath).symbols,
-  zig: (content, filePath) => extractZig(content, filePath).symbols,
+  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, '//'),
+  zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, '//'),
   r: (content, filePath) => extractR(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
   sql: extractSql,
@@ -2554,7 +2554,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   makefile: extractMakefile,
   proto: (content, filePath) => extractProto(content, filePath).symbols,
   terraform: extractTerraform,
-  powershell: (content, filePath) => extractPowershell(content, filePath).symbols,
+  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, '#'),
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
