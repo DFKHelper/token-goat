@@ -13,7 +13,7 @@ import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
-import { loadConfig } from './config.js'
+import { loadConfig, readConfigSource } from './config.js'
 import type { Config } from './config.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
@@ -422,7 +422,8 @@ export function checkConfigValid(configPath: string): DoctorResult {
     }
   }
   try {
-    const content = fs.readFileSync(configPath, 'utf-8')
+    // Same decoder the loader uses, so doctor agrees with it about a BOM'd file.
+    const content = readConfigSource(configPath)
     parse(content)
     return {
       name: 'Config',

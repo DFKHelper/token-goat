@@ -652,40 +652,25 @@ describe('cli_doctor', () => {
       expect(results.length).toBeGreaterThan(0)
     })
 
-    it('includes installation check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
-      const install = results.find((r) => r.name === 'Installation')
-      expect(install).toBeDefined()
-    })
+    // One run, one case, covering what six near-identical cases used to. Each of those ran a
+    // whole doctor pass to assert that one name was present and nothing else about it, so a check
+    // that had been reduced to a bare name with no message still passed all six. This asserts the
+    // full expected set in one pass and requires each of them to actually report something.
+    it('runs every check it is expected to run, and each one reports something', () => {
+      const expected = [
+        'Installation',
+        'Worker',
+        'TypeScript compiler',
+        'Database',
+        'Symbol body size',
+        'Config',
+      ]
 
-    it('includes worker check', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
-      const worker = results.find((r) => r.name === 'Worker')
-      expect(worker).toBeDefined()
-    })
 
-    it('includes TypeScript compiler check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
-      const tsCompiler = results.find((r) => r.name === 'TypeScript compiler')
-      expect(tsCompiler).toBeDefined()
-    })
-
-    it('includes database check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
-      const db = results.find((r) => r.name === 'Database')
-      expect(db).toBeDefined()
-    })
-
-    it('includes symbol body size check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
-      const bodySize = results.find((r) => r.name === 'Symbol body size')
-      expect(bodySize).toBeDefined()
-    })
-
-    it('includes config check', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
-      const config = results.find((r) => r.name === 'Config')
-      expect(config).toBeDefined()
+      expect(results.map((r) => r.name)).toEqual(expect.arrayContaining(expected))
+      const empty = expected.filter((name) => (results.find((r) => r.name === name)?.message ?? '') === '')
+      expect(empty).toEqual([])
     })
 
     it('marks results with ok/warn/fail status', () => {

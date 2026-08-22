@@ -102,8 +102,8 @@ describe('GrepFilter compression', () => {
     expect(out).not.toContain('unattributed')
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 })
 
@@ -177,8 +177,8 @@ describe('LsFilter compression', () => {
     expect(out.split('\n').length).toBeLessThan(lines.length)
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 })
 
@@ -432,8 +432,8 @@ describe('WcFilter compression', () => {
     expect(result.split('\n').length).toBe(lines.length)
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 })
 
@@ -653,8 +653,8 @@ describe('CurlFilter compression', () => {
     expect(result.split('\n').length).toBeLessThan(out.split('\n').length)
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 
   it('keeps the HTTP status line and useful response headers through the real apply() pipeline when curl emits \\r\\r\\n per verbose line (observed on Windows), not just the direct compress() call', () => {
@@ -908,8 +908,8 @@ describe('FfmpegFilter compression', () => {
     expect(result).toMatch(/Stream|Input|Output|video:|audio:/)
   })
 
-  it('handles empty output without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 })
 
@@ -947,8 +947,8 @@ describe('BinaryInspectFilter compression', () => {
     expect(() => compress(f, out, argv)).not.toThrow()
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 })
 
@@ -1020,8 +1020,8 @@ describe('PsFilter compression', () => {
     expect(out.split('\n').length).toBeLessThan(lines.length)
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => compress(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(compress(f, '', argv)).toBe('')
   })
 })
 

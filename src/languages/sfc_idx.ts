@@ -50,7 +50,7 @@ import {
   stripStringLiterals,
   stripXmlComments,
 } from './common.js'
-import { countContentLines } from '../util.js'
+import { pushAll, countContentLines } from '../util.js'
 
 export interface SfcResult {
   readonly symbols: SymbolEntry[]
@@ -266,12 +266,12 @@ export function extractVue(content: string, filePath: string): SfcResult {
   const refs: RefEntry[] = []
 
   for (const block of extractTagBlocks(content, lineIndex, 'script')) {
-    symbols.push(...extractTopLevelDeclarations(block.content, filePath, block.contentStartLine))
+    pushAll(symbols, extractTopLevelDeclarations(block.content, filePath, block.contentStartLine))
   }
 
   for (const block of extractTagBlocks(content, lineIndex, 'template')) {
     const markup = stripXmlComments(block.content)
-    refs.push(...extractComponentRefs(markup, filePath, block.contentStartLine, true))
+    pushAll(refs, extractComponentRefs(markup, filePath, block.contentStartLine, true))
   }
 
   return finalize(symbols, refs)
@@ -296,7 +296,7 @@ export function extractSvelte(content: string, filePath: string): SfcResult {
 
   const scriptBlocks = extractTagBlocks(content, lineIndex, 'script')
   for (const block of scriptBlocks) {
-    symbols.push(...extractTopLevelDeclarations(block.content, filePath, block.contentStartLine))
+    pushAll(symbols, extractTopLevelDeclarations(block.content, filePath, block.contentStartLine))
   }
 
   const styleBlocks = extractTagBlocks(content, lineIndex, 'style')
@@ -305,7 +305,7 @@ export function extractSvelte(content: string, filePath: string): SfcResult {
     b.matchEnd,
   ])
   const markup = stripXmlComments(maskSpans(content, spans))
-  refs.push(...extractComponentRefs(markup, filePath, 1, true))
+  pushAll(refs, extractComponentRefs(markup, filePath, 1, true))
 
   return finalize(symbols, refs)
 }
@@ -367,7 +367,7 @@ export function extractAstro(content: string, filePath: string): SfcResult {
   if (fm) {
     const frontmatterContent = lines.slice(fm.openLine + 1, fm.closeLine).join('\n')
     const contentStartLine = fm.openLine + 2
-    symbols.push(...extractTopLevelDeclarations(frontmatterContent, filePath, contentStartLine))
+    pushAll(symbols, extractTopLevelDeclarations(frontmatterContent, filePath, contentStartLine))
 
     // Mask the whole frontmatter fence (both `---` lines and everything between) out of the
     // markup pass below, by offset, so frontmatter code is never scanned for component refs.
@@ -380,7 +380,7 @@ export function extractAstro(content: string, filePath: string): SfcResult {
   for (const block of styleBlocks) spans.push([block.matchStart, block.matchEnd])
 
   const markup = stripXmlComments(maskSpans(content, spans))
-  refs.push(...extractComponentRefs(markup, filePath, 1, false))
+  pushAll(refs, extractComponentRefs(markup, filePath, 1, false))
 
   return finalize(symbols, refs)
 }

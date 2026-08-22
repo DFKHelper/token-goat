@@ -173,7 +173,7 @@ const MAX_TRANSIENT_RETRIES = 5
  * yet. Returns the count AFTER incrementing.
  *
  * Persisted in the index DB rather than an in-memory Map so the count survives across the
- * hook-process/daemon-process boundary -- see {@link resetTransientRetryCount}'s doc comment
+ * hook-process/daemon-process boundary -- see {@link clearRetryCount}'s doc comment
  * for the cross-process bug this closes. Matched by the same folded-path convention as every
  * other file_path/path comparison in this codebase (see {@link foldPath}, {@link
  * pathEqClause}), so a case-variant reference to the same file on a case-insensitive
@@ -210,8 +210,24 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
  * Reset `files.retry_count` to 0 for `absPath` in the index DB at `dbPath`. Best-effort: a DB
  * error here (e.g. the DB does not exist yet) must not block the caller's own already-completed
  * work. No-op if the path has no `files` row yet -- nothing to reset.
+ *
+ * Called from {@link processDirtyBatch} for every path whose `fingerprintFile` read succeeds
+ * during a drain, so a path that built up a retry streak during a transient lock episode (an
+ * antivirus scan, an editor holding the file, a OneDrive sync) starts from a full budget again
+ * the moment it can actually be read.
+ *
+ * The count is kept in the index DB (`files.retry_count`) rather than an in-memory Map because
+ * the processes involved do not share a heap: the edit hook runs in a short-lived CLI process
+ * while the drain loop that reads the count runs in the long-lived detached daemon. A reset
+ * that only mutated a module-level Map would be invisible to the daemon's own copy of it and
+ * would silently do nothing in the real deployed topology -- an exhausted path would stay
+ * permanently given-up-on. The index DB is the one thing both processes already share, as they
+ * do for `files.sha` and `files.embed_sha`.
+ *
+ * `appendDirtyPath` (`hooks_index.ts`) deliberately does NOT call this on the edit-hook path;
+ * its comment there explains why, and the drain-time reset above is what covers that case.
  */
-function clearRetryCount(dbPath: string, absPath: string): void {
+export function clearRetryCount(dbPath: string, absPath: string): void {
   try {
     const db = getDb(dbPath)
     // See bumpRetryCount's doc comment: normalize defensively to match the normalized form
@@ -221,30 +237,6 @@ function clearRetryCount(dbPath: string, absPath: string): void {
   } catch {
     // best-effort -- see doc comment above.
   }
-}
-
-/**
- * Clear any transient-retry count for `absPath`, giving it a fresh retry budget.
- *
- * Called from {@link appendDirtyPath} (`hooks_index.ts`) whenever an edit freshly dirties a
- * path, so a path that previously exhausted {@link MAX_TRANSIENT_RETRIES} (e.g. during a long
- * antivirus/OneDrive lock episode) does not inherit that exhausted counter on its next,
- * unrelated failure streak after the file is edited again.
- *
- * Persisted to the index DB (files.retry_count), NOT an in-memory Map: appendDirtyPath runs in
- * the short-lived hook CLI process, while the drain loop that reads the retry count
- * (requeueDirtyPath, via processDirtyBatch/drainOnce) runs in the long-lived detached daemon --
- * a separate Node process with its own heap. A reset that only mutated a module-level Map here
- * would be invisible to the daemon's own copy of that Map and would silently do nothing in the
- * real deployed topology: an already-exhausted path would stay permanently given-up-on even
- * after being freshly edited. Going through the index DB, which both processes already share
- * for every other cross-process-visible field (files.sha, files.embed_sha), makes the reset
- * actually observable on the daemon's next drain cycle. `dbPath` defaults to the global index
- * DB every real caller uses; tests pass an isolated dir's DB explicitly to prove the DB write is
- * what unblocks retries, not any process-local cache.
- */
-export function resetTransientRetryCount(absPath: string, dbPath: string = globalDbPath()): void {
-  clearRetryCount(dbPath, absPath)
 }
 
 /** Absolute path to the dirty queue file for `dir`. */

@@ -2755,6 +2755,62 @@ describe('read_commands', () => {
 
   // ---- runOutline ---------------------------------------------------------
 
+  // The per-file symbol cap cut the list short and both text headers stated the capped number as
+  // though it were the whole file: 130,000 symbols printed as `(5000 symbols)` with nothing in the
+  // output to say otherwise. `--json` reported `truncated: true` and the real `totalCount` from the
+  // same values, so the honest number reached the renderer and only one of the two paths used it --
+  // and the text one is the default an agent reads.
+  describe('a file with more symbols than the per-file cap', () => {
+    const CAP = 5000
+
+    /** Fetch returns cap+1 rows, which is how runSkeletonPrep detects it hit the cap. */
+    function stubOverCap(trueTotal: number): void {
+      mockQuerySymbols.mockReturnValue(
+        Array.from({ length: CAP + 1 }, (_, i) => ({
+          filePath: 'huge.ts',
+          name: `s${i}`,
+          kind: 'variable',
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          body: `const s${i} = ${i}`,
+          docstring: '',
+          parent: '',
+        })),
+      )
+      mockCountSymbols.mockReturnValue(trueTotal)
+    }
+
+    it.each([
+      ['skeleton', (f: string) => runSkeleton({ file: f })],
+      ['outline', (f: string) => runOutline({ file: f })],
+    ])('says how many symbols the file really has in the %s header', (_label, run) => {
+      stubOverCap(130_000)
+
+      const { text } = run('huge.ts')
+
+      const header = text.split('\n')[0] ?? ''
+      expect(header).toContain('5000 of 130000 symbols')
+      // The bare capped count on its own is the exact wording that used to be a lie.
+      expect(header).not.toMatch(/\(5000 symbols/)
+    })
+
+    it.each([
+      ['skeleton', (f: string) => runSkeleton({ file: f })],
+      ['outline', (f: string) => runOutline({ file: f })],
+    ])('leaves the %s header alone for a file that fits under the cap', (_label, run) => {
+      mockQuerySymbols.mockReturnValue([
+        { filePath: 'small.ts', name: 'a', kind: 'function', lineStart: 1, lineEnd: 1, body: 'function a() {}', docstring: '', parent: '' },
+        { filePath: 'small.ts', name: 'b', kind: 'function', lineStart: 2, lineEnd: 2, body: 'function b() {}', docstring: '', parent: '' },
+      ])
+      mockCountSymbols.mockReturnValue(2)
+
+      const header = run('small.ts').text.split('\n')[0] ?? ''
+
+      expect(header).toContain('2 symbols')
+      expect(header).not.toContain(' of ')
+    })
+  })
+
   describe('runOutline', () => {
     it('returns 1 and reports no symbols for an empty file in a supported language', () => {
       mockQuerySymbols.mockReturnValue([])

@@ -115,7 +115,14 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // realistic header ('{"alg":' or similar) always starts with "eyJ", so that's the practical
   // anchor here -- each of the three dot-separated segments requires a minimum length to avoid
   // matching a short, coincidentally dotted token.
-  ['jwt', /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g],
+  //
+  // The trailing `={0,2}` on each segment is what makes a padded token match. Base64url as the JWT
+  // spec defines it drops the `=` padding, but producers that reach for a plain base64 encoder
+  // emit it anyway, and a `=` in the header or payload segment used to defeat the match outright:
+  // not a partial redaction, but none at all, so the entire token was printed. `=` cannot appear
+  // anywhere except the end of a segment, since it is not one of the characters the segment body
+  // allows, so accepting it here cannot widen the match onto anything else.
+  ['jwt', /eyJ[A-Za-z0-9_-]{10,}={0,2}\.[A-Za-z0-9_-]{10,}={0,2}\.[A-Za-z0-9_-]{10,}={0,2}/g],
   ['npm_token', /npm_[A-Za-z0-9]{36}/g],
   // rk_live_ (restricted keys) share the sk_live_/sk_test_ secret-key shape and risk level, so
   // one pattern covers all three rather than adding a near-duplicate entry.

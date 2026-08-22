@@ -2826,6 +2826,26 @@ function mergeListingJson(files: string[], blocks: string[], anyOk: boolean): { 
 }
 
 /** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
+/**
+ * How the symbol count is written in a `skeleton` or `outline` header.
+ *
+ * Plain when everything the file has is being shown. When the per-file cap in
+ * {@link SKELETON_SYMBOL_CAP} cut the list short, the header says so and gives the real total,
+ * which {@link runSkeletonPrep} already re-queried without a LIMIT for exactly this purpose.
+ *
+ * Both text headers used to state the capped number as though it were the whole file: a file of
+ * 130,000 symbols printed `(5000 symbols)`, with nothing anywhere in the output to suggest
+ * otherwise. The `--json` output of the same command reported `truncated: true` and
+ * `totalCount: 130000` correctly, so the honest number was computed, carried all the way to the
+ * renderer, and then used on only one of the two paths -- and the one it was missing from is the
+ * default, and the one an agent reads. This is the same silent-truncation shape the comment on
+ * SKELETON_SYMBOL_CAP describes as the reason that cap and its count exist at all.
+ */
+function symbolCountLabel(shown: number, truncated: boolean, trueCount: number | undefined): string {
+  if (!truncated || trueCount === undefined || trueCount <= shown) return countNoun(shown, 'symbol')
+  return `${shown} of ${countNoun(trueCount, 'symbol')}`
+}
+
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
   const multiFiles = parseMultiFileSpec(opts.file)
   if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file, includeFilePath: true }), opts.json === true)
@@ -2864,7 +2884,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   }
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
-  const lines: string[] = [`# Skeleton: ${opts.file}  (${countNoun(filtered.length, 'symbol')}, ${countNoun(totalLines, 'line')})`]
+  const lines: string[] = [`# Skeleton: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)}, ${countNoun(totalLines, 'line')})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
@@ -2933,7 +2953,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     return { text, code: 0 }
   }
 
-  const lines: string[] = [`# Outline: ${opts.file}  (${countNoun(filtered.length, 'symbol')})`]
+  const lines: string[] = [`# Outline: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`

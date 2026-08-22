@@ -68,11 +68,11 @@ afterEach(() => {
 })
 
 /** Spawn one indexing process; resolves with everything it printed to stdout. */
-function runWorker(): Promise<string> {
+function runWorker(barrierPath: string, onReady: () => void): Promise<string> {
   return new Promise((resolve, reject) => {
     // Loading tsx through Node avoids the tsx CLI's IPC socket, which is denied in restricted
     // macOS sandboxes even though the worker itself needs no IPC.
-    const child = spawn(process.execPath, tsxProcessArgs(WORKER, dbPath, srcDir, String(FILES)), {
+    const child = spawn(process.execPath, tsxProcessArgs(WORKER, dbPath, srcDir, String(FILES), barrierPath), {
       cwd: ROOT,
       env: { ...process.env, TOKEN_GOAT_HOME: tmpHome },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -82,8 +82,15 @@ function runWorker(): Promise<string> {
     child.stdout.on('data', (d: Buffer) => {
       stdout += d.toString()
     })
+    // Reported once per child: stderr accumulates, so every later chunk still contains the marker
+    // and an unguarded call would let one talkative worker satisfy the whole barrier by itself.
+    let reportedReady = false
     child.stderr.on('data', (d: Buffer) => {
       stderr += d.toString()
+      if (!reportedReady && stderr.includes('ready')) {
+        reportedReady = true
+        onReady()
+      }
     })
     child.on('error', reject)
     child.on('exit', (code) => {
@@ -95,7 +102,28 @@ function runWorker(): Promise<string> {
 
 describe('several processes indexing into one database that does not exist yet', () => {
   it('writes every file instead of losing one to "database is locked"', async () => {
-    const outputs = await Promise.all(Array.from({ length: WORKERS }, () => runWorker()))
+    // Every worker loads its modules and then waits at the barrier, so all six reach the database
+    // within a few milliseconds of each other instead of whenever their own startup happened to
+    // finish. Two separate defects live in that window -- the deferred `BEGIN` in writeParseResult
+    // and the WAL conversion in getDb -- and both need the processes genuinely overlapping. Without
+    // the barrier this test found the second of them in about one run in four.
+    const barrierPath = path.join(tmpHome, 'go')
+    let readyCount = 0
+    let releaseWhenAllReady: () => void = () => {}
+    const allReady = new Promise<void>((resolve) => {
+      releaseWhenAllReady = resolve
+    })
+    const onReady = (): void => {
+      readyCount += 1
+      if (readyCount >= WORKERS) releaseWhenAllReady()
+    }
+
+    const running = Array.from({ length: WORKERS }, () => runWorker(barrierPath, onReady))
+    // Racing the workers so a crash before the barrier fails with that crash rather than hanging.
+    await Promise.race([allReady, Promise.all(running)])
+    fs.writeFileSync(barrierPath, 'go')
+
+    const outputs = await Promise.all(running)
 
     const failures = outputs
       .join('')

@@ -1162,8 +1162,14 @@ export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg:
  * "UTF-8 with BOM" writes, and a UTF-16 one is what Windows PowerShell 5.1 writes for a plain
  * `>` redirect, so both are ordinary ways to end up with a config on this program's main
  * platform. `decodeSource` is the same decoder the indexer already uses for source files.
+ *
+ * Exported because `config validate` and `doctor` must reach the same verdict as the loader
+ * about whether a config parses. They each opened the file with a raw `'utf8'` read of their
+ * own, so a BOM'd config that the loader accepts and applies was reported to the user as
+ * broken -- `doctor` printed `[FAIL] Config: config invalid` and `config validate` told them
+ * to go fix a file that was working. Anything that reads a config file goes through here.
  */
-function readConfigSource(p: string): string {
+export function readConfigSource(p: string): string {
   return decodeSource(fs.readFileSync(p))
 }
 

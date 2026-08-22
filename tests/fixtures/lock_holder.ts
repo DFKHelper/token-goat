@@ -21,6 +21,12 @@ const staleMs = Number(staleMsArg)
 const result = withFileLock(
   lockPath,
   () => {
+    // Announce acquisition on stderr (stdout stays pure JSON for the caller to parse) BEFORE the
+    // busy-spin pins this thread. The caller waits for this line rather than polling for the lock
+    // file within a fixed window: under a loaded parallel suite, tsx's transpile-and-start cost
+    // alone has exceeded a four-second poll, which failed the test for a reason that has nothing
+    // to do with what it is testing.
+    process.stderr.write('acquired\n')
     // Busy-spin: genuinely synchronous, non-yielding work -- never awaits, never lets this
     // process's own event loop turn -- for holdMs, which is deliberately longer than staleMs.
     const end = Date.now() + holdMs

@@ -56,6 +56,88 @@ describe('embeddings module', () => {
     })
   })
 
+  describe('chunkFile() on a file whose lines are much wider than the overlap budget', () => {
+    // `overlap` is documented as a character budget, but it was turned into a line count with
+    // `Math.ceil(overlap / 40)` -- a fixed 5 lines for the default 200, whatever those lines
+    // actually held. On lines wider than the 40-char guess that fixed count was the only bound,
+    // and it bounded the wrong quantity: each chunk was prefilled with 5 whole lines of overlap,
+    // which on 3,000-char lines is 15,000 characters rather than 200. Chunks were stored at
+    // 18,005 chars against a MAX_CHUNK_CHARS of 8,000 -- past the size cap this function exists
+    // to enforce, and past the embedding model's context window it is set from -- and the
+    // database held 5.84x the source it was indexing, every duplicated byte embedded too.
+    // Minified bundles, generated code, long CSV or log lines and single-line JSON all qualify.
+    const LINE_CHARS = 3000
+    const LINE_COUNT = 100
+    const content = Array.from({ length: LINE_COUNT }, (_, i) =>
+      `${String(i).padStart(4, '0')}${'x'.repeat(LINE_CHARS - 4)}`,
+    ).join('\n')
+
+    it('keeps every chunk within the documented size cap', () => {
+      const chunks = embeddings.chunkFile('wide.ts', content)
+
+      expect(chunks.length).toBeGreaterThan(0)
+      const oversized = chunks.filter((c) => c.text.length > embeddings.MAX_CHUNK_CHARS)
+      expect(oversized.map((c) => [c.startLine, c.text.length])).toEqual([])
+    })
+
+    it('does not store several times the source it is indexing', () => {
+      const chunks = embeddings.chunkFile('wide.ts', content)
+
+      // Some duplication is the point of overlap, so this is not a demand for exactly 1.00x --
+      // it is a bound loose enough that honest overlap passes and the 5.84x measured before the
+      // fix cannot. The whole-file numbers are asserted rather than a per-chunk ratio because
+      // amplification is what actually costs storage and embedding time.
+      const stored = chunks.reduce((total, c) => total + c.text.length, 0)
+      expect(stored).toBeLessThan(content.length * 1.5)
+    })
+
+    it('still overlaps consecutive chunks when the lines do fit the budget', () => {
+      // The fix must not become "no overlap ever". On lines narrow enough for the 200-char
+      // budget to cover several, consecutive chunks still have to share lines, or the guard
+      // above would be satisfied by simply deleting the overlap.
+      const narrow = Array.from({ length: 400 }, (_, i) => `const v${i} = ${i}`).join('\n')
+
+      const chunks = embeddings.chunkFile('narrow.ts', narrow, 500)
+
+      expect(chunks.length).toBeGreaterThan(1)
+      // Reported as the offending boundaries rather than a collapsed boolean, so a failure says
+      // which chunk pairs stopped sharing lines instead of only "expected false to be true".
+      const notOverlapping = chunks
+        .slice(1)
+        .map((c, i) => ({ after: chunks[i].endLine, startsAt: c.startLine }))
+        .filter((pair) => pair.startsAt > pair.after)
+      expect(notOverlapping).toEqual([])
+    })
+  })
+
+  describe('chunkFile() on content that never clears the minimum chunk size', () => {
+    // A below-floor chunk is dropped rather than emitted, and the window used to be pinned back to
+    // that chunk's own start so its lines could not be lost. For content that trims to nothing the
+    // pin never lifted: `startLine` stopped advancing, the buffer grew without bound, and every
+    // following line re-tripped the size flush and re-ran `trim()` over an ever-longer string.
+    // 8,000 blank lines took 127 ms and 64,000 took 11.3 s -- an 89-fold rise for an 8-fold input --
+    // and every run produced no chunks at all. Note the size below is deliberately large: the same
+    // commit also stopped this loop rebuilding a string it already had, which on its own cut the
+    // cost enough that a smaller file no longer separates a fixed loop from a quadratic one.
+    //
+    // Only the cost is asserted here. What the pin is for -- keeping the lines of a dropped
+    // below-floor chunk -- is already pinned by the short-lines-before-a-long-line case below, and
+    // that case goes red if this narrowing ever widens back into removing the pin outright. The indexer accepts files up to 500 KB, where that
+    // extrapolates to minutes of one core inside the worker's drain loop, spent to produce nothing.
+    it('does not take quadratic time on a file that is entirely blank lines', () => {
+      const started = Date.now()
+
+      const chunks = embeddings.chunkFile('blank.txt', '\n'.repeat(128_000))
+
+      expect(chunks).toEqual([])
+      // At this size the fixed loop takes about 5 ms and the quadratic one about 6,300 ms, so the
+      // bound sits several hundred times above the real cost and three times below the defect --
+      // it cannot fire on a slow or loaded machine, and the quadratic cannot slip under it.
+      expect(Date.now() - started).toBeLessThan(2_000)
+    })
+
+  })
+
   describe('chunkFile()', () => {
     it('should split file content into chunks', () => {
       // Create content larger than MIN_CHUNK_CHARS (50)
@@ -131,11 +213,19 @@ describe('embeddings module', () => {
       const chunksLF = embeddings.chunkFile('test.ts', contentLF, 500)
 
       // The regression this guards is that CRLF splitting behaves identically to LF splitting
-      // (content.split(/\r?\n/) normalizes both) -- pin the exact, equal chunk count on both
-      // sides instead of each independently being non-empty, which a mismatched count would
-      // still satisfy.
-      expect(chunksCRLF.length).toBe(4)
-      expect(chunksLF.length).toBe(4)
+      // (content.split(/\r?\n/) normalizes both). Compare the two runs against each other rather
+      // than against a literal chunk count: the count a given input splits into is a function of
+      // the overlap and size tunables, so a literal pins this test to their current values and
+      // fails when they are legitimately retuned, while saying nothing about CRLF at all. Every
+      // chunk's line range and text must match across the two, which is the actual claim and is
+      // stronger than an equal count -- a per-chunk boundary that diverged while the totals
+      // happened to agree would satisfy a count pin and fails here.
+      expect(chunksCRLF.map((c) => [c.startLine, c.endLine, c.text])).toEqual(
+        chunksLF.map((c) => [c.startLine, c.endLine, c.text]),
+      )
+      // ...and the file must actually have split, or the comparison above is vacuously true for
+      // any two single-chunk results.
+      expect(chunksLF.length).toBeGreaterThan(1)
 
       const crlfText = chunksCRLF[0].text
       const lfText = chunksLF[0].text

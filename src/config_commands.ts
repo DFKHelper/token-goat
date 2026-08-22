@@ -14,7 +14,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, resolveConfigKeyLayer } from './config.js'
+import { readConfigSource, loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, resolveConfigKeyLayer } from './config.js'
 import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
@@ -429,8 +429,8 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     let raw: Record<string, unknown> = {}
     let parseErr: string | null = null
     try {
-      const text = fs.readFileSync(cfgFile, 'utf8')
-      raw = parse(text) as Record<string, unknown>
+      // Same decoder the loader uses, so validate agrees with it about a BOM'd file.
+      raw = parse(readConfigSource(cfgFile)) as Record<string, unknown>
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') {

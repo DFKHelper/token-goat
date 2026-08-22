@@ -193,6 +193,25 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain(jwt)
   })
 
+  // A `=` in the header or payload segment used to defeat the pattern outright, so the token was
+  // not partly redacted but printed whole. Base64url as the JWT spec defines it has no padding,
+  // but a producer using a plain base64 encoder emits it, and a credential that leaks in full is
+  // the same leak whichever encoder made it. The unpadded form is covered by the case above; these
+  // are the three positions padding can appear in.
+  it.each([
+    ['padded payload', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'],
+    ['padded header', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ==.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'],
+    ['padded signature', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk='],
+  ])('redacts a JWT whose segments carry base64 padding (%s)', (_label, jwt) => {
+    const { text, count } = redactSecrets(`Authorization: ${jwt}`)
+
+    expect(count).toBe(1)
+    // The token body must not survive anywhere in the output, whatever the placeholder looks like.
+    expect(text).not.toContain('eyJzdWIiOiIxMjM0NTY3ODkw')
+    expect(text).not.toContain('dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk')
+    expect(text).toContain('[REDACTED:jwt]')
+  })
+
   it('redacts an npm token (npm_ + 36 chars)', () => {
     const fake = 'npm_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
     const { text, count } = redactSecrets(`//registry.npmjs.org/:_authToken=${fake}`)

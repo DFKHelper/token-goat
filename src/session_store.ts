@@ -21,6 +21,7 @@
  *    never a corrupt file.
  */
 
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -43,24 +44,64 @@ export const SESSIONS_SUBDIR = 'sessions'
  */
 export const AGENT_SALT_MARKER = sanitizeIdForFilename(':agent:')
 
+/** Raw separator `relay.ts`'s `sessionStateKey` joins a session id and an agent id with. */
+const AGENT_SALT_SEPARATOR = ':agent:'
+
+/** Characters of agent-id digest appended to a salted stem. 12 hex chars is 48 bits: far more
+ * than enough to keep the handful of subagents alive in one session apart, and short enough
+ * that the session id keeps most of the 64-char budget. */
+const AGENT_DIGEST_CHARS = 12
+
+/** How much of the session id a SALTED stem may use, leaving room for the marker and the
+ * digest so both always survive the 64-char cap. */
+const SALTED_SESSION_MAX = 64 - AGENT_SALT_MARKER.length - AGENT_DIGEST_CHARS
+
+/** The session-id portion of a salted filename, and the prefix sibling discovery matches on.
+ * Must be derived here rather than recomputed at each site, so the writer and the scanner can
+ * never disagree about how much of the id survived. */
+function saltedStemPrefix(sessionId: string): string {
+  return `${sanitizeIdForFilename(sessionId, SALTED_SESSION_MAX)}${AGENT_SALT_MARKER}`
+}
+
+/**
+ * Filename stem for `sessionId`, which may be a plain session id or an agent-salted key
+ * (`${sessionId}:agent:${agentId}`, see relay.ts's `sessionStateKey`).
+ *
+ * A plain id keeps its exact human-readable `<sessionId>.json` spelling, capped at 64 chars.
+ * Callers and tests (`tests/session_persistence_e2e.test.ts`) rely on that, so it must not
+ * change.
+ *
+ * A salted key is spelled `<session id, capped>_agent_<12-hex digest of the agent id>`. The
+ * agent id is hashed rather than truncated because truncation lost the very distinction the
+ * salt exists to draw. `sessionStateKey`'s docstring states the salt is there so "a subagent's
+ * genuinely-first read of a file [is not] denied as 'already read' because a *different*
+ * subagent read it earlier" -- but the whole key used to be sanitized and sliced at 64 as one
+ * string, so once the session id reached 58 sanitized characters the 7-char marker itself was
+ * cut off and every subagent in that session, and at 64 the parent too, mapped onto one file.
+ * Reproduced against the built bundle: two sibling subagents each doing their first read of
+ * the same file produced two session files at a 36-char id and one at 55 and above, with the
+ * second subagent told "You've already read package.json" about a file it had never seen.
+ * Session ids come off the wire from whatever harness is driving (`relay.ts`'s `session_id` /
+ * `sessionId`), and `CLAUDE_CODE_SESSION_ID` is a plain env var a wrapper can set to any
+ * descriptive string, so ids well past 55 characters are not exotic.
+ *
+ * Hashing also retires the ~21-char-agent-id-prefix collision this function's previous comment
+ * accepted as a known risk: two agent ids sharing a long prefix no longer share a filename.
+ */
+function sessionFileStem(sessionId: string): string {
+  const sep = sessionId.indexOf(AGENT_SALT_SEPARATOR)
+  if (sep < 0) return sanitizeIdForFilename(sessionId, 64)
+  const agentId = sessionId.slice(sep + AGENT_SALT_SEPARATOR.length)
+  const digest = createHash('sha256').update(agentId).digest('hex').slice(0, AGENT_DIGEST_CHARS)
+  return `${saltedStemPrefix(sessionId.slice(0, sep))}${digest}`
+}
+
 /** Resolve the on-disk path for `sessionId`, or null when the id is empty,
  * sanitizes to empty, or would escape the sessions dir (traversal guard).
- *
- * COLLISION RISK: `sessionId` here can be an agent-salted key
- * (`${sessionId}:agent:${agentId}`, see relay.ts's `sessionStateKey`). A UUID
- * session id (36 chars) + the sanitized salt marker (7 chars) already leaves
- * only ~21 of a UUID agent id's 36 chars before the 64-char slice below cuts
- * it off, so two different agent ids that happen to share that ~21-char
- * prefix would collide onto the same filename. This is a known, deliberately
- * accepted low-probability risk (not fixed by hashing instead of truncating,
- * since callers and tests — e.g. `tests/session_persistence_e2e.test.ts` —
- * rely on the plain, human-readable, non-salted case producing an exact
- * `<sessionId>.json` filename; hashing would change that on-disk format for
- * every caller). Leave as-is; do not "fix" by truncating differently without
- * also addressing the human-readable-filename requirement above. */
+ * See {@link sessionFileStem} for how salted keys are spelled. */
 function sessionPath(sessionId: string): string | null {
   if (!sessionId) return null
-  const safe = sanitizeIdForFilename(sessionId, 64)
+  const safe = sessionFileStem(sessionId)
   if (!safe) return null
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
   const candidate = path.join(dir, `${safe}.json`)
@@ -475,9 +516,17 @@ export function readSessionStateFile(sessionId: string): SerializedSession | nul
  */
 export function listSiblingSessionStates(sessionId: string): SerializedSession[] {
   if (!sessionId) return []
-  const safeSessionId = sanitizeIdForFilename(sessionId)
-  if (!safeSessionId) return []
-  const prefix = `${safeSessionId}${AGENT_SALT_MARKER}`
+  // Built by the same helper the writer uses, so the two can never disagree about how much
+  // of the session id survived the 64-char cap. This used to sanitize the id with NO length
+  // limit and match `startsWith` against filenames that had been capped at 64, so once the id
+  // reached 58 sanitized characters no filename could possibly start with the prefix and the
+  // scan silently returned nothing -- indistinguishable from "no subagents ran". The
+  // pre_compact manifest, whose whole purpose is to carry session context across a compaction,
+  // reported "Files read: 0" while real work had been done.
+  const prefix = saltedStemPrefix(sessionId)
+  // An id that sanitizes to nothing leaves the bare marker, which would match every salted blob
+  // on disk regardless of which session wrote it.
+  if (prefix === AGENT_SALT_MARKER) return []
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
   const out: SerializedSession[] = []
   try {
