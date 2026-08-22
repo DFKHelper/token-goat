@@ -59,12 +59,22 @@ export const UNTRUSTED_WEB_TAG = 'untrusted-web-content'
  * closing bracket: `</untrusted-tool-output/>` is a malformed end tag that HTML parsing still
  * reads as one, and leaving it unescaped handed an attacker a spelling that closed the fence.
  *
+ * After the tag name, anything up to the next `>` is consumed, guarded by a lookahead that the
+ * next character is a real tag-name terminator (whitespace, `/`, or `>`). Bounding the trailing
+ * junk to "introduced by whitespace, or a single slash right before the bracket" was too narrow:
+ * an HTML tokenizer reads `</untrusted-web-content/foo>` and `</untrusted-web-content/ foo>` as end
+ * tags for this tag too -- a `/` after the tag name enters the self-closing-start-tag state, and a
+ * following non-`>` character is reconsumed as an attribute rather than ending the tag -- so those
+ * spellings closed the fence and slipped through unescaped, the same hole as `</...\/>` above one
+ * step further along. The terminator lookahead is what keeps this from also matching a genuinely
+ * different, longer tag name (`<untrusted-web-contentX>`), which shares only a prefix.
+ *
  * A replacer function, not a replacement string: `$&` and friends are substitution sequences in a
  * string replacement, and the matched text here is attacker-controlled.
  */
 function neutralizeFenceMarkers(text: string, tag: string): string {
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?:\\s[^>]*)?\\s*/?\\s*>`, 'gi')
+  const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?=[\\s/>])[^>]*>`, 'gi')
   return text.replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
 }
 
