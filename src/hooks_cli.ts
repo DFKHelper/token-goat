@@ -37,14 +37,6 @@ export type Harness = 'claude' | 'codex' | 'gemini' | 'grok' | 'kimi'
 export type HookPayload = Record<string, unknown>
 
 /**
- * Hook response: internal result dict from dispatch.
- *
- * Contains handler output plus diagnostic keys (_tg_* fields). denormalize_response
- * translates to harness wire format.
- */
-export type HookResponse = Record<string, unknown>
-
-/**
  * Codex tool name → internal PascalCase tool name.
  * Codex uses lowercase/snake_case; token-goat handlers expect PascalCase.
  */

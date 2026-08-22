@@ -28,18 +28,6 @@ import { redactSecrets } from './secret_redact.js'
 /** Subdir under the token-goat home where bash-output blobs live. */
 export const BASH_OUTPUT_SUBDIR = 'bash_outputs'
 
-/** Metadata associated with a cached Bash output entry. */
-export interface BashOutputMeta {
-  readonly outputId: string
-  readonly cmdSha: string
-  readonly cmdPreview: string
-  readonly stdoutBytes: number
-  readonly stderrBytes: number
-  readonly exitCode: number | null
-  readonly ts: number
-  readonly truncated: boolean
-}
-
 /** A stored bash command invocation and its captured output. */
 export interface BashOutputEntry {
   /** Stable id (16-hex SHA prefix of the normalized command). */

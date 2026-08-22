@@ -132,10 +132,6 @@ export function extractLwcTemplate(content: string, filePath: string): Salesforc
   }
 }
 
-export const SALESFORCE_MARKUP_EXTENSIONS = new Set([
-  '.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens', '.page', '.component', '.email',
-])
-
 const MARKUP_KIND: Readonly<Record<string, string>> = {
   '.cmp': 'aura_bundle',
   '.app': 'aura_application',
