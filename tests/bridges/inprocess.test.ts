@@ -79,9 +79,11 @@ function setupPoisonedEntryWithRealHookLib(_cwd: string): { entryPath: string; m
     if (/~\d/.test(dir)) throw new Error(`hook fixture dir still holds an 8.3 short name: ${dir}`)
     copyFileSync(HOOK_BUNDLE, join(dir, 'token-goat-hook.mjs'))
     // The hook bundle is code-split (see esbuild.config.mjs), so the entry is a stub that imports
-    // sibling chunks by relative path -- copying it alone yields a file that throws on import.
+    // sibling chunks by relative path -- copying it alone yields a file that throws on import. The
+    // chunks are shared with the CLI entry and carry its prefix, so copy the whole set: which of
+    // them this entry reaches is esbuild's business, not something to hard-code here.
     const distDir = dirname(HOOK_BUNDLE)
-    for (const chunk of readdirSync(distDir).filter((f) => f.startsWith('token-goat-hook-chunk-'))) {
+    for (const chunk of readdirSync(distDir).filter((f) => f.startsWith('token-goat-chunk-'))) {
       copyFileSync(join(distDir, chunk), join(dir, chunk))
     }
     // token-goat-hook.mjs bundles everything except its native/optional deps

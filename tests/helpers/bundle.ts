@@ -11,13 +11,14 @@ export const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
 // being present, a stub being absent -- must read CORE_BUNDLE. Reading BUNDLE for that would pass
 // or fail on a few hundred bytes of launcher that contain none of the product code.
 export const CORE_BUNDLE = path.join(ROOT, 'dist', 'token-goat.core.mjs')
-// Prefix of the core build's hashed code chunks -- must match esbuild.config.mjs's CORE_CHUNK_PREFIX.
+// Prefix of the build's hashed code chunks -- must match esbuild.config.mjs's CHUNK_PREFIX. One
+// build emits both entries, so the CLI and the hook library share this single set of chunks.
 const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
 
 /**
- * All of the core build's emitted code, as one string: the entry plus every chunk.
+ * All of the emitted code the core entry can reach, as one string: the entry plus every chunk.
  *
- * The core build uses `splitting: true`, so CORE_BUNDLE itself is a few hundred bytes that import
+ * The build uses `splitting: true`, so CORE_BUNDLE itself is a few hundred bytes that import
  * the chunks holding the product code. An assertion about what survived bundling -- a symbol being
  * present, a stub being absent -- must therefore read the whole emitted set, not the entry alone,
  * or it fails on every symbol whichever way the code is arranged.

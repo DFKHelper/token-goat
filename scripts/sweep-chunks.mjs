@@ -15,8 +15,9 @@ import * as path from 'node:path'
  * afterwards keeps the old chunks readable until the new ones exist.
  *
  * `emitted` is authoritative rather than a heuristic: an unchanged chunk keeps its content hash, so
- * it is re-emitted under the same name and kept. Only the prefix given is considered, so the core
- * and hook builds never delete each other's chunks.
+ * it is re-emitted under the same name and kept. Only the prefix given is considered, which is what
+ * lets the build sweep its own chunks in one call and, in a second call with an empty `emitted`,
+ * clear the legacy `token-goat-hook-chunk-` set from when the hook entry was built separately.
  *
  * @param {string} dir Directory holding the build output.
  * @param {string} prefix Chunk-filename prefix owned by this build.
