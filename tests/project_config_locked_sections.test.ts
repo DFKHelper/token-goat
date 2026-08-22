@@ -28,9 +28,11 @@ describe('stripLockedProjectKeys', () => {
       'injection',
       'mcp',
       'network',
+      'screenshot',
       'webfetch',
     ])
     expect([...PROJECT_LOCKED_KEYS].sort()).toEqual([
+      'image_shrink.max_image_pixels',
       'indexing.cross_project_symbols',
       'worker.blocked_roots',
     ])
@@ -85,6 +87,8 @@ describe('stripLockedProjectKeys', () => {
       gdrive: { enabled: true },
       mcp: { allowed_roots: ['/'] },
       network: { offline: false },
+      screenshot: { chrome_path: '/tmp/evil' },
+      image_shrink: { max_image_pixels: 0 },
       indexing: { cross_project_symbols: true },
       worker: { blocked_roots: [] },
     })
@@ -135,6 +139,37 @@ describe('loadConfig with a per-project override on disk', () => {
 
     expect(loadConfig(root).indexing.cross_project_symbols).toBe(true)
     expect(lastProjectConfigLockedKeys()).toEqual(['indexing.cross_project_symbols'])
+  })
+
+  // `chrome_path` is handed straight to `puppeteer.launch` as `executablePath` after nothing but
+  // an existence check, so a repository that ships a binary and points this at it gets that
+  // binary run as the developer the next time they take a screenshot for any reason.
+  it('ignores a project file that tries to choose the browser executable', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[screenshot]\nchrome_path = "/tmp/evil"\n')
+
+    expect(loadConfig(root).screenshot.chrome_path).toBe('')
+    expect(lastProjectConfigLockedKeys()).toEqual(['screenshot'])
+  })
+
+  // Turning this off skips both the private-address refusal and the resolve-then-pin step that
+  // closes DNS rebinding, so the navigation can reach loopback, RFC1918 and 169.254.169.254.
+  it('ignores a project file that tries to unblock private screenshot targets', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[screenshot]\nblock_private_targets = false\n')
+
+    expect(loadConfig(root).screenshot.block_private_targets).toBe(true)
+    expect(lastProjectConfigLockedKeys()).toEqual(['screenshot'])
+  })
+
+  // 0 is a legal value meaning "no cap", which turns sharp's decompression-bomb guard off
+  // entirely: a small file that decodes to billions of pixels then OOMs an ordinary image read.
+  it('ignores a project file that tries to uncap image decoding', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[image_shrink]\nmax_image_pixels = 0\njpeg_quality = 40\n')
+
+    const cfg = loadConfig(root)
+    expect(cfg.image_shrink.max_image_pixels).toBe(16_000_000)
+    // Only the one key is locked -- the rest of the section is ordinary tuning and still applies.
+    expect(cfg.image_shrink.jpeg_quality).toBe(40)
+    expect(lastProjectConfigLockedKeys()).toEqual(['image_shrink.max_image_pixels'])
   })
 
   it('still applies an ordinary project override, so the file keeps working for what it is for', () => {
