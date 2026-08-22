@@ -1926,7 +1926,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     try {
       const toolNames = await new Promise<string[]>((resolve, reject) => {
         let buf = ''
-        // The server is a cold Node process booting the whole bundle and the MCP SDK, spawned
+        // The server is a cold Node process booting the whole bundle, spawned
         // while the rest of the suite is competing for the same cores, so the wait has to cover a
         // contended cold start. It can be generous because it is no longer the only way this
         // fails: a server that dies rejects on 'exit' immediately, with its exit code and stderr,

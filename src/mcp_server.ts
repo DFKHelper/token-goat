@@ -15,9 +15,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 
 // Type-only, so both are erased at compile time and neither reaches the bundle's import list.
-// The runtime values are loaded inside createMcpServer -- see the note on that function.
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+// The runtime value is loaded inside createMcpServer -- see the note on that function.
+import type { CallToolResult, McpServer } from './mcp_jsonrpc.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseline.js'
 import { VERSION, dataDir, globalDbPath } from './constants.js'
@@ -392,17 +391,17 @@ function withConfinedRead(pins: ReadonlyMap<string, string>, fn: () => CallToolR
  * Builds the MCP server and registers every tool listed in tests/mcp_server.test.ts's TOOL_NAMES,
  * which is asserted against a live listTools() call. Does not connect a transport.
  *
- * Async purely so `@modelcontextprotocol/sdk` and `zod` load here rather than at module scope.
- * cli.ts already defers this whole module behind `await import('./mcp_server.js')` and says so, but
- * that only defers token-goat's own code: the bundle is a single file, so esbuild inlines this
- * module into it and hoists a static `import` of an external package to the top of the bundle,
- * where ESM evaluates it before anything runs. The two packages together cost 181ms and 131 module
+ * Async purely so the protocol layer and `zod` load here rather than at module scope. cli.ts
+ * already defers this whole module behind `await import('./mcp_server.js')` and says so, but that
+ * only defers token-goat's own code: a static `import` of a package gets hoisted to the top of the
+ * bundle, where ESM evaluates it before anything runs, and code splitting can only keep a module
+ * out of the startup chunk if the edge reaching it is dynamic. This once cost 181ms and 131 module
  * file loads on every invocation of the binary -- `--version`, every hook Claude Code fires on
  * every tool call, every test that spawns the bundle -- to serve the one command that is an MCP
  * server. Keep both loads inside this function; a static import here is not local to this file.
  */
 export async function createMcpServer(): Promise<McpServer> {
-  const [{ McpServer }, { z }] = await Promise.all([import('@modelcontextprotocol/sdk/server/mcp.js'), import('zod')])
+  const [{ McpServer }, { z }] = await Promise.all([import('./mcp_jsonrpc.js'), import('zod')])
   const server = new McpServer({ name: 'token-goat', version: VERSION })
 
   const makeProjectRootField = (verb: string) =>
