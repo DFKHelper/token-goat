@@ -537,6 +537,41 @@ describe('preReadImageHandler + OCR wiring', () => {
     expect(out.context).not.toContain('data:image/')
   })
 
+  it('still records the image_shrink pixel-saving row when the OCR branch fires, not only image_ocr (regression: the image_shrink recordStat sat below the OCR early-return, so a text-heavy image -- exactly what OCR targets -- dropped its whole pixel-shrink saving from the ledger and recorded image_ocr alone)', async () => {
+    setTesseractEntryForTesting(
+      writeStub(
+        'text-heavy-stats',
+        `module.exports.createWorker = async function () {
+          return {
+            recognize: async () => ({ data: { text: 'a'.repeat(100), confidence: 92 } }),
+            terminate: async () => {},
+          }
+        }`,
+      ),
+    )
+    const shrinkBefore = summarize(30).by_kind['image_shrink']
+    const shrinkEventsBefore = shrinkBefore?.events ?? 0
+    const shrinkBytesBefore = shrinkBefore?.bytes_saved ?? 0
+    const ocrBefore = summarize(30).by_kind['image_ocr']
+    const ocrEventsBefore = ocrBefore?.events ?? 0
+
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    // OCR replaced the data URL -- confirms the OCR branch, not the plain shrink path, ran.
+    expect(out.context).toContain('a'.repeat(100))
+    expect(out.context).not.toContain('data:image/')
+
+    // The OCR row is recorded...
+    const ocrAfter = summarize(30).by_kind['image_ocr']
+    expect(ocrAfter?.events ?? 0).toBeGreaterThan(ocrEventsBefore)
+    // ...AND the pixel-shrink row is still recorded on the same call, with its real byte saving.
+    const shrinkAfter = summarize(30).by_kind['image_shrink']
+    expect(shrinkAfter).toBeDefined()
+    expect(shrinkAfter?.events ?? 0).toBeGreaterThan(shrinkEventsBefore)
+    expect(shrinkAfter?.bytes_saved ?? 0).toBeGreaterThan(shrinkBytesBefore)
+  })
+
   it('falls back to the pixel-shrink data URL when OCR confidence is below the configured threshold', async () => {
     setTesseractEntryForTesting(
       writeStub(
