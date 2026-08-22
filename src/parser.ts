@@ -577,12 +577,38 @@ function makeSymbol(
   }
 }
 
+// One declaration node can name hundreds of symbols, and each of them would otherwise store the
+// whole declaration's text. `const [v0, ..., v899] = source` turned a 4.4 KB line into 3.9 MB of
+// stored bodies, roughly 900x, and Go's `var v0, ..., v599 = ...` does the same thing -- the same
+// quadratic growth MAX_SYMBOL_BODY_CHARS bounds for a single oversized row, spread across many
+// small rows instead so no individual row ever trips that cap. Elide the bodies once the
+// declaration's total contribution would pass the same cap. Elided means the empty string, not a
+// truncated copy, because resolveBody re-slices an empty body from the file at read time -- so
+// `read` still serves the whole declaration.
+function fanOutElidesBodies(nameCount: number, declarationChars: number): boolean {
+  return nameCount > 1 && nameCount * declarationChars > MAX_SYMBOL_BODY_CHARS
+}
+
 // Collect the bound local identifiers from a destructuring pattern node (object_pattern / array_pattern, including nested patterns, rest elements, defaults, and renames). A renamed key (`{ a: b }`) binds the value `b`; the key `a` is a property_identifier and is intentionally skipped.
 function collectPatternBindings(node: TsNode): string[] {
   const names: string[] = []
   const walk = (n: TsNode): void => {
     if (n.type === 'identifier' || n.type === 'shorthand_property_identifier_pattern') {
       if (n.text !== '') names.push(n.text)
+      return
+    }
+    // A default binds only its left side. The right side (`{ a = fallback }`, `[a = mk()]`) is an
+    // ordinary expression, so every identifier in it is a reference to something declared
+    // elsewhere, not a new binding.
+    if (n.type === 'assignment_pattern' || n.type === 'object_assignment_pattern') {
+      const left = n.childForFieldName('left')
+      if (left !== null) walk(left)
+      return
+    }
+    // `{ key: value }` binds only the value; a computed key (`{ [k]: v }`) reads `k`.
+    if (n.type === 'pair_pattern') {
+      const value = n.childForFieldName('value')
+      if (value !== null) walk(value)
       return
     }
     for (const child of n.namedChildren) walk(child)
@@ -675,16 +701,7 @@ function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly stri
         } else {
           // Destructuring pattern: emit one variable symbol per bound identifier (not a single junk symbol named after the whole `{ ... }` / `[ ... ]`).
           const bindings = collectPatternBindings(name)
-          // One declarator can bind hundreds of names, and each of them would otherwise
-          // store the whole declarator's text: `const [v0, ..., v899] = source` turned a
-          // 4.4 KB line into 3.9 MB of stored bodies, roughly 900x, which is the same
-          // quadratic growth MAX_SYMBOL_BODY_CHARS bounds for a single oversized row but
-          // spread across many small ones instead. Store the body elided once the
-          // declaration's total contribution would pass that same cap. Elided means the
-          // empty string, not a truncated copy, because resolveBody re-slices an empty
-          // body from the file at read time -- so `read` still serves the whole thing.
-          const elideBodies =
-            bindings.length > 1 && bindings.length * child.text.length > MAX_SYMBOL_BODY_CHARS
+          const elideBodies = fanOutElidesBodies(bindings.length, child.text.length)
           for (const bound of bindings) {
             const sym = makeSymbol(filePath, bound, 'variable', child, lines, 'c')
             out.push(elideBodies ? { ...sym, body: '' } : sym)
@@ -850,15 +867,36 @@ const GO_LOCAL_KINDS: ReadonlySet<string> = new Set([
   'method_elem',
 ])
 
+// Go spec nodes that can declare several names at once: `var a, b = 1, 2`, `const x, y = 3, 4`.
+// tree-sitter-go repeats the `name` field on one spec node, and childForFieldName returns only the
+// first, so every name after the first was absent from the index -- `symbol b` found nothing for a
+// package-level variable that plainly exists. The declared names are exactly the direct
+// `identifier` children: a declared type is a `type_identifier` (or a pointer/qualified node) and
+// the assigned values live under an `expression_list`, so neither can be mistaken for a name.
+const GO_MULTI_NAME_SPECS: ReadonlySet<string> = new Set(['var_spec', 'const_spec'])
+
 function extractGoSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
   const visit = (node: TsNode, insideFunction: boolean): void => {
     const kind = GO_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined && !(insideFunction && GO_LOCAL_KINDS.has(node.type))) {
-      const name = nodeName(node)
-      if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node, lines, 'c'))
+      if (GO_MULTI_NAME_SPECS.has(node.type)) {
+        // The blank identifier declares nothing nameable; indexing it would put a `_` row in
+        // every file that discards one half of a multi-value declaration.
+        const declared = node.namedChildren.filter(
+          (c) => c.type === 'identifier' && c.text !== '' && c.text !== '_',
+        )
+        const elideBodies = fanOutElidesBodies(declared.length, node.text.length)
+        for (const child of declared) {
+          const sym = makeSymbol(filePath, child.text, kind, node, lines, 'c')
+          out.push(elideBodies ? { ...sym, body: '' } : sym)
+        }
+      } else {
+        const name = nodeName(node)
+        if (name !== null && name !== '') {
+          out.push(makeSymbol(filePath, name, kind, node, lines, 'c'))
+        }
       }
     }
 
