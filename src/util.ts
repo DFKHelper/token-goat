@@ -833,6 +833,21 @@ export function countContentLines(content: string): number {
   return content.endsWith('\n') ? n - 1 : n
 }
 
+/**
+ * Appends every item of `items` to `target`, the way `target.push(...items)` reads but without
+ * passing the items as call arguments.
+ *
+ * The spread form is a function call with one argument per item, so it fails with `RangeError:
+ * Maximum call stack size exceeded` somewhere around 125,000 items -- a limit on the engine's
+ * call stack, not on memory, and low enough to be reached by ordinary files. A 5 MB JSON array,
+ * a 300,000-element XML document and a long Word document each crashed a command that exists to
+ * read exactly those files without loading them whole. Use this wherever the number of items
+ * comes from a file rather than from a fixed-size slice.
+ */
+export function pushAll<T>(target: T[], items: Iterable<T>): void {
+  for (const item of items) target.push(item)
+}
+
 /** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

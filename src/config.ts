@@ -8,7 +8,7 @@ import { configPath, projectConfigPath } from './constants.js'
 import { envBool, envInt, envStr, envStrList, TRUTHY_ENV_VALUES, FALSY_ENV_VALUES } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
-import { atomicWriteText, extractErrorMessage } from './util.js'
+import { atomicWriteText, decodeSource, extractErrorMessage } from './util.js'
 import { registerReset } from './reset.js'
 
 // ---------------------------------------------------------------------------
@@ -1154,10 +1154,22 @@ export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg:
  * message). Shared by {@link loadConfig} and {@link loadPersistedConfig} so both loaders
  * classify failures the same way.
  */
+/**
+ * Read a config file as text, honouring the byte-order mark the editor that wrote it left behind.
+ * These files were read as raw UTF-8, so a mark of any kind became part of the first key name and
+ * the whole file failed to parse with "only letter, numbers, dashes and underscores are allowed
+ * in keys" -- every setting in it silently ignored. A UTF-8 mark is what an editor set to
+ * "UTF-8 with BOM" writes, and a UTF-16 one is what Windows PowerShell 5.1 writes for a plain
+ * `>` redirect, so both are ordinary ways to end up with a config on this program's main
+ * platform. `decodeSource` is the same decoder the indexer already uses for source files.
+ */
+function readConfigSource(p: string): string {
+  return decodeSource(fs.readFileSync(p))
+}
+
 function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: string | null } {
   try {
-    const text = fs.readFileSync(p, 'utf8')
-    return { raw: parse(text) as Record<string, unknown>, parseError: null }
+    return { raw: parse(readConfigSource(p)) as Record<string, unknown>, parseError: null }
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return { raw: {}, parseError: null }
@@ -1175,7 +1187,7 @@ function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: 
  */
 function readConfigText(p: string): { text: string | null; readError: string | null } {
   try {
-    return { text: fs.readFileSync(p, 'utf8'), readError: null }
+    return { text: readConfigSource(p), readError: null }
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return { text: null, readError: null }
@@ -1261,12 +1273,12 @@ export function isAutoTriggerMultiplierExplicit(): boolean {
     return (ca_raw as Record<string, unknown>)['auto_trigger_multiplier'] !== undefined
   }
   try {
-    if (setsMultiplier(fs.readFileSync(configPath(), 'utf8'))) return true
+    if (setsMultiplier(readConfigSource(configPath()))) return true
   } catch {
     // no readable global config.toml -- fall through to the per-project check
   }
   try {
-    return setsMultiplier(fs.readFileSync(projectConfigPath(resolveConfigProjectRoot()), 'utf8'))
+    return setsMultiplier(readConfigSource(projectConfigPath(resolveConfigProjectRoot())))
   } catch {
     return false
   }

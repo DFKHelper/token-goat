@@ -13,6 +13,7 @@
  */
 
 import { displaySafeText } from './paths.js'
+import { pushAll } from './util.js'
 
 export type JsonValueType = 'null' | 'string' | 'number' | 'boolean' | 'array' | 'object'
 
@@ -214,9 +215,9 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
       } else if (op.kind === 'wildcard') {
         fanned = true
         if (Array.isArray(item)) {
-          next.push(...item)
+          pushAll(next, item)
         } else if (typeof item === 'object' && item !== null) {
-          next.push(...Object.values(item as Record<string, unknown>))
+          pushAll(next, Object.values(item as Record<string, unknown>))
         }
       } else {
         fanned = true

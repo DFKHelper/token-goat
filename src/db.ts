@@ -382,13 +382,20 @@ function runMigrations(conn: BetterSqlite3Database, fromVersion: number, toVersi
  * are best-effort: a SQLite build lacking either still yields a working DB.
  */
 function initConnection(conn: BetterSqlite3Database): void {
+  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
+  // Set FIRST, before any statement that can contend, rather than after the two pragmas below as it
+  // used to be. The switch to WAL and the schema creation that follows it both need an exclusive
+  // lock, and on a database that does not exist yet every process racing to create it runs both --
+  // with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at
+  // all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure
+  // that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in
+  // parser.ts), and moving this line did not change it.
+  conn.pragma('busy_timeout = 15000')
   const walMode = conn.pragma('journal_mode = WAL', { simple: true })
   if (String(walMode).toLowerCase() !== 'wal') {
     throw new Error(`db: failed to enable WAL mode (got: ${walMode})`)
   }
   conn.pragma('synchronous = NORMAL')
-  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
-  conn.pragma('busy_timeout = 15000')
 
   // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte consistent. Registered once per connection (not per-query) and marked deterministic so SQLite can use it in query planning the same way it would a built-in function.
   conn.function('TG_LOWER', { deterministic: true }, (value: unknown) =>

@@ -289,3 +289,17 @@ describe('runXmlOutline and runXmlQuery CLI commands', () => {
     expect(stderrBad).toContain('Failed to parse XML')
   })
 })
+
+// Both the candidate list and the attribute-value list were appended with `push(...array)`, a
+// call with one argument per item, which fails with "Maximum call stack size exceeded" above
+// roughly 125,000 items. A 300,000-element document reached it, and `xml-query` is the command
+// that exists so a document that size never has to be read whole.
+describe('a document with more elements than can be spread as call arguments', () => {
+  const HUGE = 200_000
+
+  it('matches every element instead of overflowing the call stack', () => {
+    const xml = `<root>${'<item id="1"/>'.repeat(HUGE)}</root>`
+
+    expect(queryXml(xml, '/root/item').items).toHaveLength(HUGE)
+  })
+})

@@ -988,3 +988,58 @@ describe('per-project .token-goat.toml override', () => {
     expect(cfg.compact_assist.min_events).toBe(4)
   })
 })
+
+// A config file carries whatever byte-order mark the editor that wrote it left behind. These
+// files were read as raw UTF-8, so the mark became part of the first key name and the whole file
+// failed to parse -- every setting in it silently ignored, with an error naming a key nobody
+// wrote. "UTF-8 with BOM" is an ordinary editor setting, and UTF-16 with a mark is what Windows
+// PowerShell 5.1 writes for a plain `>` redirect, which is this program's main platform.
+describe('a config file written with a byte-order mark', () => {
+  beforeEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+    try { fs.unlinkSync(_testProjectConfigPath) } catch { /* ok */ }
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+    try { fs.unlinkSync(_testProjectConfigPath) } catch { /* ok */ }
+  })
+
+  const TOML = '[hints]\nmcp_dedup_ttl_secs = 77\n'
+
+  it.each([
+    ['UTF-8 with a mark', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(TOML, 'utf8')])],
+    ['UTF-16LE with a mark', Buffer.from(`\uFEFF${TOML}`, 'utf16le')],
+    ['UTF-8 with no mark', Buffer.from(TOML, 'utf8')],
+  ])('reads the global config written as %s', (_label, bytes) => {
+    fs.writeFileSync(_testConfigPath, bytes)
+
+    expect(loadConfig().hints.mcp_dedup_ttl_secs).toBe(77)
+    expect(getLastConfigParseError()).toBeNull()
+  })
+
+  it('reads a per-project file written with a mark, and still refuses its locked keys', () => {
+    fs.writeFileSync(
+      _testProjectConfigPath,
+      Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from('[hints]\nmcp_dedup_ttl_secs = 88\n\n[injection]\nenabled = false\n', 'utf8'),
+      ]),
+    )
+    const cfg = loadConfig()
+
+    expect(cfg.hints.mcp_dedup_ttl_secs).toBe(88)
+    expect(cfg.injection.enabled).toBe(true)
+    expect(getLastProjectConfigParseError()).toBeNull()
+  })
+
+  it('still reports a genuinely malformed file as a parse error rather than swallowing it', () => {
+    fs.writeFileSync(_testConfigPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('[hints\n', 'utf8')]))
+
+    loadConfig()
+
+    expect(getLastConfigParseError()).not.toBeNull()
+  })
+})

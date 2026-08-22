@@ -277,3 +277,20 @@ describe('accessFailureMessage', () => {
     expect(accessFailureMessage(new Error('boom'), 'a.docx')).toBe('could not read a.docx (unknown error)')
   })
 })
+
+
+// `collectElements` appended each matching array with `out.push(...val)`, a call with one
+// argument per item, so it failed with "Maximum call stack size exceeded" above roughly 125,000
+// elements. A long Word document reaches that: a 40 kB .docx of 400,000 paragraphs crashed
+// `docx-text` with that raw engine message and no indication of what was wrong.
+describe('collecting more elements than can be spread as call arguments', () => {
+  it('collects every one instead of overflowing the call stack', () => {
+    const HUGE = 200_000
+    const node = { body: { 'w:p': Array.from({ length: HUGE }, (_, i) => ({ n: i })) } }
+
+    const out = collectElements(node, 'w:p')
+
+    expect(out).toHaveLength(HUGE)
+    expect(out[HUGE - 1]).toEqual({ n: HUGE - 1 })
+  })
+})

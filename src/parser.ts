@@ -2706,7 +2706,16 @@ function writeParseResult(
     }
   })
 
-  writeAll()
+  // `.immediate()` -- BEGIN IMMEDIATE -- rather than a plain call, which better-sqlite3 issues as a
+  // deferred BEGIN. A deferred transaction takes its read snapshot first and only asks for the
+  // write lock when it reaches a writing statement, and SQLite refuses that upgrade with
+  // SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does
+  // nothing for it. Six `index` runs starting together against a database that did not exist yet
+  // reproduced it every time: one of them failed on its very first file with "database is locked",
+  // dropped that file from the index, and still exited 0. Raising busy_timeout to 60s in a run
+  // lasting one second changed nothing, which is what proved the handler was never being asked.
+  // BEGIN IMMEDIATE takes the write lock up front, where the busy handler does apply.
+  writeAll.immediate()
 }
 
 /**

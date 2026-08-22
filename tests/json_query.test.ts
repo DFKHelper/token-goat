@@ -278,3 +278,31 @@ describe('evalJsonPath / queryJson', () => {
     expect(result.items).toEqual([1]);
   });
 });
+
+// A wildcard step appended its matches with `next.push(...item)`, which is a call with one
+// argument per item, so it failed with "Maximum call stack size exceeded" above roughly 125,000
+// elements -- a limit on the engine's call stack, not on memory. A 5 MB JSON array reached it,
+// and `json-query` exists precisely so a file that size never has to be read whole. `yaml-query`
+// runs the same evaluator, so it crashed on the same shape.
+describe('a wildcard over an array too large to spread as call arguments', () => {
+  const HUGE = 200_000
+
+  it('fans out over every element instead of overflowing the call stack', () => {
+    const doc = { items: Array.from({ length: HUGE }, (_, i) => i) }
+
+    const out = evalJsonPath(doc, parseJsonPath('items[*]'))
+
+    expect(out.items).toHaveLength(HUGE)
+    expect(out.items[0]).toBe(0)
+    expect(out.items[HUGE - 1]).toBe(HUGE - 1)
+  })
+
+  it('fans out over every value of a large object the same way', () => {
+    const big: Record<string, number> = {}
+    for (let i = 0; i < HUGE; i++) big[`k${i}`] = i
+
+    const out = evalJsonPath({ items: big }, parseJsonPath('items[*]'))
+
+    expect(out.items).toHaveLength(HUGE)
+  })
+})

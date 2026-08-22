@@ -238,8 +238,15 @@ function maskSpans(content: string, spans: ReadonlyArray<readonly [number, numbe
   return chars.join('')
 }
 
-function componentSymbol(filePath: string, name: string, kind: string, totalLines: number): SymbolEntry {
-  return { filePath, name, kind, lineStart: 1, lineEnd: totalLines, body: '', docstring: '', parent: '' }
+/**
+ * The whole-file component symbol, as a list so an empty file can yield none. A file with no
+ * lines has no component to point at: emitting one anyway gave it `lineStart: 1, lineEnd: 0`, a
+ * backwards span that reached the database and printed to the reader as `Empty.vue:1-0`. Every
+ * other language emits nothing for empty content, and so does this now.
+ */
+function componentSymbols(filePath: string, name: string, kind: string, totalLines: number): SymbolEntry[] {
+  if (totalLines < 1) return []
+  return [{ filePath, name, kind, lineStart: 1, lineEnd: totalLines, body: '', docstring: '', parent: '' }]
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +262,7 @@ export function extractVue(content: string, filePath: string): SfcResult {
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   const name = componentName(filePath)
-  const symbols: SymbolEntry[] = [componentSymbol(filePath, name, 'vue_component', totalLines)]
+  const symbols: SymbolEntry[] = componentSymbols(filePath, name, 'vue_component', totalLines)
   const refs: RefEntry[] = []
 
   for (const block of extractTagBlocks(content, lineIndex, 'script')) {
@@ -284,7 +291,7 @@ export function extractSvelte(content: string, filePath: string): SfcResult {
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   const name = componentName(filePath)
-  const symbols: SymbolEntry[] = [componentSymbol(filePath, name, 'svelte_component', totalLines)]
+  const symbols: SymbolEntry[] = componentSymbols(filePath, name, 'svelte_component', totalLines)
   const refs: RefEntry[] = []
 
   const scriptBlocks = extractTagBlocks(content, lineIndex, 'script')
@@ -350,7 +357,7 @@ export function extractAstro(content: string, filePath: string): SfcResult {
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
   const name = componentName(filePath)
-  const symbols: SymbolEntry[] = [componentSymbol(filePath, name, 'astro_component', totalLines)]
+  const symbols: SymbolEntry[] = componentSymbols(filePath, name, 'astro_component', totalLines)
   const refs: RefEntry[] = []
 
   const lines = content.split('\n')
