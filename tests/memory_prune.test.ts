@@ -396,7 +396,7 @@ the quick brown fox`
 // embedding/cosine path that threshold is actually meant to govern was never ported at all
 // ("not implemented in this port; skip gracefully"), even though this repo already ships a
 // working embeddings module used elsewhere for semantic search. These tests exercise the
-// now-wired embedding path directly (bypassing the real @xenova pipeline via
+// now-wired embedding path directly (bypassing the real embedding pipeline via
 // setPipelineFnForTesting) and prove `threshold` actually changes clustering output --
 // the pre-fix hardcoded-Jaccard-only behavior would fail both assertions below.
 describe('findContentDuplicates embedding path (regression)', () => {

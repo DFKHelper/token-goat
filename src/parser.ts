@@ -2856,7 +2856,7 @@ export function disabledEmbedSha(sha: string): string {
 
 /**
  * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} could not actually embed
- * a file because the optional embedding deps were absent (the @xenova/transformers model or the
+ * a file because the optional embedding deps were absent (the inference runtime or the
  * sqlite-vec `chunk_vectors` table). Distinct from a real embed_sha so the freshness gate can
  * re-embed the file once the deps are installed -- otherwise a project indexed on a deps-less
  * install would stamp bare shas, and every previously-indexed unchanged file would look

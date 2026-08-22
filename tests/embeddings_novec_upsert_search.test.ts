@@ -19,7 +19,7 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
-// Regression: chunk_vectors exists only when sqlite-vec loads, but @xenova/transformers is an independent hard dependency, so isAvailable() (model-only) is true on a normal install even when the vec table is absent. upsertChunks ran INSERT INTO chunk_vectors and searchSemantic ran the KNN SELECT unconditionally, both throwing "no such table: chunk_vectors". Simulate the vec-absent install by dropping the table, then assert neither throws.
+// Regression: chunk_vectors exists only when sqlite-vec loads, but the embedding runtime is an independent hard dependency, so isAvailable() (model-only) is true on a normal install even when the vec table is absent. upsertChunks ran INSERT INTO chunk_vectors and searchSemantic ran the KNN SELECT unconditionally, both throwing "no such table: chunk_vectors". Simulate the vec-absent install by dropping the table, then assert neither throws.
 describe('upsertChunks and searchSemantic tolerate a missing chunk_vectors table', () => {
   const chunk: Chunk = { filePath: 'c:/proj/x.ts', startLine: 1, endLine: 2, text: 'hello world function foo', kind: 'code' }
 

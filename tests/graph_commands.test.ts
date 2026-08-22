@@ -4342,7 +4342,7 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
   // Regression: searchSymbolsFts (index_reader.ts) used to take no rootDir parameter at all, so
   // every caller queried the FTS index across every project ever indexed into global.db, not
   // just the current one. This is the default (non-edge-case) path on installs without
-  // sqlite-vec/@xenova, since `semantic` always falls through to this same FTS search there.
+  // sqlite-vec/onnxruntime-node, since `semantic` always falls through to this same FTS search there.
   it('runContextFor does not surface a symbol from a different project sharing a search term', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-rootB-'))

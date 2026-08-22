@@ -37,6 +37,9 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
   // silent no-op in the shipped binary despite every image_shrink.test.ts case
   // passing (those import image_shrink.ts directly, never through the CLI's
   // full import graph, so @xenova/transformers was never loaded in-process).
+  // The backend is onnxruntime-node now and carries no sharp of its own, so that exact
+  // collision cannot recur — but it is still a native addon reached from the same place, and
+  // embed_model.ts still defers loading it for this reason, so the check keeps its point.
   // This spawns the real dist/token-goat.mjs as a separate process and drives
   // it through the actual `hook pre_tool_use` dispatch path with a real
   // oversized image, asserting a genuine shrink happened — not just "no crash".

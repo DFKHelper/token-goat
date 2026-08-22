@@ -131,7 +131,7 @@ describe('large_file_symbol_only_kb gates embedding independently of symbol inde
   })
 })
 
-// Bug 3: when the optional embedding deps are absent (no @xenova/transformers model, or no
+// Bug 3: when the optional embedding deps are absent (no embedding runtime, or no
 // sqlite-vec chunk_vectors table), embedIndexFile skipped embedding and returned normally, yet
 // indexFileEmbeddings stamped embed_sha = sha as if the file had really been embedded. A user who
 // indexed a project without the deps, then installed them later, would find every previously

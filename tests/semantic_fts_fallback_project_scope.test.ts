@@ -1,7 +1,7 @@
 /**
  * Regression: `searchSymbolsFts` (index_reader.ts) used to take no `rootDir` parameter at all,
  * so every caller -- including `runSemantic`'s (read_commands.ts) full-text fallback, used
- * whenever no embedding index is available (no sqlite-vec/@xenova installed, or nothing has been
+ * whenever no embedding index is available (no sqlite-vec/onnxruntime-node installed, or nothing has been
  * embedded yet) -- queried the FTS index across every project ever indexed into the shared
  * `global.db`, not just the current one. This fallback is NOT an edge case: on installs without
  * the optional embedding deps it's the only path `semantic` ever takes, so cross-project leakage

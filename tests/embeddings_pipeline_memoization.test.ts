@@ -1,17 +1,17 @@
 /**
  * Regression: embedTexts called pipelineFn('feature-extraction', modelName) on every single
- * invocation with no memoization. @xenova/transformers' pipeline() has no built-in caching of
- * its own (it reloads model weights + tokenizer from scratch each call), so every embedTexts
- * call -- and by extension every indexFileEmbeddings call in the real indexing path -- paid
- * full pipeline-construction cost repeatedly instead of once per process.
+ * invocation with no memoization. Building one is not cheap and never has been: back then it was
+ * @xenova/transformers' pipeline() reloading weights and tokenizer from scratch each call, and it
+ * is EmbeddingModel.load() now, which re-hashes both model files and creates a fresh ONNX session.
+ * Either way every embedTexts call -- and by extension every indexFileEmbeddings call in the real
+ * indexing path -- paid that repeatedly instead of once per process.
  *
- * @xenova/transformers is loaded via createRequire (see embeddings.ts's ensureTransformerLoaded),
- * which resolves through Node's real CJS loader rather than vitest's mockable module graph, so
- * vi.mock('@xenova/transformers', ...) cannot intercept it, and its `pipeline` export is a
- * non-configurable property that cannot be monkey-patched from a test either (verified: both
- * approaches throw). setPipelineFnForTesting is the test-only injection seam embeddings.ts
- * exposes for exactly this reason, mirroring the setXForTesting pattern already used in
- * skill_cache.ts.
+ * The backend is loaded via createRequire (see embed_model.ts's ensureRuntimeLoaded), which
+ * resolves through Node's real CJS loader rather than vitest's mockable module graph, so vi.mock
+ * cannot intercept it, and the runtime's exports are non-configurable properties that cannot be
+ * monkey-patched from a test either (verified: both approaches throw). setPipelineFnForTesting is
+ * the test-only injection seam embeddings.ts exposes for exactly this reason, mirroring the
+ * setXForTesting pattern already used in skill_cache.ts.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 

@@ -210,7 +210,7 @@ export interface IndexingConfig {
   // symbols/refs parse. Defaults to true to match the feature's advertised behavior; set
   // false to skip the (meaningfully slower, model-inference-backed) embeddings step and keep
   // indexing purely syntactic. Independently gated at the point of use on whether
-  // @xenova/transformers and sqlite-vec are actually installed - this flag only controls
+  // onnxruntime-node and sqlite-vec are actually installed - this flag only controls
   // whether embeddings are attempted at all.
   embeddings_enabled: boolean
 }

@@ -139,7 +139,7 @@ describe.skipIf(!canExerciseVec0)('fetchScopedHits (project scoping SQL)', () =>
 // the module -- vi.mock only intercepts external imports, not a module's calls to its own other
 // exports -- so this suite needs a real model load. Gated the same way
 // tests/semantic_embeddings_e2e.test.ts gates its real-inference assertions: sqlite-vec must load
-// AND isAvailable() (the @xenova/transformers package) must be true. To stay deterministic
+// AND isAvailable() (the onnxruntime-node runtime) must be true. To stay deterministic
 // without depending on the model's actual semantic judgment, the test embeds a fixed seed string
 // once itself (via the real, exported embedTexts) and reuses that literal vector to seed every
 // test chunk -- so every chunk is at (near-)zero distance from the query embedded inside

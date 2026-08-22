@@ -65,7 +65,10 @@ describe('embeddingProvenance()', () => {
     // The pinned revision, abbreviated. Its presence is the point: bumping PINNED_MODEL_REVISION
     // has to change this string, or a re-pinned model would silently mix with the old one.
     expect(provenance).toMatch(/@[0-9a-f]{12}\//)
-    expect(provenance).toContain('@xenova/transformers@')
+    // Major.minor and no patch, deliberately: int8 kernel changes land in minor releases, so those
+    // must invalidate, while a patch that cannot move a number must not re-embed every project on
+    // the machine. The `$` is what pins that -- without it a patch-carrying string still passes.
+    expect(provenance).toMatch(/\/onnxruntime-node@\d+\.\d+$/)
   })
 
   it('distinguishes a non-default model from the pinned one rather than claiming the same revision', () => {

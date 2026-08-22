@@ -11,10 +11,10 @@
  * own [lineStart, lineEnd] span.
  *
  * Lazily `require`s `typescript` (mirrors {@link ./embeddings.ts}'s `ensureTransformerLoaded`
- * pattern for `@xenova/transformers`) so a missing/broken install degrades to `null` instead of
+ * pattern for `onnxruntime-node`) so a missing/broken install degrades to `null` instead of
  * throwing, and `typescript` never gets bundled into `dist/token-goat.mjs` (see
  * `esbuild.config.mjs`'s `EXTERNAL_NATIVE_DEPS` -- `typescript` is listed there for the same
- * "optional dependency must not get statically inlined" reason as `@xenova/transformers`).
+ * "optional dependency must not get statically inlined" reason as `onnxruntime-node`).
  *
  * Scoping / performance: building a `ts.Program` for a whole project is the exact cost this
  * product exists to avoid paying on every `refs` call. Instead of the project's full tsconfig

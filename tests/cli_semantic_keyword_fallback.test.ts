@@ -1,8 +1,9 @@
 /**
  * What `semantic` tells the user when the embedding model is not installed.
  *
- * `@xenova/transformers` is opt-in now -- it carried six advisories with no forward patch, one of
- * them critical -- so "no embedding model" is the state a default install is in, not an exotic one.
+ * The embedding backend, `onnxruntime-node`, is opt-in -- a 34 MB native addon has no business
+ * landing in every install for a feature most of them never invoke -- so "no embedding model" is
+ * the state a default install is in, not an exotic one.
  * `semantic` keeps working there: `runSemantic` fuses a dense pass with a BM25 pass and the BM25
  * pass is unconditional, so results still come back, matched on words instead of meaning.
  *
@@ -29,6 +30,8 @@ import { canonicalize } from '../src/project.js'
 import type * as EmbeddingsModule from '../src/embeddings.js'
 
 let modelAvailable = true
+/** When set, `searchSemantic` throws this instead of returning nothing -- see the second describe. */
+let searchFailure: Error | null = null
 
 vi.mock('../src/embeddings.js', async (importOriginal) => {
   const actual = await importOriginal<typeof EmbeddingsModule>()
@@ -38,7 +41,10 @@ vi.mock('../src/embeddings.js', async (importOriginal) => {
     // What the real function does when the model is absent: returns nothing, says nothing. Mocked
     // rather than called, because the real one would try to load the package that is present in
     // this repository -- the state under test is the one this repository can never be in.
-    searchSemantic: async () => [],
+    searchSemantic: async () => {
+      if (searchFailure !== null) throw searchFailure
+      return []
+    },
   }
 })
 
@@ -93,9 +99,12 @@ afterAll(() => {
 
 afterEach(() => {
   modelAvailable = true
+  searchFailure = null
 })
 
-async function runSemanticCli(query: string): Promise<{ stdout: string; warnings: string[] }> {
+async function runSemanticCli(
+  query: string,
+): Promise<{ stdout: string; warnings: string[]; exitCode: number }> {
   const prev = process.exitCode
   process.exitCode = 0
   const chunks: string[] = []
@@ -113,7 +122,10 @@ async function runSemanticCli(query: string): Promise<{ stdout: string; warnings
   process.chdir(TMP)
   try {
     await run(['node', 'token-goat', 'semantic', query])
-    return { stdout: chunks.join(''), warnings }
+    // Read before the restore below puts the caller's value back: the exit code is the whole
+    // difference between "degraded to keyword search" and "failed", and both print the same
+    // warning.
+    return { stdout: chunks.join(''), warnings, exitCode: process.exitCode === undefined ? 0 : Number(process.exitCode) }
   } finally {
     process.chdir(cwd)
     out.mockRestore()
@@ -153,7 +165,7 @@ describe('semantic with no embedding model installed', () => {
     // node_modules, so -g is load-bearing; a project install must not have it. A warning that
     // names the package without the command, or the command in the wrong form, sends the reader
     // to an install that succeeds and still does not load.
-    expect(warning).toContain('npm install -g @xenova/transformers')
+    expect(warning).toContain('npm install -g onnxruntime-node')
     expect(warning).toContain('drop -g if token-goat is a project dependency')
   })
 
@@ -168,5 +180,48 @@ describe('semantic with no embedding model installed', () => {
     // fully working one, would train the reader to ignore the line that carries the whole cost of
     // making the package opt-in.
     expect(warnings.join('\n')).not.toContain('Matching on meaning is off')
+  })
+})
+
+describe('semantic with the runtime installed but its model files unobtainable', () => {
+  // A second way to have no embeddings, and a genuinely new one. While the backend was
+  // @xenova/transformers the weights were fetched by the package itself, so "package present" and
+  // "model usable" were effectively one state and `isAvailable()` covered both. The in-house
+  // loader separates them: onnxruntime-node can install and load perfectly while the 34 MB of
+  // weights cannot be obtained -- offline mode with a cold cache, a network failure, a digest that
+  // does not match the pin. That throws out of embedTexts, past searchSemantic, and it used to
+  // escape runSemantic entirely: `semantic` exited 1 with nothing on stdout, at the exact moment
+  // three documents promise it degrades to keyword search. Found by dogfooding the built binary
+  // offline; the describe above could not have caught it, because it gates on isAvailable().
+  const OFFLINE = new Error(
+    'Offline mode is on (network.offline): refusing to download tokenizer.json for the embedding model.',
+  )
+
+  it('returns keyword results with a zero exit, rather than failing the command', async () => {
+    modelAvailable = true
+    searchFailure = OFFLINE
+    const { stdout, exitCode } = await runSemanticCli('refreshCredential')
+
+    // Both halves, because either alone still reads as a pass: a command that exits 0 having
+    // printed nothing is the bug, and so is one that prints hits and then exits 1.
+    expect(exitCode, 'a missing model degrades the results; it does not fail the command').toBe(0)
+    expect(stdout, 'the BM25 pass is unaffected by the dense half throwing').toContain('refreshCredential')
+  })
+
+  it('says what is missing, using the reason rather than a generic one', async () => {
+    modelAvailable = true
+    searchFailure = OFFLINE
+    const { warnings } = await runSemanticCli('refreshCredential')
+    const warning = warnings.join('\n')
+
+    expect(warning, 'the same sentence the absent-package case prints').toContain('Matching on meaning is off')
+    expect(warning, 'and where the results did come from').toContain('keyword search alone')
+    // The reason is the actionable part and it differs every time -- offline, a network failure, a
+    // digest mismatch. Swallowing it and printing the install command instead would send a reader
+    // who already has the package to reinstall it.
+    expect(warning, "the thrown error's own text, not a stand-in for it").toContain('network.offline')
+    expect(warning, 'the package is installed here; telling them to install it is wrong advice').not.toContain(
+      'npm install',
+    )
   })
 })

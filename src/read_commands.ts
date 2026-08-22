@@ -19,7 +19,7 @@ import { globalDbPath } from './constants.js'
 import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
 import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable } from './embeddings.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
@@ -6490,30 +6490,45 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   }
   const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
 
-  // Real embedding-vector similarity search: chunks/chunk_vectors are populated during indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers and sqlite-vec dependencies are present -- searchSemantic degrades to an empty array rather than throwing when either is unavailable or nothing has been embedded yet, so this is always safe to try; BM25 (below) is now ALWAYS consulted too, never gated on this returning zero hits, since a single weak dense hit used to make an exact BM25 keyword match unreachable.
+  // Real embedding-vector similarity search: chunks/chunk_vectors are populated during indexing whenever indexing.embeddings_enabled is on and the optional onnxruntime-node and sqlite-vec dependencies are present -- searchSemantic degrades to an empty array rather than throwing when either is unavailable or nothing has been embedded yet, so this is always safe to try; BM25 (below) is now ALWAYS consulted too, never gated on this returning zero hits, since a single weak dense hit used to make an exact BM25 keyword match unreachable.
   // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits in the SAME file before truncation, instead of merging an already-capped set of `n` raw hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
   // Say what the user is actually getting when the embedding model is absent. This is the default
-  // state now: `@xenova/transformers` carried six unpatchable advisories, one critical, so it is
-  // opt-in rather than something every install receives. The result is a real degradation that
-  // produces no error and no empty result -- BM25 below still answers -- which is precisely the
-  // kind of quiet change nobody discovers. Stated here rather than inside searchSemantic because
-  // only this function knows the keyword pass runs, and the message there claimed the whole
-  // feature was off while printing above genuine keyword hits.
+  // state now: the inference runtime is opt-in rather than something every install receives, so
+  // that a feature most installs never invoke does not put a 34 MB native addon on every machine.
+  // The result is a real degradation that produces no error and no empty result -- BM25 below
+  // still answers -- which is precisely the kind of quiet change nobody discovers. Stated here
+  // rather than inside searchSemantic because only this function knows the keyword pass runs, and
+  // the message there claimed the whole feature was off while printing above genuine keyword hits.
   if (!embeddingModelAvailable()) {
     console.warn(
-      'Matching on meaning is off (@xenova/transformers is not installed); these results come from keyword search alone. ' +
-        'Install it with: npm install -g @xenova/transformers (drop -g if token-goat is a project dependency)',
+      'Matching on meaning is off (onnxruntime-node is not installed); these results come from keyword search alone. ' +
+        'Install it with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)',
     )
   }
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-  const rawHits = await searchSemantic(
-    getDb(globalDbPath()),
-    query,
-    overFetchForMerge,
-    undefined,
-    undefined,
-    rootDir,
-  )
+  // The dense half is best-effort, and this catch is the whole of what makes that true. The
+  // package being absent is handled inside searchSemantic (it returns no hits), but the model
+  // files are a separate thing that can be missing on their own: the runtime installs fine and
+  // then the weights cannot be fetched -- offline mode, no cache yet, a network failure, a digest
+  // that does not match. That throws out of embedTexts, and before this catch it escaped
+  // runSemantic entirely, so `semantic` exited non-zero with nothing on stdout at the exact moment
+  // it was supposed to degrade to keyword search. Same treatment as the absent package: say what
+  // is missing, then carry on with the BM25 pass below, which is the half that still works.
+  let rawHits: SearchHit[] = []
+  try {
+    rawHits = await searchSemantic(
+      getDb(globalDbPath()),
+      query,
+      overFetchForMerge,
+      undefined,
+      undefined,
+      rootDir,
+    )
+  } catch (e) {
+    console.warn(
+      `Matching on meaning is off (${extractErrorMessage(e)}); these results come from keyword search alone.`,
+    )
+  }
   const mergedHits = mergeNearbyHits(rawHits)
   // BM25 full-text search over symbol names/bodies/docstrings, over-fetched for the same reason as the dense side above: searchSymbolsFts caps at the DB level via its own SQL LIMIT, so a post-hoc filter (--grep/--exclude-tests) or a post-hoc fusion rank on an already-`n`-capped result would silently under-represent this list relative to the dense one -- always called now (previously gated behind the dense branch returning zero hits), reusing the same OVER_FETCH_FACTOR/MAX_OVER_FETCH ratio the dense branch already uses.
   const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
