@@ -2,7 +2,7 @@
  * Minimal in-house SpreadsheetML (.xlsx) reader.
  *
  * .xlsx is an OOXML zip-of-XML container exactly like .docx and .pptx, both of which this repo
- * already reads with `fflate` + `fast-xml-parser` through `ooxml_extract.ts`. Reading .xlsx the
+ * already reads with `fflate` plus the in-house XML parser through `ooxml_extract.ts`. Reading .xlsx the
  * same way removes the only reason `exceljs` was ever installed: 55 packages, and the sole source
  * of every deprecated package in the tree (`inflight`, `lodash.isequal`, `bluebird`, `unzipper`,
  * old `glob`, `tmp`, `fs-extra`, plus eleven `lodash.*` micro-packages).
@@ -45,7 +45,7 @@ type XmlNode = Record<string, unknown>
 
 const EMPTY_CELL: ExcelCell = Object.freeze({ value: null, text: '' })
 
-/** fast-xml-parser folds repeated sibling elements into an array and a lone one into an object. */
+/** The XML parser folds repeated sibling elements into an array and a lone one into an object. */
 function asArray(val: unknown): XmlNode[] {
   if (val === undefined || val === null) return []
   if (Array.isArray(val)) return val.filter((v) => v !== null && typeof v === 'object') as XmlNode[]

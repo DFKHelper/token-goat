@@ -10,27 +10,15 @@ import * as fs from 'node:fs'
 
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
+import { parseXml } from './xml_parser.js'
 
 interface FflateModule {
   unzipSync: (data: Uint8Array) => Record<string, Uint8Array>
 }
 
-interface XmlParserCtor {
-  new (opts?: Record<string, unknown>): { parse: (xml: string) => unknown }
-}
-
-interface FastXmlParserModule {
-  XMLParser: XmlParserCtor
-}
-
 const loadFflate = createLazyModuleLoader(
   async () => (await import('fflate')) as unknown as FflateModule,
   'office-file reading disabled (fflate unavailable)',
-)
-
-const loadXmlParser = createLazyModuleLoader(
-  async () => (await import('fast-xml-parser')) as unknown as FastXmlParserModule,
-  'office-file reading disabled (fast-xml-parser unavailable)',
 )
 
 // DEFLATE's worst-case compression ratio is ~1032:1, so capping the compressed input
@@ -102,11 +90,21 @@ export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: s
   return new TextDecoder('utf-8').decode(bytes)
 }
 
-/** Parses one XML part's text into a plain object tree via fast-xml-parser. */
+/**
+ * Parses one XML part's text into a plain object tree.
+ *
+ * Stays `async` although `parseXml` is synchronous: every caller already awaits it, and the two
+ * pptx call sites parse a part and its `.rels` sibling concurrently. Dropping the promise would be
+ * a signature change rippling through docx_extract, pptx_extract and xlsx_reader for no gain.
+ *
+ * The parser used to be `fast-xml-parser`, loaded lazily as an optional dependency. It is now
+ * `src/xml_parser.ts`, which produces the identical shape for the options that were passed; see
+ * that file's header for why, and tests/xml_parser.test.ts for the differential test that holds the
+ * two to the same output. The historical notes below are kept because they record why those
+ * options were chosen, and the local parser is built to the same two decisions:
+ */
 export async function parseOoxmlPart(xmlText: string): Promise<unknown> {
-  const fxp = await loadXmlParser()
-  if (!fxp) throw new Error('fast-xml-parser is not installed; run `npm install fast-xml-parser` to enable this command')
-  // trimValues defaults to true in fast-xml-parser, which collapses a whitespace-only
+  // trimValues defaulted to true in fast-xml-parser, which collapses a whitespace-only
   // <w:t xml:space="preserve"> </w:t> run (Word's own way of holding just the space between
   // two <w:r> runs split at a formatting boundary) down to an empty string with no #text key
   // at all -- silently gluing the words on either side together. Disable it so inter-run
@@ -119,14 +117,11 @@ export async function parseOoxmlPart(xmlText: string): Promise<unknown> {
   // version strings all silently altered, with no error and nothing to show the value had changed.
   // Numbers that really are numbers are unaffected: every numeric read in these extractors goes
   // through its own Number()/parseInt() on the string, and attributes were never coerced here
-  // (parseAttributeValue stays at its default of false).
-  const parser = new fxp.XMLParser({
-    ignoreAttributes: false,
-    preserveOrder: false,
-    trimValues: false,
-    parseTagValue: false,
-  })
-  return parser.parse(xmlText)
+  // (parseAttributeValue stayed at its default of false).
+  //
+  // Both decisions are now properties of the parser rather than options passed to it: it never
+  // trims and never coerces, so neither can be switched back on by accident.
+  return parseXml(xmlText)
 }
 
 function pushTextValue(runs: string[], val: unknown): void {
