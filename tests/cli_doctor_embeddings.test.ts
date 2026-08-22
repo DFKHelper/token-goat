@@ -1,10 +1,11 @@
 /**
  * `doctor`'s report on the one optional package a default install stopped carrying.
  *
- * `@xenova/transformers` was an optionalDependency, which npm installs by default, so in practice
- * everyone got it -- along with a critical `protobufjs` advisory, four more through
- * `onnxruntime-web`, and a nested older `sharp` with four inherited libvips CVEs. None was patchable
- * from here, so the package is opt-in now.
+ * The embedding backend was `@xenova/transformers`, an optionalDependency, which npm installs by
+ * default -- so in practice everyone got it, along with a critical `protobufjs` advisory, four more
+ * through `onnxruntime-web`, and a nested older `sharp` with four inherited libvips CVEs, none
+ * patchable from here. The backend is `onnxruntime-node` now, and it is opt-in: a 34 MB native
+ * addon has no business landing in every install for a feature most of them never invoke.
  *
  * That trade has one cost and this check is the whole of paying it. `semantic` consults keyword
  * search alongside the vectors, so with the model gone it still answers, still finds things, and
@@ -35,7 +36,7 @@ async function withModel(available: boolean, error: Error | null) {
   vi.resetModules()
   vi.doMock('../src/embeddings.js', () => ({
     isAvailable: () => available,
-    transformerLoadError: () => error,
+    embeddingBackendLoadError: () => error,
     // cli_doctor imports only these two, but the module graph is shared: anything else that pulls
     // embeddings.js during this import would get an incomplete module otherwise.
     embeddingsDepsAvailable: () => available,
@@ -45,7 +46,7 @@ async function withModel(available: boolean, error: Error | null) {
 }
 
 function notFound(code: string): Error {
-  const err = new Error(`Cannot find module '@xenova/transformers'`) as NodeJS.ErrnoException
+  const err = new Error(`Cannot find module 'onnxruntime-node'`) as NodeJS.ErrnoException
   err.code = code
   return err
 }
@@ -57,7 +58,7 @@ describe('doctor: embeddings', () => {
   })
 
   it('reports the model as available when the real package loads', async () => {
-    // No mock: the repository keeps @xenova/transformers as a devDependency, so this resolves it
+    // No mock: the repository keeps onnxruntime-node as a devDependency, so this resolves it
     // through the same createRequire the shipping code uses, against the real package.
     const { checkEmbeddings } = await import('../src/cli_doctor.js')
     const result = checkEmbeddings(configWith(true))
@@ -85,7 +86,7 @@ describe('doctor: embeddings', () => {
     const result = checkEmbeddings(configWith(undefined))
     expect(result.status).toBe('warn')
     expect(result.message).not.toContain('disabled by config')
-    expect(result.message).toContain('npm install -g @xenova/transformers')
+    expect(result.message).toContain('npm install -g onnxruntime-node')
   })
 
   it.each([['MODULE_NOT_FOUND'], ['ERR_MODULE_NOT_FOUND']])(
@@ -97,7 +98,7 @@ describe('doctor: embeddings', () => {
       // The command is the entire value of the warning. A global token-goat resolves a sibling in
       // the same global node_modules, so it needs -g; a project install must not have it. Getting
       // this wrong sends the reader to a package that installs fine and still does not load.
-      expect(result.message).toContain('npm install -g @xenova/transformers')
+      expect(result.message).toContain('npm install -g onnxruntime-node')
       expect(result.message).toContain('drop -g if token-goat is a project dependency')
       // And it must say what is lost meanwhile, or the warning reads like a hard failure of a
       // command that in fact still works.
@@ -108,11 +109,11 @@ describe('doctor: embeddings', () => {
   it('distinguishes a package that is installed but broken from one that is missing', async () => {
     // Different fault, different fix. Telling someone to install a package they already have is the
     // failure mode this branch exists to avoid, so the install command must be absent here.
-    const checkEmbeddings = await withModel(false, new Error('libvips.dll is not a valid Win32 application'))
+    const checkEmbeddings = await withModel(false, new Error('onnxruntime_binding.node is not a valid Win32 application'))
     const result = checkEmbeddings(configWith(true))
     expect(result.status).toBe('warn')
     expect(result.message).toContain('installed but failed to load')
-    expect(result.message).toContain('libvips.dll')
+    expect(result.message).toContain('onnxruntime_binding.node')
     expect(result.message).not.toContain('npm install')
   })
 
@@ -133,7 +134,7 @@ describe('the error code the absent branch keys on', () => {
     const req = createRequire(import.meta.url)
     let code: string | undefined
     try {
-      req.resolve('@xenova/transformers-definitely-not-installed')
+      req.resolve('onnxruntime-node-definitely-not-installed')
     } catch (e) {
       code = (e as NodeJS.ErrnoException).code
     }

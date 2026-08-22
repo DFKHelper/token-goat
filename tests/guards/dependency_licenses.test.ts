@@ -9,7 +9,7 @@
  * What is left cannot be removed, so it has to be disclosed instead: six packages whose declaration
  * no scanner can resolve, and fourteen carrying a copyleft term. (`jszip` used to make it fifteen;
  * it arrived through `exceljs`, which is no longer a dependency a consumer installs. `flatbuffers`
- * used to make the first group seven, and left with `@xenova/transformers` for the same reason --
+ * used to make the first group seven, and left when `@xenova/transformers` stopped being one --
  * which is why the row for it came out of the document at the same time as this entry came out of
  * FAMILIES: a family nobody matches any more reads as coverage the document no longer has.) This
  * test is the thing that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because

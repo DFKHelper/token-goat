@@ -55,7 +55,7 @@ function classifyVec0(): Vec0State {
 }
 
 const vec0State = classifyVec0()
-// isAvailable() only proves the @xenova/transformers package require succeeded, not that a
+// isAvailable() only proves the onnxruntime-node require succeeded, not that a
 // real inference run will succeed offline (a first-ever run may still need to fetch the model
 // from the hub) - real availability here mirrors embeddings_vec_insert.test.ts's own
 // canExerciseRealUpsert gate: both the model and a genuinely loaded vec0 table.

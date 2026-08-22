@@ -148,7 +148,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     },
   )
 
-  // Embeddings require the real @xenova/transformers + sqlite-vec pipeline to actually stamp
+  // Embeddings require the real onnxruntime-node + sqlite-vec pipeline to actually stamp
   // files.embed_sha, so this test is skipped when that pipeline isn't usable in this environment
   // (mirrors the skipIf gating already used in tests/embeddings_index_wiring.test.ts).
   it.skipIf(!isAvailable())(

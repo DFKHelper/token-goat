@@ -1,56 +1,36 @@
 /**
- * Semantic search using transformer embeddings (@xenova/transformers) + SQLite storage.
+ * Semantic search: chunking, embedding, storage and the search itself.
  *
- * Ports the Python embeddings module, adapting fastembed to @xenova/transformers.
- * The transformer import is optional: if not available, semantic search degrades
- * gracefully and all functions return empty results with logged warnings.
+ * The embedding backend lives in embed_model.ts (the model, verified and run) and
+ * embed_tokenizer.ts (the text, cut into the pieces it was trained on). It is optional: with the
+ * inference runtime absent, everything here degrades to empty results rather than throwing, and
+ * `semantic` answers on its keyword half alone.
  */
-
-import { createRequire } from 'node:module'
 
 import type { Database as BetterSqlite3Database, Statement as BetterSqlite3Statement } from 'better-sqlite3'
 
 import { loadConfig } from './config.js'
+import {
+  DEFAULT_DIM,
+  DEFAULT_MODEL,
+  EmbeddingModel,
+  PINNED_MODEL_REVISION,
+  isRuntimeAvailable,
+  runtimeLoadError,
+  runtimeVersion,
+} from './embed_model.js'
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
 
-const _require = createRequire(import.meta.url)
-
-// Optional transformer import; catches both missing package and load failures. Deferred to first use (ensureTransformerLoaded), not required eagerly at module load time: @xenova/transformers transitively pulls in its own bundled onnxruntime-node and a nested, differently-versioned copy of sharp's native libvips binaries. Loading it eagerly here — as every real CLI invocation does, since index_prune.ts (needed by cmdIndex) imports this module unconditionally — poisons the process's Windows DLL search order before image_shrink.ts's own `sharp` gets a chance to dlopen, breaking image shrinking with ERR_DLOPEN_FAILED even though sharp loads fine in isolation. Only requiring it when a caller actually needs the transformer (isAvailable()/embedTexts()) means the CLI's hot hook path never touches it.
-let _transformer: unknown = null
-let _transformerError: Error | null = null
-let _transformerLoadAttempted = false
-
-function ensureTransformerLoaded(): void {
-  if (_transformerLoadAttempted) return
-  _transformerLoadAttempted = true
-  try {
-    _transformer = _require('@xenova/transformers')
-    // Offline mode refuses the download rather than the feature: a machine with the model already
-    // cached keeps working, and a cold cache fails with the library's own "model not found"
-    // instead of reaching huggingface.co. Guarding the download this way rather than refusing
-    // outright is what makes an air-gapped install with a pre-seeded cache still useful.
-    if (loadConfig().network.offline) {
-      const env = (_transformer as { env?: Record<string, unknown> }).env
-      if (env) env['allowRemoteModels'] = false
-    }
-  } catch (e) {
-    _transformerError = e instanceof Error ? e : new Error(String(e))
-  }
-}
-
-// BAAI/bge-small-en-v1.5 is the smallest BGE model for code retrieval. The 384-dimensional output is native to this checkpoint; do not change DEFAULT_DIM without re-creating all chunk_vectors tables.
-export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
-export const DEFAULT_DIM = 384
-
-// Immutable commit SHA for Xenova/bge-small-en-v1.5 on huggingface.co, pinned so a cold-cache install fetches known-good ONNX weights instead of trusting the mutable 'main' ref. Fetched via https://huggingface.co/api/models/Xenova/bge-small-en-v1.5 ("sha" field) on 2026-08-12; last model update per that same response was 2025-07-22. Bump deliberately if the model is ever intentionally updated.
-export const PINNED_MODEL_REVISION = 'ea104dacec62c0de699686887e3f920caeb4f3e3'
+// Re-exported because the model's identity belongs to the module that fetches and verifies it, and
+// because every existing caller and test reads these three from here.
+export { DEFAULT_DIM, DEFAULT_MODEL, PINNED_MODEL_REVISION }
 
 // BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric instruction prefix on the QUERY side only -- passages/documents are embedded plain. See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query text only (never to chunk/document text, which would just add noise) to improve retrieval quality for this model family.
 export const QUERY_INSTRUCTION_PREFIX = 'Represent this sentence for searching relevant passages: '
 
-// pipelineFn('feature-extraction', modelName) rebuilds the whole extractor (model weights + tokenizer) from scratch on every call -- @xenova/transformers' pipeline() has no built-in memoization of its own. Keyed by model name and cached as a Promise (not the resolved extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight construction instead of each kicking off a redundant load. Cleared via registerReset so tests that mock the pipeline factory start from a clean slate.
+// Building an extractor loads the ONNX graph and the 30k-entry vocabulary, so it is memoized per model name and cached as a Promise (not the resolved extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight construction instead of each kicking off a redundant load. Cleared via registerReset so tests that mock the pipeline factory start from a clean slate.
 type FeatureExtractor = (text: string, options: Record<string, unknown>) => Promise<unknown>
 type PipelineFn = (
   task: string,
@@ -59,7 +39,18 @@ type PipelineFn = (
 ) => Promise<FeatureExtractor>
 const _extractorCache = new Map<string, Promise<FeatureExtractor>>()
 
-// @xenova/transformers is loaded via createRequire (see ensureTransformerLoaded above), which resolves through Node's real CJS loader rather than vitest's mockable module graph, so vi.mock('@xenova/transformers', ...) can't intercept it and its `pipeline` export is a non-configurable, non-writable property that can't be monkey-patched from a test either. This override lets tests substitute a cheap fake factory (mirrors the setXForTesting pattern already used in skill_cache.ts) instead of constructing a real transformer pipeline.
+/**
+ * The real backend, in the shape the cache and the retry loop already expect. The `task` argument
+ * is ignored: there is exactly one thing this builds. It kept its name and signature through the
+ * move off @xenova/transformers so the override below, and every test using it, still fit. (That
+ * name survives in this file's comments only where it is describing history.)
+ */
+const inHousePipelineFn: PipelineFn = async (_task, modelName) => {
+  const model = await EmbeddingModel.load(modelName)
+  return async (text: string) => ({ data: await model.embed(text) })
+}
+
+// The backend is loaded through Node's real CJS loader rather than vitest's mockable module graph, so vi.mock can't intercept it. This override lets tests substitute a cheap fake factory (mirrors the setXForTesting pattern already used in skill_cache.ts) instead of loading a real model.
 let _pipelineFnOverride: PipelineFn | null = null
 
 export function setPipelineFnForTesting(fn: PipelineFn | null): void {
@@ -71,7 +62,7 @@ registerReset(() => {
   _pipelineFnOverride = null
 })
 
-// pipelineFn('feature-extraction', modelName) downloads the model over the network on a cold cache (@xenova/transformers has no retry of its own), so a single transient CDN blip fails pipeline construction outright. Retrying with backoff absorbs that; PIPELINE_RETRY_DELAY_MS is overridable so tests exercising the retry/failure path don't pay real wall-clock delay.
+// Building an extractor downloads the model on a cold cache, so a single transient CDN blip fails it outright. Retrying with backoff absorbs that; PIPELINE_RETRY_DELAY_MS is overridable so tests exercising the retry/failure path don't pay real wall-clock delay.
 const PIPELINE_RETRY_ATTEMPTS = 3
 let PIPELINE_RETRY_DELAY_MS = 250
 
@@ -96,10 +87,10 @@ async function buildExtractorWithRetry(
   let lastError: unknown
   for (let attempt = 1; attempt <= PIPELINE_RETRY_ATTEMPTS; attempt++) {
     try {
-      // Pin the immutable revision only for the default model; a caller-supplied modelName isn't guaranteed to have this SHA.
-      const pipelineOptions =
-        modelName === DEFAULT_MODEL ? { revision: PINNED_MODEL_REVISION } : undefined
-      return await pipelineFn('feature-extraction', modelName, pipelineOptions)
+      // The revision is pinned inside embed_model.ts, which is the only thing that can act on it:
+      // it is what the digests belong to. Passing it here as well would be a second copy of the
+      // same fact, and the one a reader would trust is not necessarily the one that is used.
+      return await pipelineFn('feature-extraction', modelName)
     } catch (e) {
       lastError = e
       if (attempt < PIPELINE_RETRY_ATTEMPTS) await sleep(PIPELINE_RETRY_DELAY_MS * attempt)
@@ -224,31 +215,30 @@ export interface SearchHit {
 // ============================================================================ Public API ============================================================================
 
 /**
- * Check if the transformer is available and usable.
- * Returns false if @xenova/transformers is not installed or failed to load.
+ * Whether embedding is possible at all: the inference runtime is installed and loadable. It says
+ * nothing about whether the model files are on disk yet, which is a question only answerable by
+ * going and looking, and which resolves itself by downloading them.
  */
 export function isAvailable(): boolean {
-  ensureTransformerLoaded()
-  return _transformer !== null && _transformerError === null
+  return isRuntimeAvailable()
 }
 
 /**
- * Why `@xenova/transformers` did not load, or `null` when it loaded or the config never asked for
- * it. `isAvailable()` collapses both failures into `false`, which is the right answer for a caller
- * deciding whether to embed but the wrong one for `doctor`, whose whole job is naming the fix: a
- * package that is absent is one install command away, and a package that is present but throwing is
- * a different problem entirely. Mirrors `ts_refs.ts`'s `loadError()`, which exists for the same
- * reason and is consumed by the same doctor check one line above this one.
+ * Why the backend did not load, or `null` when it loaded. `isAvailable()` collapses both failures
+ * into `false`, which is the right answer for a caller deciding whether to embed but the wrong one
+ * for `doctor`, whose whole job is naming the fix: a package that is absent is one install command
+ * away, and a package that is present but throwing is a different problem entirely. Mirrors
+ * `ts_refs.ts`'s `loadError()`, which exists for the same reason and is consumed by the same doctor
+ * check one line above this one.
  */
-export function transformerLoadError(): Error | null {
-  ensureTransformerLoaded()
-  return _transformerError
+export function embeddingBackendLoadError(): Error | null {
+  return runtimeLoadError()
 }
 
 /**
  * Embed a batch of texts to fixed-dimension semantic vectors.
  *
- * Uses @xenova/transformers with bge-small-en-v1.5 (384-dimensional output).
+ * Uses the pinned bge-small-en-v1.5 checkpoint on onnxruntime-node (384-dimensional output).
  *
  * @param texts - Strings to embed. Empty array returns empty array.
  * @param modelName - HuggingFace model identifier (default: bge-small-en-v1.5).
@@ -261,7 +251,7 @@ export async function embedTexts(
 ): Promise<number[][]> {
   if (!isAvailable()) {
     throw new Error(
-      `Transformer not available: ${_transformerError?.message ?? 'unknown error'}`,
+      `Embedding backend not available: ${runtimeLoadError()?.message ?? 'unknown error'}`,
     )
   }
 
@@ -269,18 +259,11 @@ export async function embedTexts(
     return []
   }
 
-  if (!_transformer || typeof _transformer !== 'object') {
-    throw new Error('Transformer module is unavailable')
-  }
-
-  // Use the transformer pipeline to generate embeddings, memoized per model name so the extractor is only constructed once per process (see _extractorCache above) instead of reloading model weights + tokenizer on every embedTexts call.
+  // Memoized per model name so the model is only loaded once per process (see _extractorCache above) instead of reading the graph and the vocabulary again on every embedTexts call.
   let extractorPromise = _extractorCache.get(modelName)
   if (!extractorPromise) {
-    const transformerObj = _transformer as Record<string, unknown>
-    const pipelineFn: PipelineFn =
-      _pipelineFnOverride ??
-      (transformerObj['pipeline'] as PipelineFn)
-    // @xenova/transformers' pipeline() downloads the model over the network on a cold cache with no retry of its own, so a single transient CDN blip (a dropped connection, a brief rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be populated with a promise that only resolves on eventual success, never with the raw pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry is deleted rather than left holding a rejected promise, because this cache is keyed by model name and lives for the process lifetime: a rejected promise cached here would permanently poison every future embedTexts call for that model, even long after a transient outage clears, since a Promise's settled state never changes once observed.
+    const pipelineFn: PipelineFn = _pipelineFnOverride ?? inHousePipelineFn
+    // Building an extractor downloads the model over the network on a cold cache, so a single transient CDN blip (a dropped connection, a brief rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be populated with a promise that only resolves on eventual success, never with the raw pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry is deleted rather than left holding a rejected promise, because this cache is keyed by model name and lives for the process lifetime: a rejected promise cached here would permanently poison every future embedTexts call for that model, even long after a transient outage clears, since a Promise's settled state never changes once observed.
     extractorPromise = buildExtractorWithRetry(pipelineFn, modelName)
     _extractorCache.set(modelName, extractorPromise)
     extractorPromise.catch(() => {
@@ -689,7 +672,7 @@ export function insertChunkVector(
 
 /**
  * Outcome of an embedding attempt, so callers can distinguish a real embed (or a legitimately
- * empty file) from a skip forced by absent optional deps (@xenova/transformers model or the
+ * empty file) from a skip forced by absent optional deps (the inference runtime or the
  * sqlite-vec `chunk_vectors` table). The caller (parser.ts::indexFileEmbeddings) stamps a bare
  * `embed_sha` for `'embedded'` but an `unavailable:`-prefixed marker for `'unavailable'`, so a
  * file skipped only because deps were missing is re-embedded once the deps are installed instead
@@ -1111,7 +1094,7 @@ function chunkVectorsTableExists(db: BetterSqlite3Database): boolean {
 }
 
 /**
- * Are BOTH optional embedding dependencies present on this connection: the @xenova/transformers
+ * Are BOTH optional embedding dependencies present on this connection: the onnxruntime-node
  * model ({@link isAvailable}) AND a usable sqlite-vec `chunk_vectors` table
  * ({@link chunkVectorsTableExists})? A real embed needs both -- upsertChunks reports
  * `'unavailable'` when either is missing. Freshness gates (worker.ts/cli.ts) use this to decide
@@ -1186,26 +1169,23 @@ export function embeddingProvenance(modelName: string = DEFAULT_MODEL): string {
 }
 
 /**
- * Which package computes the vectors, at which version. The version is the point: it is what pins
- * the inference runtime underneath (`@xenova/transformers` 2.17.2 resolves onnxruntime-node
- * 1.14.0), so it stands in for the runtime without reaching into the dependency's own private tree.
+ * Which runtime computes the vectors, at which version -- see the note above on why that is the
+ * half of the stamp that moves, and why it is keyed to major.minor.
  *
- * Read off the loaded module's `env.version` rather than by requiring its `package.json` on a
- * subpath. Both give the same answer here, but the subpath form depends on the package not
- * restricting `exports`, which is a property of a dependency this code does not control and which
- * would degrade silently to the `unknown` marker below if it ever changed.
- *
- * That marker is a real hole -- two different installs that both fail the read stamp the same
- * string and are then treated as one stack -- but reaching it means the module loaded while
- * carrying no version at all, and every caller is already behind {@link isAvailable}, which only
- * passes once it has loaded.
+ * `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two
+ * installs that both fail that read stamp the same string and are then treated as one stack. That
+ * is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no
+ * manifest above it, and every caller is already behind {@link isAvailable}, which only passes once
+ * it has loaded.
  */
 function backendId(): string {
-  ensureTransformerLoaded()
-  const env = (_transformer as { env?: { version?: unknown } } | null)?.env
-  const version = env?.version
-  if (typeof version === 'string' && version !== '') return `@xenova/transformers@${version}`
-  return '@xenova/transformers@unknown'
+  return `onnxruntime-node@${majorMinor(runtimeVersion())}`
+}
+
+/** The first two components of a version, or the whole thing when it has no second component. */
+function majorMinor(version: string): string {
+  const parts = version.split('.')
+  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version
 }
 
 // Memoized per connection, like _chunkVectorsUsable above and for the same reason: the answer

@@ -47,7 +47,7 @@ async function staticGraph(entry: string): Promise<Set<string>> {
     external: [
       'better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*', 'sharp', 'puppeteer-core',
       'pdfjs-dist', 'pdfjs-dist/*', 'fflate',
-      '@xenova/transformers',
+      'onnxruntime-node',
       'tesseract.js', 'typescript',
     ],
     define: { 'import.meta.env': '{}', __TG_VERSION__: '"0.0.0-test"' },

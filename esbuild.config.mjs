@@ -25,7 +25,7 @@ const EXTERNAL_NATIVE_DEPS = [
   'pdfjs-dist',
   'pdfjs-dist/*',
   'fflate',
-  '@xenova/transformers',
+  'onnxruntime-node',
   // Not a native addon either, but tesseract.js's Node entrypoint resolves its worker
   // script and tesseract.js-core's WASM binary via on-disk paths relative to its own
   // package directory at runtime -- bundling it into token-goat.mjs would break those

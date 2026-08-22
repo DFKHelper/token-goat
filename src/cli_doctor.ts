@@ -20,7 +20,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { findStrayClaudeMdBlocks } from './install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
-import { isAvailable as embeddingModelAvailable, transformerLoadError } from './embeddings.js'
+import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import type { DoctorResult } from './doctor_result.js'
 
@@ -424,7 +424,7 @@ export function checkTsCompiler(): DoctorResult {
  * Three states, three different answers. Off by config is not a problem and is reported as fine.
  * Absent is one command away, and the command is the whole point of the line. Present but throwing
  * is a different fault with a different fix, which is why this reads the error rather than the
- * boolean -- see `transformerLoadError`.
+ * boolean -- see `embeddingBackendLoadError`.
  */
 export function checkEmbeddings(config: Config): DoctorResult {
   const name = 'Embeddings'
@@ -435,7 +435,7 @@ export function checkEmbeddings(config: Config): DoctorResult {
     return { name, status: 'ok', message: 'disabled by config (indexing.embeddings_enabled)' }
   }
   if (embeddingModelAvailable()) return { name, status: 'ok', message: 'available' }
-  const err = transformerLoadError()
+  const err = embeddingBackendLoadError()
   // createRequire goes through Node's CJS loader, so an absent package is MODULE_NOT_FOUND;
   // ERR_MODULE_NOT_FOUND is accepted too rather than assumed away, since the same package reached
   // through an ESM path would report that instead and both mean the same thing to the reader.
@@ -445,8 +445,8 @@ export function checkEmbeddings(config: Config): DoctorResult {
       name,
       status: 'warn',
       message:
-        '@xenova/transformers is not installed, so semantic falls back to keyword search — ' +
-        'install it with: npm install -g @xenova/transformers (drop -g if token-goat is a project dependency)',
+        'onnxruntime-node is not installed, so semantic falls back to keyword search — ' +
+        'install it with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)',
     }
   }
   return {
@@ -454,7 +454,7 @@ export function checkEmbeddings(config: Config): DoctorResult {
     status: 'warn',
     message:
       err !== null
-        ? `@xenova/transformers is installed but failed to load: ${extractErrorMessage(err)}`
+        ? `onnxruntime-node is installed but failed to load: ${extractErrorMessage(err)}`
         : 'unavailable (not attempted)',
   }
 }

@@ -19,9 +19,9 @@ const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
  * The one package allowed to be required at runtime without being installed.
  *
  * Every other entry in this guard exists because an undeclared require fails silently: the require
- * throws, the catch swallows it, and the feature is simply dead. `@xenova/transformers` is now
- * deliberately in that position -- it carried six advisories with no forward patch, one of them
- * critical, on a feature most installs never invoke, so it is opt-in.
+ * throws, the catch swallows it, and the feature is simply dead. `onnxruntime-node` is now
+ * deliberately in that position -- it is a 34 MB native addon for a feature most installs never
+ * invoke, so it is opt-in.
  *
  * The exemption is conditional rather than a hole, because "silently dead" is exactly what must not
  * happen. Three things have to hold, and the assertions below check all three: it is still a
@@ -29,7 +29,7 @@ const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
  * `doctor` has a check that names it, so the absence is reported instead of merely happening; and
  * that check prints the command that installs it. Take any of the three away and this fails.
  */
-const OPT_IN_AT_RUNTIME = '@xenova/transformers'
+const OPT_IN_AT_RUNTIME = 'onnxruntime-node'
 
 /** Concatenated text of every .ts file under src/, recursively. */
 function allSrcText(): string {

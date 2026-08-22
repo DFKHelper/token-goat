@@ -1,6 +1,6 @@
 /**
  * SECURITY.md tells an evaluator which packages carry the residual `npm audit` findings, that
- * `@xenova/transformers` is optional so an install can simply not have it, and that `exceljs` is
+ * `onnxruntime-node` is opt-in so an install can simply not have it, and that `exceljs` is
  * not installed at all any more. That claim is only true while the manifest agrees. Promoting
  * either one back into a shipped section
  * would silently turn a documented "you can opt out" into a lie, and no other test reads the
@@ -62,13 +62,34 @@ describe('dependency advisory disclosure', () => {
   // The inverse of what this asserted until the embedding model became opt-in. Optional was not
   // good enough: npm installs optionalDependencies by default, so "optional" meant everyone got it,
   // and with it a critical protobufjs advisory, four more through onnxruntime-web, and a nested
-  // older sharp carrying four libvips CVEs -- six in total, none patchable from here. Putting it
-  // back into either shipped section reinstates all six silently, which is precisely why this reads
-  // both sections rather than only the one it moved out of.
-  it('keeps @xenova/transformers out of the packages a consumer installs', () => {
+  // older sharp carrying four libvips CVEs -- six in total, none patchable from here. The runtime
+  // that replaced all of that carries one advisory of its own, so putting it back into either
+  // shipped section makes a default install dirty again while this page still calls it clean --
+  // which is precisely why this reads both sections rather than only the one it stays out of.
+  it('keeps the embedding runtime out of the packages a consumer installs', () => {
+    expect(Object.keys(pkg.dependencies ?? {})).not.toContain('onnxruntime-node')
+    expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('onnxruntime-node')
+    expect(Object.keys(pkg.devDependencies ?? {}), 'the tests still embed with it').toContain('onnxruntime-node')
+  })
+
+  // The package it replaced must not come back either, by either door. It is still a devDependency,
+  // but only to regenerate the frozen tokenizer oracle -- nothing in src/ requires it any more.
+  it('keeps the package it replaced out of the packages a consumer installs', () => {
     expect(Object.keys(pkg.dependencies ?? {})).not.toContain('@xenova/transformers')
     expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('@xenova/transformers')
-    expect(Object.keys(pkg.devDependencies ?? {}), 'the tests still embed with it').toContain('@xenova/transformers')
+  })
+
+  // The one advisory this project does not clear for the reader. SECURITY.md states the count, the
+  // identifier, why it is unreachable, and the override that fixes it -- and, because a plausible
+  // fix that does not work is worse than none, that co-installing adm-zip does not dedupe. Rounding
+  // any of that to "clean" is the failure this pins shut.
+  it('discloses the adm-zip advisory the opt-in runtime carries, rather than rounding it to clean', () => {
+    expect(security, 'the advisory identifier, so a reader can look it up').toContain('GHSA-xcpc-8h2w-3j85')
+    expect(security, 'the package it is in').toContain('adm-zip')
+    expect(security, 'why it is not reachable from token-goat').toContain('postinstall')
+    expect(security, 'and the override that actually resolves it').toMatch(/"adm-zip":\s*"\^0\.6\.0"/)
+    // The repository's own scan is clean only because of that override, so it has to still be there.
+    expect(Object.keys(pkg.overrides ?? {}), 'the repository row is clean because of this pin').toContain('adm-zip')
   })
 
   // exceljs went further than optional: the xlsx-* commands read the container directly with
@@ -133,20 +154,20 @@ describe('dependency advisory disclosure', () => {
       expect(security, `${name} is discussed in SECURITY.md`).toContain(name)
       expect(declared, `${name} is still a dependency`).toContain(name)
     }
-    // @xenova/transformers is the one the document discusses at length without shipping. It has to
-    // stay named there, because the section is now largely about its absence and the command that
-    // brings it back, and a silent rename would leave that whole passage pointing at nothing.
-    expect(security).toContain('@xenova/transformers')
-    expect(Object.keys(pkg.devDependencies ?? {})).toContain('@xenova/transformers')
-    expect(declared).not.toContain('@xenova/transformers')
+    // onnxruntime-node is the one the document discusses at length without shipping. It has to stay
+    // named there, because the section is now largely about its absence and the command that brings
+    // it back, and a silent rename would leave that whole passage pointing at nothing.
+    expect(security).toContain('onnxruntime-node')
+    expect(Object.keys(pkg.devDependencies ?? {})).toContain('onnxruntime-node')
+    expect(declared).not.toContain('onnxruntime-node')
   })
 
   // The document does not merely say the model is optional; it prints the command that installs it.
   // A command that is wrong is worse than no command, and this one is easy to get wrong in a way
   // nobody notices: a global token-goat needs `-g` for the sibling to resolve, and a project
   // install must not have it. Both spellings are asserted because the document promises both.
-  it('prints an install command for the model it no longer ships', () => {
-    expect(security).toContain('npm install -g @xenova/transformers')
+  it('prints an install command for the runtime it no longer ships', () => {
+    expect(security).toContain('npm install -g onnxruntime-node')
     expect(security).toMatch(/drop -g if token-goat is a project dependency/)
   })
 
