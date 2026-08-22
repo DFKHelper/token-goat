@@ -8,6 +8,8 @@
  * namespaces, or domain models.
  */
 
+import { pushAll } from './util.js'
+
 export interface XmlNode {
   tag: string
   attributes: Record<string, string>
@@ -699,7 +701,7 @@ export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
         if (step.allIndices || matching.length > 1 || step.attributeFilter !== undefined) {
           hasFanned = true
         }
-        nextCandidates.push(...matching)
+        pushAll(nextCandidates, matching)
       }
     }
 

@@ -9,6 +9,7 @@
 import * as fs from 'node:fs'
 
 import { createLazyModuleLoader } from './lazy_module.js'
+import { pushAll } from './util.js'
 
 interface FflateModule {
   unzipSync: (data: Uint8Array) => Record<string, Uint8Array>
@@ -185,7 +186,7 @@ export function collectElements(node: unknown, tag: string): unknown[] {
       const obj = n as Record<string, unknown>
       for (const [key, val] of Object.entries(obj)) {
         if (key === tag) {
-          if (Array.isArray(val)) out.push(...val)
+          if (Array.isArray(val)) pushAll(out, val)
           else out.push(val)
         } else if (val !== null && typeof val === 'object') {
           walk(val)

@@ -304,3 +304,43 @@ describe('astro adapter', () => {
     expect(refNames).toContain('MainHero')
   })
 })
+
+// An empty file used to still get a whole-file component symbol, and `countContentLines('')` is
+// 0, so that symbol claimed `lineStart: 1, lineEnd: 0`. The backwards span reached the database
+// and printed to the reader as `Empty.vue:1-0`. Every other language emits nothing for empty
+// content. Found by feeding hostile inputs (empty, unterminated, CRLF-only, deeply nested) to
+// every adapter and asserting the span invariants none of them state for themselves.
+describe('single-file components with no lines', () => {
+  it.each([
+    ['vue', extractVue],
+    ['svelte', extractSvelte],
+    ['astro', extractAstro],
+  ])('emits no %s component symbol for an empty file, rather than a backwards span', (ext, extract) => {
+    expect(extract('', `Empty.${ext}`).symbols).toEqual([])
+  })
+
+  it.each([
+    ['vue', extractVue],
+    ['svelte', extractSvelte],
+    ['astro', extractAstro],
+  ])('still emits the %s component symbol for a file holding one blank line', (ext, extract) => {
+    const symbols = extract('\n', `Blank.${ext}`).symbols
+
+    expect(symbols).toHaveLength(1)
+    expect(symbols[0]).toMatchObject({ name: 'Blank', lineStart: 1, lineEnd: 1 })
+  })
+
+  it.each([
+    ['vue', extractVue],
+    ['svelte', extractSvelte],
+    ['astro', extractAstro],
+  ])('never returns a %s symbol whose span ends before it starts', (ext, extract) => {
+    for (const content of ['', '\n', '\r\n', '   ', '<template><div/></template>', '<script>\n']) {
+      for (const symbol of extract(content, `Probe.${ext}`).symbols) {
+        expect(symbol.lineEnd, `${JSON.stringify(content)} -> ${symbol.name}`).toBeGreaterThanOrEqual(
+          symbol.lineStart,
+        )
+      }
+    }
+  })
+})

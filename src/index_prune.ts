@@ -17,7 +17,13 @@ export function removeFileFromIndex(db: DbHandle, filePath: string): void {
     deleteFileRows(db, filePath)
     deleteFileEmbeddings(db, filePath)
   })
-  tx()
+  // `.immediate()` -- BEGIN IMMEDIATE. better-sqlite3 issues a plain call as a deferred BEGIN,
+  // which takes a read snapshot first and only asks for the write lock at the first writing
+  // statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting
+  // the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright.
+  // This database is shared by the worker daemon, the hook processes and the CLI at once, so that
+  // is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
+  tx.immediate()
 }
 
 // A drive root (`c:/`) or empty prefix would scope the prune to an entire drive across every project in the shared global DB; refuse it so a malformed root can never mass-delete another project's rows.
