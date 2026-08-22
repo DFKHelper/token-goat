@@ -47,20 +47,32 @@ function staticChunkImports(file: string): string[] {
   return [...out]
 }
 
-/** Transitive closure of static chunk edges starting at the core entry. */
-function eagerChunks(): Set<string> {
+/** Chunk filenames the given built file imports at all, deferred edges included. */
+function allChunkImports(file: string): string[] {
+  const out = new Set<string>()
+  for (const m of fs.readFileSync(file, 'utf8').matchAll(/["(]\s*"?(\.\/[^"')]+\.mjs)"/g)) {
+    out.add(path.basename(m[1]!))
+  }
+  return [...out]
+}
+
+/** Transitive closure of chunk edges starting at the core entry, following `edges`. */
+function closure(edges: (file: string) => string[]): Set<string> {
   const seen = new Set<string>()
-  const queue = staticChunkImports(ENTRY)
+  const queue = edges(ENTRY)
   while (queue.length > 0) {
     const next = queue.shift()
     if (next === undefined || seen.has(next)) continue
     const full = path.join(DIST, next)
     if (!fs.existsSync(full)) continue
     seen.add(next)
-    queue.push(...staticChunkImports(full))
+    queue.push(...edges(full))
   }
   return seen
 }
+
+/** The chunks the core entry parses before running anything. */
+const eagerChunks = (): Set<string> => closure(staticChunkImports)
 
 describe('core bundle stays split', () => {
   it('emits core chunks rather than one monolithic file', () => {
@@ -71,10 +83,14 @@ describe('core bundle stays split', () => {
   it('defers at least one chunk instead of importing them all statically', () => {
     // The non-vacuous half: chunks existing proves nothing on its own if the entry statically
     // imports every one of them, which is what a monolith looks like after a mechanical split.
-    const all = fs.readdirSync(DIST).filter((f) => f.startsWith(CORE_CHUNK_PREFIX))
+    // Scoped to the chunks this entry actually reaches, not everything sharing the prefix: one
+    // build now emits both entries into the same prefix, so a chunk only the hook library reaches
+    // would otherwise count as deferred here and let the assertion pass with the core deferring
+    // nothing at all.
+    const all = closure(allChunkImports)
     const eager = eagerChunks()
-    const deferred = all.filter((f) => !eager.has(f))
-    expect(deferred.length, `every core chunk is eagerly imported (${all.length} chunks)`).toBeGreaterThan(0)
+    const deferred = [...all].filter((f) => !eager.has(f))
+    expect(deferred.length, `every chunk the core reaches is eagerly imported (${all.size} chunks)`).toBeGreaterThan(0)
   })
 
   it('keeps the eagerly loaded set under the regression ceiling', () => {
@@ -126,10 +142,11 @@ describe('sweepStaleChunks', () => {
     expect(fs.existsSync(path.join(dir, same))).toBe(true)
   })
 
-  it('never touches the other build\'s chunks or the entry files', () => {
-    // Both builds write into the same directory, so a sweep matching too broadly would delete the
-    // sibling build's output -- which, unlike a stale chunk, nothing recreates until that build
-    // runs again.
+  it('never touches a differently-prefixed chunk or the entry files', () => {
+    // Prefix scoping is what lets one build sweep its own chunks and, in a second call, clear the
+    // legacy token-goat-hook-chunk- set left behind by the era of two separate builds. A sweep
+    // matching too broadly would take the entry files with it, and unlike a stale chunk, nothing
+    // recreates those until the next build.
     write('token-goat-hook-chunk-A.mjs')
     write('token-goat.core.mjs')
     write('token-goat.mjs')
