@@ -1919,10 +1919,29 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // bounded timeout elapses), then always kill the child so a broken response can't hang the
     // suite.
     const child = spawn(process.execPath, [BUNDLE, 'mcp-serve'], { cwd: repo, env: tgEnv(dataBase) })
+    let stderr = ''
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8')
+    })
     try {
       const toolNames = await new Promise<string[]>((resolve, reject) => {
         let buf = ''
-        const timer = setTimeout(() => reject(new Error('mcp-serve: timed out waiting for tools/list response')), 15000)
+        // The server is a cold Node process booting the whole bundle and the MCP SDK, spawned
+        // while the rest of the suite is competing for the same cores, so the wait has to cover a
+        // contended cold start. It can be generous because it is no longer the only way this
+        // fails: a server that dies rejects on 'exit' immediately, with its exit code and stderr,
+        // rather than sitting here until the clock runs out. Without that, a crash and a slow
+        // start produced the same bare "timed out" message and neither could be told from the
+        // other. The test itself allows 120s, so this stays well inside it.
+        const timer = setTimeout(() => reject(new Error(`mcp-serve: timed out waiting for tools/list response. stderr: ${stderr || '(empty)'}`)), 60000)
+        child.on('exit', (code, signal) => {
+          clearTimeout(timer)
+          reject(
+            new Error(
+              `mcp-serve exited (code ${String(code)}, signal ${String(signal)}) before answering tools/list. stderr: ${stderr || '(empty)'}`,
+            ),
+          )
+        })
         child.stdout.on('data', (chunk: Buffer) => {
           buf += chunk.toString('utf8')
           let idx: number

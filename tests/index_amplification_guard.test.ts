@@ -106,6 +106,16 @@ const FIXTURES: readonly Fixture[] = [
       '] = source\n',
   },
   {
+    name: 'multiname.go',
+    why: 'one Go var spec, 600 declared names -- the same fan-out through a different extractor',
+    content:
+      'package main\n\nvar ' +
+      Array.from({ length: 600 }, (_, i) => 'v' + i).join(', ') +
+      ' = ' +
+      Array.from({ length: 600 }, (_, i) => String(i)).join(', ') +
+      '\n',
+  },
+  {
     name: 'longnames.json',
     why: 'huge repeated identifiers -- proves name/context stay linear (each occurs once in source)',
     content: `{${Array.from(
