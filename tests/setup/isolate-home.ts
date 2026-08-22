@@ -47,6 +47,27 @@ const workerScope = `${process.pid}-${Date.now().toString(36)}-${Math.random().t
 function runRoot(): string {
   return process.env['TG_TEST_RUN_ROOT'] ?? os.tmpdir()
 }
+
+// Point the process-wide temp dir at that same run root. tests/ has ~981 `os.tmpdir()` call sites
+// across 272 files, and every one that mkdtemps a fixture dir used to leave it in the real %TEMP%
+// forever: vitest kills its workers, so per-test `process.on('exit')` cleanup almost never fires.
+// One full suite run leaked ~375 entries that way, and the accumulated backlog is not a cosmetic
+// problem -- at 1.45M entries NTFS directory-lock contention made every `mkdtemp` in %TEMP% cost
+// 170 ms instead of 0 ms, which took the suite from 66 s to 378 s and timed out a test doing
+// nothing but two synchronous calls.
+//
+// Node re-reads TEMP/TMP/TMPDIR on each `os.tmpdir()` call rather than caching, so pinning them
+// here moves all 981 sites under the directory globalSetup already deletes on teardown, with no
+// call-site changes. It also covers the ~975 CLI child processes, which inherit this env, and any
+// temp a dependency creates on its own. Only set when there IS a run root: without one `runRoot()`
+// returns `os.tmpdir()` and this would be a self-assignment.
+if (process.env['TG_TEST_RUN_ROOT']) {
+  const tmpRoot = runRoot()
+  process.env['TEMP'] = tmpRoot
+  process.env['TMP'] = tmpRoot
+  process.env['TMPDIR'] = tmpRoot
+}
+
 if (process.env['TG_TEST_HOME_MANAGED'] === '1') {
   delete process.env['TOKEN_GOAT_HOME']
 }
