@@ -233,6 +233,19 @@ export function isAvailable(): boolean {
 }
 
 /**
+ * Why `@xenova/transformers` did not load, or `null` when it loaded or the config never asked for
+ * it. `isAvailable()` collapses both failures into `false`, which is the right answer for a caller
+ * deciding whether to embed but the wrong one for `doctor`, whose whole job is naming the fix: a
+ * package that is absent is one install command away, and a package that is present but throwing is
+ * a different problem entirely. Mirrors `ts_refs.ts`'s `loadError()`, which exists for the same
+ * reason and is consumed by the same doctor check one line above this one.
+ */
+export function transformerLoadError(): Error | null {
+  ensureTransformerLoaded()
+  return _transformerError
+}
+
+/**
  * Embed a batch of texts to fixed-dimension semantic vectors.
  *
  * Uses @xenova/transformers with bge-small-en-v1.5 (384-dimensional output).
@@ -852,7 +865,12 @@ export async function searchSemantic(
   rootDir?: string,
 ): Promise<SearchHit[]> {
   if (!isAvailable()) {
-    console.warn('Embeddings not available; semantic search disabled')
+    // Silent by design, and deliberately not a warning. This function only knows that the vector
+    // half is unavailable; whether that leaves the user with nothing depends entirely on what the
+    // caller does next, and the sole caller (runSemantic) always runs a BM25 pass alongside this
+    // one. The warning that used to live here said "semantic search disabled", which printed
+    // directly above real keyword results and was simply false. It now lives in runSemantic, which
+    // is the only place that can honestly describe what the user is about to get.
     return []
   }
 

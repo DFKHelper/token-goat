@@ -6,10 +6,13 @@
  * there is nothing to apply a policy to. All three arrived through one old `unzipper`, which an
  * override removes.
  *
- * What is left cannot be removed, so it has to be disclosed instead: seven packages whose
- * declaration no scanner can resolve, and fourteen carrying a copyleft term. (`jszip` used to be a
- * fifteenth; it arrived through `exceljs`, which is no longer a dependency a consumer installs.) This test is the thing
- * that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because
+ * What is left cannot be removed, so it has to be disclosed instead: six packages whose declaration
+ * no scanner can resolve, and fourteen carrying a copyleft term. (`jszip` used to make it fifteen;
+ * it arrived through `exceljs`, which is no longer a dependency a consumer installs. `flatbuffers`
+ * used to make the first group seven, and left with `@xenova/transformers` for the same reason --
+ * which is why the row for it came out of the document at the same time as this entry came out of
+ * FAMILIES: a family nobody matches any more reads as coverage the document no longer has.) This
+ * test is the thing that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because
  * the lockfile lists every platform's packages while an install only holds one platform's -- a
  * `node_modules` sweep on Windows never sees the ten Linux and macOS libvips builds.
  */
@@ -56,7 +59,6 @@ const FAMILIES: { match: RegExp; documentedAs: string }[] = [
   { match: /^@img\/sharp-libvips-/, documentedAs: '`@img/sharp-libvips-<platform>`' },
   { match: /^@img\/sharp-/, documentedAs: '`@img/sharp-<platform>`' },
   { match: /^sqlite-vec/, documentedAs: '`sqlite-vec`' },
-  { match: /^flatbuffers$/, documentedAs: '`flatbuffers`' },
 ]
 
 describe('dependency licenses', () => {

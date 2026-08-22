@@ -40,9 +40,16 @@ describe('dependency advisory disclosure', () => {
     expect(security).toContain('## Dependency advisories')
   })
 
-  it.each([['@xenova/transformers']])('keeps %s optional, which is what the document promises', (name) => {
-    expect(Object.keys(pkg.optionalDependencies ?? {})).toContain(name)
-    expect(Object.keys(pkg.dependencies ?? {})).not.toContain(name)
+  // The inverse of what this asserted until the embedding model became opt-in. Optional was not
+  // good enough: npm installs optionalDependencies by default, so "optional" meant everyone got it,
+  // and with it a critical protobufjs advisory, four more through onnxruntime-web, and a nested
+  // older sharp carrying four libvips CVEs -- six in total, none patchable from here. Putting it
+  // back into either shipped section reinstates all six silently, which is precisely why this reads
+  // both sections rather than only the one it moved out of.
+  it('keeps @xenova/transformers out of the packages a consumer installs', () => {
+    expect(Object.keys(pkg.dependencies ?? {})).not.toContain('@xenova/transformers')
+    expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain('@xenova/transformers')
+    expect(Object.keys(pkg.devDependencies ?? {}), 'the tests still embed with it').toContain('@xenova/transformers')
   })
 
   // exceljs went further than optional: the xlsx-* commands read the container directly with
@@ -81,10 +88,34 @@ describe('dependency advisory disclosure', () => {
 
   it('names every package the table discusses, so a rename cannot orphan a row', () => {
     const declared = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})])
-    for (const name of ['@xenova/transformers', 'sharp', 'puppeteer-core']) {
+    for (const name of ['sharp', 'puppeteer-core']) {
       expect(security, `${name} is discussed in SECURITY.md`).toContain(name)
       expect(declared, `${name} is still a dependency`).toContain(name)
     }
+    // @xenova/transformers is the one the document discusses at length without shipping. It has to
+    // stay named there, because the section is now largely about its absence and the command that
+    // brings it back, and a silent rename would leave that whole passage pointing at nothing.
+    expect(security).toContain('@xenova/transformers')
+    expect(Object.keys(pkg.devDependencies ?? {})).toContain('@xenova/transformers')
+    expect(declared).not.toContain('@xenova/transformers')
+  })
+
+  // The document does not merely say the model is optional; it prints the command that installs it.
+  // A command that is wrong is worse than no command, and this one is easy to get wrong in a way
+  // nobody notices: a global token-goat needs `-g` for the sibling to resolve, and a project
+  // install must not have it. Both spellings are asserted because the document promises both.
+  it('prints an install command for the model it no longer ships', () => {
+    expect(security).toContain('npm install -g @xenova/transformers')
+    expect(security).toMatch(/drop -g if token-goat is a project dependency/)
+  })
+
+  // Every advisory a consumer used to inherit came through that one package, so the document's
+  // claim is now that a default install is clean rather than that some paths are unreachable. The
+  // count is pinned for the same reason the no-optional count below it is: the document states a
+  // number, and a number in a security document that nothing checks goes stale silently.
+  it('claims a clean default install, not merely a clean no-optional one', () => {
+    expect(security).toContain('clean, 106 packages')
+    expect(security).toContain('clean, 40 packages')
   })
 
   it('does not fall back below the versions that carry the forward fixes', () => {

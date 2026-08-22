@@ -1225,7 +1225,7 @@ Outbound network is reserved to these explicit cases:
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
 - Image fetches from URLs: either explicit via `token-goat fetch-image <url>`, or when the AI agent issues a WebFetch call that returns image content — the hook intercepts and shrinks the image. The URL always originates from the agent's work, not from token-goat itself.
 - `token-goat screenshot <url>` navigates a headless browser to the URL you give it, subject to the target restrictions described below.
-- The first `token-goat semantic` run on a machine downloads the embedding model from `huggingface.co`, pinned to an immutable commit rather than a mutable branch. Subsequent runs use the local cache and make no network call. Skip the download entirely by setting `indexing.embeddings_enabled = false` (it is on by default), in which case `semantic` falls back to full-text search.
+- The first `token-goat semantic` run on a machine downloads the embedding model from `huggingface.co`, pinned to an immutable commit rather than a mutable branch, and only once `@xenova/transformers` has been installed (see below — it is not part of a default install). Subsequent runs use the local cache and make no network call. Skip the download entirely by setting `indexing.embeddings_enabled = false` (it is on by default), in which case `semantic` falls back to full-text search.
 - The first optical-character read of an image downloads the English language data (about 4 MB) from `cdn.jsdelivr.net`, at a fixed version path. Subsequent reads use the local cache. This happens for an explicit `token-goat image-text`, and also for the automatic text extraction the image-shrink hook performs when the agent reads a screenshot; turn the automatic one off with `image_shrink.ocr_enabled = false`.
 
 **One switch for all of it.** Set `network.offline = true` (env `TOKEN_GOAT_OFFLINE`) and every one of the paths above refuses instead of connecting, saying so rather than failing quietly. Anything already cached keeps working: a machine that has the embedding model still runs `semantic`, and one that has the language data still reads text out of images. This is one of the settings a per-project config file may not touch, so cloning a repository cannot switch it back off.
@@ -1234,7 +1234,13 @@ Outbound network is reserved to these explicit cases:
 
 **Security reports.** See [SECURITY.md](SECURITY.md). Email `token-goat@dfkhelper.com`; do not file as a GitHub issue. Reports are acknowledged within 7 days; coordinated disclosure with a 90-day default window.
 
-**Dependency advisories.** `npm audit` on the published package is not empty. The residual findings all trace to three packages that have no forward patch, two of which are optional and can be left out with `npm install --omit=optional`. Each one is named, with why it does or does not reach you, under [Dependency advisories](SECURITY.md#dependency-advisories).
+**Dependency advisories.** `npm audit` on the published package is empty, for a default install as well as for `npm install --omit=optional`. That took removing the package the findings all came through: `@xenova/transformers`, which supplied the embedding half of `semantic` and carried a critical `protobufjs` advisory plus five more that had no forward patch. It is no longer installed by default. `semantic` still works without it, on keyword search. Both `semantic` itself and `token-goat doctor` say so, and print the one command that brings the embeddings back:
+
+```bash
+npm install -g @xenova/transformers   # drop -g if token-goat is a project dependency
+```
+
+The full accounting, including what the package used to cost and why moving it was better than migrating to a newer one, is under [Dependency advisories](SECURITY.md#dependency-advisories).
 
 **Verifying what you installed.** Every published version is built and pushed by one pinned workflow when a GitHub release is published, with npm provenance, so `npm audit signatures` verifies the tarball against the commit that produced it. Details in [Verifying what you installed](SECURITY.md#verifying-what-you-installed).
 
