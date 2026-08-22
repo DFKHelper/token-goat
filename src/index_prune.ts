@@ -21,10 +21,21 @@ export function removeFileFromIndex(db: DbHandle, filePath: string): void {
 }
 
 // A drive root (`c:/`) or empty prefix would scope the prune to an entire drive across every project in the shared global DB; refuse it so a malformed root can never mass-delete another project's rows.
-function isTooShallowToPrune(rootPrefix: string): boolean {
-  const segments = rootPrefix.split('/').filter((s) => s.length > 0 && !/^[a-z]:$/i.test(s))
+export function isTooShallowToPrune(rootPrefix: string): boolean {
+  // Normalize FIRST. The scan this guards (foldedBounds) normalizes before it matches rows, so a
+  // guard reading the raw spelling is answering about a different string than the one that gets
+  // scanned. `C:\` splits into a single segment that looks like an ordinary directory name, passes,
+  // and only then normalizes to `c:/` and prefix-matches every row on the drive. Both spellings the
+  // guard was written against -- `c:/` and `C:` -- were rejected correctly, which is exactly what
+  // kept the gap invisible: it covered the spellings callers happen to pass rather than the hazard.
+  const normalized = normalizePath(rootPrefix)
+  const segments = normalized.split('/').filter((s) => s.length > 0 && !/^[a-z]:$/i.test(s))
   // A WSL-mounted drive root (/mnt/c) is the same "entire drive" hazard as a bare drive letter -- recognize it too, in case a project root is ever literally the mount root rather than a real path under it.
   if (segments.length === 2 && segments[0]?.toLowerCase() === 'mnt' && /^[a-z]$/i.test(segments[1] ?? '')) return true
+  // `//server/share` is the root of a whole network share, the same whole-volume hazard as a drive
+  // root. Gated on the path actually being UNC: a plain POSIX `/usr/local` also has two segments and
+  // is an ordinary directory that must stay prunable.
+  if (normalized.startsWith('//') && segments.length <= 2) return true
   return segments.length === 0
 }
 
@@ -58,7 +69,12 @@ function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
   for (const p of foldedPathsUnderRoot(rootPrefix, dbPath)) {
     let stillExists: boolean
     try {
-      stillExists = fs.statSync(p, { throwIfNoEntry: false }) !== undefined
+      // isFile, not mere existence: `files` rows are source files, and a path now occupied by a
+      // directory (or a symlink to one) means the indexed file is gone even though something answers
+      // at that path. Bare existence kept its symbols, references and embedding chunks in the index
+      // forever, with no event that could ever clear them.
+      const st = fs.statSync(p, { throwIfNoEntry: false })
+      stillExists = st !== undefined && st.isFile()
     } catch {
       // Stat failed for a reason other than "file is gone" (EPERM, EBUSY, an antivirus/search-indexer holding a transient lock, etc.). We can't confirm the file was actually deleted, so don't treat it as deletable this pass -- it will be re-evaluated the next time pruning runs.
       continue
@@ -88,15 +104,29 @@ function removeFilesBestEffort(db: DbHandle, paths: string[]): string[] {
 
 // Same as removeFilesBestEffort, but re-checks disk existence immediately before each delete. findDeletablePaths' scan and this loop's deletes are not one atomic step -- across a large root the gap between "checked, file was gone" and "actually delete the row" can be wide enough for the file to be recreated and reindexed by a concurrent writer (an edit hook, a second worker/CLI invocation, a git checkout) in between. Without this recheck, deleteFileRows deletes unconditionally by path and would wipe that freshly-written row, silently losing the new content. This can only shrink the race window (down to the gap between this statSync and the delete itself), not eliminate it -- true atomicity would need a DB-level guard -- but it closes the far wider window that findDeletablePaths' full-scan-then-delete-all shape otherwise leaves open. Used only where "gone from disk" is the deletion trigger (pruneDeletedFiles, sweepKnownRoots's live-root branch); pruneSystemTempFiles intentionally does NOT use this since its rows are stale regardless of current disk existence.
 function removeDeletedFilesBestEffort(db: DbHandle, paths: string[]): string[] {
-  const stillGone = paths.filter((p) => {
+  // Checked immediately before each delete, one path at a time. Filtering the whole list first and
+  // deleting afterwards left the first path's window open across every remaining stat AND every
+  // delete -- the full-scan-then-delete-all shape this exists to avoid, just one stage later. Now
+  // the window really is the gap between one path's stat and its own delete, as described above.
+  const removed: string[] = []
+  for (const p of paths) {
+    let gone: boolean
     try {
-      return fs.statSync(p, { throwIfNoEntry: false }) === undefined
+      const st = fs.statSync(p, { throwIfNoEntry: false })
+      gone = st === undefined || !st.isFile()
     } catch {
       // Can't confirm the file is actually gone (EPERM/EBUSY/etc) -- don't delete this pass.
-      return false
+      continue
     }
-  })
-  return removeFilesBestEffort(db, stillGone)
+    if (!gone) continue
+    try {
+      removeFileFromIndex(db, p)
+      removed.push(p)
+    } catch {
+      // Best-effort: one file's delete failure must not abort pruning the rest.
+    }
+  }
+  return removed
 }
 
 // Remove index rows for files under rootPrefix that no longer exist on disk. Scoped by absolute-path prefix so the shared global DB never prunes another project's rows, and keeps every file still present on disk. Returns the count pruned.
@@ -308,7 +338,13 @@ export function sweepKnownRoots(
 
     let reachable: boolean
     try {
-      reachable = fs.existsSync(root)
+      // isDirectory, not mere existence. A project root replaced by a regular file answers
+      // existsSync, so the live-root branch below ran against a root whose every indexed child is
+      // missing: the anomaly ratio hit 100%, the root was flagged instead of pruned, and it stayed
+      // flagged on every later sweep. The rows were then unreachable by any code path -- the
+      // missing-root grace that would have pruned them is skipped precisely because the root
+      // "exists".
+      reachable = fs.statSync(root, { throwIfNoEntry: false })?.isDirectory() === true
     } catch {
       reachable = false
     }

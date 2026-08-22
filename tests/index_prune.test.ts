@@ -21,6 +21,10 @@ const mockState = vi.hoisted(() => ({
   // gone" and the prune's own delete of that path actually running.
   onStatOnce: undefined as (() => void) | undefined,
   onStatOncePath: undefined as string | undefined,
+  // Number of matching stats to let pass before the hook fires. 0 = fire on the first match
+  // (findDeletablePaths' scan). 1 = fire on the second match, which is removeDeletedFilesBestEffort's
+  // own recheck scan -- the window Fix C narrows and a batch-shape delete leaves wide open.
+  onStatSkip: 0,
 }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
@@ -33,6 +37,10 @@ vi.mock('node:fs', async (importOriginal) => {
       throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
     }
     if (mockState.onStatOncePath !== undefined && args[0] === mockState.onStatOncePath) {
+      if (mockState.onStatSkip > 0) {
+        mockState.onStatSkip--
+        return actual.statSync(...args)
+      }
       const cb = mockState.onStatOnce
       mockState.onStatOnce = undefined
       mockState.onStatOncePath = undefined
@@ -84,6 +92,7 @@ describe('index_prune', () => {
     mockState.blockedPath = undefined
     mockState.onStatOnce = undefined
     mockState.onStatOncePath = undefined
+    mockState.onStatSkip = 0
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch {
@@ -295,6 +304,50 @@ describe('index_prune', () => {
   // prune scan) and, as a side effect, recreates the file with different content and reindexes
   // it before the mocked stat call reports "gone" -- faithfully reproducing the race without
   // needing real wall-clock timing.
+  // The case above fires the recreate during the target's OWN recheck, which the pre-fix shape
+  // also survived: its filter stat'd the path, the hook recreated it, and the filter then dropped
+  // it from the delete list. The window that shape actually left open is a different one. It
+  // rechecked EVERY path first and only then began deleting, so a path checked early stayed
+  // condemned across all the remaining checks and all the deletes -- the very full-scan-then-
+  // delete-all shape the recheck was added to close, moved one stage later. Here the recreate
+  // lands while a LATER path is being checked, after the earlier one has already been judged
+  // gone, and the earlier file's fresh rows must still survive.
+  it('does not delete a file recreated while a later path in the same batch is being checked', () => {
+    const aPath = path.join(dir, 'a-early.ts')
+    const bPath = path.join(dir, 'z-later.ts')
+    fs.writeFileSync(aPath, 'export const oldSym = 1')
+    fs.writeFileSync(bPath, 'export const other = 1')
+    const aKey = normalizePath(aPath)
+    const bKey = normalizePath(bPath)
+    indexFileSync(aKey, dbPath)
+    indexFileSync(bKey, dbPath)
+    fs.rmSync(aPath)
+    fs.rmSync(bPath)
+
+    // The recreate must land during removeDeletedFilesBestEffort's OWN recheck scan, not
+    // findDeletablePaths' first scan -- otherwise the filter re-stat that follows the first scan
+    // already sees the recreated file and excludes it, so batch and interleaved shapes behave
+    // identically. onStatSkip = 1 lets the first-scan stat of bKey pass through and fires the hook
+    // on the second stat of bKey (the recheck scan), after a-early was rechecked-gone in that same
+    // scan but before its row is deleted. The batch shape (filter-all, then delete-all) deletes the
+    // now-recreated a-early; the interleaved shape (delete each path right after its own recheck)
+    // has already deleted a-early's stale row and leaves the fresh one alone.
+    mockState.onStatOncePath = bKey
+    mockState.onStatSkip = 1
+    mockState.onStatOnce = () => {
+      fs.writeFileSync(aPath, 'export const newSym = 2')
+      indexFileSync(aKey, dbPath)
+    }
+
+    pruneDeletedFiles(normalizePath(dir), dbPath)
+
+    expect(symbolCount(dbPath, aKey), 'a file recreated mid-batch had its fresh rows deleted anyway').toBe(1)
+    const db = getDb(dbPath)
+    const row = db.prepare('SELECT body FROM symbols WHERE file_path = ?').get(aKey) as { body: string } | undefined
+    expect(row?.body, 'the surviving row held the stale content, not the recreated content').toContain('newSym')
+    expect(symbolCount(dbPath, bKey), 'the genuinely deleted file was not pruned').toBe(0)
+  })
+
   it('does not delete a file that was recreated and reindexed mid-scan (delete-recreate race)', () => {
     const aPath = path.join(dir, 'race.ts')
     fs.writeFileSync(aPath, 'export const oldSym = 1\n')

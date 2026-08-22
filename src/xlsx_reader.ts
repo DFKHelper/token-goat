@@ -316,7 +316,14 @@ function makeWorksheet(name: string, data: SheetData): ExcelWorksheet {
       },
       eachCell(opts, cb) {
         if (opts.includeEmpty) {
-          const maxCol = data.columnCount
+          // This row's own last populated column, not the sheet-wide maximum. ExcelJS, which this
+          // shim stands in for, walks a row out to its own width: on a sheet whose widest row has 9
+          // columns, a 4-column row yields 4 cells, not 9. Using the sheet maximum handed every
+          // short row a tail of empty cells that the real library never emits. No caller passes
+          // includeEmpty today -- every consumer in xlsx_extract.ts passes false -- which is why
+          // nothing caught it, and is also why it would have been a trap for the first one that did.
+          let maxCol = 0
+          if (rowCells !== undefined) for (const c of rowCells.keys()) if (c > maxCol) maxCol = c
           for (let c = 1; c <= maxCol; c++) cb(rowCells?.get(c) ?? EMPTY_CELL, c)
           return
         }

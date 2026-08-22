@@ -274,6 +274,31 @@ describe('sparse sheets and malformed input', () => {
     expect(() => ws?.getRow(999).eachCell({ includeEmpty: false }, () => undefined)).not.toThrow()
   })
 
+  it('walks a row to its own last column, not the sheet-wide maximum, when includeEmpty is set', async () => {
+    // Row 1 is four columns wide, so the sheet columnCount is 4. Row 2 populates A and C, leaving an
+    // interior gap at B and nothing at D. ExcelJS -- which this reader stands in for -- walks each
+    // row out to its OWN last column with includeEmpty, filling interior gaps but not padding past
+    // the row's own width. So getRow(2) yields three cells (A, an empty B, C), not four. Pre-fix the
+    // shim used the sheet-wide maximum and appended a phantom empty D to every short row.
+    const file = buildXlsx({
+      sheets: [
+        {
+          name: 'S',
+          target: 'worksheets/sheet1.xml',
+          xml: sheetXml(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c><c r="B1" t="inlineStr"><is><t>b</t></is></c><c r="C1" t="inlineStr"><is><t>c</t></is></c><c r="D1" t="inlineStr"><is><t>d</t></is></c></row>' +
+              '<row r="2"><c r="A2" t="inlineStr"><is><t>x</t></is></c><c r="C2" t="inlineStr"><is><t>z</t></is></c></row>',
+          ),
+        },
+      ],
+    })
+    const ws = (await readXlsxWorkbook(file)).getWorksheet('S')
+    expect(ws?.columnCount).toBe(4)
+    const cols: number[] = []
+    ws?.getRow(2).eachCell({ includeEmpty: true }, (_cell, col) => cols.push(col))
+    expect(cols, 'a short row was padded with empty cells out to the sheet-wide width').toEqual([1, 2, 3])
+  })
+
   it('reports a zip with no workbook part as an invalid xlsx rather than a parse error', async () => {
     const file = path.join(dir, 'no-workbook.xlsx')
     fs.writeFileSync(file, Buffer.from(zipSync({ 'hello.txt': new TextEncoder().encode('hi') })))
