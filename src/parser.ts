@@ -2740,7 +2740,10 @@ function writeParseResult(
 // reopen. A CLI caller (worker.ts, cli.ts) never has a pin to verify against and omits this
 // parameter, so this function's own fs.readFileSync (below) still runs for every call site
 // except the pinned ones, unchanged from before this parameter existed.
-export function indexFileSync(filePath: string, dbPath: string = globalDbPath(), preReadBytes?: Buffer): void {
+export function indexFileSync(rawPath: string, dbPath: string = globalDbPath(), preReadBytes?: Buffer): void {
+  // Every symbols/refs/files row this call writes derives from this one spelling, so the whole
+  // parse side of the index agrees on a single name for the file. See canonicalizeIndexPath.
+  const filePath = canonicalizeIndexPath(rawPath)
   const ixCfg = loadConfig().indexing
   if (ixCfg !== undefined && isParseSkipEligible(filePath, ixCfg)) {
     // Purge stale rows AND the files row (sha) so the file settles into a stable not-indexed state instead of being re-selected as "changed" on every drain; also drop any embedding rows it held before becoming skip-eligible (indexFileSync is called directly from read_commands' --force-refresh path).
@@ -2832,6 +2835,62 @@ export function unavailableEmbedSha(sha: string): string {
 }
 
 /**
+ * Return `absPath` with its final segment spelled the way the filesystem actually spells it.
+ *
+ * The companion of `indexedPathSpellingIsStale`. That guard notices when a stored row's spelling
+ * has drifted from disk and forces a reparse -- but a reparse only helps if the reparse writes a
+ * *different* spelling than the one already stored. Every writer used to hand its own caller's
+ * path straight to `writeParseResult`, and no caller's spelling is authoritative: `git ls-files`
+ * reports the name in git's index, which still says `MixedName.ts` after an unstaged case-only
+ * rename on a case-insensitive filesystem, because git never sees such a rename at all. So the
+ * bulk `index` command detected the drift, reparsed, wrote the same stale name back, and detected
+ * the very same drift again on the next run -- reparsing and re-embedding an unchanged file on
+ * every single run, forever, while every citation named a path with no directory entry behind it.
+ * Canonicalizing here, at the one point every writer passes through, is what makes that converge.
+ *
+ * Only the last segment is taken from the filesystem. `fs.realpathSync.native` canonicalizes every
+ * parent directory too, so adopting its whole answer would rewrite rows to an ambient prefix
+ * spelling the caller never used (`C:/WINDOWS/TEMP/...` for a caller that said `C:/Windows/Temp`),
+ * churning paths for a difference that is not the file's own. The directory prefix stays exactly
+ * as the caller spelled it.
+ *
+ * Three rails keep this from ever *relocating* a path. `fs.realpathSync.native` also resolves
+ * symlinks and Windows junctions, so it can answer with a completely different file: the new
+ * segment is adopted only when it case-folds equal to the one it replaces, and only when the
+ * resolved file's directory case-folds equal to the directory the caller named. And any failure
+ * returns the caller's path untouched. `fs.realpathSync` (without `.native`) is useless for this:
+ * on Windows it echoes the caller's own spelling back.
+ */
+export function canonicalizeIndexPath(absPath: string): string {
+  if (!isCaseInsensitiveFs()) return absPath
+  let real: string
+  try {
+    real = fs.realpathSync.native(absPath)
+  } catch {
+    // Unreadable or gone right now -- a git-tracked file deleted from the worktree reaches the
+    // indexer on every run. Keep the name callers know it by rather than guess at a spelling.
+    return absPath
+  }
+  // Split on the caller's own string, not a normalized copy: normalizePath lowercases a UNC
+  // host and share, so rebuilding the prefix from it would rewrite `//SERVER/Share/...` to
+  // `//server/share/...` on the runs that correct a name and leave it alone on the runs that do
+  // not -- a second spelling difference introduced by the very function meant to remove one.
+  const cut = Math.max(absPath.lastIndexOf('/'), absPath.lastIndexOf('\\'))
+  const base = absPath.slice(cut + 1)
+  const realNorm = normalizePath(real)
+  const realBase = path.basename(realNorm)
+  if (base === realBase) return absPath
+  if (foldPath(base) !== foldPath(realBase)) return absPath
+  // The resolved file must live in the directory the caller named. `fs.realpathSync.native` also
+  // follows symlinks and Windows junctions, so `alias.ts` can resolve to `../elsewhere/Alias.ts`
+  // -- fold-equal basenames, entirely different file. Adopting that spelling would name a
+  // directory entry that does not exist where the row says it does.
+  const callerDir = cut < 0 ? normalizePath(path.resolve('.')) : normalizePath(absPath.slice(0, cut))
+  if (foldPath(callerDir) !== foldPath(path.dirname(realNorm))) return absPath
+  return absPath.slice(0, cut + 1) + realBase
+}
+
+/**
  * True when the index's stored spelling of `absPath` no longer matches the file's real spelling
  * on disk.
  *
@@ -2856,7 +2915,9 @@ export function unavailableEmbedSha(sha: string): string {
  * would reindex forever. The identical fold check earlier is a cheap filter for a caller naming a
  * structurally different path, not a second correctness guard. This costs one realpath per file
  * per index run, which is noise beside the full-file read and hash `fingerprintFile` already
- * performs for the same file on the same pass.
+ * performs for the same file on the same pass. A file whose spelling has actually drifted pays
+ * for two more, one in each writer (see canonicalizeIndexPath) -- three in total, on the one run
+ * that corrects it and never again.
  */
 export function indexedPathSpellingIsStale(storedPath: string, absPath: string): boolean {
   if (!isCaseInsensitiveFs()) return false
@@ -2944,11 +3005,14 @@ export function isEmbedFresh(
  * permanently sha-gate-skipped. See makeIndexer in worker.ts for the read side of this gate.
  */
 export async function indexFileEmbeddings(
-  filePath: string,
+  rawPath: string,
   dbPath: string = globalDbPath(),
   sha?: string,
   onError?: (err: unknown) => void,
 ): Promise<void> {
+  // Same canonicalization as indexFileSync, for the same reason: chunk rows must be keyed by
+  // the spelling the parse side wrote, not by whatever the caller happened to pass.
+  const filePath = canonicalizeIndexPath(rawPath)
   const ixCfg = loadConfig().indexing
   if (!ixCfg.embeddings_enabled) {
     // Stamp a disabled-marker embed_sha even though no embedding actually ran, so makeIndexer's embedUnchanged gate (worker.ts) can hold for this content the next time it's touched while STILL disabled -- otherwise every re-touch of an unchanged file re-enters indexFileEmbeddings just to hit this same early-return again, on every drain, for as long as embeddings stay disabled. Deliberately NOT the real sha (see disabledEmbedSha's doc comment): re-enabling embeddings later must not be mistaken for "already embedded, unchanged".

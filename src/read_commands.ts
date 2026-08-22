@@ -80,6 +80,8 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 // ---- constants --------------------------------------------------------------
 
 const DIDYOUMEAN_LIMIT = 5
+/** Qualified retries listed for an ambiguous `section` heading before the tail is summarized. */
+const AMBIGUOUS_HEADING_LIMIT = 10
 // A query this long or longer gets a 2-edit typo budget; below it, 1. See typoBudget.
 const TYPO_TWO_EDIT_MIN_LEN = 8
 // Past this length a near-miss is no longer plausibly a typo of the same name, so the edit-distance fallback is skipped entirely.
@@ -675,13 +677,18 @@ export function filterSimilarHeadings(available: string[], query: string): strin
 }
 
 export function didYouMean(candidates: string[]): string {
-  if (candidates.length === 0) return ''
+  // Deduplicate first. Headings are not unique within a file -- a changelog carries one `Fixed`
+  // per release -- so an unfiltered list printed the same name five times and spent the whole
+  // suggestion budget saying one thing. Symbol callers pass names that are already distinct, so
+  // this only ever collapses a genuine repeat.
+  const unique = [...new Set(candidates)]
+  if (unique.length === 0) return ''
   const lines = ['Did you mean:']
-  for (const c of candidates.slice(0, DIDYOUMEAN_LIMIT)) {
+  for (const c of unique.slice(0, DIDYOUMEAN_LIMIT)) {
     lines.push(`  - ${c}`)
   }
-  if (candidates.length > DIDYOUMEAN_LIMIT) {
-    lines.push(`  (${candidates.length - DIDYOUMEAN_LIMIT} more not shown)`)
+  if (unique.length > DIDYOUMEAN_LIMIT) {
+    lines.push(`  (${unique.length - DIDYOUMEAN_LIMIT} more not shown)`)
   }
   return lines.join('\n')
 }
@@ -1911,6 +1918,23 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     if (!fs.existsSync(filePath)) {
       return { text: `File not found: '${filePath}'`, code: 1 }
     }
+    // An out-of-range ordinal (`Fixed#9` in a file with five `Fixed` headings) is not a missing
+    // heading, and reporting it as one sends the caller hunting for text that is right there. The
+    // base spec resolves, and its `occurrences` says how many there really are.
+    const ordSpec = /^(.*?)#(\d+)$/.exec(heading)
+    const ordBase = ordSpec?.[1]?.trim()
+    if (ordBase !== undefined && ordBase.length > 0) {
+      const baseResult = readSection(filePath, ordBase, readFileText)
+      if (baseResult !== null) {
+        const total = baseResult.occurrences?.length ?? 1
+        return {
+          text:
+            `Heading '${ordBase}' has ${countNoun(total, 'occurrence')} in '${specFilePath}'; ` +
+            `valid ordinals are #1 to #${total}`,
+          code: 1,
+        }
+      }
+    }
     const messages = [`Section '${heading}' not found in '${filePath}'`]
     const allHeadings = listSections(filePath, readFileText)
     const available = filterSimilarHeadings(allHeadings, heading)
@@ -1919,6 +1943,27 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     else if (allHeadings.length === 0) messages.push(`'${specFilePath}' has no headings`)
     else messages.push(`Try: token-goat outline ${specFilePath}`)
     return { text: messages.join('\n'), code: 1 }
+  }
+
+  // Several headings share this name and the caller did not say which. Returning the first one
+  // silently is how `section "CHANGELOG.md::Fixed"` handed back the newest release's entry with
+  // no hint that four older ones existed -- the caller cannot tell a lucky hit from a wrong one.
+  // Refuse and name the qualified retries, exactly as `read` does for an ambiguous symbol. The
+  // ambiguity rides on the result rather than collapsing it to null, so the not-found branch
+  // above can never report a heading that is plainly present as missing.
+  if (result.occurrences !== undefined) {
+    const lines = [
+      `Ambiguous heading '${heading}' in '${specFilePath}': ` +
+        `${countNoun(result.occurrences.length, 'heading')} match. ` +
+        `Retry with one of the qualified commands below to pick one:`,
+    ]
+    for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {
+      lines.push(`  - line ${line}  ->  token-goat section "${specFilePath}::${heading}#${i + 1}"`)
+    }
+    if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
+      lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)
+    }
+    return { text: lines.join('\n'), code: 1 }
   }
 
   // A prefix-redirected match (readSection resolved a different heading than the one asked
@@ -4404,7 +4449,22 @@ export function runListSections(opts: ListSectionsOptions): number {
   // above, so a filter can only ever narrow a real non-empty result -- never masquerade as one.
   const preFilterCount = sections.length
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const filtered = matchesGrep !== undefined ? sections.filter((s) => matchesGrep(s)) : sections
+  // A name that occurs more than once is indistinguishable in a bare list, and the `#N` form is
+  // the only way to ask for a specific one. Numbered over `sections` and before --grep runs, so
+  // narrowing the output never renumbers the ordinals a retry would have to use, and matched
+  // against the raw heading text so a filter still means what it always did.
+  const totals = new Map<string, number>()
+  for (const heading of sections) totals.set(heading, (totals.get(heading) ?? 0) + 1)
+  const seen = new Map<string, number>()
+  const labelled = sections.map((heading) => {
+    const nth = (seen.get(heading) ?? 0) + 1
+    seen.set(heading, nth)
+    return (totals.get(heading) ?? 1) > 1 ? `${heading}#${nth}` : heading
+  })
+  const filtered =
+    matchesGrep !== undefined
+      ? labelled.filter((_, i) => matchesGrep(sections[i] ?? ''))
+      : labelled
 
   if (filtered.length === 0) {
     // The file IS non-empty (preFilterCount > 0, already confirmed above) -- --grep matched none
@@ -4425,8 +4485,8 @@ export function runListSections(opts: ListSectionsOptions): number {
     return 0
   }
 
-  for (const s of filtered) {
-    emit(s)
+  for (const heading of filtered) {
+    emit(heading)
   }
   return 0
 }
