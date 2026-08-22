@@ -30,6 +30,13 @@ export interface SectionResult {
   readonly lineEnd: number
   /** The original query a prefix redirect resolved from; absent on an exact match. */
   readonly redirectedFrom?: string
+  /**
+   * 1-based line numbers of every heading the spec matched, present only when the spec carried no
+   * ordinal and more than one heading matched. Absent -- not a one-element array -- for the
+   * unambiguous case, so a caller that ignores the field keeps the historical first-match result
+   * and only a caller that checks it sees the ambiguity. See runSection, which refuses on it.
+   */
+  readonly occurrences?: readonly number[]
 }
 
 /** A located section header before its end line is resolved. */
@@ -382,7 +389,7 @@ function resolveHeaderPos(
   headers: readonly SectionHeader[],
   base: string,
   ordinal: number | null,
-): { headerPos: number; redirectedFrom: string | null } | null {
+): { headerPos: number; redirectedFrom: string | null; occurrences: number[] | null } | null {
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
   const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
@@ -408,7 +415,17 @@ function resolveHeaderPos(
     const pick = ordinal === null ? 0 : ordinal - 1
     const headerPos = matches[pick]
     if (headerPos === undefined) return null
-    return { headerPos, redirectedFrom: null }
+    // Report the ambiguity only when the caller did NOT already disambiguate. A spec carrying an
+    // ordinal has picked its occurrence deliberately and must stay a plain, silent hit.
+    let occurrences: number[] | null = null
+    if (ordinal === null && matches.length > 1) {
+      occurrences = []
+      for (const i of matches) {
+        const h = headers[i]
+        if (h !== undefined) occurrences.push(h.index + 1)
+      }
+    }
+    return { headerPos, redirectedFrom: null, occurrences }
   }
   // No exact match. Fall back to an unambiguous normalized-prefix match so a slash/ampersand subtitle (which the strip-normalizer doesn't cover) still resolves. An ordinal implies the caller already knows the exact text, so skip the fallback there.
   if (ordinal !== null || normalizedTarget.length === 0) return null
@@ -426,7 +443,7 @@ function resolveHeaderPos(
   if (distinct.size === 1 && prefixPos !== -1) {
     const chosen = headers[prefixPos]
     if (chosen === undefined) return null
-    return { headerPos: prefixPos, redirectedFrom: base }
+    return { headerPos: prefixPos, redirectedFrom: base, occurrences: null }
   }
   // Still no match. Last-resort tier: a distinctive suffix or word-subset query, e.g. "Setup"
   // for "Installation and Setup", or "Config Options" for "Configuration Options". Every
@@ -451,7 +468,7 @@ function resolveHeaderPos(
   if (widenedMatches.length !== 1) return null
   const widenedPos = widenedMatches[0]
   if (widenedPos === undefined) return null
-  return { headerPos: widenedPos, redirectedFrom: base }
+  return { headerPos: widenedPos, redirectedFrom: base, occurrences: null }
 }
 
 /**
@@ -509,7 +526,9 @@ function resolveSectionFromText(text: string, headingSpec: string, language: str
 
   const resolved = resolveHeaderPos(headers, base, ordinal)
   if (resolved === null) return null
-  return buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
+  const built = buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
+  if (built === null || resolved.occurrences === null) return built
+  return { ...built, occurrences: resolved.occurrences }
 }
 
 export function extractSection(text: string, headingSpec: string): SectionResult | null {
