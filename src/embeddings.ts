@@ -180,15 +180,6 @@ export const MAX_OVER_FETCH = 100
 
 // ============================================================================ Types ============================================================================
 
-/** Result of an embedding/index operation. */
-export interface EmbeddingsResult {
-  filesVisited: number
-  chunksEmbedded: number
-  chunksSkippedUnchanged: number
-  durationSec: number
-  model: string
-}
-
 /** A contiguous code or text segment suitable for embedding. */
 export interface Chunk {
   filePath: string

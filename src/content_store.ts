@@ -8,7 +8,7 @@
 import { deflateRawSync } from 'node:zlib'
 import * as path from 'node:path'
 
-import { isBlobStale, loadBlob, listBlobs, storeBlob } from './disk_cache.js'
+import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
@@ -193,8 +193,4 @@ export function resolveHandoff(name: string, opts: { projectRoot?: string; full?
   recordStat('handoff_resolve')
   if (opts.full === true) return text
   return compressText(text)
-}
-
-export function listContentForTesting(): Array<{ id: string; mtime: number }> {
-  return listBlobs(CONTENT_SUBDIR).map(({ id, mtime }) => ({ id, mtime }))
 }
