@@ -724,6 +724,10 @@ export async function upsertChunks(
     return 'unavailable'
   }
 
+  // Before adding to the index, make sure what is already in it came from this same stack --
+  // otherwise this file's fresh vectors join a set they cannot be compared against.
+  ensureEmbeddingProvenance(db)
+
   // Embed all chunk texts.
   const texts = chunks.map((c) => c.text)
   const embeddings = await embedTexts(texts)
@@ -882,6 +886,12 @@ export async function searchSemantic(
   if (!chunkVectorsTableExists(db)) {
     return []
   }
+
+  // Searching has to check this too, not just indexing: a query vector computed by this stack is
+  // only comparable with stored vectors from the same stack, and it is entirely possible to search
+  // a database that has not been re-indexed since the stack changed. Returning nothing (and saying
+  // why) beats returning neighbours measured against vectors from a different model.
+  ensureEmbeddingProvenance(db, modelName)
 
   // Embed the query. BGE models are asymmetric: only the query side gets the retrieval-instruction prefix (see QUERY_INSTRUCTION_PREFIX) -- document/chunk embedding (the embedTexts call in chunk indexing) must stay unprefixed.
   const queryEmbeddings = await embedTexts([`${QUERY_INSTRUCTION_PREFIX}${query}`], modelName)
@@ -1133,6 +1143,117 @@ export function deleteFileEmbeddings(
     for (const id of ids) deleteVector.run(id)
   }
   db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(folded)
+}
+
+/**
+ * Drop every stored vector and chunk in the database, and clear the `embed_sha` of each file that
+ * had one, so the freshness gate re-embeds it (see {@link isEmbedFresh} in parser.ts).
+ *
+ * Only files that actually had chunk rows are cleared. A file carrying a bare `embed_sha` with no
+ * chunks is a deliberate terminal skip -- an empty file, or a policy-excluded one like a
+ * multi-megabyte `.profile-meta.xml` -- and re-entering those would re-read their whole content
+ * just to reach the same early return. Collecting the paths before the delete rather than after is
+ * what makes that distinction possible at all, and mirrors purgeDotenvEmbeddings in db.ts.
+ *
+ * @returns How many files were marked for re-embedding.
+ */
+export function resetAllEmbeddings(db: BetterSqlite3Database): number {
+  const paths = db.prepare('SELECT DISTINCT file_path FROM chunks').pluck().all() as string[]
+  const clearEmbedSha = db.prepare(`UPDATE files SET embed_sha = NULL WHERE ${pathEqClause('path')}`)
+  const tx = db.transaction(() => {
+    for (const p of paths) deleteFileEmbeddings(db, p)
+    for (const p of paths) clearEmbedSha.run(foldPath(p))
+  })
+  tx.immediate()
+  return paths.length
+}
+
+/**
+ * A stable identifier for the embedding stack in this process: the model, the exact revision of it
+ * that was fetched, and the inference runtime's major.minor version.
+ *
+ * The runtime version is in here because it changes the numbers. Running the same quantized model
+ * through two runtime versions produced final vectors 0.9925-0.9978 cosine apart -- both about
+ * equally close to the unquantized model, so neither is wrong, but near-ties reorder between them.
+ * Major.minor rather than the full version is a judgement call: int8 kernel changes land in minor
+ * releases, and keying on the patch would re-embed every project on the machine for a bug fix that
+ * cannot plausibly move a number. It errs toward not re-embedding, so a patch release that DID
+ * change a kernel would go unnoticed.
+ */
+export function embeddingProvenance(modelName: string = DEFAULT_MODEL): string {
+  const revision = modelName === DEFAULT_MODEL ? PINNED_MODEL_REVISION.slice(0, 12) : 'unpinned'
+  return `${modelName}@${revision}/${backendId()}`
+}
+
+/**
+ * Which package computes the vectors, at which version. The version is the point: it is what pins
+ * the inference runtime underneath (`@xenova/transformers` 2.17.2 resolves onnxruntime-node
+ * 1.14.0), so it stands in for the runtime without reaching into the dependency's own private tree.
+ *
+ * Read off the loaded module's `env.version` rather than by requiring its `package.json` on a
+ * subpath. Both give the same answer here, but the subpath form depends on the package not
+ * restricting `exports`, which is a property of a dependency this code does not control and which
+ * would degrade silently to the `unknown` marker below if it ever changed.
+ *
+ * That marker is a real hole -- two different installs that both fail the read stamp the same
+ * string and are then treated as one stack -- but reaching it means the module loaded while
+ * carrying no version at all, and every caller is already behind {@link isAvailable}, which only
+ * passes once it has loaded.
+ */
+function backendId(): string {
+  ensureTransformerLoaded()
+  const env = (_transformer as { env?: { version?: unknown } } | null)?.env
+  const version = env?.version
+  if (typeof version === 'string' && version !== '') return `@xenova/transformers@${version}`
+  return '@xenova/transformers@unknown'
+}
+
+// Memoized per connection, like _chunkVectorsUsable above and for the same reason: the answer
+// cannot change during a connection's life (the provenance is fixed once the runtime has loaded,
+// and the stamp is rewritten in the same call that finds it stale), so re-running the read on
+// every embed and every search would be pure overhead on the hot path.
+const _provenanceChecked = new WeakSet<BetterSqlite3Database>()
+
+/**
+ * Make sure the vectors already in this database were produced by the stack running right now, and
+ * throw the whole set away if they were not.
+ *
+ * Three cases, and the middle one is the reason this needs no migration step:
+ *  - the stored provenance matches: nothing to do, the overwhelmingly common path.
+ *  - nothing is stored but chunks exist: the vectors predate this stamp entirely, so their
+ *    provenance is unknowable and they must be assumed foreign. Discarding them is the whole
+ *    upgrade path -- a database written by any earlier release lands here exactly once.
+ *  - nothing is stored and no chunks exist: a fresh index, so just record the stamp.
+ *
+ * Discarding is the right response rather than tolerating the mix, because there is no way to tell
+ * which rows came from where once they are in the table, and a partially-foreign index gives wrong
+ * neighbours quietly. The cost is one re-embed, which the caller is told how to trigger.
+ */
+export function ensureEmbeddingProvenance(
+  db: BetterSqlite3Database,
+  modelName: string = DEFAULT_MODEL,
+): void {
+  if (_provenanceChecked.has(db)) return
+  _provenanceChecked.add(db)
+
+  const current = embeddingProvenance(modelName)
+  const stored = db.prepare('SELECT provenance FROM embedding_provenance WHERE id = 1').pluck().get() as
+    | string
+    | undefined
+  if (stored === current) return
+
+  const cleared = resetAllEmbeddings(db)
+  db.prepare(
+    'INSERT INTO embedding_provenance (id, provenance) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET provenance = excluded.provenance',
+  ).run(current)
+
+  if (cleared > 0) {
+    console.warn(
+      `Embedding stack changed (${stored ?? 'unrecorded'} -> ${current}); discarded ${cleared} ` +
+        `file${cleared === 1 ? '' : 's'} worth of vectors because old and new ones are not comparable. ` +
+        'Run `token-goat index` to rebuild them.',
+    )
+  }
 }
 
 // ============================================================================ Internal helpers ============================================================================

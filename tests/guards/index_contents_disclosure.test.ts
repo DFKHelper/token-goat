@@ -40,6 +40,11 @@ const DISCLOSED_TABLES = [
   'cache_recall_fts',
   'chunk_vectors',
   'chunks',
+  // Holds one string naming the model, revision and backend that produced the stored vectors --
+  // no file content, nothing derived from the user's code -- so the README's "What the index
+  // actually holds" paragraph is still accurate without it. Recorded here because that judgement
+  // is the whole point of this list; the next table to arrive has to make the same one.
+  'embedding_provenance',
   'files',
   'hint_emissions',
   'hint_manual_marks',
