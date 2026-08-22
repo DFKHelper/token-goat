@@ -46,7 +46,7 @@ The following are not treated as security issues unless paired with a working pr
 | What you scan | Command | Result |
 | --- | --- | --- |
 | this repository | `npm audit` | clean, development dependencies included |
-| an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 46 packages |
+| an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 40 packages |
 | a default install | `npm install token-goat` then `npm audit --omit=dev` | the optional packages in the table below |
 
 The repository is clean because [`package.json`](package.json) carries an `overrides` block that pins five transitive packages to patched versions. **npm applies `overrides` only in the root project**, so those pins do not travel to anyone who installs Token-Goat as a dependency. We are saying so plainly rather than letting a clean repository scan stand in for a clean install: if your scanner reads this repository or its lockfile it will report nothing, and that is not the whole picture.
@@ -62,6 +62,8 @@ Without the overrides a consumer resolves `protobufjs` at 6.x, which carries mor
 `exceljs` used to appear in that table, carrying [`uuid`](https://github.com/advisories/GHSA-w5hq-g745-h8pq). It is now a development dependency instead. The `xlsx-*` commands read the workbook container directly with `fflate` and `fast-xml-parser`, the same two packages the `.docx` and `.pptx` readers already used, so `exceljs` is only a test fixture writer now. That removes 55 packages from a default install, including every deprecated one in the tree.
 
 `html-to-text` used to appear in that table, carrying [`deepmerge-ts`](https://github.com/advisories/GHSA-ggr8-5vv4-36mx). It is now a development dependency instead. esbuild inlines it into `dist/token-goat.mjs` at build time and nothing in the published bundle imports it, so it was a runtime dependency in name only: moving it removes `html-to-text`, `deepmerge-ts`, `htmlparser2`, `selderee`, and `dom-serializer` from an installed copy while the HTML-to-text output stays byte-for-byte identical. That is what takes the no-optional install to zero, and it is better than the alternative we had considered, rolling `html-to-text` back to 9.x: that version pins `htmlparser2` two majors lower, and `htmlparser2` is what parses fetched pages, so it would have traded an advisory in an options merger for an older parser on the one path that handles untrusted input.
+
+Five more packages were in `dependencies` for the same reason and have moved the same way: `commander`, `csv-parse`, `js-yaml`, `smol-toml` and `zod`. esbuild inlines each one into the bundle, and the published bundle resolves none of them, so a consumer was downloading code the artifact already carried. Moving them takes an install without optional packages from 46 packages to 40. `better-sqlite3` and `jsonc-parser` stay, because the bundle really does load them at run time: the first is a native addon, and the second is reached through `createRequire` rather than an import esbuild can inline. `zod` is the largest of the five on disk and the one that saves least in practice, because `@modelcontextprotocol/sdk` and `puppeteer-core` both depend on it and a default install still gets it from them.
 
 Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
 

@@ -68,10 +68,14 @@ describe('dependency advisory disclosure', () => {
 
   // The document now claims that install is clean rather than carrying one chain. The claim is
   // only worth making while nothing has been added back to `dependencies` that could break it.
+  // The count is the part worth pinning: the document states how large that install is, and five
+  // packages the bundle inlines have since moved out of `dependencies`, which is what took it from
+  // 46 to 40. The anchor names the two that stay because the bundle genuinely resolves them at run
+  // time, so a demotion of either one fails here as well as in the bundle guard.
   it('claims a clean no-optional install, and lists only packages that keep it clean', () => {
-    expect(security).toContain('clean, 46 packages')
+    expect(security).toContain('clean, 40 packages')
     expect(Object.keys(pkg.dependencies ?? {})).toEqual(
-      expect.arrayContaining(['better-sqlite3', 'commander', 'zod']),
+      expect.arrayContaining(['better-sqlite3', 'jsonc-parser']),
     )
   })
 
