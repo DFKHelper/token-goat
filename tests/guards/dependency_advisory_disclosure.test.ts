@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import { consumerPackageCount } from '../helpers/lock_tree.js'
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 interface Manifest {
@@ -33,6 +35,23 @@ function majorOf(range: string): number {
 
 function minorOf(range: string): number {
   return Number(/\d+\.(\d+)/.exec(range)?.[1] ?? -1)
+}
+
+/**
+ * The size SECURITY.md claims for one of the two installs, read out of the table row that claims it.
+ *
+ * Read rather than matched. This guard used to assert that the string `clean, 106 packages` appeared
+ * somewhere in the document, which cannot tell a current number from a stale one -- it is a fact
+ * about the sentence. Pulling the number out and measuring against it is the whole point of the
+ * change; finding the row is a precondition, so a row that has been deleted or reworded fails here
+ * instead of quietly leaving nothing to check.
+ */
+function statedInstallSize(rowLabel: string): number {
+  const row = security.split('\n').find((line) => line.startsWith(`| ${rowLabel} |`))
+  if (!row) throw new Error(`SECURITY.md has no install table row labelled "${rowLabel}"`)
+  const stated = /\bclean, (\d+) packages\b/.exec(row)
+  if (!stated) throw new Error(`the "${rowLabel}" row no longer states a clean package count: ${row}`)
+  return Number(stated[1])
 }
 
 describe('dependency advisory disclosure', () => {
@@ -79,11 +98,33 @@ describe('dependency advisory disclosure', () => {
   // packages the bundle inlines have since moved out of `dependencies`, which is what took it from
   // 46 to 40. The anchor names the two that stay because the bundle genuinely resolves them at run
   // time, so a demotion of either one fails here as well as in the bundle guard.
-  it('claims a clean no-optional install, and lists only packages that keep it clean', () => {
-    expect(security).toContain('clean, 40 packages')
+  it('states the size of a no-optional install that the lock file agrees with exactly', () => {
+    // Not a text match: the number is read out of the document and compared against the tree
+    // resolved from package-lock.json. Exact equality is available here and nowhere else, because
+    // this half of the tree contains no platform-gated package -- every entry installs everywhere --
+    // so the resolved answer is one number rather than one per runner.
+    const measured = consumerPackageCount({ includeOptional: false })
+    expect(
+      statedInstallSize('an install without optional packages'),
+      'SECURITY.md states the size of --omit=optional; package-lock.json resolves to this. Re-measure and update the row.',
+    ).toBe(measured)
     expect(Object.keys(pkg.dependencies ?? {})).toEqual(
       expect.arrayContaining(['better-sqlite3', 'jsonc-parser']),
     )
+  })
+
+  it('resolves the same no-optional tree on every platform, which is what lets the check above be exact', () => {
+    // The premise of the exact comparison, asserted rather than assumed. If a native package ever
+    // lands in `dependencies`, this fails first and says so, instead of the check above starting to
+    // fail on two of the four CI jobs for a reason that reads like a stale document.
+    const sizes = (
+      [
+        ['win32', 'x64'],
+        ['linux', 'x64'],
+        ['darwin', 'arm64'],
+      ] as const
+    ).map(([os, cpu]) => consumerPackageCount({ includeOptional: false, os, cpu }))
+    expect(new Set(sizes).size, `a no-optional install differs by platform: ${sizes.join(', ')}`).toBe(1)
   })
 
   it('names every package the table discusses, so a rename cannot orphan a row', () => {
@@ -113,9 +154,31 @@ describe('dependency advisory disclosure', () => {
   // claim is now that a default install is clean rather than that some paths are unreachable. The
   // count is pinned for the same reason the no-optional count below it is: the document states a
   // number, and a number in a security document that nothing checks goes stale silently.
-  it('claims a clean default install, not merely a clean no-optional one', () => {
-    expect(security).toContain('clean, 106 packages')
-    expect(security).toContain('clean, 40 packages')
+  it('never claims a default install is smaller than the lock file proves it must be', () => {
+    // One-directional on purpose. A default install pulls the optional half, which is where every
+    // prebuilt binary lives, so the true size depends on the platform (measured: 102 on win32/x64,
+    // 106 on linux/x64, 103 on darwin/arm64) and on how far upstream trees have grown since the lock
+    // was last built. The lock is therefore a floor and not the answer, and a floor is still worth
+    // holding the document to: a document claiming fewer packages than the lock demonstrably
+    // requires is wrong, with no measurement needed to know it.
+    const stated = statedInstallSize('a default install')
+    const floor = consumerPackageCount({ includeOptional: true })
+    expect(
+      stated,
+      `SECURITY.md says a default install is ${stated} packages; package-lock.json already resolves to ${floor} on ${process.platform}/${process.arch}, so the figure is stale. Re-measure it.`,
+    ).toBeGreaterThanOrEqual(floor)
+  })
+
+  // The floor above cannot see the other half of the drift: upstream trees grow inside version
+  // ranges an install already accepts, and no file in this repository changes when they do. That
+  // half is answered by telling the reader the figures are dated measurements rather than
+  // constants, so the passage saying so is itself load-bearing and pinned here.
+  it('presents the counts as dated measurements rather than as constants', () => {
+    expect(security, 'the counting method has to survive, or the figures cannot be reproduced').toContain(
+      'counting the directories under `node_modules`',
+    )
+    expect(security, 'and the date they were taken').toMatch(/counts as of \d{4}-\d{2}-\d{2}/)
+    expect(security, 'and that they move on their own').toContain('drift upward')
   })
 
   it('does not fall back below the versions that carry the forward fixes', () => {
