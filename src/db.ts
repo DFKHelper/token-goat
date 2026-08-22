@@ -19,7 +19,7 @@ import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 import { dataDir, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { isDotenvPath } from './dotenv_redact.js'
 import { safeJoin } from './paths.js'
-import { ensureDirSync, foldCase, foldPath } from './util.js'
+import { ensureDirSync, foldCase, foldPath, sleepSync } from './util.js'
 import { registerReset } from './reset.js'
 
 // ESM has no `require`; build one so we can probe for the optional sqlite-vec package without making it a hard module-resolution dependency.
@@ -350,7 +350,7 @@ function purgeDotenvEmbeddings(conn: BetterSqlite3Database): void {
 const MIGRATIONS: Record<number, Migration> = {
   // v1 -> v2: adds files.embed_sha, tracked separately from files.sha so embedding freshness can be gated independently of parse freshness (see makeIndexer in worker.ts). A pre-existing v1 database's `files` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, so a genuine ALTER TABLE failure is never silently lost.
   1: (conn) => alterTableIdempotent(conn, 'ALTER TABLE files ADD COLUMN embed_sha TEXT'),
-  // v2 -> v3: adds files.retry_count, a durable per-path counter for consecutive transient-read-failure requeues (see MAX_TRANSIENT_RETRIES / requeueDirtyPath / resetTransientRetryCount in worker.ts). Previously this counter lived only in an in-memory Map inside worker.ts, which meant resetTransientRetryCount -- called from appendDirtyPath (hooks_index.ts) in the short-lived hook CLI process -- could never actually reach the long-lived detached daemon process's own copy of that Map: they are different Node processes with no shared memory, so the reset was a silent no-op in the real deployed topology. Persisting the counter in `files` makes it visible to both processes via the one thing they do share: the index DB. Same swallow-duplicate-column pattern as v1 -> v2 above.
+  // v2 -> v3: adds files.retry_count, a durable per-path counter for consecutive transient-read-failure requeues (see MAX_TRANSIENT_RETRIES / requeueDirtyPath / clearRetryCount in worker.ts). Previously this counter lived only in an in-memory Map inside worker.ts, which meant the retry-count reset -- run at the time in the short-lived hook CLI process -- could never actually reach the long-lived detached daemon process's own copy of that Map: they are different Node processes with no shared memory, so the reset was a silent no-op in the real deployed topology. Persisting the counter in `files` makes it visible to both processes via the one thing they do share: the index DB. Same swallow-duplicate-column pattern as v1 -> v2 above.
   2: (conn) => alterTableIdempotent(conn, 'ALTER TABLE files ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0'),
   // v8 -> v9: adds symbols.parent (see SCHEMA_VERSION comment above for why). A pre-existing v8 database's `symbols` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, same pattern as v1 -> v2 / v2 -> v3 above.
   8: (conn) => alterTableIdempotent(conn, "ALTER TABLE symbols ADD COLUMN parent TEXT NOT NULL DEFAULT ''"),
@@ -381,6 +381,58 @@ function runMigrations(conn: BetterSqlite3Database, fromVersion: number, toVersi
  * which matters on the hot hook path. FTS5 and the optional sqlite-vec table
  * are best-effort: a SQLite build lacking either still yields a working DB.
  */
+/** How long {@link enableWalWithRetry} keeps trying before giving up, matched to `busy_timeout`. */
+const WAL_SWITCH_DEADLINE_MS = 15_000
+
+/**
+ * Put a connection into WAL mode, waiting out other processes rather than failing on the first
+ * refusal.
+ *
+ * Converting a database's journal mode needs exclusive access, and SQLite answers `SQLITE_BUSY`
+ * for that conversion **without consulting the busy handler** -- the wait `busy_timeout` configures
+ * applies to ordinary lock contention, not to this. So on a database that does not exist yet, where
+ * every process racing to create it runs this conversion, `busy_timeout` cannot help and the losers
+ * throw immediately. Reproduced with six processes indexing one new database under load: one threw
+ * `database is locked` from this very pragma and dropped the file it was indexing, while the run
+ * still exited 0. That is the same silent-file-loss the deferred-`BEGIN` fix in `writeParseResult`
+ * removed, arriving by a second and entirely separate route -- which is why the comment that used
+ * to sit here, saying moving `busy_timeout` first was mere hardening because it "did not change
+ * it", was reporting a real remaining failure as a non-event.
+ *
+ * A process that loses the race has nothing to fix and nothing to report: whoever won is doing the
+ * conversion it wanted done. So each attempt re-reads the mode, and finding `wal` is success no
+ * matter who set it. Only a deadline passing with the database still not in WAL is an error, and it
+ * carries the last refusal so a genuine permission or filesystem problem is not reported as
+ * contention.
+ *
+ * `budgetMs` exists so the giving-up branch can be reached in a test without spending the real
+ * fifteen seconds to get there. Production callers pass nothing and get that full budget.
+ */
+export function enableWalWithRetry(conn: Pick<BetterSqlite3Database, 'pragma'>, budgetMs: number = WAL_SWITCH_DEADLINE_MS): void {
+  const deadline = Date.now() + budgetMs
+  let lastError: unknown
+  for (;;) {
+    try {
+      const mode = conn.pragma('journal_mode = WAL', { simple: true })
+      if (String(mode).toLowerCase() === 'wal') return
+      lastError = new Error(`got: ${String(mode)}`)
+    } catch (e) {
+      lastError = e
+    }
+    // Another process may already have finished the conversion while this one was being refused,
+    // in which case there is nothing left to do and no reason to keep waiting.
+    try {
+      if (String(conn.pragma('journal_mode', { simple: true })).toLowerCase() === 'wal') return
+    } catch {
+      // Reading the mode can fail for the same contention reason; fall through and retry.
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`db: failed to enable WAL mode (${lastError instanceof Error ? lastError.message : String(lastError)})`)
+    }
+    sleepSync(25)
+  }
+}
+
 function initConnection(conn: BetterSqlite3Database): void {
   // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
   // Set FIRST, before any statement that can contend, rather than after the two pragmas below as it
@@ -391,10 +443,7 @@ function initConnection(conn: BetterSqlite3Database): void {
   // that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in
   // parser.ts), and moving this line did not change it.
   conn.pragma('busy_timeout = 15000')
-  const walMode = conn.pragma('journal_mode = WAL', { simple: true })
-  if (String(walMode).toLowerCase() !== 'wal') {
-    throw new Error(`db: failed to enable WAL mode (got: ${walMode})`)
-  }
+  enableWalWithRetry(conn)
   conn.pragma('synchronous = NORMAL')
 
   // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte consistent. Registered once per connection (not per-query) and marked deterministic so SQLite can use it in query planning the same way it would a built-in function.

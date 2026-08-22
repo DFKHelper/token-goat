@@ -351,9 +351,15 @@ describe('"latest session" resolution skips subagent-salted blobs (regression: a
     // session file from earlier tests in this shared tgHome.
     const sessionsDir = path.join(tgHome, 'sessions')
     const parentBlobPath = path.join(sessionsDir, `${sessionId}.json`)
-    const subagentBlobPath = path.join(sessionsDir, `${sessionId}_agent_newer-subagent.json`)
     expect(fs.existsSync(parentBlobPath)).toBe(true)
-    expect(fs.existsSync(subagentBlobPath)).toBe(true)
+    // Found by its salt marker rather than by reconstructing the filename: what this test is
+    // about is that session-summary resolves to the parent and not to a newer salted blob, and
+    // the agent id's exact spelling on disk is an implementation detail of sessionFileStem (it
+    // is a digest, so that the salt survives the 64-char cap). Reconstructing it here would pin
+    // this test to that spelling while testing nothing about it.
+    const salted = fs.readdirSync(sessionsDir).filter((f) => f.startsWith(`${sessionId}_agent_`))
+    expect(salted).toHaveLength(1)
+    const subagentBlobPath = path.join(sessionsDir, salted[0]!)
     const future = new Date(Date.now() + 60_000)
     fs.utimesSync(subagentBlobPath, future, future)
 

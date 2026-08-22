@@ -241,6 +241,10 @@ describe('withFileLock', () => {
       // regardless of what the holder's thread is doing.
       const holdMs = 8000
       const staleMs = 4000
+      let signalAcquired: () => void = () => {}
+      const holderAcquired = new Promise<void>((resolve) => {
+        signalAcquired = resolve
+      })
       const holderExit = new Promise<string>((resolve, reject) => {
         const child = spawn(
           process.execPath,
@@ -253,7 +257,10 @@ describe('withFileLock', () => {
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
-        child.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
+        child.stderr.on('data', (d: Buffer) => {
+          stderr += d.toString()
+          if (stderr.includes('acquired')) signalAcquired()
+        })
         child.on('error', reject)
         child.on('exit', (code) => {
           if (code === 0) resolve(stdout)
@@ -261,13 +268,20 @@ describe('withFileLock', () => {
         })
       })
 
-      // Wait for the holder to actually acquire the lock (poll instead of a fixed sleep: tsx's
-      // own transpile/startup cost is itself a source of scheduling jitter this fix has to
-      // tolerate, and a fixed short wait flaked under that jitter).
-      const acquireDeadline = Date.now() + 4000
-      while (!existsSync(lockPath) && Date.now() < acquireDeadline) {
-        await new Promise((r) => setTimeout(r, 20))
-      }
+      // Wait for the holder to say it has the lock, rather than polling for the lock file within
+      // a window chosen in advance. The holder writes that line on stderr as its first act inside
+      // fn(). A four-second poll here used to stand in for the signal, and under a loaded parallel
+      // full-suite run tsx's own transpile-and-start cost exceeded it, failing this test at its
+      // setup for a reason that has nothing to do with the heartbeat it exists to check. There is
+      // no window to pick correctly: what is being waited for is another process starting up, and
+      // only that process knows when it is ready. Racing the exit promise so a holder that dies
+      // before acquiring reports its own error instead of hanging until the test times out.
+      await Promise.race([
+        holderAcquired,
+        holderExit.then(() => {
+          throw new Error('lock holder exited before it acquired the lock')
+        }),
+      ])
       expect(existsSync(lockPath)).toBe(true)
       // Let the heartbeat tick several times before trying to steal. staleMs is generous here
       // (2000ms, well above production's 5000ms default only in that it's smaller -- the ratio
@@ -298,7 +312,9 @@ describe('withFileLock', () => {
       const after = withFileLock(lockPath, () => 'post-release', { staleMs, waitMs: 1000 })
       expect(after).toBe('post-release')
     },
-    20_000,
+    // Generous because the holder's startup is now waited for rather than assumed: a slow start
+    // must delay this test, never fail it.
+    45_000,
   )
 })
 

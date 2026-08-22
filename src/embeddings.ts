@@ -392,7 +392,8 @@ function splitRangeIntoChunks(
       // and get embedded/stored with text === "" (confirmed via a scratch repro: 30 whitespace-
       // only lines followed by real content produced a chunk with rawTextLen 60+ but an entirely
       // empty trimmed text).
-      const currentChunkTooSmall = currentChunk.trim().length < MIN_CHUNK_CHARS
+      const trimmedLength = currentChunk.trim().length
+      const currentChunkTooSmall = trimmedLength < MIN_CHUNK_CHARS
       if (!currentChunkTooSmall) {
         chunks.push({
           filePath,
@@ -404,8 +405,31 @@ function splitRangeIntoChunks(
       }
 
       // Start new chunk with overlap, never reaching before this range's own start.
-      const overlapLines = Math.ceil(overlap / 40) // Rough estimate: ~40 chars per line.
-      const computedOverlapStart = Math.max(rangeStart, currentLine - overlapLines)
+      //
+      // `overlap` is a CHARACTER budget (chunkFile documents it as "Overlap in chars between
+      // consecutive chunks", default 200), so the window is measured in the real lengths of the
+      // lines it covers. It used to be `Math.ceil(overlap / 40)` -- a fixed line count derived
+      // from a guess that every line is about 40 characters wide. On any file whose lines are
+      // wider than that guess, the guess is the only thing that bounded the window, and it
+      // bounded it in the wrong unit: 200 chars became 5 lines regardless, so a file of
+      // 3,000-char lines carried 15,000 characters of overlap into each chunk instead of 200.
+      // That broke the size cap this function exists to enforce -- `MAX_CHUNK_CHARS` is
+      // documented as the limit "before embedding: bge-small has ~512-token context window", and
+      // stored chunks reached 18,005 chars against a cap of 8,000, because the prefilled overlap
+      // alone was already over it before a single new line was added. It also multiplied what
+      // the database holds: measured over a 300 KB file of 3,000-char lines, the chunks stored
+      // 1,752,485 chars for 300,099 chars of source, 5.84x amplification, every duplicated byte
+      // also being embedded. Minified bundles, generated code, long CSV or log lines and
+      // single-line JSON all have lines far wider than 40 chars.
+      let overlapChars = 0
+      let computedOverlapStart = currentLine
+      while (computedOverlapStart > rangeStart) {
+        // +1 for the newline the rebuild below rejoins with.
+        const candidateChars = (lines[computedOverlapStart - 2] ?? '').length + 1
+        if (overlapChars + candidateChars > overlap) break
+        overlapChars += candidateChars
+        computedOverlapStart--
+      }
       // A below-MIN_CHUNK_CHARS chunk is dropped above (never pushed) rather than merged, so its
       // lines must not be silently lost -- overlapStart normally starts fresh at `currentLine -
       // overlapLines`, which can land AFTER this dropped chunk's own startLine whenever it spans
@@ -417,12 +441,36 @@ function splitRangeIntoChunks(
       // own `startLine` when it was too small to keep on its own guarantees every source line
       // survives into some chunk, at the cost of a larger-than-usual overlap on the rare case
       // this triggers.
-      const overlapStart = currentChunkTooSmall ? Math.min(computedOverlapStart, startLine) : computedOverlapStart
-      const overlapText = lines
-        .slice(overlapStart - 1, currentLine - 1)
-        .join('\n')
-      currentChunk = overlapText + '\n'
-      startLine = overlapStart
+      // Pinning applies only when the dropped chunk actually held something. The pin exists to stop
+      // a below-floor chunk's *content* being lost, and a buffer that trims to nothing has no
+      // content to lose -- while pinning it is what made this loop quadratic. `startLine` stops
+      // advancing, so the buffer grows without bound, so every following line re-trips the size
+      // flush and re-runs `trim()` over an ever-longer string. Measured on files that are entirely
+      // blank lines: 8,000 lines took 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold
+      // input, and every run produced zero chunks. At the 500 KB the indexer accepts that is
+      // minutes of one core inside the worker's drain loop, spent to produce nothing. A
+      // blank-padded log or a half-written file is all it takes.
+      const droppedChunkHadContent = currentChunkTooSmall && trimmedLength > 0
+      const overlapStart = droppedChunkHadContent ? Math.min(computedOverlapStart, startLine) : computedOverlapStart
+      // Only rebuild when the window actually moved. When it was pinned back to where it already
+      // began -- `overlapStart === startLine` -- the lines it covers are the lines `currentChunk`
+      // already holds, so slicing and joining them reconstructs the identical string.
+      //
+      // That rebuild was not just wasted work, it was quadratic. Content that never clears
+      // MIN_CHUNK_CHARS -- a file of blank lines, or one whose entire non-whitespace content is
+      // shorter than that floor -- pins the window on every flush, so `startLine` never advances
+      // and each flush re-joined a window one line longer than the last. 8,000 blank lines took
+      // 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold input, and every one of those
+      // runs produced zero chunks. At the 500 KB the indexer accepts, that is minutes of one core
+      // inside the worker's drain loop, buying nothing. A blank-padded log or a half-written file
+      // is all it takes.
+      if (overlapStart !== startLine) {
+        const overlapText = lines
+          .slice(overlapStart - 1, currentLine - 1)
+          .join('\n')
+        currentChunk = overlapText + '\n'
+        startLine = overlapStart
+      }
     }
 
     currentChunk += lineWithNewline

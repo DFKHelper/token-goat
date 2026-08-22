@@ -640,7 +640,7 @@ export function queryXml(xmlText: string, pathStr: string): XmlQueryResult {
       const attrName = step.attributeSelect
       for (const cand of currentCandidates) {
         if (attrName === '*') {
-          attrVals.push(...Object.values(cand.attributes))
+          pushAll(attrVals, Object.values(cand.attributes))
         } else if (cand.attributes[attrName] !== undefined) {
           attrVals.push(cand.attributes[attrName]!)
         }

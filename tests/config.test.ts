@@ -31,6 +31,8 @@ import {
   saveConfig,
 } from '../src/config.js'
 import { ENV_KEYS } from '../src/constants.js'
+import { checkConfigValid } from '../src/cli_doctor.js'
+import { cmdConfig } from '../src/config_commands.js'
 
 // ---------------------------------------------------------------------------
 // Cleanup
@@ -1033,6 +1035,55 @@ describe('a config file written with a byte-order mark', () => {
     expect(cfg.hints.mcp_dedup_ttl_secs).toBe(88)
     expect(cfg.injection.enabled).toBe(true)
     expect(getLastProjectConfigParseError()).toBeNull()
+  })
+
+  // `doctor` and `config validate` each opened the file with a raw 'utf8' read of their own
+  // rather than the loader's decoder, so a BOM'd config produced two answers in one process: the
+  // loader applied every setting in it while doctor printed "[FAIL] Config: config invalid" and
+  // validate told the user to go fix a file that was working. That inversion is worse than the
+  // original defect -- it sends someone editing a healthy file. Whatever reads a config must
+  // reach the loader's verdict about it.
+  it.each([
+    ['UTF-8 with a mark', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(TOML, 'utf8')])],
+    ['UTF-16LE with a mark', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(TOML, 'utf16le')])],
+    ['UTF-8 with no mark', Buffer.from(TOML, 'utf8')],
+  ])('has doctor agree with the loader about a config written as %s', (_label, bytes) => {
+    fs.writeFileSync(_testConfigPath, bytes)
+
+    // The loader's verdict, then doctor's, on the very same bytes.
+    expect(loadConfig().hints.mcp_dedup_ttl_secs).toBe(77)
+    expect(checkConfigValid(_testConfigPath).status).toBe('ok')
+  })
+
+  it.each([
+    ['UTF-8 with a mark', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(TOML, 'utf8')])],
+    ['UTF-16LE with a mark', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(TOML, 'utf16le')])],
+    ['UTF-8 with no mark', Buffer.from(TOML, 'utf8')],
+  ])('has config validate agree with the loader about a config written as %s', (_label, bytes) => {
+    // The same defect lived at two sites; covering only one of them would repeat exactly the
+    // "fixed here, missed there" mistake that produced it.
+    fs.writeFileSync(_testConfigPath, bytes)
+    expect(loadConfig().hints.mcp_dedup_ttl_secs).toBe(77)
+
+    let out = ''
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out += String(chunk)
+      return true
+    })
+    try {
+      cmdConfig({ action: 'validate', json: true })
+    } finally {
+      write.mockRestore()
+    }
+
+    expect((JSON.parse(out) as { findings: unknown[] }).findings).toEqual([])
+  })
+
+  it('still has doctor report a genuinely malformed BOM-prefixed file as failing', () => {
+    // The agreement above must not come from doctor having stopped checking.
+    fs.writeFileSync(_testConfigPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('[hints\n', 'utf8')]))
+
+    expect(checkConfigValid(_testConfigPath).status).toBe('fail')
   })
 
   it('still reports a genuinely malformed file as a parse error rather than swallowing it', () => {

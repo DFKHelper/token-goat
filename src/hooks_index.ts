@@ -55,7 +55,7 @@ export function appendDirtyPath(normalizedPath: string): void {
     // File doesn't exist yet (first append) -- nothing to guard against.
   }
   fs.appendFileSync(queuePath, `${leadingNewline}${encodeDirtyQueueLine(normalizedPath)}\n`)
-  // Deliberately NOT calling resetTransientRetryCount here anymore: doing so unconditionally
+  // Deliberately NOT calling worker.ts's clearRetryCount here anymore: doing so unconditionally
   // opened a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
   // load attempt) via getDb() on every single edit hook invocation -- and could even create
   // global.db from scratch if it did not exist yet -- just to run a retry-counter reset that is

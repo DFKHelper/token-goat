@@ -110,7 +110,7 @@ describe('dirty queue', () => {
     expect(getDirtyPaths()).toEqual(['/a/one.t', '/a/two.ts'])
   })
 
-  // Regression: appendDirtyPath used to unconditionally call resetTransientRetryCount, which
+  // Regression: appendDirtyPath used to unconditionally reset the retry counter, which
   // opens a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
   // load attempt) via getDb() -- paying that cost on every single edit hook invocation just to
   // run a no-op retry-counter reset, and even creating global.db from scratch if it did not

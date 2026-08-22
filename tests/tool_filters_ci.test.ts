@@ -990,8 +990,8 @@ describe('BanditFilter output', () => {
     expect(out).not.toContain('testing /src/foo.py')
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => apply(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(apply(f, '', argv)).toBe('')
   })
 
   it('keeps a HIGH severity issue header before its numbered source-context lines', () => {
@@ -1142,8 +1142,8 @@ describe('TrivyFilter output', () => {
     expect(out).toContain('No vulnerabilities')
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => apply(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(apply(f, '', argv)).toBe('')
   })
 })
 
@@ -1263,8 +1263,8 @@ describe('SnykFilter output', () => {
     expect(out).toContain('License issue')
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => apply(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(apply(f, '', argv)).toBe('')
   })
 })
 
@@ -1347,8 +1347,8 @@ describe('SemgrepFilter output', () => {
     expect(out).toContain('Ran 100 rules')
   })
 
-  it('handles empty stdout without throwing', () => {
-    expect(() => apply(f, '', argv)).not.toThrow()
+  it('returns empty output for empty stdout', () => {
+    expect(apply(f, '', argv)).toBe('')
   })
 })
 

@@ -21,7 +21,7 @@ import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { resolveBody } from './read_commands.js'
 import { getSessionFiles } from './session.js'
-import { decodeSource, foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
+import { pushAll, decodeSource, foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
 import { detectWalkMode } from './walk_mode.js'
 
 // ── Shared utilities ────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ function collectTodoFiles(patterns: string[]): string[] {
       try {
         const stat = fs.statSync(abs)
         if (stat.isDirectory()) {
-          results.push(...walkProject(abs).files)
+          pushAll(results, walkProject(abs).files)
         } else {
           results.push(abs)
         }
@@ -163,7 +163,7 @@ export function cmdTodo(
   const files = collectTodoFiles(patterns)
   const items: TodoItem[] = []
   for (const f of files) {
-    items.push(...scanFileForTodos(f, kindSet))
+    pushAll(items, scanFileForTodos(f, kindSet))
   }
 
   if (opts.json === true) {

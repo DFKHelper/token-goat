@@ -102,7 +102,18 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean } = {}): 
         db.prepare(`DELETE FROM "${table}"`).run()
         dropped[table] = before
       }
-    })()
+    }).immediate()
+    // `.immediate()` -- BEGIN IMMEDIATE. better-sqlite3 issues a plain call as a deferred BEGIN,
+    // which takes a read snapshot first and only asks for the write lock at the first writing
+    // statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting
+    // the busy handler, so `busy_timeout` does nothing for it. This transaction is the worst
+    // instance of that shape in the codebase, because it opens with an explicit
+    // `SELECT count(*)`: the stale snapshot is taken deliberately, one statement before the
+    // first DELETE. Measured against a held write lock, the deferred form failed in 176 ms with
+    // "database is locked" while a 15 s busy_timeout was armed, and the immediate form waited
+    // and succeeded. The comment further down this file already calls this "the operation most
+    // likely to lose a 15s busy_timeout race against an active writer" -- it was losing it
+    // without ever entering the race. See writeParseResult in parser.ts.
     // The symbols_fts mirror is content-linked to `symbols` and maintained by AFTER DELETE
     // triggers, so the delete above already removed its entries. Rebuild its internal b-tree
     // anyway: FTS5 leaves tombstones behind on delete, and this is the one moment where
