@@ -46,7 +46,7 @@ async function staticGraph(entry: string): Promise<Set<string>> {
     // is about which of *our own* modules are eagerly reachable, not about dependency layout.
     external: [
       'better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*', 'sharp', 'puppeteer-core',
-      'pdfjs-dist', 'pdfjs-dist/*', 'fflate', 'fast-xml-parser',
+      'pdfjs-dist', 'pdfjs-dist/*', 'fflate',
       '@modelcontextprotocol/sdk', '@modelcontextprotocol/sdk/*', '@xenova/transformers',
       'tesseract.js', 'typescript',
     ],
