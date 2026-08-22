@@ -332,6 +332,24 @@ function pruneShrinkCache(): void {
 async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Promise<HookOutput> {
   const basename = path.basename(filePath)
 
+  // The pixel-shrink saving (original bytes -> shrunk bytes) is real on every path this function
+  // takes, so record it up front, before the OCR branch below can return early. The OCR branch
+  // then adds an image_ocr row measured against the SHRUNK bytes rather than the original, so that
+  // when the OCR text is no larger than the shrunk image the two rows sum exactly to the true
+  // original->text saving with no double-counting -- which only holds if this image_shrink row is
+  // actually recorded on the OCR path too. (In the degenerate case where the OCR text is somehow
+  // larger than the shrunk image, image_ocr clamps to zero rather than record a negative saving,
+  // so the total is the shrink saving alone; that case does not arise for a genuinely text-heavy
+  // image, whose recognized text is far smaller than its downscaled pixels.)
+  // This recordStat previously sat after the OCR early-return, so a text-heavy image (exactly what
+  // OCR targets) recorded image_ocr alone and dropped the whole shrink saving from the ledger.
+  // The Python original (hooks_read.py) recorded this via an exact vision-token delta (Claude's
+  // per-tile cost at the pre/post dimensions); that formula was never ported to shrinkImage's
+  // return shape, so this uses the same bytes/4 token-cost approximation the rest of this codebase
+  // applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls).
+  const shrinkSaved = result.originalBytes - result.shrunkBytes
+  recordStat('image_shrink', shrinkSaved, Math.round(shrinkSaved / 4), undefined, basename)
+
   // OCR runs on the already-shrunk bytes, not the raw file: it is resized to Claude Vision's
   // optimal edge already (plenty of resolution for legible screenshot text) and is much
   // cheaper to hand to a subprocess than the original, sometimes-many-MB source. A text-heavy
@@ -345,9 +363,9 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
     const ocr = await ocrImage(result.data)
     if (ocr !== null && isTextHeavy(ocr, loadConfig().image_shrink.ocr_min_confidence)) {
       // Measured against the shrunk image bytes (the realistic alternative this branch
-      // preempts), not the original file -- the shrink-step savings are already attributed
-      // to the 'image_shrink' stat kind above; this avoids double-counting the same bytes
-      // under two stat rows.
+      // preempts), not the original file -- the shrink-step savings are recorded above, on the
+      // shared path before this branch, so this avoids double-counting the same bytes under two
+      // stat rows.
       const textBytes = Buffer.byteLength(ocr.text, 'utf8')
       const saved = Math.max(0, result.shrunkBytes - textBytes)
       recordStat('image_ocr', saved, Math.round(saved / 4), undefined, basename)
@@ -355,12 +373,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
     }
   }
 
-  const saved = result.originalBytes - result.shrunkBytes
   const { summary, dataUrl } = formatShrinkSummary(result, basename)
-
-  // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that formula was never ported to shrinkImage's return shape, so this uses the same bytes/4 token-cost approximation the rest of this TS codebase already applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls). This call was dropped entirely during the Python->TS port -- restoring it is what makes 'image_shrink' rows (and the flagship image-shrink savings figure derived from them) appear in `token-goat stats --full` again.
-  recordStat('image_shrink', saved, Math.round(saved / 4), undefined, basename)
-
   return contextOutput(`${summary}\n${dataUrl}`)
 }
 
