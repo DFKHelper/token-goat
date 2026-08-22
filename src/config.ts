@@ -860,15 +860,32 @@ export function getLastProjectConfigParseError(): string | null {
  * fencing, empty the fetch allow/deny lists, switch the Google Drive integration back on, or
  * widen the MCP root allowlist, silently, for every session opened in that directory.
  *
- * These four sections are the security controls an administrator sets once and expects to hold.
+ * These sections are the security controls an administrator sets once and expects to hold.
  * They now come from the global config and the environment only. The environment is left alone
  * deliberately: a repository cannot set it, and the developer who exports a variable is
  * configuring their own machine.
  *
+ * `screenshot` is locked as a whole section rather than key by key because both of its settings
+ * decide how and where a browser process is launched, which makes the whole surface a security
+ * one: `chrome_path` names the executable `takeScreenshot` hands to `puppeteer.launch`, so a
+ * checked-in value pointed at a binary the repository also ships is arbitrary local code
+ * execution the next time the developer runs `token-goat screenshot` for any reason; and
+ * `block_private_targets = false` turns off both the private-address refusal and the
+ * resolve-then-pin step that closes DNS rebinding, letting that navigation reach loopback,
+ * RFC1918 and cloud-metadata addresses. A future key in this section will be about launching a
+ * browser too, so it inherits the lock instead of needing to be remembered.
+ *
  * Everything else -- hints, formatting, compression thresholds, worker tuning -- stays
  * project-overridable, which is what the per-project file exists for.
  */
-export const PROJECT_LOCKED_SECTIONS: readonly string[] = ['injection', 'webfetch', 'gdrive', 'mcp', 'network']
+export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
+  'injection',
+  'webfetch',
+  'gdrive',
+  'mcp',
+  'network',
+  'screenshot',
+]
 
 /**
  * Individual `section.key` entries locked without locking their whole section.
@@ -881,8 +898,19 @@ export const PROJECT_LOCKED_SECTIONS: readonly string[] = ['injection', 'webfetc
  * folder the user had deliberately excluded back into the index, where `symbol`, `read` and
  * `semantic` then served it. That is a protection being switched off by a checked-in file, which
  * is exactly what this list exists to prevent.
+ *
+ * `image_shrink.max_image_pixels` is sharp's decode-time decompression-bomb cap: `0` means "no
+ * cap" and the schema accepts it, so a repository that sets it to zero and ships a small file
+ * that decodes to billions of pixels turns an ordinary `Read` of that image into an
+ * out-of-memory kill. The rest of that section (quality, the OCR thresholds, the redirect
+ * switch) is ordinary tuning a repository has a legitimate reason to set, so only this one key
+ * is locked rather than the whole section.
  */
-export const PROJECT_LOCKED_KEYS: readonly string[] = ['indexing.cross_project_symbols', 'worker.blocked_roots']
+export const PROJECT_LOCKED_KEYS: readonly string[] = [
+  'image_shrink.max_image_pixels',
+  'indexing.cross_project_symbols',
+  'worker.blocked_roots',
+]
 
 let _lastProjectConfigLockedKeys: string[] = []
 
