@@ -63,8 +63,14 @@ describe('dependency licenses', () => {
   const packages = productionPackages()
   const flagged = packages.filter((p) => isUnresolvable(p.license) || isCopyleft(p.license))
 
+  // Both floors guard against the same thing: a sweep that reads nothing and reports nothing wrong.
+  // They are deliberately far below the real figures rather than pinned to them, because the tree
+  // shrinks whenever a dependency is removed and a floor set just under today's count turns every
+  // such removal into a failure that says nothing useful. It has already happened once: this read
+  // 200 while the production tree was around 240, and dropping `@modelcontextprotocol/sdk` took the
+  // tree to 153 and broke it. The SDK carried no flagged license, so the second floor did not move.
   it('reads a real lockfile, so an empty sweep cannot pass as a clean one', () => {
-    expect(packages.length).toBeGreaterThan(200)
+    expect(packages.length).toBeGreaterThan(100)
     expect(flagged.length).toBeGreaterThan(10)
   })
 

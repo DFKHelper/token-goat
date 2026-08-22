@@ -25,8 +25,6 @@ const EXTERNAL_NATIVE_DEPS = [
   'pdfjs-dist',
   'pdfjs-dist/*',
   'fflate',
-  '@modelcontextprotocol/sdk',
-  '@modelcontextprotocol/sdk/*',
   '@xenova/transformers',
   // Not a native addon either, but tesseract.js's Node entrypoint resolves its worker
   // script and tesseract.js-core's WASM binary via on-disk paths relative to its own
@@ -95,8 +93,7 @@ const result = await esbuild.build({
   outExtension: { '.js': '.mjs' },
   // Native addons cannot be bundled, and every package here is declared
   // optionalDependencies in package.json — bundling one anyway (as sharp,
-  // puppeteer-core, pdfjs-dist, fflate, and
-  // @modelcontextprotocol/sdk previously were, via their `await import(...)`
+  // puppeteer-core, pdfjs-dist and fflate previously were, via their `await import(...)`
   // call sites) defeats "optional": esbuild statically resolves and inlines
   // even a dynamic `import('literal')`, so the feature only worked at runtime
   // because a matching platform package happened to be present in

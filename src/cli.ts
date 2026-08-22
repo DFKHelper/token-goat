@@ -16,9 +16,9 @@ import { attemptedCommandName, suggestForUnknownCommand } from './command_intent
 import * as fs from 'fs'
 import * as path from 'path'
 import { homedir } from 'os'
-// Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively @modelcontextprotocol/sdk) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
+// Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
-import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
+import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
@@ -521,16 +521,17 @@ function cmdCommands(opts: { json?: boolean; grep?: string }): void {
   }
 }
 
-// Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The returned promise only resolves once the underlying Server reports its connection closed (via the Protocol-level `onclose` hook, set after `connect()` so it's not clobbered by the wiring `connect()` itself does to the transport's own `onclose`) -- resolving early here would let `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
+// Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The returned promise only resolves once the server reports its connection closed (via `onclose`, set after `connect()` so it's not clobbered by the wiring `connect()` itself does to the transport's own `onclose`) -- resolving early here would let `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
 async function cmdMcpServe(): Promise<void> {
   let createMcpServer: typeof CreateMcpServerFn
   let StdioServerTransport: typeof StdioServerTransportClass
+  // Both modules are token-goat's own and are inlined into the bundle, so unlike the days when this loaded an optional third-party SDK there is no "not installed" case left. The guard stays because a dynamic import can still fail on a truncated or partially written install, and a bare rejection here would surface as an unhandled crash rather than a command that reports what went wrong.
   try {
     ;({ createMcpServer } = await import('./mcp_server.js'))
-    ;({ StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js'))
+    ;({ StdioServerTransport } = await import('./mcp_stdio.js'))
   } catch (err) {
     process.stderr.write(
-      `token-goat: mcp-server unavailable (install @modelcontextprotocol/sdk to use this feature): ${String(err)}\n`,
+      `token-goat: mcp-server unavailable (could not load the MCP server modules): ${String(err)}\n`,
     )
     process.exitCode = 1
     return
@@ -539,7 +540,7 @@ async function cmdMcpServe(): Promise<void> {
   const transport = new StdioServerTransport()
   await server.connect(transport)
   await new Promise<void>((resolve) => {
-    server.server.onclose = resolve
+    server.onclose = resolve
   })
 }
 
