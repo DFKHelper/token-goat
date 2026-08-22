@@ -6,7 +6,14 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
-import { indexFile, insertChunkVector, isAvailable, packVec, upsertChunks } from '../src/embeddings.js'
+import {
+  ensureEmbeddingProvenance,
+  indexFile,
+  insertChunkVector,
+  isAvailable,
+  packVec,
+  upsertChunks,
+} from '../src/embeddings.js'
 import type { Chunk } from '../src/embeddings.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
@@ -147,6 +154,11 @@ describe('a failed reindex does not delete a file\'s prior embeddings without re
     async () => {
       const dbPath = path.join(TMP, 'index.db')
       const db = getDb(dbPath)
+      // Claim the empty database for the running stack before hand-seeding a prior vector into it.
+      // upsertChunks discards stored vectors whose provenance it cannot account for, and a
+      // hand-inserted row has none -- which would delete the "prior" state this test is about.
+      // Real indexing stamps on its first write; this is the same thing, one call earlier.
+      ensureEmbeddingProvenance(db)
       const file = 'c:/proj/atomic-reindex.ts'
 
       const priorEmbedding = Array.from({ length: 384 }, (_, i) => (i % 7) * 0.01)

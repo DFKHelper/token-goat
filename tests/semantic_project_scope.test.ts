@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { closeAllDbs, getDb } from '../src/db.js'
 import {
   embedTexts,
+  ensureEmbeddingProvenance,
   fetchScopedHits,
   insertChunkVector,
   isAvailable,
@@ -168,6 +169,12 @@ describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic project scoping + ba
       if (!seedVec) return
 
       const db = getDb(dbPath)
+      // Claim the empty database for the running stack before hand-seeding vectors into it.
+      // searchSemantic checks that stored vectors came from the stack computing the query vector,
+      // and hand-inserted rows carry no such record -- which is precisely the state it throws away.
+      // Stamping first is what real indexing does on its first write; doing it here keeps this test
+      // about project scoping rather than about provenance.
+      ensureEmbeddingProvenance(db)
       const chunkStmt = db.prepare(
         'INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)',
       )

@@ -947,6 +947,14 @@ describe('embeddings module', () => {
             all: () => [],
             // chunk_vectors existence probe (searchSemantic gate) - return a row so the gate passes and the KNN query under test runs.
             get: () => ({}),
+            // The provenance read (ensureEmbeddingProvenance) answers with the stack that is
+            // actually running, which is what a database in the steady state holds. Anything else
+            // would send this mock down the invalidation path, which is a different test's job.
+            pluck: () => ({
+              get: () =>
+                sql.includes('embedding_provenance') ? embeddings.embeddingProvenance() : undefined,
+              all: () => [],
+            }),
           }
         },
       }
