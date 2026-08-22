@@ -45,8 +45,9 @@ describe('git-repo fixtures are equivalent to building the repo directly', () =>
 
     // The tree hash is the content of the commit, independent of when or where it was made.
     expect(git(copied, ['log', '--format=%T', '-1'])).toBe(git(control, ['log', '--format=%T', '-1']))
-    expect(git(copied, ['status', '--porcelain'])).toBe(git(control, ['status', '--porcelain']))
-    expect(git(copied, ['status', '--porcelain'])).toBe('')
+    const copiedStatus = git(copied, ['status', '--porcelain'])
+    expect(copiedStatus).toBe(git(control, ['status', '--porcelain']))
+    expect(copiedStatus).toBe('')
     expect(git(copied, ['symbolic-ref', '--short', 'HEAD'])).toBe(git(control, ['symbolic-ref', '--short', 'HEAD']))
     expect(git(copied, ['ls-files'])).toBe('a.txt\n')
     expect(fs.readFileSync(path.join(copied, 'a.txt'), 'utf8')).toBe('one\n')
@@ -56,13 +57,21 @@ describe('git-repo fixtures are equivalent to building the repo directly', () =>
     // because the two agreeing proves nothing on its own: before the date was pinned they agreed
     // whenever both commits happened to land in the same wall-clock second, which is most of the
     // time and none of the time under load. Drop the pin and this fails on every run instead.
-    expect(git(copied, ['rev-parse', 'HEAD']).trim()).toBe('32ba05faacf1c3dc7aed01ce1e67d38e6e89f51d')
-    expect(git(control, ['rev-parse', 'HEAD']).trim()).toBe(git(copied, ['rev-parse', 'HEAD']).trim())
+    const copiedHead = git(copied, ['rev-parse', 'HEAD']).trim()
+    expect(copiedHead).toBe('32ba05faacf1c3dc7aed01ce1e67d38e6e89f51d')
+    expect(git(control, ['rev-parse', 'HEAD']).trim()).toBe(copiedHead)
 
     // Same set of files on disk, .git included: a copy that silently dropped part of .git could
     // still answer every command above correctly from the parts it did copy.
     expect(listTree(copied)).toEqual(listTree(control))
-  })
+    // 180s, not the 60s global bound. This case runs 15 `git` subprocesses -- three to build the
+    // control, three to build the template, nine to interrogate the two repositories -- in a suite
+    // whose scarcest resource is process creation. Standalone it takes 1.26s; under a full run it
+    // was measured at 63.8s and timed out, a 50x contention factor that no plausible global bound
+    // absorbs without weakening hang detection for the other ~10,000 tests. The bound is sized
+    // above the observed worst rather than tuned to it, and a genuine hang still fails here, just
+    // later. Duplicate spawns were removed alongside this, which is why the count is 15 and not 17.
+  }, 180000)
 
   it('hands out independent repos, so writing to one never reaches another', () => {
     const first = gitRepoWithCommit()
