@@ -19,7 +19,7 @@ import { globalDbPath } from './constants.js'
 import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
 import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
@@ -6492,6 +6492,19 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
 
   // Real embedding-vector similarity search: chunks/chunk_vectors are populated during indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers and sqlite-vec dependencies are present -- searchSemantic degrades to an empty array rather than throwing when either is unavailable or nothing has been embedded yet, so this is always safe to try; BM25 (below) is now ALWAYS consulted too, never gated on this returning zero hits, since a single weak dense hit used to make an exact BM25 keyword match unreachable.
   // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits in the SAME file before truncation, instead of merging an already-capped set of `n` raw hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
+  // Say what the user is actually getting when the embedding model is absent. This is the default
+  // state now: `@xenova/transformers` carried six unpatchable advisories, one critical, so it is
+  // opt-in rather than something every install receives. The result is a real degradation that
+  // produces no error and no empty result -- BM25 below still answers -- which is precisely the
+  // kind of quiet change nobody discovers. Stated here rather than inside searchSemantic because
+  // only this function knows the keyword pass runs, and the message there claimed the whole
+  // feature was off while printing above genuine keyword hits.
+  if (!embeddingModelAvailable()) {
+    console.warn(
+      'Matching on meaning is off (@xenova/transformers is not installed); these results come from keyword search alone. ' +
+        'Install it with: npm install -g @xenova/transformers (drop -g if token-goat is a project dependency)',
+    )
+  }
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
   const rawHits = await searchSemantic(
     getDb(globalDbPath()),

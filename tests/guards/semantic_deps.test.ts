@@ -12,7 +12,24 @@ const SRC = path.join(ROOT, 'src')
 const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {
   dependencies?: Record<string, string>
   optionalDependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
 }
+
+/**
+ * The one package allowed to be required at runtime without being installed.
+ *
+ * Every other entry in this guard exists because an undeclared require fails silently: the require
+ * throws, the catch swallows it, and the feature is simply dead. `@xenova/transformers` is now
+ * deliberately in that position -- it carried six advisories with no forward patch, one of them
+ * critical, on a feature most installs never invoke, so it is opt-in.
+ *
+ * The exemption is conditional rather than a hole, because "silently dead" is exactly what must not
+ * happen. Three things have to hold, and the assertions below check all three: it is still a
+ * devDependency, so the repository's own tests exercise the real package rather than a stand-in;
+ * `doctor` has a check that names it, so the absence is reported instead of merely happening; and
+ * that check prints the command that installs it. Take any of the three away and this fails.
+ */
+const OPT_IN_AT_RUNTIME = '@xenova/transformers'
 
 /** Concatenated text of every .ts file under src/, recursively. */
 function allSrcText(): string {
@@ -54,9 +71,28 @@ describe('semantic-stack dependency declarations', () => {
     const required = requiredOptionalPackages()
     // Sanity: the scan found the known semantic-stack requires (the vec0 vector store and the embedding model), so a future rename that breaks the regex fails loudly here instead of silently asserting against an empty set.
     expect(required).toContain('sqlite-vec')
-    expect(required).toContain('@xenova/transformers')
+    expect(required).toContain(OPT_IN_AT_RUNTIME)
     const declared = declaredDeps()
-    const missing = required.filter((pkg) => !declared.has(pkg))
+    const missing = required.filter((pkg) => !declared.has(pkg) && pkg !== OPT_IN_AT_RUNTIME)
     expect(missing).toEqual([])
+    // The exemption is for that one package and no other: anything else that stops being declared
+    // still fails above, and this pins that the exemption was not quietly widened into the rule.
+    expect(declared).toContain('sqlite-vec')
+  })
+
+  it('the one exempt package is opt-in on purpose, not undeclared by accident', () => {
+    // An undeclared require and a deliberate opt-in look identical in package.json. What tells them
+    // apart is whether anything tells the user, so the exemption is held to its mitigation here.
+    expect(Object.keys(PKG.devDependencies ?? {}), 'the tests still embed with the real package').toContain(
+      OPT_IN_AT_RUNTIME,
+    )
+    expect(declaredDeps(), 'a consumer must not be installing it').not.toContain(OPT_IN_AT_RUNTIME)
+
+    const doctor = fs.readFileSync(path.join(SRC, 'cli_doctor.ts'), 'utf8')
+    const check = doctor.slice(doctor.indexOf('export function checkEmbeddings'))
+    expect(check, 'doctor must name the package that is missing').toContain(OPT_IN_AT_RUNTIME)
+    expect(check, 'and print the command that installs it').toContain(`npm install -g ${OPT_IN_AT_RUNTIME}`)
+    // Anchors the slice: an empty or truncated read would satisfy `toContain` on nothing at all.
+    expect(check.length).toBeGreaterThan(200)
   })
 })

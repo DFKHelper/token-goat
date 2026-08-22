@@ -20,6 +20,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { findStrayClaudeMdBlocks } from './install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
+import { isAvailable as embeddingModelAvailable, transformerLoadError } from './embeddings.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import type { DoctorResult } from './doctor_result.js'
 
@@ -411,6 +412,54 @@ export function checkTsCompiler(): DoctorResult {
 }
 
 /**
+ * The embedding model is the one optional package a default install no longer carries.
+ *
+ * It used to arrive with everyone, and it brought the whole `onnxruntime-web` -> `onnx-proto` ->
+ * `protobufjs` chain plus its own nested, older `sharp` with it -- five high advisories and one
+ * critical, none of them fixable from here, on a feature that most installs never invoke. So it is
+ * opt-in now, and the cost of that trade is discoverability: `semantic` keeps working either way,
+ * because it always consults keyword search as well, so nothing errors and nothing is empty. The
+ * failure is silent by construction, which is exactly the kind doctor exists to make loud.
+ *
+ * Three states, three different answers. Off by config is not a problem and is reported as fine.
+ * Absent is one command away, and the command is the whole point of the line. Present but throwing
+ * is a different fault with a different fix, which is why this reads the error rather than the
+ * boolean -- see `transformerLoadError`.
+ */
+export function checkEmbeddings(config: Config): DoctorResult {
+  const name = 'Embeddings'
+  // `?? true` rather than `=== true`: the rest of the codebase reads an absent flag as enabled
+  // (src/cli.ts and src/worker.ts both spell it this way), and a doctor line that reported
+  // "disabled by config" for a config that never mentioned the setting would be a false all-clear.
+  if ((config.indexing?.embeddings_enabled ?? true) === false) {
+    return { name, status: 'ok', message: 'disabled by config (indexing.embeddings_enabled)' }
+  }
+  if (embeddingModelAvailable()) return { name, status: 'ok', message: 'available' }
+  const err = transformerLoadError()
+  // createRequire goes through Node's CJS loader, so an absent package is MODULE_NOT_FOUND;
+  // ERR_MODULE_NOT_FOUND is accepted too rather than assumed away, since the same package reached
+  // through an ESM path would report that instead and both mean the same thing to the reader.
+  const code = (err as NodeJS.ErrnoException | null)?.code
+  if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') {
+    return {
+      name,
+      status: 'warn',
+      message:
+        '@xenova/transformers is not installed, so semantic falls back to keyword search — ' +
+        'install it with: npm install -g @xenova/transformers (drop -g if token-goat is a project dependency)',
+    }
+  }
+  return {
+    name,
+    status: 'warn',
+    message:
+      err !== null
+        ? `@xenova/transformers is installed but failed to load: ${extractErrorMessage(err)}`
+        : 'unavailable (not attempted)',
+  }
+}
+
+/**
  * Check if config file is valid and readable.
  */
 export function checkConfigValid(configPath: string): DoctorResult {
@@ -741,6 +790,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))
+  results.push(checkEmbeddings(loadConfig(rootDir)))
 
   for (const result of checkSecurityPosture(loadConfig(rootDir), actualDataDir)) results.push(result)
 
