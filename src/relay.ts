@@ -131,6 +131,11 @@ function harnessForNormalization(): Harness {
   if (detected === 'grok') return 'grok'
   // Kimi Code's shim (src/bridges/kimi.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=kimi before dispatching, so detectHarness() resolves 'kimi' here for a real Kimi install. Its payload needs remapping because Kimi's v2 tools name their path argument `path` rather than `file_path` (and its URL fetcher is `FetchURL`, not `WebFetch`).
   if (detected === 'kimi') return 'kimi'
+  // Copilot CLI's shim (src/bridges/copilot_cli.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli,
+  // so detectHarness() resolves it here. Its branch in normalizePayload() exists only to translate
+  // Copilot's `<server>-<tool>` MCP tool names into the `mcp__<server>__<tool>` spelling the MCP
+  // handlers gate on; the shim has already canonicalised every built-in name, so nothing else changes.
+  if (detected === 'copilot_cli') return 'copilot_cli'
   return 'claude'
 }
 
