@@ -857,6 +857,84 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
+  /**
+   * `head` writes to the line-range ledger and never read from it.
+   *
+   * `recordBashFileReadsForSessionCache` has always recorded 1..n for a successful `head -n N file`
+   * -- leading-lines reads are the one truncated shape whose absolute range is known. Nothing ever
+   * read that entry back, so a second `head -30 CHANGELOG.md` produced the same generic advice as
+   * the first and never mentioned that those lines were already in context. Observed live: the same
+   * `head -30 CHANGELOG.md` twice verbatim in one session, and five near-identical CHANGELOG
+   * head-reads in another.
+   *
+   * A ledger's write half and read half are separately observable, and a guard holding only one of
+   * them is indistinguishable from a working guard unless both directions are asserted -- hence the
+   * paired "first read does not warn" test below.
+   */
+  it('a first head read gets the normal surgical hint and no overlap warning', async () => {
+    const first = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_demo.md'))
+
+    expect(first.hookType).toBe('context')
+    if (first.hookType === 'context') {
+      expect(first.context).toContain('`head` bypasses read hooks.')
+      expect(first.context).not.toContain('already read')
+    }
+    // The write half, which already worked: the successful run records lines 1-30.
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_demo.md', 'line\n'.repeat(30)))
+  })
+
+  it('a repeat head read on the same file names the lines it already served', async () => {
+    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_repeat.md'))
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_repeat.md', 'line\n'.repeat(30)))
+
+    const second = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_repeat.md'))
+
+    expect(second.hookType).toBe('context')
+    if (second.hookType === 'context') {
+      expect(second.context).toContain('already read lines 1-30')
+      expect(second.context).toContain('already served')
+    }
+  })
+
+  it('a longer repeat head read asks only for the lines it has not served', async () => {
+    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_grow.md'))
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_grow.md', 'line\n'.repeat(30)))
+
+    const second = preBashHandler(makeBashEvent('head -n 80 docs/paging_head_grow.md'))
+
+    expect(second.hookType).toBe('context')
+    if (second.hookType === 'context') {
+      expect(second.context).toContain('already read lines 1-30')
+      expect(second.context).toContain('docs/paging_head_grow.md@31-80')
+    }
+  })
+
+  it('a head read on a different file is not treated as an overlap', async () => {
+    preBashHandler(makeBashEvent('head -n 30 docs/paging_head_a.md'))
+    await postBashHandler(makePostBashEvent('head -n 30 docs/paging_head_a.md', 'line\n'.repeat(30)))
+
+    const other = preBashHandler(makeBashEvent('head -n 30 docs/paging_head_b.md'))
+
+    expect(other.hookType).toBe('context')
+    if (other.hookType === 'context') expect(other.context).not.toContain('already read')
+  })
+
+  it('a repeat tail read still gets the plain hint, since its absolute start line is unknown', async () => {
+    // The deliberate non-change. `tail` is recorded as truncated, not as a range, because where its
+    // output starts depends on the file's total length -- which this hook does not know. Claiming an
+    // overlap for it would be a fabricated range, so the plain hint is the correct outcome.
+    preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md'))
+    await postBashHandler(makePostBashEvent('tail -n 30 docs/paging_tail_demo.md', 'line\n'.repeat(30)))
+
+    const second = preBashHandler(makeBashEvent('tail -n 30 docs/paging_tail_demo.md'))
+
+    expect(second.hookType).toBe('context')
+    if (second.hookType === 'context') {
+      expect(second.context).toContain('`tail` bypasses read hooks.')
+      expect(second.context).not.toContain('already read')
+    }
+  })
+
   it('an overlapping sed read that starts BEFORE the prior range surfaces the leading new lines, not a false "already served" (SEDOVERLAP-LEADING-DELTA regression)', () => {
     // First read records lines 50-100 for this file.
     preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts"))

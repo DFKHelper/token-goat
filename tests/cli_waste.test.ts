@@ -82,8 +82,13 @@ describe('runWasteCommand', () => {
     expect(out).toContain('Top expensive tool calls')
     expect(out).toContain('Read once, never touched again')
     expect(out).toContain('Repeated Bash commands not hitting the token-goat cache')
-    // Every section should fall through to the "none" placeholder line.
-    expect((out.match(/ {2}none\n/g) ?? []).length).toBe(4)
+    expect(out).toContain('Harness-injected context')
+    // Every list-shaped section should fall through to the "none" placeholder line. The
+    // injected-context section is the fifth; its task-list and skill-body subsections render only
+    // when there is something to report, and the compaction line always prints a count rather than
+    // a placeholder, so neither adds one here.
+    expect((out.match(/ {2}none\n/g) ?? []).length).toBe(5)
+    expect(out).toContain('0 compactions this session')
     expect(process.exitCode).toBeUndefined()
 
     // Zero-turn assistant-output section must render sensibly -- no NaN, no divide-by-zero,

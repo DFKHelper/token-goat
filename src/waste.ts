@@ -19,6 +19,13 @@ import * as path from 'node:path'
 
 import { estimateTokens } from './overflow_guard.js'
 import { commandHash, getBashOutput, normalizeCommandForCacheKey } from './bash_output_cache.js'
+import {
+  accumulateResidentLine,
+  createResidentContextStats,
+  summarizeResidentContext,
+  type ResidentContextStats,
+  type ResidentContextSummary,
+} from './resident_context.js'
 
 // ---- transcript discovery ----------------------------------------------------
 
@@ -87,6 +94,12 @@ export interface ParsedTranscript {
    * uses for its resend multiplier, so it deliberately excludes silent tool-only turns).
    */
   assistantTurns: number[]
+  /**
+   * Harness-injected context counted off the same pass. These lines carry no `message`, so the
+   * tool-call parser below skips them entirely -- which is exactly why this class of cost went
+   * unreported until now. See resident_context.ts.
+   */
+  resident: ResidentContextStats
 }
 
 export function safeStringify(value: unknown): string {
@@ -157,6 +170,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
   const calls: ParsedToolCall[] = []
   const resultTextById = new Map<string, string>()
   const assistantTurns: number[] = []
+  const resident = createResidentContextStats()
   let seq = 0
 
   for (const line of raw.split('\n')) {
@@ -170,6 +184,9 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
     }
     if (obj === null || typeof obj !== 'object') continue
     const o = obj as Record<string, unknown>
+    // Before the `message` gate below, not after: attachment and compaction-boundary lines have no
+    // `message` at all, so anything placed after that early-continue would never see one.
+    accumulateResidentLine(resident, o, trimmed.length)
     const message = o['message']
     if (message === null || typeof message !== 'object') continue
     const messageObj = message as Record<string, unknown>
@@ -220,7 +237,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
     if (role === 'assistant' && sawTextBlock) assistantTurns.push(turnTextTokens)
   }
 
-  return { calls, resultTextById, assistantTurns }
+  return { calls, resultTextById, assistantTurns, resident }
 }
 
 // ---- cost attribution -----------------------------------------------------
@@ -414,6 +431,8 @@ export interface WasteReport {
   neverTouchedAgain: NeverTouchedFile[]
   repeatedUncompressedBash: RepeatedBashCommand[]
   assistantOutput: AssistantOutputCost
+  /** Harness-injected context: attachment classes, the current task list, repeated skill bodies, compactions. */
+  residentContext: ResidentContextSummary
 }
 
 export async function buildWasteReport(transcriptPath: string, opts: { topN?: number } = {}): Promise<WasteReport> {
@@ -430,5 +449,6 @@ export async function buildWasteReport(transcriptPath: string, opts: { topN?: nu
     neverTouchedAgain: neverTouchedAgain(costs),
     repeatedUncompressedBash: await repeatedUncompressedBashCommands(costs),
     assistantOutput: assistantOutputCost(parsed.assistantTurns),
+    residentContext: summarizeResidentContext(parsed.resident),
   }
 }

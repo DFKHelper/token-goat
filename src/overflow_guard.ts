@@ -9,12 +9,23 @@ import { stripAnsiCodes } from './bash_compress.js'
 import { safeSlice } from './util.js'
 
 /**
+ * Estimate tokens from a character count: ~3 chars/token (conservative).
+ *
+ * Split out from {@link estimateTokens} so a caller that only has a size -- a byte count read from
+ * a file stat or a transcript line length, with no string in hand -- estimates against the same
+ * ratio instead of reimplementing it or materializing a throwaway string of that length. The two
+ * have drifted apart in this codebase before; this keeps the arithmetic in one place.
+ */
+export function estimateTokensFromLength(length: number): number {
+  return Math.max(1, Math.floor(Math.max(0, length) / 3) + 1)
+}
+
+/**
  * Estimate tokens from text: ~3 chars/token (conservative).
  * Strips ANSI color codes before counting to avoid inflating token estimates.
  */
 export function estimateTokens(text: string): number {
-  const stripped = stripAnsiCodes(text)
-  return Math.max(1, Math.floor(stripped.length / 3) + 1)
+  return estimateTokensFromLength(stripAnsiCodes(text).length)
 }
 
 /**
