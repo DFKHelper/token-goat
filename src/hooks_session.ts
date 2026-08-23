@@ -22,14 +22,23 @@ import {
 /**
  * Harnesses that run the prompt-submit hook but drop whatever it returns.
  *
- * Copilot CLI is the only confirmed member: its `userPromptSubmitted` reads a response body, but
- * only `modifiedPrompt`, and only for SDK-registered hooks -- command hooks, which is what
- * token-goat installs, "have their output dropped"
- * (https://docs.github.com/en/copilot/reference/hooks-reference). Membership is deliberately
- * narrow and evidence-backed: adding a harness here silently reroutes its hints, so a guess would
- * cost the very delivery it was meant to fix.
+ * Empty today, and that is a finding rather than an oversight. Copilot CLI was the only member,
+ * on the strength of its own hooks reference saying command-hook output "is dropped"
+ * (https://docs.github.com/en/copilot/reference/hooks-reference). That documentation is wrong for
+ * `additionalContext`, at least as of 1.0.80: a command hook installed in `~/.copilot/hooks/`
+ * returned `{"additionalContext":"<marker>"}` and the marker appeared verbatim in the session's
+ * `user.message.transformedContent`, wrapped in `<system_reminder>` -- i.e. in the assembled
+ * prompt, not merely in the on-disk hook record. The doc's claim about `modifiedPrompt` was not
+ * retested and is assumed to still hold; token-goat does not want that field regardless.
+ *
+ * The set and the reroute below are kept rather than deleted because they are the fallback if a
+ * future Copilot release makes the documentation true again: re-adding a harness name here is the
+ * whole fix, with no other code change. Membership stays evidence-backed in both directions --
+ * adding a harness silently reroutes its hints and removing one silently discards them, so
+ * neither move should ever rest on documentation alone. See BRIDGES_STATUS for the harness-level
+ * record of what each event can actually carry.
  */
-const PROMPT_SUBMIT_CONTEXT_DROPPED = new Set<string>(['copilot_cli']);
+const PROMPT_SUBMIT_CONTEXT_DROPPED = new Set<string>([]);
 
 function dropsPromptSubmitContext(): boolean {
   return PROMPT_SUBMIT_CONTEXT_DROPPED.has(getHarnessName());

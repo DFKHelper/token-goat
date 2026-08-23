@@ -74,7 +74,7 @@ interface CopilotCliConfig {
  * every hook simply never fires and nothing surfaces the mismatch. Blank/whitespace is
  * treated as unset, matching how an exported-but-empty variable behaves everywhere else.
  */
-function copilotCliUserRoot(): string {
+export function copilotCliUserRoot(): string {
   const override = process.env['COPILOT_HOME']
   if (override !== undefined && override.trim() !== '') return path.resolve(override)
   return path.join(os.homedir(), '.copilot')

@@ -843,19 +843,22 @@ describe('prompt-submit hint routing by harness', () => {
     };
   }
 
-  it('queues the hint on Copilot CLI and delivers it on the next tool call', async () => {
+  it('returns the hint directly on Copilot CLI, whose userPromptSubmitted additionalContext is honored despite its docs', async () => {
+    // This used to assert the opposite. Copilot's hooks reference says command-hook output for
+    // this event "is dropped", and that was taken at face value; a live experiment against 1.0.80
+    // showed a returned additionalContext arriving verbatim in the session's assembled prompt
+    // (user.message.transformedContent, wrapped in <system_reminder>). Delivery on this event is
+    // strictly better than the old reroute: the hint lands before the model picks its first tool,
+    // rather than after the first tool call has already been made.
     setHarness('copilot_cli');
     const sessionId = nonce();
 
     const submitted = await userPromptSubmitHandler(submitEvent(sessionId, bigTaskListTranscript()));
-    expect(submitted.hookType).toBe('pass');
+    expect(submitted.hookType).toBe('context');
+    expect((submitted as { context: string }).context).toContain('TaskUpdate');
 
-    const delivered = pendingContextHandler(toolEvent(sessionId));
-    expect(delivered.hookType).toBe('context');
-    expect((delivered as { context: string }).context).toContain('TaskUpdate');
-
-    // The drain runs on every tool call, so a second one must add nothing; otherwise a one-shot
-    // nudge becomes a per-tool-call tax for the rest of the session.
+    // Queuing as well would deliver the same hint twice, once per channel -- the specific bug a
+    // half-applied version of this change would produce.
     expect(pendingContextHandler(toolEvent(sessionId)).hookType).toBe('pass');
   });
 
