@@ -857,7 +857,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(stdout.trim()).toBe('{}')
   })
 
-  it('maps userPromptSubmitted to the internal user_prompt_submit event but discards the response -- Copilot treats it as notification-only too', () => {
+  it('maps userPromptSubmitted to user_prompt_submit and forwards the response as additionalContext, which Copilot does honor despite its docs', () => {
     const cwd = mkIsolated()
     const argvPath = path.join(cwd, 'argv.txt')
     const capturePath = path.join(cwd, 'captured.json')
@@ -877,10 +877,27 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       env,
     )
 
-    expect(stdout.trim()).toBe('{}')
+    // Asserted as a whole object, not just the presence of additionalContext: modifiedPrompt is
+    // the field Copilot's docs actually describe for this event, and forwarding it would rewrite
+    // the user's prompt. An extra-key assertion is the only thing that catches that regression.
+    expect(JSON.parse(stdout)).toEqual({ additionalContext: 'branch: main' })
     expect(fs.readFileSync(argvPath, 'utf8')).toContain('user_prompt_submit')
     const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
     expect(captured.session_id).toBe('s1')
+  })
+
+  it('emits {} for userPromptSubmitted when token-goat returns no context, rather than an empty additionalContext', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, JSON.stringify({}))
+    const stdout = runShim(
+      'userPromptSubmitted',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', prompt: 'fix the bug please' }),
+      cwd,
+      env,
+    )
+    // An empty additionalContext would still cost a <system_reminder> wrapper in the prompt for
+    // zero content, so the absence of the key matters and is not merely cosmetic.
+    expect(JSON.parse(stdout)).toEqual({})
   })
 
   it('translates an agentStop deny (decision:"block") into {decision:"block", reason}, never additionalContext', () => {

@@ -1026,12 +1026,13 @@ function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; y
   return runMemoryCommand(opts)
 }
 
-function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean; top?: string } = {}): Promise<void> {
+function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean; top?: string; copilot?: boolean } = {}): Promise<void> {
   return runWasteCommand({
     ...(opts.project !== undefined ? { project: opts.project } : {}),
     ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+    ...(opts.copilot === true ? { copilot: true } : {}),
   })
 }
 
@@ -3566,6 +3567,7 @@ export function buildProgram(): Command {
     .option('--project <path>', 'project root to analyze')
     .option('--transcript <path>', 'explicit transcript JSONL path (default: most-recently-modified transcript for this project)')
     .option('--top <n>', 'number of top expensive tool calls to show (default: 10)')
+    .option('--copilot', 'analyze a Copilot CLI session event log instead, reporting Copilot\'s own token split')
     .option('--json', 'output JSON')
     .action(guard(cmdWaste))
 

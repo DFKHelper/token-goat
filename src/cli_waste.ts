@@ -14,6 +14,7 @@ import * as path from 'node:path'
 
 import { resolveProjectRoot } from './project.js'
 import { buildWasteReport, findLatestTranscript, type WasteReport } from './waste.js'
+import { buildCopilotWasteReport, findLatestCopilotSession, type CopilotWasteReport } from './copilot_waste.js'
 import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
@@ -23,6 +24,69 @@ export interface WasteCommandOptions {
   transcript?: string
   json?: boolean
   top?: number
+  copilot?: boolean
+}
+
+/**
+ * Copilot's ledger, which is a different report rather than the same one with different inputs.
+ *
+ * The Claude Code report is denominated in bytes because nothing in a transcript states a token
+ * count. Copilot states its own, so this one leads with them: reporting an estimate next to a
+ * figure the harness already published would be strictly worse information.
+ */
+function printCopilotReport(report: CopilotWasteReport): void {
+  const w = (text: string) => { process.stdout.write(text) }
+  w('\n# token-goat waste (Copilot CLI)\n')
+  w(`Session: ${report.sessionId}\n`)
+  w(`  ${report.sessionPath}\n`)
+
+  w('\n## Per-request fixed overhead (Copilot\'s own token counts)\n')
+  if (report.tokens === null) {
+    w('  No shutdown record yet, so Copilot has not published a token split for this session.\n')
+  } else {
+    const { systemTokens, toolDefinitionsTokens, conversationTokens } = report.tokens
+    const fixed = systemTokens + toolDefinitionsTokens
+    const total = fixed + conversationTokens
+    w(`  System prompt:     ${systemTokens.toLocaleString()} tok\n`)
+    w(`  Tool definitions:  ${toolDefinitionsTokens.toLocaleString()} tok\n`)
+    w(`  Conversation:      ${conversationTokens.toLocaleString()} tok\n`)
+    if (total > 0) {
+      const pct = ((fixed / total) * 100).toFixed(1)
+      // Deliberately not phrased as "N% of every request": the split is a snapshot taken at
+      // shutdown, and conversation grows over a session while the other two do not. The
+      // re-sent-every-request claim is true of the numerator; the percentage is true of this
+      // moment only, and saying otherwise would be the same overstatement this report exists
+      // to avoid.
+      w(`  ${fixed.toLocaleString()} tok of system prompt and tool definitions ships with every\n`)
+      w(`  request; at shutdown that was ${pct}% of the context. No hook can reach it: Copilot\n`)
+      w('  assembles both natively, with nothing between assembly and send. Fewer MCP servers and\n')
+      w('  custom tools is the only lever on this number.\n')
+    }
+  }
+
+  w('\n## Injected blocks in the assembled prompt\n')
+  if (report.blocks.length === 0) {
+    w(`  none across ${countNoun(report.turns, 'turn')}\n`)
+  } else {
+    for (const block of report.blocks) {
+      const pct = block.bytes > 0 ? ((block.repeatBytes / block.bytes) * 100).toFixed(1) : '0.0'
+      w(`  ${block.kind}: ${countNoun(block.count, 'injection')}, ${formatBytes(block.bytes)}`)
+      w(block.repeatBytes > 0 ? `, ${formatBytes(block.repeatBytes)} re-sent verbatim (${pct}%)\n` : '\n')
+    }
+  }
+
+  w('\n## Compactions\n')
+  if (report.compactions.length === 0) {
+    w(`  ${countNoun(report.compactions.length, 'compaction')} recorded this session\n`)
+  } else {
+    for (const c of report.compactions) {
+      w(`  ${c.trigger}: summary ${formatBytes(c.summaryBytes)}, ${c.preTokens.toLocaleString()} -> ${c.postTokens.toLocaleString()} tok\n`)
+    }
+  }
+
+  w('\n## On disk but never billed\n')
+  w(`  Hook records: ${formatBytes(report.hookRecordBytes)} of ${formatBytes(report.totalEventBytes)} in the event log.\n`)
+  w('  hook.start/hook.end never reach the model, so this is log weight, not context weight.\n')
 }
 
 function printReport(report: WasteReport): void {
@@ -123,6 +187,30 @@ function printResidentContext(resident: WasteReport['residentContext'], w: (text
 
 /** Run the `token-goat waste` command. */
 export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<void> {
+  if (opts.copilot === true) {
+    const eventsPath = opts.transcript !== undefined ? path.resolve(opts.transcript) : findLatestCopilotSession()
+    if (eventsPath === null || !fs.existsSync(eventsPath)) {
+      const detail = eventsPath === null
+        ? 'no Copilot CLI session found under <copilot-home>/session-state'
+        : `Copilot session event log not found: ${eventsPath}`
+      if (opts.json === true) {
+        process.stdout.write(`${JSON.stringify({ error: detail })}\n`)
+      } else {
+        process.stdout.write('\n# token-goat waste (Copilot CLI)\n')
+        process.stdout.write(`${detail}\n`)
+      }
+      process.exitCode = 1
+      return
+    }
+    const copilotReport = buildCopilotWasteReport(eventsPath)
+    if (opts.json === true) {
+      process.stdout.write(`${JSON.stringify(copilotReport)}\n`)
+      return
+    }
+    printCopilotReport(copilotReport)
+    return
+  }
+
   const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
 
   const transcriptPath = opts.transcript !== undefined

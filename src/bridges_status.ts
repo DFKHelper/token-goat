@@ -88,7 +88,7 @@ const NO_POST_COMPACT_EVENT_REASON =
  * on the other end to read bare text.
  */
 const COPILOT_NO_POST_COMPACT_REASON =
-  "Copilot CLI has no post-compaction hook: its HookType enum (schemas/api.schema.json, 1.0.79) declares preCompact and no postCompact, and both preCompact call sites in app.js discard the hook's response, so there is no summary to measure and no channel to write to"
+  "Copilot CLI has no post-compaction hook: its HookType enum (schemas/api.schema.json, 1.0.79 and 1.0.80) declares preCompact and no postCompact, and both preCompact call sites in app.js await the hook and never assign its result. The summary is still reachable, just not by a hook: app.js emits session.compaction_complete with summaryContent via emit() rather than emitEphemeral(), and the session event writer subscribes to '*', so it lands in ~/.copilot/session-state/<id>/events.jsonl. Context can be written back on the next turn through userPromptSubmitted additionalContext"
 
 export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
   {

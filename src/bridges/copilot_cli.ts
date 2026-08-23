@@ -359,25 +359,35 @@ function translate(copilotEvent, resp) {
     return { decision: 'allow' }
   }
 
-  // preCompact / userPromptSubmitted: neither surfaces a response here, but for DIFFERENT reasons,
-  // and the difference matters to anyone deciding whether a channel exists.
-  //
-  // preCompact really is notification-only -- the hooks reference marks it "No -- notification
-  // only" for output processing, so there is no field to aim at and nothing to reconsider.
-  //
-  // userPromptSubmitted DOES read a response body: it accepts modifiedPrompt, documented as
-  // "Replaces the prompt for the rest of the turn (SDK programmatic hooks only)". The reason it is
-  // dropped here is the hook TYPE, not the event: "Command and HTTP config-file
-  // userPromptSubmitted hooks have their output dropped, including modifiedPrompt", and token-goat
-  // installs command hooks (see COPILOT_CLI_HOOK_EVENTS). Reaching it would mean shipping an
-  // SDK-registered hook, a separate distribution surface -- and rewriting a user's prompt is a
-  // far more invasive act than anything token-goat does today, so the field is not a goal.
-  //
-  // What this event's context is worth is delivered instead through postToolUse's
-  // additionalContext, which Copilot does honor ("Additional guidance appended to
-  // textResultForLlm so the model sees it after the tool output on the same turn"). The handler
-  // above still runs, so its side effects and its hint text both survive; the text is queued for
-  // the next tool call rather than discarded. See queuePendingContext in ../pending_context.ts.
+  if (copilotEvent === 'userPromptSubmitted') {
+    // Copilot's own hooks reference says command-hook output here "is dropped, including
+    // modifiedPrompt", and this branch used to believe it and return nothing. That is wrong for
+    // additionalContext on 1.0.80, established by experiment rather than by reading: a command
+    // hook in ~/.copilot/hooks returned {"additionalContext":"<marker>"} and the marker turned up
+    // verbatim inside the session's user.message.transformedContent, wrapped in a
+    // <system_reminder> block. transformedContent is the assembled prompt -- it carries the
+    // <current_datetime> and reminder envelope that the raw content field does not -- so the
+    // marker reached the model, not merely the on-disk hook record. That distinction is the whole
+    // point: hook.start/hook.end records also persist and reach nothing.
+    //
+    // modifiedPrompt is NOT claimed to work and is not wanted: rewriting a user's prompt is far
+    // more invasive than anything token-goat does, so only additionalContext is forwarded.
+    //
+    // This is also the write end of the post-compaction channel. Copilot has no postCompact hook,
+    // but it does record session.compaction_complete (with summaryContent) into events.jsonl, so
+    // a manifest can be injected on the first prompt after a compaction. See
+    // COPILOT_NO_POST_COMPACT_REASON in ../bridges_status.ts.
+    const context = extractContext(resp)
+    if (context) return { additionalContext: context }
+    return {}
+  }
+
+  // preCompact is the genuine notification-only case, and the contrast with userPromptSubmitted
+  // above is why this fallthrough is worth a comment at all. The hooks reference marks it
+  // "No -- notification only" for output processing, and unlike the additionalContext claim that
+  // turned out to be false, this one is confirmed in the shipping bundle: both preCompact call
+  // sites in app.js (1.0.79 and re-checked in 1.0.80) await the hook and never assign its result.
+  // There is no field to aim at here, so nothing to reconsider on the next version bump.
   return {}
 }
 
