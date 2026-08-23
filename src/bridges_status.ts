@@ -128,6 +128,33 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       },
     ],
   },
+  /**
+   * What Copilot CLI's wired events can actually carry, read from the shipping 1.0.80 bundle
+   * rather than from its hooks reference page. A row's `implemented` set says an event is wired;
+   * it deliberately says nothing about how much of that event's response the harness honors, and
+   * for Copilot the difference matters:
+   *
+   * - `pre_tool_use` deny is real, and the reason text reaches the model. The native string table
+   *   (runtime.node offset 98057208) carries `permissionDecision`, `permissionDecisionReason`, the
+   *   default "No reason provided." and the formatter "Denied by preToolUse hook: " as distinct
+   *   literals, and app.js sets `{textResultForLlm: reason, resultType: "denied"}` per denial and
+   *   filters that call out of execution. This was previously only an inference drawn from an
+   *   incident comment; it is now confirmed. The fail-closed "(hook errored)" deny-all strings sit
+   *   beside these, so that incident was behavior layered on top of a working deny handler, not a
+   *   substitute for one.
+   * - `post_tool_use` honors `modifiedResult`, so compression, injection fencing and image shrink
+   *   do reach the model: `postToolExecution` (app.js offset 2043150) assigns the returned
+   *   `toolResultJson` onto the tool result in place.
+   * - `post_tool_use` drops `additionalContext` on the JS path -- no supplier for the
+   *   `onAdditionalContext` callback anywhere in the bundle, and no `additional_contexts` key in
+   *   that event's native return payload, unlike its pre-tool sibling. Whether native folds it
+   *   into the returned result instead was not verified.
+   * - Failed tool calls never reach `post_tool_use` at all. Copilot routes them to a separate
+   *   `postToolUseFailure` event, which is handed only a stringified error and honors only
+   *   `additionalContext`; `modifiedResult` is documented as not honored there. So on Copilot the
+   *   output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and no
+   *   response shape token-goat's shim can emit changes that. Known gap, deliberately recorded.
+   */
   {
     harness: 'copilot_cli',
     label: 'Copilot CLI',
@@ -146,7 +173,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       {
         events: ['notification'],
         reason:
-          "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/postToolUseFailure/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at",
+          "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at. postToolUseFailure is also unwired, for a different and now-understood reason: it fires instead of postToolUse on a failed tool result, and it accepts only additionalContext -- modifiedResult is not honored there -- so wiring it could append advisory text but could never fence, compress or shrink a failed tool result",
       },
     ],
   },

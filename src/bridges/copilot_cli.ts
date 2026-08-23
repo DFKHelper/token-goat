@@ -71,9 +71,18 @@ const { pathToFileURL } = require('node:url')
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
 // HOOK_EVENTS). Only these seven have a token-goat handler; every other real
-// Copilot event (sessionEnd, postToolUseFailure, subagentStart,
-// errorOccurred, notification, permissionRequest) is left unimplemented
+// Copilot event (sessionEnd, subagentStart, errorOccurred, notification,
+// permissionRequest) is left unimplemented
 // rather than guessed at, and falls through to the default no-op below.
+// postToolUseFailure is unimplemented for a stronger reason than that: it is
+// now understood, not unknown. It is the event that fires instead of
+// postToolUse when a tool result is a failure, and per the shipped
+// copilot-sdk/types.d.ts it hands a hook only a stringified error message and
+// accepts only additionalContext back -- modifiedResult and suppressOutput
+// are explicitly not honored there. Wiring it could append advisory text to a
+// failed tool result but could never fence, compress or shrink one. See the
+// postToolUse branch in translate() for the full evidence and the gap it
+// leaves.
 // 'sessionStart' was previously a permanent no-op on the stated grounds that
 // token-goat has no internal session_start handler. That was simply wrong --
 // hooks_session_start.ts has long emitted the command-routing reminder that
@@ -324,7 +333,46 @@ function translate(copilotEvent, resp) {
   }
 
   if (copilotEvent === 'postToolUse') {
-    // Confirmed against https://docs.github.com/en/copilot/reference/hooks-reference: postToolUse accepts modifiedResult ({resultType: 'success', textResultForLlm: string}) to replace the tool output, and additionalContext can coexist with it in the same response -- token-goat's rewriteOutput producers (compression, injection fencing, image shrink) map to modifiedResult here; resultType is hardcoded 'success' since token-goat never intends to fail the tool call. Emitted camelCase-only, not the snake_case "VS Code compatible" variant the inbound side handles around line 247: the hooks reference doc selects that format by registering the event name in PascalCase, and COPILOT_CLI_HOOK_EVENTS (copilot_cli_install.ts) registers every event this shim handles in camelCase, so a token-goat-installed hook can never be in that mode and a snake_case response would be wrong here, not merely redundant.
+    // Verified against the shipping @github/copilot 1.0.80 bundle, not against the docs page.
+    // NativeHookPipelineProcessor.postToolExecution (app.js offset 2043150) gates on
+    // toolResult.resultType === "success", then does n.toolResultJson && CSr(e.toolResult,
+    // n.toolResultJson), where CSr (offset 2032350) is an in-place Object.assign; the mutated
+    // object is re-serialized back to native in the postTool callback at offset 1793926. So
+    // modifiedResult IS honored on this event, and token-goat's rewriteOutput producers
+    // (compression, injection fencing, image shrink) really do reach the model. resultType is
+    // hardcoded 'success' because success is the only branch this event ever runs on.
+    //
+    // additionalContext on THIS event is dropped on the JS path. grep -abo "onAdditionalContext:"
+    // app.js returns nothing, so the callback is never supplied, and the two "onAdditionalContext?"
+    // call sites (offsets 2041896 and 2043300) are both no-ops. preToolsExecution (offset 2041832)
+    // additionally pushes each context into an array that IS drained into the native return
+    // payload (additional_contexts, offset 1791950); postToolExecution has no such push and its
+    // native return payload (offset 1793926) has no additional_contexts key. Residual, stated
+    // honestly: the native hookProcessorPostToolUse might fold additionalContext into the
+    // toolResultJson it returns, and that was NOT verified. The evidence leans against it, since
+    // the failure sibling path appends its context explicitly in JS via
+    // hookAppendPostToolUseFailureContext and there is no success-path counterpart. The
+    // out.additionalContext below is kept as cheap best-effort, not as a channel anything should
+    // depend on -- see src/pending_context.ts, whose whole design depended on it.
+    //
+    // Failed tool calls never reach this event. postToolUse and postToolUseFailure are two
+    // distinct hook events (both listed in the runtime.node hook-event enum at offset 101618150),
+    // and the shipped copilot-sdk/types.d.ts says onPostToolUse "does not fire for non-success
+    // results". The failure event cannot carry a fence either: PostToolUseFailureHookInput carries
+    // only a stringified error message, not the tool result, and PostToolUseFailureHookOutput
+    // consumes only additionalContext -- "modifiedResult or suppressOutput are not honored for
+    // failure hooks". rejected/denied/timeout results trigger no post hook at all. So on Copilot,
+    // the output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and
+    // no response shape this shim could emit changes that. A real gap, recorded rather than
+    // papered over; closing it needs a new postToolUseFailure registration that could at best
+    // append advisory guidance, never rewrite the failed output.
+    //
+    // Emitted camelCase-only. The inbound side around line 247 also tolerates a snake_case "VS
+    // Code compatible" shape, and this comment used to justify the camelCase choice by claiming
+    // PascalCase event registration selects the snake_case response format. That reasoning is
+    // UNVERIFIED in 1.0.80: every hook-response field in the native string tables is camelCase,
+    // and the snake_case hits in the bundle are unrelated internal Rust identifiers. camelCase
+    // stays because it is what the bundle reads; the old justification is no longer asserted.
     const hso = resp && resp.hookSpecificOutput
     const updatedToolOutput = hso && hso.updatedToolOutput
     const context = extractContext(resp)

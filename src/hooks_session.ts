@@ -35,8 +35,16 @@ import {
  * and is assumed to still hold; token-goat does not want that field regardless.
  *
  * The set and the reroute below are kept rather than deleted because they are the fallback if a
- * future Copilot release makes the documentation true again: re-adding a harness name here is the
- * whole fix, with no other code change. Membership stays evidence-backed in both directions --
+ * future Copilot release makes the documentation true again. Re-adding a harness name here used to
+ * be described as the whole fix, with no other code change. That is no longer true for Copilot
+ * specifically: a hint queued by this reroute drains through `post_tool_use`, and reading the
+ * 1.0.80 bundle shows Copilot's `postToolUse` never forwards `additionalContext` to the model on
+ * the JS path (no supplier for `onAdditionalContext`, no `additional_contexts` key in that event's
+ * native return payload; see the `postToolUse` branch in `src/bridges/copilot_cli.ts`). So for
+ * Copilot the reroute currently moves a hint from one unconfirmed channel to another, and
+ * re-adding the name would also need the drain side proven to arrive. For a harness that drops
+ * prompt-submit output but does honor post-tool `additionalContext`, the one-line claim still
+ * holds. Membership stays evidence-backed in both directions --
  * adding a harness silently reroutes its hints and removing one silently discards them, so
  * neither move should ever rest on documentation alone. See BRIDGES_STATUS for the harness-level
  * record of what each event can actually carry.
