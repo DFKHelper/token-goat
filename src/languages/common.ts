@@ -348,20 +348,30 @@ export function isInsideStringLiteral(line: string, index: number, from = 0): bo
  * merely contains that two-character sequence doesn't swallow the rest of the file as a
  * never-closed comment.
  */
+/**
+ * Index of the next real `/*` opener on `line` at or after `from`, or -1 -- skipping any that sits
+ * inside a string literal or after a `//`, for the reasons the two span strippers below spell out.
+ * Shared by both so they can never disagree about what counts as an opener.
+ */
+function nextBlockCommentOpen(line: string, from: number): number {
+  const lineCommentIdx = lineCommentStartIndex(line, ['//'], from)
+  let open = line.indexOf('/*', from)
+  while (
+    open !== -1 &&
+    (isInsideStringLiteral(line, open, from) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+  ) {
+    open = line.indexOf('/*', open + 1)
+  }
+  return open
+}
+
 export function stripBlockCommentSpan(line: string, inComment: boolean): { code: string; inComment: boolean } {
   let code = ''
   let j = 0
   let comment = inComment
   while (j < line.length) {
     if (!comment) {
-      const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
-      let open = line.indexOf('/*', j)
-      while (
-        open !== -1 &&
-        (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
-      ) {
-        open = line.indexOf('/*', open + 1)
-      }
+      const open = nextBlockCommentOpen(line, j)
       if (open === -1) {
         code += line.slice(j)
         break
@@ -407,14 +417,7 @@ export function stripNestedBlockCommentSpan(line: string, depth: number): { code
   let d = depth
   while (j < line.length) {
     if (d === 0) {
-      const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
-      let open = line.indexOf('/*', j)
-      while (
-        open !== -1 &&
-        (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
-      ) {
-        open = line.indexOf('/*', open + 1)
-      }
+      const open = nextBlockCommentOpen(line, j)
       if (open === -1) {
         code += line.slice(j)
         break
