@@ -84,9 +84,9 @@ function initRepo(dir: string): void {
   runGit(['commit', '-m', 'initial commit'], { cwd: dir })
 }
 
-function manifestFrom(wireJson: string): string {
-  const parsed = JSON.parse(wireJson) as { systemMessage?: string }
-  return parsed.systemMessage ?? ''
+/** On Claude Code (the harness tests/setup/isolate-home.ts pins) a pre_compact context output is written to stdout as raw text, because Claude Code feeds PreCompact stdout to the summarizing model verbatim -- so the wire output IS the manifest, with no JSON envelope to unwrap. */
+function manifestFrom(wireOutput: string): string {
+  return wireOutput
 }
 
 function truncatedAt(manifest: string): number | null {

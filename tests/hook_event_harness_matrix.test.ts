@@ -408,7 +408,13 @@ describe('hook-event x harness bundle matrix (real bundle, non-crash coverage)',
       const payload = isToolEvent ? toolPayload(harness, sessionId, filePath) : nonToolPayload(event, sessionId)
       const r = run(['hook', event], tgEnv(harness), JSON.stringify(payload))
       expect(r.status, `harness=${harness} event=${event} stderr: ${r.stderr}`).toBe(0)
-      expect(() => JSON.parse(r.stdout)).not.toThrow()
+      // Claude Code's pre_compact is the single deliberate exception to the JSON wire format: it reads a PreCompact hook's stdout verbatim into the summarizing model's instructions, so the manifest is emitted as bare text there. Every other pair still owes valid JSON, and the raw-text shape has its own assertions in tests/wire_format_contract_matrix.test.ts.
+      if (harness === 'claudecode' && event === 'pre_compact') {
+        expect(r.stdout.trimStart().startsWith('{')).toBe(false)
+        expect(r.stdout.trim().length).toBeGreaterThan(0)
+      } else {
+        expect(() => JSON.parse(r.stdout)).not.toThrow()
+      }
     })
   }
 })

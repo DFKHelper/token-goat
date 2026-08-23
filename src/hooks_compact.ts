@@ -341,7 +341,12 @@ function buildMemEpochSection(): string[] {
 }
 
 /**
- * pre_compact handler: inject the session manifest as context.
+ * pre_compact handler: hand the session manifest to the model that writes the compaction summary.
+ *
+ * On Claude Code this hook's stdout reaches that model as `customInstructions`, so the manifest is
+ * addressed to a reader rather than filed as an attachment -- see EVENTS_WITH_RAW_STDOUT_CONTEXT in
+ * hook_registry.ts for how that was established and why it is scoped to one harness. {@link
+ * MANIFEST_PREAMBLE} is what turns a block of facts into something a summariser can act on.
  *
  * Returns `pass` (no-op) when `compact_assist.enabled` is off -- the config field is fully
  * wired through TOML parsing/validation/env-override (TOKEN_GOAT_COMPACT_ASSIST) and `config
@@ -349,11 +354,23 @@ function buildMemEpochSection(): string[] {
  * Otherwise always returns a `context` output so the manifest reaches the compaction summary
  * even for an otherwise empty session (the counts confirm nothing was dropped).
  */
+/**
+ * One line of framing in front of the manifest, addressed to whoever writes the compaction summary.
+ *
+ * Deliberately asks for preservation and not for brevity. A shorter summary is the larger prize --
+ * summaries measured on this machine average about 21 KB each -- but the summary is the only thing
+ * the next turn has, and trading its completeness for tokens is a bad trade to make on a user's
+ * behalf without being asked. Naming the paths as the things to keep verbatim is the part that is
+ * safe: it costs nothing and it protects exactly the handles a surgical read needs afterwards.
+ */
+const MANIFEST_PREAMBLE =
+  'When summarizing this session, keep the file paths and symbol names below exactly as written -- they are the handles the next turn needs to resume work. Do not paraphrase them into prose.'
+
 export function preCompactHandler(event: HookEvent): HookOutput {
   // Order is load-bearing: buildManifest reads getSessionFiles(), and markCompacted stamps the epoch that makes every one of those reads count as no-longer-in-context. Stamping first would not corrupt the manifest today (it reads readCount/wasEdited directly rather than going through wasFileReadThisSession), but the dependency is real -- any future manifest input that asks "is this still in context" would silently render empty. Build first, stamp second.
   // The stamp is NOT gated on compact_assist.enabled: compaction happens whether or not we inject a manifest, so the read ledger must be invalidated either way. Gating it would leave hooks_read.ts serving diffs and "unchanged" denials against content the model can no longer see, for every user who turned the manifest off.
   const out = loadConfig().compact_assist.enabled
-    ? contextOutput(buildManifest(event.sessionId, getCwd(event)))
+    ? contextOutput(`${MANIFEST_PREAMBLE}\n\n${buildManifest(event.sessionId, getCwd(event))}`)
     : passOutput()
   markCompacted()
   return out

@@ -254,7 +254,7 @@ describe('wire-format contract matrix: post_tool_use `context` hint -> hookSpeci
   })
 })
 
-describe('wire-format contract matrix: pre_compact `context` -> top-level systemMessage, never hookSpecificOutput (real bundle, real preCompactHandler)', () => {
+describe('wire-format contract matrix: pre_compact `context` -> raw stdout on Claude Code, top-level systemMessage everywhere else, never hookSpecificOutput (real bundle, real preCompactHandler)', () => {
   let dataBase: string
   let homeBase: string
 
@@ -267,7 +267,22 @@ describe('wire-format contract matrix: pre_compact `context` -> top-level system
   // EXPECTED_SUPPORTED_EVENTS in tests/hook_event_harness_matrix.test.ts) --
   // codex is deliberately excluded, since its default install never wires
   // pre_compact in the first place (CODEX_EVENT_ARG has no pre_compact entry).
-  for (const harness of RAW_PASSTHROUGH_HARNESSES) {
+  // Claude Code is the one harness that reads a PreCompact hook's stdout verbatim: its executor sets the hook result's `output` to the raw stdout and the compaction path joins every succeeding hook's `output` into the summarizing model's customInstructions. `systemMessage` is lifted onto a separate field nothing in that path reads, so a JSON-wrapped manifest was delivered to the summarizer as literal JSON text rather than as instructions. Bare text is what actually lands.
+  it('claudecode: preCompactHandler\'s manifest reaches stdout as raw text, not wrapped in JSON, because Claude Code feeds PreCompact stdout to the summarizer verbatim', () => {
+    const sessionId = 'wireformat-compact-claudecode'
+    const env = tgEnv('claudecode', dataBase, homeBase)
+    const payload = { session_id: sessionId, trigger: 'auto' }
+    const r = run(['hook', 'pre_compact'], env, JSON.stringify(payload))
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0)
+    expect(r.stdout.trim().length).toBeGreaterThan(0)
+    expect(r.stdout.trimStart().startsWith('{')).toBe(false)
+    expect(r.stdout).not.toContain('systemMessage')
+    expect(r.stdout).not.toContain('hookSpecificOutput')
+    // The preamble is the part that only makes sense as instructions rather than as a quoted JSON string value, so it doubles as proof the manifest is being delivered in the register the summarizer reads.
+    expect(r.stdout).toContain('When summarizing this session')
+  })
+
+  for (const harness of RAW_PASSTHROUGH_HARNESSES.filter((h) => h !== 'claudecode')) {
     it(`${harness}: preCompactHandler's manifest reaches stdout as a top-level systemMessage, with no hookSpecificOutput field at all`, () => {
       const sessionId = `wireformat-compact-${harness}`
       const env = tgEnv(harness, dataBase, homeBase)
