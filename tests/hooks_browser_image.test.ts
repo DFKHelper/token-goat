@@ -18,6 +18,8 @@ import type { HookEvent } from '../src/hook_registry.js'
 // Random noise resists compression, guaranteeing a >512KB encoded size at 3000x3000 so the shrink path (downscale to 1568) has real bytes to save — same construction as tests/image_shrink.test.ts's largeJpeg fixture.
 let largeJpegB64: string
 let smallPngB64: string
+let flatScreenshotB64: string
+let flatScreenshotBytes: number
 
 beforeAll(async () => {
   const side = 3000
@@ -34,6 +36,17 @@ beforeAll(async () => {
     .png()
     .toBuffer()
   smallPngB64 = smallPng.toString('base64')
+
+  // What a real screenshot actually looks like: flat colour, so it compresses to a few kilobytes
+  // on the wire, while still decoding to 1920 on its longest edge -- well past the 1568 vision
+  // optimum the model is billed against. Small in bytes and oversized in pixels at the same time.
+  const flatScreenshot = await sharp({
+    create: { width: 1920, height: 1080, channels: 3, background: { r: 250, g: 250, b: 250 } },
+  })
+    .png()
+    .toBuffer()
+  flatScreenshotB64 = flatScreenshot.toString('base64')
+  flatScreenshotBytes = flatScreenshot.length
 })
 
 beforeEach(() => {
@@ -95,6 +108,24 @@ describe('postBrowserImageHandler', () => {
   it('leaves a below-threshold image untouched (no rewrite fires for that reason alone)', async () => {
     const result = await postBrowserImageHandler(imageEvent(smallPngB64))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('shrinks a screenshot that is small in bytes but oversized in pixels, which the byte threshold alone would skip', async () => {
+    // The regression this pins: shrinkImageBlock used to call shrinkImage with no options, so the
+    // 512 KB byte gate decided on its own and a 1920px screenshot at a few KB went through at full
+    // size. Vision bills pixels, not bytes, so that is the whole cost of the image left unpaid for.
+    // The file-Read path had a dimension probe for exactly this and the browser path did not.
+    expect(flatScreenshotBytes).toBeLessThan(512 * 1024)
+
+    const result = await postBrowserImageHandler(imageEvent(flatScreenshotB64))
+
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).toContain('token-goat shrank an inline browser screenshot')
+      const dataUrlMatch = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(result.updatedOutput)
+      expect(dataUrlMatch).not.toBeNull()
+      expect(dataUrlMatch![1]!.length).toBeLessThan(flatScreenshotB64.length)
+    }
   })
 
   it('preserves an unrecognized content-block type (e.g. an MCP resource block) instead of silently dropping it when an image in the same result triggers a rewrite (regression: the loop only pushed image/text blocks to parts, so any other block type vanished from updatedOutput once anyChanged fired)', async () => {

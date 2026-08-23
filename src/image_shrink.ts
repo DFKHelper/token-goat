@@ -122,6 +122,37 @@ export async function probeImageMeta(input: Buffer): Promise<{ width: number; he
 }
 
 /**
+ * True when `input` is worth spending a re-encode on.
+ *
+ * Two independent tests, and only the first is about bytes. At or above the byte threshold the
+ * encode pays for itself on size alone. Below it, decoded dimensions still decide: a flat-colour
+ * screenshot compresses to a hundred kilobytes on disk and still decodes to well past
+ * `DEFAULT_MAX_DIMENSION`, and vision is billed on pixels rather than bytes, so the model pays in
+ * full for an edge it cannot use. Both callers need both tests, which is why the decision lives
+ * here instead of inside either of them: the file-Read path had both and the inline browser
+ * screenshot path had only the byte one, so every screenshot under 512 KB went through at full
+ * size no matter how large it decoded to.
+ *
+ * The dimension probe is a header-only metadata read and honours the configured decode-pixel cap,
+ * so a decompression bomb answers false rather than being decoded. Undecodable input and a
+ * missing `sharp` both answer false, matching {@link shrinkImage}'s own convention.
+ */
+export async function imageQualifiesForShrink(input: Buffer): Promise<boolean> {
+  if (input.length >= DEFAULT_SIZE_THRESHOLD_BYTES) return true
+
+  const sharp = await loadSharp()
+  if (sharp === null) return false
+  try {
+    const cfg = loadConfig().image_shrink
+    const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
+    const meta = await sharp(input, { limitInputPixels }).metadata()
+    return Math.max(meta.width ?? 0, meta.height ?? 0) > DEFAULT_MAX_DIMENSION
+  } catch {
+    return false
+  }
+}
+
+/**
  * Shrink an image buffer to fit within `maxDimension` on its longest edge and
  * re-encode it, choosing JPEG or WebP — whichever is smaller.
  *
@@ -405,7 +436,6 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
 
   const stat = statInfo(filePath)
   if (stat === null) return passOutput()
-  const size = stat.size
 
   // Checked before any read/decode of the original: a cache hit skips the sharp re-encode (and,
   // for small-but-oversized-dimension files, the metadata probe below) entirely. A corrupt or
@@ -445,43 +475,19 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     }
   }
 
-  let input: Buffer | null = null
-  let qualifies = size >= DEFAULT_SIZE_THRESHOLD_BYTES
-
-  if (!qualifies) {
-    // Under the byte threshold: probe decoded dimensions before giving up on
-    // this file. The probe reads the file once and reuses that same buffer
-    // for the shrink below on a hit, so a qualifying file is never read twice.
-    try {
-      input = fs.readFileSync(filePath)
-    } catch {
-      return passOutput()
-    }
-
-    const sharp = await loadSharp()
-    if (sharp === null) return passOutput()
-
-    try {
-      const cfg = loadConfig().image_shrink
-      const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
-      const meta = await sharp(input, { limitInputPixels }).metadata()
-      const longestEdge = Math.max(meta.width ?? 0, meta.height ?? 0)
-      qualifies = longestEdge > DEFAULT_MAX_DIMENSION
-    } catch {
-      // Undecodable / unsupported input: treat as not-shrinkable, same as shrinkImage's own convention.
-      return passOutput()
-    }
+  // Read once and let imageQualifiesForShrink judge the bytes it already holds. A file that
+  // qualifies on size alone never reaches the dimension probe, and one that does not qualify at
+  // all is read exactly as often as it was before -- the probe always needed the bytes anyway.
+  let input: Buffer
+  try {
+    input = fs.readFileSync(filePath)
+  } catch {
+    return passOutput()
   }
 
-  if (!qualifies) return passOutput()
-
-  if (input === null) {
-    try {
-      input = fs.readFileSync(filePath)
-    } catch {
-      return passOutput()
-    }
-  }
+  // A pass here is a file that was never a candidate, which is not the same event as a candidate
+  // the re-encode declined below, so it deliberately records nothing.
+  if (!(await imageQualifiesForShrink(input))) return passOutput()
 
   const result = await shrinkImage(input, { quality, sizeThresholdBytes: 0 })
   if (result === null) {
