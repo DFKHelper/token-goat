@@ -37,6 +37,7 @@ const VALID_HOOK_EVENTS = new Set([
   'notification',
   'stop',
   'pre_compact',
+  'post_compact',
   'user_prompt_submit',
   'subagent_stop',
   'session_start',

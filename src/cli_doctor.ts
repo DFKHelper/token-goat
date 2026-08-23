@@ -22,6 +22,7 @@ import { findStrayClaudeMdBlocks } from './install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
+import { getDb } from './db.js'
 import type { DoctorResult } from './doctor_result.js'
 
 // Both live outside this module so hooks_session_start.ts can run the one check it needs without
@@ -772,6 +773,70 @@ function dataDirPermissionResult(dataDirPath: string): DoctorResult {
  * that is what the CLI does, and `tests/cli_doctor.test.ts` covers that default path explicitly so
  * the gather cannot rot behind an argument every test supplies.
  */
+/** How many recent compactions must all show zero surviving manifest paths before the channel is called broken. One is noise -- a summary can legitimately paraphrase every path away when the session barely touched any files. */
+const COMPACTION_CHANNEL_WINDOW = 5
+
+/**
+ * Is the manifest token-goat sends ahead of a compaction still reaching the summary?
+ *
+ * That manifest travels a route Claude Code does not document: a PreCompact hook's raw stdout is
+ * handed to the summarizing model as its instructions. If that ever changes, nothing fails --
+ * the hook still exits 0, the manifest is still built, and the only visible symptom is summaries
+ * that quietly stop naming real paths. `postCompactHandler` records how many of the paths it sent
+ * came back out of each summary verbatim; this reads that record and says so out loud.
+ *
+ * Deliberately quiet in every ambiguous case. A run with nothing to look for (`sampled === 0`,
+ * i.e. the session had touched no files) proves nothing either way and is skipped rather than
+ * counted as a failure, and fewer than {@link COMPACTION_CHANNEL_WINDOW} conclusive runs is not
+ * enough evidence to accuse the harness of anything. The alarm only sounds when every one of the
+ * last several compactions that had something to find found none of it.
+ */
+export function checkCompactionChannel(dbPath: string): DoctorResult {
+  const name = 'Compaction channel'
+  if (!fs.existsSync(dbPath)) {
+    return { name, status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const db = getDb(dbPath)
+    // The stats table is created lazily by the first recordStat call (src/stats.ts), so on a fresh
+    // install global.db exists with an index schema and no stats at all. Querying it blind would
+    // throw "no such table" and be reported as a warning, which would put a scary line in front of
+    // every new user for the entirely normal condition of having compacted nothing yet.
+    const present = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stats'").get()
+    if (present === undefined) {
+      return { name, status: 'ok', message: 'no compaction has been measured yet' }
+    }
+    const rows = db
+      .prepare("SELECT detail FROM stats WHERE kind = 'compact_summary' ORDER BY rowid DESC LIMIT ?")
+      .all(COMPACTION_CHANNEL_WINDOW * 4) as Array<{ detail: string | null }>
+    const conclusive: Array<{ survived: number; sampled: number }> = []
+    for (const row of rows) {
+      const m = /manifest_paths=(\d+)\/(\d+)/.exec(row.detail ?? '')
+      if (m === null) continue
+      const sampled = Number(m[2])
+      if (sampled === 0) continue
+      conclusive.push({ survived: Number(m[1]), sampled })
+      if (conclusive.length >= COMPACTION_CHANNEL_WINDOW) break
+    }
+    if (conclusive.length === 0) {
+      return { name, status: 'ok', message: 'no compaction has been measured yet' }
+    }
+    const dead = conclusive.filter((c) => c.survived === 0).length
+    if (conclusive.length >= COMPACTION_CHANNEL_WINDOW && dead === conclusive.length) {
+      return {
+        name,
+        status: 'warn',
+        message: `none of the last ${conclusive.length} compaction summaries kept a single file path token-goat sent ahead of them -- Claude Code may have stopped feeding a PreCompact hook's output to the summarizer, which would make the session manifest a no-op`,
+      }
+    }
+    const kept = conclusive.reduce((n, c) => n + c.survived, 0)
+    const sent = conclusive.reduce((n, c) => n + c.sampled, 0)
+    return { name, status: 'ok', message: `${kept}/${sent} sampled paths survived the last ${conclusive.length} compaction(s)` }
+  } catch (e) {
+    return { name, status: 'warn', message: `could not read compaction stats: ${extractErrorMessage(e)}` }
+  }
+}
+
 export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
@@ -787,6 +852,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkSymbolBodySize(path.join(actualDataDir, 'global.db')))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
+  results.push(checkCompactionChannel(path.join(actualDataDir, 'global.db')))
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))

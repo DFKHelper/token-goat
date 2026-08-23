@@ -48,6 +48,7 @@ export const HOOK_EVENTS = [
   'notification',
   'stop',
   'pre_compact',
+  'post_compact',
   'user_prompt_submit',
   'subagent_stop',
   'session_start',

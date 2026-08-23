@@ -825,7 +825,12 @@ function _renderInsightsSection(stats: StatsData): string[] {
     return `${fg(...C.TEXT_MUTED)}${s}${RESET}`
   }
 
-  const topKind = stats.by_kind.reduce((max, k) => (k.bytes > (max?.bytes || -Infinity) ? k : max), stats.by_kind[0])
+  // Only kinds that actually saved something can lead a savings ranking. Some kinds are pure
+  // measurements recorded at (0, 0) -- compact_summary, which records how large a compaction
+  // summary was -- and a store holding only those would otherwise crown one of them "Biggest
+  // saver ... 0.0%", which reads as a result rather than as an empty ranking.
+  const savingKinds = stats.by_kind.filter((k) => k.bytes > 0)
+  const topKind = savingKinds.reduce((max, k) => (k.bytes > (max?.bytes || -Infinity) ? k : max), savingKinds[0])
   if (topKind) {
     const share = stats.totals.bytes > 0 ? topKind.bytes / stats.totals.bytes : 0
     lines.push(
@@ -843,7 +848,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
     )
   }
 
-  const tokenKinds = stats.by_kind.filter((k) => !k.bytes_mode_only)
+  const tokenKinds = stats.by_kind.filter((k) => !k.bytes_mode_only && k.tokens > 0)
   const topToken = tokenKinds.reduce((max, k) => (k.tokens > (max?.tokens || -Infinity) ? k : max), tokenKinds[0])
   if (topToken) {
     lines.push(

@@ -213,6 +213,7 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
   notification: 'Notification',
   stop: 'Stop',
   pre_compact: 'PreCompact',
+  post_compact: 'PostCompact',
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
   session_start: 'SessionStart',
@@ -227,6 +228,13 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
  * Kept as an explicit table rather than a single hardcoded event check so a
  * new handler on one of these events cannot silently reproduce the pre_compact
  * wire-format bug (2026-07-02) by inheriting the wrong default.
+ *
+ * `post_compact` is deliberately absent from this set AND from
+ * {@link EVENTS_WITH_RAW_STDOUT_CONTEXT}, because listing it in either would assert something
+ * false. Reading `claude.exe` 2.1.240, the PostCompact runner builds its return value from
+ * `userDisplayMessage` alone -- a line echoed to the user's terminal -- and reads neither
+ * `additionalContext` nor `systemMessage` nor the raw `output`. There is no context channel on
+ * that event at all, which is why {@link postCompactHandler} measures and returns `pass`.
  */
 const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
   'notification',

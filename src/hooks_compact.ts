@@ -6,6 +6,9 @@
  * touched (files read, files edited, web URLs fetched) so the compaction
  * preserves that context instead of dropping it. The manifest is intentionally
  * compact — aim well under 2000 chars — and is emitted as a `context` output.
+ *
+ * Also carries the `post_compact` counterpart, which measures what compaction
+ * actually produced. See {@link postCompactHandler}.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -19,6 +22,8 @@ import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB, runGit } from './util.js'
 import type { HookOutput } from './types.js'
 import { getBashOutput } from './bash_output_cache.js'
+import { recordStat } from './stats.js'
+import { estimateTokensFromLength } from './overflow_guard.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, loadSessionCache } from './compact.js'
 
@@ -377,3 +382,88 @@ export function preCompactHandler(event: HookEvent): HookOutput {
 }
 
 registerHook('pre_compact', preCompactHandler)
+
+/**
+ * Distinct path-shaped tokens to sample from the manifest when checking whether it survived
+ * compaction. Small on purpose: the check is a canary, not a census, and each candidate costs
+ * one substring scan over a summary that averages roughly 21 KB.
+ */
+const MANIFEST_SURVIVAL_SAMPLE = 12
+
+/**
+ * Paths this session touched, in the same order and from the same source {@link buildManifest}
+ * draws them from, capped to {@link MANIFEST_SURVIVAL_SAMPLE}.
+ *
+ * Deliberately re-derived from session state rather than stashed at pre_compact time. Nothing
+ * mutates the file ledger between the two events -- no tool call can run while the harness is
+ * compacting -- so the list is the same one the manifest was built from, and re-deriving it
+ * avoids adding a field that would need all six of the session-state touch points (interface,
+ * serialize, deserialize, reset, coerce, merge) to carry a value that is only ever read
+ * milliseconds after it is written.
+ *
+ * The one imprecision is in the safe direction: `capManifestChars` may have cut the tail off the
+ * emitted manifest, so a path here might never have been sent. That can only make survival look
+ * worse than it was, never better, which is the bias a canary wants -- it cannot falsely report
+ * that the channel is alive.
+ */
+function manifestPathSample(sessionId?: string): string[] {
+  const ownFiles = [...getSessionFiles().values()]
+  const siblingFiles = sessionId !== undefined ? listSiblingSessionStates(sessionId).flatMap((s) => s.files) : []
+  const files = siblingFiles.length > 0 ? mergeManifestFiles(ownFiles, siblingFiles) : ownFiles
+  const seen = new Set<string>()
+  for (const entry of files) {
+    // entry.path verbatim, because that is exactly what both manifest sections print -- renderReadRow and the edited-files rows each interpolate entry.path with no transformation. Folding here instead would compare a lowercased needle against the manifest's real spelling and match nothing on Windows, reporting every compaction as a dead channel. Case tolerance belongs at the comparison, where both sides get folded together.
+    if (entry.path) seen.add(entry.path)
+    if (seen.size >= MANIFEST_SURVIVAL_SAMPLE) break
+  }
+  return [...seen]
+}
+
+/**
+ * post_compact handler: measure the summary compaction produced, and check whether the manifest
+ * we sent into it survived.
+ *
+ * Two things make this worth wiring even though it changes nothing the model sees.
+ *
+ * The measurement: compaction summaries are the single largest thing token-goat could not see.
+ * Every other number in `stats` came from a tool call token-goat intercepted, and a summary
+ * arrives through none. Across 22 sessions on one machine they totalled roughly 27.5 MB, and
+ * until now nothing counted a byte of it. Claude Code hands the finished summary to a PostCompact
+ * hook verbatim, so counting it costs one `length` read of a string already in memory.
+ *
+ * The canary: {@link preCompactHandler}'s manifest reaches the summarizing model through an
+ * undocumented channel -- Claude Code feeds a PreCompact hook's raw stdout in as the summarizer's
+ * customInstructions, which its own hooks reference describes as going to a debug log. That can
+ * stop working on any release, and it would stop silently: the hook would keep succeeding, the
+ * manifest would keep being built, and nothing would fail. So this counts how many of the paths
+ * the manifest named actually appear in the summary. A run of compactions where none survive is
+ * the signal that the channel died.
+ *
+ * Recorded at zero bytes and zero tokens, always. Nothing here saves anything -- the summary was
+ * written whether or not token-goat was watching -- and crediting a measurement as a saving is
+ * the exact accounting mistake this project keeps having to undo.
+ *
+ * Returns `pass`. A PostCompact hook's stdout is not context: Claude Code's runner returns only
+ * `userDisplayMessage`, a line echoed to the user's terminal, so anything printed here would be
+ * noise in front of a person rather than help for a model.
+ */
+export function postCompactHandler(event: HookEvent): HookOutput {
+  const raw = event.raw['compact_summary']
+  const summary = typeof raw === 'string' ? raw : ''
+  const bytes = Buffer.byteLength(summary, 'utf-8')
+  const sample = manifestPathSample(event.sessionId)
+  // Fold both sides on a case-insensitive filesystem so a summary that reproduces a path with different capitalization still counts as a survivor. Folding the needle alone was the first version of this and it matched nothing on Windows, which would have made the canary read "channel dead" on every compaction.
+  const haystack = foldPath(summary)
+  const survived = sample.filter((p) => haystack.includes(foldPath(p))).length
+  const trigger = typeof event.raw['trigger'] === 'string' ? event.raw['trigger'] : 'unknown'
+  recordStat(
+    'compact_summary',
+    0,
+    0,
+    undefined,
+    `trigger=${trigger} bytes=${bytes} est_tokens=${estimateTokensFromLength(summary.length)} manifest_paths=${survived}/${sample.length}`,
+  )
+  return passOutput()
+}
+
+registerHook('post_compact', postCompactHandler)

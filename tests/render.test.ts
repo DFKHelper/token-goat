@@ -478,6 +478,32 @@ describe('Stats rendering', () => {
     })
   })
 
+  it('never names a kind that saved nothing as the biggest saver or the token leader', () => {
+    // compact_summary is the first kind deliberately recorded at (0, 0) forever: it measures how
+    // large a compaction summary was, and that summary was written whether or not token-goat was
+    // watching. Ranking it as a saver would put "Biggest saver compact_summary -- 0.0%" in front
+    // of the user, which reads as a finding rather than as an empty ranking.
+    const stats = { ...minimalStats }
+    stats.by_kind = [{ kind: 'compact_summary', bytes: 0, tokens: 0, events: 2 }]
+    const result = renderStats(stats)
+    expect(result).not.toContain('Biggest saver')
+    expect(result).not.toContain('Token leader')
+  })
+
+  it('still names the biggest saver when a real saver sits alongside a zero-savings measurement', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'compact_summary', bytes: 0, tokens: 0, events: 9 },
+      { kind: 'read_replacement', bytes: 4000, tokens: 900, events: 2 },
+    ]
+    const result = renderStats(stats)
+    expect(result).toContain('Biggest saver')
+    expect(result).toContain('Token leader')
+    // The measurement has more events than the saver, so a ranking that fell back to event count
+    // -- or that simply took the first row -- would still name it here.
+    expect(result).not.toMatch(/Biggest saver\s+\S*compact_summary/)
+  })
+
   it('renderStats with multiple kinds grouped correctly', () => {
     const stats = { ...minimalStats }
     stats.by_kind = [
