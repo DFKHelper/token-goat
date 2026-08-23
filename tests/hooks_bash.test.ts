@@ -1558,13 +1558,45 @@ describe('preBashHandler — orchestrator state file exemption', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('denies python open() of a .output transcript and points at bash-output --transcript', () => {
-    const event = makeBashEvent("python3 -c \"\nimport json\nfor line in open(r'/home/user/.claude/tasks/abc123.output'):\n    print(json.loads(line))\n\"")
-    const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123.output" --transcript')
-      expect(result.message).not.toContain('token-goat read')
+  it('denies python open() of a .output file that really is a JSONL transcript, and points at bash-output --transcript', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-pyout-'))
+    const jsonlFile = join(tmpDir, 'abc123.output')
+    writeFileSync(jsonlFile, '{"type":"user","message":{"role":"user"}}\n')
+    try {
+      const event = makeBashEvent(`python3 -c "\nimport json\nfor line in open(r'${jsonlFile.replace(/\\/g, '/')}'):\n    print(json.loads(line))\n"`)
+      const result = preBashHandler(event)
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('--transcript')
+        expect(result.message).toContain('JSONL agent transcript')
+        expect(result.message).not.toContain('token-goat read')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // The .output extension is shared by two unrelated kinds of file: an agent task's JSONL transcript,
+  // and a background bash task's plain stdout, which the harness itself tells the model to read. This
+  // path judged on the extension alone, so reading a build log was refused with advice to run
+  // --transcript on it, which would have returned nothing. The cat/tail guard on the same directory
+  // already sniffed the first byte; only this caller did not. Both halves are pinned here, because a
+  // sniff that answers "transcript" for everything passes the first test on its own.
+  it('does not deny python open() of a .output file that is a background command\'s plain stdout', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-pyout-'))
+    const plainFile = join(tmpDir, 'b1l6az05r.output')
+    writeFileSync(plainFile, '\n Test Files  450 passed (450)\n      Tests  10288 passed | 17 skipped\n')
+    try {
+      const event = makeBashEvent(`python3 -c "print(open(r'${plainFile.replace(/\\/g, '/')}').read())"`)
+      const result = preBashHandler(event)
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain("background command's stdout")
+        expect(result.context).not.toContain('--transcript')
+        expect(result.context).not.toContain('JSONL')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
     }
   })
 
