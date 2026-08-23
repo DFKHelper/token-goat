@@ -217,6 +217,12 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
   session_start: 'SessionStart',
+  // Claude Code has no separate failure event -- a failed tool arrives on PostToolUse there,
+  // and only Copilot splits it out. This entry exists because the map is exhaustive over
+  // HookEventName, and it is a spelling for the response envelope rather than a claim that
+  // Claude Code will ever send this event. Nothing iterates this map to build install config,
+  // so naming an event Claude Code does not have cannot register one.
+  post_tool_use_failure: 'PostToolUseFailure',
 }
 
 /**

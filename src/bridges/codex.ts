@@ -57,6 +57,7 @@ const HOOK_EVENT_NAME_MAP = {
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
   session_start: 'SessionStart',
+  post_tool_use_failure: 'PostToolUseFailure',
 }
 
 function stripTg(value) {

@@ -41,6 +41,7 @@ const VALID_HOOK_EVENTS = new Set([
   'user_prompt_submit',
   'subagent_stop',
   'session_start',
+  'post_tool_use_failure',
 ])`
 
 /** `tryInProcess()`: the in-process `dist/token-goat-hook.mjs` fast path. */

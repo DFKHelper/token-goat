@@ -175,20 +175,20 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 7/9 score for claudecode and copilot_cli, 6/9 for kimi, 5/9 for codex/grok/qwen, 3/9 for opencode/gemini/openclaw/pi', () => {
+  it('shows an 8/10 score for copilot_cli, 7/10 for claudecode, 6/10 for kimi, 5/10 for codex/grok/qwen, 3/10 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    // claudecode draws level with copilot_cli here: copilot_cli wires stop via its agentStop
-    // mapping, which claudecode's settings.json wiring does not, and claudecode wires
-    // post_compact, which no other harness has a confirmed equivalent event for.
-    for (const harness of ['claudecode', 'copilot_cli']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s7\\/9`))
-    }
-    expect(text).toMatch(/kimi\s+.*\s6\/9/)
+    // copilot_cli pulls ahead of claudecode on post_tool_use_failure, which is its own event there
+    // and folded into post_tool_use everywhere else. It already drew level by wiring stop via its
+    // agentStop mapping, which claudecode's settings.json wiring does not; claudecode's one
+    // remaining edge is post_compact, which no other harness has a confirmed equivalent event for.
+    expect(text).toMatch(/copilot_cli\s+.*\s8\/10/)
+    expect(text).toMatch(/claudecode\s+.*\s7\/10/)
+    expect(text).toMatch(/kimi\s+.*\s6\/10/)
     for (const harness of ['codex', 'grok', 'qwen']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/9`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/10`))
     }
     for (const harness of ['opencode', 'gemini', 'openclaw', 'pi']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/9`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/10`))
     }
   })
 })

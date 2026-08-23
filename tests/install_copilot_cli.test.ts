@@ -66,7 +66,7 @@ afterEach(() => {
 })
 
 describe('installCopilotCli (user scope)', () => {
-  it('writes the shim script and a hooks config registering all seven implemented events on a fresh install', () => {
+  it('writes the shim script and a hooks config registering all eight implemented events on a fresh install', () => {
     const result = installCopilotCli()
     expect(result.alreadyInstalled).toBe(false)
     expect(result.configPath).toBe(copilotCliConfigPath())
@@ -91,6 +91,7 @@ describe('installCopilotCli (user scope)', () => {
         'agentStop',
         'subagentStop',
         'userPromptSubmitted',
+        'postToolUseFailure',
       ].sort(),
     )
     for (const event of [
@@ -101,6 +102,7 @@ describe('installCopilotCli (user scope)', () => {
       'agentStop',
       'subagentStop',
       'userPromptSubmitted',
+      'postToolUseFailure',
     ]) {
       expect(config.hooks[event]).toBeDefined()
       expect(config.hooks[event]?.[0]?.type).toBe('command')
@@ -165,6 +167,7 @@ describe('installCopilotCli (user scope)', () => {
       'agentStop',
       'subagentStop',
       'userPromptSubmitted',
+      'postToolUseFailure',
     ]) {
       const timeoutSec = config.hooks[event]?.[0]?.timeoutSec
       // Copilot's own documented default is 30s; this must be strictly more generous, not
@@ -189,6 +192,7 @@ describe('installCopilotCli (user scope)', () => {
       'agentStop',
       'subagentStop',
       'userPromptSubmitted',
+      'postToolUseFailure',
     ]) {
       expect(config.hooks[event]).toHaveLength(1)
     }
@@ -581,8 +585,9 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const mapMatch = /COPILOT_TO_TG_EVENT = \{([\s\S]*?)\}/.exec(COPILOT_CLI_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const mapped = [...(mapMatch?.[1] ?? '').matchAll(/:\s*'([^']+)'/g)].map((m) => m[1])
-    // 7 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted.
-    expect(mapped.length).toBe(7)
+    // 8 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop,
+    // userPromptSubmitted, postToolUseFailure.
+    expect(mapped.length).toBe(8)
     for (const eventName of mapped) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
