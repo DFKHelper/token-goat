@@ -160,7 +160,7 @@ describe('classifyBashHint', () => {
       'correlator, making isActedOn credit ANY later bash-output --file call regardless of which file it targeted)',
     () => {
       const result = classifyBashHint(
-        '`.output` files are JSONL agent transcripts. Use `token-goat bash-output --file "C:/Projects/tasks/abc.output" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.',
+        'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "C:/Projects/tasks/abc.output" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.',
       )
       expect(result.category).toBe('bash_recall')
       expect(result.correlator).toBe('C:/Projects/tasks/abc.output')

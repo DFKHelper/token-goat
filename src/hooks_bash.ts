@@ -21,7 +21,7 @@ import { loadConfig } from './config.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
-import { statSync, existsSync, readFileSync } from 'node:fs'
+import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
 import { isUnderSystemTemp } from './project.js'
 import { runGit } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -821,17 +821,17 @@ function pythonOpenPathsAreAllLiteral(text: string): boolean {
 }
 
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
-function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean; isTranscript: boolean } | null {
+function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean; isOutputFile: boolean } | null {
   if (!/^python3?\b/.test(cmd)) return null
   // Return null when the command shows write intent — these are edits, not reads
   if (pythonOpenWritesAFile(cmd) || pythonWritesThroughFileObject(cmd)) return null
 
-  // .output files are subagent/task JSONL transcripts, not source — route to the transcript-recall command rather than a symbol read
+  // .output files are task artifacts, not source, so neither a symbol read nor a section read fits. Which recall command fits is decided by the caller, which can look at the bytes; the extension alone does not say whether this is an agent transcript or a background command's stdout.
   const outputOpen = /open\s*\(\s*r?['"]([^'"]+\.output)['"]/i.exec(cmd)
   if (outputOpen?.[1]) {
     const filePath = outputOpen[1]
     if (isOrchestratorStateFile(filePath)) return null
-    return { filePath, isDoc: false, isTranscript: true }
+    return { filePath, isDoc: false, isOutputFile: true }
   }
 
   const OPEN_EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|ps1|psm1)/i
@@ -848,7 +848,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
       const filePath = heredocOpen[1]
       if (isOrchestratorStateFile(filePath)) return null
       const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-      return { filePath, isDoc, isTranscript: false }
+      return { filePath, isDoc, isOutputFile: false }
     }
     // Indirect: open(var, ...) where a string literal with known ext appears in the body
     if (/open\s*\(/.test(body) && !pythonOpenPathsAreAllLiteral(body)) {
@@ -858,7 +858,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
         if (isOrchestratorStateFile(filePath)) return null
         if (OPEN_EXT.test(filePath)) {
           const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-          return { filePath, isDoc, isTranscript: false }
+          return { filePath, isDoc, isOutputFile: false }
         }
       }
     }
@@ -872,7 +872,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
     if (!filePath) return null
     if (isOrchestratorStateFile(filePath)) return null
     const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-    return { filePath, isDoc, isTranscript: false }
+    return { filePath, isDoc, isOutputFile: false }
   }
   // Indirect: open(var, ...) where a string literal with a known extension appears elsewhere in the cmd
   if (/open\s*\(/.test(cmd) && !pythonOpenPathsAreAllLiteral(cmd)) {
@@ -883,7 +883,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
         if (isOrchestratorStateFile(filePath)) return null
         if (OPEN_EXT.test(filePath)) {
           const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-          return { filePath, isDoc, isTranscript: false }
+          return { filePath, isDoc, isOutputFile: false }
         }
       }
     }
@@ -1141,6 +1141,41 @@ function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: b
  * that actually works (`bash-output <id>` misses, since the task id is not a
  * bash-output cache key).
  */
+/**
+ * Whether a `…/tasks/<id>.output` file holds an agent's JSONL transcript rather than a background
+ * command's stdout.
+ *
+ * Both kinds land in the same directory under the same extension, so the extension answers nothing:
+ * an agent task's file is JSONL and worth several hundred kilobytes, while a background bash task's
+ * file is whatever the command printed and is meant to be read. The first non-whitespace byte tells
+ * them apart, and only that byte is read -- the transcripts this guards against are large enough
+ * that pulling the whole file in to look at its first character is the cost the guard exists to
+ * avoid. Anything unreadable answers false, so a missing file leaves the command alone.
+ *
+ * `normalizePath` first: Git Bash yields `/c/Users/...` and WSL `/mnt/c/Users/...`, neither of which
+ * Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently turns the
+ * guard off for those shells.
+ */
+function taskOutputIsJsonlTranscript(outPath: string): boolean {
+  let fd: number | null = null
+  try {
+    fd = openSync(normalizePath(outPath), 'r')
+    const buf = Buffer.alloc(64)
+    const read = readSync(fd, buf, 0, buf.length, 0)
+    return buf.subarray(0, read).toString('utf-8').trim().startsWith('{')
+  } catch {
+    return false
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* already closed or never opened cleanly */
+      }
+    }
+  }
+}
+
 function extractTasksOutput(cmd: string): { id: string; path: string; n?: number } | null {
   const taskOutputRe = /[/\\]tasks[/\\]([a-z0-9]+)\.output$/
 
@@ -2002,22 +2037,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (taskOutput !== null) {
     const { id, path: outPath, n } = taskOutput
     recordStat('session_hint', 0, 0)
-    // Only deny if the file actually starts with `{` (genuine JSONL transcript); plain-text logs pass through
-    // Normalize first: Git Bash yields /c/Users/... and WSL yields /mnt/c/Users/..., neither of which Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently disables the deny for those shells
-    try {
-      const firstByte = readFileSync(normalizePath(outPath), { encoding: 'utf8', flag: 'r' }).slice(0, 1)
-      const trimmed = firstByte.trim()
-      if (trimmed !== '{') {
-        // Not a JSONL file; fall through to normal handling
-      } else {
-        // Genuine JSONL transcript; deny with the transcript-specific hint
-        const tail = n ?? 50
-        return denyOutput(
-          'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
-        )
-      }
-    } catch {
-      // File missing or unreadable; fall through to normal handling
+    // Only deny a genuine JSONL transcript; a background command's stdout is meant to be read and falls through to normal handling.
+    if (taskOutputIsJsonlTranscript(outPath)) {
+      const tail = n ?? 50
+      return denyOutput(
+        'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
+      )
     }
   }
 
@@ -2176,12 +2201,21 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
-    const { filePath, isDoc, isTranscript } = pyRead
+    const { filePath, isDoc, isOutputFile } = pyRead
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    if (isTranscript) {
-      const tHint = '`.output` files are JSONL agent transcripts. Use `token-goat bash-output --file "' + hintPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
-      return cdStripped ? contextOutput(tHint) : denyOutput(tHint)
+    if (isOutputFile) {
+      // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript
+      // is JSONL worth hundreds of kilobytes and reading it whole is the mistake worth blocking; a
+      // background command's stdout is plain text the harness expects to be read, so that only gets
+      // advice about narrowing it, never a refusal.
+      if (taskOutputIsJsonlTranscript(filePath)) {
+        const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "' + hintPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
+        return cdStripped ? contextOutput(tHint) : denyOutput(tHint)
+      }
+      return contextOutput(
+        'This `.output` file is a background command\'s stdout. Use `token-goat bash-output --file "' + hintPath + '"` to narrow it with `--grep PATTERN`, `--tail N` or `--head N`, instead of reading the whole file.',
+      )
     }
     const hint = isDoc
       ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
