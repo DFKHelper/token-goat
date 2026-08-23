@@ -15,6 +15,7 @@ import * as path from 'node:path'
 import { resolveProjectRoot } from './project.js'
 import { buildWasteReport, findLatestTranscript, type WasteReport } from './waste.js'
 import { buildCopilotWasteReport, findLatestCopilotSession, type CopilotWasteReport } from './copilot_waste.js'
+import { copilotCliMcpToolsDir } from './bridges/copilot_cli_install.js'
 import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
@@ -70,8 +71,55 @@ function printCopilotReport(report: CopilotWasteReport): void {
       w('  assembles both natively, with nothing between assembly and send. The levers are all\n')
       w('  config: fewer MCP servers and custom tools, and --excluded-tools / --available-tools /\n')
       w('  --agent / --no-ask-user / --no-custom-instructions, whose effect on this number is\n')
-      w('  entailed by how they are wired but has not been measured here.\n')
+      w('  entailed by how they are wired but has not been measured here. Copilot also ships\n')
+      w('  built-in MCP servers, which --disable-builtin-mcps turns off wholesale. Note that\n')
+      w('  --enable-all-github-mcp-tools moves this number the wrong way: its own help text calls\n')
+      w('  the default a subset, so enabling everything adds definitions rather than removing\n')
+      w('  them. --add-github-mcp-tool and --add-github-mcp-toolset replace that subset too.\n')
     }
+  }
+
+  // The aggregate above is the largest number in this report and the least
+  // actionable one: it says the tool definitions are expensive without saying
+  // which tools. Copilot caches the resolved tool list per MCP server, so that
+  // question is answerable, but only as an estimate and only for part of the
+  // total -- Copilot's built-in tools are never cached there. Both limits are
+  // stated in the output rather than left for the reader to work out, because
+  // a per-server number printed under an exact one reads as a split of it.
+  w('\n## Tool definitions by MCP server (estimated)\n')
+  const mcp = report.mcpTools
+  if (!mcp.cacheFound) {
+    w(`  No MCP tool cache at ${copilotCliMcpToolsDir()}.\n`)
+    w('  That is not the same as having no MCP servers: it means nothing has been cached\n')
+    w('  there yet, which is also what a Copilot that has never connected one looks like.\n')
+  } else if (mcp.servers.length === 0) {
+    w('  Cache is present but holds no servers, so none of the tool-definition budget\n')
+    w(`  above is MCP: it is all Copilot's own tools, which the flags above can narrow\n`)
+    w('  but dropping a server cannot.\n')
+  } else {
+    for (const server of mcp.servers) {
+      const tokens = server.estimatedTokens.toLocaleString()
+      w(`  ${server.serverName}: ${countNoun(server.toolCount, 'tool')}, `)
+      w(`${formatBytes(server.definitionBytes)}, ~${tokens} tok\n`)
+    }
+    const mcpTokens = mcp.servers.reduce((sum, server) => sum + server.estimatedTokens, 0)
+    w(`  ~${mcpTokens.toLocaleString()} tok estimated across `)
+    w(`${countNoun(mcp.servers.length, 'server')}, re-sent every request.\n`)
+    if (report.tokens !== null && report.tokens.toolDefinitionsTokens > 0) {
+      const share = ((mcpTokens / report.tokens.toolDefinitionsTokens) * 100).toFixed(1)
+      w(`  Copilot counted ${report.tokens.toolDefinitionsTokens.toLocaleString()} tok of tool `)
+      w(`definitions in total, so this is roughly ${share}% of it.\n`)
+      w('  The two are not a split of each other and come from different places: Copilot\n')
+      w('  counted its own with its own tokeniser, while these are estimated from the bytes\n')
+      w(`  of the cached definitions. The remainder is mostly Copilot's own non-MCP tools,\n`)
+      w('  which are not cached here: dropping a server does not touch them, though the\n')
+      w('  tool-filter flags above still can.\n')
+    }
+    w('  Dropping a server saves its line above on every request for the rest of the session.\n')
+  }
+  if (mcp.unreadable > 0) {
+    const verb = mcp.unreadable === 1 ? 'is' : 'are'
+    w(`  ${countNoun(mcp.unreadable, 'cache file')} could not be read and ${verb} not counted above.\n`)
   }
 
   w('\n## Injected blocks in the assembled prompt\n')

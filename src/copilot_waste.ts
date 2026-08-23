@@ -29,6 +29,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { copilotCliUserRoot } from './bridges/copilot_cli_install.js'
+import { readCopilotMcpTools, type CopilotMcpToolsReport } from './copilot_mcp_tools.js'
 
 /** Event types verified to carry no model-visible content: they exist only in the on-disk log. */
 const HOOK_RECORD_TYPES = new Set(['hook.start', 'hook.end'])
@@ -70,6 +71,14 @@ export interface CopilotWasteReport {
   /** Bytes of hook.start/hook.end records: on disk, never in context. */
   hookRecordBytes: number
   totalEventBytes: number
+  /**
+   * Per-MCP-server tool-definition weight, read from Copilot's own cache
+   * rather than from this session log. The log carries no tool events at all
+   * -- verified across every session on this machine, none of which contains
+   * a single one -- so the log cannot say which server the tool-definition
+   * budget went to. The cache can.
+   */
+  mcpTools: CopilotMcpToolsReport
 }
 
 /**
@@ -142,6 +151,11 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
     compactions: [],
     hookRecordBytes: 0,
     totalEventBytes: Buffer.byteLength(raw, 'utf-8'),
+    // Read through the real resolution chain rather than passed in. Copilot's
+    // own COPILOT_CACHE_HOME override is what tests point at a fixture, so the
+    // shipping path is the tested path and there is no seam here that only a
+    // test ever supplies.
+    mcpTools: readCopilotMcpTools(),
   }
 
   const classes = new Map<string, CopilotBlockClass>()
