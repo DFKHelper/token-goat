@@ -57,10 +57,20 @@ function printCopilotReport(report: CopilotWasteReport): void {
       // re-sent-every-request claim is true of the numerator; the percentage is true of this
       // moment only, and saying otherwise would be the same overstatement this report exists
       // to avoid.
+      // An earlier version of these lines said no hook can reach this and that fewer MCP servers
+      // is the only lever. The first half stands; the second was wrong. An adversarial read of the
+      // 1.0.80 bundle found --excluded-tools/--available-tools, --agent, --no-ask-user,
+      // disabledSkills and --no-custom-instructions all feeding the tool-filter state that
+      // sessionPrepareToolsForModelRequest builds from, and Copilot itself passes
+      // excludedTools:["*"] to make a cheap call. That those flags shrink the counted definitions
+      // rather than merely gating invocation is entailed by the wiring and the help text, not
+      // measured -- so it is offered as a place to look, not as a promised saving.
       w(`  ${fixed.toLocaleString()} tok of system prompt and tool definitions ships with every\n`)
       w(`  request; at shutdown that was ${pct}% of the context. No hook can reach it: Copilot\n`)
-      w('  assembles both natively, with nothing between assembly and send. Fewer MCP servers and\n')
-      w('  custom tools is the only lever on this number.\n')
+      w('  assembles both natively, with nothing between assembly and send. The levers are all\n')
+      w('  config: fewer MCP servers and custom tools, and --excluded-tools / --available-tools /\n')
+      w('  --agent / --no-ask-user / --no-custom-instructions, whose effect on this number is\n')
+      w('  entailed by how they are wired but has not been measured here.\n')
     }
   }
 
