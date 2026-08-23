@@ -307,6 +307,16 @@ async function main() {
   // post-read/post-bash stats stay empty no matter how many tool calls happen. Extract the
   // LLM-facing text directly rather than forwarding the raw object, since textResultForLlm
   // isn't one of those recognized object keys.
+  // postToolUseFailure only: Copilot's PostToolUseFailureHookInput (copilot-sdk/types.d.ts:1042)
+  // carries {toolName, toolArgs, error} and no toolResult at all -- the failure text lives in
+  // \`error\`, a plain string. Without forwarding it, hooks_tool_failure.ts's extractFailureText
+  // finds nothing to key on and the repeat-failure brake returns pass on every single call: wired,
+  // green, and doing nothing. Found by driving the installed shim rather than by a test, because
+  // the handler's own tests hand it a raw payload that already has the field.
+  if (typeof (payload && payload.error) === 'string' && payload.error !== '') {
+    canonical.error = payload.error
+  }
+
   const rawResult = payload && payload.toolResult
   if (rawResult && typeof rawResult === 'object') {
     const tr = rawResult
