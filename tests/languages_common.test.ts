@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineIndex, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
+import { buildLineIndex, findMatchingBraceEndLine, stripBlockCommentSpan, stripCstyleComments, stripNestedBlockCommentSpan, stripSqlLineComments } from '../src/languages/common.js'
 import { countContentLines } from '../src/util.js'
 import { extractR } from '../src/languages/r.js'
 import { extractLwcJavaScript } from '../src/languages/salesforce_frontend.js'
@@ -99,6 +99,37 @@ describe('stripBlockCommentSpan', () => {
     expect(result.code).not.toContain('publicstatic')
     // '/*x*/' (5 chars) is replaced by 5 spaces, preserving column offsets like stripCstyleComments does.
     expect(result.code).toBe('public     static void Foo()')
+  })
+
+  // Gap found by mutation while extracting nextBlockCommentOpen: deleting the "a /* at or after a
+  // // is not an opener" clause from the scan left the entire suite green. Without it, a `/*` in a
+  // trailing line comment opens a span that never closes, so every following line of the file is
+  // blanked and its declarations vanish from the index -- the same swallow the string-literal
+  // clause beside it guards against, which was already covered.
+  it('does not treat a /* inside a // line comment as a block-comment opener', () => {
+    const line = 'int x = 1; // see /* the note above'
+    const result = stripBlockCommentSpan(line, false)
+    expect(result.inComment).toBe(false)
+    expect(result.code).toBe(line)
+  })
+})
+
+describe('stripNestedBlockCommentSpan', () => {
+  // Same opener scan as stripBlockCommentSpan (they share nextBlockCommentOpen), asserted here
+  // too: this variant is otherwise only reached through the Swift adapter, so a break in the
+  // shared scan would surface as a confusing symbol-extraction failure rather than as this.
+  it('does not treat a /* inside a // line comment as a block-comment opener', () => {
+    const line = 'let x = 1 // see /* the note above'
+    const result = stripNestedBlockCommentSpan(line, 0)
+    expect(result.depth).toBe(0)
+    expect(result.code).toBe(line)
+  })
+
+  it('does not treat a /* inside a string literal as a block-comment opener', () => {
+    const line = `let pattern = "src/*.swift"`
+    const result = stripNestedBlockCommentSpan(line, 0)
+    expect(result.depth).toBe(0)
+    expect(result.code).toBe(line)
   })
 })
 
