@@ -51,6 +51,13 @@ export interface CopilotMcpServerTools {
   estimatedTokens: number
   /** ISO timestamp Copilot last refreshed this server's cache entry. */
   updatedAt: string
+  /**
+   * The tool names this server contributes, exactly as cached. Needed by
+   * {@link copilotMcpToolNameMap}, which reconstructs the `<server>-<tool>`
+   * name Copilot puts on the wire; the byte/token measurement above does not
+   * use it.
+   */
+  toolNames: string[]
 }
 
 export interface CopilotMcpToolsReport {
@@ -134,6 +141,11 @@ export function readCopilotMcpTools(dir: string = copilotCliMcpToolsDir()): Copi
       definitionBytes,
       estimatedTokens: estimateTokensFromLength(definitionBytes),
       updatedAt,
+      // `tools` is an unchecked cast off a JSON array, so every element is
+      // treated as untrusted here rather than trusted to match CachedTool.
+      toolNames: (tools as unknown[])
+        .map((t) => (t as { name?: unknown } | null)?.name)
+        .filter((n): n is string => typeof n === 'string' && n !== ''),
     }
     const existing = newest.get(serverName)
     // Ties and unparseable timestamps keep the first entry seen rather than

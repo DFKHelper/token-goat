@@ -5,6 +5,7 @@
  * Ports the payload-normalization slice of Python's hooks_cli.py. Response
  * denormalization and hook dispatch now live in relay.ts / hook_registry.ts.
  */
+import { canonicalizeCopilotMcpToolName } from './copilot_mcp_names.js'
 
 // All three levels are wired to console.error (stderr), never console.log/console.debug
 // (stdout): `token-goat hook <event>` treats its own stdout as the wire protocol Claude
@@ -26,7 +27,7 @@ const _LOG = {
  * Harness identifier: the Claude Code harness variant token-goat is running under.
  * Determines payload/response shape translation.
  */
-export type Harness = 'claude' | 'codex' | 'gemini' | 'grok' | 'kimi'
+export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi'
 
 /**
  * Hook payload: unstructured dict from harness stdin.
@@ -290,6 +291,20 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     if (mapped) {
       result['tool_name'] = mapped
     }
+    result['_tg_harness'] = harness
+    return result
+  }
+
+  // Copilot CLI's shim (src/bridges/copilot_cli.ts) already remaps the built-ins it knows
+  // (bash/powershell->Bash, view->Read, ...) and forwards everything else verbatim, so what
+  // arrives here for an MCP call is Copilot's own `<server>-<tool>` spelling. Canonicalise it
+  // to `mcp__<server>__<tool>` -- by exact match against Copilot's own tool cache only, never
+  // by guessing from the name's shape -- so the MCP dedup/compression and repeat-screenshot
+  // handlers, all of which gate on that prefix, stop being dead code on Copilot. A name with
+  // no cache entry (including every built-in) passes through untouched.
+  if (harness === 'copilot_cli') {
+    const result = { ...obj }
+    result['tool_name'] = canonicalizeCopilotMcpToolName(toolName)
     result['_tg_harness'] = harness
     return result
   }
