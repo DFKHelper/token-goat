@@ -2943,24 +2943,13 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
 
 // ---- outline ----------------------------------------------------------------
 
-export interface OutlineOptions {
-  file: string
-  json?: boolean
-  minLines?: number
-  /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
-  grep?: string
-  /** Internal. Set only by the multi-file path, where several files merge into one payload and each row needs to name its own file. Single-file callers already know the file they asked for, and every extra field per row costs rows under the byte cap. */
-  includeFilePath?: boolean
-  forceRefresh?: boolean
-  stats?: boolean
-  /**
-   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
-   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
-   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
-   * to the wrong absolute index key and silently match nothing.
-   */
-  projectRoot?: string
-}
+/**
+ * `outline` takes exactly the options `skeleton` does -- same flags on the CLI, same shape through
+ * `prepareSymbolListing`. Aliased rather than restated so a field added to one is never silently
+ * missing from the other: the two were byte-identical copies, and the pair of `cli.ts` `.action`
+ * blocks that build them is likewise line-for-line the same.
+ */
+export type OutlineOptions = SkeletonOptions
 
 /** Handle ``token-goat outline file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
