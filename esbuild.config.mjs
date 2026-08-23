@@ -16,7 +16,6 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
 // See the build's own external comment below for why these must stay external rather than bundled.
 const EXTERNAL_NATIVE_DEPS = [
-  'better-sqlite3',
   'sqlite-vec',
   'tree-sitter',
   'tree-sitter-*',

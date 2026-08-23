@@ -53,7 +53,11 @@ function requiredOptionalPackages(): string[] {
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const pkg = m[1]
-    if (pkg !== undefined && !pkg.startsWith('tree-sitter')) out.add(pkg)
+    // A `node:` specifier is a builtin, not something npm can install, so it is neither missing nor
+    // declarable. sqlite_driver.ts requires `node:sqlite` through this same helper (it cannot use a
+    // static import without hoisting the load above its warning filter), which is what put a builtin
+    // in front of this scan for the first time.
+    if (pkg !== undefined && !pkg.startsWith('tree-sitter') && !pkg.startsWith('node:')) out.add(pkg)
   }
   return [...out]
 }

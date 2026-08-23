@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import Database from 'better-sqlite3'
+import Database from '../src/sqlite_driver.js'
 
 // Stub the DB-layer imports so tests don't need a real SQLite DB
 vi.mock('../src/index_reader.js', () => ({

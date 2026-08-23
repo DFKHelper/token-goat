@@ -13,7 +13,7 @@
  * existing connection-pool/pragma/migration machinery. `cache_recall_fts` is a
  * content-linked FTS5 virtual table over `cache_recall`, defined in db.ts's
  * SCHEMA_SQL/FTS_SQL exactly like `symbols_fts`. FTS5 is confirmed available in
- * this project's better-sqlite3 build (symbols_fts already relies on it), but
+ * the SQLite build Node bundles (symbols_fts already relies on it), but
  * db.ts's schema setup wraps FTS_SQL in a try/catch as defense in depth for a
  * SQLite build that lacks it -- {@link searchRecall} mirrors that by falling
  * back to a plain `LIKE` scan over `cache_recall` (no ranking, most-recent-first)
@@ -157,7 +157,7 @@ function ftsSearch(query: string, type: RecallCacheType | undefined, limit: numb
   const matchExpr = toFtsMatchExpr(query)
   if (matchExpr === null) return []
   const db = getDb(globalDbPath())
-  // No alias on cache_recall_fts: aliasing an FTS5 virtual table on the left side of `MATCH` (e.g. `... FROM cache_recall_fts f WHERE f MATCH ?`) throws `no such column: f` in this project's SQLite build (confirmed against better-sqlite3's bundled 3.49.2) -- a MATCH clause against an FTS5 table must reference the table by its real name. Only the content table (cache_recall) is aliased.
+  // No alias on cache_recall_fts: aliasing an FTS5 virtual table on the left side of `MATCH` (e.g. `... FROM cache_recall_fts f WHERE f MATCH ?`) throws `no such column: f` in the SQLite build Node bundles (re-confirmed after the move off better-sqlite3) -- a MATCH clause against an FTS5 table must reference the table by its real name. Only the content table (cache_recall) is aliased.
   const rows = (
     type !== undefined
       ? db

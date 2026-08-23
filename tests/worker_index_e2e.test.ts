@@ -15,7 +15,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import Database from 'better-sqlite3'
+import Database from '../src/sqlite_driver.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { cmdIndex } from '../src/cli.js'

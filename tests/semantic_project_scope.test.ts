@@ -36,6 +36,7 @@ import {
   QUERY_INSTRUCTION_PREFIX,
 } from '../src/embeddings.js'
 import { clearModuleCaches } from '../src/reset.js'
+import Database from '../src/sqlite_driver.js'
 
 function vec0Working(): boolean {
   const req = createRequire(import.meta.url)
@@ -46,10 +47,6 @@ function vec0Working(): boolean {
   }
   try {
     const sqliteVec = req('sqlite-vec') as { load: (db: unknown) => void }
-    const Database = req('better-sqlite3') as new (p: string) => {
-      prepare: (s: string) => { get: () => unknown }
-      close: () => void
-    }
     const probe = new Database(':memory:')
     sqliteVec.load(probe)
     probe.prepare('SELECT vec_version()').get()

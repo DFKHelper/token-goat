@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { isAvailable } from '../src/embeddings.js'
 
 import { BUNDLE } from './helpers/bundle.js'
+import Database from '../src/sqlite_driver.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 
@@ -40,10 +41,6 @@ function classifyVec0(): Vec0State {
   }
   try {
     const sqliteVec = req('sqlite-vec') as { load: (db: unknown) => void }
-    const Database = req('better-sqlite3') as new (p: string) => {
-      prepare: (s: string) => { get: () => unknown }
-      close: () => void
-    }
     const probe = new Database(':memory:')
     sqliteVec.load(probe)
     probe.prepare('SELECT vec_version()').get()

@@ -39,6 +39,7 @@ import { indexFileEmbeddings } from '../../src/parser.js'
 import { runRead, runSymbol } from '../../src/read_commands.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import { readSection } from '../../src/section_reader.js'
+import Database from '../../src/sqlite_driver.js'
 
 /** Fake secrets, built by concatenation so a secrets scanner does not read them as real. */
 const DB_SECRET = 'postgres://admin:' + 'hunter2pw' + '@db.internal:5432/app'
@@ -364,10 +365,6 @@ function vec0Working(): boolean {
   const req = createRequire(import.meta.url)
   try {
     const sqliteVec = req('sqlite-vec') as { load: (db: unknown) => void }
-    const Database = req('better-sqlite3') as new (p: string) => {
-      prepare: (s: string) => { get: () => unknown }
-      close: () => void
-    }
     const probe = new Database(':memory:')
     sqliteVec.load(probe)
     probe.prepare('SELECT vec_version()').get()

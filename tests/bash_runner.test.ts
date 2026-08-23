@@ -62,7 +62,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  // Best-effort: on Windows the still-open better-sqlite3 handle on the temp global.db keeps the dir locked (EPERM); the OS reclaims it later.
+  // Best-effort: on Windows the still-open SQLite handle on the temp global.db keeps the dir locked (EPERM); the OS reclaims it later.
   for (const dir of [scriptDir, DATA_DIR_TMP]) {
     try {
       fs.rmSync(dir, { recursive: true, force: true })

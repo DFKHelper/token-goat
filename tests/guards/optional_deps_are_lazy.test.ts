@@ -75,12 +75,16 @@ describe('optional dependencies stay off the startup path', () => {
     expect(offenders, 'Node resolves these before any command runs; --omit=optional cannot start').toEqual([])
   })
 
-  // The counterpart claim: a required dependency is allowed to be static, and one of them is, so
-  // the assertion above is passing because optional deps are lazy rather than because the bundle
-  // happens to have no bare imports at all.
-  it('still allows a required dependency to be imported statically', () => {
-    const all = distFiles().flatMap((f) => topLevelImportSpecifiers(fs.readFileSync(path.join(distDir, f), 'utf8')))
+  // The counterpart claim: the check above passes because optional deps are lazy, not because the
+  // matcher is incapable of reporting one. This used to be shown by pointing at better-sqlite3,
+  // which was a required dependency imported statically -- true until the move to node:sqlite left
+  // `jsonc-parser` as the only runtime dependency, and that one is reached through createRequire,
+  // so no npm package is statically imported anywhere in the output today. The mechanism is proven
+  // directly instead: the test above establishes that the matcher matches real dist lines, and this
+  // one establishes that an optional package sitting in one is what it reports.
+  it('reports an optional dependency when a chunk does import it statically', () => {
+    const synthetic = 'import { unzipSync } from "fflate"\nimport * as own from "./chunk-ABC.mjs"\nconst late = await import("sharp")\n'
 
-    expect(all.some((i) => i.specifier === 'better-sqlite3')).toBe(true)
+    expect(topLevelImportSpecifiers(synthetic).map((i) => i.specifier)).toEqual(['fflate'])
   })
 })

@@ -287,7 +287,7 @@ For recurring scheduler loops, the 25th, 100th, and 250th observed delivery in a
 
 > **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will run the commands, check codecs, and confirm everything is working.
 
-**Requirements:** Node.js 22 or later (all platforms)
+**Requirements:** Node.js 22.16 or later (all platforms)
 
 ```
 npm install -g token-goat

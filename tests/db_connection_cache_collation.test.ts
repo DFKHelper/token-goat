@@ -1,9 +1,9 @@
 /**
- * getDb()/closeDb() cache the open better-sqlite3 handle by resolved db path so two
+ * getDb()/closeDb() cache the open SQLite handle by resolved db path so two
  * callers naming the same file share one connection (see the `_connections` doc comment
  * in db.ts). On a case-insensitive filesystem (Windows/macOS default), two callers naming
  * the same physical file with different casing must still share that one handle — two
- * separate better-sqlite3 Database objects open on the same file risks WAL/locking issues
+ * separate Database objects open on the same file risks WAL/locking issues
  * and defeats the whole point of the cache.
  *
  * Uses the TOKEN_GOAT_CASE_INSENSITIVE_FS env override (the same real seam isCaseInsensitiveFs()

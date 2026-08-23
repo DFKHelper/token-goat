@@ -1,6 +1,6 @@
 // Regression guard: a non-numeric --limit/--top CLI arg (e.g. "abc") parses to NaN via
 // Number.parseInt, and several commands bind that limit straight into a SQL `LIMIT ?`
-// parameter. better-sqlite3 rejects a NaN bind with an opaque "datatype mismatch" error
+// parameter. SQLite rejects a NaN bind with an opaque "datatype mismatch" error
 // instead of a clean, actionable CLI validation error. Drive the real run() entry so this
 // exercises the actual command wiring, not just the parsing helper in isolation.
 //

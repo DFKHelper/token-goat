@@ -2,7 +2,7 @@
  * Regression test for the concurrent cold-start indexing race.
  *
  * `writeParseResult` wrapped its deletes and inserts in `db.transaction(...)` and called it plainly.
- * better-sqlite3 issues a plain call as a deferred `BEGIN`: the transaction takes a read snapshot at
+ * The driver issues a plain call as a deferred `BEGIN`: the transaction takes a read snapshot at
  * its first statement and only asks for the write lock when it reaches a writing one. SQLite refuses
  * that upgrade with `SQLITE_BUSY` immediately and never consults the busy handler, because retrying
  * cannot help -- the snapshot the transaction is holding is already stale. So `busy_timeout` did
@@ -13,7 +13,7 @@
  *
  * Spawning real OS processes is the whole point. The failure needs one process to commit between
  * another's snapshot and its first write, which nothing in a single-threaded test can arrange:
- * better-sqlite3 is synchronous, so two connections in one process never interleave inside a
+ * the driver is synchronous, so two connections in one process never interleave inside a
  * transaction. An in-process test of two connections contending for the lock does not reproduce it
  * either -- plain lock contention consults the busy handler and waits, exactly as it should. Only
  * the stale-snapshot upgrade fails instantly, and only genuine concurrency produces one.

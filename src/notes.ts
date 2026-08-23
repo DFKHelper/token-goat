@@ -48,7 +48,7 @@ export interface NoteRow {
   readonly updatedAt: number
 }
 
-/** Raw `notes` row as returned by better-sqlite3 (snake_case columns). */
+/** Raw `notes` row as returned by SQLite (snake_case columns). */
 interface NoteDbRow {
   readonly id: number
   readonly file_path: string

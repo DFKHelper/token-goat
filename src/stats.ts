@@ -17,7 +17,7 @@
  */
 
 import * as path from 'node:path'
-import type Database from 'better-sqlite3'
+import type { SqliteDatabase } from './sqlite_driver.js'
 import { getDb } from './db.js'
 import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
@@ -311,7 +311,7 @@ CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
 const _globalSchemaApplied = new Set<string>()
 registerReset(() => _globalSchemaApplied.clear())
 
-function getGlobalDb(homeDir?: string): Database.Database {
+function getGlobalDb(homeDir?: string): SqliteDatabase {
   const basePath = homeDir ? dataDirForHome(homeDir) : dataDir()
   const dbPath = path.join(basePath, 'global.db')
   const db = getDb(dbPath)
@@ -345,7 +345,7 @@ export function recordStat(
   kind: string,
   bytesSaved = 0,
   tokensSaved = 0,
-  _testDb?: Database.Database,
+  _testDb?: SqliteDatabase,
   detail?: string,
 ): void {
   try {
@@ -358,7 +358,7 @@ export function recordStat(
   }
 }
 
-export function summarize(windowDays: number = 30, testDb?: Database.Database, homeDir?: string): StatsSummary {
+export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, homeDir?: string): StatsSummary {
   const t0 = Date.now()
   const sinceTs =
     windowDays > 0 ? Math.floor((Date.now() - windowDays * 24 * 60 * 60 * 1000) / 1000) : null

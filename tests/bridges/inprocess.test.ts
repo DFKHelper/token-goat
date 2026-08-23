@@ -87,7 +87,7 @@ function setupPoisonedEntryWithRealHookLib(_cwd: string): { entryPath: string; m
       copyFileSync(join(distDir, chunk), join(dir, chunk))
     }
     // token-goat-hook.mjs bundles everything except its native/optional deps
-    // (better-sqlite3, sqlite-vec, tree-sitter*, see esbuild.config.mjs's `external` list),
+    // (sqlite-vec, tree-sitter*, see esbuild.config.mjs's `external` list),
     // which it resolves at runtime via ordinary Node module resolution from its own
     // directory. In the real install that directory (dist/) sits inside
     // node_modules/token-goat/, with those deps reachable as node_modules siblings a few
