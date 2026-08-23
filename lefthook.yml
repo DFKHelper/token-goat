@@ -18,7 +18,11 @@ pre-commit:
       glob: "**/*.ts"
     fast-guards:
       priority: 3
-      run: npm run test:guards
+      # Wrapped rather than run directly so a passing run prints nothing: the
+      # guards' own stdout is ~150 lines that no reporter suppresses, and on a
+      # commit made by an agent every one of those lines is paid for. The
+      # wrapper replays the full output on failure. See the script's header.
+      run: bash .lefthook-scripts/run-guards.sh
       glob: "**/*.ts"
 
 pre-push:
