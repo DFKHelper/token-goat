@@ -2,13 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_refs.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { normalizePath } from '../src/paths.js'
+import { GLOBAL_SCHEMA_SQL } from '../src/stats.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
@@ -290,6 +291,100 @@ describe('cli_doctor', () => {
       const result = checkSymbolCount(dbPath, brokenRoot)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('0 symbols extracted')
+    })
+  })
+
+  // The manifest token-goat prints ahead of a compaction reaches the summarizing model through a
+  // route Claude Code does not document, so if that route ever closes nothing throws and nothing
+  // fails -- the only symptom is summaries that stop naming real paths. postCompactHandler records
+  // how many sent paths came back out of each summary; this check is what turns that record into
+  // something a person sees. Its whole difficulty is not crying wolf, so most of what is pinned
+  // here is the cases where it must stay quiet.
+  describe('checkCompactionChannel', () => {
+    function seedDetails(dbPath: string, details: string[]): void {
+      const db = getDb(dbPath)
+      db.exec(GLOBAL_SCHEMA_SQL)
+      const stmt = db.prepare("INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, 'compact_summary', 0, 0, ?)")
+      for (const d of details) stmt.run(Date.now(), d)
+    }
+
+    it('returns ok when there is no database yet', () => {
+      const result = checkCompactionChannel(path.join(tempDir, 'global.db'))
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no database yet')
+    })
+
+    it('returns ok when no compaction has been measured', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      getDb(dbPath)
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no compaction has been measured yet')
+    })
+
+    it('reports how many paths survived when the channel is working', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, ['trigger=auto bytes=900 est_tokens=300 manifest_paths=3/4', 'trigger=auto bytes=800 est_tokens=270 manifest_paths=2/4'])
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('5/8 sampled paths survived')
+    })
+
+    it('warns only after a full window of compactions that each had paths to find and found none', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'))
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('PreCompact')
+    })
+
+    it('stays quiet when only some of the window found nothing, because one paraphrased summary is not a broken channel', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, [
+        ...Array.from({ length: 4 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'),
+        'trigger=auto bytes=700 est_tokens=240 manifest_paths=1/6',
+      ])
+      expect(checkCompactionChannel(dbPath).status).toBe('ok')
+    })
+
+    it('stays quiet below a full window even when every one of them found nothing', () => {
+      // Four dead compactions is suggestive, not conclusive: a run of short sessions can each
+      // legitimately produce a summary that names nothing. Accusing the harness on thin evidence
+      // is the failure mode that would get this check ignored.
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, Array.from({ length: 4 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'))
+      expect(checkCompactionChannel(dbPath).status).toBe('ok')
+    })
+
+    it('ignores compactions that had nothing to look for, rather than counting them as failures', () => {
+      // manifest_paths=0/0 means the session had touched no files, so the summary could not have
+      // reproduced one. Counting those as evidence would make a machine that mostly runs short
+      // sessions report a dead channel forever.
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, Array.from({ length: 8 }, () => 'trigger=auto bytes=100 est_tokens=34 manifest_paths=0/0'))
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no compaction has been measured yet')
+    })
+
+    it('reads the most recent compactions, so a channel that recovered is not condemned by old rows', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, [
+        ...Array.from({ length: 6 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'),
+        ...Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=4/6'),
+      ])
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('20/30 sampled paths survived')
+    })
+
+    it('is wired into runDoctor rather than only being callable', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
+      const row = results.find((r) => r.name === 'Compaction channel')
+      expect(row, `no Compaction channel row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
+      expect(row?.status).toBe('warn')
     })
   })
 

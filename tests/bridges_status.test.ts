@@ -75,16 +75,18 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
     }
   })
 
-  it('claudecode and codex wire the identical event set aside from session_start (regression: codex used to be missing pre_compact/user_prompt_submit/subagent_stop -- feature-queue #307 Part B fix; session_start is claudecode-only since Codex CLI has no session-start-equivalent hook)', () => {
+  it('claudecode and codex wire the identical event set aside from session_start and post_compact (regression: codex used to be missing pre_compact/user_prompt_submit/subagent_stop -- feature-queue #307 Part B fix; session_start is claudecode-only since Codex CLI has no session-start-equivalent hook, and post_compact is claudecode-only because no other harness has been shown to have a PostCompact-equivalent event)', () => {
     const claudecode = rowFor('claudecode')
     const codex = rowFor('codex')
-    const codexPlusSessionStart = new Set([...codex.implemented, 'session_start' as const])
-    expect([...codexPlusSessionStart].sort()).toEqual([...claudecode.implemented].sort())
+    const codexPlusClaudecodeOnly = new Set([...codex.implemented, 'session_start' as const, 'post_compact' as const])
+    expect([...codexPlusClaudecodeOnly].sort()).toEqual([...claudecode.implemented].sort())
     expect(codex.implemented.has('pre_compact')).toBe(true)
     expect(codex.implemented.has('user_prompt_submit')).toBe(true)
     expect(codex.implemented.has('subagent_stop')).toBe(true)
     expect(codex.implemented.has('session_start')).toBe(false)
+    expect(codex.implemented.has('post_compact')).toBe(false)
     expect(claudecode.implemented.has('session_start')).toBe(true)
+    expect(claudecode.implemented.has('post_compact')).toBe(true)
   })
 
   it("notification is implemented by zero rows, matching the codebase-wide absence of any registerHook('notification', ...) call site", () => {
@@ -173,19 +175,20 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 7/8 score for copilot_cli, 6/8 for claudecode/kimi, 5/8 for codex/grok/qwen, 3/8 for opencode/gemini/openclaw/pi', () => {
+  it('shows a 7/9 score for claudecode and copilot_cli, 6/9 for kimi, 5/9 for codex/grok/qwen, 3/9 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    // copilot_cli overtakes claudecode here: it wires session_start (like claudecode) *and*
-    // stop via its agentStop mapping, which claudecode's settings.json wiring does not.
-    expect(text).toMatch(/copilot_cli\s+.*\s7\/8/)
-    for (const harness of ['claudecode', 'kimi']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s6\\/8`))
+    // claudecode draws level with copilot_cli here: copilot_cli wires stop via its agentStop
+    // mapping, which claudecode's settings.json wiring does not, and claudecode wires
+    // post_compact, which no other harness has a confirmed equivalent event for.
+    for (const harness of ['claudecode', 'copilot_cli']) {
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s7\\/9`))
     }
+    expect(text).toMatch(/kimi\s+.*\s6\/9/)
     for (const harness of ['codex', 'grok', 'qwen']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/8`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/9`))
     }
     for (const harness of ['opencode', 'gemini', 'openclaw', 'pi']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/8`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/9`))
     }
   })
 })

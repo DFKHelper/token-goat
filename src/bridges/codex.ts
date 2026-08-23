@@ -53,6 +53,7 @@ const HOOK_EVENT_NAME_MAP = {
   notification: 'Notification',
   stop: 'Stop',
   pre_compact: 'PreCompact',
+  post_compact: 'PostCompact',
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
   session_start: 'SessionStart',

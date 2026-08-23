@@ -64,12 +64,38 @@ export interface BridgeCapabilityRow {
 const NO_SERVER_HANDLER_REASON =
   "token-goat has no registered server-side handler for this event (zero registerHook('notification'|'stop', ...) call sites in src/) -- wiring it client-side would currently be a no-op"
 
+/**
+ * `post_compact` is Claude Code's own event, confirmed by reading the installed binary: its hook
+ * input schema declares `hook_event_name: "PostCompact"` with a `compact_summary` string, and the
+ * runner hands a hook the finished summary verbatim. No other harness here has been shown to have
+ * an equivalent. Several have something adjacent -- pi emits `session_compact` and opencode
+ * `experimental.session.compacting` -- but neither bridge forwards a summary, and the Claude Code
+ * forks (grok, qwen, kimi) have not been re-checked against their own hooks docs. Left unwired
+ * rather than guessed at, the same standard every other row's gaps are held to.
+ */
+const NO_POST_COMPACT_EVENT_REASON =
+  "post_compact is a Claude Code event (hook_event_name PostCompact, carrying compact_summary); no equivalent has been confirmed for this harness, so it is left unwired rather than guessed at"
+
+/**
+ * Copilot CLI is the one harness where this has actually been checked rather than left open, so it
+ * gets its own reason. Read from the installed Copilot CLI 1.0.79 (`app.js` and
+ * `schemas/api.schema.json`): the `HookType` enum lists `preCompact` and has no `postCompact`
+ * member at all, and both `preCompact` call sites are a bare
+ * `await this.nativeHookProcessor?.event("preCompact", ...)` whose return value is never assigned
+ * -- so unlike `notification`, which reads `.additionalContext` off the same runner, nothing there
+ * consumes a pre-compaction hook's output either. That is also why copilot keeps the JSON wrapper
+ * on `pre_compact` (see EVENTS_WITH_RAW_STDOUT_CONTEXT in src/hook_registry.ts): there is nothing
+ * on the other end to read bare text.
+ */
+const COPILOT_NO_POST_COMPACT_REASON =
+  "Copilot CLI has no post-compaction hook: its HookType enum (schemas/api.schema.json, 1.0.79) declares preCompact and no postCompact, and both preCompact call sites in app.js discard the hook's response, so there is no summary to measure and no channel to write to"
+
 export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
   {
     harness: 'claudecode',
     label: 'Claude Code',
     sourceFile: 'src/install.ts (HOOK_EVENT_MAP)',
-    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
   },
   {
@@ -78,6 +104,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/codex_install.ts (CODEX_HOOK_EVENTS, CODEX_GLOBAL_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
       {
         events: ['session_start'],
@@ -92,6 +119,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/grok_install.ts (GROK_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
       {
         events: ['session_start'],
@@ -114,6 +142,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       'user_prompt_submit',
     ]),
     reasons: [
+      { events: ['post_compact'], reason: COPILOT_NO_POST_COMPACT_REASON },
       {
         events: ['notification'],
         reason:
@@ -127,6 +156,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/gemini_install.ts (GEMINI_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason: "Gemini CLI's hooks integration only wires BeforeTool/AfterTool/PreCompress (README \"Gemini CLI users\")",
@@ -139,6 +169,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/qwen_install.ts (QWEN_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification'],
         reason:
@@ -156,7 +187,8 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     label: 'Kimi Code CLI',
     sourceFile: 'src/bridges/kimi_install.ts (KIMI_EVENT_ARG), src/bridges/kimi.ts (KIMI_HOOK_SCRIPT)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
-    reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
+    reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
   },
   {
     harness: 'opencode',
@@ -164,6 +196,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/opencode.ts',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason:
@@ -177,6 +210,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/openclaw.ts',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason:
@@ -190,6 +224,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/pi.ts',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason:

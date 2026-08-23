@@ -172,6 +172,7 @@ describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previousl
     notification: 'Notification',
     stop: 'Stop',
     pre_compact: 'PreCompact',
+    post_compact: 'PostCompact',
     user_prompt_submit: 'UserPromptSubmit',
     subagent_stop: 'SubagentStop',
     session_start: 'SessionStart',
