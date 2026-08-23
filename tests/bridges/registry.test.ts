@@ -2,27 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { detectHarness, getHarnessName } from '../../src/bridges/registry.js'
 import { clearModuleCaches } from '../../src/reset.js'
+import { HARNESS_DETECTION_ENV_KEYS } from '../helpers/harness-env.js'
 
 // Every env var any branch of detectHarness() reads, across both spellings
 // codex/opencode ever used (CODEX_SESSION_ID vs CODEX_SESSION, OPENCODE_SESSION_ID
 // vs OPENCODE_SESSION) plus the harness-override escape hatch.
+// The four beyond the shared detection set are ones this file's own "ollama launch claude" test
+// sets; detectHarness() never reads them, so they belong here rather than in the shared list.
 const ENV_KEYS = [
-  'TERM_PROGRAM',
-  'CLAUDE_CODE_VERSION',
-  'CLAUDE_CODE_SESSION_ID',
-  'ANTHROPIC_API_KEY',
-  'CODEX_SESSION_ID',
-  'CODEX_SESSION',
-  'OPENCODE_SESSION_ID',
-  'OPENCODE_SESSION',
-  'GROK_SESSION_ID',
-  'OPENCLAW_SESSION_ID',
-  'HERMES_SESSION_ID',
-  'HERMES_HOME',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  'TOKEN_GOAT_HARNESS_OVERRIDE',
+  ...HARNESS_DETECTION_ENV_KEYS,
   'ANTHROPIC_BASE_URL',
   'OLLAMA_HOST',
   'OLLAMA_MODEL',

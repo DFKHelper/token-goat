@@ -5,6 +5,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
+
 import { registerHook } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { buildEvent, readStdinJson, relay } from '../src/relay.js'
@@ -221,24 +223,7 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
   // session, which sets CLAUDE_CODE_SESSION_ID in the test process's ambient
   // environment, so without clearing it the claudecode branch (checked before
   // codex) wins over this test's CODEX_SESSION_ID and silently breaks it.
-  const ENV_KEYS = [
-    'TERM_PROGRAM',
-    'CLAUDE_CODE_VERSION',
-    'CLAUDE_CODE_SESSION_ID',
-    'ANTHROPIC_API_KEY',
-    'CODEX_SESSION_ID',
-    'CODEX_SESSION',
-    'OPENCODE_SESSION_ID',
-    'OPENCODE_SESSION',
-    'GROK_SESSION_ID',
-    'OPENCLAW_SESSION_ID',
-    'HERMES_SESSION_ID',
-    'HERMES_HOME',
-    'OPENAI_API_KEY',
-    'GEMINI_API_KEY',
-    'GOOGLE_API_KEY',
-    'TOKEN_GOAT_HARNESS_OVERRIDE',
-  ] as const
+  const ENV_KEYS = HARNESS_DETECTION_ENV_KEYS
   const savedEnv: Record<string, string | undefined> = {}
 
   beforeEach(() => {
@@ -384,24 +369,7 @@ describe('relay Gemini deny wire format (regression: Gemini CLI has no output-re
   // with zero translation code required -- the real bug being verified here
   // was that this compatibility was previously assumed, never actually
   // checked against Gemini's real contract or exercised by a test.
-  const ENV_KEYS = [
-    'TERM_PROGRAM',
-    'CLAUDE_CODE_VERSION',
-    'CLAUDE_CODE_SESSION_ID',
-    'ANTHROPIC_API_KEY',
-    'CODEX_SESSION_ID',
-    'CODEX_SESSION',
-    'OPENCODE_SESSION_ID',
-    'OPENCODE_SESSION',
-    'GROK_SESSION_ID',
-    'OPENCLAW_SESSION_ID',
-    'HERMES_SESSION_ID',
-    'HERMES_HOME',
-    'OPENAI_API_KEY',
-    'GEMINI_API_KEY',
-    'GOOGLE_API_KEY',
-    'TOKEN_GOAT_HARNESS_OVERRIDE',
-  ] as const
+  const ENV_KEYS = HARNESS_DETECTION_ENV_KEYS
   const savedEnv: Record<string, string | undefined> = {}
 
   beforeEach(() => {
@@ -484,24 +452,7 @@ describe('relay Gemini deny wire format (regression: Gemini CLI has no output-re
 })
 
 describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Claude-Code harnesses (regression: getSessionId() previously resolved only from that env var, which Claude Code sets itself but Codex/opencode/pi/Gemini/Grok/Copilot/OpenClaw never do -- each hook invocation is a fresh short-lived process, so without seeding, every call on those harnesses got a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity)', () => {
-  const ENV_KEYS = [
-    'TERM_PROGRAM',
-    'CLAUDE_CODE_VERSION',
-    'CLAUDE_CODE_SESSION_ID',
-    'ANTHROPIC_API_KEY',
-    'CODEX_SESSION_ID',
-    'CODEX_SESSION',
-    'OPENCODE_SESSION_ID',
-    'OPENCODE_SESSION',
-    'GROK_SESSION_ID',
-    'OPENCLAW_SESSION_ID',
-    'HERMES_SESSION_ID',
-    'HERMES_HOME',
-    'OPENAI_API_KEY',
-    'GEMINI_API_KEY',
-    'GOOGLE_API_KEY',
-    'TOKEN_GOAT_HARNESS_OVERRIDE',
-  ] as const
+  const ENV_KEYS = HARNESS_DETECTION_ENV_KEYS
   const savedEnv: Record<string, string | undefined> = {}
 
   beforeEach(() => {
