@@ -77,6 +77,18 @@ const NO_POST_COMPACT_EVENT_REASON =
   "post_compact is a Claude Code event (hook_event_name PostCompact, carrying compact_summary); no equivalent has been confirmed for this harness, so it is left unwired rather than guessed at"
 
 /**
+ * Only Copilot CLI is known to route a failed tool result to its own event. Every other harness
+ * here either delivers failures on its ordinary post-tool event or is not known to distinguish
+ * them at all, and this deliberately asserts the second thing about token-goat rather than the
+ * first thing about the harness: what is being stated is that no separate failure event is wired,
+ * not that the harness lacks one. Establishing the latter would need the same bundle-level read
+ * that was done for Copilot, and it has not been done for these.
+ */
+const NO_SEPARATE_FAILURE_EVENT_REASON =
+  'post_tool_use_failure exists because Copilot CLI routes a failed tool result to a separate postToolUseFailure event instead of postToolUse. No separate failure event is wired for this harness, so a failed tool call either arrives on post_tool_use like any other result or is not seen; which of the two has not been checked here'
+
+
+/**
  * Copilot CLI is the one harness where this has actually been checked rather than left open, so it
  * gets its own reason. Read from the installed Copilot CLI 1.0.79 (`app.js` and
  * `schemas/api.schema.json`): the `HookType` enum lists `preCompact` and has no `postCompact`
@@ -96,7 +108,10 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     label: 'Claude Code',
     sourceFile: 'src/install.ts (HOOK_EVENT_MAP)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
-    reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
+    reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
+      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+    ],
   },
   {
     harness: 'codex',
@@ -104,6 +119,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/codex_install.ts (CODEX_HOOK_EVENTS, CODEX_GLOBAL_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
       {
@@ -119,6 +135,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/grok_install.ts (GROK_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
       {
@@ -159,9 +176,11 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
    *   it into `textResultForLlm` (if `appendFailureContextToToolResult` is set) or formats it and
    *   pushes `{content, source: "system"}` onto `toolResult.newMessages`. So the channel is real
    *   and model-visible -- it just carries advice alongside the failure, never a replacement for
-   *   it. Wiring it would need a tenth `HOOK_EVENTS` member, since routing failures through
-   *   `post_tool_use` would let success-path handlers mark a file as successfully read when the
-   *   read failed.
+   *   it. It is wired now, as its own `post_tool_use_failure` event rather than a reuse of
+   *   `post_tool_use`: routing failures through the success event would let success-path handlers
+   *   mark a file as successfully read when the read failed. Because the channel spends tokens
+   *   instead of saving them, its handler (`src/hooks_tool_failure.ts`) stays silent on a first
+   *   failure and speaks only on an exact repeat.
    * - `pre_compact` is wired and fires, but nothing it returns can reach the model. Both dispatch
    *   sites call it in statement position and drop the result: app.js offset 2467452 (the manual
    *   `/compact` path) and offset 2571216 (`case "execute_pre_compact_hook"`). The contrast is
@@ -187,13 +206,14 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       'stop',
       'subagent_stop',
       'user_prompt_submit',
+      'post_tool_use_failure',
     ]),
     reasons: [
       { events: ['post_compact'], reason: COPILOT_NO_POST_COMPACT_REASON },
       {
         events: ['notification'],
         reason:
-          "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at. postToolUseFailure is also unwired, for a different and now-understood reason: it fires instead of postToolUse on a failed tool result, and it accepts only additionalContext -- modifiedResult is not honored there -- so wiring it could append advisory text but could never fence, compress or shrink a failed tool result",
+          "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at",
       },
     ],
   },
@@ -203,6 +223,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/gemini_install.ts (GEMINI_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
@@ -216,6 +237,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/qwen_install.ts (QWEN_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification'],
@@ -235,6 +257,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/kimi_install.ts (KIMI_EVENT_ARG), src/bridges/kimi.ts (KIMI_HOOK_SCRIPT)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
   },
   {
@@ -243,6 +266,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/opencode.ts',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
@@ -257,6 +281,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/openclaw.ts',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
@@ -271,6 +296,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     sourceFile: 'src/bridges/pi.ts',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
+      { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       {
         events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],

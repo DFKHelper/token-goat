@@ -48,6 +48,7 @@ const COPILOT_CLI_HOOK_EVENTS = [
   'agentStop',
   'subagentStop',
   'userPromptSubmitted',
+  'postToolUseFailure',
 ] as const
 type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number]
 

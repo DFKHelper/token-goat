@@ -230,6 +230,7 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
     'stop',
     'subagent_stop',
     'user_prompt_submit',
+    'post_tool_use_failure',
   ],
   generic: [...HOOK_EVENTS],
 }

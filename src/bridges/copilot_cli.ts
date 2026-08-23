@@ -70,19 +70,19 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
-// HOOK_EVENTS). Only these seven have a token-goat handler; every other real
+// HOOK_EVENTS). Only these eight have a token-goat handler; every other real
 // Copilot event (sessionEnd, subagentStart, errorOccurred, notification,
 // permissionRequest) is left unimplemented
 // rather than guessed at, and falls through to the default no-op below.
-// postToolUseFailure is unimplemented for a stronger reason than that: it is
-// now understood, not unknown. It is the event that fires instead of
-// postToolUse when a tool result is a failure, and per the shipped
-// copilot-sdk/types.d.ts it hands a hook only a stringified error message and
-// accepts only additionalContext back -- modifiedResult and suppressOutput
-// are explicitly not honored there. Wiring it could append advisory text to a
-// failed tool result but could never fence, compress or shrink one. See the
-// postToolUse branch in translate() for the full evidence and the gap it
-// leaves.
+// postToolUseFailure is the newest of the eight and the only one whose channel
+// costs tokens instead of saving them: it fires instead of postToolUse when a
+// tool result is a failure, and accepts only additionalContext back --
+// modifiedResult and suppressOutput are not honored there, so a failed result
+// still cannot be fenced, compressed or shrunk. It is wired anyway because
+// additionalContext demonstrably reaches the model (see the postToolUseFailure
+// branch in translate() for the bundle offset), and hooks_tool_failure.ts
+// spends that channel only on an exact repeat failure, where staying silent
+// costs a whole wasted retry.
 // 'sessionStart' was previously a permanent no-op on the stated grounds that
 // token-goat has no internal session_start handler. That was simply wrong --
 // hooks_session_start.ts has long emitted the command-routing reminder that
@@ -102,6 +102,7 @@ const COPILOT_TO_TG_EVENT = {
   agentStop: 'stop',
   subagentStop: 'subagent_stop',
   userPromptSubmitted: 'user_prompt_submit',
+  postToolUseFailure: 'post_tool_use_failure',
 }
 
 // Copilot built-in tool name -> token-goat internal tool name. Confirmed via
@@ -363,9 +364,9 @@ function translate(copilotEvent, resp) {
     // consumes only additionalContext -- "modifiedResult or suppressOutput are not honored for
     // failure hooks". rejected/denied/timeout results trigger no post hook at all. So on Copilot,
     // the output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and
-    // no response shape this shim could emit changes that. A real gap, recorded rather than
-    // papered over; closing it needs a new postToolUseFailure registration that could at best
-    // append advisory guidance, never rewrite the failed output.
+    // no response shape this shim could emit changes that. That gap is real and still open. What
+    // is now wired is the narrower thing that IS possible there: the postToolUseFailure branch
+    // below carries advisory text alongside the failure, and never rewrites it.
     //
     // Emitted camelCase-only. The inbound side around line 247 also tolerates a snake_case "VS
     // Code compatible" shape, and this comment used to justify the camelCase choice by claiming
@@ -382,6 +383,25 @@ function translate(copilotEvent, resp) {
     }
     if (context) out.additionalContext = context
     return out
+  }
+
+  if (copilotEvent === 'postToolUseFailure') {
+    // The failed-tool twin of postToolUse, and the only response field it accepts is
+    // additionalContext: the shipped copilot-sdk/types.d.ts says "modifiedResult or suppressOutput
+    // are not honored for failure hooks", so nothing here can fence, compress or shrink the failed
+    // output -- that gap is real and stays open. What is NOT open, and was the reason this event
+    // went unwired for so long, is whether additionalContext reaches the model at all. It does:
+    // app.js 1.0.80 at offset 2043380 either folds it into textResultForLlm (when
+    // appendFailureContextToToolResult is set) or has the native
+    // hookAppendPostToolUseFailureContext push {content, source:'system'} onto
+    // toolResult.newMessages. That is the exact opposite of postToolUse, whose additionalContext
+    // the JS side drops on the floor, so neither event's behaviour generalises to the other.
+    //
+    // Because this channel spends tokens rather than saving them, the handler behind it
+    // (hooks_tool_failure.ts) is silent on a first failure and speaks only on an exact repeat.
+    const context = extractContext(resp)
+    if (context) return { additionalContext: context }
+    return {}
   }
 
   if (copilotEvent === 'sessionStart') {
