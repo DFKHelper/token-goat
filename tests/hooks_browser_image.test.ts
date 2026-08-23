@@ -93,6 +93,37 @@ describe('postBrowserImageHandler', () => {
     }
   })
 
+  it('replaces a screenshot it has already shown this session instead of sending the same pixels twice', async () => {
+    // The second screenshot of an unchanged page is the one case where no image beats a smaller
+    // image: the notice answers the question the screenshot was taken to ask, in a hundred bytes.
+    const first = await postBrowserImageHandler(imageEvent(largeJpegB64))
+    expect(first.hookType).toBe('rewriteOutput')
+    if (first.hookType === 'rewriteOutput') {
+      expect(first.updatedOutput).toContain('data:image/')
+      expect(first.updatedOutput).not.toContain('identical to one already shown')
+    }
+
+    const second = await postBrowserImageHandler(imageEvent(largeJpegB64))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType === 'rewriteOutput') {
+      expect(second.updatedOutput).toContain('identical to one already shown')
+      expect(second.updatedOutput).not.toContain('data:image/')
+    }
+  })
+
+  it('still sends a genuinely different screenshot after one it has already shown', async () => {
+    // The failure this rules out is a dedup keyed on something every screenshot shares -- it would
+    // pass the test above and silently blind the model to every page it visited afterwards.
+    await postBrowserImageHandler(imageEvent(largeJpegB64))
+
+    const other = await postBrowserImageHandler(imageEvent(flatScreenshotB64))
+    expect(other.hookType).toBe('rewriteOutput')
+    if (other.hookType === 'rewriteOutput') {
+      expect(other.updatedOutput).toContain('data:image/')
+      expect(other.updatedOutput).not.toContain('identical to one already shown')
+    }
+  })
+
   it('passes through a tool result with no image blocks', async () => {
     const event = makeHookEvent({
       eventName: 'post_tool_use',

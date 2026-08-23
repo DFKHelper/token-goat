@@ -32,13 +32,14 @@
  * passes through unchanged.
  */
 
+import { createHash } from 'node:crypto'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, passOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
 import { formatShrinkSummary, imageQualifiesForShrink, shrinkImage } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
-import { getLastTabContext, setLastTabContext } from './session.js'
+import { getLastTabContext, hasSeenImage, recordSeenImage, setLastTabContext } from './session.js'
 import { recordStat } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
@@ -59,6 +60,21 @@ function getResponseContentBlocks(raw: Record<string, unknown>): ContentBlock[] 
 /** Matches the literal "Tab Context:" block claude-in-chrome appends to browser-automation tool results. */
 const TAB_CONTEXT_RE = /^\n*Tab Context:/
 
+/** Replaces a screenshot the model has already been shown, rather than sending the same pixels twice. */
+const SCREENSHOT_REPEAT_NOTICE =
+  '[token-goat: screenshot identical to one already shown this session; not re-sent. Nothing on the page has changed since.]'
+
+/**
+ * Fingerprint of a screenshot's decoded bytes.
+ *
+ * Taken on the bytes as they arrived, before any shrink, so two identical arrivals match no matter
+ * what the re-encode would have done to either of them -- and a repeat costs one hash instead of a
+ * second decode and encode.
+ */
+function screenshotFingerprint(data: string): string {
+  return createHash('sha256').update(data).digest('hex').slice(0, 32)
+}
+
 async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; changed: boolean; savedBytes: number }> {
   const source = block.source
   const mediaType = typeof source?.media_type === 'string' ? source.media_type : 'image/png'
@@ -71,6 +87,29 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
     buffer = Buffer.from(data, 'base64')
   } catch {
     return { text: originalDataUrl, changed: false, savedBytes: 0 }
+  }
+
+  // A screenshot the model has already been shown is the one case where the cheapest thing to
+  // send is no image at all. "Identical to the last one" is not a lossy summary of those pixels --
+  // it is strictly more informative than the pixels, because it answers the question the second
+  // screenshot was taken to ask. Same shape as dedupTabContext below, on the block beside this one.
+  const fingerprint = screenshotFingerprint(data)
+  const alreadyShown = hasSeenImage(fingerprint)
+  recordSeenImage(fingerprint)
+  if (alreadyShown) {
+    const worthwhile = isRewriteWorthwhile({
+      originalBytes: originalDataUrl.length,
+      rewrittenBytes: 0,
+      noticeBytes: Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8'),
+      minNetSavingsBytes: resolveMinNetSavingsBytes(),
+    })
+    if (worthwhile) {
+      return {
+        text: SCREENSHOT_REPEAT_NOTICE,
+        changed: true,
+        savedBytes: originalDataUrl.length - SCREENSHOT_REPEAT_NOTICE.length,
+      }
+    }
   }
 
   // sizeThresholdBytes: 0 because imageQualifiesForShrink has already applied the byte test, and

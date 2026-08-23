@@ -84,6 +84,7 @@ let _globQueries = new Map<string, number>()
 
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
 let _lastTabContext: string | null = null
+let _seenImageHashes: string[] = []
 
 /** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's
  * duplicate-brief detection: the original prompt text (before any briefing/advisory the
@@ -506,6 +507,31 @@ export function getLastTabContext(): string | null {
   return _lastTabContext
 }
 
+/**
+ * Upper bound on screenshot fingerprints remembered per session.
+ *
+ * Bounded for the same reason MAX_OUTSTANDING_AGENT_SPAWNS is: a long browsing session takes
+ * hundreds of screenshots and this list is written to disk on every hook. Oldest is evicted
+ * first, which is also the right policy on merit -- a screenshot from an hour ago being
+ * repeated now is a coincidence, while one from three tool calls ago is a poll loop.
+ */
+export const MAX_SEEN_IMAGE_HASHES = 16
+
+/** True when a screenshot with this fingerprint has already been shown this session. */
+export function hasSeenImage(hash: string): boolean {
+  return _seenImageHashes.includes(hash)
+}
+
+/** Remember a screenshot fingerprint, evicting the oldest once {@link MAX_SEEN_IMAGE_HASHES} is reached. */
+export function recordSeenImage(hash: string): void {
+  const at = _seenImageHashes.indexOf(hash)
+  if (at !== -1) _seenImageHashes.splice(at, 1)
+  _seenImageHashes.push(hash)
+  if (_seenImageHashes.length > MAX_SEEN_IMAGE_HASHES) {
+    _seenImageHashes.splice(0, _seenImageHashes.length - MAX_SEEN_IMAGE_HASHES)
+  }
+}
+
 /** Upper bound on outstanding Agent-spawn prompts tracked per session; oldest recorded first once exceeded, mirroring MAX_RANGES_PER_FILE's cap-then-evict shape. A long session that spawns many subagents must not grow this list unboundedly. */
 export const MAX_OUTSTANDING_AGENT_SPAWNS = 30
 
@@ -707,6 +733,8 @@ export interface SerializedSession {
   globQueries?: Array<[string, number]>
   outstandingAgentSpawns?: Array<[string, number]>
   lastTabContext?: string
+  /** Fingerprints of screenshots already shown this session, oldest first. See `_seenImageHashes`. */
+  seenImageHashes?: string[]
   /** Unix-ms of the most recent context compaction, or absent if none. Merged max-wins by session_store.ts so a stamp made by one hook process is never lost to a concurrent process that predates it. See `_compactedAt`. */
   compactedAt?: number
   /**
@@ -735,6 +763,7 @@ export function exportSessionState(): SerializedSession {
     globQueries: Array.from(_globQueries.entries()),
     outstandingAgentSpawns: _outstandingAgentSpawns.map((e) => [e.prompt, e.ts]),
     ...(_lastTabContext !== null ? { lastTabContext: _lastTabContext } : {}),
+    ...(_seenImageHashes.length > 0 ? { seenImageHashes: [..._seenImageHashes] } : {}),
     ...(_compactedAt > 0 ? { compactedAt: _compactedAt } : {}),
   }
 }
@@ -769,6 +798,7 @@ export function importSessionState(s: SerializedSession): void {
   _outstandingAgentSpawns = (s.outstandingAgentSpawns ?? []).map(([prompt, ts]) => ({ prompt, ts }))
   _outstandingAgentSpawnsAtLoad = [..._outstandingAgentSpawns]
   _lastTabContext = s.lastTabContext ?? null
+  _seenImageHashes = [...(s.seenImageHashes ?? [])]
   _compactedAt = s.compactedAt ?? 0
 }
 
@@ -791,6 +821,7 @@ registerReset(() => {
   _outstandingAgentSpawns = []
   _outstandingAgentSpawnsAtLoad = []
   _lastTabContext = null
+  _seenImageHashes = []
   _compactedAt = 0
   _sessionId = null
 })

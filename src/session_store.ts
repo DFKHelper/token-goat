@@ -27,7 +27,7 @@ import * as path from 'node:path'
 
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -263,6 +263,9 @@ function coerce(raw: unknown): SerializedSession {
   const bashReruns = Array.isArray(o['bashReruns'])
     ? o['bashReruns'].filter((h): h is string => typeof h === 'string')
     : []
+  const seenImageHashes = Array.isArray(o['seenImageHashes'])
+    ? o['seenImageHashes'].filter((h): h is string => typeof h === 'string')
+    : []
   const pendingLargeFileHints: Array<[string, number]> = Array.isArray(o['pendingLargeFileHints'])
     ? (o['pendingLargeFileHints'] as unknown[]).filter(
         (p): p is [string, number] =>
@@ -302,6 +305,7 @@ function coerce(raw: unknown): SerializedSession {
     globQueries,
     outstandingAgentSpawns,
     ...(typeof o['lastTabContext'] === 'string' ? { lastTabContext: o['lastTabContext'] } : {}),
+    ...(seenImageHashes.length > 0 ? { seenImageHashes } : {}),
     ...(typeof o['compactedAt'] === 'number' ? { compactedAt: o['compactedAt'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
@@ -473,6 +477,11 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     globQueries: mergePairs(disk.globQueries ?? [], mem.globQueries ?? []),
     outstandingAgentSpawns: mergeOutstandingAgentSpawns(disk.outstandingAgentSpawns ?? [], mem.outstandingAgentSpawns ?? []),
+    // An accumulating collection, so union rather than pick a winner: two hook processes can
+    // each see a screenshot the other never did. Disk first, then mem, so the order stays
+    // oldest-to-newest and the cap evicts the oldest -- the same policy recordSeenImage applies
+    // in memory, applied again here because a union of two capped lists can exceed the cap.
+    seenImageHashes: mergeSeenImageHashes(disk.seenImageHashes ?? [], mem.seenImageHashes ?? []),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContext !== undefined
       ? { lastTabContext: mem.lastTabContext }
@@ -486,6 +495,12 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
         ? { created_ts: mem.created_ts }
         : {}),
   }
+}
+
+/** Union two screenshot-fingerprint lists oldest-first, keeping at most MAX_SEEN_IMAGE_HASHES. */
+function mergeSeenImageHashes(disk: string[], mem: string[]): string[] {
+  const merged = Array.from(new Set([...disk, ...mem]))
+  return merged.length > MAX_SEEN_IMAGE_HASHES ? merged.slice(merged.length - MAX_SEEN_IMAGE_HASHES) : merged
 }
 
 /** Drop all but the `max` most-recently-read file entries (oldest by lastReadAt). */
