@@ -151,6 +151,8 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     if (!isHookEventName(eventName)) {
       return '{}'
     }
+    // Read before the CLAUDE_CODE_SESSION_ID seeding below, which sets that variable for every harness and would make a later detection answer 'claudecode' everywhere. serializeOutput needs the true harness to decide the pre_compact wire form, so capture it while the environment still says who we are.
+    const harness = detectHarness()
     // Codex and Gemini send harness-native tool names (e.g. `bash`, `read_file`) that never match the canonical names (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }). Normalization is scoped to the two tool-scoped events: normalizePayload() treats a payload with no tool_name as invalid and returns {}, which would silently drop session_id off pre_compact/stop/notification payloads if run unconditionally.
     const payload =
       eventName === 'pre_tool_use' || eventName === 'post_tool_use'
@@ -174,7 +176,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     } catch {
       // fail-soft: a save failure must not block the tool call
     }
-    return serializeOutput(output, event.eventName)
+    return serializeOutput(output, event.eventName, harness)
   } catch {
     // Pass-through on every failure path — a hook must never block the caller's tool call.
     return '{}'

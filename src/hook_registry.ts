@@ -17,6 +17,7 @@
  * reads from the hook process's stdout.
  */
 
+import type { HarnessName } from './bridges/types.js'
 import { registerReset } from './reset.js'
 import type { HookEventName, HookOutput } from './types.js'
 
@@ -233,7 +234,38 @@ const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
 ])
 
 /**
+ * Events whose `context` must be written to stdout as plain text rather than wrapped in wire JSON,
+ * because the harness forwards that stdout somewhere an envelope is only noise.
+ *
+ * `pre_compact` on Claude Code is the whole set, and the reason is a piece of the harness that its
+ * hook documentation does not describe. Reading `claude.exe` 2.1.240: a command hook that exits 0
+ * has its result's `output` field set to `R.stdout` verbatim -- the JSON is parsed alongside it into
+ * a separate value, and `systemMessage` is lifted onto its own separate field, but `output` itself
+ * is the raw text either way. The PreCompact runner then joins every succeeded hook's `output` into
+ * `newCustomInstructions`, and the four compaction call sites pass that straight to the summarising
+ * model as `customInstructions`. Nothing in that chain ever reads `systemMessage`.
+ *
+ * So on this event the bytes we print are not an envelope the harness unpacks; they are a message to
+ * a model. Emitting `{"systemMessage":"..."}` sent it the serialized object -- braces, escaped
+ * newlines and all -- while the field we meant it to read was dropped. Verified live as well as by
+ * reading the binary: a PreCompact hook printing an instruction had that instruction obeyed in the
+ * resulting compact summary.
+ *
+ * Scoped to Claude Code deliberately. This behaviour is undocumented and may not survive an update,
+ * and no other harness wants raw text here: Copilot CLI's reference marks `preCompact` output
+ * "notification only" and its shim discards the response, while the Codex shim `JSON.parse`s our
+ * stdout and degrades to `{}` on anything else. Both are unharmed by the JSON form, so they keep it.
+ */
+const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre_compact'])
+
+/**
  * Serialize a {@link HookOutput} to the Claude Code hook wire JSON.
+ *
+ * `harness` is a required argument rather than a call to `detectHarness()` here, because by the time
+ * this runs the relay has already seeded `CLAUDE_CODE_SESSION_ID` from the event payload for *every*
+ * harness -- a detection at this point would answer "claudecode" on Codex and Copilot alike. The
+ * relay reads the harness before that seeding and passes it down. Required and not optional so a
+ * future caller has to make the same decision consciously.
  *
  * The harness reads this object from the hook process's stdout and acts on it:
  * - `deny`    → `{"decision":"block","reason":"<message>"}`
@@ -257,11 +289,14 @@ const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
  * The `switch` is exhaustive over the `hookType` union; adding a variant to
  * {@link HookOutput} without handling it here is a compile error.
  */
-export function serializeOutput(output: HookOutput, eventName: HookEventName): string {
+export function serializeOutput(output: HookOutput, eventName: HookEventName, harness: HarnessName): string {
   switch (output.hookType) {
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })
     case 'context':
+      if (EVENTS_WITH_RAW_STDOUT_CONTEXT.has(eventName) && harness === 'claudecode') {
+        return output.context
+      }
       if (EVENTS_WITHOUT_ADDITIONAL_CONTEXT.has(eventName)) {
         return JSON.stringify({ systemMessage: output.context })
       }

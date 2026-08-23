@@ -97,6 +97,7 @@ describe('serializeOutput: rewriteInput', () => {
         updatedInput: { command: 'token-goat compress -f generic -c \'cargo build\'', description: 'build' },
       },
       'pre_tool_use',
+      'claudecode',
     )
     expect(JSON.parse(json)).toEqual({
       hookSpecificOutput: {

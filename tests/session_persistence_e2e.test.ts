@@ -292,12 +292,12 @@ describe('pre_compact manifest sees subagent edits (regression: agent_id salting
     // edited at all -- exactly the context compaction is supposed to preserve.
     const compact = runHook('pre_compact', { session_id: sessionId })
     expect(compact.status).toBe(0)
-    const parsed = JSON.parse(compact.stdout) as { systemMessage?: string }
-    expect(parsed.systemMessage).toBeDefined()
-    expect(parsed.systemMessage).toContain('subagent-edited.md')
-    expect(parsed.systemMessage).toMatch(/### Edited files/)
+    // Claude Code (the harness tests/setup/isolate-home.ts pins) reads PreCompact stdout verbatim, so the manifest is the raw output with no JSON envelope.
+    expect(compact.stdout.trim().length).toBeGreaterThan(0)
+    expect(compact.stdout).toContain('subagent-edited.md')
+    expect(compact.stdout).toMatch(/### Edited files/)
     // File A (parent's own read, never edited) must still show up as read, not edited.
-    expect(parsed.systemMessage).toContain('parent-touched.md')
+    expect(compact.stdout).toContain('parent-touched.md')
   })
 })
 

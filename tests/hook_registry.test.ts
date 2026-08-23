@@ -181,13 +181,13 @@ describe('hook registry', () => {
 
   describe('serializeOutput', () => {
     it('serializes deny to a block decision', () => {
-      expect(serializeOutput({ hookType: 'deny', message: 'nope' }, 'pre_tool_use')).toBe(
+      expect(serializeOutput({ hookType: 'deny', message: 'nope' }, 'pre_tool_use', 'claudecode')).toBe(
         JSON.stringify({ decision: 'block', reason: 'nope' }),
       )
     })
 
     it('serializes context to the documented hookSpecificOutput.additionalContext shape', () => {
-      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_tool_use')).toBe(
+      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_tool_use', 'claudecode')).toBe(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'hint' },
         }),
@@ -195,17 +195,25 @@ describe('hook registry', () => {
     })
 
     it('threads the current event into hookEventName instead of hardcoding it', () => {
-      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'post_tool_use')).toBe(
+      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'post_tool_use', 'claudecode')).toBe(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'hint' },
         }),
       )
     })
 
-    it('serializes context for pre_compact via top-level systemMessage, not hookSpecificOutput (PreCompact is not a valid hookEventName there and fails the harness schema)', () => {
-      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_compact')).toBe(
-        JSON.stringify({ systemMessage: 'hint' }),
-      )
+    // On Claude Code a PreCompact hook's raw stdout is what reaches the summarizing model: the executor sets the hook result's `output` field to the process stdout verbatim, and the compaction path joins every succeeding hook's `output` into the summarizer's `customInstructions`. `systemMessage` is lifted onto a separate field that the compaction path never reads, so wrapping the manifest in JSON meant the summarizer received the literal characters `{"systemMessage":"..."}` -- or, more to the point, received our manifest as a quoted JSON blob rather than as instructions. Emitting the text bare is what actually delivers it.
+    it('serializes context for pre_compact on Claude Code as raw text, because PreCompact stdout is fed to the summarizer verbatim', () => {
+      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_compact', 'claudecode')).toBe('hint')
+    })
+
+    // The raw-stdout behavior above is Claude Code's and is undocumented. Every other harness keeps the JSON form: Copilot discards a preCompact response entirely, and the Codex shim JSON.parses our stdout, so bare text would degrade to `{}` there rather than being read as instructions.
+    it('keeps the JSON systemMessage form for pre_compact on every harness that is not Claude Code', () => {
+      for (const harness of ['codex', 'copilot_cli', 'gemini', 'opencode', 'generic'] as const) {
+        expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_compact', harness)).toBe(
+          JSON.stringify({ systemMessage: 'hint' }),
+        )
+      }
     })
 
     // Full matrix over every HookEventName, cross-checked against
@@ -216,8 +224,9 @@ describe('hook registry', () => {
     // entry in EVENTS_WITHOUT_ADDITIONAL_CONTEXT can't silently default to the wrong
     // shape the way pre_compact did (2026-07-02) -- every event is asserted, not just
     // the two or three a hand-picked example test happens to cover.
+    // Runs on 'codex' rather than 'claudecode' so pre_compact still emits JSON here: the raw-stdout carve-out is Claude Code's alone and is pinned by its own pair of tests above. Every other event is harness-independent, so this matrix's coverage is unchanged.
     it.each(HOOK_EVENTS)('serializes context for %s to the schema-correct shape', (eventName) => {
-      const result = JSON.parse(serializeOutput({ hookType: 'context', context: 'hint' }, eventName)) as Record<string, unknown>
+      const result = JSON.parse(serializeOutput({ hookType: 'context', context: 'hint' }, eventName, 'codex')) as Record<string, unknown>
       if (eventName === 'pre_compact' || eventName === 'notification') {
         expect(result).toEqual({ systemMessage: 'hint' })
       } else {
@@ -227,7 +236,7 @@ describe('hook registry', () => {
     })
 
     it('serializes pass to an empty object', () => {
-      expect(serializeOutput({ hookType: 'pass' }, 'pre_tool_use')).toBe('{}')
+      expect(serializeOutput({ hookType: 'pass' }, 'pre_tool_use', 'claudecode')).toBe('{}')
     })
 
     // Confirmed against https://code.claude.com/docs/en/hooks (verified 2026-07-12):
@@ -238,7 +247,7 @@ describe('hook registry', () => {
     // does not by itself confirm a live Claude Code session honors it on receipt.
     it('serializes rewriteOutput to the documented hookSpecificOutput.updatedToolOutput shape', () => {
       expect(
-        serializeOutput({ hookType: 'rewriteOutput', updatedOutput: 'rewritten body' }, 'post_tool_use'),
+        serializeOutput({ hookType: 'rewriteOutput', updatedOutput: 'rewritten body' }, 'post_tool_use', 'claudecode'),
       ).toBe(
         JSON.stringify({
           hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: 'rewritten body' },
