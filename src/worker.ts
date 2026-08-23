@@ -197,7 +197,7 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
     db.prepare('INSERT INTO files (path, retry_count) VALUES (?, 1)').run(normalized)
     return 1
   })
-  // `.immediate()` -- BEGIN IMMEDIATE. better-sqlite3 issues a plain call as a deferred BEGIN,
+  // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN,
   // which takes a read snapshot first and only asks for the write lock at the first writing
   // statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting
   // the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright.

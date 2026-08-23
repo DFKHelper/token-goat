@@ -216,7 +216,7 @@ describe('index_reader round-trips inserted rows', () => {
     ).run('src/auth.ts', 'authenticate', 'function', 1, 5, 'body', 'docs')
 
     const hits = searchSymbolsFts('authenticate', 10, dbPath)
-    // When the FTS5 mirror exists (better-sqlite3 ships FTS5, so it does here) the search MUST return the symbol. Gating only on `hits.length > 0` made this test pass vacuously while a broken MATCH clause left `semantic` permanently empty — assert against the real table presence instead.
+    // When the FTS5 mirror exists (the SQLite build Node bundles ships FTS5, so it does here) the search MUST return the symbol. Gating only on `hits.length > 0` made this test pass vacuously while a broken MATCH clause left `semantic` permanently empty — assert against the real table presence instead.
     const ftsExists =
       (
         db

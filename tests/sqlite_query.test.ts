@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import Database from 'better-sqlite3'
+import Database from '../src/sqlite_driver.js'
 import {
   isSqliteFile,
   openReadonlySqlite,
@@ -124,7 +124,7 @@ describe('sqlite_query', () => {
     it('reports an empty database with no tables cleanly', () => {
       const emptyPath = path.join(tempDir, 'empty.db')
       const empty = new Database(emptyPath)
-      // A freshly created better-sqlite3 file has no on-disk header at all until the first
+      // A freshly created SQLite file has no on-disk header at all until the first
       // write transaction -- create and drop a throwaway table so the file gets a real
       // SQLite header (isSqliteFile's magic-byte check) while still ending with zero tables.
       empty.exec('CREATE TABLE t (x)')

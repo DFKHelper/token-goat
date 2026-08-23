@@ -45,7 +45,7 @@ async function staticGraph(entry: string): Promise<Set<string>> {
     // Mirrors esbuild.config.mjs's EXTERNAL_NATIVE_DEPS. Kept loose here on purpose: this guard
     // is about which of *our own* modules are eagerly reachable, not about dependency layout.
     external: [
-      'better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*', 'sharp', 'puppeteer-core',
+      'sqlite-vec', 'tree-sitter', 'tree-sitter-*', 'sharp', 'puppeteer-core',
       'pdfjs-dist', 'pdfjs-dist/*', 'fflate',
       'onnxruntime-node',
       'tesseract.js', 'typescript',

@@ -7,7 +7,7 @@
  * `semantic` answers on its keyword half alone.
  */
 
-import type { Database as BetterSqlite3Database, Statement as BetterSqlite3Statement } from 'better-sqlite3'
+import type { SqliteDatabase, SqliteStatement } from './sqlite_driver.js'
 
 import { loadConfig } from './config.js'
 import {
@@ -661,9 +661,9 @@ export function chunkFile(
  * @param chunks - Array of chunks to insert.
  * @throws Error if embeddings are not available or insertion fails.
  */
-// Insert one chunk vector. sqlite-vec's vec0 chunk_vectors table declares rowid as a strict INTEGER PRIMARY KEY that rejects a plain JS number bound by better-sqlite3 ("Only integers are allowed for primary key values"); the rowid must be coerced to BigInt. Centralizing the insert keeps that binding rule in one place so upsertChunks and its tests cannot drift from it.
+// Insert one chunk vector. sqlite-vec's vec0 chunk_vectors table declares rowid as a strict INTEGER PRIMARY KEY that rejects a plain JS number ("Only integers are allowed for primary key values"); the rowid must be coerced to BigInt. Centralizing the insert keeps that binding rule in one place so upsertChunks and its tests cannot drift from it.
 export function insertChunkVector(
-  stmt: BetterSqlite3Statement,
+  stmt: SqliteStatement,
   rowid: number | bigint,
   embedding: number[],
 ): void {
@@ -681,7 +681,7 @@ export function insertChunkVector(
 export type EmbedOutcome = 'embedded' | 'unavailable'
 
 export async function upsertChunks(
-  db: BetterSqlite3Database,
+  db: SqliteDatabase,
   chunks: Chunk[],
 ): Promise<EmbedOutcome> {
   if (chunks.length === 0) {
@@ -749,7 +749,7 @@ export async function upsertChunks(
     }
   })
 
-  // `.immediate()` -- BEGIN IMMEDIATE. better-sqlite3 issues a plain call as a deferred BEGIN,
+  // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN,
   // which takes a read snapshot first and only asks for the write lock at the first writing
   // statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting
   // the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright.
@@ -764,7 +764,7 @@ const BACKFILL_MULTIPLIER = 3
 
 /** One over-fetch-and-filter pass: KNN-search `k` candidates, then keep only those within `maxDistance` and (when `rootDir` is set) under that project root. Returns the surviving hits plus how many raw candidates the ANN scan returned, so the caller can tell whether growing `k` further could possibly help (or if the vector index is simply exhausted). Exported (not just used internally by searchSemantic) so tests can exercise the project-scoping/backfill SQL directly with a hand-built query vector, without needing a real embedding-model inference call. */
 export function fetchScopedHits(
-  db: BetterSqlite3Database,
+  db: SqliteDatabase,
   queryVec: number[],
   k: number,
   maxDistance: number,
@@ -844,7 +844,7 @@ export function fetchScopedHits(
  * @returns Array of SearchHit objects, sorted by distance (best first).
  */
 export async function searchSemantic(
-  db: BetterSqlite3Database,
+  db: SqliteDatabase,
   query: string,
   topK: number = 8,
   modelName: string = DEFAULT_MODEL,
@@ -1056,7 +1056,7 @@ export function mergeNearbyHits(
  * @returns Number of chunks created and indexed.
  */
 export async function indexFile(
-  db: BetterSqlite3Database,
+  db: SqliteDatabase,
   filePath: string,
   content: string,
   boundaries: ChunkBoundary[] = [],
@@ -1074,10 +1074,10 @@ export async function indexFile(
 }
 
 // Per-connection cache of whether `chunk_vectors` is actually usable (see chunkVectorsTableExists). Keyed on the connection object so it is dropped when the connection is garbage-collected. A connection's vec0 load state is fixed for its lifetime (db.ts loads sqlite-vec once at open), so caching the boolean is safe and avoids re-probing on every embed/prune/search call.
-const _chunkVectorsUsable = new WeakMap<BetterSqlite3Database, boolean>()
+const _chunkVectorsUsable = new WeakMap<SqliteDatabase, boolean>()
 
 // Is the optional sqlite-vec `chunk_vectors` virtual table actually usable on this connection? A plain sqlite_master name probe is not enough: the vec0 table row PERSISTS in sqlite_master once created, but its backing module is registered per-connection by sqlite-vec's runtime load. If global.db was first created while sqlite-vec loaded (so the row exists), then token-goat is reinstalled without the optional native dep (--no-optional, or a native build failure after a Node upgrade), db.ts silently swallows the failed load -- yet the row is still in sqlite_master. A bare name probe would return true, and the next `chunk_vectors` statement would throw "no such module: vec0" at prepare time, aborting whatever transaction it ran in (e.g. removeFileFromIndex, leaking symbols/refs/files rows) and crashing searchSemantic. So probe real usability with a trivial SELECT: it throws "no such table" when the row is absent AND "no such module: vec0" when the row exists but the module did not load, covering both.
-function chunkVectorsTableExists(db: BetterSqlite3Database): boolean {
+function chunkVectorsTableExists(db: SqliteDatabase): boolean {
   const cached = _chunkVectorsUsable.get(db)
   if (cached !== undefined) {
     return cached
@@ -1101,7 +1101,7 @@ function chunkVectorsTableExists(db: BetterSqlite3Database): boolean {
  * whether an `unavailable:`-marked embed_sha must trigger a re-embed (deps now present) or can
  * still be treated as fresh (deps still absent, so re-embedding would just re-skip).
  */
-export function embeddingsDepsAvailable(db: BetterSqlite3Database): boolean {
+export function embeddingsDepsAvailable(db: SqliteDatabase): boolean {
   return isAvailable() && chunkVectorsTableExists(db)
 }
 
@@ -1114,7 +1114,7 @@ export function embeddingsDepsAvailable(db: BetterSqlite3Database): boolean {
  * @param filePath - Relative path to the file.
  */
 export function deleteFileEmbeddings(
-  db: BetterSqlite3Database,
+  db: SqliteDatabase,
   filePath: string,
 ): void {
   const folded = foldPath(filePath)
@@ -1140,7 +1140,7 @@ export function deleteFileEmbeddings(
  *
  * @returns How many files were marked for re-embedding.
  */
-export function resetAllEmbeddings(db: BetterSqlite3Database): number {
+export function resetAllEmbeddings(db: SqliteDatabase): number {
   const paths = db.prepare('SELECT DISTINCT file_path FROM chunks').pluck().all() as string[]
   const clearEmbedSha = db.prepare(`UPDATE files SET embed_sha = NULL WHERE ${pathEqClause('path')}`)
   const tx = db.transaction(() => {
@@ -1192,7 +1192,7 @@ function majorMinor(version: string): string {
 // cannot change during a connection's life (the provenance is fixed once the runtime has loaded,
 // and the stamp is rewritten in the same call that finds it stale), so re-running the read on
 // every embed and every search would be pure overhead on the hot path.
-const _provenanceChecked = new WeakSet<BetterSqlite3Database>()
+const _provenanceChecked = new WeakSet<SqliteDatabase>()
 
 /**
  * Make sure the vectors already in this database were produced by the stack running right now, and
@@ -1210,7 +1210,7 @@ const _provenanceChecked = new WeakSet<BetterSqlite3Database>()
  * neighbours quietly. The cost is one re-embed, which the caller is told how to trigger.
  */
 export function ensureEmbeddingProvenance(
-  db: BetterSqlite3Database,
+  db: SqliteDatabase,
   modelName: string = DEFAULT_MODEL,
 ): void {
   if (_provenanceChecked.has(db)) return

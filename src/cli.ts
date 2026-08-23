@@ -274,7 +274,7 @@ function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
   out(typeof result === 'string' ? result : formatCompression(result, false, 'payload withheld: inlining it would cost more tokens than the original text; pass --full to get the original text back outright'))
 }
 
-// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3 rejects with an opaque "datatype mismatch" error).
+// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which SQLite rejects with an opaque "datatype mismatch" error).
 function requireInt(flag: string, raw: string): number {
   // Only accept exact integer literals (optional leading minus, followed by digits)
   if (!/^-?\d+$/.test(raw)) {

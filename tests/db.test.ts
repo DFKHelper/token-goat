@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import Database from 'better-sqlite3'
+import Database from '../src/sqlite_driver.js'
 
 import { closeAllDbs, closeDb, getDb, SCHEMA_VERSION } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -59,8 +59,8 @@ describe('getDb', () => {
     expect(Number(sync)).toBe(1)
   })
 
-  it('sets a busy_timeout above the better-sqlite3 default so concurrent writers wait instead of erroring', () => {
-    // token-goat runs multiple processes against one global.db (worker daemon + CLI hook invocations). Without a generous busy_timeout a writer that finds the write lock held fails immediately with SQLITE_BUSY ("database is locked"). The better-sqlite3 default is 5000ms; we raise it to 15000ms, so a regression that drops the explicit pragma is caught here.
+  it('sets a busy_timeout above the driver default so concurrent writers wait instead of erroring', () => {
+    // token-goat runs multiple processes against one global.db (worker daemon + CLI hook invocations). Without a generous busy_timeout a writer that finds the write lock held fails immediately with SQLITE_BUSY ("database is locked"). The driver opens connections at 5000ms (matching better-sqlite3, since node:sqlite's own default is 0); we raise it to 15000ms here, so a regression that drops the explicit pragma is caught.
     const db = getDb(tmpDbPath())
     const timeout = Number(db.pragma('busy_timeout', { simple: true }))
     expect(timeout).toBe(15000)
@@ -108,7 +108,7 @@ describe('getDb', () => {
     const names = (
       db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
     ).map((r) => r.name)
-    // better-sqlite3 ships FTS5 enabled, so this should be present.
+    // The SQLite build Node bundles ships FTS5 enabled, so this should be present.
     expect(names).toContain('symbols_fts')
   })
 
@@ -131,7 +131,7 @@ describe('getDb error handling', () => {
   // Regression (M9): if a setup step inside initConnection throws after `new Database(...)`
   // has already opened the file (e.g. the WAL-mode check fails), the just-opened handle was
   // neither cached NOR closed -- a leaked file descriptor. This spies on the REAL
-  // Database.prototype.pragma (better-sqlite3's actual prototype, not a reimplementation) so
+  // Database.prototype.pragma (the driver's actual prototype, not a reimplementation) so
   // getDb runs its real production code path end to end; only the `journal_mode = WAL` call
   // is intercepted to simulate WAL failing to engage, matching initConnection's own check.
   it('closes the just-opened handle if the WAL-mode setup step throws inside initConnection', () => {

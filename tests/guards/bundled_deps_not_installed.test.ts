@@ -10,8 +10,15 @@
  * resolving a package that is only a devDependency and every consumer install breaks at run time.
  * That is the regression this file exists to catch, and it can only be seen in `dist/`.
  *
- * The converse is guarded too. `better-sqlite3` (a native addon) and `jsonc-parser` (reached via
- * `createRequire`) really are resolved at run time, so demoting either one ships a broken install.
+ * The converse is guarded too. `jsonc-parser` (reached via `createRequire`) really is resolved at
+ * run time, so demoting it ships a broken install.
+ *
+ * `better-sqlite3` is the third case and needs its own list. It used to be the largest thing a
+ * consumer installed; `src/sqlite_driver.ts` replaced it with Node's built-in `node:sqlite`, and it
+ * is now a devDependency kept only so `tests/sqlite_driver.test.ts` can diff the driver against it.
+ * So it must be in neither of the lists above: not inlined into the bundle, and not resolved from
+ * node_modules either. A static import of it anywhere in `src/` would break every consumer install
+ * while every test here still passed, because the repository's own tree has it.
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -34,7 +41,10 @@ const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf
 const INLINED = ['commander', 'csv-parse', 'js-yaml', 'smol-toml', 'zod'] as const
 
 /** Packages the bundle genuinely resolves at run time, so they must stay installable. */
-const RESOLVED_AT_RUNTIME = ['better-sqlite3', 'jsonc-parser'] as const
+const RESOLVED_AT_RUNTIME = ['jsonc-parser'] as const
+
+/** Packages that must appear in the shipped bundle in no form at all: not inlined, not resolved. */
+const ABSENT_FROM_THE_BUNDLE = ['better-sqlite3'] as const
 
 function distSources(): string[] {
   return fs
@@ -114,6 +124,14 @@ describe('packages the bundle inlines are not shipped to consumers', () => {
 
   it.each(RESOLVED_AT_RUNTIME)('keeps %s installable, because the bundle really does resolve it', (name) => {
     expect(Object.keys(pkg.dependencies ?? {}), 'the bundle resolves this at run time').toContain(name)
+  })
+
+  it.each(ABSENT_FROM_THE_BUNDLE)('never ships %s to a consumer in any form', (name) => {
+    expect(Object.keys(pkg.dependencies ?? {}), 'nothing in src/ imports it any more').not.toContain(name)
+    expect(Object.keys(pkg.optionalDependencies ?? {})).not.toContain(name)
+    expect(Object.keys(pkg.devDependencies ?? {}), 'the driver test diffs against it').toContain(name)
+    const offenders = distSources().filter((s) => resolvesSpecifier(s, name))
+    expect(offenders, `${name} is a devDependency; a consumer install has no copy to resolve`).toHaveLength(0)
   })
 
   // The positive control for the matcher above: if `resolvesSpecifier` silently stopped matching

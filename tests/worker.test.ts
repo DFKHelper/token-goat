@@ -777,7 +777,7 @@ describe('drainOnce', () => {
       expect(found.length).toBe(1)
       expect(found[0]?.name).toBe('knownWorkerSymbol')
     } finally {
-      // Release the better-sqlite3 handle so afterEach can remove DIR on Windows.
+      // Release the SQLite handle so afterEach can remove DIR on Windows.
       closeDb(projectDb)
     }
   })
@@ -1973,7 +1973,7 @@ describe('runWorkerLoop self-terminates when its data dir is deleted (regression
       await new Promise<void>((resolve) => setTimeout(resolve, 15))
       // Both `lastSnapshotCleanupMs`/`lastKnownRootsSweepMs` start at 0, so the very first loop
       // iteration always fires the known-roots sweep too, which opens (and caches) a
-      // better-sqlite3 connection to `${scratchDir}/global.db` -- release it first, same as this
+      // SQLite connection to `${scratchDir}/global.db` -- release it first, same as this
       // file's own afterEach does for DIR, or the still-open native handle makes the directory
       // removal below fail with EPERM on Windows.
       closeDb(path.join(scratchDir, 'global.db'))

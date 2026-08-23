@@ -44,11 +44,12 @@ updates:
       # (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to
       # skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on
       # Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on
-      # Windows needs a full Visual Studio C++ toolchain. That failed CI on windows-latest with
-      # Node 22, which is also the plain `npm install -g token-goat` path for Windows users -- the
-      # platform this tool exists for. 12.x still carries the prebuild-install script and installs
-      # from a binary everywhere, so we stay on it. Minor and patch updates on 12.x still come
-      # through.
+      # Windows needs a full Visual Studio C++ toolchain, and that failed CI on windows-latest.
+      # This no longer reaches anyone who installs token-goat -- src/sqlite_driver.ts runs on
+      # node:sqlite and better-sqlite3 is a devDependency, kept as the differential oracle in
+      # tests/sqlite_driver.test.ts -- but the same build still has to succeed on windows-latest
+      # for every CI run and on a Windows development machine, so the hold stays for that reason
+      # instead. Minor and patch updates on 12.x still come through.
       - dependency-name: better-sqlite3
         update-types:
           - version-update:semver-major
@@ -80,11 +81,12 @@ updates:
       # (`prebuild-install || node-gyp rebuild`) and set `gypfile: false` instead, trusting npm to
       # skip its default `node-gyp rebuild` for a package that ships prebuilt binaries. npm on
       # Linux and macOS does skip it; npm on Windows runs the build anyway, so installing on
-      # Windows needs a full Visual Studio C++ toolchain. That failed CI on windows-latest with
-      # Node 22, which is also the plain `npm install -g token-goat` path for Windows users -- the
-      # platform this tool exists for. 12.x still carries the prebuild-install script and installs
-      # from a binary everywhere, so we stay on it. Minor and patch updates on 12.x still come
-      # through.
+      # Windows needs a full Visual Studio C++ toolchain, and that failed CI on windows-latest.
+      # This no longer reaches anyone who installs token-goat -- src/sqlite_driver.ts runs on
+      # node:sqlite and better-sqlite3 is a devDependency, kept as the differential oracle in
+      # tests/sqlite_driver.test.ts -- but the same build still has to succeed on windows-latest
+      # for every CI run and on a Windows development machine, so the hold stays for that reason
+      # instead. Minor and patch updates on 12.x still come through.
       - dependency-name: better-sqlite3
         update-types:
           - version-update:semver-major

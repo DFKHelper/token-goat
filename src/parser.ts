@@ -2744,7 +2744,7 @@ function writeParseResult(
     }
   })
 
-  // `.immediate()` -- BEGIN IMMEDIATE -- rather than a plain call, which better-sqlite3 issues as a
+  // `.immediate()` -- BEGIN IMMEDIATE -- rather than a plain call, which the driver issues as a
   // deferred BEGIN. A deferred transaction takes its read snapshot first and only asks for the
   // write lock when it reaches a writing statement, and SQLite refuses that upgrade with
   // SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does

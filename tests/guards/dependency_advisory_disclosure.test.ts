@@ -116,9 +116,10 @@ describe('dependency advisory disclosure', () => {
   // The document now claims that install is clean rather than carrying one chain. The claim is
   // only worth making while nothing has been added back to `dependencies` that could break it.
   // The count is the part worth pinning: the document states how large that install is, and five
-  // packages the bundle inlines have since moved out of `dependencies`, which is what took it from
-  // 46 to 40. The anchor names the two that stay because the bundle genuinely resolves them at run
-  // time, so a demotion of either one fails here as well as in the bundle guard.
+  // packages the bundle inlines have since moved out of `dependencies`, which took it from 46 to
+  // 40; replacing better-sqlite3 with the node:sqlite driver then took it from 40 to 2. The anchor
+  // names the one that stays because the bundle genuinely resolves it at run time, so a demotion
+  // of it fails here as well as in the bundle guard.
   it('states the size of a no-optional install that the lock file agrees with exactly', () => {
     // Not a text match: the number is read out of the document and compared against the tree
     // resolved from package-lock.json. Exact equality is available here and nowhere else, because
@@ -129,9 +130,7 @@ describe('dependency advisory disclosure', () => {
       statedInstallSize('an install without optional packages'),
       'SECURITY.md states the size of --omit=optional; package-lock.json resolves to this. Re-measure and update the row.',
     ).toBe(measured)
-    expect(Object.keys(pkg.dependencies ?? {})).toEqual(
-      expect.arrayContaining(['better-sqlite3', 'jsonc-parser']),
-    )
+    expect(Object.keys(pkg.dependencies ?? {})).toEqual(expect.arrayContaining(['jsonc-parser']))
   })
 
   it('resolves the same no-optional tree on every platform, which is what lets the check above be exact', () => {

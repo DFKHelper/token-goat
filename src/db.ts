@@ -5,16 +5,16 @@
  * synchronous) and the index schema (files / symbols / refs / FTS5) that later
  * layers query. Each database file gets one lazily-opened, cached connection.
  *
- * better-sqlite3 is a CommonJS module that exports a default constructor; under
- * NodeNext + `allowSyntheticDefaultImports` the default import binds correctly.
+ * The connection itself comes from `./sqlite_driver.js`, a thin better-sqlite3-shaped facade over
+ * Node's built-in `node:sqlite`; nothing in this file talks to `node:sqlite` directly.
  */
 
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
 
-import Database from 'better-sqlite3'
-import type { Database as BetterSqlite3Database } from 'better-sqlite3'
+import Database from './sqlite_driver.js'
+import type { SqliteDatabase } from './sqlite_driver.js'
 
 import { dataDir, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { isDotenvPath } from './dotenv_redact.js'
@@ -26,7 +26,7 @@ import { registerReset } from './reset.js'
 const _require = createRequire(import.meta.url)
 
 // One Database handle per absolute db path. Keyed by the resolved path so two callers naming the same file via different relative strings share a handle.
-const _connections = new Map<string, BetterSqlite3Database>()
+const _connections = new Map<string, SqliteDatabase>()
 
 /**
  * Index-DB schema (matches the spec for Layer 2).
@@ -262,7 +262,7 @@ CREATE TABLE IF NOT EXISTS embedding_provenance (
 );
 `
 
-// FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
+// FTS5 is a compile-time-optional SQLite extension. Node's bundled SQLite ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
 const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name,
@@ -316,10 +316,10 @@ END;
 // Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above). v6 -> v7: added skill_version_snapshots (skill_version_drift.ts's one-shot "token-goat was upgraded since you loaded this skill" nudge). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v6 database, so no MIGRATIONS[6] step is needed (same reasoning as v5 -> v6 above). v7 -> v8: added notes (token-goat note-add/note-get/note-list -- file/symbol-attached architecture notes with a staleness fingerprint, see notes.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v7 database, so no MIGRATIONS[7] step is needed (same reasoning as v6 -> v7 above). v8 -> v9: added symbols.parent, separating the "parent container name" the regex adapters used to overload into symbols.docstring from the symbol's real doc comment (see precedingDocComment in parser.ts and makeLineSymbol/makeSpanSymbol/makeSymbolEmitter in languages/common.ts). A pre-existing v8 database's `symbols` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive like v3 -> v8 above. v9 -> v10: added hint_emissions.bytes_emitted, the per-emission spend (byte length of the hint text actually injected into context) recorded alongside the pre-existing bytes-saved figures already tracked in the `stats` table, so `token-goat hint-stats` can answer "are hints net-positive" instead of only measuring their benefit (see applyHintTracking/logHintEmission in hint_stats.ts). Left nullable with no default rather than defaulted to 0, so a pre-existing v9 database's rows -- which predate spend tracking entirely -- read as genuinely unknown spend, not a fake measured zero. A pre-existing v9 database's `hint_emissions` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive like v3 -> v8 above. v11 -> v12: added embedding_provenance (which embedding stack produced the stored vectors, see the table's own comment and ensureEmbeddingProvenance in embeddings.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v11 database, so no MIGRATIONS[11] step is needed. Deliberately no migration step even though existing vectors ARE invalidated by this change: a migration would have to run the invalidation on every database at open time, including ones whose embedding stack is absent and which therefore have nothing to re-embed with. The check belongs where embedding actually happens, and an empty provenance table on a populated index is the signal it keys on.
 export const SCHEMA_VERSION = 12 as const
 
-type Migration = (conn: BetterSqlite3Database) => void
+type Migration = (conn: SqliteDatabase) => void
 
 /** Runs `sql` (expected to be an idempotent-in-intent `ALTER TABLE ... ADD COLUMN`), swallowing exactly a "duplicate column" failure -- the column already existing on a fresh database whose CREATE TABLE already includes it -- and rethrowing anything else, so a genuine ALTER TABLE failure is never silently lost. */
-function alterTableIdempotent(conn: BetterSqlite3Database, sql: string): void {
+function alterTableIdempotent(conn: SqliteDatabase, sql: string): void {
   try {
     conn.exec(sql)
   } catch (err) {
@@ -338,7 +338,7 @@ function alterTableIdempotent(conn: BetterSqlite3Database, sql: string): void {
  * the migration -- the chunk rows carrying the secret text are deleted either way, and a vector
  * with no chunk row is unreadable (searchSemantic joins them by rowid).
  */
-function purgeDotenvEmbeddings(conn: BetterSqlite3Database): void {
+function purgeDotenvEmbeddings(conn: SqliteDatabase): void {
   let paths: string[]
   try {
     paths = (conn.prepare('SELECT DISTINCT file_path FROM chunks').all() as { file_path: string }[])
@@ -387,7 +387,7 @@ const MIGRATIONS: Record<number, Migration> = {
 }
 
 // Walks a database from its stamped version up to (but not including) `toVersion`, applying each registered migration step in order. Does not itself touch PRAGMA user_version -- the caller stamps that once every step has run.
-function runMigrations(conn: BetterSqlite3Database, fromVersion: number, toVersion: number): void {
+function runMigrations(conn: SqliteDatabase, fromVersion: number, toVersion: number): void {
   for (let v = fromVersion; v < toVersion; v++) {
     MIGRATIONS[v]?.(conn)
   }
@@ -428,7 +428,7 @@ const WAL_SWITCH_DEADLINE_MS = 15_000
  * `budgetMs` exists so the giving-up branch can be reached in a test without spending the real
  * fifteen seconds to get there. Production callers pass nothing and get that full budget.
  */
-export function enableWalWithRetry(conn: Pick<BetterSqlite3Database, 'pragma'>, budgetMs: number = WAL_SWITCH_DEADLINE_MS): void {
+export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetMs: number = WAL_SWITCH_DEADLINE_MS): void {
   const deadline = Date.now() + budgetMs
   let lastError: unknown
   for (;;) {
@@ -453,7 +453,7 @@ export function enableWalWithRetry(conn: Pick<BetterSqlite3Database, 'pragma'>, 
   }
 }
 
-function initConnection(conn: BetterSqlite3Database): void {
+function initConnection(conn: SqliteDatabase): void {
   // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
   // Set FIRST, before any statement that can contend, rather than after the two pragmas below as it
   // used to be. The switch to WAL and the schema creation that follows it both need an exclusive
@@ -491,7 +491,7 @@ function initConnection(conn: BetterSqlite3Database): void {
   // sqlite-vec is an optional dependency; the vec0 virtual table only exists when the package is installed and its extension can be loaded. Wrap the entire load+create so a missing package or load failure is non-fatal.
   try {
     // Dynamic require so a missing package does not break module resolution.
-    const sqliteVec = _require('sqlite-vec') as { load: (db: BetterSqlite3Database) => void }
+    const sqliteVec = _require('sqlite-vec') as { load: (db: SqliteDatabase) => void }
     sqliteVec.load(conn)
     conn.exec(
       `CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
@@ -529,14 +529,14 @@ function connectionKey(dbPath: string): { resolved: string; key: string } {
 }
 
 /**
- * Return the cached {@link BetterSqlite3Database} for `dbPath`, opening and
+ * Return the cached {@link SqliteDatabase} for `dbPath`, opening and
  * initializing it on first access.
  *
  * The connection is opened with the schema applied, WAL enabled, and the
  * optional FTS5 / sqlite-vec tables created when available. Subsequent calls
  * with the same resolved path return the same handle.
  */
-export function getDb(dbPath: string): BetterSqlite3Database {
+export function getDb(dbPath: string): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)
   const existing = _connections.get(key)

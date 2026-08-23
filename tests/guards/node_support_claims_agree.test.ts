@@ -31,15 +31,27 @@ function workflowNodeVersions(): { where: string; version: number }[] {
 
 describe('Node support claims', () => {
   const required = Number(/(\d+)/.exec(engines ?? '')?.[1] ?? -1)
+  /** The whole floor, not just its major: `>=22.16.0` -> `22.16.0`. */
+  const floor = /(\d+(?:\.\d+)*)/.exec(engines ?? '')?.[1] ?? ''
+  // How a human writes that floor, which is how the README writes it: trailing zero segments are dropped, so `22.0.0` reads as "22" and `22.16.0` as "22.16". Comparing only the major would have let the README keep saying "Node.js 22" after the node:sqlite driver raised the real floor to 22.16, which is the drift this line exists to catch.
+  const label = floor.replace(/(?:\.0)+$/, '')
   const pinned = workflowNodeVersions()
 
   it('finds the declarations at all, so an empty sweep cannot pass as a clean one', () => {
     expect(required).toBeGreaterThan(0)
     expect(pinned.length).toBeGreaterThan(0)
+    expect(label.length).toBeGreaterThan(0)
+    // The trim only ever removes zeroes, so the label cannot quietly become a weaker claim than the
+    // floor it is derived from: `22.16.0` may shorten to `22.16`, never to `22`.
+    const dropped = floor.split('.').slice(label.split('.').length)
+    expect(
+      dropped.every((part) => Number(part) === 0),
+      `the README label "${label}" drops a non-zero part of the engines floor "${floor}"`,
+    ).toBe(true)
   })
 
   it('states the engines floor in the README requirements line', () => {
-    expect(readme).toContain(`Node.js ${required} or later`)
+    expect(readme).toContain(`Node.js ${label} or later`)
   })
 
   it('never runs CI on a version the package says it does not support', () => {

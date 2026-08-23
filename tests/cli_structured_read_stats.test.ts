@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
-import Database from 'better-sqlite3'
+import Database from '../src/sqlite_driver.js'
 
 import { run } from '../src/cli.js'
 import { summarize } from '../src/stats.js'

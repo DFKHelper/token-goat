@@ -18,7 +18,7 @@ import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
 import { pathEqClause as pathEq, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 
-/** Raw `symbols` row as returned by better-sqlite3 (snake_case columns). */
+/** Raw `symbols` row as returned by SQLite (snake_case columns). */
 interface SymbolRow {
   readonly file_path: string
   readonly name: string

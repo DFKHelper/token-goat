@@ -9,19 +9,19 @@
  * Security posture (sqlite-query only executes text an agent -- or a prompt-injection payload
  * embedded in file content the agent is processing -- hands it, so this is a trust boundary):
  *
- *  1. The connection itself is opened `{ readonly: true }` (a real, supported better-sqlite3 /
- *     libsqlite3 option -- SQLite's core refuses any write at the OS/VFS level under
- *     `SQLITE_OPEN_READONLY`, independent of anything the SQL text says).
+ *  1. The connection itself is opened `{ readonly: true }` (a real, supported libsqlite3 option --
+ *     SQLite's core refuses any write at the OS/VFS level under `SQLITE_OPEN_READONLY`,
+ *     independent of anything the SQL text says).
  *  2. `validateReadOnlySelect` rejects the SQL text itself before it ever reaches
  *     `db.prepare()`: single-statement only (no `;`-separated multi-statement injection),
  *     must start with `SELECT` or `WITH` (CTE prefix), and must not contain any
  *     data-modification/DDL/transaction/attach/pragma keyword anywhere outside a string
  *     literal or comment.
- *  3. `stmt.reader` (better-sqlite3's own "does this statement return rows" flag) is checked
+ *  3. `stmt.reader` (SQLite's own "does this statement return rows" classification) is checked
  *     after `prepare()` as a third, independent layer -- catches any statement shape our
  *     keyword scan didn't anticipate.
  *
- * Row/execution cap: better-sqlite3 is synchronous and exposes no query-cancellation or
+ * Row/execution cap: the SQLite driver is synchronous and exposes no query-cancellation or
  * progress-handler hook (verified against the installed 11.10.0 -- no `interrupt`/`progress`
  * on `Database`/`Statement`), so there is no real wall-clock timeout available. The mitigation
  * is a hard cap on rows pulled from the result iterator (`stmt.iterate()`, not `stmt.all()`,
@@ -36,8 +36,8 @@
  */
 
 import * as fs from 'node:fs'
-import Database from 'better-sqlite3'
-import type { Database as BetterSqlite3Database } from 'better-sqlite3'
+import Database from './sqlite_driver.js'
+import type { SqliteDatabase } from './sqlite_driver.js'
 
 /** Hard cap on rows pulled from a query's result iterator, independent of any caller-supplied
  * `--head`. Bounds worst-case memory/time for "return everything" queries against a huge table
@@ -45,7 +45,7 @@ import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 export const SQLITE_QUERY_ROW_CAP = 5000
 
 // First 16 bytes of every valid SQLite database file (the fixed "SQLite format 3\0" header
-// magic) -- checked before ever handing the path to better-sqlite3, so a non-database file
+// magic) -- checked before ever handing the path to SQLite, so a non-database file
 // (or a corrupt one whose header is intact but body isn't) gets a clean "not a SQLite
 // database" message instead of an opaque native-addon exception.
 const SQLITE_MAGIC = Buffer.from([0x53,0x51,0x4c,0x69,0x74,0x65,0x20,0x66,0x6f,0x72,0x6d,0x61,0x74,0x20,0x33,0x00])
@@ -79,7 +79,7 @@ export function isSqliteFile(filePath: string): boolean {
 /** Opens `filePath` as a read-only SQLite connection. Never creates a file (fileMustExist) and
  * never accepts a path that doesn't exist or doesn't look like a SQLite database -- both fail
  * fast with a plain Error instead of reaching the native addon with a bogus path. */
-export function openReadonlySqlite(filePath: string): BetterSqlite3Database {
+export function openReadonlySqlite(filePath: string): SqliteDatabase {
   if (!fs.existsSync(filePath)) {
     throw new Error(`file not found: ${filePath}`)
   }
@@ -356,7 +356,7 @@ export function validateReadOnlySelect(sql: string): void {
 }
 
 // A 64-bit SQLite INTEGER column (large snowflake/hash IDs, nanosecond timestamps) can exceed
-// Number.MAX_SAFE_INTEGER. better-sqlite3's default (non-safe-integer) mode silently rounds such
+// Number.MAX_SAFE_INTEGER. The driver's default (non-safe-integer) mode silently rounds such
 // a value to the nearest representable double when reading it back -- e.g. 9223372036854775807
 // comes back as 9223372036854776000, with no error and no indication the value was corrupted.
 // runReadOnlySqliteQuery below reads with safeIntegers enabled and normalizes each value through
@@ -384,7 +384,7 @@ export interface SqliteQueryResult {
  * instead of materializing an unbounded array first. See the module doc for why this does not
  * bound a single-row pathological aggregate.
  */
-/** Converts one raw better-sqlite3 result value (read with `safeIntegers(true)`, so every SQLite
+/** Converts one raw SQLite result value (read with `safeIntegers(true)`, so every SQLite
  * INTEGER column arrives as a `bigint`) into a {@link SqliteScalar}: a `bigint` that still fits a
  * safe JS number converts to a plain `number` (identical to the pre-existing non-safe-integer
  * behavior for the overwhelmingly common case), while one that doesn't converts to its exact
@@ -416,7 +416,7 @@ export function runReadOnlySqliteQuery(filePath: string, sql: string, opts: { ro
       throw new Error(`invalid SQL: ${msg}`, { cause: e })
     }
 
-    // Third defense-in-depth layer: better-sqlite3's own classification of whether this
+    // Third defense-in-depth layer: SQLite's own classification of whether this
     // statement produces rows. Catches any non-SELECT shape the keyword scan didn't
     // anticipate (e.g. a future SQLite statement form not yet in FORBIDDEN_KEYWORDS).
     if (!stmt.reader) {

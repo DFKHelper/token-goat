@@ -906,10 +906,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const dir = mkIsolated('tg-matrix-sqliteschema-')
     const dbPath = path.join(dir, 'fixture.db')
     execFileSync(process.execPath, [
+      '--no-warnings',
       '-e',
-      "const Database = require(" +
-        JSON.stringify(path.join(ROOT, 'node_modules', 'better-sqlite3')) +
-        "); const db = new Database(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); db.prepare('INSERT INTO users (id, name) VALUES (?, ?)').run(1, 'Alice'); db.close();",
+      "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); db.prepare('INSERT INTO users (id, name) VALUES (?, ?)').run(1, 'Alice'); db.close();",
       dbPath,
     ])
     const r = run(['sqlite-schema', dbPath])
@@ -921,10 +920,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const dir = mkIsolated('tg-matrix-sqlitequery-')
     const dbPath = path.join(dir, 'fixture.db')
     execFileSync(process.execPath, [
+      '--no-warnings',
       '-e',
-      "const Database = require(" +
-        JSON.stringify(path.join(ROOT, 'node_modules', 'better-sqlite3')) +
-        "); const db = new Database(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); const ins = db.prepare('INSERT INTO users (id, name) VALUES (?, ?)'); ins.run(1, 'Alice'); ins.run(2, 'Bob'); db.close();",
+      "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); const ins = db.prepare('INSERT INTO users (id, name) VALUES (?, ?)'); ins.run(1, 'Alice'); ins.run(2, 'Bob'); db.close();",
       dbPath,
     ])
     const r = run(['sqlite-query', dbPath, 'SELECT id, name FROM users ORDER BY id'])

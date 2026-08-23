@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
-import Database from 'better-sqlite3'
+import Database from '../src/sqlite_driver.js'
 import { closeAllDbs } from '../src/db.js'
 import {
   summarize,
