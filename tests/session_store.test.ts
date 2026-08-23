@@ -19,6 +19,7 @@ import {
   takePendingLargeFileHint,
   type FileEntry,
   type SerializedSession,
+  MAX_SEEN_IMAGE_HASHES,
 } from '../src/session.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 
@@ -131,6 +132,48 @@ describe('save/load round-trip', () => {
 
     loadSessionState('sid-tabcontext')
     expect(exportSessionState().lastTabContext).toBe('Tab Context: tab 1')
+  })
+
+  it('persists and restores seenImageHashes across a save/load round-trip, so screenshot dedup survives between hook processes', () => {
+    // Same six touch points lastTabContext needed, and the test above records what happens when two
+    // of them are missed: the feature works inside one process, every test passes, and the thing it
+    // exists for -- recognising a repeat sent by the NEXT hook process -- never happens once.
+    importSessionState({ ...empty(), seenImageHashes: ['aaa', 'bbb'] })
+    saveSessionState('sid-seenimages')
+
+    importSessionState(empty())
+    expect(exportSessionState().seenImageHashes).toBeUndefined()
+
+    loadSessionState('sid-seenimages')
+    expect(exportSessionState().seenImageHashes).toEqual(['aaa', 'bbb'])
+  })
+
+  it('unions seenImageHashes from two concurrent writers instead of letting the later save clobber the earlier', () => {
+    // Unlike lastTabContext this is an accumulating collection: two hook processes can each see a
+    // screenshot the other never did, and picking one writer's list would forget the other's.
+    importSessionState({ ...empty(), seenImageHashes: ['aaa'] })
+    saveSessionState('sid-seenimages-merge')
+
+    importSessionState({ ...empty(), seenImageHashes: ['bbb'] })
+    saveSessionState('sid-seenimages-merge')
+
+    loadSessionState('sid-seenimages-merge')
+    expect(exportSessionState().seenImageHashes?.slice().sort()).toEqual(['aaa', 'bbb'])
+  })
+
+  it('caps a merged seenImageHashes list, keeping the newest, so a long browsing session cannot grow the file without bound', () => {
+    const disk = Array.from({ length: MAX_SEEN_IMAGE_HASHES }, (_, i) => `d${i}`)
+    importSessionState({ ...empty(), seenImageHashes: disk })
+    saveSessionState('sid-seenimages-cap')
+
+    importSessionState({ ...empty(), seenImageHashes: ['newest-a', 'newest-b'] })
+    saveSessionState('sid-seenimages-cap')
+
+    loadSessionState('sid-seenimages-cap')
+    const got = exportSessionState().seenImageHashes ?? []
+    expect(got).toHaveLength(MAX_SEEN_IMAGE_HASHES)
+    expect(got.slice(-2)).toEqual(['newest-a', 'newest-b'])
+    expect(got).not.toContain('d0')
   })
 })
 
