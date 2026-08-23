@@ -27,17 +27,26 @@ let nonGitProjectDir: string
 let indexedProjectDir: string
 let homeDir: string
 
-function run(args: string[], cwd: string, home: string): { status: number; out: string } {
+/**
+ * `out` is stdout and stderr together, which is what the message assertions below want: a hint
+ * counts whichever stream it came out on. `stdout` is kept separate because the `--json` cases
+ * must not: a caller pipes stdout and parses it, and stderr carries lines that have nothing to do
+ * with the query -- the one-off embedding-model download notice in particular, which appears only
+ * on a machine that has not cached the model yet. Parsing the combined string made those two cases
+ * pass on a warm machine and fail on a cold one.
+ */
+function run(args: string[], cwd: string, home: string): { status: number; out: string; stdout: string } {
   try {
     const stdout = execFileSync(process.execPath, [BUNDLE, ...args], {
       cwd,
       encoding: 'utf-8',
       env: { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home },
     })
-    return { status: 0, out: stdout }
+    return { status: 0, out: stdout, stdout }
   } catch (e) {
     const err = e as { status?: number; stdout?: string; stderr?: string }
-    return { status: err.status ?? 1, out: (err.stdout ?? '') + (err.stderr ?? '') }
+    const stdout = err.stdout ?? ''
+    return { status: err.status ?? 1, out: stdout + (err.stderr ?? ''), stdout }
   }
 }
 
@@ -94,7 +103,7 @@ describe('empty-index hint', () => {
   it('semantic --json: unindexed project stays valid JSON and names indexEmpty', () => {
     const r = run(['semantic', 'noSuchThingAtAll', '--json'], nonGitProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    const parsed = JSON.parse(r.out) as { indexEmpty?: boolean; hint?: string; items: unknown[] }
+    const parsed = JSON.parse(r.stdout) as { indexEmpty?: boolean; hint?: string; items: unknown[] }
     expect(parsed.indexEmpty).toBe(true)
     expect(parsed.hint).toContain(EMPTY_INDEX_SNIPPET)
     expect(parsed.items).toEqual([])
@@ -102,7 +111,7 @@ describe('empty-index hint', () => {
 
   it('semantic --json: indexed project with a genuine miss stays byte-identical (no indexEmpty field)', () => {
     const r = run(['semantic', 'noSuchThingAtAll', '--json'], indexedProjectDir, homeDir)
-    const parsed = JSON.parse(r.out) as { indexEmpty?: boolean; hint?: string }
+    const parsed = JSON.parse(r.stdout) as { indexEmpty?: boolean; hint?: string }
     expect(parsed.indexEmpty).toBeUndefined()
     expect(parsed.hint).toBeUndefined()
   })
