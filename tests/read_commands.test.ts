@@ -7178,6 +7178,39 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
     expect(withFlag).not.toContain('vendor/x.ts')
     expect(withFlag).toContain('all 1 reference was filtered out by --grep')
   })
+
+  // Pins both halves of a divergence that renderRefsTargets now carries as one named option
+  // (`annotateHiddenByGrep`) instead of as a silent difference between two loops a hundred lines
+  // apart. The same-file multi-symbol path emits `hiddenByGrep`, so an entry emptied by --grep is
+  // distinguishable from one that genuinely has no references; the cross-file path never has.
+  // Neither half was asserted anywhere, so flipping that option in either direction left the whole
+  // suite green -- which is how the two loops came apart to begin with. This does not endorse the
+  // difference. It makes changing it a deliberate act with a failing test attached, in the
+  // direction the same-file comment argues is correct.
+  it('emits hiddenByGrep on the same-file multi-symbol JSON path, and -- today -- not on the cross-file one', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'alpha') return [ref('src/cli.ts', 5, 'alpha()'), ref('vendor/x.ts', 1, 'alpha()')]
+      if (opts.name === 'beta') return [ref('vendor/y.ts', 2, 'beta()')]
+      return []
+    })
+    type Entry = { totalCount: number; hiddenByGrep?: number }
+
+    const sameFile = JSON.parse(
+      capture(() => runRefs({ spec: 'src/a.ts::alpha,beta', grep: '^src/', json: true })).stdout,
+    ) as Record<string, Entry>
+    expect(sameFile['alpha']?.hiddenByGrep).toBe(1)
+    // The case the key exists for: nothing left after --grep, but 1 reference does exist.
+    expect(sameFile['beta']?.totalCount).toBe(0)
+    expect(sameFile['beta']?.hiddenByGrep).toBe(1)
+
+    const crossFile = JSON.parse(
+      capture(() => runRefs({ spec: 'src/a.ts::alpha,src/b.ts::beta', grep: '^src/', json: true })).stdout,
+    ) as Record<string, Entry>
+    expect(crossFile['src/a.ts::alpha']?.totalCount).toBe(1)
+    expect(crossFile['src/a.ts::alpha']?.hiddenByGrep).toBeUndefined()
+    expect(crossFile['src/b.ts::beta']?.totalCount).toBe(0)
+    expect(crossFile['src/b.ts::beta']?.hiddenByGrep).toBeUndefined()
+  })
 })
 
 // getDisplayRoot()/toDisplayPath() wiring: runRefsSingle never resolved its own project root
