@@ -577,7 +577,7 @@ token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 | `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` prunes dead-link and duplicate entries from `MEMORY.md` and writes the file (destructive — inspect the report first). |
 | `token-goat bootstrap-audit [--project <path>] [--json]` | Audit Claude Code startup-context contributors without outputting prompt bodies: global/project `CLAUDE.md` totals plus agent/skill frontmatter metadata, largest entries, diagnostics, and CI warning/failure budgets (`--warn-tokens`, `--fail-tokens`, `--warn-bytes`, `--fail-bytes`). |
 | `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
-| `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, Bash commands run repeatedly without hitting token-goat's own bash-output cache, and the assistant's own text-output cost (generated tokens plus a cache-unaware re-send upper bound). See [Session waste ledger](#session-waste-ledger) below. |
+| `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json] [--copilot]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, Bash commands run repeatedly without hitting token-goat's own bash-output cache, and the assistant's own text-output cost (generated tokens plus a cache-unaware re-send upper bound). See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat mcp-audit [--project <path>] [--json]` | MCP server schema cost report: scans .mcp.json for installed MCP servers, estimates per-server token costs from cached tool calls, correlates schema complexity against real call frequency. Outputs as markdown table or JSON. |
 | `token-goat recall ["<query>"] [--type bash\|web\|mcp] [--limit <n>] [--json]` | Full-text search across every cached bash-output, web-output, and mcp-output entry at once — one command instead of remembering which cache type holds a prior result. Ranked by relevance (BM25 via SQLite FTS5). With **no query**, lists every cached entry newest-first instead of searching, so you can browse when the ids have scrolled out of context and you have no term to search for. `--type` narrows to one cache type; `--limit` caps results (default 10). Each hit shows its cache type, id, the exact recall command (`bash-output <id>` / `web-output <id>` / `mcp-output <id>`), and a content snippet. See [Cross-cache recall](#cross-cache-recall) below. |
 | `token-goat hint-stats [--json] [--reset] [--mark-effective <cat>] [--mark-ineffective <cat>]` | Per-category efficacy report for token-goat's discretionary hint hooks: how often each hint category was emitted, how often the agent actually followed its specific suggestion within the next few tool calls, whether the category is currently auto-suppressed, and the bytes each category spent (injected into context) plus an all-time saved/spent/net summary line. `--reset` clears all tracked data; `--mark-effective`/`--mark-ineffective <category>` record a manual vote as a supplement to the automatic signal. See [Hint efficacy tracking](#hint-efficacy-tracking) below. |
@@ -735,6 +735,24 @@ Total tokens: 18420
 ```
 
 `--top <n>` controls how many entries appear under "Top expensive tool calls" (default 10). `--json` prints the same report as machine-readable JSON instead.
+
+`--copilot` reads a GitHub Copilot CLI session instead, from `<copilot-home>/session-state/<id>/events.jsonl`. It is a different report rather than the same one with different inputs, because Copilot writes down its own token accounting at shutdown and token-goat reports those numbers rather than estimating them:
+
+```
+$ token-goat waste --copilot
+
+## Per-request fixed overhead (Copilot's own token counts)
+  System prompt:     8,981 tok
+  Tool definitions:  11,548 tok
+  Conversation:      722 tok
+
+## Tool definitions by MCP server (estimated)
+  github-mcp-server: 6 tools, 6 KB, ~2,135 tok
+  ~2,135 tok estimated across 1 server, re-sent every request.
+  Copilot counted 11,548 tok of tool definitions in total, so this is roughly 18.5% of it.
+```
+
+The fixed overhead is the largest number in a Copilot session and no hook can reach it: Copilot assembles the system prompt and the tool definitions natively, with nothing between assembly and send. Only configuration moves it. The per-server breakdown exists to make that configuration decision possible, since one aggregate says the tool definitions are expensive without saying which tools. It is read from Copilot's own MCP tool cache, counts only the fields a model is actually sent, and is labelled an estimate throughout: it comes from byte length rather than Copilot's tokeniser, and it deliberately does not add up to Copilot's total, because Copilot's own built-in tools are not cached there.
 
 The "Assistant output" section is separate from the tool-call ledger above it: `generatedTokens` is what was actually paid, once, to produce the assistant's own text turns. `resendCeilingTokens` is a cache-unaware upper bound on how much re-sending those turns as conversation history on every later request could cost — not real spend, since Claude Code's prompt caching bills a repeated conversation prefix at cache-read rates, a fraction of full input price. Treat it as a ceiling on how bad unbounded verbosity could get, not as a dollar figure.
 

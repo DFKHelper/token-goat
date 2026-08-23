@@ -154,6 +154,26 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
    *   `additionalContext`; `modifiedResult` is documented as not honored there. So on Copilot the
    *   output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and no
    *   response shape token-goat's shim can emit changes that. Known gap, deliberately recorded.
+   *   What `additionalContext` does on that event is no longer doc-derived: app.js offset 2043380
+   *   reads the native processor's return and, when it carries `additionalContext`, either folds
+   *   it into `textResultForLlm` (if `appendFailureContextToToolResult` is set) or formats it and
+   *   pushes `{content, source: "system"}` onto `toolResult.newMessages`. So the channel is real
+   *   and model-visible -- it just carries advice alongside the failure, never a replacement for
+   *   it. Wiring it would need a tenth `HOOK_EVENTS` member, since routing failures through
+   *   `post_tool_use` would let success-path handlers mark a file as successfully read when the
+   *   read failed.
+   * - `pre_compact` is wired and fires, but nothing it returns can reach the model. Both dispatch
+   *   sites call it in statement position and drop the result: app.js offset 2467452 (the manual
+   *   `/compact` path) and offset 2571216 (`case "execute_pre_compact_hook"`). The contrast is
+   *   what makes this conclusive rather than an absence of evidence -- the same `event()` runner's
+   *   return IS read for other events, e.g. `notification` at offset 2296123 assigns it and
+   *   forwards `additionalContext` as a prepended system prompt. The compaction prompt is then
+   *   built from session history and the user's own focus text, with no hook channel into it.
+   *   So token-goat's `pre_compact` registration here is observe-only by construction, not merely
+   *   unused: a future attempt to inject a session manifest through it would silently do nothing.
+   *   Not verified: whether the native declarative runner applies `additionalContext` itself. The
+   *   trail ends in stripped Rust. That it would make the explicit JS handling for `notification`
+   *   and `userPromptSubmitted` redundant is an argument, not a proof.
    */
   {
     harness: 'copilot_cli',
