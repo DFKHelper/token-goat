@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **The Copilot repeat-failure notice shipped in 2.8.0 never actually said anything.** Copilot hands a failed tool call to token-goat on its own separate channel, and on that channel the text of the failure arrives in a field of its own rather than alongside the tool's output, because a call that failed has no output. The small program token-goat installs into Copilot was copying across the tool's name, its arguments and its output, and quietly leaving that one field behind. So the part of token-goat that watches for the same failure happening twice was handed a failure with no text in it, found nothing to recognise, and stayed silent every single time. The feature was installed, switched on, fully tested and doing nothing at all. The field is now carried across. This was found by running the real thing rather than by a test: every test of the watching part handed it a failure that already had its text, which is exactly why none of them could notice the text going missing on the way in. A test now checks the handover itself. See [src/bridges/copilot_cli.ts](src/bridges/copilot_cli.ts) and [src/hooks_tool_failure.ts](src/hooks_tool_failure.ts).
+
 ## [2.8.0] - 2026-08-23
 
 ### Added

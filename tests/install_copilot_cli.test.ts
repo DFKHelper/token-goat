@@ -988,8 +988,13 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     }
   })
 
-  /** Runs one preToolUse call through the shim and hands back the canonical payload it sent on to token-goat. */
-  function canonicalFor(copilotTool: string, toolArgs: Record<string, unknown>): Record<string, unknown> {
+  /** Runs one hook call through the shim and hands back the canonical payload it sent on to token-goat. */
+  function canonicalFor(
+    copilotTool: string,
+    toolArgs: Record<string, unknown>,
+    event = 'preToolUse',
+    extraPayload: Record<string, unknown> = {},
+  ): Record<string, unknown> {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
     const script =
@@ -1000,7 +1005,12 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     fs.writeFileSync(binPath, script, 'utf8')
     if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
     const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
-    runShim('preToolUse', JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs }), cwd, env)
+    runShim(
+      event,
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs, ...extraPayload }),
+      cwd,
+      env,
+    )
     return JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
   }
 
@@ -1045,6 +1055,24 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     ]) {
       expect(canonicalFor(copilotTool, { shellId: 'shell-7' })['tool_name']).toBe(copilotTool)
     }
+  })
+
+  // Copilot's PostToolUseFailureHookInput (copilot-sdk/types.d.ts:1042) is
+  // {toolName, toolArgs, error} -- there is no toolResult, so the failure text only
+  // ever arrives in `error`, a plain string. src/hooks_tool_failure.ts keys the
+  // repeat-failure brake on that text and returns pass when it finds none, so a shim
+  // that drops the field leaves the whole feature wired, green and doing nothing on
+  // every single call. The handler's own tests hand it a payload that already has
+  // `error`, which is exactly why they could not catch this.
+  it('forwards postToolUseFailure error text into the canonical payload, which is the only place the failure text exists', () => {
+    const captured = canonicalFor('bash', { command: 'nope' }, 'postToolUseFailure', {
+      error: 'command not found: nope',
+    })
+    expect(captured['error']).toBe('command not found: nope')
+  })
+
+  it('does not invent an error field on hook events that have none', () => {
+    expect(canonicalFor('bash', { command: 'ls' })).not.toHaveProperty('error')
   })
 
   it('never propagates an uncaught exception or a non-zero exit code, even for adversarial/malformed payloads the per-step guards were not written against', () => {
