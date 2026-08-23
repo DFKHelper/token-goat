@@ -1,6 +1,8 @@
 import { tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { unlinkSync } from 'node:fs';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { HookEvent } from '../src/hook_registry.js';
 import * as util from '../src/util.js';
 
@@ -609,5 +611,154 @@ describe('hooks_session', () => {
       expect(result.hookType).toBe('context');
       expect((result as { context: string }).context).toContain(`upgraded v0.0.0-test-old -> v${VERSION}`);
     });
+  });
+});
+
+/**
+ * Hints about harness-injected context: an oversized task list, and a skill body that slash-command
+ * expansion has sent more than once.
+ *
+ * Neither shape ever reaches a hook -- PreToolUse never fires for TaskCreate/TaskUpdate, and slash
+ * expansion happens before any hook runs -- so the only place they are observable is the transcript
+ * file whose path the hook payload already carries. These tests drive that path end to end: a real
+ * file on disk, read through the same tail-and-filter the hook uses.
+ */
+describe('resident-context hints', () => {
+  const written: string[] = [];
+
+  afterEach(() => {
+    while (written.length > 0) {
+      const file = written.pop();
+      if (file !== undefined) {
+        try {
+          unlinkSync(file);
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  });
+
+  function writeTranscript(lines: string[]): string {
+    const file = join(tmpdir(), `tg-hs-transcript-${process.pid}-${nonce()}.jsonl`);
+    writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+    written.push(file);
+    return file;
+  }
+
+  function taskReminder(completed: number, pending: number, descriptionSize: number): string {
+    const items = [
+      ...Array.from({ length: completed }, (_, i) => ({
+        id: `c${i}`,
+        subject: `done ${i}`,
+        description: 'd'.repeat(descriptionSize),
+        status: 'completed',
+      })),
+      ...Array.from({ length: pending }, (_, i) => ({
+        id: `p${i}`,
+        subject: `todo ${i}`,
+        description: 'p'.repeat(descriptionSize),
+        status: 'pending',
+      })),
+    ];
+    return JSON.stringify({ attachment: { type: 'task_reminder', itemCount: items.length, content: items } });
+  }
+
+  function skillBody(name: string, size: number): string {
+    // Forward-slash spelling on purpose; the Windows backslash spelling is covered in
+    // tests/resident_context.test.ts, and the name parser accepts either separator.
+    const text = `Base directory for this skill: /home/someone/.claude/skills/${name}\n\n# ${name}\n\n${'x'.repeat(size)}`;
+    return JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text }] } });
+  }
+
+  function promptEvent(sessionId: string, transcriptPath?: string): HookEvent {
+    return {
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      toolInput: {},
+      sessionId,
+      agentId: undefined,
+      raw: { prompt: 'ok', ...(transcriptPath !== undefined ? { transcript_path: transcriptPath } : {}) },
+    };
+  }
+
+  it('warns about a large task list and points at the tool that can prune it', async () => {
+    const transcript = writeTranscript([taskReminder(40, 4, 900)]);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
+
+    expect(result.hookType).toBe('context');
+    const context = (result as { context: string }).context;
+    expect(context).toContain('40 of 44');
+    expect(context).toContain('TaskUpdate');
+  });
+
+  it('warns only once per session, so the scan stops running after it fires', async () => {
+    const transcript = writeTranscript([taskReminder(40, 4, 900)]);
+    const sessionId = nonce();
+
+    const first = await userPromptSubmitHandler(promptEvent(sessionId, transcript));
+    const second = await userPromptSubmitHandler(promptEvent(sessionId, transcript));
+
+    expect((first as { context: string }).context).toContain('TaskUpdate');
+    expect(second.hookType).toBe('pass');
+  });
+
+  it('says nothing about a small task list', async () => {
+    const transcript = writeTranscript([taskReminder(2, 1, 20)]);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('says nothing about a large list that is all outstanding work', async () => {
+    // Nothing completed means nothing to prune; advising a prune here would be wrong.
+    const transcript = writeTranscript([taskReminder(0, 40, 900)]);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('attributes a skill body that slash expansion injected more than once', async () => {
+    const transcript = writeTranscript([skillBody('superman', 40_000), skillBody('superman', 40_000)]);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
+
+    expect(result.hookType).toBe('context');
+    const context = (result as { context: string }).context;
+    expect(context).toContain('`superman`');
+    expect(context).toContain('2 times');
+  });
+
+  it('says nothing about a skill body injected once', async () => {
+    const transcript = writeTranscript([skillBody('superman', 40_000)]);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('passes through when the payload carries no transcript path', async () => {
+    const result = await userPromptSubmitHandler(promptEvent(nonce()));
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('passes through when the transcript path does not exist, rather than throwing', async () => {
+    const missing = join(tmpdir(), `tg-hs-absent-${nonce()}.jsonl`);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), missing));
+
+    expect(result.hookType).toBe('pass');
+  });
+
+  it('passes through on a corrupt transcript rather than failing the user turn', async () => {
+    const transcript = writeTranscript(['not json', '{"broken":', '']);
+
+    const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
+
+    expect(result.hookType).toBe('pass');
   });
 });

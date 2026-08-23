@@ -994,6 +994,39 @@ function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, 
 }
 
 // Returns the previously-served range that overlaps [start, end] the most (by shared line count), or null if none overlap.
+/**
+ * Hint for a leading-lines read (`head -n N file`, `Get-Content file | Select-Object -First N`):
+ * the overlap warning when those lines were already served this session, the ordinary surgical
+ * hint when they were not.
+ *
+ * These commands have always *written* to the line-range ledger -- `recordBashFileReadsForSessionCache`
+ * records 1..n once the command succeeds, because leading-lines reads are the one truncated shape
+ * whose absolute range is known -- but nothing ever read that entry back. So a second
+ * `head -30 CHANGELOG.md` produced the same generic advice as the first, and never mentioned that
+ * the lines were already in context. A ledger's write half and read half are separately observable,
+ * and a guard holding only one of them is indistinguishable from a working guard from the outside.
+ *
+ * `tail` deliberately stays out of this: its absolute start line depends on the file's total length,
+ * which this hook does not know, so it is recorded as truncated rather than as a range and there is
+ * no trustworthy range here to compare against.
+ *
+ * Checks without recording, because for these shapes the recording is the post-hook's job and
+ * happens only if the command actually succeeds.
+ */
+function leadingLinesHint(
+  lead: string,
+  hintPath: string,
+  start: number,
+  end: number,
+  flags: { isConfig: boolean; isDoc: boolean; isSql: boolean },
+  preHookCwd: string | null,
+): string {
+  const key = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
+  const prior = findRangeOverlap(getFileLineRanges(key), start, end)
+  if (prior !== null) return sedOverlapHint(hintPath, prior, start, end)
+  return lead + surgicalHintForConfigDoc(hintPath, flags.isConfig, flags.isDoc, flags.isSql)
+}
+
 function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start: number, end: number): readonly [number, number] | null {
   let best: readonly [number, number] | null = null
   let bestOverlap = 0
@@ -2166,10 +2199,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
-    const { filePath, isDoc, isConfig, isSql } = headResult
+    const { filePath, isDoc, isConfig, isSql, n } = headResult
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    return contextOutput('`head` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
+    return contextOutput(leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
   }
 
   const gcTailResult = extractGetContentTail(cmd)
@@ -2182,10 +2215,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
-    const { filePath, isDoc, isConfig, isSql } = gcSelectResult
+    const { filePath, isDoc, isConfig, isSql, n } = gcSelectResult
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Select-Object -First` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
+    return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
   }
 
   const nodeRead = extractNodeFileRead(cmd)

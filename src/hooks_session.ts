@@ -7,6 +7,15 @@ import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
 import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
+import { recordStat } from './stats.js';
+import {
+  accumulateResidentLines,
+  lineMayCarryResidentSignal,
+  readTranscriptTail,
+  repeatedSkillBodyHint,
+  summarizeResidentContext,
+  taskListPruneHint,
+} from './resident_context.js';
 
 const EMBEDDED_SKILL_CONTEXT_RE = /^\s*<skill-context\b/i;
 const CONTINUATION_PROMPT_RE = /^(?:continue|resume|next|go on)$/i;
@@ -15,6 +24,51 @@ const SCHEDULED_PROMPT_PRESSURE_THRESHOLDS = new Set([25, 100, 250]);
 
 function promptFingerprint(prompt: string): string {
   return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
+}
+
+/**
+ * Hints about context the harness injected and no hook ever saw: an oversized task list, and a
+ * skill body that slash expansion has sent more than once. See resident_context.ts.
+ *
+ * Both are one-shot per session, and that is also what bounds the cost: once each hint has fired
+ * there is nothing left to look for, so the scan stops running entirely. Until then it reads a
+ * capped window from the end of the transcript and, before parsing anything, drops the ~98% of
+ * lines that cannot carry either signal.
+ *
+ * Advisory by construction. A task list may hold items owned by other agents, so the hint names
+ * TaskUpdate and stops there; token-goat never edits a task itself.
+ */
+function residentContextHints(event: HookEvent): string[] {
+  const transcriptPath = event.raw['transcript_path'];
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return [];
+
+  const taskKey = `resident-task-list:${event.sessionId}`;
+  const skillKey = `resident-skill-body:${event.sessionId}`;
+  const wantTask = !wasHintShown(taskKey);
+  const wantSkill = !wasHintShown(skillKey);
+  if (!wantTask && !wantSkill) return [];
+
+  const lines = readTranscriptTail(transcriptPath).filter(lineMayCarryResidentSignal);
+  if (lines.length === 0) return [];
+  const summary = summarizeResidentContext(accumulateResidentLines(lines));
+
+  const hints: string[] = [];
+  if (wantTask) {
+    const hint = taskListPruneHint(summary.latestTaskList);
+    if (hint !== null) {
+      markHintShown(taskKey);
+      hints.push(hint);
+    }
+  }
+  if (wantSkill) {
+    const hint = repeatedSkillBodyHint(summary.repeatedSkillBodies);
+    if (hint !== null) {
+      markHintShown(skillKey);
+      hints.push(hint);
+    }
+  }
+  if (hints.length > 0) recordStat('session_hint', 0, 0);
+  return hints;
 }
 
 async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
@@ -85,7 +139,11 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
     // it is a standalone, occasional line, not another terse `key: value` fragment.
     const driftNudge = await checkSkillVersionDrift(event.sessionId);
 
-    if (parts.length === 0 && !driftNudge) {
+    // Standalone sentences, so they join driftNudge on their own lines rather than the bracketed
+    // `key: value` summary.
+    const residentHints = residentContextHints(event);
+
+    if (parts.length === 0 && !driftNudge && residentHints.length === 0) {
       return passOutput();
     }
 
@@ -95,6 +153,9 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
     }
     if (driftNudge) {
       lines.push(driftNudge);
+    }
+    for (const hint of residentHints) {
+      lines.push(hint);
     }
     return contextOutput(lines.join('\n'));
   } catch {

@@ -15,6 +15,8 @@ import * as path from 'node:path'
 import { resolveProjectRoot } from './project.js'
 import { buildWasteReport, findLatestTranscript, type WasteReport } from './waste.js'
 import { countNoun } from './util.js'
+import { formatBytes, formatTokenEstimate } from './resident_context.js'
+import { estimateTokensFromLength } from './overflow_guard.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -73,6 +75,50 @@ function printReport(report: WasteReport): void {
   w(`  ${countNoun(ao.turnCount, 'turn')}, ${ao.generatedTokens} tok generated\n`)
   w(`  Re-send upper bound: ${ao.resendCeilingTokens} tok if every turn were resent at full price on every later request\n`)
   w('  Real cost is substantially lower: prompt caching bills resent conversation history at cache-read rates, not full input price.\n')
+
+  printResidentContext(report.residentContext, w)
+}
+
+/**
+ * The harness-injected half of the ledger: context that never passes through a hook and so was
+ * never attributed above.
+ *
+ * Every figure here is *injected bytes*, read from the transcript's own records. How long any of it
+ * stays resident and what it is billed at is not recorded anywhere this code can see, so the
+ * heading says "injected" and the token figures stay marked as estimates -- the same discipline the
+ * assistant-output section above applies to its re-send ceiling.
+ */
+function printResidentContext(resident: WasteReport['residentContext'], w: (text: string) => void): void {
+  w('\n## Harness-injected context (never passes through a hook)\n')
+  if (resident.attachmentClasses.length === 0) {
+    w('  none\n')
+  } else {
+    w(`  Total injected: ${formatBytes(resident.totalAttachmentBytes)} across ${countNoun(resident.attachmentClasses.length, 'class', 'classes')}\n`)
+    for (const c of resident.attachmentClasses.slice(0, 8)) {
+      w(`  ${c.type}: ${countNoun(c.count, 'injection')}, ${formatBytes(c.bytes)}\n`)
+    }
+  }
+
+  const task = resident.latestTaskList
+  if (task !== null) {
+    w('\n## Task list (re-injected in full whenever it changes)\n')
+    w(`  Latest: ${formatBytes(task.bytes)} (~${formatTokenEstimate(estimateTokensFromLength(task.bytes))} tok est), ${countNoun(task.itemCount, 'item')}\n`)
+    w(`  ${task.completed} completed, ${task.inProgress} in progress, ${task.pending} pending\n`)
+    w(`  Descriptions: ${formatBytes(task.descriptionBytes)} total, ${formatBytes(task.completedDescriptionBytes)} of it on completed items\n`)
+    w(`  Injected ${countNoun(resident.taskReminderCount, 'time')} this session, ${formatBytes(resident.taskReminderBytes)} cumulative\n`)
+  }
+
+  if (resident.repeatedSkillBodies.length > 0) {
+    w('\n## Skill bodies injected more than once as prompt text\n')
+    w('  Slash-command expansion sends the whole body every time; no hook can intercept it.\n')
+    for (const s of resident.repeatedSkillBodies.slice(0, 8)) {
+      w(`  ${s.skill}: ${countNoun(s.count, 'injection')}, ${formatBytes(s.bytes)} (~${formatTokenEstimate(estimateTokensFromLength(s.bytes))} tok est)\n`)
+    }
+  }
+
+  w('\n## Compactions\n')
+  w(`  ${countNoun(resident.compactionCount, 'compaction')} this session`)
+  w(resident.compactionCount === 0 ? '\n' : ', each re-injecting the fixed preamble (CLAUDE.md, memory, skill and agent listings)\n')
 }
 
 /** Run the `token-goat waste` command. */
