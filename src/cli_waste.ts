@@ -109,8 +109,8 @@ function printResidentContext(resident: WasteReport['residentContext'], w: (text
   }
 
   if (resident.repeatedSkillBodies.length > 0) {
-    w('\n## Skill bodies injected more than once as prompt text\n')
-    w('  Slash-command expansion sends the whole body every time; no hook can intercept it.\n')
+    w('\n## Skill bodies injected more than once\n')
+    w('  Slash expansion and the Skill tool both send the whole body every time; no hook sees either.\n')
     for (const s of resident.repeatedSkillBodies.slice(0, 8)) {
       w(`  ${s.skill}: ${countNoun(s.count, 'injection')}, ${formatBytes(s.bytes)} (~${formatTokenEstimate(estimateTokensFromLength(s.bytes))} tok est)\n`)
     }

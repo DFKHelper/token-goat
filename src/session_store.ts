@@ -100,11 +100,29 @@ function sessionFileStem(sessionId: string): string {
  * sanitizes to empty, or would escape the sessions dir (traversal guard).
  * See {@link sessionFileStem} for how salted keys are spelled. */
 function sessionPath(sessionId: string): string | null {
+  return sessionSidecarPath(sessionId, '.json')
+}
+
+/**
+ * Resolve the on-disk path for a session-scoped file, or null when the id is empty, sanitizes to
+ * empty, or would escape the sessions dir (traversal guard).
+ *
+ * `suffix` selects which file: `.json` is the session state itself, and any other suffix is a
+ * sidecar sharing the same salted stem. Exported so a caller needing per-session state of its own
+ * gets this sanitization and traversal guard rather than rebuilding either -- and so that state
+ * can live beside the session instead of inside its JSON, which would mean adding a field to the
+ * serialize, deserialize, validate and merge paths where omitting one half silently does nothing.
+ * See {@link sessionFileStem} for how salted keys are spelled.
+ */
+export function sessionSidecarPath(sessionId: string, suffix: string): string | null {
   if (!sessionId) return null
   const safe = sessionFileStem(sessionId)
   if (!safe) return null
+  // A suffix is chosen by calling code, never by a session id, but it still lands in a filename:
+  // reject anything that could climb out of the directory rather than trusting the call site.
+  if (suffix.includes('/') || suffix.includes('\\') || suffix.includes('..')) return null
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
-  const candidate = path.join(dir, `${safe}.json`)
+  const candidate = path.join(dir, `${safe}${suffix}`)
   try {
     const rel = path.relative(dir, candidate)
     if (rel.startsWith('..')) return null
