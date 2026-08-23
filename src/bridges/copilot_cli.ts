@@ -359,12 +359,25 @@ function translate(copilotEvent, resp) {
     return { decision: 'allow' }
   }
 
-  // preCompact / userPromptSubmitted: confirmed against the hooks reference
-  // doc that both are notification-only -- Copilot never reads a response
-  // body for either, so any additionalContext/systemMessage token-goat
-  // produces has no surfacing channel here. This still routes through the
-  // token-goat hook call above so the internal handler's own side effects keep
-  // running; only the response is discarded.
+  // preCompact / userPromptSubmitted: neither surfaces a response here, but for DIFFERENT reasons,
+  // and the difference matters to anyone deciding whether a channel exists.
+  //
+  // preCompact really is notification-only -- the hooks reference marks it "No -- notification
+  // only" for output processing, so there is no field to aim at and nothing to reconsider.
+  //
+  // userPromptSubmitted DOES read a response body: it accepts modifiedPrompt, documented as
+  // "Replaces the prompt for the rest of the turn (SDK programmatic hooks only)". The reason it is
+  // dropped here is the hook TYPE, not the event: "Command and HTTP config-file
+  // userPromptSubmitted hooks have their output dropped, including modifiedPrompt", and token-goat
+  // installs command hooks (see COPILOT_CLI_HOOK_EVENTS). Reaching it would mean shipping an
+  // SDK-registered hook, a separate distribution surface -- and rewriting a user's prompt is a
+  // far more invasive act than anything token-goat does today, so the field is not a goal.
+  //
+  // What this event's context is worth is delivered instead through postToolUse's
+  // additionalContext, which Copilot does honor ("Additional guidance appended to
+  // textResultForLlm so the model sees it after the tool output on the same turn"). The handler
+  // above still runs, so its side effects and its hint text both survive; the text is queued for
+  // the next tool call rather than discarded. See queuePendingContext in ../pending_context.ts.
   return {}
 }
 

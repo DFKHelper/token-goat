@@ -7,6 +7,8 @@ import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
 import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
+import { getHarnessName } from './bridges/registry.js';
+import { drainPendingContext, queuePendingContext } from './pending_context.js';
 import { recordStat } from './stats.js';
 import {
   accumulateResidentLines,
@@ -16,6 +18,39 @@ import {
   summarizeResidentContext,
   taskListPruneHint,
 } from './resident_context.js';
+
+/**
+ * Harnesses that run the prompt-submit hook but drop whatever it returns.
+ *
+ * Copilot CLI is the only confirmed member: its `userPromptSubmitted` reads a response body, but
+ * only `modifiedPrompt`, and only for SDK-registered hooks -- command hooks, which is what
+ * token-goat installs, "have their output dropped"
+ * (https://docs.github.com/en/copilot/reference/hooks-reference). Membership is deliberately
+ * narrow and evidence-backed: adding a harness here silently reroutes its hints, so a guess would
+ * cost the very delivery it was meant to fix.
+ */
+const PROMPT_SUBMIT_CONTEXT_DROPPED = new Set<string>(['copilot_cli']);
+
+function dropsPromptSubmitContext(): boolean {
+  return PROMPT_SUBMIT_CONTEXT_DROPPED.has(getHarnessName());
+}
+
+/**
+ * Deliver anything the prompt-submit hook queued, on the first tool call that follows.
+ *
+ * Advisory and tool-agnostic: it adds context and never decides a tool's fate. The drain is
+ * one-shot, so this is a no-op for every later call in the turn, and a no-op entirely on a harness
+ * that surfaces prompt-submit context directly.
+ */
+function pendingContextHandler(event: HookEvent): HookOutput {
+  try {
+    if (!event.sessionId || !dropsPromptSubmitContext()) return passOutput();
+    const pending = drainPendingContext(event.sessionId);
+    return pending === null ? passOutput() : contextOutput(pending);
+  } catch {
+    return passOutput();
+  }
+}
 
 const EMBEDDED_SKILL_CONTEXT_RE = /^\s*<skill-context\b/i;
 const CONTINUATION_PROMPT_RE = /^(?:continue|resume|next|go on)$/i;
@@ -157,7 +192,15 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
     for (const hint of residentHints) {
       lines.push(hint);
     }
-    return contextOutput(lines.join('\n'));
+    const text = lines.join('\n');
+
+    // On a harness that discards this event's response, returning the text would deliver nothing.
+    // Queue it for the next tool call, where there IS a channel that reaches the model.
+    if (dropsPromptSubmitContext()) {
+      queuePendingContext(event.sessionId, text);
+      return passOutput();
+    }
+    return contextOutput(text);
   } catch {
     return passOutput();
   }
@@ -221,5 +264,11 @@ function subagentStopHandler(event: HookEvent): HookOutput {
 
 registerHook('user_prompt_submit', userPromptSubmitHandler);
 registerHook('subagent_stop', subagentStopHandler);
+// followsMatcher: this handler filters no tool, but it must not force the catch-all matcher.
+// On Claude Code it is a no-op anyway, and on Copilot CLI -- the harness it exists for -- the
+// installed matcher plays no part, since that shim receives every postToolUse event regardless.
+// So accepting the event's existing narrowed matcher costs the delivery nothing and keeps every
+// other harness from paying a hook spawn on tool calls no handler wants.
+registerHook('post_tool_use', pendingContextHandler, { advisory: true, followsMatcher: true });
 
-export { subagentStopHandler, userPromptSubmitHandler };
+export { pendingContextHandler, subagentStopHandler, userPromptSubmitHandler };

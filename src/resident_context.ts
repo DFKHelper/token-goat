@@ -190,6 +190,41 @@ function readTaskList(attachment: Record<string, unknown>, bytes: number): TaskL
  * Never throws. The shapes above are undocumented and can change without notice, and one of this
  * function's two callers is a hook on the user's turn.
  */
+/**
+ * Fold an `invoked_skills` attachment's bodies into the skill accumulator.
+ *
+ * Each entry is `{name, path, content}`. The name is taken from `name` when present and otherwise
+ * from the last segment of `path`, which is the same rule {@link skillNameFromBody} uses for the
+ * slash-expansion channel -- both end up keyed on the name the user types after the slash, so the
+ * two channels aggregate together instead of splitting one skill across two labels.
+ *
+ * Applies the same size floor as the other channel. A body arriving here is often truncated by the
+ * harness to a fixed cap, so it is the injection COUNT that carries the signal, not the length.
+ */
+function collectInvokedSkills(acc: ResidentContextStats, record: Record<string, unknown>): void {
+  const skills = record['skills']
+  if (!Array.isArray(skills)) return
+  for (const entry of skills) {
+    if (entry === null || typeof entry !== 'object') continue
+    const skill = entry as Record<string, unknown>
+    const content = skill['content']
+    if (typeof content !== 'string' || content.length < LARGE_SKILL_BODY_BYTES) continue
+    const name = skillName(skill)
+    if (name !== null) bump(acc.skillBodies, name, content.length)
+  }
+}
+
+/** The skill's name from an `invoked_skills` entry: explicit `name`, else the last path segment. */
+function skillName(skill: Record<string, unknown>): string | null {
+  const name = skill['name']
+  if (typeof name === 'string' && name.trim() !== '') return name.trim()
+  const path = skill['path']
+  if (typeof path !== 'string') return null
+  const segments = path.split(/[\\/]/).filter((part) => part !== '')
+  const last = segments[segments.length - 1]
+  return last === undefined || last === '' ? null : last
+}
+
 export function accumulateResidentLine(acc: ResidentContextStats, parsed: unknown, bytes: number): void {
   try {
     if (parsed === null || typeof parsed !== 'object') return
@@ -207,6 +242,13 @@ export function accumulateResidentLine(acc: ResidentContextStats, parsed: unknow
         acc.taskReminderBytes += bytes
         acc.latestTaskList = readTaskList(record, bytes)
       }
+      // A skill body reaches the model through TWO channels, and counting only one of them
+      // under-reports the same skill several-fold. Slash expansion sends it as prompt text (the
+      // isMeta branch below); the Skill tool sends it here, as `{skills:[{name, path, content}]}`.
+      // Measured on a real transcript: `superman` arrived 94 times this way against 12 the other,
+      // so attributing only the isMeta channel credited under a third of one skill's real cost.
+      // Both feed the same accumulator, so a repeat is a repeat regardless of how it arrived.
+      if (type === 'invoked_skills') collectInvokedSkills(acc, record)
     }
 
     if (line['isMeta'] === true && line['type'] === 'user') {
@@ -297,9 +339,10 @@ export function repeatedSkillBodyHint(injections: readonly SkillBodyInjection[])
   if (worst.count < SKILL_BODY_REPEAT_THRESHOLD || worst.bytes < LARGE_SKILL_BODY_BYTES) return null
   const tokens = formatTokenEstimate(estimateTokensFromLength(worst.bytes))
   return (
-    `The \`${worst.skill}\` skill body has been injected ${worst.count} times as prompt text this session ` +
-    `(${formatBytes(worst.bytes)} total, ~${tokens} tok est). Slash expansion sends the whole body every time and ` +
-    'no hook can intercept it. If it is already loaded, work from it instead of re-invoking; to reread one part, ' +
+    `The \`${worst.skill}\` skill body has been injected ${worst.count} times this session ` +
+    `(${formatBytes(worst.bytes)} total, ~${tokens} tok est). Slash expansion and the Skill tool both send the ` +
+    'whole body every time, and no hook can intercept either. If it is already loaded, work from it instead of ' +
+    're-invoking; to reread one part, ' +
     `use \`token-goat skill-section ${worst.skill} '<heading>'\`.`
   )
 }
@@ -360,7 +403,12 @@ export function lineMayCarryResidentSignal(line: string): boolean {
   // tie this to one serializer's formatting and silently stop matching if that ever changed, with
   // no failure anywhere to notice. Match the key alone and let accumulateResidentLine do the real
   // `=== true` check; a line mentioning the key at all is only ever a candidate here.
-  return line.includes('"task_reminder"') || line.includes('"compact_boundary"') || line.includes('"isMeta"')
+  return (
+    line.includes('"task_reminder"') ||
+    line.includes('"compact_boundary"') ||
+    line.includes('"invoked_skills"') ||
+    line.includes('"isMeta"')
+  )
 }
 
 /** Fold a list of raw JSONL lines into a fresh accumulator, skipping blanks and unparseable lines. */

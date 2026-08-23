@@ -20,7 +20,8 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-hooks-session-config-test.toml');
 
-import { subagentStopHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
+import { pendingContextHandler, subagentStopHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
+import { clearModuleCaches } from '../src/reset.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { getDb } from '../src/db.js';
 import { globalDbPath } from '../src/constants.js';
@@ -760,5 +761,113 @@ describe('resident-context hints', () => {
     const result = await userPromptSubmitHandler(promptEvent(nonce(), transcript));
 
     expect(result.hookType).toBe('pass');
+  });
+});
+
+/**
+ * Harness routing for prompt-submit hints.
+ *
+ * Copilot CLI runs the prompt-submit hook and then drops whatever it returns, so returning context
+ * there delivers nothing at all. The hint is queued instead and handed over on the next tool call,
+ * where postToolUse's additionalContext does reach the model.
+ *
+ * Both halves are pinned in one test on purpose. A queue with no drain and a drain with no queue
+ * each deliver nothing, and each would still pass a test that watched only its own side.
+ */
+describe('prompt-submit hint routing by harness', () => {
+  const written: string[] = [];
+  let prevHarness: string | undefined;
+
+  beforeEach(() => {
+    prevHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE'];
+  });
+
+  afterEach(() => {
+    if (prevHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE'];
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = prevHarness;
+    clearModuleCaches();
+    while (written.length > 0) {
+      const file = written.pop();
+      if (file !== undefined) {
+        try {
+          unlinkSync(file);
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  });
+
+  // Harness detection is memoized, so the cache has to be dropped after the env changes.
+  function setHarness(name: string): void {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = name;
+    clearModuleCaches();
+  }
+
+  /** A transcript carrying one oversized task list, which is enough to produce a hint. */
+  function bigTaskListTranscript(): string {
+    const items = Array.from({ length: 44 }, (_, i) => ({
+      id: `t${i}`,
+      subject: `item ${i}`,
+      description: 'd'.repeat(900),
+      status: i < 40 ? 'completed' : 'pending',
+    }));
+    const line = JSON.stringify({
+      attachment: { type: 'task_reminder', itemCount: items.length, content: items },
+    });
+    const file = join(tmpdir(), `tg-hs-routing-${process.pid}-${nonce()}.jsonl`);
+    writeFileSync(file, `${line}\n`, 'utf8');
+    written.push(file);
+    return file;
+  }
+
+  function submitEvent(sessionId: string, transcriptPath: string): HookEvent {
+    return {
+      eventName: 'user_prompt_submit',
+      toolName: undefined,
+      agentId: undefined,
+      toolInput: {},
+      sessionId,
+      raw: { prompt: 'ok', transcript_path: transcriptPath },
+    };
+  }
+
+  function toolEvent(sessionId: string): HookEvent {
+    return {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      agentId: undefined,
+      toolInput: {},
+      sessionId,
+      raw: {},
+    };
+  }
+
+  it('queues the hint on Copilot CLI and delivers it on the next tool call', async () => {
+    setHarness('copilot_cli');
+    const sessionId = nonce();
+
+    const submitted = await userPromptSubmitHandler(submitEvent(sessionId, bigTaskListTranscript()));
+    expect(submitted.hookType).toBe('pass');
+
+    const delivered = pendingContextHandler(toolEvent(sessionId));
+    expect(delivered.hookType).toBe('context');
+    expect((delivered as { context: string }).context).toContain('TaskUpdate');
+
+    // The drain runs on every tool call, so a second one must add nothing; otherwise a one-shot
+    // nudge becomes a per-tool-call tax for the rest of the session.
+    expect(pendingContextHandler(toolEvent(sessionId)).hookType).toBe('pass');
+  });
+
+  it('returns the hint directly on Claude Code, and leaves nothing queued behind it', async () => {
+    setHarness('claudecode');
+    const sessionId = nonce();
+
+    const submitted = await userPromptSubmitHandler(submitEvent(sessionId, bigTaskListTranscript()));
+    expect(submitted.hookType).toBe('context');
+    expect((submitted as { context: string }).context).toContain('TaskUpdate');
+
+    // Queuing here as well would deliver the same hint twice, once per channel.
+    expect(pendingContextHandler(toolEvent(sessionId)).hookType).toBe('pass');
   });
 });

@@ -230,6 +230,43 @@ describe('slash-expanded skill bodies', () => {
     expect(summary.repeatedSkillBodies[0]?.bytes).toBeGreaterThan(2 * LARGE_SKILL_BODY_BYTES)
   })
 
+  it('aggregates the Skill-tool channel with the slash-expansion channel, under one name', () => {
+    // A skill body arrives two ways. Counting only slash expansion under-reported `superman` by
+    // roughly 3x on a real transcript (94 invoked_skills injections against 12 isMeta ones), so a
+    // repeat that spans both channels must aggregate rather than split into two labels.
+    const invoked = (entries: Array<Record<string, unknown>>): string =>
+      JSON.stringify({ type: 'attachment', attachment: { type: 'invoked_skills', skills: entries } })
+    const content = 'S'.repeat(LARGE_SKILL_BODY_BYTES)
+
+    const summary = fold([
+      metaLine(body('superman', LARGE_SKILL_BODY_BYTES)),
+      invoked([{ name: 'superman', path: '/home/u/.claude/skills/superman', content }]),
+      // No `name` field: the name has to come from the last path segment, and it has to match the
+      // spelling the other two channels produced or this lands as a third, separate skill.
+      invoked([{ path: 'C:\\Users\\u\\.claude\\skills\\superman', content }]),
+    ])
+
+    expect(summary.repeatedSkillBodies.map((s) => [s.skill, s.count])).toEqual([['superman', 3]])
+  })
+
+  it('skips invoked_skills entries that are malformed or below the size floor', () => {
+    const line = JSON.stringify({
+      type: 'attachment',
+      attachment: {
+        type: 'invoked_skills',
+        skills: [
+          { name: 'small', path: '/s/small', content: 'tiny' },
+          { name: 'nobody', path: '/s/nobody' },
+          { path: '', content: 'X'.repeat(LARGE_SKILL_BODY_BYTES) },
+          null,
+        ],
+      },
+    })
+    const bad = JSON.stringify({ type: 'attachment', attachment: { type: 'invoked_skills', skills: 'not-a-list' } })
+
+    expect(fold([line, bad]).repeatedSkillBodies).toEqual([])
+  })
+
   it('ignores a body below the size threshold and any non-meta user text', () => {
     const summary = fold([
       metaLine(body('tiny', 10)),
