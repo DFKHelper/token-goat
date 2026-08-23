@@ -25,11 +25,14 @@ import {
  * Empty today, and that is a finding rather than an oversight. Copilot CLI was the only member,
  * on the strength of its own hooks reference saying command-hook output "is dropped"
  * (https://docs.github.com/en/copilot/reference/hooks-reference). That documentation is wrong for
- * `additionalContext`, at least as of 1.0.80: a command hook installed in `~/.copilot/hooks/`
- * returned `{"additionalContext":"<marker>"}` and the marker appeared verbatim in the session's
- * `user.message.transformedContent`, wrapped in `<system_reminder>` -- i.e. in the assembled
- * prompt, not merely in the on-disk hook record. The doc's claim about `modifiedPrompt` was not
- * retested and is assumed to still hold; token-goat does not want that field regardless.
+ * `additionalContext`, at least as of 1.0.80: a project-scope config-file command hook (under
+ * `<cwd>/.github/hooks/`) returned `{"additionalContext":"<marker>"}` and the marker appeared
+ * verbatim in the session's `user.message.transformedContent`, wrapped in `<system_reminder>`.
+ * That it reached the model rather than only the on-disk record is settled by the provider's own
+ * returned usage: ~140 input tokens billed for a turn whose raw `content` is 35 bytes. Scope: this
+ * was demonstrated once, on one of two turns, and the delivery rate is unknown -- see the longer
+ * account in `src/bridges/copilot_cli.ts`. The doc's claim about `modifiedPrompt` was not retested
+ * and is assumed to still hold; token-goat does not want that field regardless.
  *
  * The set and the reroute below are kept rather than deleted because they are the fallback if a
  * future Copilot release makes the documentation true again: re-adding a harness name here is the

@@ -362,21 +362,33 @@ function translate(copilotEvent, resp) {
   if (copilotEvent === 'userPromptSubmitted') {
     // Copilot's own hooks reference says command-hook output here "is dropped, including
     // modifiedPrompt", and this branch used to believe it and return nothing. That is wrong for
-    // additionalContext on 1.0.80, established by experiment rather than by reading: a command
-    // hook in ~/.copilot/hooks returned {"additionalContext":"<marker>"} and the marker turned up
+    // additionalContext on 1.0.80, established by experiment rather than by reading: a config-file
+    // command hook (at <cwd>/.github/hooks/, the project scope -- the user scope ~/.copilot/hooks/
+    // was never exercised) returned {"additionalContext":"<marker>"} and the marker turned up
     // verbatim inside the session's user.message.transformedContent, wrapped in a
-    // <system_reminder> block. transformedContent is the assembled prompt -- it carries the
-    // <current_datetime> and reminder envelope that the raw content field does not -- so the
-    // marker reached the model, not merely the on-disk hook record. That distinction is the whole
-    // point: hook.start/hook.end records also persist and reach nothing.
+    // <system_reminder> block. What settles that it reached the model rather than only the on-disk
+    // record is the billing: the provider's returned usage charged ~140 input tokens for a turn
+    // whose raw content field is 35 bytes, so the marker's bytes were paid for whichever field
+    // carried them. (The weaker argument first offered for this -- that transformedContent carries
+    // an envelope the content field lacks, 29 B vs 195 B -- was measured on the control turn that
+    // had no marker in it, and proves nothing about the marker.) That the model sees it is the
+    // whole point: hook.start/hook.end records also persist and reach nothing.
+    //
+    // Scope of the finding, stated honestly: demonstrated ONCE on 1.0.80, not shown to be
+    // reliable. Of two turns in that experiment, one delivered the marker and one fired a
+    // userPromptSubmitted hook that produced no output and never ran the script; no explanation
+    // was established and the rate is unknown. A hint that silently fails to arrive costs nothing
+    // and breaks nothing here, which is why the direct return is still the right default.
     //
     // modifiedPrompt is NOT claimed to work and is not wanted: rewriting a user's prompt is far
     // more invasive than anything token-goat does, so only additionalContext is forwarded.
     //
-    // This is also the write end of the post-compaction channel. Copilot has no postCompact hook,
-    // but it does record session.compaction_complete (with summaryContent) into events.jsonl, so
-    // a manifest can be injected on the first prompt after a compaction. See
-    // COPILOT_NO_POST_COMPACT_REASON in ../bridges_status.ts.
+    // This is also the write end of any post-compaction channel. Copilot has no postCompact hook.
+    // Whether the summary is recoverable from events.jsonl is NOT settled -- the emit()/
+    // emitEphemeral() distinction does not gate the writer, and the real decision is in native
+    // code; see COPILOT_NO_POST_COMPACT_REASON in ../bridges_status.ts for what was and was not
+    // established. The read end that IS confirmed is preCompact, which fires as a notification, so
+    // a manifest can be built there and drained here without reading the event log at all.
     const context = extractContext(resp)
     if (context) return { additionalContext: context }
     return {}
