@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import Database from '../src/sqlite_driver.js'
 import { closeAllDbs } from '../src/db.js'
+import { dataDirForHome } from '../src/constants.js'
 import {
   summarize,
   renderStats as _renderStats,
@@ -21,7 +22,37 @@ import {
   SOURCE_SKILL,
   SOURCE_CONTENT,
   SOURCE_OTHER,
+  GLOBAL_SCHEMA_SQL,
 } from '../src/stats.js'
+
+/**
+ * A `stats` table standing on production's own DDL rather than a copy of it.
+ *
+ * `GLOBAL_SCHEMA_SQL` is exported for exactly this, and its comment says why: a restated schema
+ * drifts from the real one silently, and a test running against a schema production no longer has
+ * proves nothing. This file used to restate it twenty-three times.
+ */
+function openStatsDb(dbPath: string): Database {
+  const db = new Database(dbPath)
+  db.exec(GLOBAL_SCHEMA_SQL)
+  return db
+}
+
+/**
+ * A throwaway HOME with the platform's real data directory created inside it, plus the
+ * `global.db` path `--home-dir` will look for there.
+ *
+ * The layout comes from `dataDirForHome` instead of being spelled out per platform. That branch
+ * has been hand-copied and left to drift once already (see tests/constants.test.ts, which pins the
+ * layout), and tests/content_store.test.ts records what the copy costs: hardcoding the win32 shape
+ * passes on Windows and leaves every stat assertion reading zero on macOS and Linux.
+ */
+function makeStatsHome(prefix: string): { customHome: string; dbPath: string } {
+  const customHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  const homeDataDir = dataDirForHome(customHome)
+  fs.mkdirSync(homeDataDir, { recursive: true })
+  return { customHome, dbPath: path.join(homeDataDir, 'global.db') }
+}
 
 describe('stats', () => {
   let tempDir: string
@@ -107,19 +138,7 @@ describe('stats', () => {
   describe('summarize', () => {
     it('returns empty summary when no stats exist', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const summary = summarize(30, db)
       db.close()
@@ -132,19 +151,7 @@ describe('stats', () => {
 
     it('aggregates stats by kind', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const insert = db.prepare(
@@ -176,19 +183,7 @@ describe('stats', () => {
 
     it('aggregates stats by source', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const insert = db.prepare(
@@ -229,19 +224,7 @@ describe('stats', () => {
 
     it('aggregates stats by day', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const yesterday = now - 24 * 60 * 60
@@ -280,19 +263,7 @@ describe('stats', () => {
         const ts = Math.floor(Date.UTC(2026, 0, 16, 3, 0, 0) / 1000)
 
         const dbPath = path.join(tempDir, 'test.db')
-        const db = new Database(dbPath)
-        db.exec(`
-          CREATE TABLE stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            tokens_saved INTEGER NOT NULL DEFAULT 0,
-            bytes_saved INTEGER NOT NULL DEFAULT 0,
-            detail TEXT
-          );
-          CREATE INDEX idx_stats_ts ON stats(ts);
-          CREATE INDEX idx_stats_kind ON stats(kind);
-        `)
+        const db = openStatsDb(dbPath)
         db.prepare('INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)').run(
           ts,
           'image_shrink',
@@ -316,19 +287,7 @@ describe('stats', () => {
 
     it('respects windowDays filter', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const old = now - 100 * 24 * 60 * 60
@@ -351,19 +310,7 @@ describe('stats', () => {
 
     it('aggregates stats by command', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const insert = db.prepare(
@@ -396,19 +343,7 @@ describe('stats', () => {
 
     it('groups imports kind under the imports command bucket, mirroring exports', () => {
       const dbPath = path.join(tempDir, 'test-imports.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const insert = db.prepare(
@@ -435,19 +370,7 @@ describe('stats', () => {
 
     it('groups dep_docs kind under the dep-docs command bucket (regression: dep_docs was never registered in COMMAND_KINDS/KIND_TO_SOURCE)', () => {
       const dbPath = path.join(tempDir, 'test-dep-docs.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const insert = db.prepare(
@@ -474,19 +397,7 @@ describe('stats', () => {
 
     it('handles NULL bytes_saved and tokens_saved', () => {
       const dbPath = path.join(tempDir, 'test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       db.exec(`INSERT INTO stats (ts, kind) VALUES (${now}, 'symbol_lookup')`)
@@ -507,29 +418,8 @@ describe('stats', () => {
     // production code path. Route through a homeDir-threaded temp DB and the real
     // _renderStats(), matching the pattern the other tests in this describe block use.
     it('prints "No stats recorded yet" when empty', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-empty-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-empty-')
+      const db = openStatsDb(dbPath)
       db.close()
 
       let output = ''
@@ -556,29 +446,8 @@ describe('stats', () => {
     // render byte-identical to "no stats ever recorded" -- the empty-vs-filtered-store trap
     // (see runDead's --exclude-tests handling) applied to the time-window filter.
     it('distinguishes "outside window" from "never recorded" when a stat exists before the cutoff', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-outside-window-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-outside-window-')
+      const db = openStatsDb(dbPath)
       const sixtyDaysAgo = Math.floor(Date.now() / 1000) - 60 * 24 * 60 * 60
       db.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)').run(
         sixtyDaysAgo,
@@ -613,29 +482,8 @@ describe('stats', () => {
     // --window-days 1 is a reachable flag value, and the window label used to read "last 1 days".
     // A 30-day assertion passes whether or not the singular branch works, so pin count==1 directly.
     it('renders "last 1 day", not "last 1 days", when --window-days is 1', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-window-one-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-window-one-')
+      const db = openStatsDb(dbPath)
       const sixtyDaysAgo = Math.floor(Date.now() / 1000) - 60 * 24 * 60 * 60
       db.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)').run(sixtyDaysAgo, 'symbol_read', 100, 20)
       db.close()
@@ -662,29 +510,8 @@ describe('stats', () => {
     })
 
     it('formats and prints stats summary', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-summary-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-summary-')
+      const db = openStatsDb(dbPath)
 
       const now = Math.floor(Date.now() / 1000)
       const insert = db.prepare(
@@ -720,29 +547,8 @@ describe('stats', () => {
     })
 
     it('threads a custom homeDir through the human-readable output (not the default global DB)', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
@@ -773,29 +579,8 @@ describe('stats', () => {
     })
 
     it('flags zero direct command invocations when hints fired but no commands were run', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-hints-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-hints-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       // Only hint kinds -- no symbol_lookup/read_replacement/outline/etc -- so
       // by_command stays empty while by_source[hint] is non-zero.
@@ -830,29 +615,8 @@ describe('stats', () => {
 
   describe('renderShortStats', () => {
     it('prints only the totals block plus a --full hint, no breakdown sections', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-short-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
@@ -903,29 +667,8 @@ describe('stats', () => {
     })
 
     it('uses the rich header + KPI section (no breakdown sections) on a TTY', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-tty-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-short-tty-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
@@ -964,29 +707,8 @@ describe('stats', () => {
     })
 
     it('force:true reaches the rich KPI view even when stdout is not a TTY (piped)', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-force-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-short-force-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
@@ -1028,29 +750,8 @@ describe('stats', () => {
     })
 
     it('force:true still respects an explicit NO_COLOR preference (falls back to flat totals)', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-force-nocolor-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-short-force-nocolor-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
@@ -1080,29 +781,8 @@ describe('stats', () => {
     })
 
     it('formats a gigabyte-scale total_bytes_saved as GB, not a raw MB figure (regression: stats.ts kept its own fmtBytes capped at the MB tier instead of importing the shared, GB/TB-aware fmtBytes from render/ansi.ts)', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-gb-'))
-      const platform = process.platform
-      const homeDataDir =
-        platform === 'win32'
-          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
-          : platform === 'darwin'
-            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
-            : path.join(customHome, '.local', 'share', 'token-goat')
-      fs.mkdirSync(homeDataDir, { recursive: true })
-      const dbPath = path.join(homeDataDir, 'global.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const { customHome, dbPath } = makeStatsHome('tg-home-short-gb-')
+      const db = openStatsDb(dbPath)
       const now = Math.floor(Date.now() / 1000)
       db.prepare(
         'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
@@ -1133,19 +813,7 @@ describe('stats', () => {
   describe('recordStat', () => {
     it('inserts a row into the stats table and summarize picks it up', () => {
       const dbPath = path.join(tempDir, 'record-test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       recordStat('session_hint', 1024, 50, db)
 
@@ -1166,19 +834,7 @@ describe('stats', () => {
 
     it('web_fetch maps to SOURCE_WEB and skill_load maps to SOURCE_SKILL', () => {
       const dbPath = path.join(tempDir, 'source-mapping-test.db')
-      const db = new Database(dbPath)
-      db.exec(`
-        CREATE TABLE stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          tokens_saved INTEGER NOT NULL DEFAULT 0,
-          bytes_saved INTEGER NOT NULL DEFAULT 0,
-          detail TEXT
-        );
-        CREATE INDEX idx_stats_ts ON stats(ts);
-        CREATE INDEX idx_stats_kind ON stats(kind);
-      `)
+      const db = openStatsDb(dbPath)
 
       recordStat('web_fetch', 0, 0, db)
       recordStat('skill_load', 0, 0, db)
