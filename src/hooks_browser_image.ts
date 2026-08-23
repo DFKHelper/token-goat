@@ -36,7 +36,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, passOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
-import { formatShrinkSummary, shrinkImage } from './image_shrink.js'
+import { formatShrinkSummary, imageQualifiesForShrink, shrinkImage } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
 import { getLastTabContext, setLastTabContext } from './session.js'
 import { recordStat } from './stats.js'
@@ -73,7 +73,11 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
     return { text: originalDataUrl, changed: false, savedBytes: 0 }
   }
 
-  const result = await shrinkImage(buffer)
+  // sizeThresholdBytes: 0 because imageQualifiesForShrink has already applied the byte test, and
+  // applying it a second time inside shrinkImage would throw away every screenshot that qualified
+  // on dimensions instead -- which is most of them, since a screenshot is flat colour and
+  // compresses far below the byte threshold while still decoding well past the vision optimum.
+  const result = (await imageQualifiesForShrink(buffer)) ? await shrinkImage(buffer, { sizeThresholdBytes: 0 }) : null
   if (result === null) return { text: originalDataUrl, changed: false, savedBytes: 0 }
 
   const saved = result.originalBytes - result.shrunkBytes
