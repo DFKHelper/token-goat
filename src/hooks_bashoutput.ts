@@ -63,9 +63,10 @@ function storePollSnapshot(sessionId: string, bashId: string, output: string): v
 
 /**
  * BashOutput's tool_input `bash_id` field (per Claude Code's documented
- * BashOutput schema -- there is no reference to it elsewhere in this
- * codebase to cross-check against, so this is the best-understood wire
- * shape rather than a verified one). Returns undefined for anything
+ * BashOutput schema -- the only other producer of this key is the Copilot CLI
+ * shim, which mirrors read_bash/read_powershell's `shellId` onto it
+ * deliberately, so this is still the best-understood wire shape for Claude
+ * Code rather than a verified one). Returns undefined for anything
  * missing/non-string/empty.
  */
 function getBashId(toolInput: Record<string, unknown>): string | undefined {

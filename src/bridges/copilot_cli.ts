@@ -28,19 +28,23 @@
  * an earlier docs-based guess (`shell`/`write`/`read`/`url`) that didn't hold
  * up in practice (`write` in particular was never a real `toolName` value at
  * all, only a Copilot permission-pattern keyword) -- are `view`, `grep`
- * (alias `rg`), `glob`, `bash`, `powershell`, `edit`, `create`, `web_fetch`,
+ * (alias `rg`), `glob`, `bash`, `powershell`, `read_bash`, `stop_bash`,
+ * `list_bash` (and the `read_powershell`/`stop_powershell`/`list_powershell`
+ * twins the PowerShell shell config uses), `edit`, `create`, `web_fetch`,
  * `task`, `ask_user`, `memory`, and MCP-server tool invocations (named
  * `<server-name>-<tool-name>`). The ones with a clear token-goat equivalent
- * are remapped (bash/powershell->Bash, view->Read, create->Write,
- * edit->Edit, web_fetch->WebFetch, grep->Grep, glob->Glob); `task`,
- * `ask_user`, `memory`, and MCP tool calls are forwarded with their original
+ * are remapped (bash/powershell->Bash, read_bash/read_powershell->BashOutput,
+ * view->Read, create->Write, edit->Edit, web_fetch->WebFetch, grep->Grep,
+ * glob->Glob); `task`, `ask_user`, `memory`, the stop/list shell tools, and
+ * MCP tool calls are forwarded with their original
  * name unchanged, which is safe because token-goat's dispatch loop simply
  * no-ops for tool names none of its handlers are registered for. The bash
  * tool's `toolArgs` command key is confirmed literally `command` (GitHub's
  * own hooks-reference example: `"toolArgs": "{\"command\":\"rm -rf dist\",
  * \"description\":\"Clean build\"}"`), matching what hooks_bash.ts reads
  * (`event.toolInput['command']`), so no remap is needed there. Other tools'
- * `toolArgs` key names beyond the view/edit/create `path` remap above were
+ * `toolArgs` key names beyond the view/edit/create `path` remap and the
+ * read_bash/read_powershell `shellId` remap below were
  * not individually enumerated, so `toolArgs` is otherwise forwarded to
  * token-goat verbatim (no key renaming) and any `modifiedArgs` token-goat
  * returns is likewise passed back verbatim.
@@ -117,9 +121,47 @@ const COPILOT_TO_TG_EVENT = {
 // MCP-server tool invocations (<server-name>-<tool-name>) have no
 // token-goat equivalent and are passed through unmapped (safe no-op for
 // handlers that don't recognize the name).
+// 'read_bash'/'read_powershell' are the background-shell output pollers, and
+// they are the exact shape of Claude Code's BashOutput: Copilot's shell tool
+// is async, so a long-running command is started once and then re-read over
+// and over within one turn, each read returning the accumulated output again.
+// hooks_bashoutput.ts already collapses that into a delta (or a short
+// "unchanged" marker) for Claude Code, and now does the same here. Both the
+// names and the argument key were read out of the shipping 1.0.80 bundle
+// rather than guessed: the builtin tool-name table in
+// prebuilds/win32-x64/runtime.node lists read_bash/stop_bash/list_bash and
+// read_powershell/stop_powershell/list_powershell, and the poller's own input
+// schema in app.js is {shellId, delay} -- so the shell id needs the
+// POLL_ID_ARG_KEY remap below to reach postBashOutputHandler, which reads
+// 'bash_id'. read_shell/stop_shell/list_shells, which an earlier static sweep
+// of the same binary suggested were the real names, are internal Rust
+// identifiers (tool_read_shell_prepare_input, tool_list_shells_descriptor,
+// PreparedStopShellInput, and the serde field names of the shell config
+// struct), never wire tool names, so they are deliberately absent here.
+// stop_bash/list_bash and their powershell twins stay unmapped because
+// token-goat has no KillShell-equivalent handler for them to reach; a mapping
+// would be pure decoration.
+// 'bash'/'powershell' stay exactly as they were. The same sweep suggested the
+// executor had been renamed to write_bash/write_powershell and that this
+// mapping was dead, and that is not what the bundle says: app.js resolves the
+// executor as shellConfig?.shellToolName ?? "bash" (with "powershell" as the
+// Windows default of the same config), and its command lives under 'command'
+// exactly as hooks_bash.ts expects. write_bash/write_powershell are real tool
+// names, but they are a different tool -- their schema is {shellId, input,
+// delay} and the bundle files them under the subtype "write_shell", i.e. send
+// stdin to an already-running shell, not run a command. Mapping them to Bash
+// would label a stdin write as a shell execution, so they are left unmapped.
+// 'task', 'read_agent' and 'memory'-family tools are likewise left alone:
+// task's result is assembled in the native addon and its shape is unknown,
+// read_agent is an incremental poll that postAgentHandler is not written for,
+// and the real tool names behind memory were never confirmed. Each would put
+// a handler that rewrites model-visible output in front of a payload shape
+// nobody has seen, which is worse than leaving the compression on the table.
 const TOOL_TO_TG = {
   bash: 'Bash',
   powershell: 'Bash',
+  read_bash: 'BashOutput',
+  read_powershell: 'BashOutput',
   view: 'Read',
   create: 'Write',
   edit: 'Edit',
@@ -160,6 +202,17 @@ const FILE_PATH_ARG_KEY = {
   create: 'path',
 }
 
+// read_bash/read_powershell send the background shell's id under 'shellId' (confirmed
+// against the poller's input schema in the shipping 1.0.80 app.js: {shellId, delay});
+// postBashOutputHandler reads 'bash_id'. Without this the tool-name mapping above would
+// be inert -- the handler bails on a missing bash_id and every poll would keep costing
+// the full accumulated output. Same keying convention as FILE_PATH_ARG_KEY: the ORIGINAL
+// Copilot tool name, since that is what the argument shape belongs to.
+const POLL_ID_ARG_KEY = {
+  read_bash: 'shellId',
+  read_powershell: 'shellId',
+}
+
 // Copilot spawns a brand-new process for every single hook invocation (no long-lived plugin
 // process the way OpenClaw's is -- OPENCLAW_HOOK_SCRIPT's own \`copilot-\${process.pid}-\${Date.now()}\`
 // fallback is safe there specifically because that process lives for the whole session, so the
@@ -176,13 +229,19 @@ function stableFallbackSessionId(cwd) {
 }
 
 function remapToolInput(copilotToolName, input) {
+  if (!input || typeof input !== 'object') return input
+  let out = input
+  // Add the canonical key alongside the original rather than renaming it, so nothing that
+  // might read the original 'path'/'shellId' key elsewhere (e.g. a future handler) loses it.
   const pathKey = FILE_PATH_ARG_KEY[copilotToolName]
-  if (pathKey === undefined || !input || typeof input !== 'object' || !(pathKey in input)) {
-    return input
+  if (pathKey !== undefined && pathKey in out) {
+    out = Object.assign({}, out, { file_path: out[pathKey] })
   }
-  // Add file_path alongside the original key rather than renaming it, so nothing that
-  // might read the original 'path' key elsewhere (e.g. a future handler) loses it.
-  return Object.assign({}, input, { file_path: input[pathKey] })
+  const idKey = POLL_ID_ARG_KEY[copilotToolName]
+  if (idKey !== undefined && idKey in out) {
+    out = Object.assign({}, out, { bash_id: out[idKey] })
+  }
+  return out
 }
 
 // Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of

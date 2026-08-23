@@ -508,6 +508,58 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     expect(typeof parsed.permissionDecisionReason).toBe('string')
     expect(parsed.permissionDecisionReason ?? '').toContain('was already read this session')
   })
+
+  // The whole point of mapping read_bash -> BashOutput is that Copilot's shell is
+  // async: one long-running command gets re-read over and over inside a turn, and
+  // every read costs the full accumulated output again. Nothing short of driving the
+  // real shim against the real bundle proves that arrives compressed: the tool-name
+  // map alone is inert without the shellId -> bash_id remap, and the remap alone is
+  // inert without the name map, so a unit test on either half in isolation would stay
+  // green with the feature dead. Two polls, second one strictly appending.
+  it('copilot_cli: a second read_bash poll comes back as a delta through modifiedResult, not the whole accumulated buffer', () => {
+    const cwd = mkIsolated('tg-hookmatrix-copilotpoll-')
+    const sessionId = 'matrix-poll-copilot-shim'
+    const firstOutput = 'a'.repeat(3000)
+    const appended = 'b'.repeat(800)
+    const env = tgEnv('copilot_cli')
+    const poll = (text: string): RunResult =>
+      runShim(
+        COPILOT_CLI_HOOK_SCRIPT,
+        cwd,
+        'postToolUse',
+        [BUNDLE],
+        {
+          sessionId,
+          cwd,
+          toolName: 'read_bash',
+          toolArgs: { shellId: 'shell-7', delay: 1 },
+          toolResult: { resultType: 'success', textResultForLlm: text },
+        },
+        env,
+      )
+
+    const first = poll(firstOutput)
+    expect(first.status, `first poll, stderr: ${first.stderr}`).toBe(0)
+    // Nothing to diff against yet -- the first poll only baselines the snapshot.
+    expect(JSON.parse(first.stdout) as Record<string, unknown>).not.toHaveProperty('modifiedResult')
+
+    const second = poll(firstOutput + appended)
+    expect(second.status, `second poll, stderr: ${second.stderr}`).toBe(0)
+    const parsed = JSON.parse(second.stdout) as {
+      modifiedResult?: { resultType?: string; textResultForLlm?: string }
+    }
+    const rewritten = parsed.modifiedResult?.textResultForLlm
+    expect(
+      rewritten,
+      'second read_bash poll was not rewritten -- read_bash is unmapped, or shellId never became bash_id',
+    ).toBeTypeOf('string')
+    expect(parsed.modifiedResult?.resultType).toBe('success')
+    expect(rewritten ?? '').toContain('shell-7')
+    expect(rewritten ?? '').toContain(appended)
+    // The load-bearing assertion: the 3000 bytes the model already paid for once are
+    // gone. A pass-through would still contain them.
+    expect(rewritten ?? '').not.toContain(firstOutput)
+  })
 })
 
 describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape -- static verification for plugin-host-only harnesses)', () => {
