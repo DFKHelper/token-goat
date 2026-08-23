@@ -988,6 +988,65 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     }
   })
 
+  /** Runs one preToolUse call through the shim and hands back the canonical payload it sent on to token-goat. */
+  function canonicalFor(copilotTool: string, toolArgs: Record<string, unknown>): Record<string, unknown> {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    runShim('preToolUse', JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs }), cwd, env)
+    return JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+  }
+
+  // Copilot's background-shell pollers. Names and argument key both come from the
+  // shipping 1.0.80 bundle: runtime.node's builtin tool-name table lists
+  // read_bash/read_powershell, and app.js's input schema for the poller is
+  // {shellId, delay}. Nothing here is inferred from the internal read_shell /
+  // list_shells identifiers, which are Rust-side names that never reach the wire.
+  it('maps read_bash/read_powershell to BashOutput, and mirrors their shellId onto bash_id so the poll handler can key on it', () => {
+    for (const copilotTool of ['read_bash', 'read_powershell']) {
+      const captured = canonicalFor(copilotTool, { shellId: 'shell-7', delay: 2 })
+      expect(captured['tool_name']).toBe('BashOutput')
+      const toolInput = captured['tool_input'] as Record<string, unknown>
+      // bash_id is what postBashOutputHandler (src/hooks_bashoutput.ts) reads; without
+      // it the name mapping above is inert and every poll costs the full buffer again.
+      expect(toolInput['bash_id']).toBe('shell-7')
+      // Added alongside, never renamed -- the original key still has to survive.
+      expect(toolInput['shellId']).toBe('shell-7')
+      expect(toolInput['delay']).toBe(2)
+    }
+  })
+
+  // These are deliberate omissions, not oversights, so they get pinned like any other
+  // behavior. write_bash/write_powershell are real Copilot tools but they are NOT the
+  // shell executor -- their schema is {shellId, input, delay} under the bundle's
+  // "write_shell" subtype, i.e. sending stdin to a shell that is already running -- so
+  // calling them Bash would label a stdin write as a command execution. stop_bash and
+  // list_bash have no token-goat handler to reach at all. read_agent and the memory
+  // tools would put an output-rewriting handler in front of a result shape nobody has
+  // seen. read_shell is not a wire name in the first place.
+  it('leaves the shell tools token-goat has no correct handler for unmapped, rather than guessing at their result shape', () => {
+    for (const copilotTool of [
+      'write_bash',
+      'write_powershell',
+      'stop_bash',
+      'stop_powershell',
+      'list_bash',
+      'list_powershell',
+      'read_shell',
+      'read_agent',
+      'memory',
+    ]) {
+      expect(canonicalFor(copilotTool, { shellId: 'shell-7' })['tool_name']).toBe(copilotTool)
+    }
+  })
+
   it('never propagates an uncaught exception or a non-zero exit code, even for adversarial/malformed payloads the per-step guards were not written against', () => {
     const cwd = mkIsolated()
     const scriptPath = path.join(cwd, 'shim.js')
