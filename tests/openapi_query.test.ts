@@ -443,3 +443,108 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
     })
   })
 })
+
+describe('extractOperations resolves local $ref pointers', () => {
+  /** Walk a nested unknown by key path, keeping the tree typed as Record without `any`. */
+  function dig(root: unknown, keys: string[]): unknown {
+    let cur: unknown = root
+    for (const k of keys) {
+      cur = (cur as Record<string, unknown>)[k]
+    }
+    return cur
+  }
+
+  const SPEC_WITH_REFS = {
+    openapi: '3.0.0',
+    paths: {
+      '/pets/{id}': {
+        get: {
+          operationId: 'getPet',
+          parameters: [{ $ref: '#/components/parameters/PetId' }],
+          responses: {
+            '200': {
+              description: 'a pet',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Pet' } } },
+            },
+          },
+        },
+        post: {
+          operationId: 'createPet',
+          requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/Pet' } } } },
+          responses: { '201': { description: 'created' } },
+        },
+      },
+    },
+    components: {
+      parameters: { PetId: { name: 'id', in: 'path', required: true, schema: { type: 'string' } } },
+      schemas: {
+        Pet: { type: 'object', properties: { name: { type: 'string' }, kind: { $ref: '#/components/schemas/Kind' } } },
+        Kind: { type: 'string', enum: ['cat', 'dog'] },
+      },
+    },
+  }
+
+  const schemaOf = (op: OpenApiOperation | undefined, status: string): Record<string, unknown> =>
+    dig(op?.responses[status], ['content', 'application/json', 'schema']) as Record<string, unknown>
+
+  it('inlines a $ref in a response schema instead of leaving the pointer', () => {
+    const getPet = extractOperations(SPEC_WITH_REFS).find((o) => o.operationId === 'getPet')
+    const schema = schemaOf(getPet, '200')
+    expect(schema, 'the $ref must be replaced by the schema it points at').not.toHaveProperty('$ref')
+    expect(schema['type']).toBe('object')
+  })
+
+  it('inlines a $ref in a requestBody schema', () => {
+    const create = extractOperations(SPEC_WITH_REFS).find((o) => o.operationId === 'createPet')
+    const schema = dig(create?.requestBody, ['content', 'application/json', 'schema']) as Record<string, unknown>
+    expect(schema).not.toHaveProperty('$ref')
+    expect(schema['type']).toBe('object')
+  })
+
+  it('inlines a $ref in a referenced parameter', () => {
+    const getPet = extractOperations(SPEC_WITH_REFS).find((o) => o.operationId === 'getPet')
+    expect(getPet?.parameters).toEqual([{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }])
+  })
+
+  it('resolves a $ref nested inside another resolved schema', () => {
+    const getPet = extractOperations(SPEC_WITH_REFS).find((o) => o.operationId === 'getPet')
+    const kind = dig(schemaOf(getPet, '200'), ['properties', 'kind'])
+    expect(kind, 'a ref inside a resolved ref must also be resolved').toEqual({ type: 'string', enum: ['cat', 'dog'] })
+  })
+
+  it('leaves a self-referential schema as a ref rather than looping forever', () => {
+    const spec = {
+      openapi: '3.0.0',
+      paths: {
+        '/nodes': {
+          get: {
+            operationId: 'listNodes',
+            responses: { '200': { description: 'ok', content: { 'application/json': { schema: { $ref: '#/components/schemas/Node' } } } } },
+          },
+        },
+      },
+      components: { schemas: { Node: { type: 'object', properties: { child: { $ref: '#/components/schemas/Node' } } } } },
+    }
+    const op = extractOperations(spec)[0]
+    const schema = schemaOf(op, '200')
+    expect(schema['type']).toBe('object')
+    // The cycle stops with the inner ref left in place, not with a stack overflow.
+    expect(dig(schema, ['properties', 'child'])).toEqual({ $ref: '#/components/schemas/Node' })
+  })
+
+  it('leaves an external (non-local) $ref untouched instead of trying to fetch it', () => {
+    const spec = {
+      openapi: '3.0.0',
+      paths: {
+        '/x': {
+          get: {
+            operationId: 'x',
+            responses: { '200': { description: 'ok', content: { 'application/json': { schema: { $ref: 'https://example.com/Pet.json' } } } } },
+          },
+        },
+      },
+    }
+    const op = extractOperations(spec)[0]
+    expect(schemaOf(op, '200')).toEqual({ $ref: 'https://example.com/Pet.json' })
+  })
+})

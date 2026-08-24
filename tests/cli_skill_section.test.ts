@@ -74,4 +74,23 @@ describe('skill-section exit code on a missing heading', () => {
 
     expect(code).toBe(1)
   })
+
+  it('names the missing section and skill and suggests the nearest real heading, instead of failing silently', async () => {
+    await storeOutput('sess-2', 'myskill-msg', 'cached body', { sourcePath: skillFile })
+    const stderr: string[] = []
+    const errSpy = spyOnWrite(process.stderr, stderr)
+    let code: number | string | undefined
+    try {
+      // "Usague" is one transposition from the real "Usage" heading, so the did-you-mean pass
+      // must surface it rather than leaving the caller with a bare non-zero exit.
+      code = await runSkillSection('myskill-msg::Usague')
+    } finally {
+      errSpy.mockRestore()
+    }
+    const msg = stderr.join('')
+    expect(code).toBe(1)
+    expect(msg, 'must name the missing heading').toContain("Section 'Usague' not found")
+    expect(msg, 'must name the skill it looked in').toContain("skill 'myskill-msg'")
+    expect(msg, 'must suggest the nearest real heading').toContain('Usage')
+  })
 })

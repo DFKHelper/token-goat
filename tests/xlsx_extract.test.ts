@@ -61,6 +61,10 @@ beforeAll(async () => {
   ws7.addRow(['a', 'b', 'c', 'd', 'e'])
   ws7.addRow(['1', '2', '3', '4', '5'])
   ws7.addRow(['6', '7', '8'])
+  // A never-written sheet (no rows at all). usedRange used to floor this to A1:A1 / 1x1,
+  // announcing one phantom cell that xlsx-head then returned nothing for -- the two commands
+  // disagreed. It must report as empty (ref '(empty)', 0 rows, 0 cols) instead.
+  wb.addWorksheet('Blank')
   await wb.xlsx.writeFile(file)
 })
 
@@ -79,6 +83,7 @@ describe('listSheets', () => {
       'Gaps',
       'FormulaResults',
       'Ragged',
+      'Blank',
     ])
     const employees = sheets.find((s) => s.name === 'Employees')
     expect(employees?.rows).toBe(4)
@@ -89,6 +94,14 @@ describe('listSheets', () => {
     const sheets = await listSheets(file)
     const gaps = sheets.find((s) => s.name === 'Gaps')
     expect(gaps?.rows).toBe(4)
+  })
+
+  it('reports a never-written sheet as empty rather than a phantom 1x1 cell', async () => {
+    const sheets = await listSheets(file)
+    const blank = sheets.find((s) => s.name === 'Blank')
+    expect(blank?.rows, 'an empty sheet has zero rows, not a floored 1').toBe(0)
+    expect(blank?.cols, 'an empty sheet has zero cols, not a floored 1').toBe(0)
+    expect(blank?.ref).toBe('(empty)')
   })
 
   // Regression: a non-.xlsx/corrupt file forwarded jszip's raw internal parse error ("Can't

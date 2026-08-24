@@ -65,6 +65,18 @@ describe('runImageMeta', () => {
     await expect(runImageMeta(file)).rejects.toThrow(`Not an image file: ${file}`)
   })
 
+  it('distinguishes a corrupt image (right extension, undecodable bytes) from a missing or non-image file', async () => {
+    // A .png whose bytes are not a valid PNG passes the extension check but fails to decode. Before
+    // the fix, sharp's raw decode error surfaced unwrapped; now it is caught and re-thrown as a
+    // clear "not a readable image" -- neither the "Could not read" wording (reserved for a missing
+    // path) nor "Not an image file" (reserved for a wrong extension).
+    const file = path.join(TMP, 'corrupt.png')
+    fs.writeFileSync(file, Buffer.from('this is definitely not a PNG\n'))
+    await expect(runImageMeta(file)).rejects.toThrow(`${file} is not a readable image`)
+    await expect(runImageMeta(file)).rejects.not.toThrow('Could not read')
+    await expect(runImageMeta(file)).rejects.not.toThrow('Not an image file')
+  })
+
   it('the image-meta CLI command prints dimensions/format/size and a shrink line, and does not touch OCR', async () => {
     const side = 700
     const noise = Buffer.allocUnsafe(side * side * 3)

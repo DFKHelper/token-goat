@@ -337,6 +337,38 @@ describe('runScope integration', () => {
     expect(result).toBe(1)
   })
 
+  // Regression: a file that exists on disk but has no indexed symbols used to fall through to the
+  // same "No symbols enclosing line" path a real-but-uncovered line hits -- indistinguishable from
+  // a genuine miss. It must say the file itself is unindexed, and must NOT reuse the "Could not
+  // read" wording reserved for a path that isn't there at all.
+  it('distinguishes an existing-but-unindexed file from both a missing file and a real miss', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-scope-unindexed-'))
+    try {
+      const file = join(dir, 'NotIndexed.ts')
+      // Written to disk but deliberately never passed to indexFileSync.
+      writeFileSync(file, ['export function whatever() {', '  return 42', '}', ''].join('\n'))
+      const errs: string[] = []
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+        errs.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+        return true
+      })
+      let code: number
+      try {
+        code = runScope({ spec: `${file}:2` })
+      } finally {
+        spy.mockRestore()
+      }
+      const msg = errs.join('')
+      expect(code).toBe(1)
+      expect(msg, 'must name the file as unindexed, not report a phantom enclosing miss').toContain(
+        'nothing is indexed for it',
+      )
+      expect(msg, 'the file exists, so it must not claim it could not be read').not.toContain('Could not read')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('returns JSON array for --json flag', () => {
     // Resolve a line guaranteed to be inside a real symbol at test-run time, rather than a hardcoded number -- this file grows over time and a fixed line eventually drifts outside every range, making runScope legitimately find nothing and never print, which is a test bug rather than a runScope bug.
     // Taking the FIRST indexed symbol was the previous attempt at that and carried the same defect one level up: the first row is frequently a one-line `const`, whose lineStart + 1 is already past its end, so the test only passed while the next line happened to belong to another symbol. Require a symbol spanning at least two lines, which makes lineStart + 1 inside it by construction rather than by luck.
@@ -4862,6 +4894,53 @@ describe('runBlame', () => {
       expect(code).toBe(0)
       expect(captured.split('\t')[0]).toBe('target')
       expect(captured).not.toContain('target@1')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('parses a boundary commit line (leading ^) into structured fields instead of dropping it to {raw}', () => {
+    // Every line of the very first commit in a repo is a blame "boundary" and git prefixes its
+    // SHA with `^`. The JSON parser regex had no optional `^`, so each such line failed to match
+    // and fell through to `{ raw: <line> }`, silently discarding commit/author/date/line/content
+    // for exactly the common case of a brand-new file. The fix captures the marker and flags it.
+    const repo = mkdtempSync(join(tmpdir(), 'tg-blame-boundary-'))
+    try {
+      writeFileSync(join(repo, 'package.json'), '{"name":"tg-blame-boundary-fixture"}\n')
+      const file = normalizePath(join(repo, 'edge.ts'))
+      writeFileSync(file, ['export function edge(): number {', '  return 7', '}', ''].join('\n'))
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+      execFileSync(
+        'git',
+        ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'],
+        { cwd: repo, stdio: 'ignore' },
+      )
+      indexFileSync(file)
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      let code: number
+      try {
+        process.stdout.write = (chunk: unknown) => {
+          captured += String(chunk)
+          return true
+        }
+        code = runBlame({ spec: `${file}::edge`, cwd: repo, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(captured) as {
+        lines: Array<{ raw?: string; commit?: string; boundary?: boolean; author?: string; line?: number }>
+      }
+      expect(parsed.lines.length).toBeGreaterThan(0)
+      const first = parsed.lines[0]
+      expect(first, 'a boundary line must be parsed, not dropped to {raw}').not.toHaveProperty('raw')
+      expect(first?.boundary, 'the first commit in a repo is a boundary commit').toBe(true)
+      expect(first?.commit, 'the SHA must be captured without the leading ^').toMatch(/^[0-9a-f]{6,}$/)
+      expect(first?.line, 'the parsed line number must be the symbol start line').toBe(1)
+      expect((first?.author ?? '').length, 'author must be captured').toBeGreaterThan(0)
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }

@@ -81,6 +81,46 @@ function mergeParameters(pathLevelParams: unknown[], ownParams: unknown[]): unkn
  * "0 operations found" is a more useful signal than a crash for a spec that parsed but isn't
  * shaped like OpenAPI.
  */
+/** Resolve one `#/a/b/c` JSON pointer against the root document; null if any segment is missing. */
+function resolveJsonPointer(root: unknown, ref: string): unknown {
+  const parts = ref
+    .slice(2)
+    .split('/')
+    .map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'))
+  let cur: unknown = root
+  for (const part of parts) {
+    if (typeof cur !== 'object' || cur === null) return null
+    cur = (cur as Record<string, unknown>)[part]
+    if (cur === undefined) return null
+  }
+  return cur
+}
+
+/**
+ * Replace internal `$ref` pointers with the schema they point at, so `openapi-op` shows the actual
+ * request/response shape instead of a bare `{"$ref": "#/components/schemas/Pet"}` the caller then
+ * has to chase by hand. Only local (`#/…`) refs are followed — an external or URL ref is left
+ * untouched, since fetching it would be an unbounded, network-touching operation. A ref already on
+ * the current resolution path is left as-is to break recursive-schema cycles.
+ */
+function dereferenceLocalRefs(node: unknown, root: unknown, seen: ReadonlySet<string>): unknown {
+  if (Array.isArray(node)) return node.map((item) => dereferenceLocalRefs(item, root, seen))
+  if (typeof node !== 'object' || node === null) return node
+  const rec = node as Record<string, unknown>
+  const ref = rec['$ref']
+  if (typeof ref === 'string' && ref.startsWith('#/')) {
+    if (seen.has(ref)) return node
+    const target = resolveJsonPointer(root, ref)
+    if (target === undefined || target === null) return node
+    return dereferenceLocalRefs(target, root, new Set([...seen, ref]))
+  }
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(rec)) {
+    out[key] = dereferenceLocalRefs(value, root, seen)
+  }
+  return out
+}
+
 export function extractOperations(spec: unknown): OpenApiOperation[] {
   if (typeof spec !== 'object' || spec === null) return []
   const paths = (spec as Record<string, unknown>)['paths']
@@ -106,9 +146,12 @@ export function extractOperations(spec: unknown): OpenApiOperation[] {
         ...(typeof op['summary'] === 'string' ? { summary: op['summary'] } : {}),
         ...(typeof op['description'] === 'string' ? { description: op['description'] } : {}),
         ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
-        parameters: mergeParameters(pathLevelParams, ownParams),
-        ...(op['requestBody'] !== undefined ? { requestBody: op['requestBody'] } : {}),
-        responses: typeof op['responses'] === 'object' && op['responses'] !== null ? (op['responses'] as Record<string, unknown>) : {},
+        parameters: dereferenceLocalRefs(mergeParameters(pathLevelParams, ownParams), spec, new Set()) as unknown[],
+        ...(op['requestBody'] !== undefined ? { requestBody: dereferenceLocalRefs(op['requestBody'], spec, new Set()) } : {}),
+        responses:
+          typeof op['responses'] === 'object' && op['responses'] !== null
+            ? (dereferenceLocalRefs(op['responses'], spec, new Set()) as Record<string, unknown>)
+            : {},
       })
     }
   }

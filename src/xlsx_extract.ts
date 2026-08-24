@@ -110,8 +110,12 @@ function usedRange(ws: ExcelWorksheet): { ref: string; rows: number; cols: numbe
   }
   const rows = rowCount
   const cols = maxCol
-  const ref = rows > 0 && cols > 0 ? `A1:${indexToColLetters(cols)}${rows}` : 'A1:A1'
-  return { ref, rows: Math.max(rows, 1), cols: Math.max(cols, 1) }
+  // A never-written sheet has no cells, and flooring it to A1:A1 / 1x1 announced one phantom cell
+  // that xlsx-head correctly returns nothing for. Report it as empty so the two commands agree.
+  if (rows === 0 || cols === 0) {
+    return { ref: '(empty)', rows: 0, cols: 0 }
+  }
+  return { ref: `A1:${indexToColLetters(cols)}${rows}`, rows, cols }
 }
 
 export interface SheetInfo {

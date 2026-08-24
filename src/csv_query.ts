@@ -28,10 +28,27 @@ export interface CsvQueryOptions {
 function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
   const delimiter = opts.delimiter ?? ','
   if (opts.noHeader === true) {
-    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true }) as string[][]
+    // relax_column_count so a single short or long row is filled/trimmed to the widest shape
+    // rather than aborting the whole file (the default CSV_RECORD_INCONSISTENT_FIELDS_LENGTH).
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true }) as string[][]
     return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
   }
-  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true }) as Array<Record<string, string>>
+  // Two columns sharing a header name collapse to one key under `columns: true`, and the profile
+  // then reads as complete with a column silently gone. The tool's object-keyed model genuinely
+  // cannot carry both, so refuse and name the collision rather than drop it. Detected from the raw
+  // header before parsing, so it fires on a header-only file too.
+  const header = csvHeader(content, opts)
+  const dupes = header.filter((name, i) => name !== '' && header.indexOf(name) !== i)
+  if (dupes.length > 0) {
+    const unique = [...new Set(dupes)]
+    throw new Error(
+      `duplicate column ${unique.length === 1 ? 'name' : 'names'} in header: ${unique.join(', ')} — ` +
+        `rename the duplicates or pass --no-header to address columns positionally as col1, col2, …`,
+    )
+  }
+  // relax_column_count: a ragged row omits its missing trailing keys (read back as '') instead of
+  // aborting the file; an over-long row's extra fields past the header are dropped.
+  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true }) as Array<Record<string, string>>
 }
 
 /**
