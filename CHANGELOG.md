@@ -2,6 +2,20 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.8.2] - 2026-08-24
+
+### Security
+
+- **A crafted line of command output could make token-goat's pattern matching take a very long time.** Token-goat recognises the shape of command output using a large set of text patterns, and several of those patterns described the middle of a line loosely, as "anything at all". When two loose parts sit next to each other, a line built to almost match but not quite can force the matcher to try an enormous number of combinations before it gives up, so one line is enough to stall the process. Every one of those loose parts now says what it actually accepts, such as "anything except a line break" or "a flag made of letters, digits, dashes and underscores". The patterns still match the same real output; they simply stop exploring combinations that could never have led anywhere. This covers the recognisers for dependency listings and npm commands, markdown headings, section references, Rust panic and Java exception headers, and the output filters for git, Terraform, linters, package managers, pytest and AI command-line tools. See [src/bash_output_cache.ts](src/bash_output_cache.ts), [src/section_reader.ts](src/section_reader.ts), [src/text_commands.ts](src/text_commands.ts), [src/hints/markdown_hints.ts](src/hints/markdown_hints.ts) and [src/tool_filters/git.ts](src/tool_filters/git.ts).
+
+- **Temporary names were built from a random source that is not meant for security.** The helper that makes a short unique suffix used the ordinary random-number generator, which is predictable enough that someone who can watch a few values can guess the next ones. It now takes its bytes from the operating system's cryptographic source instead. Nothing about the names changes otherwise, and they remain the same length. See [src/cli.ts](src/cli.ts).
+
+- **Example credentials in the test suite were written as whole strings, so secret scanners flagged the tests themselves.** The fake keys and tokens the redaction tests need are now assembled from pieces at run time. The tests check exactly the same behaviour; the files just no longer contain anything that reads as a real credential at rest. See [tests/secret_redact.test.ts](tests/secret_redact.test.ts).
+
+### Added
+
+- **The runtime architecture is now written down, with diagrams.** A set of C4 model documents describes how token-goat actually runs: which processes exist, how a tool call is intercepted and rewritten, what is stored on disk and where, how the background indexer drains its queue, and which trust boundaries separate the harness, untrusted web and document content, and local storage. The diagrams are checked in both as vector images and as PlantUML sources, and the script that generates them is included, so they can be regenerated rather than hand-edited. See [docs/C4_RUNTIME_ARCHITECTURE.md](docs/C4_RUNTIME_ARCHITECTURE.md) and [scripts/generate-architecture-diagrams.py](scripts/generate-architecture-diagrams.py).
+
 ## [2.8.1] - 2026-08-24
 
 ### Added
