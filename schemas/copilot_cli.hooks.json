@@ -1,0 +1,246 @@
+{
+  "harness": "copilot_cli",
+  "sourceVersion": "1.0.80",
+  "sourceSha256": "9233c40bf06500bd13cba1e3ea9469e4cdb2d7eb03f46aa47291369f28c0f4d3",
+  "sourceFile": "types.d.ts",
+  "extractedInterfaces": [
+    "AgentStopHookInput",
+    "BaseHookInput",
+    "ErrorOccurredHookInput",
+    "PostToolUseFailureHookInput",
+    "PostToolUseHookInput",
+    "PreMcpToolCallHookInput",
+    "PreToolUseHookInput",
+    "SessionEndHookInput",
+    "SessionStartHookInput",
+    "UserPromptSubmittedHookInput"
+  ],
+  "hooks": {
+    "PreToolUseHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "toolName": {
+        "type": "string",
+        "optional": false
+      },
+      "toolArgs": {
+        "type": "unknown",
+        "optional": false
+      }
+    },
+    "PreMcpToolCallHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "toolCallId": {
+        "type": "string",
+        "optional": true
+      },
+      "serverName": {
+        "type": "string",
+        "optional": false
+      },
+      "toolName": {
+        "type": "string",
+        "optional": false
+      },
+      "arguments": {
+        "type": "unknown",
+        "optional": false
+      },
+      "_meta": {
+        "type": "Record<string, unknown>",
+        "optional": true
+      }
+    },
+    "PostToolUseHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "toolName": {
+        "type": "string",
+        "optional": false
+      },
+      "toolArgs": {
+        "type": "unknown",
+        "optional": false
+      },
+      "toolResult": {
+        "type": "ToolResultObject",
+        "optional": false
+      }
+    },
+    "PostToolUseFailureHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "toolName": {
+        "type": "string",
+        "optional": false
+      },
+      "toolArgs": {
+        "type": "unknown",
+        "optional": false
+      },
+      "error": {
+        "type": "string",
+        "optional": false
+      }
+    },
+    "UserPromptSubmittedHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "prompt": {
+        "type": "string",
+        "optional": false
+      }
+    },
+    "SessionStartHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "source": {
+        "type": "\"startup\" | \"resume\" | \"new\"",
+        "optional": false
+      },
+      "initialPrompt": {
+        "type": "string",
+        "optional": true
+      }
+    },
+    "SessionEndHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "reason": {
+        "type": "\"complete\" | \"error\" | \"abort\" | \"timeout\" | \"user_exit\"",
+        "optional": false
+      },
+      "finalMessage": {
+        "type": "string",
+        "optional": true
+      },
+      "error": {
+        "type": "string",
+        "optional": true
+      }
+    },
+    "ErrorOccurredHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "error": {
+        "type": "string",
+        "optional": false
+      },
+      "errorContext": {
+        "type": "\"model_call\" | \"tool_execution\" | \"system\" | \"user_input\"",
+        "optional": false
+      },
+      "recoverable": {
+        "type": "boolean",
+        "optional": false
+      }
+    },
+    "AgentStopHookInput": {
+      "sessionId": {
+        "type": "string",
+        "optional": false
+      },
+      "timestamp": {
+        "type": "Date",
+        "optional": false
+      },
+      "workingDirectory": {
+        "type": "string",
+        "optional": false
+      },
+      "stopReason": {
+        "type": "string",
+        "optional": true
+      },
+      "transcriptPath": {
+        "type": "string",
+        "optional": true
+      },
+      "stopHookActive": {
+        "type": "boolean",
+        "optional": true
+      }
+    }
+  }
+}
