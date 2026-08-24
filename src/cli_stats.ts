@@ -174,6 +174,7 @@ export function runStats(opts: StatsOptions = {}): void {
       by_project: summary.by_project,
       by_command: summary.by_command,
       by_source: summary.by_source,
+      by_harness: summary.by_harness,
       window_days: summary.window_days,
     }
     process.stdout.write(JSON.stringify(out) + '\n')

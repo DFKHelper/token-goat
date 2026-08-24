@@ -19,6 +19,7 @@
 
 import type { HarnessName } from './bridges/types.js'
 import { registerReset } from './reset.js'
+import { recordUnmappedTool } from './stats.js'
 import type { HookEventName, HookOutput } from './types.js'
 
 /**
@@ -170,9 +171,47 @@ export function toolMatcherFor(eventName: HookEventName): string | null {
  * A handler whose `toolName` filter does not match `event.toolName` is skipped
  * without being called.
  */
+/**
+ * Fold a tool name to the form that survives a bridge's renaming step: lower case, no separators.
+ *
+ * The class this catches is narrow and deliberate. A bridge that fails to rename an inbound tool
+ * passes the harness's own spelling straight through -- Copilot's `bash` instead of `Bash`,
+ * `web_fetch` instead of `WebFetch` -- and that is a difference of case and underscores only. A
+ * bridge whose mapping is *semantic* (Copilot's `view` -> `Read`) produces a name this cannot
+ * relate to anything, and it does not pretend otherwise: such a name is simply recorded as
+ * unrecognized, with no near-miss claimed.
+ */
+function foldToolName(name: string): string {
+  return name.toLowerCase().replace(/[_-]/g, '')
+}
+
+/**
+ * Record that `event.toolName` reached an event whose handlers name the tools they want, and
+ * matched none of them.
+ *
+ * Cheap and side-band: the observation never changes what runs. Skipped entirely when the event
+ * has no name-filtered handler at all (a non-tool event, or one whose handlers all take every
+ * tool), because there is nothing for a name to be unrecognized *against* there.
+ */
+function noteUnrecognizedTool(event: HookEvent, list: readonly Registration[]): void {
+  const toolName = event.toolName
+  if (typeof toolName !== 'string' || toolName === '') return
+  const named: string[] = []
+  for (const { toolName: want } of list) {
+    if (want === undefined) continue
+    if (want === toolName) return
+    named.push(want)
+  }
+  if (named.length === 0) return
+  const folded = foldToolName(toolName)
+  const nearMiss = named.find((n) => foldToolName(n) === folded) ?? null
+  recordUnmappedTool(toolName, event.eventName, nearMiss)
+}
+
 export async function runHook(event: HookEvent): Promise<HookOutput> {
   const list = _handlers.get(event.eventName)
   if (list === undefined) return { hookType: 'pass' }
+  noteUnrecognizedTool(event, list)
   // Advisory handlers never short-circuit: their non-pass results are remembered as a
   // fallback, but the loop always continues so every later, non-advisory handler for
   // this event still runs and can still return its own result. This keeps a

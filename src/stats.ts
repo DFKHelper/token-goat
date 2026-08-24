@@ -25,6 +25,7 @@ import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import { fmtBytes } from './render/ansi.js'
 import type { StatsData } from './render/types.js'
 import { registerReset } from './reset.js'
+import { getHarnessName } from './bridges/registry.js'
 import { countNoun } from './util.js'
 
 interface StatsBucket {
@@ -55,8 +56,22 @@ export interface StatsSummary {
   by_project: ProjectRow[]
   by_source: Record<string, StatsBucket>
   by_command: CommandRow[]
+  /**
+   * Savings split by the AI harness the hook fired under, so "token-goat saved 1.1 Gt" can be
+   * asked per harness instead of only in aggregate. Rows written before this column existed
+   * carry no harness and are bucketed under {@link HARNESS_UNRECORDED} rather than being
+   * attributed to whichever harness happens to be running now -- an unmeasured row is not a
+   * measured zero, and folding it into a real harness would overstate that harness's share.
+   */
+  by_harness: Record<string, StatsBucket>
   window_days: number
 }
+
+/**
+ * Bucket for stat rows that predate the `harness` column. Deliberately not a harness name: it
+ * marks the absence of a measurement, and any renderer showing it must not let it read as one.
+ */
+export const HARNESS_UNRECORDED = 'unrecorded (pre-2.8.1)'
 
 export const SOURCE_IMAGE = 'image'
 export const SOURCE_HINT = 'hint'
@@ -305,14 +320,73 @@ CREATE TABLE IF NOT EXISTS stats (
   kind TEXT NOT NULL,
   tokens_saved INTEGER NOT NULL DEFAULT 0,
   bytes_saved INTEGER NOT NULL DEFAULT 0,
-  detail TEXT
+  detail TEXT,
+  harness TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
+CREATE TABLE IF NOT EXISTS unmapped_tools (
+  harness TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  event_name TEXT NOT NULL,
+  near_miss TEXT,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  hits INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (harness, tool_name, event_name)
+);
 `
 
 const _globalSchemaApplied = new Set<string>()
 registerReset(() => _globalSchemaApplied.clear())
+
+/**
+ * Bring an already-created `global.db` up to the shape {@link GLOBAL_SCHEMA_SQL} describes.
+ *
+ * `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists, so adding a column
+ * to the DDL above reaches brand-new databases only. Every database created by an earlier release
+ * keeps the old shape, and an INSERT naming the new column then fails on it -- which {@link
+ * recordStat} swallows by design, so the visible symptom would be every existing user's telemetry
+ * silently stopping. Hence an explicit column add here, and the independent capability check in
+ * {@link statsHasHarnessColumn} so a database this function never touched (a caller's injected
+ * `_testDb`) degrades to "harness not recorded" instead of "nothing recorded".
+ *
+ * Unlike the per-project database there is no schema-version stamp on `global.db` to key
+ * migrations off, so each step must be individually idempotent: swallow exactly a duplicate-column
+ * failure -- the column already being present from the CREATE TABLE on a fresh database -- and
+ * rethrow anything else, so a genuine failure is never lost.
+ */
+function migrateGlobalSchema(db: SqliteDatabase): void {
+  try {
+    db.exec('ALTER TABLE stats ADD COLUMN harness TEXT')
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
+}
+
+/**
+ * Does this database's `stats` table carry the `harness` column?
+ *
+ * Cached per database handle: on the normal path {@link migrateGlobalSchema} has already run, so
+ * this answers `true` once and never queries again. It exists for the path that bypasses
+ * `getGlobalDb` entirely -- a caller-supplied `_testDb` -- where guessing wrong turns every write
+ * into a swallowed exception.
+ */
+const _harnessColumnByDb = new WeakMap<object, boolean>()
+function statsHasHarnessColumn(db: SqliteDatabase): boolean {
+  const cached = _harnessColumnByDb.get(db as unknown as object)
+  if (cached !== undefined) return cached
+  let present: boolean
+  try {
+    present = (db.prepare('PRAGMA table_info(stats)').all() as { name?: string }[]).some(
+      (c) => c.name === 'harness',
+    )
+  } catch {
+    present = false
+  }
+  _harnessColumnByDb.set(db as unknown as object, present)
+  return present
+}
 
 function getGlobalDb(homeDir?: string): SqliteDatabase {
   const basePath = homeDir ? dataDirForHome(homeDir) : dataDir()
@@ -320,6 +394,7 @@ function getGlobalDb(homeDir?: string): SqliteDatabase {
   const db = getDb(dbPath)
   if (!_globalSchemaApplied.has(dbPath)) {
     db.exec(GLOBAL_SCHEMA_SQL)
+    migrateGlobalSchema(db)
     _globalSchemaApplied.add(dbPath)
   }
   return db
@@ -353,11 +428,83 @@ export function recordStat(
 ): void {
   try {
     const db = _testDb ?? getGlobalDb()
-    db.prepare(
-      'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, ?, ?, ?)',
-    ).run(Math.floor(Date.now() / 1000), kind, bytesSaved, tokensSaved, detail ?? null)
+    const ts = Math.floor(Date.now() / 1000)
+    if (statsHasHarnessColumn(db)) {
+      db.prepare(
+        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName())
+    } else {
+      db.prepare(
+        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, ?, ?, ?)',
+      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null)
+    }
   } catch {
     // Best-effort — never block the hook path.
+  }
+}
+
+/** One row of the unrecognized-tool histogram, newest activity first. */
+export interface UnmappedToolRow {
+  harness: string
+  tool_name: string
+  event_name: string
+  /** A tool token-goat *does* handle for this event whose name differs only by case or separators, or `null`. */
+  near_miss: string | null
+  hits: number
+  last_seen: number
+}
+
+/** Longest tool name stored. The name comes from the harness, so it is bounded here rather than trusted. */
+const MAX_TOOL_NAME_CHARS = 200
+
+/**
+ * Note that a tool name reached a hook event for which token-goat registers named handlers, and
+ * matched none of them.
+ *
+ * This is the one detector in the codebase that does not encode a belief about a harness. Every
+ * other check -- the bridge capability matrix, the hook/harness fixture matrix, even the derived
+ * Copilot shape manifest -- describes what this repo thinks a harness sends. This records what
+ * actually arrived. That matters most for the nine bridges nobody can dogfood: the histogram is
+ * the only ground truth about their real tool vocabulary.
+ *
+ * Keyed rather than appended, so the table is bounded by the number of *distinct* names ever seen
+ * (tens of rows) instead of growing one row per tool call.
+ */
+export function recordUnmappedTool(
+  toolName: string,
+  eventName: string,
+  nearMiss: string | null,
+  _testDb?: SqliteDatabase,
+): void {
+  try {
+    if (!toolName) return
+    const db = _testDb ?? getGlobalDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      `INSERT INTO unmapped_tools (harness, tool_name, event_name, near_miss, first_seen, last_seen, hits)
+       VALUES (?, ?, ?, ?, ?, ?, 1)
+       ON CONFLICT(harness, tool_name, event_name) DO UPDATE SET
+         hits = hits + 1,
+         last_seen = excluded.last_seen,
+         near_miss = excluded.near_miss`,
+    ).run(getHarnessName(), toolName.slice(0, MAX_TOOL_NAME_CHARS), eventName, nearMiss, now, now)
+  } catch {
+    // Best-effort — an observation must never block or fail the hook path it observes.
+  }
+}
+
+/** Read the unrecognized-tool histogram back, busiest first. Returns `[]` when the table is absent. */
+export function readUnmappedTools(dbPath?: string, homeDir?: string): UnmappedToolRow[] {
+  try {
+    const db = dbPath ? getDb(dbPath) : getGlobalDb(homeDir)
+    return db
+      .prepare(
+        'SELECT harness, tool_name, event_name, near_miss, hits, last_seen FROM unmapped_tools ORDER BY hits DESC, tool_name ASC',
+      )
+      .all() as UnmappedToolRow[]
+  } catch {
+    // No table yet (a database from before this release, read without going through getGlobalDb).
+    return []
   }
 }
 
@@ -368,15 +515,23 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
 
   const byKind: Record<string, StatsBucket> = {}
   const byDay: Record<string, StatsBucket> = {}
+  const byHarness: Record<string, StatsBucket> = {}
   let totalEvents = 0
   let totalBytes = 0
   let totalTokens = 0
 
   const db = testDb ?? getGlobalDb(homeDir)
+  // Selected only when the column is actually there: an injected `testDb` may carry a table this
+  // module never migrated, and naming a missing column would throw out of summarize() entirely
+  // rather than degrading to "harness not recorded".
+  const hasHarness = statsHasHarnessColumn(db)
+  const cols = hasHarness
+    ? 'ts, kind, bytes_saved, tokens_saved, harness'
+    : 'ts, kind, bytes_saved, tokens_saved'
   const query =
     sinceTs !== null
-      ? 'SELECT ts, kind, bytes_saved, tokens_saved FROM stats WHERE ts >= ? ORDER BY ts DESC'
-      : 'SELECT ts, kind, bytes_saved, tokens_saved FROM stats ORDER BY ts DESC'
+      ? `SELECT ${cols} FROM stats WHERE ts >= ? ORDER BY ts DESC`
+      : `SELECT ${cols} FROM stats ORDER BY ts DESC`
 
   const stmt = db.prepare(query)
   const rows = sinceTs !== null ? stmt.all(sinceTs) : stmt.all()
@@ -407,6 +562,15 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
       byDay[dateKey] = zeroBucket()
     }
     incBucket(byDay[dateKey], bytesSaved, tokensSaved)
+
+    // A NULL harness is a row written before the column existed. It is bucketed as unrecorded
+    // rather than dropped (which would make the per-harness events undercount the total) or
+    // attributed to the current harness (which would invent a measurement that was never taken).
+    const harness = (row as { harness?: string | null }).harness || HARNESS_UNRECORDED
+    if (!byHarness[harness]) {
+      byHarness[harness] = zeroBucket()
+    }
+    incBucket(byHarness[harness], bytesSaved, tokensSaved)
   }
 
   const bySourceDict: Record<string, StatsBucket> = {}
@@ -452,6 +616,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     by_day: byDayList,
     by_project: byProjectList,
     by_source: bySourceDict,
+    by_harness: byHarness,
     by_command: Object.entries(byCommandDict)
       .map(([command, bucket]) => ({ ...bucket, command }))
       .filter((r) => r.events > 0),
@@ -511,6 +676,21 @@ function _plainTextStats(summary: StatsSummary): void {
     }
   }
 
+  // Only worth printing once there is something to compare. A single-harness install would just
+  // read "claudecode: 100% of the total already printed above", and a lone `unrecorded` bucket
+  // says only that these rows predate the column -- neither is information.
+  const harnesses = Object.entries(summary.by_harness)
+    .filter(([, b]) => b.events > 0)
+    .sort((a, b) => b[1].tokens_saved - a[1].tokens_saved)
+  if (harnesses.length > 1) {
+    lines.push('', '## By Harness')
+    for (const [harness, bucket] of harnesses) {
+      lines.push(
+        `  ${harness.padEnd(22)} ${bucket.events.toString().padStart(6)} events  ${fmtBytes(bucket.bytes_saved).padStart(8)}  ${bucket.tokens_saved.toString().padStart(8)} tokens`,
+      )
+    }
+  }
+
   if (summary.by_command.length > 0) {
     lines.push('', '## By Command')
     for (const row of summary.by_command) {
@@ -545,6 +725,10 @@ function _plainTextStats(summary: StatsSummary): void {
 }
 
 /** Build the StatsData payload consumed by the rich TTY renderer from a StatsSummary. */
+/** Test seam for the builder: exported so a test can pin summarize -> build -> render as one chain. */
+export const _buildStatsDataForTest = (summary: StatsSummary, windowDays: number): StatsData =>
+  _buildStatsData(summary, windowDays)
+
 function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
   const now = new Date()
   const periodStart =
@@ -603,6 +787,15 @@ function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
       tokens: c.tokens_saved,
       events: c.events,
     })),
+    by_harness: Object.entries(summary.by_harness)
+      .filter(([, b]) => b.events > 0)
+      .map(([harness, bucket]) => ({
+        harness,
+        bytes: bucket.bytes_saved,
+        tokens: bucket.tokens_saved,
+        events: bucket.events,
+      }))
+      .sort((a, b) => b.bytes - a.bytes),
   }
 }
 
