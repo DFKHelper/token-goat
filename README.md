@@ -305,7 +305,7 @@ Installation adds a short routing guide to the agent's instructions. When the ag
 
 | Task | Agent flow |
 | --- | --- |
-| Review a PDF | `pdf-meta` and `pdf-outline`, then `pdf-extract --pages` |
+| Review a PDF | `pdf-meta` and `pdf-outline`, then `pdf-locate` to find the pages that mention a term and `pdf-extract --pages` only those |
 | Review a Word document | `docx-outline`, then `docx-text` |
 | Review a slide deck | `pptx-outline`, then `pptx-slide` or `pptx-notes` |
 | Review a workbook | `xlsx-sheets`, then `xlsx-head`, `xlsx-range`, or `xlsx-query` |
@@ -515,6 +515,7 @@ token-goat xlsx-sheets link-map.xlsx
 token-goat xlsx-query link-map.xlsx --sheet Links --columns publication,source,target --head 50
 token-goat pdf-meta manual.pdf
 token-goat pdf-outline manual.pdf
+token-goat pdf-locate manual.pdf "torque spec" --ignore-case
 token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 ```
 
@@ -606,6 +607,7 @@ token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 | `token-goat config list / get / set / validate` | Inspect or edit `config.toml` from the CLI. `validate` reports unknown keys with did-you-mean suggestions, plus any project-file or environment value that validation rejected or clamped. A project-root `.token-goat.toml` layers on top of the global config, overriding hint thresholds, indexing settings, etc. for that project only. It may not set the security sections `injection`, `webfetch`, `gdrive`, or `mcp`, nor `indexing.cross_project_symbols`: that file arrives with the repository, so a cloned project could otherwise switch off prompt-injection fencing or empty the fetch allow list for anyone who opened it. Those settings come from the global config or the environment only, and a project file that tries to set one is ignored with a message naming what was dropped. `config get`/`list`/`set` report which layer a value actually resolved from — the project file, an environment variable, or the global config — and where that layer's value was clamped or rejected they say so, naming what was asked for and what is in effect instead. |
 | `token-goat config-get <file> <key>` | Look up one key from a config-shaped file (TOML/INI `key = value`, or YAML) without reading the whole thing. On a `.md` file, a leading `---`-fenced YAML frontmatter block (Jekyll/Hugo/SKILL.md style) is checked first and takes precedence over the TOML/INI fallback; a `.md` file with no frontmatter, or an unclosed fence, falls through to the normal lookup unchanged. |
 | `token-goat pdf-extract <file>` | Extract plain text from a PDF instead of a raw Read. `--pages <spec>` narrows to a page range (e.g. `1-5` or `3`); `--head`/`--tail`/`--grep`/`--max-matches`/`--section` slice the extracted text the same way `bash-output`/`web-output` do. `--layout` heuristically reconstructs column-aware reading order from text-item coordinates instead of raw content-stream order (imperfect on rotated/overlapping text). |
+| `token-goat pdf-locate <file> <pattern>` | Find which pages of a PDF match a regex, with a snippet per match, so you can `pdf-extract --pages` only those pages instead of pulling the whole document. `-i`/`--ignore-case` for case-insensitive matching; `--max-matches <n>` caps how many page matches to collect (default 50); `--context <n>` sets the snippet length around each match (default 80); `--pages <spec>` narrows the scan to a page range; `-j`/`--json` emits `{ file, pattern, matchCount, pages, matches }`. |
 | `token-goat pdf-outline <file>` | List a PDF's bookmark/outline tree with page numbers instead of a raw Read. |
 | `token-goat pdf-meta <file> [--json]` | Page count, title/author, and whether a PDF has an extractable text layer (so you know before extracting whether it's scanned/image-only). `--json` emits `{ pageCount, title, author, hasTextLayer }` — `hasTextLayer` as a real boolean rather than a prose sentence, and an absent title/author as `null` rather than the literal `(none)`. |
 | `token-goat image-meta <file> [--json]` | Dimensions, format, byte size, and what a `shrinkImage` pass would cost — a cheap "should I even look at this" probe that reads `sharp` metadata only and never runs OCR. Requires `sharp`; degrades with a clear message when it's missing. |

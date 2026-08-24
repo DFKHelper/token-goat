@@ -68,7 +68,7 @@ import {
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
-import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
+import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, type PdfLocateMatch, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
@@ -3988,6 +3988,19 @@ export async function runPdfMeta(file: string): Promise<PdfMeta> {
   }
   const data = fs.readFileSync(file)
   return extractPdfMeta(new Uint8Array(data))
+}
+
+/** Thin async wrapper (same rationale as runPdfExtractText above). */
+export async function runPdfLocate(
+  file: string,
+  pattern: string,
+  opts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string },
+): Promise<PdfLocateMatch[]> {
+  if (!fileExists(file)) {
+    throw new Error(`Could not read: ${file}`)
+  }
+  const data = fs.readFileSync(file)
+  return locatePdfPages(new Uint8Array(data), pattern, opts)
 }
 
 export interface ImageMeta {

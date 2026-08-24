@@ -988,6 +988,23 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rLayout.status, rLayout.stderr).toBe(0)
     expect(rLayout.stdout).toContain('Hello PDF')
   },
+  'pdf-locate': () => {
+    const dir = mkIsolated('tg-matrix-pdfl-')
+    const pdfPath = path.join(dir, 'doc.pdf')
+    fs.writeFileSync(pdfPath, Buffer.from(MINIMAL_PDF, 'latin1'))
+    const r = run(['pdf-locate', pdfPath, 'PDF'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('p1:')
+    expect(r.stdout).toContain('1 match across 1 page')
+    const rNone = run(['pdf-locate', pdfPath, 'zzzznope'])
+    expect(rNone.status, rNone.stderr).toBe(0)
+    expect(rNone.stdout).toContain('(no matches)')
+    const rJson = run(['pdf-locate', pdfPath, 'PDF', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const payload = JSON.parse(rJson.stdout) as { matchCount: number; pages: number[] }
+    expect(payload.matchCount).toBe(1)
+    expect(payload.pages).toEqual([1])
+  },
   'pdf-outline': () => {
     const dir = mkIsolated('tg-matrix-pdfo-')
     const pdfPath = path.join(dir, 'doc.pdf')

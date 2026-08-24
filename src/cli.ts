@@ -110,6 +110,7 @@ import {
   runConflicts,
 
   runPdfExtractText,
+  runPdfLocate,
   runPdfMeta,
   runPdfOutline,
   runImageMeta,
@@ -1356,6 +1357,43 @@ async function cmdPdfExtract(
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_extract', bytesSaved, Math.round(bytesSaved / 4))
+}
+
+async function cmdPdfLocate(
+  file: string,
+  pattern: string,
+  opts: { ignoreCase?: boolean; maxMatches?: string; context?: string; pages?: string; json?: boolean },
+) {
+  // Build the options object without setting keys to undefined -- exactOptionalPropertyTypes
+  // is on, so an explicit `undefined` is not assignable to an optional-but-not-undefined field.
+  const locateOpts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string } = {
+    ignoreCase: opts.ignoreCase === true,
+  }
+  if (opts.maxMatches !== undefined) locateOpts.maxMatches = requirePositiveInt('--max-matches', opts.maxMatches)
+  if (opts.context !== undefined) locateOpts.context = requirePositiveInt('--context', opts.context)
+  if (opts.pages !== undefined) locateOpts.pages = opts.pages
+  const matches = await runPdfLocate(file, pattern, locateOpts)
+
+  const pages = matches.map((m) => m.page)
+  let printed: string
+  if (opts.json === true) {
+    printed = JSON.stringify({ file, pattern, matchCount: matches.length, pages, matches }, null, 2)
+    out(printed)
+  } else if (matches.length === 0) {
+    // A clean "found nothing", not an error -- the caller asked where a term is and the answer is "nowhere".
+    printed = '(no matches)'
+    out(printed)
+  } else {
+    const lines = matches.map((m) => `p${m.page}: ${m.snippet}`)
+    printed = `${lines.join('\n')}\n\n${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
+    out(printed)
+  }
+  // Same registry/producer desync guarded against as cmdPdfExtract above -- see the comment there.
+  // "Full source" is the on-disk PDF size; "emitted" is the page list + snippets actually printed,
+  // which is what a locate-then-extract caller pays instead of pulling whole pages.
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
+  recordStat('pdf_locate', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
@@ -4361,6 +4399,18 @@ export function buildProgram(): Command {
     .option('--section <heading>', 'extract one markdown section by heading')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
     .action(guard(cmdPdfExtract))
+
+  program
+    .command('pdf-locate <file> <pattern>')
+    .description(
+      'find which pages of a PDF match a regex, with a snippet per match, so you can pdf-extract only those pages instead of the whole document',
+    )
+    .option('-i, --ignore-case', 'case-insensitive matching')
+    .option('--max-matches <n>', 'stop after this many page matches (default: 50)')
+    .option('--context <n>', 'snippet length in characters around each match (default: 80)')
+    .option('--pages <spec>', 'page range to scan, e.g. 1-5 or 3 (default: all pages)')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdPdfLocate))
 
   program
     .command('pdf-outline <file>')

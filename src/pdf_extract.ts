@@ -135,6 +135,72 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layou
   })
 }
 
+export interface PdfLocateMatch {
+  page: number
+  snippet: string
+}
+
+/**
+ * Cheap where-pass for `token-goat pdf-locate`: returns the pages whose text
+ * matches `pattern`, each with a short snippet, so a caller can then run
+ * pdf-extract on only those pages instead of pulling the whole document into
+ * the model's context. One snippet per matching page (centred on the first
+ * match on that page, whitespace collapsed) is enough to confirm the hit --
+ * dumping the whole page would defeat the point of locating first.
+ */
+export async function locatePdfPages(
+  data: Uint8Array,
+  pattern: string,
+  opts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string },
+): Promise<PdfLocateMatch[]> {
+  // Compile up front so an invalid pattern fails with a message naming it,
+  // rather than leaking a bare SyntaxError with no indication of which input
+  // caused it (or paying pdfjs's document load only to throw afterwards).
+  let re: RegExp
+  try {
+    re = new RegExp(pattern, opts.ignoreCase === true ? 'i' : '')
+  } catch (e) {
+    throw new Error(`invalid regex pattern: ${pattern} (${e instanceof Error ? e.message : String(e)})`, { cause: e })
+  }
+
+  const pdfjs = await loadPdfjs()
+  if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-extract')
+
+  const maxMatches = opts.maxMatches ?? 50
+  const context = opts.context ?? 80
+
+  return withPdfDocument(pdfjs, data, async (doc) => {
+    const range = parsePageRange(opts.pages, doc.numPages)
+    const start = range ? range.start : 1
+    const end = range ? range.end : doc.numPages
+
+    const matches: PdfLocateMatch[] = []
+    for (let i = start; i <= end && matches.length < maxMatches; i++) {
+      const page = await doc.getPage(i)
+      const content = await page.getTextContent()
+      const textItems = content.items.filter((item) => 'str' in item) as unknown as LayoutTextItem[]
+      const pageText = textItems.map((item) => item.str).join(' ')
+      // Non-global regex: exec always starts at 0, so reusing `re` across pages carries no lastIndex state.
+      const m = re.exec(pageText)
+      if (m === null) continue
+      matches.push({ page: i, snippet: locateSnippet(pageText, m.index, m[0].length, context) })
+    }
+    return matches
+  })
+}
+
+/**
+ * A single-lined context window of ~`context` characters centred on the match
+ * at [index, index+matchLen). Internal whitespace runs collapse to one space so
+ * the snippet stays on one line even when the page text spans multiple lines.
+ */
+function locateSnippet(text: string, index: number, matchLen: number, context: number): string {
+  const pad = Math.max(0, context - matchLen)
+  const from = Math.max(0, index - Math.floor(pad / 2))
+  const to = Math.min(text.length, index + matchLen + Math.ceil(pad / 2))
+  return text.slice(from, to).replace(/\s+/g, ' ').trim()
+}
+
 export interface PdfOutlineEntry {
   level: number
   title: string
