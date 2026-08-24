@@ -1378,6 +1378,18 @@ export function runScope(opts: ScopeOptions): number {
     .filter((s) => s.lineStart <= line && line <= s.lineEnd)
     .sort((a, b) => b.lineStart - a.lineStart)
 
+  // "the file isn't there" and "nothing wraps that line" are different answers, and both printed
+  // the identical no-symbols line — so a typo'd path read as a real file with a bare line, which
+  // is the most misleading of the two. `outline` already separates them; match it.
+  if (syms.length === 0) {
+    if (!fs.existsSync(filePath)) {
+      emitErr(`Could not read: ${file}`)
+      return 1
+    }
+    emitErr(`No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`)
+    return 1
+  }
+
   if (enclosing.length === 0) {
     emitErr(`No symbols enclosing line ${line} in '${file}'`)
     return 1
@@ -1928,9 +1940,13 @@ export function runBlame(opts: BlameOptions): number {
 
   if (opts.json === true) {
     const lines = raw.split('\n').filter((l) => l.length > 0).map((l) => {
-      const m = /^([0-9a-f]+)\s+\((.+?)\s+(\d{4}-\d{2}-\d{2}[^)]*)\s+(\d+)\)(.*)/.exec(l)
+      // A boundary commit (one at the edge of the blame range's history) is printed with a leading
+      // `^`. Without matching it, every such line fell through to the raw fallback, dropping the
+      // commit/author/date/line/content the text output shows fine. Capture the marker instead of
+      // letting it break the parse, and flag it so the structured output keeps that distinction.
+      const m = /^(\^?)([0-9a-f]+)\s+\((.+?)\s+(\d{4}-\d{2}-\d{2}[^)]*)\s+(\d+)\)(.*)/.exec(l)
       if (!m) return { raw: l }
-      return { commit: m[1], author: (m[2] ?? '').trim(), date: (m[3] ?? '').trim(), line: Number.parseInt(m[4] ?? '0', 10), content: m[5] }
+      return { commit: m[2], boundary: m[1] === '^', author: (m[3] ?? '').trim(), date: (m[4] ?? '').trim(), line: Number.parseInt(m[5] ?? '0', 10), content: m[6] }
     })
     emit(JSON.stringify({ symbol: sym.name, file: filePath, lines }, null, 2))
     return 0

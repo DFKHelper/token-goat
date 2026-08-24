@@ -125,6 +125,7 @@ import {
   runNoteList,
   rankSimilarNames,
   filterSimilarHeadings,
+  AMBIGUOUS_HEADING_LIMIT,
 } from './read_commands.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
@@ -1227,11 +1228,16 @@ function _applyFiltersAndPrint(
     }
   }
 
-  const lines = content.split(/\r?\n/)
+  const rawLines = content.split(/\r?\n/)
   // --full is the only way to get the stored blob back verbatim. The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
-    return emit(lines.join('\n'))
+    return emit(rawLines.join('\n'))
   }
+  // Text that ends in a newline splits into a trailing "" that is not a line of output. Counting
+  // it made `--tail N` return N-1 real lines (`--tail 1` returned nothing at all) and made the
+  // default elision drop the last line of every long capture. `--full` above keeps the raw split
+  // so the verbatim blob is unchanged.
+  const lines = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines
   const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
   const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
 
@@ -2125,8 +2131,16 @@ async function cmdSkillSection(nameHeading: string, headingArg?: string): Promis
   const body = decodeSource(fs.readFileSync(filePath))
   const extracted = extractNamedSection(body, heading)
   if (!extracted) {
-    process.exitCode = 1
-    return
+    // A bare exit 1 with nothing on either stream is indistinguishable from a crash, and gave a
+    // caller no way to tell a mistyped heading from a skill that never had one. `section` says
+    // what it looked for and what is near it; say the same here.
+    const messages = [`Section '${heading}' not found in skill '${skillName}'`]
+    const allHeadings = listSections(filePath)
+    const available = filterSimilarHeadings(allHeadings, heading)
+    if (available.length > 0) messages.push(didYouMean(available))
+    else if (allHeadings.length === 0) messages.push(`skill '${skillName}' has no headings`)
+    else messages.push(`Try: token-goat outline ${filePath}`)
+    throw new CliError(messages.join('\n'))
   }
   out(extracted)
 }
@@ -2181,7 +2195,9 @@ function mapFsError(e: unknown, src?: string, dest?: string, srcLabel = 'source'
   if (fe.code === 'ENOENT') {
     const errPath = fe.path ?? ''
     const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
-    if (isSource) throw new CliError(`${srcLabel} file not found: ${src}`)
+    // Callers pass either a bare noun ('source') or one that already ends in 'file' ('target
+    // file'), and appending unconditionally produced 'target file file not found'.
+    if (isSource) throw new CliError(`${/\bfile$/i.test(srcLabel) ? srcLabel : `${srcLabel} file`} not found: ${src}`)
     // Always show the destination directory, never the internal .tmp path
     const destDir = dest ? path.dirname(path.resolve(dest)) : path.dirname(path.resolve(errPath || '.'))
     throw new CliError(`destination directory does not exist: ${destDir}`)
@@ -2845,6 +2861,24 @@ function cmdInsertSection(file: string, opts: { after: string; contentFrom?: str
     if (available.length > 0) messages.push(didYouMean(available))
     else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${file}`)
     throw new CliError(messages.join('\n'))
+  }
+
+  // `section` refuses an ambiguous heading and names the qualified retries; this write path picked
+  // the first match and reported success naming only the heading, so a caller could not tell which
+  // of two identical headings the text landed under -- and a write to the wrong one is worse than a
+  // read from it. `--after "Heading#2"` already resolves it, so only the gate was missing.
+  if (result.occurrences !== undefined) {
+    const lines = [
+      `Ambiguous heading '${opts.after}' in '${file}': ${countNoun(result.occurrences.length, 'heading')} match. ` +
+        `Retry with one of the qualified forms below to pick one:`,
+    ]
+    for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {
+      lines.push(`  - line ${line}  ->  --after "${opts.after}#${i + 1}"`)
+    }
+    if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
+      lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)
+    }
+    throw new CliError(lines.join('\n'))
   }
 
   let rawBytes: Buffer

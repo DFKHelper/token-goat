@@ -69,6 +69,31 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('2 Chrome DevTools MCP launchers')
       expect(result.message).toContain('1 orphaned Node process')
     })
+
+    it("does not report token-goat's own detached indexing daemon as an orphan", () => {
+      // The daemon is spawned detached on purpose, so it has no live parent from the moment it
+      // starts. Flagging it fired this warning on nearly every install, and the advice attached to
+      // it -- terminate the orphan -- would stop incremental indexing.
+      const result = checkMcpProcessHealth([
+        { processId: 1, parentProcessId: 0, name: 'copilot.exe', commandLine: '' },
+        { processId: 7, parentProcessId: 999, name: 'node.exe', commandLine: 'C:\\dist\\token-goat.mjs --worker-daemon' },
+      ])
+
+      expect(result.status, result.message).toBe('ok')
+      expect(result.message, 'the ok message states nothing was found, not a count').not.toMatch(/\d+ orphaned/)
+    })
+
+    it('still reports a genuinely parentless Node process alongside the daemon', () => {
+      // The carve-out must be the daemon flag specifically, not "any parentless node.exe once a
+      // daemon is present" -- otherwise running the daemon would blind the whole check.
+      const result = checkMcpProcessHealth([
+        { processId: 7, parentProcessId: 999, name: 'node.exe', commandLine: 'C:\\dist\\token-goat.mjs --worker-daemon' },
+        { processId: 8, parentProcessId: 998, name: 'node.exe', commandLine: 'scripts/selfimprove-scheduler.mjs' },
+      ])
+
+      expect(result.status).toBe('warn')
+      expect(result.message, 'only the non-daemon process should be counted').toContain('1 orphaned Node process')
+    })
   })
 
   describe('checkGlobalMcpConfig', () => {

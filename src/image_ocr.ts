@@ -94,6 +94,16 @@ function resolveTesseractEntry(): string | null {
   return _tesseractEntryPath
 }
 
+/**
+ * Is the OCR engine itself present? A null OCR result means "tesseract.js is not installed" only
+ * when this is false; when it is true, a null result is the engine running and producing nothing
+ * for this input (an unreadable image, a timeout, an offline model fetch) -- a different answer the
+ * caller must not report as a missing dependency.
+ */
+export function isOcrEngineAvailable(): boolean {
+  return !_ocrUnavailableThisProcess && resolveTesseractEntry() !== null
+}
+
 /** Test seam: lets tests substitute a fake resolved entry path (e.g. pointing at a stub module) without needing the real `tesseract.js` package installed, or force "unavailable" by passing null. */
 export function setTesseractEntryForTesting(entryPath: string | null | undefined): void {
   _tesseractEntryPath = entryPath

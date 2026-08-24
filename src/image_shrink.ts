@@ -110,14 +110,20 @@ export function isImagePath(p: string): boolean {
 }
 
 /** Raw decoded metadata for `image-meta` -- dimensions/format only, no re-encode. Returns `null` when `sharp` is unavailable or the input can't be decoded, same convention as {@link shrinkImage}. */
+/** Sentinel thrown by {@link probeImageMeta} when sharp is present but the bytes will not decode. */
+export class ImageDecodeError extends Error {}
+
 export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number } | null> {
   const sharp = await loadSharp()
   if (sharp === null) return null
   try {
     const meta = await sharp(input, { limitInputPixels: false }).metadata()
     return { width: meta.width ?? 0, height: meta.height ?? 0, format: meta.format ?? null, pages: meta.pages ?? 1 }
-  } catch {
-    return null
+  } catch (e) {
+    // sharp IS installed and still failed: these bytes are not a decodable image. Reporting that as
+    // null (the "not installed" signal) told the user to install a dependency they already have, at
+    // exit 0, for a file that is simply corrupt. Throw so the caller can say what is actually wrong.
+    throw new ImageDecodeError((e as Error)?.message ?? 'image could not be decoded')
   }
 }
 
@@ -456,7 +462,16 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     } catch {
       cachedData = null
     }
-    const meta = cachedData !== null ? await probeImageMeta(cachedData) : null
+    // The pre-read hook must never throw on a bad image; a decode failure here just means this
+    // cache entry is unusable, so fall through to a fresh read as if it were a miss.
+    let meta: Awaited<ReturnType<typeof probeImageMeta>> = null
+    if (cachedData !== null) {
+      try {
+        meta = await probeImageMeta(cachedData)
+      } catch {
+        meta = null
+      }
+    }
     if (cachedData !== null && meta !== null) {
       const result: ShrinkResult = {
         data: cachedData,

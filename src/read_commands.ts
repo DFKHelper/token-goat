@@ -69,8 +69,8 @@ import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqli
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
-import { isImagePath, probeImageMeta, shrinkImage } from './image_shrink.js'
-import { ocrImage, isTextHeavy } from './image_ocr.js'
+import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
+import { ocrImage, isTextHeavy, isOcrEngineAvailable } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
 import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
@@ -80,8 +80,10 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 // ---- constants --------------------------------------------------------------
 
 const DIDYOUMEAN_LIMIT = 5
-/** Qualified retries listed for an ambiguous `section` heading before the tail is summarized. */
-const AMBIGUOUS_HEADING_LIMIT = 10
+/** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
+const SYMBOL_PREVIEW_LINES = 5
+/** Qualified retries listed for an ambiguous `section` heading before the tail is summarized. Exported so `insert-section` refuses the same ambiguity with the same shape of message. */
+export const AMBIGUOUS_HEADING_LIMIT = 10
 // A query this long or longer gets a 2-edit typo budget; below it, 1. See typoBudget.
 const TYPO_TWO_EDIT_MIN_LEN = 8
 // Past this length a near-miss is no longer plausibly a typo of the same name, so the edit-distance fallback is skipped entirely.
@@ -1134,8 +1136,17 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
     const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}${statsStr}${goneTag}`
     const body = resolveBody(sym)
-    const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
-    return preview.trim() !== '' ? `${header}\n${preview}` : header
+    const bodyLines = body.split(/\r?\n/)
+    const preview = bodyLines.slice(0, SYMBOL_PREVIEW_LINES).join('\n')
+    // The header states the symbol's real line span, so a five-line preview of a forty-line
+    // function looked like the whole thing was five lines long -- a silent cap of exactly the kind
+    // truncationFooter below exists to prevent. Say what was cut and how to get the rest.
+    const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
+    const elided =
+      dropped > 0
+        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: token-goat read "${toDisplayPath(symbolDisplayRoot, sym.filePath)}::${sym.name}")`
+        : ''
+    return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })
   const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
@@ -3228,8 +3239,41 @@ export function runJsonQuery(opts: JsonQueryCliOptions): number {
 }
 
 /** Parses YAML text, handling multi-document streams (`---`-separated) via js-yaml's loadAll -- a single-document file (the overwhelming majority) unwraps to its one value so path queries work directly against it, while a genuine multi-doc stream (k8s manifests, etc.) stays an array so the existing [n]/[*] json_query.ts grammar indexes into documents for free. */
-function parseYamlDocument(text: string): unknown {
-  const docs = loadAllYaml(text)
+/** A value js-yaml produced as a plain mapping (not an array, Date, null, or scalar). */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype
+}
+
+/**
+ * Apply YAML merge keys (`<<: *anchor`), which js-yaml 4 leaves as a literal `<<` key rather than
+ * folding the anchor's keys into the parent. Precedence follows the spec: a node's own keys win
+ * over merged keys, and when `<<` is a list of mappings the earlier ones win over the later. New
+ * objects are built throughout so anchor targets shared across the document are never mutated.
+ */
+function resolveYamlMergeKeys(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(resolveYamlMergeKeys)
+  if (!isPlainObject(node)) return node
+  const merged: Record<string, unknown> = {}
+  const mergeVal = node['<<']
+  if (mergeVal !== undefined) {
+    const sources = Array.isArray(mergeVal) ? mergeVal : [mergeVal]
+    // Apply lowest-precedence first so earlier list entries overwrite later ones.
+    for (const src of [...sources].reverse()) {
+      const resolved = resolveYamlMergeKeys(src)
+      if (isPlainObject(resolved)) Object.assign(merged, resolved)
+    }
+  }
+  // The node's own keys have the highest precedence and overwrite anything merged in.
+  for (const [key, value] of Object.entries(node)) {
+    if (key === '<<') continue
+    merged[key] = resolveYamlMergeKeys(value)
+  }
+  return merged
+}
+
+/** Exported for tests: parse YAML and expand merge keys, the transform `yaml-query` runs on input. */
+export function parseYamlDocument(text: string): unknown {
+  const docs = loadAllYaml(text).map(resolveYamlMergeKeys)
   return docs.length === 1 ? docs[0] : docs
 }
 
@@ -3966,7 +4010,17 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
   }
   const data = fs.readFileSync(file)
   const bytes = data.length
-  const probe = await probeImageMeta(data)
+  let probe: Awaited<ReturnType<typeof probeImageMeta>>
+  try {
+    probe = await probeImageMeta(data)
+  } catch (e) {
+    // sharp is installed and rejected the bytes: this is a corrupt/unreadable image, not a missing
+    // dependency. Surface it as a real error rather than the "install sharp" notice at exit 0.
+    if (e instanceof ImageDecodeError) {
+      throw new Error(`${file} is not a readable image: ${e.message}`, { cause: e })
+    }
+    throw e
+  }
   if (probe === null) {
     return { width: 0, height: 0, format: null, bytes, sharpAvailable: false, wouldShrink: false, shrunkBytes: null }
   }
@@ -4001,6 +4055,12 @@ export async function runImageText(file: string): Promise<ImageTextResult> {
   const data = fs.readFileSync(file)
   const ocr = await ocrImage(data)
   if (ocr === null) {
+    // A null result means "engine not installed" only when the engine is genuinely absent. If it
+    // is present, OCR ran and produced nothing for this input -- a corrupt image, a timeout, an
+    // offline model fetch -- which must not be reported as a missing dependency at exit 0.
+    if (isOcrEngineAvailable()) {
+      throw new Error(`${file} could not be processed by OCR (unreadable image, timeout, or offline model fetch)`)
+    }
     return { ocrAvailable: false, confidence: 0, chars: 0, textHeavy: false, text: null }
   }
   const minConfidence = loadConfig().image_shrink.ocr_min_confidence

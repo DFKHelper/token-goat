@@ -38,6 +38,13 @@ const GO_FAIL = /^--- FAIL:\s+(\S+)/;
 const CARGO_FAIL = /^test (\S+) \.\.\. FAILED/;
 const CARGO_SECTION = /^---- (\S+) (?:stdout|stderr) ----$/;
 const CARGO_RESULT = /^test result:/;
+// Vitest prints each failure as ` FAIL  <file> > <test name>` under a `⎯ Failed Tests N ⎯` banner,
+// with the assertion detail on the very next line. The leading space distinguishes it from Jest's
+// column-0 `FAIL <file>` summary line.
+const VITEST_FAIL_HEADER = /^\s+FAIL\s+(.+?)\s*$/;
+const VITEST_BANNER = /⎯+\s*Failed Tests\s+\d+\s*⎯+/;
+const VITEST_SEPARATOR = /^⎯+.*⎯+$/;
+const VITEST_SUMMARY = /^\s*(Test Files|Tests|Start at|Duration)\s/;
 
 // ───────────────────────────────────────────────────────────────────────────── Runner detection ─────────────────────────────────────────────────────────────────────────────
 
@@ -47,6 +54,11 @@ function detectRunner(text: string): string {
   }
   if (/\bFAILED\b.+::test_/.test(text) || /short test summary/i.test(text)) {
     return 'pytest';
+  }
+  // Checked before jest: both print `FAIL`, but vitest's banner and its `Test Files`/`Tests`
+  // summary pair are unambiguous, and its FAIL lines are indented where jest's sit at column 0.
+  if (VITEST_BANNER.test(text) || (/^\s*Test Files\s+/m.test(text) && /^\s*Tests\s+\d+\s+(failed|passed)/m.test(text))) {
+    return 'vitest';
   }
   if (/^\s+●\s/m.test(text) || /^FAIL\s+\S+\.test\b/m.test(text)) {
     return 'jest';
@@ -194,6 +206,54 @@ function extractJest(lines: string[]): FailureResult {
     result.blocks.push({ name: currentName, body: currentBody.join('\n') });
   }
 
+  return result;
+}
+
+function extractVitest(lines: string[]): FailureResult {
+  // One block per ` FAIL  file > name` header, body running to the next FAIL, the [i/j] separator,
+  // or the summary. Anchoring on FAIL headers means the count is exactly the number of failing
+  // tests -- not the several keyword-bearing lines (`Failed Tests`, `AssertionError`) the generic
+  // extractor was inflating a single failure into -- and the assertion detail that follows each
+  // header is kept in that block's body instead of being dropped.
+  const result: FailureResult = { runner: 'vitest', blocks: [], summaryLines: [], statsLine: '' };
+  let inBlock = false;
+  let currentName = '';
+  let currentBody: string[] = [];
+
+  const flush = (): void => {
+    if (inBlock && currentName) result.blocks.push({ name: currentName, body: currentBody.join('\n').trimEnd() });
+    inBlock = false;
+    currentName = '';
+    currentBody = [];
+  };
+
+  for (const line of lines) {
+    const s = line.trimEnd();
+    const header = VITEST_FAIL_HEADER.exec(s);
+    if (header) {
+      flush();
+      currentName = header[1] ?? '';
+      currentBody = [];
+      inBlock = true;
+      result.summaryLines.push(currentName);
+      continue;
+    }
+    if (VITEST_SUMMARY.test(s)) {
+      if (/^\s*Tests\s/.test(s)) result.statsLine = s.trim();
+      flush();
+      continue;
+    }
+    if (inBlock) {
+      // The [i/j] rule that separates one failure's report from the next is a boundary, not body.
+      if (VITEST_SEPARATOR.test(s)) {
+        flush();
+        continue;
+      }
+      currentBody.push(s);
+    }
+  }
+
+  flush();
   return result;
 }
 
@@ -351,6 +411,9 @@ export function extractFailures(text: string, options?: { runner?: string }): Fa
 
   if (detected === 'pytest') {
     return extractPytest(lines);
+  }
+  if (detected === 'vitest') {
+    return extractVitest(lines);
   }
   if (detected === 'jest') {
     return extractJest(lines);

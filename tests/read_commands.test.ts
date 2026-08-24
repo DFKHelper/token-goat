@@ -232,6 +232,29 @@ describe('read_commands', () => {
       expect(stderr).toContain('missing')
     })
 
+    it('marks a body longer than the preview cap with an elision line pointing to the full read (regression: a 5-line preview of a 40-line function read as if the whole thing were 5 lines)', () => {
+      const body = Array.from({ length: 12 }, (_, i) => `  line${i + 1}()`).join('\n')
+      mockQuerySymbols.mockReturnValue([
+        { name: 'bigFn', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 10, lineEnd: 21, body, docstring: '', parent: '' },
+      ])
+      const { text, code } = runSymbol({ name: 'bigFn' })
+      expect(code).toBe(0)
+      // 12 body lines, 5 shown -> 7 dropped, so the marker must count 7 and name the retry command.
+      expect(text, 'the preview must announce how many lines it cut').toContain('...(7 more lines;')
+      expect(text, 'the marker must point at the full-body read').toContain('token-goat read "src/read_commands.ts::bigFn"')
+      // The 6th body line onward must NOT be inline -- proof the preview really stopped at 5.
+      expect(text, 'the preview must stop at the cap, not print the whole body').not.toContain('line6()')
+    })
+
+    it('emits no elision line when the body fits within the preview cap', () => {
+      mockQuerySymbols.mockReturnValue([
+        { name: 'smallFn', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 3, body: '  a()\n  b()', docstring: '', parent: '' },
+      ])
+      const { text, code } = runSymbol({ name: 'smallFn' })
+      expect(code).toBe(0)
+      expect(text, 'a body that fits must not grow a spurious elision marker').not.toContain('more line')
+    })
+
     it('appends a Did you mean block with near-name candidates on a miss', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockImplementation((opts?: any) => {

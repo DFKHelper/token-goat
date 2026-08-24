@@ -118,7 +118,13 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null):
   const nodeProcesses = processes.filter((process) => process.name.toLowerCase() === 'node.exe')
   const chromeLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*chrome-devtools-mcp/i.test(process.commandLine))
   const playwrightLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*@playwright[\\/]mcp/i.test(process.commandLine))
-  const orphanedNodeProcesses = nodeProcesses.filter((process) => !byPid.has(process.parentProcessId))
+  // token-goat's own indexing daemon is spawned detached, so its parent is gone the moment it
+  // starts -- being parentless is what healthy looks like for it, not a symptom. Without this the
+  // check warned on nearly every install and advised terminating the very process that keeps the
+  // index current. Matched on the daemon flag it is always launched with (see worker.ts).
+  const orphanedNodeProcesses = nodeProcesses.filter(
+    (process) => !byPid.has(process.parentProcessId) && !/--worker-daemon\b/.test(process.commandLine),
+  )
   const launchers = chromeLaunchers.length + playwrightLaunchers.length
 
   if (launchers > 2 || orphanedNodeProcesses.length > 0) {

@@ -546,6 +546,26 @@ describe('token-goat CLI', () => {
       }
     })
 
+    it('replace on a missing target file says "target file not found", never doubling the word "file"', async () => {
+      // The label "target file" already ends in "file"; the ENOENT formatter used to append
+      // " file" unconditionally, producing "target file file not found". A label that ends in
+      // "file" must be used verbatim.
+      const missingTarget = path.join(os.tmpdir(), `tg-rpl-missing-target-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-missing-target-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-missing-target-new-${Date.now()}.txt`)
+      fs.writeFileSync(oldFile, 'beta', 'utf8')
+      fs.writeFileSync(newFile, 'delta', 'utf8')
+      try {
+        const r = await run(['replace', missingTarget, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain(`target file not found: ${missingTarget}`)
+        expect(r.stderr, 'the label already ends in "file" and must not be doubled').not.toContain('file file')
+      } finally {
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
     it('replace --new-from with a missing source file names the failing flag, not a bare "source"', async () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-missing-new-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-missing-new-src-${Date.now()}.txt`)
@@ -1023,6 +1043,42 @@ describe('token-goat CLI', () => {
         expect(r.stderr).toContain('Did you mean')
         expect(r.stderr).toContain('Lesson 2')
         expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    // Regression: `section` refuses an ambiguous heading, but this write path silently inserted
+    // after the FIRST of two identical headings and reported success naming only the heading --
+    // so a caller could not tell which one the text landed under, and a write to the wrong section
+    // is worse than a read from it. It must refuse, list the qualified retry forms, and leave the
+    // file byte-for-byte unchanged.
+    it('insert-section refuses an ambiguous heading, lists qualified retries, and does not touch the file', async () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-ambig-${Date.now()}.md`)
+      const original = '# Doc\n\n## Notes\nalpha\n\n## Other\nmid\n\n## Notes\nbeta\n'
+      fs.writeFileSync(tmp, original, 'utf8')
+      const contentB64 = Buffer.from('## Inserted\nx\n', 'utf8').toString('base64')
+      try {
+        const r = await run(['insert-section', tmp, '--after', 'Notes', '--content-b64', contentB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain("Ambiguous heading 'Notes'")
+        expect(r.stderr, 'must offer the qualified retry for the first match').toContain('--after "Notes#1"')
+        expect(r.stderr, 'must offer the qualified retry for the second match').toContain('--after "Notes#2"')
+        expect(fs.readFileSync(tmp, 'utf8'), 'an ambiguous insert must be a no-op on disk').toBe(original)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('insert-section --after "Heading#2" resolves the ambiguity to the second occurrence', async () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-ambig-pick-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '# Doc\n\n## Notes\nalpha\n\n## Notes\nbeta\n', 'utf8')
+      const contentB64 = Buffer.from('## Inserted\nx\n', 'utf8').toString('base64')
+      try {
+        const r = await run(['insert-section', tmp, '--after', 'Notes#2', '--content-b64', contentB64])
+        expect(r.status, r.stderr).toBe(0)
+        // Landed under the SECOND Notes (after beta), not the first.
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Notes\nalpha\n\n## Notes\nbeta\n## Inserted\nx\n')
       } finally {
         fs.rmSync(tmp, { force: true })
       }
