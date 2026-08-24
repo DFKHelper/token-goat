@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 850" width="100%" height="100%" style="background:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <text x="40" y="45" font-size="24" font-weight="700" fill="#0f172a">Token-Goat Component Architecture (C4 Level 3)</text>
+  <text x="40" y="70" font-size="14" fill="#64748b">Internal pipeline structure for Hook Processing, 158 Bash Filters, and Parser / Indexing Engine.</text>
+
+  <!-- Left: Hook Processing Pipeline -->
+  <g transform="translate(30, 100)" filter="url(#shadow)">
+    <rect width="560" height="710" rx="10" fill="#ffffff" stroke="#2563eb" stroke-width="2"/>
+    <text x="20" y="32" font-size="15" font-weight="700" fill="#1e40af">HOOK PROCESSING &amp; OPTIMIZATION PIPELINE</text>
+
+    <!-- Normalizer -->
+    <rect x="20" y="55" width="520" height="60" rx="6" fill="#1e40af"/>
+    <text x="280" y="80" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Harness Normalizer (hooks_cli.ts::normalizePayload)</text>
+    <text x="280" y="98" font-size="10" fill="#93c5fd" text-anchor="middle">Maps Codex 'shell' -> 'Bash', Gemini 'read_file' -> 'Read', etc.</text>
+
+    <!-- Handlers Grid -->
+    <g transform="translate(20, 130)">
+      <rect x="0" y="0" width="250" height="70" rx="6" fill="#2563eb"/>
+      <text x="125" y="26" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">preReadHandler</text>
+      <text x="125" y="44" font-size="9.5" fill="#dbeafe" text-anchor="middle">Large-file gate &amp; diff-on-reread</text>
+      <text x="125" y="58" font-size="9" fill="#bfdbfe" text-anchor="middle">Suggests token-goat read/section</text>
+
+      <rect x="270" y="0" width="250" height="70" rx="6" fill="#2563eb"/>
+      <text x="395" y="26" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">preBashHandler</text>
+      <text x="395" y="44" font-size="9.5" fill="#dbeafe" text-anchor="middle">Rewrites command to 'compress'</text>
+      <text x="395" y="58" font-size="9" fill="#bfdbfe" text-anchor="middle">Recalls prior run if cached</text>
+
+      <rect x="0" y="80" width="250" height="70" rx="6" fill="#2563eb"/>
+      <text x="125" y="106" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">preFetchHandler</text>
+      <text x="125" y="124" font-size="9.5" fill="#dbeafe" text-anchor="middle">Image shrink (WebP/AVIF)</text>
+      <text x="125" y="138" font-size="9" fill="#bfdbfe" text-anchor="middle">Prompt injection scan &amp; fence</text>
+
+      <rect x="270" y="80" width="250" height="70" rx="6" fill="#2563eb"/>
+      <text x="395" y="106" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">preCompactHandler</text>
+      <text x="395" y="124" font-size="9.5" fill="#dbeafe" text-anchor="middle">Adaptive token manifest</text>
+      <text x="395" y="138" font-size="9" fill="#bfdbfe" text-anchor="middle">Preserves edited files &amp; skills</text>
+    </g>
+
+    <!-- 158 Bash Filters Box -->
+    <g transform="translate(20, 300)">
+      <rect width="520" height="270" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="16" y="26" font-size="13" font-weight="700" fill="#15803d">158 Bash Output Tool Filters (src/tool_filters/)</text>
+
+      <rect x="16" y="38" width="488" height="42" rx="4" fill="#15803d"/>
+      <text x="260" y="56" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">Test Runners (Batch A)</text>
+      <text x="260" y="70" font-size="9" fill="#bbf7d0" text-anchor="middle">Vitest, Jest, Mocha, Pytest, GoTest (data race &amp; stack frame preservation)</text>
+
+      <rect x="16" y="86" width="488" height="42" rx="4" fill="#15803d"/>
+      <text x="260" y="104" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">Package Managers &amp; Linters (Batches B &amp; C)</text>
+      <text x="260" y="118" font-size="9" fill="#bbf7d0" text-anchor="middle">npm, pnpm, uv, pip, cargo, tsc, ruff, mypy, eslint, oxlint, biome, swiftlint</text>
+
+      <rect x="16" y="134" width="488" height="42" rx="4" fill="#15803d"/>
+      <text x="260" y="152" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">VCS, Build &amp; Cloud (Batches D, E, F, G)</text>
+      <text x="260" y="166" font-size="9" fill="#bbf7d0" text-anchor="middle">git log/diff/status/blame, make, cmake, gradle, docker, kubectl, terraform, aws</text>
+
+      <rect x="16" y="182" width="488" height="42" rx="4" fill="#15803d"/>
+      <text x="260" y="200" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">CI, Shell Utilities &amp; DB Clients (Batches H, J, K1, K2)</text>
+      <text x="260" y="214" font-size="9" fill="#bbf7d0" text-anchor="middle">gh run/api, rg, tree, jq, psql, mysql, sqlite3, redis-cli, python, node</text>
+
+      <rect x="16" y="230" width="488" height="30" rx="4" fill="#047857"/>
+      <text x="260" y="250" font-size="10" font-weight="600" fill="#ffffff" text-anchor="middle">GenericFilter (ANSI &amp; progress strip + consecutive dedupe fallback)</text>
+    </g>
+
+    <!-- Security Guards -->
+    <g transform="translate(20, 590)">
+      <rect width="520" height="95" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="16" y="24" font-size="12" font-weight="700" fill="#b91c1c">Security &amp; Integrity Controls</text>
+      <text x="16" y="44" font-size="10" fill="#7f1d1d">• injection_scan.ts: Heuristic scanner marks adversarial prompts untrusted</text>
+      <text x="16" y="62" font-size="10" fill="#7f1d1d">• secret_redact.ts: Bearer, AWS &amp; JWT redaction before cache persistence</text>
+      <text x="16" y="80" font-size="10" fill="#7f1d1d">• paths.ts: safeJoin colon rejection blocks Windows drive-letter traversal</text>
+    </g>
+  </g>
+
+  <!-- Right: Indexer, Parser & Query Subsystem -->
+  <g transform="translate(610, 100)" filter="url(#shadow)">
+    <rect width="560" height="710" rx="10" fill="#ffffff" stroke="#059669" stroke-width="2"/>
+    <text x="20" y="32" font-size="15" font-weight="700" fill="#047857">INDEXER, PARSER &amp; QUERY SUBSYSTEM</text>
+
+    <!-- Worker & Dirty Queue -->
+    <rect x="20" y="55" width="520" height="70" rx="6" fill="#047857"/>
+    <text x="280" y="82" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Worker Loop &amp; Drainer (worker.ts)</text>
+    <text x="280" y="102" font-size="10" fill="#a7f3d0" text-anchor="middle">Consumes queue/dirty.txt • SHA fingerprint check • Periodic dead-root GC</text>
+
+    <!-- Parser Orchestrator -->
+    <rect x="20" y="140" width="520" height="60" rx="6" fill="#059669"/>
+    <text x="280" y="165" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">Parser Orchestrator (parser.ts)</text>
+    <text x="280" y="183" font-size="10" fill="#d1fae5" text-anchor="middle">detectLanguage() • Routes to Tree-Sitter or Regex Extractors</text>
+
+    <!-- Language Adapters -->
+    <g transform="translate(20, 215)">
+      <rect width="520" height="150" rx="6" fill="#ecfdf5" stroke="#10b981"/>
+      <text x="16" y="24" font-size="12" font-weight="700" fill="#065f46">Parser Language Adapters (28 languages + formats)</text>
+
+      <rect x="16" y="38" width="488" height="45" rx="4" fill="#10b981"/>
+      <text x="260" y="58" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">Tree-Sitter Inline Extractors</text>
+      <text x="260" y="73" font-size="9" fill="#064e3b" text-anchor="middle">TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C, C++</text>
+
+      <rect x="16" y="93" width="488" height="45" rx="4" fill="#059669"/>
+      <text x="260" y="113" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">src/languages/ Regex &amp; Pattern Adapters</text>
+      <text x="260" y="128" font-size="9" fill="#d1fae5" text-anchor="middle">C#, PHP, Kotlin, GraphQL, SQL, HTML, Liquid, Proto, Apex, Markdown, JSON</text>
+    </g>
+
+    <!-- Choke Point -->
+    <g transform="translate(20, 380)">
+      <rect width="520" height="110" rx="6" fill="#0284c7" stroke="#0369a1" stroke-width="2"/>
+      <text x="260" y="30" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">🛡️ Single Choke Point: writeParseResult (parser.ts)</text>
+      <text x="20" y="55" font-size="10.5" fill="#e0f2fe">• Enforces single atomic transaction across files, symbols, and refs</text>
+      <text x="20" y="73" font-size="10.5" fill="#e0f2fe">• Invariant: Bounds body at MAX_SYMBOL_BODY_CHARS; elides over-cap</text>
+      <text x="20" y="91" font-size="10.5" fill="#e0f2fe">• Amplification Guard: Guarantees index bytes &lt;= 4x source file size</text>
+    </g>
+
+    <!-- Surgical & Non-Code Readers -->
+    <g transform="translate(20, 505)">
+      <rect width="520" height="180" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+      <text x="16" y="25" font-size="13" font-weight="700" fill="#1e293b">Surgical Query &amp; Non-Code Readers (read_commands.ts)</text>
+
+      <text x="20" y="52" font-size="11" fill="#334155"><tspan font-weight="700">Code Precision:</tspan> symbol, read, section, skeleton, outline, refs, diff, blame</text>
+      <text x="20" y="74" font-size="11" fill="#334155"><tspan font-weight="700">Documents:</tspan> pdf-extract, pdf-outline, pptx-slide, docx-text, xlsx-query</text>
+      <text x="20" y="96" font-size="11" fill="#334155"><tspan font-weight="700">Structured Data:</tspan> json-query, yaml-query, csv-query, sqlite-query, openapi-op</text>
+      <text x="20" y="118" font-size="11" fill="#334155"><tspan font-weight="700">Semantic Discovery:</tspan> semantic (Xenova/bge-small-en-v1.5 + vec0 KNN)</text>
+      <text x="20" y="140" font-size="11" fill="#334155"><tspan font-weight="700">Session Memory:</tspan> note-add, memory, recall, compact-hint, session-summary</text>
+      <text x="20" y="162" font-size="11" fill="#334155"><tspan font-weight="700">Integrity:</tspan> All paths normalized via resolveIndexPath() (byte-identical key match)</text>
+    </g>
+  </g>
+</svg>

@@ -1264,7 +1264,7 @@ const LOG_WARN_RE = /\b(WARN(?:ING)?)\b|\[WARN(?:ING)?\]|level=warn/i
 const LOG_INFO_RE = /\b(INFO)\b|\[INFO\]|level=info/i
 const LOG_DEBUG_RE = /\b(DEBUG|TRACE|VERBOSE)\b|\[DEBUG\]|\[TRACE\]|level=(?:debug|trace)/i
 const LOG_ANY_RE = /\b(?:ERROR|FAIL(?:URE|ED)?|CRITICAL|EXCEPTION|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE|VERBOSE)\b|\[(?:ERROR|CRITICAL|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE)\]|level=(?:error|critical|fatal|warn|info|debug|trace)/i
-const TRACE_CONTINUATION_RE = /^\s+(?:at |File "|in |\w+Error:|\w+Exception:)|^\s+\w+[\w.]+\(.*\)$|^\s+\.{3}\s*\d+\s+more|^Caused by:|^During handling of the above exception/
+const TRACE_CONTINUATION_RE = /^\s+(?:at |File "|in |\w+Error:|\w+Exception:)|^\s+\w+[\w.]+\([^)\r\n]*\)$|^\s+\.{3}\s*\d+\s+more|^Caused by:|^During handling of the above exception/
 
 function scoreLogLine(line: string): number {
   if (LOG_LEVEL_RE.test(line)) return 1.0

@@ -39,7 +39,7 @@ function dedupLines(
 // npm install noise
 const NPM_DEPRECATED_RE = /^npm warn deprecated\b/i
 const NPM_NOTICE_RE = /^npm notice\b/i
-const NPM_NOTICE_LOCKFILE_RE = /^npm notice.*lock/i
+const NPM_NOTICE_LOCKFILE_RE = /^npm notice[^\r\n]*lock/i
 const NPM_ZERO_VULN_RE = /^found 0 vulnerabilities\b/i
 const NPM_FUNDING_RE = /^\d+\s+packages? are looking for funding\b/i
 const NPM_FUND_RUN_RE = /^\s*run `npm fund`/i
@@ -48,7 +48,7 @@ const NPM_VERBOSE_RE = /^npm (?:timing|sill|http fetch|http request|http finish|
 const NPM_REIFY_RE = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s/
 
 // yarn classic install noise
-const YARN_PEER_DEP_RE = /^warning ".+ > .+" has (?:unmet|incorrect) peer dependency/i
+const YARN_PEER_DEP_RE = /^warning "[^"\r\n]+ > [^"\r\n]+" has (?:unmet|incorrect) peer dependency/i
 const YARN_PHASE_RE = /^\[\d+\/\d+\]/
 const YARN_FETCH_PHASE_RE = /^\[2\/4\]/
 const YARN_INFO_RE = /^info\b/i
@@ -66,7 +66,7 @@ const PNPM_PROGRESS_RE = /^Progress:/i
 
 // pnpm install resolution progress (used by PnpmFilter)
 const PNPM_RESOLVER_PROGRESS_RE =
-  /^\s*(?:Resolving|Downloading|Fetching)[:\s].*\d+\/\d+|\s+\d+\s+packages?\s+(?:fetched|resolved|downloaded|linked)/
+  /^\s*(?:Resolving|Downloading|Fetching)[:\s][^\r\n]*\d+\/\d+|\s+\d+\s+packages?\s+(?:fetched|resolved|downloaded|linked)/
 const PNPM_SUMMARY_RE = /^(?:Packages:|Already up to date|Progress:|WARN|ERR!|added|removed|changed)/i
 const PNPM_LOCKFILE_RE = /^\s*(?:Lockfile|Saved|node_modules|symlink)/i
 
@@ -116,7 +116,7 @@ const BUNDLER_FETCH_INSTALL_RE = /^(?:Fetching|Installing)\s+\S+\s+[\d.]+/
 // composer noise
 const COMPOSER_INSTALL_RE = /^\s+- Installing \S+ \(/
 const COMPOSER_DOWNLOADING_RE = /^\s+- Downloading \S+ \(/
-const COMPOSER_DOWNLOAD_PROGRESS_RE = /^\s+- (?:Installing|Downloading) .+\(\d+%\)/
+const COMPOSER_DOWNLOAD_PROGRESS_RE = /^\s+- (?:Installing|Downloading) [^\r\n]+\(\d+%\)/
 const COMPOSER_FUNDING_RE = /^\d+ packages? you are using are looking for funding/
 const COMPOSER_WARNING_RE = /^\s*(?:Warning|Deprecation|deprecated|constraint):/i
 
@@ -124,7 +124,7 @@ const COMPOSER_WARNING_RE = /^\s*(?:Warning|Deprecation|deprecated|constraint):/
 const NUGET_INSTALLING_RE = /^\s*Installing\s+\S+\s+\d+\.\d+/i
 const NUGET_RESTORING_RE = /^\s*Restoring packages for\b/i
 const NUGET_OK_HTTPS_RE = /^\s*OK\s+https?:\/\//i
-const NUGET_ALREADY_INSTALLED_RE = /^\s*Package\s+\S+.*\bis already installed/i
+const NUGET_ALREADY_INSTALLED_RE = /^\s*Package\s+\S+[^\r\n]*\bis already installed/i
 const NUGET_SUCCESS_INSTALL_RE = /^\s*Successfully installed\s+/i
 
 // pub

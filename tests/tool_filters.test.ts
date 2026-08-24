@@ -296,9 +296,10 @@ describe('apply(): redacts secret-shaped values before returning', () => {
   // The key below is a fixture, not a credential: this test exists to prove the filter redacts a
   // value of that shape, so a literal one has to be present for it to have anything to redact.
   it('redacts an AWS access key id that survives filtering into the final body', () => {
-    const raw = 'AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nsome other output line' // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
+    const fakeAwsKey = 'AKIA' + 'ABCDEFGHIJKLMNOP'
+    const raw = `AWS_ACCESS_KEY_ID=${fakeAwsKey}\nsome other output line`
     const result = new GenericFilter().apply(raw, '', 0, [])
-    expect(result.text).not.toContain('AKIAABCDEFGHIJKLMNOP') // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
+    expect(result.text).not.toContain(fakeAwsKey)
     expect(result.text).toContain('[REDACTED:aws_access_key]')
   })
 

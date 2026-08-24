@@ -18,7 +18,7 @@ const _GH_COPILOT_DISCLAIMER_RE = /^\s*(?:Disclaimer:|This response was|GitHub C
 // ---------------------------------------------------------------------------
 // Aider
 // ---------------------------------------------------------------------------
-const _AIDER_APPLYING_RE = /^\s*(?:Applying\s+edit(?:s)?(?:\s+to\s+\S+)?|Applied\s+edit\s+to\s+\S+)\s*\.{0,3}\s*$/i
+const _AIDER_APPLYING_RE = /^\s*(?:Applying\s+edits?(?:\s+to\s+\S+)?|Applied\s+edit\s+to\s+\S+)\s*(?:\.{1,3})?\s*$/i
 const _AIDER_TOKENS_RE = /^\s*Tokens:\s+\d[\d,]*\s+sent,\s+\d[\d,]*\s+received/i
 const _AIDER_COST_RE = /^\s*Cost:\s+\$[\d.]+\s+message,\s+\$[\d.]+\s+session/i
 const _AIDER_REPOMAP_RE = /^\s*(?:Repo-map:|Added\s+\S+\s+to\s+the\s+chat|Removed\s+\S+\s+from\s+the\s+chat|Loading\s+repo\s+map|Updating\s+repo\s+map|Scanning\s+repo\s+contents|Using\s+\d+\s+tokens\s+of\s+repo\s+map)/i

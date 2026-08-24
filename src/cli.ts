@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 /**
  * CLI entrypoint (`token-goat ...`).
  *
@@ -2193,7 +2194,7 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
   }
   // Place tmp in same directory as dest so rename is always same-device (avoids EXDEV); include random suffix to eliminate PID-reuse collisions.
-  const rnd = Math.random().toString(36).slice(2, 8)
+  const rnd = randomBytes(4).toString('hex')
   const tmp = path.join(path.dirname(path.resolve(dest)), `.tmp.${process.pid}.${rnd}`)
   try {
     // mode 0o600 applies on POSIX only; on Windows Node.js ignores it and the tmp file inherits the default ACL.

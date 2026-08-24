@@ -1,0 +1,38 @@
+@startuml C4_Containers
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Container Diagram for Token-Goat (C4 Level 2)
+
+Person(user, "Developer / Agent Harness")
+
+System_Boundary(tg_boundary, "Token-Goat System") {
+    Container(shim, "Hook Shim", "JavaScript (~/.claude/hooks/token-goat-shim.js)", "Provides in-process fast path relay for Claude Code hooks.")
+    Container(relay, "Hook Relay & Dispatcher", "TypeScript (dist/token-goat-hook.mjs)", "Normalizes multi-harness payloads and runs 158 compression filters.")
+    Container(cli, "CLI Application", "TypeScript (dist/token-goat.mjs)", "Exposes 100+ surgical read, outline, pack, and doctor commands.")
+    Container(mcp, "MCP stdio Server", "TypeScript (token-goat mcp-serve)", "Serves 18 tools to VS Code Copilot over stdio.")
+    Container(worker, "Background Worker Daemon", "TypeScript (worker.ts)", "Consumes dirty queue every 2000ms and reindexes changed files.")
+
+    ContainerDb(global_db, "Global Index Database", "SQLite (global.db)", "Holds files, symbols, refs, chunks, symbols_fts, and chunk_vectors.")
+    ContainerDb(sessions, "Session State Store", "Atomic JSON (sessions/{id}.json)", "Maintains per-session read/edit histories and hint deduplication.")
+    ContainerDb(blobs, "Content Blob Cache", "File Store (bash_outputs/, web_outputs/)", "Stores raw tool outputs for 24h with content-addressed IDs.")
+    ContainerDb(dirty_queue, "Dirty Queue", "Append-only text (queue/dirty.txt)", "Synchronizes file edits between hooks and the worker daemon.")
+}
+
+Rel(user, shim, "Invokes hook", "CLI/stdio")
+Rel(shim, relay, "Executes in-process", "dynamic import")
+Rel(user, cli, "Runs command", "Shell")
+Rel(user, mcp, "Calls tool", "stdio JSON-RPC")
+
+Rel(relay, dirty_queue, "Appends touched path on Edit", "File append")
+Rel(relay, sessions, "Loads and merges session state", "Atomic read/write")
+Rel(relay, blobs, "Persists output bodies", "File I/O")
+
+Rel(worker, dirty_queue, "Polls & drains", "File read/truncate")
+Rel(worker, global_db, "Writes parsed symbols & vectors", "SQLite WAL transaction")
+
+Rel(cli, global_db, "Queries symbols & headings", "SQLite read")
+Rel(mcp, global_db, "Queries index", "SQLite read")
+Rel(mcp, blobs, "Retrieves cached text", "File read")
+@enduml

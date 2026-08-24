@@ -26,7 +26,7 @@ function creditSites(): Array<{ line: number; args: string; advisory: boolean }>
   const lines = readFileSync(SRC, 'utf-8').split(/\r?\n/)
   const out: Array<{ line: number; args: string; advisory: boolean }> = []
   for (let i = 0; i < lines.length; i++) {
-    const m = /recordStat\('session_hint',\s*([^)]*)\)/.exec(lines[i] ?? '')
+    const m = /recordStat\('session_hint',\s*([^)\r\n]*)\)/.exec(lines[i] ?? '')
     if (m === null) continue
     // The returning statement is the next `return` within a short window; a deny and an advisory note are the only two things these branches return.
     let advisory = false

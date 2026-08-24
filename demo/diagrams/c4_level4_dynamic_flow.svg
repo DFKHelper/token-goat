@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="100%" height="100%" style="background:#ffffff; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <text x="40" y="45" font-size="22" font-weight="700" fill="#0f172a">Token-Goat Dynamic Hook &amp; Storage Lifecycle (C4 Level 4)</text>
+  <text x="40" y="70" font-size="13" fill="#64748b">End-to-end trace of PreToolUse command rewriting, subprocess execution, output compression &amp; dirty-queue sync.</text>
+
+  <!-- Lifeline Headers -->
+  <g transform="translate(60, 100)">
+    <rect x="0" y="0" width="160" height="40" rx="6" fill="#7C3AED"/>
+    <text x="80" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">AI Agent (Claude)</text>
+    <line x1="80" y1="40" x2="80" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <g transform="translate(280, 100)">
+    <rect x="0" y="0" width="180" height="40" rx="6" fill="#2563EB"/>
+    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">token-goat-shim.js</text>
+    <line x1="90" y1="40" x2="90" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <g transform="translate(520, 100)">
+    <rect x="0" y="0" width="180" height="40" rx="6" fill="#1D4ED8"/>
+    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">relay.ts &amp; ToolFilter</text>
+    <line x1="90" y1="40" x2="90" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <g transform="translate(760, 100)">
+    <rect x="0" y="0" width="180" height="40" rx="6" fill="#0D9488"/>
+    <text x="90" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">bash_runner.ts</text>
+    <line x1="90" y1="40" x2="90" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <g transform="translate(980, 100)">
+    <rect x="0" y="0" width="160" height="40" rx="6" fill="#047857"/>
+    <text x="80" y="25" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">Worker &amp; DB Store</text>
+    <line x1="80" y1="40" x2="80" y2="650" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <!-- Sequence Messages -->
+  <!-- 1. PreToolUse Trigger -->
+  <g transform="translate(0, 170)">
+    <line x1="140" y1="0" x2="360" y2="0" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="250" y="-8" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">1. PreToolUse(tool=Bash, cmd="npx vitest run")</text>
+  </g>
+
+  <!-- 2. Relay In-Process -->
+  <g transform="translate(0, 210)">
+    <line x1="370" y1="0" x2="600" y2="0" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="490" y="-8" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">2. relayInProcess(payload)</text>
+  </g>
+
+  <!-- 3. ToolFilter Rewrite -->
+  <g transform="translate(0, 250)">
+    <rect x="540" y="-15" width="220" height="30" rx="4" fill="#eff6ff" stroke="#3b82f6"/>
+    <text x="650" y="5" font-size="10" font-weight="600" fill="#1d4ed8" text-anchor="middle">Select VitestFilter &amp; rewrite input</text>
+  </g>
+
+  <!-- 4. Return Rewritten Command -->
+  <g transform="translate(0, 295)">
+    <line x1="600" y1="0" x2="150" y2="0" stroke="#2563eb" stroke-width="2" stroke-dasharray="4 2" marker-end="url(#arrow)"/>
+    <text x="375" y="-8" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">3. Return updatedInput: "token-goat compress -f vitest -c 'npx vitest run'"</text>
+  </g>
+
+  <!-- 5. Subprocess Execution -->
+  <g transform="translate(0, 350)">
+    <line x1="140" y1="0" x2="840" y2="0" stroke="#0d9488" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="490" y="-8" font-size="11" font-weight="600" fill="#0f766e" text-anchor="middle">4. Spawns wrapped command in child process</text>
+  </g>
+
+  <!-- 6. Stream Compression -->
+  <g transform="translate(0, 395)">
+    <rect x="760" y="-15" width="240" height="40" rx="4" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="880" y="3" font-size="10" font-weight="600" fill="#0f766e" text-anchor="middle">Captures stdout/stderr (32MB cap)</text>
+    <text x="880" y="18" font-size="9" fill="#115e59" text-anchor="middle">Collapses passing tests, extracts failures</text>
+  </g>
+
+  <!-- 7. Compressed Output to Model -->
+  <g transform="translate(0, 455)">
+    <line x1="840" y1="0" x2="150" y2="0" stroke="#0d9488" stroke-width="2" stroke-dasharray="4 2" marker-end="url(#arrow)"/>
+    <text x="495" y="-8" font-size="11" font-weight="600" fill="#0f766e" text-anchor="middle">5. Returns clean compressed test summary to model window</text>
+  </g>
+
+  <!-- 8. PostToolUse Cache -->
+  <g transform="translate(0, 515)">
+    <line x1="140" y1="0" x2="600" y2="0" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="370" y="-8" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">6. PostToolUse(tool=Bash, output=...)</text>
+  </g>
+
+  <!-- 9. Save Cache Blob & Merge Session -->
+  <g transform="translate(0, 560)">
+    <line x1="610" y1="0" x2="1050" y2="0" stroke="#047857" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="830" y="-8" font-size="11" font-weight="600" fill="#065f46" text-anchor="middle">7. storeBlob(bash_outputs/{id}.json) &amp; saveSessionState()</text>
+  </g>
+
+  <!-- 10. Background Worker Sync -->
+  <g transform="translate(0, 610)">
+    <rect x="960" y="-15" width="200" height="35" rx="4" fill="#f0fdf4" stroke="#047857"/>
+    <text x="1060" y="3" font-size="10" font-weight="600" fill="#065f46" text-anchor="middle">Worker polls dirty.txt (2s)</text>
+    <text x="1060" y="17" font-size="9" fill="#047857" text-anchor="middle">Reindexes touched files to global.db</text>
+  </g>
+</svg>

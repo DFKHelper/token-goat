@@ -331,7 +331,7 @@ function parseNodeBlock(lines: string[], start: number): TraceParseResult | null
   return { block: { frames, exception: header }, nextIndex: i }
 }
 
-const RUST_PANIC_HEADER_RE = /^thread '[^']*' panicked at (.+):(\d+):(\d+):\s*$/
+const RUST_PANIC_HEADER_RE = /^thread '[^']*' panicked at ([^:\r\n]+):(\d+):(\d+):\s*$/
 const RUST_BACKTRACE_NOTE_RE = /^note: run with `RUST_BACKTRACE=1`/
 const RUST_BACKTRACE_NUM_RE = /^\s*\d+:\s+(.+)$/
 const RUST_BACKTRACE_AT_RE = /^\s+at\s+(.+):(\d+):(\d+)\s*$/
@@ -386,7 +386,7 @@ function parseRustBlock(lines: string[], start: number): TraceParseResult | null
   return { block: { frames: [panicFrame], exception }, nextIndex: i }
 }
 
-const JVM_HEADER_RE = /^(?:Exception in thread "[^"]*" )?(?:Caused by: )?((?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*): (.*)$/
+const JVM_HEADER_RE = /^(?:Exception in thread "[^"\r\n]*" )?(?:Caused by: )?((?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*): (.*)$/
 const JVM_FRAME_RE = /^\s+at\s+(\S+)\(([^)]*)\)\s*$/
 const JVM_MORE_RE = /^\s*\.\.\.\s+\d+\s+more\s*$/
 

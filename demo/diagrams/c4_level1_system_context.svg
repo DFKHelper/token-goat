@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="100%" height="100%" style="background:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <!-- Title & Legend Header -->
+  <text x="40" y="45" font-size="24" font-weight="700" fill="#0f172a">Token-Goat System Context &amp; Trust Boundaries (C4 Level 1)</text>
+  <text x="40" y="70" font-size="14" fill="#64748b">Describes runtime actors, AI coding harnesses, local boundaries, and untrusted input pipelines.</text>
+
+  <!-- Top Actors -->
+  <g transform="translate(480, 100)" filter="url(#shadow)">
+    <rect width="240" height="90" rx="8" fill="#08427B" stroke="#073B6F" stroke-width="2"/>
+    <text x="120" y="32" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">👤 Software Developer</text>
+    <text x="120" y="52" font-size="11" fill="#cbd5e1" text-anchor="middle">[Person / Local User]</text>
+    <text x="120" y="72" font-size="11" fill="#e2e8f0" text-anchor="middle">Prompts agents &amp; runs tasks</text>
+  </g>
+
+  <!-- External AI Harnesses Box -->
+  <g transform="translate(40, 240)" filter="url(#shadow)">
+    <rect width="320" height="230" rx="8" fill="#faf5ff" stroke="#a855f7" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#7e22ce">AI CODING HARNESSES [External Systems]</text>
+    
+    <!-- Claude Code -->
+    <rect x="16" y="42" width="288" height="50" rx="6" fill="#7C3AED" stroke="#5B21B6"/>
+    <text x="160" y="66" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">🤖 Claude Code (CLI)</text>
+    <text x="160" y="82" font-size="10" fill="#e9d5ff" text-anchor="middle">Subprocess Lifecycle Hook Intercept</text>
+
+    <!-- Copilot / Codex -->
+    <rect x="16" y="102" width="288" height="50" rx="6" fill="#6D28D9" stroke="#4C1D95"/>
+    <text x="160" y="126" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">🤖 VS Code Copilot &amp; Copilot CLI</text>
+    <text x="160" y="142" font-size="10" fill="#e9d5ff" text-anchor="middle">stdio MCP Server &amp; Native Commands</text>
+
+    <!-- Codex / OpenCode -->
+    <rect x="16" y="162" width="288" height="50" rx="6" fill="#5B21B6" stroke="#3B0764"/>
+    <text x="160" y="186" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">🤖 Codex / OpenCode / Hermes</text>
+    <text x="160" y="202" font-size="10" fill="#e9d5ff" text-anchor="middle">Tool Bridges &amp; Payload Normalization</text>
+  </g>
+
+  <!-- Core System Boundary -->
+  <g transform="translate(420, 240)" filter="url(#shadow)">
+    <rect width="360" height="230" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#15803d">TOKEN-GOAT RUNTIME [Software System]</text>
+
+    <rect x="20" y="45" width="320" height="165" rx="6" fill="#1168BD" stroke="#0B4884" stroke-width="2"/>
+    <text x="180" y="78" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">⚡ Token-Goat Engine</text>
+    <text x="180" y="98" font-size="12" fill="#bfdbfe" text-anchor="middle">[TypeScript / Node.js Engine]</text>
+    
+    <text x="40" y="130" font-size="11" fill="#ffffff">• Intercepts Pre/Post tool calls &amp; compresses output</text>
+    <text x="40" y="150" font-size="11" fill="#ffffff">• SQLite AST symbols, refs &amp; semantic vector index</text>
+    <text x="40" y="170" font-size="11" fill="#ffffff">• 158 deterministic filters for build/test/git</text>
+    <text x="40" y="190" font-size="11" fill="#ffffff">• Prompt injection scanner &amp; untrusted content fence</text>
+  </g>
+
+  <!-- Untrusted Zone (Red Boundary) -->
+  <g transform="translate(840, 240)" filter="url(#shadow)">
+    <rect width="320" height="230" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="16" y="28" font-size="13" font-weight="700" fill="#b91c1c">UNTRUSTED ZONE [External Content]</text>
+
+    <rect x="16" y="45" width="288" height="75" rx="6" fill="#ef4444" stroke="#b91c1c"/>
+    <text x="160" y="72" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">🌐 Web Pages &amp; Remote APIs</text>
+    <text x="160" y="90" font-size="11" fill="#fee2e2" text-anchor="middle">Arbitrary URLs, issues, docs, HTML</text>
+    <text x="160" y="106" font-size="10" fill="#fecaca" text-anchor="middle">Threat: Indirect Prompt Injection</text>
+
+    <rect x="16" y="135" width="288" height="75" rx="6" fill="#dc2626" stroke="#991b1b"/>
+    <text x="160" y="162" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">📄 Documents &amp; Attachments</text>
+    <text x="160" y="180" font-size="11" fill="#fee2e2" text-anchor="middle">PDF, PPTX, Excel, Word, Zip, SQLite</text>
+    <text x="160" y="196" font-size="10" fill="#fecaca" text-anchor="middle">Threat: Oversized payload / malicious macros</text>
+  </g>
+
+  <!-- Local Storage & Workspace (Bottom) -->
+  <g transform="translate(240, 530)" filter="url(#shadow)">
+    <rect width="720" height="190" rx="8" fill="#f8fafc" stroke="#475569" stroke-width="2"/>
+    <text x="20" y="28" font-size="13" font-weight="700" fill="#334155">LOCAL HOST &amp; PERSISTENT STORAGE [Trust Boundary: Local User]</text>
+
+    <!-- Workspace Filesystem -->
+    <rect x="20" y="45" width="325" height="125" rx="6" fill="#334155" stroke="#1e293b"/>
+    <text x="182" y="75" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">📁 Local Workspace FS</text>
+    <text x="182" y="95" font-size="11" fill="#94a3b8" text-anchor="middle">Git repositories, tracked files &amp; code</text>
+    <text x="40" y="125" font-size="11" fill="#cbd5e1">• Read/written by developer &amp; agent</text>
+    <text x="40" y="145" font-size="11" fill="#cbd5e1">• Sliced by Token-Goat surgical readers</text>
+
+    <!-- SQLite & Cache -->
+    <rect x="375" y="45" width="325" height="125" rx="6" fill="#0f766e" stroke="#115e59"/>
+    <text x="537" y="75" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">🗄️ %LOCALAPPDATA% / ~/.token-goat</text>
+    <text x="537" y="95" font-size="11" fill="#99f6e4" text-anchor="middle">Private, user-isolated storage</text>
+    <text x="395" y="125" font-size="11" fill="#ccfbf1">• global.db (SQLite WAL + symbols/chunks)</text>
+    <text x="395" y="145" font-size="11" fill="#ccfbf1">• Content-addressed bash &amp; web caches (24h)</text>
+  </g>
+
+  <!-- Relationship Arrows -->
+  <path d="M 520 190 L 260 240" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M 600 190 L 600 240" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Harness <-> TG Core -->
+  <path d="M 360 355 L 420 355" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="390" y="345" font-size="10" font-weight="600" fill="#475569" text-anchor="middle">IPC</text>
+
+  <!-- TG Core <-> Untrusted -->
+  <path d="M 780 330 L 840 330" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow-red)"/>
+  <path d="M 840 380 L 780 380" fill="none" stroke="#16a34a" stroke-width="2" stroke-dasharray="4 2" marker-end="url(#arrow)"/>
+  <text x="810" y="322" font-size="10" font-weight="600" fill="#dc2626" text-anchor="middle">Fetch</text>
+  <text x="810" y="398" font-size="10" font-weight="600" fill="#16a34a" text-anchor="middle">Fenced</text>
+
+  <!-- TG Core -> Storage -->
+  <path d="M 520 470 L 400 530" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M 680 470 L 680 530" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+</svg>

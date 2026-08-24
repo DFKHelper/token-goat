@@ -63,7 +63,7 @@ function parseHeadingSpec(
   spec: string,
   headers?: readonly SectionHeader[],
 ): { base: string; ordinal: number | null } {
-  const m = /^(.*?)#(\d+)$/.exec(spec)
+  const m = /^([^#\r\n]+)#(\d+)$/.exec(spec)
   if (m !== null && m[1] !== undefined && m[2] !== undefined) {
     // A trailing #<digits> is normally an ordinal disambiguator (e.g. "Install#2"). But if a real heading text matches the full spec verbatim, the digits are part of the heading itself (e.g. "Issue #42") -- use the spec as-is rather than splitting off an ordinal.
     const specLower = spec.trim().toLowerCase()
@@ -120,7 +120,7 @@ function normalizeHeadingStrip(s: string): string {
 // resolveHeaderPos -- below this, short words like "a"/"of" would match almost any heading.
 const MIN_WIDEN_WORD_LEN = 3
 
-const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/
+const MARKDOWN_HEADER_RE = /^(#{1,6})\s+([^\r\n]+?)(?:\s+#+)?\s*$/
 // TOML permits a trailing `# comment` after a table header, and INI files very commonly write `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s) without treating the header line as anything other than a table header. Deliberately NOT fully unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be misread as a table header, which the comment-only relaxation avoids.
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
 // A Python def/class header. Indentation = nesting; the name is the section key.

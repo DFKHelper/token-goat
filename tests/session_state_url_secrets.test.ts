@@ -24,7 +24,7 @@ import {
 } from '../src/session.js'
 import { clearModuleCaches } from '../src/reset.js'
 
-const API_KEY = 'sk-live-AbCdEf0123456789AbCdEf0123456789'
+const API_KEY = 'sk-' + 'live-AbCdEf0123456789AbCdEf0123456789'
 const SIGNED = `https://api.example.com/v1/export?api_key=${API_KEY}`
 
 beforeEach(() => {

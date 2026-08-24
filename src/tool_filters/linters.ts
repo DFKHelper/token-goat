@@ -1096,7 +1096,7 @@ class KtlintFilter extends ToolFilter {
 const _SWIFTLINT_VIOLATION_RE =
   /^(.+\.swift):(\d+)(?::\d+)?: (warning|error|serious): (.+?) \(([a-z_]+)\)\s*$/i
 const _SWIFTLINT_PROGRESS_RE =
-  /^(Linting Swift files|Loading configuration|Linting '|Done linting!|Resolved \d|warning: .+ is deprecated|Ignoring '.+' in '|\s*$)/i
+  /^(?:Linting Swift files|Loading configuration|Linting '|Done linting!|Resolved \d|warning: [^\r\n]+ is deprecated|Ignoring '[^']+' in '|\s*$)/i
 const _SWIFTLINT_SUMMARY_RE = /^Done linting!/i
 
 const swiftlintFilter = makeLinterFilter({
@@ -1363,7 +1363,7 @@ const _CPPCHECK_DIAG_NOLINE_RE = /^\[.+\]:\s*\((?:error|warning|style|performanc
 const _CPPCHECK_CONFIG_RE =
   /^(?:Checking\s+configuration|Active\s+checkers:|Enabled\s+checkers:|cppcheck:\s+(?:error:|warning:|note:))/i
 const _CPPCHECK_SUMMARY_RE =
-  /^(?:\d+\s+(?:error|warning|style|performance|portability)s?(?:\s+(?:found|detected))?|No\s+errors\s+found|Done\s+processing|cppcheck:\s+.*(?:done|finished)|\d+\s+unique\s+error)/i
+  /^(?:\d+\s+(?:error|warning|style|performance|portability)s?(?:\s+(?:found|detected))?|No\s+errors\s+found|Done\s+processing|cppcheck:\s+[^\r\n]*(?:done|finished)|\d+\s+unique\s+error)/i
 
 class CppcheckFilter extends ToolFilter {
   readonly name = 'cppcheck'
