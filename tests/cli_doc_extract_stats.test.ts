@@ -94,6 +94,7 @@ describe('document-extraction CLI stat recording', () => {
 
   it.each([
     ['pdf-extract', () => ['pdf-extract', join(root, 'doc.pdf')], 'pdf_extract'],
+    ['pdf-locate', () => ['pdf-locate', join(root, 'doc.pdf'), 'PDF'], 'pdf_locate'],
     ['pdf-outline', () => ['pdf-outline', join(root, 'doc_outline.pdf')], 'pdf_outline'],
     ['pdf-meta', () => ['pdf-meta', join(root, 'doc.pdf')], 'pdf_meta'],
     ['xlsx-sheets', () => ['xlsx-sheets', join(root, 'book.xlsx')], 'xlsx_sheets'],

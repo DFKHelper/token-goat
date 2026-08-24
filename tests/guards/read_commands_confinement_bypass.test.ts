@@ -35,6 +35,7 @@ const ALLOWED_RAW_READ_FUNCTIONS = new Set([
   // explicitly rather than silently excluded, so a future confinement pass covering these formats
   // has to touch this allowlist and notice it.
   'runPdfExtractText',
+  'runPdfLocate',
   'runPdfOutline',
   'runPdfMeta',
   'runImageMeta',

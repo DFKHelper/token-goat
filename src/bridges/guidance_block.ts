@@ -87,11 +87,11 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     "- pulling one value or subtree out of a JSON/YAML/XML file (manifest, lockfile, spec, config) → `json-query file 'a.b.c'` / `yaml-query file 'a.b.c'` / `xml-query file 'a.b.c'`",
     '- opening an image to check its dimensions, format, or size → `image-meta file`',
     '- opening a screenshot, diagram, or scan to read the text in it → `image-text file`',
-    '- opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-extract`; Word `docx-outline` then `docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-head`/`xlsx-range`/`xlsx-query`',
+    '- opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-locate` to find the pages and `pdf-extract` only those; Word `docx-outline` then `docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-head`/`xlsx-range`/`xlsx-query`',
     '',
     'Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
       (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
-      '`image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-extract`, `docx-outline`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
+      '`image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
     '',
     'Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.',
     '',
