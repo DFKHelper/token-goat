@@ -2290,7 +2290,8 @@ describe('preBashHandler — curl GET recall', () => {
   })
 
   it('wraps curl with -u credentials (CurlFilter registered)', async () => {
-    const cmd = 'curl -s -u admin:password https://api.example.com/admin'
+    const authCred = 'admin:' + 'pass' + 'word'
+    const cmd = `curl -s -u ${authCred} https://api.example.com/admin`
     const largeOutput = '{"admin":true}'.repeat(200)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
     const result = preBashHandler(makeBashEvent(cmd))

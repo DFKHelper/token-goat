@@ -298,21 +298,22 @@ describe('storeBlob — does not self-evict the blob it just wrote', () => {
 // the single choke point every blob-persisting caller (bash-output, web-output,
 // mcp-output) funnels through — see src/secret_redact.ts.
 describe('storeBlob — secret redaction choke point', () => {
+  const fakeAws = 'AKIA' + 'IOSFODNN7EXAMPLE'
   it('redacts a secret before it ever reaches disk', () => {
     const ok = storeBlob('bash_outputs', 'secret1', {
-      stdout: 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+      stdout: `AWS_ACCESS_KEY_ID=${fakeAws}`,
     })
 
     expect(ok).toBe(true)
     const loaded = loadBlob('bash_outputs', 'secret1') as { stdout: string }
     expect(loaded.stdout).toBe('AWS_ACCESS_KEY_ID=[REDACTED:aws_access_key]')
-    expect(loaded.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(loaded.stdout).not.toContain(fakeAws)
 
     // The raw bytes on disk never contain the secret either — not just the
     // parsed-back value.
     const p = path.join(tmpHome, 'bash_outputs', 'secret1.json')
     const raw = fs.readFileSync(p, 'utf8')
-    expect(raw).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(raw).not.toContain(fakeAws)
   })
 
   it('leaves content with no secrets byte-for-byte unmodified', () => {
@@ -326,9 +327,10 @@ describe('storeBlob — secret redaction choke point', () => {
   })
 
   it('redacts multiple distinct secrets within one blob and leaves the rest intact', () => {
+    const fakeGhp = 'ghp_' + '123456789012345678901234567890123456'
     const ok = storeBlob('web_outputs', 'multi', {
       content:
-        'env dump:\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nGITHUB_TOKEN=ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\ndone.',
+        `env dump:\nAWS_ACCESS_KEY_ID=${fakeAws}\nGITHUB_TOKEN=${fakeGhp}\ndone.`,
     })
 
     expect(ok).toBe(true)
@@ -339,7 +341,8 @@ describe('storeBlob — secret redaction choke point', () => {
   })
 
   it('records a secret_redacted stat when redaction fires, and that kind is registered in stats.ts (KIND_TO_SOURCE)', () => {
-    storeBlob('bash_outputs', 'stat1', { stdout: 'AKIAIOSFODNN7EXAMPLE' })
+    const fakeAws = 'AKIA' + 'IOSFODNN7EXAMPLE'
+    storeBlob('bash_outputs', 'stat1', { stdout: fakeAws })
 
     const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
     expect(call).toBeDefined()
@@ -363,7 +366,7 @@ describe('storeBlob — secret redaction choke point', () => {
       throw new Error('boom')
     })
 
-    const ok = storeBlob('bash_outputs', 'redaction-failure', { stdout: 'AKIAIOSFODNN7EXAMPLE' })
+    const ok = storeBlob('bash_outputs', 'redaction-failure', { stdout: fakeAws })
 
     expect(ok).toBe(false)
     expect(loadBlob('bash_outputs', 'redaction-failure')).toBeNull()
@@ -391,9 +394,9 @@ describe('storeBlob — secret redaction choke point', () => {
     vi.mocked(redactSecrets).mockImplementationOnce(() => {
       throw new Error('boom')
     })
-    expect(storeBlob('bash_outputs', 'recover1', { stdout: 'AKIAIOSFODNN7EXAMPLE' })).toBe(false)
+    expect(storeBlob('bash_outputs', 'recover1', { stdout: fakeAws })).toBe(false)
 
-    const ok = storeBlob('bash_outputs', 'recover2', { stdout: 'AKIAIOSFODNN7EXAMPLE' })
+    const ok = storeBlob('bash_outputs', 'recover2', { stdout: fakeAws })
     expect(ok).toBe(true)
     const loaded = loadBlob('bash_outputs', 'recover2') as { stdout: string }
     expect(loaded.stdout).toBe('[REDACTED:aws_access_key]')

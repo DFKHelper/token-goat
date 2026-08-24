@@ -61,11 +61,11 @@ function gitPositionalArgs(args: string[]): string[] {
 
 // Modern git 2.37+: self-contained single-line warning
 const _GIT_CRLF_MODERN_RE =
-  /^warning: in the working copy of '.*', (?:LF will be replaced by CRLF|CRLF will be replaced by LF) the next time Git touches it\.?\r?$/m
+  /^warning: in the working copy of '[^']+', (?:LF will be replaced by CRLF|CRLF will be replaced by LF) the next time Git touches it\.?\r?$/m
 
 // Legacy pre-2.37: header line
 const _GIT_CRLF_WARNING_RE =
-  /^warning: (?:LF will be replaced by CRLF|CRLF will be replaced by LF) in .*\.?\r?$/
+  /^warning: (?:LF will be replaced by CRLF|CRLF will be replaced by LF) in [^\r\n]+\.?\r?$/
 
 // Legacy continuation line that follows the header
 const _GIT_CRLF_CONTINUATION_RE =

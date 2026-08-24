@@ -171,7 +171,7 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // identifier characters only, so prose that merely mentions a keyword still never reaches
   // a separator and stays unredacted. api[_-]?key covers the apikey and api-key spellings too.
   // `& ; # , :` play two incompatible roles. They separate one field from the next (a query
-  // string, a cookie header, an inline env list), and they are also perfectly ordinary password
+  // string, a cookie header, an inline env list), and they are also perfectly ordinary credential
   // characters. Rejecting them outright got the first role right and the second badly wrong: the
   // match stopped at the first one and left everything after it in plain text, so
   // `password=corr&horse&battery` redacted four characters and printed the rest, and

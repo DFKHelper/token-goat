@@ -1480,7 +1480,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Tokens by tool')
     expect(r.stdout).toContain('never-touched.ts')
     expect(r.stdout).toContain('never referenced again')
-    expect(r.stdout).toMatch(/git status.*ran 2 times/)
+    expect(r.stdout).toMatch(/git status[^\r\n]*ran 2 times/)
 
     const rj = run(['waste', '--project', proj, '--transcript', transcript, '--json'])
     expect(rj.status, rj.stderr).toBe(0)
@@ -1864,7 +1864,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   worker: () => {
     // Parent command with subcommands and no own action: prints usage listing its subcommands. Reachable and lists start/stop/status.
     const r = run(['worker', '--help'])
-    expect(r.stdout + r.stderr).toMatch(/start[\s\S]*stop[\s\S]*status/)
+    expect(r.stdout + r.stderr).toMatch(/start[\s\S]*?stop[\s\S]*?status/)
   },
   'worker status': () => {
     const env = tgEnv(mkIsolated('tg-matrix-wstatus-'))
@@ -2224,7 +2224,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const suggestions = hit.stdout.trim().split('\n').filter((l) => l.startsWith('token-goat read '))
     expect(suggestions.length).toBeGreaterThan(0)
     for (const line of suggestions) {
-      const spec = /^token-goat read "(.+)"$/.exec(line)?.[1]
+      const spec = /^token-goat read "([^"\r\n]+)"$/.exec(line)?.[1]
       expect(spec, `malformed suggestion: ${line}`).toMatch(/@\d+$/)
       const exec = run(['read', spec!])
       expect(exec.status, `suggestion failed: ${line}\n${exec.stderr}`).toBe(0)

@@ -24,7 +24,7 @@ const COV_TOTAL_RE = /^TOTAL\s+\d/
 // A `--- Docs: https://…` warnings footer (always the same URL).
 const WARN_DOCS_RE = /^\s*--\s+Docs:\s+https?:\/\//
 // A warning message line inside the warnings summary section.
-const WARN_MSG_RE = /^\s+\S.*:\d+:\s+\S.*Warning\b/
+const WARN_MSG_RE = /^\s+\S[^:\r\n]*:\d+:\s+\S[^\r\n]*Warning\b/
 // A bare node-id header line preceding a warning message, e.g. `tests/test_foo.py::test_bar`
 // (no leading whitespace, contains the pytest node-id `::` separator). Deferred until we know
 // whether the message under it survives dedup, so a fully-deduped group never orphans its header.

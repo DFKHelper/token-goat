@@ -69,6 +69,7 @@ export const OPENCODE_PLUGIN_SCRIPT = `// token-goat bridge plugin for opencode
 // Bridges opencode's plugin hooks to token-goat's subprocess hook protocol.
 // https://github.com/DFKHelper/token-goat
 import { spawnSync } from "node:child_process"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"

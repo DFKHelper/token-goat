@@ -78,7 +78,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
     }
   }
 
-  const title = content.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim()
+  const title = content.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim()
   // Route through the shared findHtmlHeadingMatches helper (same one html.ts/liquid.ts/
   // section_reader.ts use) rather than a hand-rolled regex, so a heading-shaped tag sitting
   // inside a <!-- comment -->, <script> body, or CDATA section is masked out first instead of

@@ -1,0 +1,31 @@
+@startuml C4_System_Context
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title System Context Diagram for Token-Goat (C4 Level 1)
+
+Person(developer, "Software Developer", "Uses AI coding harnesses and inspects deterministic output.")
+
+System_Boundary(harness_boundary, "AI Coding Assistants") {
+    System_Ext(claude, "Claude Code", "Agent harness executing tools via subprocess hooks.")
+    System_Ext(copilot, "VS Code Copilot / Copilot CLI", "Agent harness using stdio MCP server & CLI tools.")
+    System_Ext(codex, "Codex / OpenCode / Hermes", "Agent harness communicating via tool bridges.")
+}
+
+System(token_goat, "Token-Goat", "Local context optimization engine, SQLite AST/vector indexer, and hook relay.")
+
+System_Ext(workspace, "Local Workspace FS", "Git-tracked repositories, source files, and test fixtures.")
+System_Ext(untrusted, "Untrusted External Content", "Web pages, external docs, PDFs, PPTX with potential prompt injection.")
+
+Rel(developer, claude, "Prompts and instructs", "UI/CLI")
+Rel(developer, copilot, "Prompts and instructs", "UI/CLI")
+Rel(developer, token_goat, "Executes surgical commands", "CLI")
+
+Rel(claude, token_goat, "Fires Pre/Post lifecycle hooks", "JSON over stdin/stdout")
+Rel(copilot, token_goat, "Calls surgical tools", "JSON-RPC stdio MCP")
+Rel(codex, token_goat, "Dispatches tool events", "Bridge shims")
+
+Rel(token_goat, workspace, "Reads, indexes, and monitors", "File I/O")
+Rel(token_goat, untrusted, "Fetches, sanitizes, and fences", "HTTP/Doc extract")
+@enduml

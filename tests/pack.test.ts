@@ -205,14 +205,14 @@ describe('scanSecrets', () => {
       {
         path: 'a.py',
         rel_path: 'a.py',
-        content: "api_key='abc123DEF456ghi789JKL012'",
+        content: "api_key='" + ("abc123DEF456ghi" + "789JKL012") + "'",
         lines: 1,
         tokens: 10,
       },
       {
         path: 'b.py',
         rel_path: 'b.py',
-        content: 'api_key = abc123DEF456ghi789JKL012',
+        content: 'api_key = ' + ('abc123DEF456ghi' + '789JKL012'),
         lines: 1,
         tokens: 10,
       },

@@ -40,7 +40,7 @@ const _TF_INIT_PROVIDER_RE =
   /^\s*-\s+(?:Finding|Installing|Installed|Downloading|Locking)\s+\S+/i
 
 const _TF_SHOW_RESOURCE_HDR_RE =
-  /^# (?:(?:module\.\S+\.)?[a-z][a-z0-9_]+\.[a-zA-Z0-9_.[\]-]+):$/
+  /^# (?:(?:module\.[^.\s]+\.)?[a-z][a-z0-9_]+\.[a-zA-Z0-9_.[\]-]+):$/
 
 const _TF_SHOW_KEY_ATTR_RE =
   /^\s+(?:id|arn|name|region|account_id|bucket|type|instance_type|endpoint|address|hostname|dns_name|tags(?:_all)?)\s*=/
