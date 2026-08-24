@@ -30,7 +30,9 @@
     "typecheck:vscode-extension": "npm --prefix vscode-extension run compile",
     "typecheck:vscode-extension:tests": "npm --prefix vscode-extension run typecheck:tests",
     "dev": "tsx src/main.ts",
-    "prepare": "node scripts/install-git-hooks.mjs"
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "schema:copilot": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json",
+    "schema:copilot:check": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json --check"
   },
   "contributors": [
     {

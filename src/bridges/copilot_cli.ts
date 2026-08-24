@@ -221,7 +221,14 @@ const POLL_ID_ARG_KEY = {
 // the same session, since process.pid varies per invocation -- breaking token-goat's
 // session-based dedup/state ledger, which never accumulates across calls as a result. Derive a
 // stable id instead from the one thing that's actually constant across calls for the same
-// session: the working directory Copilot reports in \`payload.cwd\`.
+// session: the working directory Copilot reports. That field is \`workingDirectory\`, declared
+// required on BaseHookInput in copilot-sdk/types.d.ts since 1.0.76, so it is present on EVERY
+// hook event. This previously read \`payload.cwd\`, which Copilot has never sent under any name in
+// any version -- the key simply did not exist, so this derived every fallback id from
+// process.cwd() instead and \`canonical.cwd\` below was undefined on every single call. It went
+// unnoticed because process.cwd() happens to be the project directory Copilot spawns the hook in,
+// so the fallback was accidentally right; nothing about that was by design. \`cwd\` is still read
+// as a secondary in case a future version adds it under the shorter name.
 function stableFallbackSessionId(cwd) {
   const key = typeof cwd === 'string' && cwd ? cwd : process.cwd()
   const hash = require('node:crypto').createHash('sha256').update(key).digest('hex').slice(0, 16)
@@ -291,8 +298,19 @@ async function main() {
 
   const toolName = payload && payload.toolName
   const canonical = {
-    session_id: (payload && payload.sessionId) || stableFallbackSessionId(payload && payload.cwd),
-    cwd: payload && payload.cwd,
+    session_id:
+      (payload && payload.sessionId) ||
+      stableFallbackSessionId(payload && (payload.workingDirectory || payload.cwd)),
+    cwd: payload && (payload.workingDirectory || payload.cwd),
+  }
+
+  // userPromptSubmitted only: Copilot declares \`prompt\` required on UserPromptSubmittedHookInput.
+  // hooks_session.ts's userPromptSubmitHandler reads it as \`event.raw['prompt']\` and gates every
+  // branch it has on the text, so without this it saw '' on every Copilot prompt and the
+  // embedded-skill dedup hint could never fire. Same shape as the postToolUseFailure \`error\`
+  // drop: a required field the canonical builder simply did not list.
+  if (typeof (payload && payload.prompt) === 'string' && payload.prompt !== '') {
+    canonical.prompt = payload.prompt
   }
   if (toolName) {
     canonical.tool_name = TOOL_TO_TG[toolName] || toolName
