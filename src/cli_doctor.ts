@@ -23,6 +23,7 @@ import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
+import { readUnmappedTools } from './stats.js'
 import type { DoctorResult } from './doctor_result.js'
 
 // Both live outside this module so hooks_session_start.ts can run the one check it needs without
@@ -837,6 +838,59 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
   }
 }
 
+/** How many unrecognized names to name in the informational line before summarizing the rest. */
+const UNMAPPED_TOOL_SAMPLE = 5
+
+/**
+ * Report the tool names that reached token-goat's hooks and matched no handler.
+ *
+ * This is the only bridge check here that is not a restatement of a belief. `bridges-status` says
+ * which events a bridge *should* wire; the harness fixture matrix says what a payload *should*
+ * look like; the Copilot shape manifest says what the vendor *declares*. Each of those was
+ * written from the same understanding that produced the bridge, so a bridge built on a
+ * misunderstanding agrees with all three -- which is exactly how four separate features shipped
+ * wired, tested, green and inert. This one reads back what a harness actually sent.
+ *
+ * A warning fires only for a *near miss*: a name that differs from one token-goat handles by case
+ * or separators alone, e.g. `bash` arriving where `Bash` is handled. That is the fingerprint of a
+ * bridge's tool-rename step not being applied, and it is the only inference available without
+ * knowing what the harness meant. Everything else is reported as-is rather than judged: a name
+ * with no handler is usually just a tool token-goat has nothing to say about.
+ */
+export function checkUnmappedTools(dbPath: string): DoctorResult {
+  const name = 'Tool names'
+  if (!fs.existsSync(dbPath)) {
+    return { name, status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const rows = readUnmappedTools(dbPath)
+    if (rows.length === 0) {
+      return { name, status: 'ok', message: 'every tool name seen so far reached a handler that wanted it' }
+    }
+    const nearMisses = rows.filter((r) => r.near_miss !== null && r.near_miss !== undefined)
+    if (nearMisses.length > 0) {
+      const shown = nearMisses
+        .slice(0, UNMAPPED_TOOL_SAMPLE)
+        .map((r) => `${r.harness} sent "${r.tool_name}" where "${r.near_miss}" is handled (${r.event_name}, ${r.hits}x)`)
+      const more = nearMisses.length > UNMAPPED_TOOL_SAMPLE ? ` (+${nearMisses.length - UNMAPPED_TOOL_SAMPLE} more)` : ''
+      return {
+        name,
+        status: 'warn',
+        message: `${shown.join('; ')}${more} -- these differ only by case or separators, so that bridge's tool-rename step is very likely not being applied and every handler behind those names is inert`,
+      }
+    }
+    const shown = rows.slice(0, UNMAPPED_TOOL_SAMPLE).map((r) => `${r.tool_name} (${r.hits}x)`)
+    const more = rows.length > UNMAPPED_TOOL_SAMPLE ? `, +${rows.length - UNMAPPED_TOOL_SAMPLE} more` : ''
+    return {
+      name,
+      status: 'ok',
+      message: `${rows.length} tool name(s) seen with no handler, none resembling one token-goat handles: ${shown.join(', ')}${more}`,
+    }
+  } catch (e) {
+    return { name, status: 'warn', message: `could not read the tool-name histogram: ${extractErrorMessage(e)}` }
+  }
+}
+
 export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
@@ -853,6 +907,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
   results.push(checkCompactionChannel(path.join(actualDataDir, 'global.db')))
+  results.push(checkUnmappedTools(path.join(actualDataDir, 'global.db')))
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))

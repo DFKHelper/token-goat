@@ -22,7 +22,15 @@
 
 import { RESET, C, fg, lerpRgb, padL, padR, stripAnsi, vlen } from './ansi.js'
 import type { RGB } from './ansi.js'
-import type { CommandStat, DayStat, KindStat, ProjectStat, SourceStat, StatsData } from './types.js'
+import type {
+  CommandStat,
+  DayStat,
+  HarnessStat,
+  KindStat,
+  ProjectStat,
+  SourceStat,
+  StatsData,
+} from './types.js'
 import { toLocalDateKey } from '../stats.js'
 
 // Statistics messages for insights section
@@ -740,6 +748,39 @@ function _renderByCommandSection(stats: StatsData): string[] {
   return lines
 }
 
+// Section: by harness
+
+function _renderByHarnessSection(stats: StatsData): string[] {
+  // One row equal to the total teaches nothing, so a single-harness install sees no section at all.
+  if (!stats.by_harness || stats.by_harness.length < 2) {
+    return []
+  }
+
+  const lines = [..._sectionHeader('By harness'), _tableHeader('harness')]
+
+  const { grossBytes, shareBytesDenom, shareTokensDenom } = _computeShareDenominators(stats.by_harness)
+
+  function share(h: HarnessStat): number {
+    return _absShare(h.bytes, h.tokens, shareBytesDenom, shareTokensDenom)
+  }
+
+  for (const h of [...stats.by_harness].sort((a, b) => share(b) - share(a))) {
+    lines.push(
+      _tableRow({
+        name: h.harness,
+        fraction: _barFraction(h.bytes, grossBytes),
+        bytes: h.bytes,
+        tokens: h.tokens,
+        events: h.events,
+        share: share(h),
+        nameColor: C.TEXT_PRIMARY,
+      }),
+    )
+  }
+
+  return lines
+}
+
 // Section: by day
 
 function _renderByDaySection(stats: StatsData): string[] {
@@ -916,6 +957,7 @@ export function renderStats(stats: StatsData, opts?: { short?: boolean }): strin
     _renderByKindSection(stats),
     _renderBySourceSection(stats),
     _renderByCommandSection(stats),
+    _renderByHarnessSection(stats),
     _renderByDaySection(stats),
     _renderByProjectSection(stats),
     _renderInsightsSection(stats),

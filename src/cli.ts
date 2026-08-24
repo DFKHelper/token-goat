@@ -128,7 +128,8 @@ import {
 } from './read_commands.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
-import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
+import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus, installVerificationNotice } from './bridges_status.js'
+import type { HarnessName } from './bridges/types.js'
 import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
@@ -545,6 +546,18 @@ async function cmdMcpServe(): Promise<void> {
   })
 }
 
+/**
+ * Print the "how well is this bridge actually verified" caveat, if the bridge has one.
+ *
+ * Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat
+ * enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely
+ * the whitelist-drops-a-field shape that has shipped dead features from this codebase before.
+ */
+function printBridgeVerificationNotice(harness: HarnessName): void {
+  const notice = installVerificationNotice(harness)
+  if (notice !== null) out(notice)
+}
+
 async function cmdHook(event: string, opts: { harness?: string }): Promise<void> {
   // A bridge that writes a bare command string into its host tool's config (no in-process
   // env-setting hook like pi.ts/copilot_cli.ts have) can self-identify via this flag instead —
@@ -617,6 +630,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Codex CLI integration → ${codexResult.configPath}, ${codexResult.agentsPath}`)
     }
+    printBridgeVerificationNotice('codex')
   }
 
   // --gemini is additive, exactly like --codex above.
@@ -627,6 +641,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Gemini CLI integration → ${geminiResult.settingsPath}`)
     }
+    printBridgeVerificationNotice('gemini')
   }
 
   // --qwen is additive, exactly like --gemini above.
@@ -637,6 +652,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Qwen Code integration → ${qwenResult.settingsPath}`)
     }
+    printBridgeVerificationNotice('qwen')
   }
 
   // --kimi is additive, exactly like --qwen above.
@@ -647,6 +663,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Kimi Code integration → ${kimiResult.configPath}, ${kimiResult.hookScriptPath}, ${kimiResult.agentsPath}, ${kimiResult.skillPath}`)
     }
+    printBridgeVerificationNotice('kimi')
   }
 
   // --pi is additive on both install and uninstall, exactly like --codex. --local only has meaning combined with --pi; passed alone it is silently ignored (no dedicated validation), matching this CLI's existing convention of independently-parsed boolean flags (e.g. -p/--project has no combination guard with anything else either).
@@ -657,6 +674,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat pi extension → ${piResult.extensionPath}`)
     }
+    printBridgeVerificationNotice('pi')
   }
 
   // --openclaw is additive, exactly like --codex above.
@@ -667,6 +685,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat OpenClaw integration → ${openclawResult.configPath}, ${openclawResult.pluginPath}`)
     }
+    printBridgeVerificationNotice('openclaw')
   }
 
   // --copilot is additive, exactly like --codex above.
@@ -677,6 +696,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Copilot CLI integration → ${copilotResult.configPath}, ${copilotResult.scriptPath}, ${copilotResult.instructionsPath}`)
     }
+    printBridgeVerificationNotice('copilot_cli')
   }
 
   // --opencode is additive, exactly like --pi above.
@@ -687,6 +707,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat opencode plugin → ${opencodeResult.pluginPath}`)
     }
+    printBridgeVerificationNotice('opencode')
   }
 
   // --grok is additive, exactly like --codex above.
@@ -697,6 +718,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Grok CLI integration → ${grokResult.configPath}, ${grokResult.hookScriptPath}`)
     }
+    printBridgeVerificationNotice('grok')
   }
 
   if (opts.vscode === true) {

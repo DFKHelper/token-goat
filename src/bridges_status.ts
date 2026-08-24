@@ -46,6 +46,10 @@ export interface BridgeCapabilityRow {
   readonly label: string
   /** File(s) this row's data was verified against. */
   readonly sourceFile: string
+  /** How strongly this row's claims are backed. See {@link BridgeVerification}. */
+  readonly verification: BridgeVerification
+  /** The specific evidence behind {@link verification}, so the level can be audited rather than taken on trust. */
+  readonly verificationNote: string
   /** Subset of `HOOK_EVENTS` this bridge actually wires to a real hook entry. */
   readonly implemented: ReadonlySet<HookEventName>
   /** Short, documented reason for one or more *not*-implemented events -- omitted when no in-code explanation exists. */
@@ -102,11 +106,46 @@ const NO_SEPARATE_FAILURE_EVENT_REASON =
 const COPILOT_NO_POST_COMPACT_REASON =
   "Copilot CLI has no post-compaction hook: its HookType enum (schemas/api.schema.json, 1.0.79 and 1.0.80) declares preCompact and no postCompact, and both preCompact call sites in app.js await the hook and never assign its result. Whether the summary is reachable another way is open. app.js does emit session.compaction_complete carrying summaryContent, and the session event writer subscribes to '*' -- but emit() vs emitEphemeral() does NOT gate that writer: dispatchEventHandlers runs outside the ephemeral branch in emitInternal, on('*') early-returns past every filter, and the writer's callback applies no filter of its own before handing the JSON to native recordEventJson. The durable-vs-ephemeral decision is in Rust (api_session_event_writer.rs) and was not readable. Nor is the event uniformly summary-bearing: two of the four emit sites are the branches taken when no summary exists, summaryContent is optional in the schema, and the relay session class emits the same event via emitEphemeral. No compaction has ever been observed on the machines checked, so nothing empirical anchors any of it. Context can be written back on the next turn through userPromptSubmitted additionalContext"
 
+/**
+ * How a bridge row's claims were established -- strictly by evidence recorded *in this repository*,
+ * never by recollection that someone once tried it.
+ *
+ * The distinction is load-bearing rather than decorative. Four features have shipped from here
+ * wired, tested, green and inert, and every one was caught by running the real thing -- never by a
+ * check written from the same understanding that produced the bug. A row saying `documented` is not
+ * an apology: it is the honest statement that its guarantee comes from reading, so the failure mode
+ * that reading cannot catch is still open on it.
+ *
+ * - `dogfooded`: some part of the wired path has been driven against the real harness binary, and
+ *   the repo records which version and when.
+ * - `sourced`: the wire format was read out of the harness's own source or published declarations
+ *   -- stronger than prose, still not a run.
+ * - `documented`: wired from the harness's documentation, with no source read and no run.
+ */
+export type BridgeVerification = 'dogfooded' | 'sourced' | 'documented'
+
+/** Ordered strongest-first, for rendering and for the install-time notice. */
+export const VERIFICATION_RANK: Record<BridgeVerification, number> = {
+  dogfooded: 0,
+  sourced: 1,
+  documented: 2,
+}
+
+/** One-line explanation of each level, shown wherever a level is printed on its own. */
+export const VERIFICATION_BLURB: Record<BridgeVerification, string> = {
+  dogfooded: 'driven against the real harness binary',
+  sourced: "wire format read from the harness's own source or declarations, never driven against it",
+  documented: "wired from the harness's documentation only, never driven against it",
+}
+
 export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
   {
     harness: 'claudecode',
     label: 'Claude Code',
     sourceFile: 'src/install.ts (HOOK_EVENT_MAP)',
+    verification: 'dogfooded',
+    verificationNote:
+      "The harness this repo is developed and released under; CLAUDE.md requires every CLI/hook change be run against the built binary here before it ships.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -117,6 +156,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'codex',
     label: 'Codex CLI',
     sourceFile: 'src/bridges/codex_install.ts (CODEX_HOOK_EVENTS, CODEX_GLOBAL_HOOK_EVENTS)',
+    verification: 'sourced',
+    verificationNote:
+      "Wire format pinned to Codex 0.137.0+'s declared hookSpecificOutput schema (src/bridges/codex.ts); no run against a Codex binary is recorded here.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -133,6 +175,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'grok',
     label: 'Grok CLI',
     sourceFile: 'src/bridges/grok_install.ts (GROK_HOOK_EVENTS)',
+    verification: 'dogfooded',
+    verificationNote:
+      "grok 0.2.93, 2026-07-09: observed executing the global settings.json hooks config unmodified and setting GROK_SESSION_ID on every hook subprocess (src/bridges/registry.ts, src/hooks_cli.ts).",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -198,6 +243,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'copilot_cli',
     label: 'Copilot CLI',
     sourceFile: 'src/bridges/copilot_cli_install.ts (COPILOT_CLI_HOOK_EVENTS), src/bridges/copilot_cli.ts (COPILOT_TO_TG_EVENT)',
+    verification: 'dogfooded',
+    verificationNote:
+      "doctor's checkCopilotCli drives the installed shim end to end, and every hook payload field is cross-checked against Copilot's own declarations pinned at 1.0.80 (schemas/copilot_cli.hooks.json).",
     implemented: new Set([
       'session_start',
       'pre_tool_use',
@@ -221,6 +269,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'gemini',
     label: 'Gemini CLI',
     sourceFile: 'src/bridges/gemini_install.ts (GEMINI_HOOK_EVENTS)',
+    verification: 'sourced',
+    verificationNote:
+      "Verified against Gemini CLI's published hooks reference (src/bridges/gemini_install.ts); no run against a Gemini binary is recorded here.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -235,6 +286,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'qwen',
     label: 'Qwen Code',
     sourceFile: 'src/bridges/qwen_install.ts (QWEN_HOOK_EVENTS)',
+    verification: 'documented',
+    verificationNote:
+      "Wired from QwenLM/qwen-code's hooks.md, which src/bridges/qwen_install.ts states was not live-tested against a running install.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -255,6 +309,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'kimi',
     label: 'Kimi Code CLI',
     sourceFile: 'src/bridges/kimi_install.ts (KIMI_EVENT_ARG), src/bridges/kimi.ts (KIMI_HOOK_SCRIPT)',
+    verification: 'sourced',
+    verificationNote:
+      "Payload keys and response contract read from MoonshotAI/kimi-code's own source (externalHooksRunner/runner.ts, externalHooksService.ts); no run against a Kimi binary is recorded here.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -264,6 +321,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'opencode',
     label: 'opencode',
     sourceFile: 'src/bridges/opencode.ts',
+    verification: 'sourced',
+    verificationNote:
+      "Tool ids, parameter keys and handler behavior read directly from opencode's own source (src/bridges/opencode.ts); no run against a running gateway is recorded here.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -279,6 +339,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'openclaw',
     label: 'OpenClaw',
     sourceFile: 'src/bridges/openclaw.ts',
+    verification: 'sourced',
+    verificationNote:
+      "Verified against the live plugin docs and OpenClaw's aristotle-agent/types.ts; the bridge's own note lists what stays unverified without a live instance (built-in tool names, session id).",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -294,6 +357,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'pi',
     label: 'pi (pi-coding-agent)',
     sourceFile: 'src/bridges/pi.ts',
+    verification: 'sourced',
+    verificationNote:
+      "Response shape verified against pi's own TextContent/ImageContent types (src/bridges/pi.ts); no run against a pi binary is recorded here.",
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
@@ -312,6 +378,8 @@ export interface BridgeCapabilityRowJson {
   readonly harness: HarnessName
   readonly label: string
   readonly sourceFile: string
+  readonly verification: BridgeVerification
+  readonly verificationNote: string
   readonly events: Readonly<Record<HookEventName, boolean>>
   readonly reasons: Readonly<Record<string, string>>
 }
@@ -329,7 +397,15 @@ export function bridgesStatusToJson(matrix: readonly BridgeCapabilityRow[] = BRI
         reasons[event] = reason
       }
     }
-    return { harness: row.harness, label: row.label, sourceFile: row.sourceFile, events, reasons }
+    return {
+      harness: row.harness,
+      label: row.label,
+      sourceFile: row.sourceFile,
+      verification: row.verification,
+      verificationNote: row.verificationNote,
+      events,
+      reasons,
+    }
   })
 }
 
@@ -343,7 +419,8 @@ export function formatBridgesStatus(matrix: readonly BridgeCapabilityRow[] = BRI
   lines.push('')
 
   const harnessWidth = Math.max(...matrix.map((r) => r.harness.length), 'harness'.length)
-  const header = ['harness'.padEnd(harnessWidth), ...HOOK_EVENTS.map((e) => e), 'score'].join('  ')
+  const verifyWidth = Math.max(...matrix.map((r) => r.verification.length), 'verified'.length)
+  const header = ['harness'.padEnd(harnessWidth), ...HOOK_EVENTS.map((e) => e), 'score', 'verified'.padEnd(verifyWidth)].join('  ')
   lines.push(header)
 
   for (const row of matrix) {
@@ -352,7 +429,21 @@ export function formatBridgesStatus(matrix: readonly BridgeCapabilityRow[] = BRI
       return cell.padEnd(event.length)
     })
     const score = `${row.implemented.size}/${HOOK_EVENTS.length}`
-    lines.push([row.harness.padEnd(harnessWidth), ...cells, score].join('  '))
+    lines.push([row.harness.padEnd(harnessWidth), ...cells, score, row.verification.padEnd(verifyWidth)].join('  '))
+  }
+
+  // A score column on its own invites reading every row as equally established. It is not: the
+  // score says which events are *wired*, and wiring is exactly what has shipped inert before. This
+  // section says how each row's claim was actually established, so a reader can tell a bridge that
+  // has been run from one that has only been read about.
+  lines.push('')
+  lines.push('## How each row was established')
+  for (const level of Object.keys(VERIFICATION_RANK) as BridgeVerification[]) {
+    lines.push(`- ${level}: ${VERIFICATION_BLURB[level]}`)
+  }
+  lines.push('')
+  for (const row of [...matrix].sort((a, b) => VERIFICATION_RANK[a.verification] - VERIFICATION_RANK[b.verification])) {
+    lines.push(`- ${row.harness} (${row.verification}): ${row.verificationNote}`)
   }
 
   const gapRows = matrix.filter((r) => r.reasons.length > 0)
@@ -367,4 +458,20 @@ export function formatBridgesStatus(matrix: readonly BridgeCapabilityRow[] = BRI
   }
 
   return lines.join('\n')
+}
+
+/**
+ * The one-line caveat to print when a bridge is installed, or `null` for a bridge that has been
+ * driven against its real harness.
+ *
+ * Installing a bridge currently prints a path and nothing else, which reads as a guarantee the
+ * project cannot make for most of them: nine of the ten bridges have never been run against the
+ * harness they target, and the failure that produces is silent by construction -- hooks fire,
+ * exit clean, and change nothing. Saying so at the moment of install is the only point where the
+ * person who could notice is actually looking.
+ */
+export function installVerificationNotice(harness: HarnessName): string | null {
+  const row = BRIDGE_CAPABILITY_MATRIX.find((r) => r.harness === harness)
+  if (row === undefined || row.verification === 'dogfooded') return null
+  return `NOTE: the ${row.label} bridge is ${row.verification} -- ${VERIFICATION_BLURB[row.verification]}. If a token-goat feature seems to do nothing here, run \`token-goat doctor\` (its "Tool names" check reports what ${row.label} actually sent) and please open an issue. Details: token-goat bridges-status.`
 }

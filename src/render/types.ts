@@ -103,6 +103,14 @@ export interface CommandStat {
   events: number
 }
 
+/** One harness's share of the savings. `harness` is a HarnessName, or the pre-migration bucket. */
+export interface HarnessStat {
+  harness: string
+  bytes: number
+  tokens: number
+  events: number
+}
+
 /**
  * Complete stats payload for a reporting period: totals, by-kind, by-day, and by-project breakdowns.
  * by_kind: All breakdown rows (no top-N applied); the renderer orders them by share.
@@ -110,6 +118,9 @@ export interface CommandStat {
  * by_project: Caller-filtered top-N rows; the renderer orders them by share.
  * by_source: Sorted desc by bytes; collapses raw kinds into image/hint/read/compact/other.
  * by_command: Sorted desc by bytes; breaks down savings by CLI command (symbol, read, section, etc.).
+ * by_harness: Sorted desc by bytes; which harness each saving was recorded under. Populated only
+ *   when more than one has been seen, because a single-harness install learns nothing from a
+ *   breakdown that has one row equal to the total.
  * version: Loaded token-goat package version string (e.g. "0.6.1"); "" when unknown.
  * window_label: Human-readable window label, e.g. "last 30 days" or "all time".
  */
@@ -122,6 +133,7 @@ export interface StatsData {
   by_project: ProjectStat[]
   by_source?: SourceStat[]
   by_command?: CommandStat[]
+  by_harness?: HarnessStat[]
   version?: string
   window_label?: string
 }
