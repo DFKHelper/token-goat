@@ -11,9 +11,11 @@ import {
   readOoxmlZip,
   sortNumberedParts,
 } from '../src/ooxml_extract.js'
+import { zipSync } from 'fflate'
 import { docxOutline } from '../src/docx_extract.js'
 import { pptxOutline } from '../src/pptx_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
+import { zeroPayload } from './helpers/zip_bomb_fixture.js'
 
 describe('readOoxmlZip', () => {
   let dir: string
@@ -42,6 +44,29 @@ describe('readOoxmlZip', () => {
     fs.ftruncateSync(fd, 51 * 1024 * 1024)
     fs.closeSync(fd)
     await expect(readOoxmlZip(file, '.docx')).rejects.toThrow(/over the 50MB limit/)
+  })
+
+  // Gap 1: the compressed-input cap above only bounds what's read off disk. `unzipSync`
+  // decompresses every entry's *declared* uncompressed size with no cap of its own, so a
+  // compliant, capped-input archive can still ask fflate to allocate hundreds of megabytes -- or
+  // more -- for one entry. This is an honestly-labeled bomb (declared size matches the real
+  // content), so the cheap declared-size check alone is enough to catch it before any streaming
+  // decompression begins.
+  it('rejects a decompression bomb by its declared size, without decompressing it', async () => {
+    const file = path.join(dir, 'bomb.pptx')
+    // 520MB of zeros, well over the 500MB decompressed-output limit, compresses to a few MB in
+    // well under a second -- readOoxmlZip doesn't care about real OOXML structure, only that the
+    // bytes are a valid zip container.
+    fs.writeFileSync(file, zipSync({ 'bomb.bin': zeroPayload(520) }, { level: 1 }))
+
+    const t0 = Date.now()
+    await expect(readOoxmlZip(file, '.pptx')).rejects.toThrow(/over the 500MB decompressed-size limit/)
+    const elapsedMs = Date.now() - t0
+
+    // The declared-size check rejects before any streaming decompression of the entry begins.
+    // Fully materializing 520MB would take measurably longer than this; a generous bound catches
+    // a regression to "decompress first, check after" without being flaky under load.
+    expect(elapsedMs).toBeLessThan(1000)
   })
 })
 
