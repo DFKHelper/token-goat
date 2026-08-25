@@ -11,7 +11,9 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 
 import { storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
-import { analyzeMcpCache } from '../src/cli_mcp_audit.js'
+import { analyzeMcpCache, buildMcpAuditReport, printReport } from '../src/cli_mcp_audit.js'
+import { normalizePath } from '../src/paths.js'
+import { captureStdout } from './helpers/capture-stdout.js'
 
 interface McpServer {
   command: string
@@ -201,6 +203,90 @@ describe('mcp-audit', () => {
 
       expect(metrics.has('unknown')).toBe(false)
       expect([...metrics.keys()]).toEqual([])
+    })
+  })
+
+  // These drive the REAL exported buildMcpAuditReport/printReport, not the inline copy above --
+  // the inline copy is a fixture-parsing test for the old single-source .mcp.json reader and
+  // does not exercise report-building, discovery breadth, or the printed unknown-vs-zero wording.
+  describe('buildMcpAuditReport / printReport (real dispatch path)', () => {
+    let homeDir: string
+
+    beforeEach(() => {
+      homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-audit-claudehome-'))
+    })
+
+    afterEach(() => {
+      fs.rmSync(homeDir, { recursive: true, force: true })
+    })
+
+    // The bug: no readable config anywhere and no recorded MCP calls must render as "we don't
+    // know", never as a confident "Total cost: 0 tok" -- that reads as a measurement.
+    it('never prints "Total cost: 0 tok" when no config source is readable and the cache is empty', () => {
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      expect(report.configFound).toBe(false)
+      expect(report.costKnown).toBe(false)
+      const output = captureStdout(() => { printReport(report) })
+      expect(output).not.toContain('Total cost: 0 tok')
+      expect(output).toContain('Total cost: unknown')
+    })
+
+    it('reports a genuine zero (costKnown) when .mcp.json is found but declares no servers', () => {
+      fs.writeFileSync(path.join(tempDir, '.mcp.json'), JSON.stringify({ mcpServers: {} }))
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      expect(report.configFound).toBe(true)
+      expect(report.costKnown).toBe(true)
+      const output = captureStdout(() => { printReport(report) })
+      expect(output).toContain('Total cost: 0 tok')
+    })
+
+    it('discovers servers from ~/.claude.json when .mcp.json is absent, keyed on the forward-slash project path', () => {
+      const claudeJsonPath = path.join(homeDir, '.claude.json')
+      fs.writeFileSync(claudeJsonPath, JSON.stringify({
+        projects: {
+          [tempDir.replace(/\\/g, '/')]: { mcpServers: { github: { command: 'gh-mcp' } } },
+        },
+      }))
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      expect(report.configFound).toBe(true)
+      expect(report.configSourcePath).toBe(claudeJsonPath)
+      expect(report.servers.some((s) => s.name === 'github')).toBe(true)
+    })
+
+    it('discovers servers from ~/.claude.json keyed on the backslash project path form too', () => {
+      const claudeJsonPath = path.join(homeDir, '.claude.json')
+      fs.writeFileSync(claudeJsonPath, JSON.stringify({
+        projects: {
+          [tempDir.replace(/\//g, '\\')]: { mcpServers: { github: { command: 'gh-mcp' } } },
+        },
+      }))
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      expect(report.configFound).toBe(true)
+      expect(report.servers.some((s) => s.name === 'github')).toBe(true)
+    })
+
+    // resolveProjectRoot canonicalizes the drive letter to lowercase, but Claude Code's
+    // ~/.claude.json keys `projects` by whatever casing it literally saw (often uppercase on
+    // Windows) -- a drive-letter-case mismatch must not hide a config that is genuinely there.
+    it('discovers servers from ~/.claude.json even when its key uses a different drive-letter case than the (canonicalized) project root', () => {
+      if (process.platform !== 'win32' || !/^[a-zA-Z]:/.test(tempDir)) return
+      const claudeJsonPath = path.join(homeDir, '.claude.json')
+      const lowerDriveRoot = normalizePath(tempDir)
+      const upperDriveKey = lowerDriveRoot.charAt(0).toUpperCase() + lowerDriveRoot.slice(1)
+      fs.writeFileSync(claudeJsonPath, JSON.stringify({
+        projects: { [upperDriveKey]: { mcpServers: { github: { command: 'gh-mcp' } } } },
+      }))
+      const report = buildMcpAuditReport(lowerDriveRoot, homeDir)
+      expect(report.configFound).toBe(true)
+      expect(report.servers.some((s) => s.name === 'github')).toBe(true)
+    })
+
+    // Plugin-provided servers have no on-disk config at all -- the report must say so rather
+    // than silently omitting them, regardless of what was discovered.
+    it('always prints a caveat that plugin-provided MCP servers are not visible to this audit', () => {
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      const output = captureStdout(() => { printReport(report) })
+      expect(output).toMatch(/plugin-provided mcp servers/i)
     })
   })
 })
