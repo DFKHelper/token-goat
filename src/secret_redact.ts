@@ -160,7 +160,21 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // base64 and needs no such lookahead here. The lookbehind keeps `AccountKey=` itself in the
   // output, matching auth_bearer_token and presigned_signature above, so
   // `;EndpointSuffix=core.windows.net` after it stays fully readable too.
-  ['azure_storage_key', /(?<=AccountKey=)[A-Za-z0-9+/]{40,}=*/g],
+  // `SharedAccessKey` is the same credential one Azure service over: Service Bus, Event Hubs and
+  // Relay spell it that way (`Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=Root;
+  // SharedAccessKey=<base64>`) and it carries the same authority over that namespace that
+  // AccountKey does over a storage account. `SharedAccessKeyName` is a plain identifier rather
+  // than a secret, and never matches: the separator in the lookbehind sits directly against the
+  // key name, so the `Name` in between stops it dead.
+  // The separator is spelled the way auth_bearer_token above spells its own, for the same reasons
+  // that comment records having learned the hard way. Optional quotes on either side of it, so
+  // the JSON and YAML forms a logged MCP result or api response actually arrives in are matched
+  // rather than stopped dead at the opening quote. A bounded gap rather than exactly one space,
+  // so a hand-aligned or reformatted `AccountKey = ...` in an appsettings file is not the single
+  // variant that defeats the whole pattern. Case-insensitive for the same reason
+  // presigned_signature is. The leading word boundary is what keeps the widened name from
+  // reaching into the middle of a longer identifier such as `myaccountkey=`.
+  ['azure_storage_key', /(?<=\b(?:AccountKey|SharedAccessKey)["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)[A-Za-z0-9+/]{40,}=*/gi],
   // Generic key=value assignments in .env-file and connection-string/query-string shape. The
   // lookbehind again redacts only the value, and the value's character class deliberately
   // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- that exclusion is
