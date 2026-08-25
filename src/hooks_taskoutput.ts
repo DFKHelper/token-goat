@@ -35,7 +35,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, extractToolResultText, rewriteWithRedactionStat } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, extractToolResultText, emitRewrite } from './hooks_common.js'
 import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
@@ -96,15 +96,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     if (taskId === undefined) return passOutput()
     const rawOutput = extractToolResultText(event.raw)
     if (!rawOutput) return passOutput()
-    // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob
-    // (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value
-    // recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per
-    // call, so there is no living in-memory cache to hit instead) is always the REDACTED text.
-    // Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the
-    // instant a secret-shaped token appears anywhere in the accumulated output, permanently
-    // falling through to the "buffer reset" branch on every later poll for this task. Redacting
-    // here keeps both sides of every comparison on equal footing, mirroring the redact-before-
-    // compare pattern `storeBashOutput` already applies for the same reason.
+    // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per call, so there is no living in-memory cache to hit instead) is always the REDACTED text. Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the instant a secret-shaped token appears anywhere in the accumulated output, permanently falling through to the "buffer reset" branch on every later poll for this task. Redacting here keeps both sides of every comparison on equal footing, mirroring the redact-before- compare pattern `storeBashOutput` already applies for the same reason.
     const output = redactSecrets(rawOutput).text
     if (!output) return passOutput()
 
@@ -112,22 +104,13 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     const minBytes = loadConfig().bash_compress.cache_min_bytes
 
     if (prior === null) {
-      // First poll ever seen for this task this session -- nothing to diff against
-      // yet, but the payload can still carry within-payload line-repeat storms (a
-      // single warning line repeated 247 times has been observed in one poll), so
-      // apply the same collapse the delta path applies below. Cache stores the
-      // original raw output (not the collapsed copy) since future delta diffs must
-      // compare against the real prior output.
+      // First poll ever seen for this task this session -- nothing to diff against yet, but the payload can still carry within-payload line-repeat storms (a single warning line repeated 247 times has been observed in one poll), so apply the same collapse the delta path applies below. Cache stores the original raw output (not the collapsed copy) since future delta diffs must compare against the real prior output.
       storePollSnapshot(event.sessionId, taskId, output)
       const collapsed = collapseRepeatedLines(output)
       if (collapsed === output) return passOutput()
       const savings = Buffer.byteLength(output, 'utf-8') - Buffer.byteLength(collapsed, 'utf-8')
       if (savings < minBytes) return passOutput()
-      // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
-      // bash_runner's filter pipeline and hooks_bashoutput.ts): the collapse has
-      // no separate notice/marker text (the collapsed body IS the replacement),
-      // so noticeBytes is 0, but routing through the same shared check keeps
-      // this path's "worth it" decision identical in shape to every other one.
+      // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with bash_runner's filter pipeline and hooks_bashoutput.ts): the collapse has no separate notice/marker text (the collapsed body IS the replacement), so noticeBytes is 0, but routing through the same shared check keeps this path's "worth it" decision identical in shape to every other one.
       if (
         !isRewriteWorthwhile({
           originalBytes: Buffer.byteLength(output, 'utf-8'),
@@ -138,12 +121,11 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return rewriteWithRedactionStat(collapsed, 'taskoutput')
+      return emitRewrite(collapsed, 'taskoutput', { kind: 'taskoutput:collapse', originalBytes: Buffer.byteLength(output, 'utf-8') })
     }
 
     if (output === prior.output) {
-      // Unchanged since the last poll -- see hooks_bashoutput.ts's docstring for
-      // why replacing (not just annotating) is safe here.
+      // Unchanged since the last poll -- see hooks_bashoutput.ts's docstring for why replacing (not just annotating) is safe here.
       storePollSnapshot(event.sessionId, taskId, output)
       if (Buffer.byteLength(output, 'utf-8') < minBytes) return passOutput()
       const unchangedNotice = `[token-goat: task_id ${taskId} unchanged since last poll -- no new output]`
@@ -157,13 +139,11 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return rewriteWithRedactionStat(unchangedNotice, 'taskoutput')
+      return emitRewrite(unchangedNotice, 'taskoutput', { kind: 'taskoutput:unchanged', originalBytes: Buffer.byteLength(output, 'utf-8') })
     }
 
     if (!output.startsWith(prior.output)) {
-      // The new output isn't a simple append of the cached snapshot (e.g. the
-      // task's buffer rotated or reset) -- a suffix diff would misrepresent the
-      // result, so pass the fresh output through untouched and re-baseline.
+      // The new output isn't a simple append of the cached snapshot (e.g. the task's buffer rotated or reset) -- a suffix diff would misrepresent the result, so pass the fresh output through untouched and re-baseline.
       storePollSnapshot(event.sessionId, taskId, output)
       return passOutput()
     }
@@ -183,7 +163,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     ) {
       return passOutput()
     }
-    return rewriteWithRedactionStat(`${deltaNotice}${collapsedDelta}`, 'taskoutput')
+    return emitRewrite(`${deltaNotice}${collapsedDelta}`, 'taskoutput', { kind: 'taskoutput:delta', originalBytes: Buffer.byteLength(output, 'utf-8') })
   } catch {
     return passOutput()
   }

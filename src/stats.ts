@@ -174,6 +174,10 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Cold first load of an oversized skill where preSkillHandler inlined the compact slice in its reply instead of pointing at `skill-body --compact`. Unlike its skill_oversized_first_load sibling (event-only, 0 bytes -- the pointer deny saves nothing by itself, the follow-up command does) this one records real savings: the full body never landed, the slice did, so bytesSaved is body minus slice.
   skill_compact_inlined: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
+  // Fail-soft diagnostic counters from hooks_edit.ts: they record that a side task threw, never a byte saving, so "other" is the right home. Listed explicitly rather than left to kindToSource()'s fallback so the registration guard can tell a deliberate placement from an unregistered kind.
+  dirty_queue_append_failed: SOURCE_OTHER,
+  worker_healthcheck_failed: SOURCE_OTHER,
+  known_root_record_failed: SOURCE_OTHER,
   // Measurement of what a compaction produced (hooks_compact.ts postCompactHandler): summary size and how many manifest paths survived into it. SOURCE_OTHER and always recorded at (0, 0) -- the summary was written whether or not token-goat was watching, so there is no counterfactual in which those bytes were saved. Filing it anywhere with a savings total would credit token-goat for the whole summary, which is the accounting mistake this registry exists to prevent.
   compact_summary: SOURCE_OTHER,
   // Envelope compaction of an oversized subagent report (hooks_agent_spawn.ts). SOURCE_CONTENT, not SOURCE_HINT: the handler's sibling session_hint entry is advisory (it only appends a recall pointer and genuinely saves nothing), whereas this kind records a real rewrite with real bytes removed, so filing it under the advisory bucket would understate the compaction and repeat the zero-savings desync this registry keeps getting bitten by.
@@ -195,6 +199,8 @@ const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
   ['mcp:', SOURCE_MCP],
   ['skill_body:', SOURCE_SKILL],
   ['skill_compact:', SOURCE_SKILL],
+  ['bashoutput:', SOURCE_BASH],
+  ['taskoutput:', SOURCE_CONTENT],
 ]
 
 const COMMAND_KINDS: Record<string, Set<string>> = {
@@ -844,4 +850,11 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
 
   const statsData = _buildStatsData(summary, windowDays)
   process.stdout.write(richRenderStats(statsData) + '\n')
+}
+
+// True when `kind` resolves to a source through an explicit KIND_TO_SOURCE entry, the `_overhead` suffix rule, or a KIND_PREFIX_TO_SOURCE prefix. kindToSource() falls back to SOURCE_OTHER for anything unregistered, so an unregistered kind is silently misfiled rather than rejected; this predicate is what lets a guard tell "deliberately filed under other" apart from "nobody registered it".
+export function isRegisteredKind(kind: string): boolean {
+  if (KIND_TO_SOURCE[kind] !== undefined) return true
+  if (kind.endsWith(OVERHEAD_SUFFIX) && KIND_TO_SOURCE[kind.slice(0, -OVERHEAD_SUFFIX.length)] !== undefined) return true
+  return KIND_PREFIX_TO_SOURCE.some(([prefix]) => kind.startsWith(prefix))
 }
