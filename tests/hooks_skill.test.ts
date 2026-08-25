@@ -30,6 +30,8 @@ import {
 } from '../src/skill_cache.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { makeHookEvent } from './helpers/hook-event.js';
+import { summarize } from '../src/stats.js';
+import { PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.resolve(__dirname, '.temp-hooks-skill-cache');
@@ -190,6 +192,34 @@ describe('preSkillHandler — duplicate-load advisory', () => {
       expect(pre.message).toContain('already loaded this session');
       expect(pre.message).toContain('token-goat skill-body ollama --compact');
     }
+  });
+
+  // Regression: a denied re-load genuinely blocks the cached body from reaching the model
+  // (same shape as hooks_read.ts's read_count_deny), so the session_hint stat it records
+  // should credit those bytes, not the (0, 0) default a bare `recordStat('session_hint')`
+  // call produces. Pre-fix this delta is 0; post-fix it equals the cached body's byte size.
+  it('credits the blocked body bytes on the duplicate-load deny, not zero', async () => {
+    const body = 'Body for ollama.';
+    await runHook(skillPostEvent('ollama', body, 'sess-credit'));
+
+    const before = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    const pre = await runHook(skillPreEvent('ollama', 'sess-credit'));
+    expect(pre.hookType).toBe('deny');
+    const delta = (summarize(30).by_kind['session_hint']?.bytes_saved ?? 0) - before
+
+    expect(delta).toBe(Buffer.byteLength(body, 'utf-8'));
+  });
+
+  it('caps the credited bytes at PER_FILE_COUNTERFACTUAL_CEILING for an oversized cached body', async () => {
+    const body = 'x'.repeat(PER_FILE_COUNTERFACTUAL_CEILING + 50_000);
+    await runHook(skillPostEvent('ollama', body, 'sess-credit-cap'));
+
+    const before = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    const pre = await runHook(skillPreEvent('ollama', 'sess-credit-cap'));
+    expect(pre.hookType).toBe('deny');
+    const delta = (summarize(30).by_kind['session_hint']?.bytes_saved ?? 0) - before
+
+    expect(delta).toBe(PER_FILE_COUNTERFACTUAL_CEILING);
   });
 
   it('does not deny a different skill that was not loaded this session', async () => {

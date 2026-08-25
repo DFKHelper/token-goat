@@ -956,7 +956,6 @@ describe('getHintStatsTotals harness scope', () => {
     const totals = getHintStatsTotals()
     expect(totals.legacyEmissions).toBe(2)
     expect(totals.spentBytes).toBeNull()
-    expect(totals.netBytes).toBeNull()
   })
 })
 

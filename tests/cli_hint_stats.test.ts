@@ -4,6 +4,7 @@ import { runHintStatsCommand } from '../src/cli_hint_stats.js'
 import { logHintEmission, markCategoryEffective, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
 import { defaultConfig, saveConfig } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { recordStat } from '../src/stats.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
 function nonce(): string {
@@ -152,6 +153,25 @@ describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
     expect(line).toContain('200')
     // 1 legacy row for this category must be visible, not silently dropped.
     expect(output).toContain('1 legacy')
+  })
+
+  // Regression: the TOTAL line used to compute net = saved - spent, where `saved` is an all-time
+  // aggregate over the entire `stats` table (every kind mapped to SOURCE_HINT -- tens of
+  // thousands of events across the codebase) and `spent` sums only the much smaller
+  // `hint_emissions` ledger. Those are disjoint populations, so the "net" implied a handful of
+  // tracked emissions produced gigabytes of savings. The TOTAL line must report the two figures
+  // separately, each labelled with its own population, and never combine them into a difference.
+  it('never nets the stats-ledger saved total against the much smaller hint_emissions spend total', () => {
+    recordStat('session_hint', 5_000_000_000, 0)
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, null, false, 200)
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const totalLine = output.split('\n').find((l) => l.startsWith('TOTAL'))
+    expect(totalLine).toBeDefined()
+    expect(totalLine).toContain('saved=5000000000')
+    expect(totalLine).toContain('spent=200')
+    expect(totalLine).not.toMatch(/net=/)
   })
 
   it('--json still returns the per-category array unchanged in shape, now carrying bytesEmitted/legacyEmissions', () => {

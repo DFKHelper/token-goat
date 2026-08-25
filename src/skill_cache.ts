@@ -335,6 +335,34 @@ export async function hasSessionOutput(sessionId: string, skillName: string): Pr
   }
 }
 
+/**
+ * Byte size of the body that a same-session re-load of *skillName* would have
+ * re-injected, or null if no matching cached output exists. Mirrors
+ * {@link hasSessionOutput}'s session+name matching exactly (same fields, same
+ * `.startsWith` prefix check) so the two never disagree on whether a match
+ * exists -- this just also returns the counterfactual byte count instead of a
+ * bare boolean. `bodyBytes` on the stored meta is the full pre-truncation size
+ * (see storeOutput), i.e. the real re-injection cost, not the on-disk cap.
+ * When multiple matches exist (e.g. the skill was reloaded with different
+ * content this session), the most recently stored one is used, since that is
+ * the body a fresh re-load would actually be recalling.
+ */
+export async function sessionOutputBodyBytes(sessionId: string, skillName: string): Promise<number | null> {
+  try {
+    if (!sessionId) return null
+    const name = safeSkillName(skillName)
+    if (!name) return null
+    const safeSession = safeSessionFragment(sessionId)
+    const metas = await listOutputs()
+    const matches = metas.filter(m => m.skillName === name && m.outputId.startsWith(`${safeSession}-`))
+    if (matches.length === 0) return null
+    matches.sort((a, b) => b.ts - a.ts)
+    return matches[0]!.bodyBytes
+  } catch {
+    return null
+  }
+}
+
 export async function findCrossSessionEntry(skillName: string, contentSha: string): Promise<SkillMeta | null> {
   const name = safeSkillName(skillName)
   if (!name || !contentSha) return null

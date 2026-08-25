@@ -2,6 +2,18 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **The `hint-stats` TOTAL line subtracted two figures that were never measuring the same thing.** It printed `saved`, `spent` and a `net` that was `saved` minus `spent`. `saved` is an all-time total across every kind of hint token-goat has ever recorded — tens of thousands of events. `spent` only sums the much smaller ledger that tracks individual hint emissions, which for most installs holds a few dozen rows. Because the two figures come from different, unrelated counts, the subtraction between them was not a real net benefit; on one real store it read "net=4861733142" from a ledger of only 71 rows, which looks like hints saved gigabytes when nothing of the sort was measured. The `net` figure is gone. `saved` and `spent` now print side by side, each labelled with what it actually counts, so the line states what was measured instead of implying a benefit nothing measured. See [src/hint_stats.ts](src/hint_stats.ts) and [src/cli_hint_stats.ts](src/cli_hint_stats.ts).
+
+- **Two of the savings figures were counting something nobody would ever actually do.** `sqlite-query` credited itself with saving the entire on-disk size of the SQLite database file it queried, as if the alternative were pasting a whole binary database into the model — that never happens and no tool even offers it; on one real install this one line item alone accounted for 40% of all reported savings. `map` had the same problem: it credited the full on-disk content size of every file it surfaced, as if the alternative were reading each of those files in full, which nobody does either. `sqlite-query` now measures against the same query's own untruncated output, so a saving is only recorded when `--head` genuinely cuts rows out of what was returned. `map` now measures against a plain listing of the same file paths, the more realistic alternative to running `map` at all. Neither command's savings can be inflated by the size of files or databases nobody actually reads whole. See [src/read_commands.ts](src/read_commands.ts) and [src/baseline.ts](src/baseline.ts).
+
+- **A file blocked on its third read within one session was credited for the same saving twice.** When a source file was read enough times in a row to trigger the hard block, the block's size was recorded once under its own tally and then a second time under the general hint tally — and both of those tallies roll up into the same total that `hint-stats` reports, so one blocked read counted as two. On one real install this doubled 6.3MB of genuine savings into 6.3MB of phantom savings on top. The general hint tally now records this event at zero bytes, since the file's own tally already carries the real number; the event itself still shows up, just without booking its bytes twice. See [src/hooks_read.ts](src/hooks_read.ts).
+
+- **Blocking a repeat skill load in the same session recorded zero bytes saved, even though the skill's body genuinely never reached the model.** A skill loaded a second time in one session is denied with a pointer to the cached, cheaper recall command instead — the same shape as a blocked repeat file read, which does credit its real size. This one didn't: it always recorded the saving as zero, silently understating real savings. It now credits the cached skill body's actual byte size, capped the same way a blocked re-read already is, so it doesn't claim more than a real re-load of that size would ever have cost. See [src/hooks_skill.ts](src/hooks_skill.ts) and [src/skill_cache.ts](src/skill_cache.ts).
+
 ## [2.8.2] - 2026-08-24
 
 ### Security

@@ -115,6 +115,8 @@ import { fingerprintContent } from '../src/fingerprint.js'
 import { enqueueDirtyPathSafe } from '../src/hooks_index.js'
 import { takeScreenshot } from '../src/screenshot.js'
 import { isIndexEmptyForProject } from '../src/index_health.js'
+import { dataDir } from '../src/constants.js'
+import { getDb } from '../src/db.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 // The real querySymbols() takes an optional opts param; mockImplementation callbacks below narrow it to a required object (never actually called with none/undefined by read_commands.ts) so their bodies can access opts.name/opts.filePath directly.
@@ -187,6 +189,16 @@ type MockSymbol = {
   body: string
   docstring: string
   parent?: string
+}
+
+// Reads the most recently recorded bytes_saved for a stats `kind` straight out of the real
+// (test-isolated) global.db, so a stat-accounting regression is caught without mocking recordStat.
+function latestStatBytesSaved(kind: string): number {
+  const db = getDb(path.join(dataDir(), 'global.db'))
+  const row = db.prepare('SELECT bytes_saved FROM stats WHERE kind = ? ORDER BY id DESC LIMIT 1').get(kind) as
+    | { bytes_saved: number }
+    | undefined
+  return row ? row.bytes_saved : -1
 }
 
 describe('read_commands', () => {
@@ -4894,6 +4906,38 @@ describe('read_commands', () => {
         const { stderr } = capture(() => { code = runSqliteQuery({ file: f, sql: 'SELECT 1' }) })
         expect(code).toBe(1)
         expect(stderr).toContain('not a valid SQLite database')
+      })
+
+      // Regression: sqlite_query used to book bytes_saved against the SIZE OF THE DATABASE FILE
+      // ON DISK, as if the alternative to running this query were pasting the whole binary .db
+      // into model context -- nobody does that, and no tool even offers it. Seeds a database whose
+      // on-disk size is inflated by an unrelated table the query never touches, then asserts the
+      // recorded saving tracks the actual result set (here: 0 extra bytes, since nothing was
+      // --head-truncated), never the multi-megabyte file size.
+      it('books bytes_saved against the result set, not the database file size on disk', () => {
+        const f = path.join(tempDir, 'inflated.db')
+        const db = new Database(f)
+        db.exec('CREATE TABLE users (id INTEGER, name TEXT)')
+        db.exec('CREATE TABLE junk (blob TEXT)')
+        db.prepare('INSERT INTO users (id, name) VALUES (1, ?)').run('Alice')
+        // Inflate the file's on-disk size well past anything the query result could plausibly
+        // account for, without touching the queried table.
+        db.prepare('INSERT INTO junk (blob) VALUES (?)').run('x'.repeat(2_000_000))
+        db.close()
+        const fileBytes = fs.statSync(f).size
+        expect(fileBytes).toBeGreaterThan(1_000_000)
+
+        const { stdout } = capture(() => {
+          runSqliteQuery({ file: f, sql: 'SELECT id, name FROM users' })
+        })
+        expect(stdout).toContain('Alice')
+
+        const bytesSaved = latestStatBytesSaved('sqlite_query')
+        // No --head truncation happened, so the honest baseline (the same query's untruncated
+        // output) equals what was actually emitted: bytesSaved must sit at the Math.max(1, ...)
+        // floor, nowhere near the inflated multi-megabyte file size.
+        expect(bytesSaved).toBeGreaterThan(0)
+        expect(bytesSaved).toBeLessThan(1000)
       })
     })
   })

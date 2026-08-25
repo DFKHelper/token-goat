@@ -1025,8 +1025,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
       const isSourceExt = isSourceExtension(basename)
       if (isSourceExt && reads >= 2) {
+        // read_count_deny carries the credit for this blocked read. Both it and session_hint
+        // map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint
+        // row here would double the same blocked bytes into the by_source rollup that
+        // hint-stats reads -- one deny, one blocked read, one credit. session_hint is still
+        // recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, Math.round(rereadCredit / 4))
-        recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
+        recordStat('session_hint', 0, 0)
         return denyOutput(
           'Read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.' +
           ' ' + editAnywayHint(normalized),
