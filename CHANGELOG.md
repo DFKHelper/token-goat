@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Security
+
+- **WebSearch results reached the model with no scan for injected instructions and no fence around them.** Every other source of third-party text token-goat handles goes through this check first: a WebFetch page, an MCP tool result, cached output recalled later. WebSearch results were the one live surface that skipped it entirely, because the handler only cached the result and passed it through untouched. The post-search hook now scans every result the same way [`postFetchHandler`](src/hooks_fetch.ts) does for WebFetch, and wraps a result that matches in the same `<untrusted-web-content>` fence used for fetched pages, before any of the handler's own caching guards can return early with the result already attached — including the guard for an in-band error response, which is exactly the ordering mistake a past MCP fix already closed for `mcp__*` tools. See [src/hooks_websearch.ts](src/hooks_websearch.ts).
+
 ### Documentation
 
 - **The README's image section never said what actually drives vision-model token cost.** It claimed a flat 60-90% cut in vision tokens without explaining why, so a reader couldn't tell why a small, heavily compressed screenshot still costs the model plenty. Vision models bill by pixel dimensions, not file size, and the README now says so, with the per-vendor patch and tile formulas that back it up. It also explains why token-goat shrinks an image on either of two independent checks (file size at or above 512 KB, or longest edge past 1568 pixels): the byte check is a cheap pre-filter, and the dimension check catches the case the byte check alone misses, a small file that still decodes to a huge image. See [README.md](README.md).

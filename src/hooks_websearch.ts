@@ -26,6 +26,7 @@ import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultTex
 import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
+import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js'
 
 /** Collapse whitespace and case so "React hooks" and "  react   HOOKS  " dedup as the
  *  same query, mirroring grepSignature's normalization intent in hooks_grep.ts. */
@@ -77,19 +78,38 @@ export function preWebSearchDedupHandler(event: HookEvent): HookOutput {
 
 export function postWebSearchHandler(event: HookEvent): HookOutput {
   try {
-    if (getToolName(event) !== 'WebSearch' || !event.sessionId) return passOutput()
+    if (getToolName(event) !== 'WebSearch') return passOutput()
+    const resultText = extractToolResultText(event.raw)
+    if (!resultText) return passOutput()
+    // A WebSearch result is third-party web content, exactly as untrusted as a WebFetch result --
+    // fenced with the same UNTRUSTED_WEB_TAG for consistency with hooks_fetch.ts's postFetchHandler.
+    // Scanned and the fence decision computed before every guard below that can return early with
+    // this text already extracted, per CLAUDE.arch.md's Security Boundaries: a guard that exists to
+    // save cache work (an in-band error, a missing session id, an unkeyable query) must never
+    // double as a way around the injection scan.
+    let injectionMatches: string[] = []
+    try {
+      if (loadConfig().injection.enabled) injectionMatches = scanForInjectionPatterns(resultText)
+    } catch {
+      injectionMatches = []
+    }
+    if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
+    const passOrFence = (): HookOutput =>
+      injectionMatches.length > 0
+        ? { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(resultText, injectionMatches) }
+        : passOutput()
+
+    if (!event.sessionId) return passOrFence()
     const signature = webSearchSignatureInput(getToolInput(event))
-    if (signature === null) return passOutput()
+    if (signature === null) return passOrFence()
     // An in-band error is a valid response, not a cacheable one. This cache is the one the
     // pre-hook above denies against, so caching a failed search meant the next identical search
     // was blocked and the model was pointed at the error message instead of being allowed to
     // retry -- for the whole dedup window. Exactly the reasoning already written down in
     // hooks_mcp.ts's isMcpErrorResponse, which WebSearch writes past into the same store.
-    if (isMcpErrorResponse(event.raw)) return passOutput()
-    const resultText = extractToolResultText(event.raw)
-    if (!resultText) return passOutput()
+    if (isMcpErrorResponse(event.raw)) return passOrFence()
     storeMcpOutput(event.sessionId, 'WebSearch', signature, resultText)
-    return passOutput()
+    return passOrFence()
   } catch {
     return passOutput()
   }
