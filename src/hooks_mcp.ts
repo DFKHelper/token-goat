@@ -62,11 +62,23 @@ function postMcpHandler(event: HookEvent): HookOutput {
     injectionMatches = []
   }
   if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
+  // Redact secrets on this same live path, computed once here ahead of every early-return guard
+  // below -- an MCP result carrying a bare credential (an API key in an env-dump tool's output, a
+  // PAT sitting in a commit message) trips no injection pattern at all, so gating redaction on
+  // injectionMatches (as fenced() alone used to) would leave every non-fenced return -- no session
+  // id, an in-band MCP error, a dedup cache hit, and the terminal "compression did not fire or did
+  // not pay off" return below -- shipping it unredacted. Mirrors postWebSearchHandler's and
+  // postFetchHandler's fix for the same gap.
+  const redactedResult = redactSecrets(resultText)
   const fenced = (): HookOutput => ({
     hookType: 'rewriteOutput',
-    updatedOutput: fenceUntrustedContent(redactSecrets(resultText).text, injectionMatches, UNTRUSTED_TOOL_TAG),
+    updatedOutput: fenceUntrustedContent(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
   })
-  const passOrFence = (): HookOutput => (injectionMatches.length > 0 ? fenced() : passOutput())
+  const passOrFence = (): HookOutput => {
+    if (injectionMatches.length > 0) return fenced()
+    if (redactedResult.count > 0) return { hookType: 'rewriteOutput', updatedOutput: redactedResult.text }
+    return passOutput()
+  }
 
   if (!event.sessionId) return passOrFence()
   // An in-band MCP error is a valid response, not a cacheable one - never let a

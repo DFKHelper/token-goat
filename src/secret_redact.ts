@@ -143,6 +143,24 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // a userinfo segment, the colon, and a following `@`. `http://host:8080/path` has no `@` and
   // is left alone; so is any url without credentials.
   ['url_credentials', /(?<=:\/\/[^\s:@/]{1,64}:)[^\s:@/]{1,256}(?=@)/g],
+  // Azure storage account connection strings (`DefaultEndpointsProtocol=https;AccountName=...;
+  // AccountKey=<base64>==;EndpointSuffix=core.windows.net`) carry a full read/write key to the
+  // account in the AccountKey field, and none of the generic patterns above catch it:
+  // generic_secret_assignment's keyword list (password|passwd|secret|api[_-]?key|
+  // access[_-]?token|refresh[_-]?token|id[_-]?token) has nothing that matches "AccountKey", and
+  // an unanchored base64-shape pattern was deliberately rejected -- this module's header already
+  // warns that a bare high-entropy-blob heuristic false-fires on ordinary code, JSON and log
+  // output, and an 88-char base64 value is exactly the shape a hash, a compiled asset digest or a
+  // generated id can also take. Anchoring on the literal `AccountKey=` field name instead keeps
+  // the match specific to this one connection-string field. The value class is base64 proper
+  // (letters, digits, `+`, `/`, trailing `=` padding) and none of those characters include `;`, so
+  // the match terminates on its own at the `;` that starts the next `Name=` field -- unlike
+  // generic_secret_assignment's separator characters (`& ; # , :`), which double as ordinary
+  // credential characters and need a lookahead to tell the two roles apart, `;` is never valid
+  // base64 and needs no such lookahead here. The lookbehind keeps `AccountKey=` itself in the
+  // output, matching auth_bearer_token and presigned_signature above, so
+  // `;EndpointSuffix=core.windows.net` after it stays fully readable too.
+  ['azure_storage_key', /(?<=AccountKey=)[A-Za-z0-9+/]{40,}=*/g],
   // Generic key=value assignments in .env-file and connection-string/query-string shape. The
   // lookbehind again redacts only the value, and the value's character class deliberately
   // excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- that exclusion is
