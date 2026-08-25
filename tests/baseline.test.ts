@@ -381,44 +381,79 @@ describe('mapLookupBytesSaved', () => {
   // fed it RELATIVE recentFiles ('a.ts') alongside ABSOLUTE, normalizePath-form topSymbols
   // filePaths ('c:/.../a.ts'). A file present in BOTH lists (a recently-modified file that also
   // carries a headline symbol -- extremely common) therefore landed as two distinct Set keys and
-  // had its on-disk size counted twice, inflating the stat. Seeds a headline symbol whose
-  // normalized file_path points at the same real file buildProjectMap will also surface as a recent
-  // file, then asserts the accounting counts that file exactly once.
+  // had its on-disk size counted twice, inflating the stat.
+  //
+  // Under the CURRENT (file-path-listing, not on-disk-content-size) accounting, a comparison
+  // against the file's content size no longer discriminates: a duplicated path only adds its own
+  // (tiny) path length to the listing, which stays far below any content-size-scale threshold
+  // whether or not dedup actually ran. So this asserts the exact byte count the deduplicated
+  // one-path listing must produce, computed independently of mapLookupBytesSaved's own dedup
+  // logic (from the known emitted text and the known single absolute path), and separately proves
+  // that count is distinguishable from what a broken (duplicate-counting) dedup would produce --
+  // i.e. that the equality check above is capable of catching the regression, not just passing
+  // for an unrelated reason.
   it('counts a file surfaced as both a recent file and a top symbol exactly once', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-mapdup-'))
-    // Large body so fullSourceBytes dwarfs the emitted map text: with the double-count bug the
-    // returned value is ~2x the file size (well above it); deduplicated it is size - emittedText
-    // (strictly below the file size). A tiny file would clamp both to the Math.max(1, ...) floor.
-    const bigBody = Array.from({ length: 400 }, (_, i) => `  const line${i} = ${i} * 2`).join('\n')
-    const source = `export function mapDupHeadlineFn5w8() {\n${bigBody}\n  return 1\n}\n`
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-mapdup-'))
+    try {
+      // The exact normalized absolute path mapLookupBytesSaved resolves 'a.ts' (a recentFiles
+      // entry) to, and the same path a topSymbols entry can carry directly (already absolute,
+      // normalizePath-form) -- this is the one file present in both lists.
+      const absPath = normalizePath(path.resolve(rootDir, 'a.ts'))
+
+      const map = {
+        rootDir,
+        fileCount: 1,
+        languages: { typescript: 1 },
+        topSymbols: [{
+          filePath: absPath, name: 'fn', kind: 'function', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '',
+        }],
+        recentFiles: ['a.ts'],
+        compact: false,
+      }
+      const emittedText = 'compact map output — irrelevant to this accounting check'
+
+      const bytesSaved = mapLookupBytesSaved(map, emittedText)
+
+      // Deduplicated: the listing is the single path, joined with nothing (one entry, no separator).
+      const dedupedExpected = Math.max(1, Buffer.byteLength(absPath, 'utf8') - Buffer.byteLength(emittedText, 'utf8'))
+      expect(bytesSaved).toBe(dedupedExpected)
+
+      // Not vacuous: a regression that drops the Set (counts the same path twice) would produce
+      // this instead -- prove it actually differs from the deduped answer at this scale, so the
+      // equality assertion above is a real regression trap rather than a coincidental pass.
+      const duplicatedListing = [absPath, absPath].sort().join('\n')
+      const duplicatedExpected = Math.max(1, Buffer.byteLength(duplicatedListing, 'utf8') - Buffer.byteLength(emittedText, 'utf8'))
+      expect(duplicatedExpected).not.toBe(dedupedExpected)
+    } finally {
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: map_lookup used to book bytes_saved against the FULL ON-DISK SIZE of every file
+  // `map` surfaces, as if the alternative to `map` were reading each surfaced file whole -- nobody
+  // does that. Seeds a recent file with a large body so the old (content-size) accounting would
+  // book a saving on the order of that body size; asserts the real accounting instead tracks the
+  // (tiny) cost of a plain path listing, nowhere close to the file's content size.
+  it('books bytes saved against a file-path listing, not the on-disk content size of surfaced files', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-mapcontent-'))
+    const bigBody = Array.from({ length: 5000 }, (_, i) => `  const line${i} = ${i} * 2`).join('\n')
+    const source = `export function mapContentSizeFn9x2q() {\n${bigBody}\n  return 1\n}\n`
     const fileBytes = Buffer.byteLength(source, 'utf8')
+    expect(fileBytes).toBeGreaterThan(100_000)
     fs.writeFileSync(path.join(root, 'a.ts'), source)
 
-    const filePath = `${normalizePath(root)}/a.ts`
-    const db = getDb(globalDbPath())
-    db.prepare(
-      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(filePath, 'mapDupHeadlineFn5w8', 'function', 1, 1, source, '')
-
-    // cmdMap always runs with cwd === map.rootDir (buildProjectMap(process.cwd())), which is the
-    // condition under which the bug actually bites: the buggy dedup fed a RELATIVE recentFile
-    // ('a.ts') into the Set, and it only resolves to the real file (and thus gets double-counted
-    // alongside the absolute topSymbol path) when cwd is the project root. Reproduce that here.
     const savedCwd = process.cwd()
     try {
       process.chdir(root)
       const map = buildProjectMap(root)
-      // Precondition: the same file really is present in both lists, or this test proves nothing.
-      expect(map.topSymbols.some((s) => s.name === 'mapDupHeadlineFn5w8')).toBe(true)
       expect(map.recentFiles).toContain('a.ts')
 
       const text = formatProjectMap(map, map.compact)
       const bytesSaved = mapLookupBytesSaved(map, text)
-      // Counted once: fullSourceBytes == fileBytes, so bytesSaved == fileBytes - emittedText < fileBytes.
-      // Double-counted: fullSourceBytes == 2*fileBytes, so bytesSaved > fileBytes.
+      // The old content-size accounting would book a saving close to fileBytes (~150KB); the
+      // path-listing accounting books a saving on the order of a few file-path characters.
       expect(bytesSaved).toBeGreaterThan(0)
-      expect(bytesSaved).toBeLessThan(fileBytes)
+      expect(bytesSaved).toBeLessThan(1000)
     } finally {
       process.chdir(savedCwd)
       fs.rmSync(root, { recursive: true, force: true })

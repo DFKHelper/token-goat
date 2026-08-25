@@ -60,17 +60,22 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
 }
 
 /**
- * Prints the all-time saved/spent/net summary line -- the actual answer to "are hints
- * net-positive?" this feature exists to surface. `saved` reuses the pre-existing `stats` ledger
- * (unaffected by this feature); `spent`/`net` render 'n/a', never a fake 0, when nothing has
- * been tracked yet or the store is entirely pre-migration legacy rows (see
- * hint_stats.ts's getHintStatsTotals doc comment).
+ * Prints the all-time saved/spent summary line. `saved` reuses the pre-existing `stats` ledger
+ * (unaffected by this feature) and spans every hint kind; `spent` sums only the much smaller
+ * hint_emissions ledger and renders 'n/a', never a fake 0, when nothing has been tracked yet or
+ * the store is entirely pre-migration legacy rows. The two figures cover disjoint populations and
+ * are deliberately never netted against each other -- see hint_stats.ts's getHintStatsTotals doc
+ * comment for the regression this guards against.
  */
 function printTotals(totals: HintStatsTotals): void {
   const spent = totals.spentBytes === null ? 'n/a' : String(totals.spentBytes)
-  const net = totals.netBytes === null ? 'n/a' : String(totals.netBytes)
   const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${totals.legacyEmissions} legacy emission(s) recorded before spend tracking)` : ''
-  process.stdout.write(`\nTOTAL   saved=${totals.savedBytes}   spent=${spent}   net=${net}${legacyNote}\n`)
+  // saved and spent are deliberately NOT netted against each other: saved is an all-time total
+  // across every hint kind stats.ts maps to SOURCE_HINT, while spent sums only the much smaller
+  // hint_emissions ledger. They are disjoint populations -- see getHintStatsTotals's doc comment.
+  process.stdout.write(
+    `\nTOTAL   saved=${totals.savedBytes} (all-time, every hint kind)   spent=${spent} (hint_emissions ledger only)${legacyNote}\n`,
+  )
 }
 
 /** Run the `token-goat hint-stats` command. */

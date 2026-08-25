@@ -3824,7 +3824,11 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     const headTruncated = head !== undefined && result.rows.length > head
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
 
-    const fullSourceBytes = sumFileSizes([opts.file])
+    // The database file's on-disk size is not a real counterfactual: nobody pastes a binary
+    // SQLite file into model context. The one honest baseline is the output the same query
+    // would have produced without --head -- a real alternative the user could have run --
+    // so bytesSaved reflects only what --head actually avoided emitting, never the size of
+    // the database itself.
     if (opts.json === true) {
       // totalCount must come from `result.rows.length` (captured above, before --head slices
       // `rows`) -- capped.totalCount would report the already-head-limited row count instead of
@@ -3838,11 +3842,20 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
         rowCapped: result.rowCapped,
       })
       emit(jsonText)
-      recordReadStat('sqlite_query', fullSourceBytes, jsonText, opts.file)
+      const uncappedFull = guardJsonRows(result.rows)
+      const baselineJsonText = JSON.stringify({
+        columns: result.columns,
+        items: uncappedFull.items,
+        truncated: uncappedFull.truncated || result.rowCapped,
+        totalCount,
+        rowCapped: result.rowCapped,
+      })
+      recordReadStat('sqlite_query', Buffer.byteLength(baselineJsonText, 'utf8'), jsonText, opts.file)
     } else {
       const text = formatSqliteQueryTable({ ...result, rows }, { headTruncated })
       emit(text)
-      recordReadStat('sqlite_query', fullSourceBytes, text, opts.file)
+      const baselineText = formatSqliteQueryTable({ ...result, rows: result.rows }, { headTruncated: false })
+      recordReadStat('sqlite_query', Buffer.byteLength(baselineText, 'utf8'), text, opts.file)
     }
     return 0
   } catch (e) {

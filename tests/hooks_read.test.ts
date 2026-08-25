@@ -30,7 +30,7 @@ import { compactPathFor, writeCompact } from '../src/doc_compact.js'
 import { load as snapshotLoad } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
-import { summarize } from '../src/stats.js'
+import { summarize, SOURCE_HINT } from '../src/stats.js'
 import { PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -1883,6 +1883,33 @@ Some content that makes the file large enough`
       expect(r3.message).toContain('Read this file 2 times already')
       expect(r3.message).toContain('token-goat skeleton')
     }
+  })
+
+  it('does not double-count the count-based deny in the SOURCE_HINT rollup (read_count_deny and session_hint both map to SOURCE_HINT; one blocked read must credit the rollup once, not twice)', () => {
+    pinProtectRecentReadsToZero()
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.cs`,
+    )
+    const content = 'class Foo {}'
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('context')
+
+    const beforeHintBytes = summarize(30).by_source[SOURCE_HINT]?.bytes_saved ?? 0
+
+    const r3 = preReadHandler(readEvent(p))
+    expect(r3.hookType).toBe('deny')
+
+    const afterHintBytes = summarize(30).by_source[SOURCE_HINT]?.bytes_saved ?? 0
+    const expectedCredit = Math.min(Buffer.byteLength(content), PER_FILE_COUNTERFACTUAL_CEILING)
+    // A single blocked read must credit the SOURCE_HINT rollup exactly once, not once per
+    // recordStat call sharing that source (read_count_deny + session_hint here).
+    expect(afterHintBytes - beforeHintBytes).toBe(expectedCredit)
   })
 
   it('recognizes .ps1/.psm1 (PowerShell) and .cls/.trigger (Apex) as source extensions for the count-based re-read deny (regression: SOURCE_EXT_RE/DIFFABLE_SOURCE_RE drifted from EXTENSION_LANGUAGE and omitted these despite real language adapters existing)', () => {

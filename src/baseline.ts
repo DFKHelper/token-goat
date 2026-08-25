@@ -341,14 +341,12 @@ export function mapLookupBytesSaved(map: ProjectMap, emittedText: string): numbe
     ...map.recentFiles.map((f) => normalizePath(path.resolve(map.rootDir, f))),
     ...map.topSymbols.map((s) => normalizePath(s.filePath)),
   ])
-  let fullSourceBytes = 0
-  for (const fp of referencedFiles) {
-    try {
-      fullSourceBytes += fs.statSync(fp).size
-    } catch {
-      // Stale index entry pointing at a deleted/moved file -- contributes nothing.
-    }
-  }
+  // The full on-disk size of every referenced file is not a real counterfactual: nobody reads
+  // every file surfaced by `map` in full. The realistic alternative to `map` is a plain
+  // directory listing of the same files, so the baseline is the byte cost of listing their
+  // paths, not the bytes of their contents.
+  const listingText = Array.from(referencedFiles).sort().join('\n')
+  const fullSourceBytes = Buffer.byteLength(listingText, 'utf8')
   const emittedBytes = Buffer.byteLength(emittedText, 'utf8')
   return Math.max(1, fullSourceBytes - emittedBytes)
 }

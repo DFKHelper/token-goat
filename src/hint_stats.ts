@@ -657,17 +657,28 @@ export function getHintStatsSummary(): CategoryEfficacy[] {
 }
 
 export interface HintStatsTotals {
-  /** All-time bytes saved across every hint kind (see stats.ts's KIND_TO_SOURCE) already recorded via the pre-existing `stats` ledger -- unaffected by this feature, just read here. */
+  /** All-time bytes saved across every hint kind (see stats.ts's KIND_TO_SOURCE) already recorded via the pre-existing `stats` ledger -- unaffected by this feature, just read here. This is a much larger population than `spentBytes`: it covers every hint-emitting call site across the whole codebase, while `hint_emissions` (the source of `spentBytes`) only tracks emissions from the categories in {@link HINT_CATEGORIES}. The two are NOT comparable and must never be subtracted from one another -- see the regression note on {@link getHintStatsTotals}. */
   savedBytes: number
   /** All-time sum of hint_emissions.bytes_emitted across every category and harness -- `null` when nothing has been tracked yet (an empty store or a store made up entirely of legacy emissions; see `legacyEmissions`), never a fake 0. */
   spentBytes: number | null
-  /** All-time count of emissions with no bytes_emitted figure, across every category and harness -- non-zero here means `spentBytes`/`netBytes` are computed from a subset of real emissions, not the full history. */
+  /** All-time count of emissions with no bytes_emitted figure, across every category and harness -- non-zero here means `spentBytes` is computed from a subset of real emissions, not the full history. */
   legacyEmissions: number
-  /** savedBytes - spentBytes; `null` exactly when spentBytes is `null`, for the same reason. */
-  netBytes: number | null
 }
 
-/** All-time saved/spent/net totals for `token-goat hint-stats`'s summary line — see {@link getHintStatsSummary} for the per-category breakdown this rolls up. Deliberately NOT harness-scoped, unlike the per-category rows above it: the saved half comes from the `stats` ledger, which has no `harness` column at all (see stats.ts's GLOBAL_SCHEMA_SQL) and therefore spans every harness. Filtering only the spend half would subtract one harness's cost from every harness's savings and overstate the net. */
+/**
+ * All-time saved/spent totals for `token-goat hint-stats`'s summary line — see {@link getHintStatsSummary} for
+ * the per-category breakdown this rolls up. Deliberately NOT harness-scoped, unlike the per-category rows above
+ * it: `savedBytes` comes from the `stats` ledger, which has no `harness` column at all (see stats.ts's
+ * GLOBAL_SCHEMA_SQL) and therefore spans every harness.
+ *
+ * Regression note: this used to also return a `netBytes = savedBytes - spentBytes` figure. `savedBytes` is an
+ * all-time aggregate over every kind stats.ts maps to `SOURCE_HINT` (session_hint, diff_hint,
+ * evidence_cache_hit, etc. -- tens of thousands of events), while `spentBytes` sums only the much smaller
+ * `hint_emissions` ledger (a handful of tracked rows, since that table only started recording spend
+ * post-migration). Those are disjoint populations: subtracting one from the other produced a "net" figure in
+ * the billions that implied a few dozen tracked emissions netted gigabytes, which they never did. Report the
+ * two figures separately, each labelled with its own population, and never combine them into a difference.
+ */
 export function getHintStatsTotals(): HintStatsTotals {
   const db = getDb(globalDbPath())
   const row = db
@@ -683,7 +694,6 @@ export function getHintStatsTotals(): HintStatsTotals {
     savedBytes,
     spentBytes,
     legacyEmissions,
-    netBytes: spentBytes === null ? null : savedBytes - spentBytes,
   }
 }
 
