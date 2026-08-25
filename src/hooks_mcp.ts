@@ -13,7 +13,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, rewriteWithRedactionStat } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
@@ -70,13 +70,14 @@ function postMcpHandler(event: HookEvent): HookOutput {
   // not pay off" return below -- shipping it unredacted. Mirrors postWebSearchHandler's and
   // postFetchHandler's fix for the same gap.
   const redactedResult = redactSecrets(resultText)
-  const fenced = (): HookOutput => ({
-    hookType: 'rewriteOutput',
-    updatedOutput: fenceUntrustedContent(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
-  })
+  const fenced = (): HookOutput =>
+    rewriteWithRedactionStat(
+      fenceUntrustedContent(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
+      'mcp',
+    )
   const passOrFence = (): HookOutput => {
     if (injectionMatches.length > 0) return fenced()
-    if (redactedResult.count > 0) return { hookType: 'rewriteOutput', updatedOutput: redactedResult.text }
+    if (redactedResult.count > 0) return rewriteWithRedactionStat(redactedResult.text, 'mcp')
     return passOutput()
   }
 
@@ -139,13 +140,12 @@ function postMcpHandler(event: HookEvent): HookOutput {
           minNetSavingsBytes: resolveMinNetSavingsBytes(),
         })
         if (worthwhile) {
-          return {
-            hookType: 'rewriteOutput',
-            updatedOutput:
-              injectionMatches.length > 0
-                ? `${notice}${fenceUntrustedContent(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`
-                : `${notice}${redactedBody}`,
-          }
+          return rewriteWithRedactionStat(
+            injectionMatches.length > 0
+              ? `${notice}${fenceUntrustedContent(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`
+              : `${notice}${redactedBody}`,
+            'mcp',
+          )
         }
       }
     }

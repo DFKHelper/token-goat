@@ -22,7 +22,7 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse } from './hooks_common.js'
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, rewriteWithRedactionStat } from './hooks_common.js'
 import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
@@ -106,10 +106,10 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     const redacted = redactSecrets(resultText)
     const passOrFence = (): HookOutput => {
       if (injectionMatches.length > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(redacted.text, injectionMatches) }
+        return rewriteWithRedactionStat(fenceUntrustedContent(redacted.text, injectionMatches), 'websearch')
       }
       if (redacted.count > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: redacted.text }
+        return rewriteWithRedactionStat(redacted.text, 'websearch')
       }
       return passOutput()
     }
