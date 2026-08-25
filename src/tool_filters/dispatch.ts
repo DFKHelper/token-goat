@@ -3,6 +3,7 @@
 // `TOOL_FILTERS` is the ordered registry every per-tool filter joins as the batched port proceeds (test-runners, package-managers, linters, ...). Order matters: more specific filters must precede the generic package-manager handlers they overlap with — each batch documents its placement.
 
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
+import { resolveIndexPath } from '../paths.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
@@ -63,6 +64,29 @@ export const TOOL_FILTERS: ToolFilter[] = [
 const PROFILE_CAPS: Record<string, number> = { aggressive: 50, balanced: 200, minimal: 500 }
 
 /**
+ * Peel a leading `cd DIR &&`/`cd DIR ;` off `argv` so the real command lands at argv[0] for
+ * matching, and shift `cwd` to DIR so package-manager script resolution (below) resolves
+ * against the right `package.json`. Deliberately narrow: only a single `cd` immediately
+ * followed by exactly one directory token and a top-level `&&`/`;` separator qualifies. A
+ * bare `cd`, a `cd DIR` with nothing following, or a `cd` displaced from argv[0] by an earlier
+ * pass-through (e.g. inside a subshell, where shlexSplit tokenizes `(cd` as one token) are left
+ * untouched -- this is filter-selection routing, not general shell-grammar parsing.
+ *
+ * When `cwd` is `undefined` (the caller never had one), the peeled cwd stays `undefined` too:
+ * peeling must not conjure a cwd that lets script resolution run somewhere it previously
+ * couldn't -- callers that never pass cwd see no behaviour change beyond the peel itself.
+ */
+function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[]; cwd: string | undefined } | null {
+  if (argv.length < 3 || argv[0] !== 'cd') return null
+  const sep = argv[2]
+  if (sep !== '&&' && sep !== ';') return null
+  const remainder = argv.slice(3)
+  if (remainder.length === 0) return null
+  const dir = argv[1]!
+  return { argv: remainder, cwd: cwd === undefined ? undefined : resolveIndexPath(dir, cwd) }
+}
+
+/**
  * Return the first registered filter whose `matches(argv)` is true, or null
  * when none applies (callers should NOT wrap such commands — the subprocess
  * overhead would be pure cost). argv is prefix-stripped first so
@@ -79,14 +103,17 @@ const PROFILE_CAPS: Record<string, number> = { aggressive: 50, balanced: 200, mi
  */
 export function selectFilter(argv: string[], cwd?: string): ToolFilter | null {
   if (argv.length === 0) return null
-  let resolved = stripPrefixes(argv)
+  const peeled = peelLeadingCd(argv, cwd)
+  const effectiveArgv = peeled !== null ? peeled.argv : argv
+  const effectiveCwd = peeled !== null ? peeled.cwd : cwd
+  let resolved = stripPrefixes(effectiveArgv)
   if (resolved.length === 0) {
     // Prefix-stripping consumed the whole argv (bare `env`, `env -0`); fall back to the first token so a dedicated env filter can still opt in.
-    resolved = argv.slice(0, 1)
+    resolved = effectiveArgv.slice(0, 1)
     if (resolved.length === 0) return null
   }
-  if (cwd !== undefined) {
-    const scriptArgv = resolvePackageManagerScript(resolved, cwd)
+  if (effectiveCwd !== undefined) {
+    const scriptArgv = resolvePackageManagerScript(resolved, effectiveCwd)
     if (scriptArgv !== null) {
       const scriptResolved = stripPrefixes(scriptArgv)
       if (scriptResolved.length > 0) {

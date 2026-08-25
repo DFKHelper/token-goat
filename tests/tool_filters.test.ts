@@ -347,6 +347,41 @@ describe('dispatch: detection + compound handling', () => {
     expect(selectFilter(['othertool'])).toBeNull()
   })
 
+  // A leading `cd DIR &&`/`cd DIR ;` displaces argv[0] away from the real command, so no
+  // filter matches at all (measured: 32.7x more output on an unfiltered `cd DIR && ls -la`
+  // versus plain `ls -la`). Peeling it back to the real command must restore dispatch.
+  it('selectFilter peels a leading `cd DIR &&` before matching', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(shlexSplit('cd /some/dir && mytool -x'))?.name).toBe('echo-test')
+  })
+
+  it('selectFilter peels a leading `cd DIR ;` before matching', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(shlexSplit('cd /some/dir ; mytool -x'))?.name).toBe('echo-test')
+  })
+
+  it('selectFilter peels a quoted directory containing a space', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(shlexSplit('cd "my dir" && mytool -x'))?.name).toBe('echo-test')
+  })
+
+  it('selectFilter does not peel a bare `cd` with no directory', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(shlexSplit('cd'))).toBeNull()
+  })
+
+  it('selectFilter does not peel a `cd DIR` with no following command', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(shlexSplit('cd /some/dir'))).toBeNull()
+  })
+
+  // Guard: pipes never displace argv[0] (matches() only inspects argv[0]), so this must keep
+  // working exactly as before -- it is not part of the bug and must not be "fixed".
+  it('selectFilter still matches through a pipe, unaffected by the cd peel', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(shlexSplit('mytool -x | cat'))?.name).toBe('echo-test')
+  })
+
   it('detectFromCommand rejects compound and redirected commands', () => {
     TOOL_FILTERS.push(new EchoFilter())
     expect(detectFromCommand('mytool a && mytool b')).toBeNull()

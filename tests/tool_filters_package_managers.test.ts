@@ -1460,4 +1460,24 @@ describe('Dispatch: package-manager run-script resolution', () => {
     const f = selectFilter(['npm', 'test'])
     expect(f?.name).toBe('npm')
   })
+
+  // A leading `cd DIR &&` must shift the cwd used for script resolution to DIR, not leave it
+  // at the original cwd -- otherwise a peeled `cd sub && npm test` would resolve against the
+  // wrong package.json and land on the wrong filter.
+  it('selectFilter resolves the package-manager script against the peeled cd directory, not the original cwd', () => {
+    writePkg({ test: 'eslint .' }, dir) // "root" -- would resolve to eslint if cwd weren't shifted
+    const sub = fs.mkdtempSync(path.join(dir, 'pkg-'))
+    writePkg({ test: 'vitest run' }, sub)
+    const subName = path.basename(sub)
+    const f = selectFilter(['cd', subName, '&&', 'npm', 'test'], dir)
+    expect(f?.name).toBe('vitest')
+  })
+
+  // When the caller never had a cwd to begin with, peeling the cd must not conjure one --
+  // script resolution stays skipped exactly as it already is for any other cwd-less call.
+  it('selectFilter with a cd peel but no cwd argument does not resolve a package-manager script', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['cd', 'sub', '&&', 'npm', 'test'])
+    expect(f?.name).toBe('npm')
+  })
 })
