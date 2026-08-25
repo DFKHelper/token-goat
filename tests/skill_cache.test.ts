@@ -57,6 +57,29 @@ vi.mock('fs/promises', async (importOriginal) => {
   return { ...actual, default: actual, readFile: guardedReadFile, mkdir: guardedMkdir }
 })
 
+// vi.mock is hoisted -- wraps the real redactSecrets in a spy (calls through by default) so
+// tests can both assert it ran and force a one-off throw to exercise storeOutput/storeCompact's
+// fail-safe path, mirroring disk_cache.test.ts's identical setup for storeBlob().
+vi.mock('../src/secret_redact.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  const real = original['redactSecrets'] as (text: string) => { text: string; count: number }
+  return {
+    ...original,
+    redactSecrets: vi.fn((text: string) => real(text)),
+  }
+})
+
+// vi.mock is hoisted -- wraps the real recordStat in a spy so tests can assert a
+// 'secret_redacted' stat fired, mirroring disk_cache.test.ts.
+vi.mock('../src/stats.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  const real = original['recordStat'] as (...args: unknown[]) => void
+  return {
+    ...original,
+    recordStat: vi.fn((...args: unknown[]) => real(...args)),
+  }
+})
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   contentHash,
@@ -90,6 +113,8 @@ import {
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
+import { redactSecrets } from '../src/secret_redact.js'
+import { recordStat, kindToSource, SOURCE_OTHER } from '../src/stats.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tempDir = path.resolve(__dirname, '.temp-skill-cache-test')
@@ -475,6 +500,98 @@ describe('storeOutput and getCompact round trip', () => {
 
     expect(retrieved).toContain('source_sha')
     expect(retrieved).toContain('abc123')
+  })
+})
+
+describe('storeOutput / storeCompact redaction (CLAUDE.arch.md Security Boundaries funnel)', () => {
+  const fakeSkillSecret = 'sk-ant-' + 'a1B2c3D4e5F6g7H8i9J0k1L2'
+
+  beforeEach(() => {
+    vi.mocked(redactSecrets).mockClear()
+    vi.mocked(recordStat).mockClear()
+  })
+
+  it('does not write a skill body secret verbatim to disk', async () => {
+    const body = `Some skill instructions.\nAPI key: ${fakeSkillSecret}\nMore text.`
+    const meta = await storeOutput('sess123', 'secretskill', body)
+
+    expect(meta).not.toBeNull()
+    const storedPath = path.resolve(tempDir, `${meta!.outputId}.txt`)
+    const stored = await fs.readFile(storedPath, 'utf-8')
+    expect(stored).not.toContain(fakeSkillSecret)
+    expect(stored).toContain('[REDACTED:anthropic_api_key]')
+  })
+
+  it('records a secret_redacted stat, registered under SOURCE_OTHER, when a skill body secret is found', async () => {
+    await storeOutput('sess123', 'secretskill2', `leaked: ${fakeSkillSecret}`)
+
+    const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
+    expect(call).toBeDefined()
+    expect(kindToSource('secret_redacted')).toBe(SOURCE_OTHER)
+  })
+
+  it('does not record a secret_redacted stat when the body has no secrets', async () => {
+    await storeOutput('sess123', 'cleanskill', 'nothing sensitive here')
+
+    const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
+    expect(call).toBeUndefined()
+  })
+
+  it('does not persist bodyBytes at the redacted length -- it stays the raw pre-redaction size', async () => {
+    const body = `x: ${fakeSkillSecret}`
+    const meta = await storeOutput('sess123', 'sizedskill', body)
+
+    expect(meta!.bodyBytes).toBe(Buffer.byteLength(body, 'utf-8'))
+  })
+
+  it('fails safe: skips writing the skill body entirely when the redaction pass itself throws', async () => {
+    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+
+    const meta = await storeOutput('sess123', 'failsafeskill', `leak: ${fakeSkillSecret}`)
+
+    expect(meta).toBeNull()
+    const files = await fs.readdir(tempDir)
+    expect(files.filter((f) => f.includes('failsafeskill'))).toHaveLength(0)
+  })
+
+  it('recovers on the next call after a one-off redaction failure', async () => {
+    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+    expect(await storeOutput('sess123', 'recoverskill', `leak: ${fakeSkillSecret}`)).toBeNull()
+
+    const meta = await storeOutput('sess123', 'recoverskill', `leak: ${fakeSkillSecret}`)
+    expect(meta).not.toBeNull()
+    const stored = await fs.readFile(path.resolve(tempDir, `${meta!.outputId}.txt`), 'utf-8')
+    expect(stored).not.toContain(fakeSkillSecret)
+  })
+
+  it('does not write a compact-slice secret verbatim to disk, and getCompact returns the redacted text', async () => {
+    const compact = `Compact summary.\nToken: ${fakeSkillSecret}\nDone.`
+    await storeCompact('sess123', 'secretcompactskill', compact, 'deadbeefcafe')
+
+    const compactPath = path.resolve(tempDir, 'sess123@secretcompactskill@compact')
+    const stored = await fs.readFile(compactPath, 'utf-8')
+    expect(stored).not.toContain(fakeSkillSecret)
+    expect(stored).toContain('[REDACTED:anthropic_api_key]')
+    // The source_sha marker itself must survive untouched -- it is a content hash, not a secret.
+    expect(stored).toContain('deadbeefcafe')
+
+    const retrieved = await getCompact('sess123', 'secretcompactskill')
+    expect(retrieved).not.toContain(fakeSkillSecret)
+  })
+
+  it('fails safe: skips writing the compact slice when the redaction pass itself throws', async () => {
+    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+
+    await storeCompact('sess123', 'failsafecompact', `leak: ${fakeSkillSecret}`)
+
+    const retrieved = await getCompact('sess123', 'failsafecompact')
+    expect(retrieved).toBeNull()
   })
 })
 
