@@ -31,8 +31,14 @@
  * Disclosed scope limit, stated rather than quietly accepted: a handler only gets checked on the
  * fixtures below, so one that returns `pass` for all of them contributes nothing. This proves the
  * handlers that DO rewrite keep redacting; it does not prove a handler that rewrites only under
- * some condition these fixtures never reach would redact there too. The `expect(rewrote)` floor
- * at the end is what keeps that limit visible instead of letting the whole file pass vacuously.
+ * some condition these fixtures never reach would redact there too.
+ *
+ * That limit is not hypothetical -- it has bitten twice. Grep sat in this guard's population while
+ * carrying a real leak, because the fixture gave it one match per file and its fold only engages
+ * when a file has two. ExitPlanMode contributed nothing until its fixture was made a genuine plan
+ * echo. Both were invisible because the pass/fail signal aggregated: the other handlers' rewrites
+ * kept the floor satisfied. So the assertion at the end pins the exact SET of tools that reached a
+ * rewrite, not just a count -- a handler dropping out of coverage now fails by name.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -85,6 +91,17 @@ const FILLER = Array.from(
   (_, i) => `npm WARN deprecated pkg-${i}@1.0.0: no longer supported, use another package`,
 ).join('\n')
 
+/**
+ * The plan body `ExitPlanMode` echoes back. It has to be both long enough to clear that handler's
+ * net-benefit floor and byte-identical to the `plan` tool input, or the handler declines to rewrite
+ * and the tool contributes nothing to this guard -- which is what it did until the credential was
+ * moved into the pre-marker region below, the only part its rewrite actually keeps.
+ */
+const PLAN_BODY = Array.from(
+  { length: 40 },
+  (_, i) => `step ${i}: do the thing carefully and completely, with enough text to matter`,
+).join('\n')
+
 /** A fenced block long enough for the agent-report handler's fence collapse to engage. */
 const FENCE = '```\n' + 'a filler line of captured build output, long enough to collapse\n'.repeat(90) + '```\n'
 
@@ -112,7 +129,11 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
       grepHits.push(`${f}:${i}:  const key = "${SECRET}" // occurrence ${i} with padding to clear the floor`)
     }
   }
-  const plan = `User has approved your plan. The key ${SECRET} is noted.`
+  // The credential goes BEFORE the `## Approved Plan:` marker on purpose. That handler's rewrite
+  // keeps the text up to the marker and discards the echoed body after it, so a secret placed in
+  // the body would be dropped by the truncation rather than by any redaction -- the assertion would
+  // pass while proving nothing about whether the handler redacts.
+  const plan = `User has approved your plan. Context: AWS_ACCESS_KEY_ID=${SECRET}\n\n## Approved Plan:\n${PLAN_BODY}`
   return [
     { first: { output: clean, exit_code: 0 }, second: { output: withSecret, exit_code: 0 } },
     { first: { content: [{ type: 'text', text: report }] }, second: { content: [{ type: 'text', text: report }] } },
@@ -138,8 +159,11 @@ function toolInputFor(toolName: string): Record<string, unknown> {
     case 'WebFetch':
     case 'WebSearch':
       return { url: 'https://example.com/page', prompt: 'summarize' }
+    // Must match the echoed body in the fixture exactly: the handler verifies the echo really
+    // corresponds to this call's own plan before truncating, so a placeholder here would send it
+    // down a pass branch and quietly drop the tool out of this guard's coverage.
     case 'ExitPlanMode':
-      return { plan: 'do the thing' }
+      return { plan: PLAN_BODY }
     default:
       return { file_path: 'src/index.ts' }
   }
@@ -153,6 +177,7 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
 
     const leaked: string[] = []
     let rewrote = 0
+    const rewroteTools = new Set<string>()
 
     for (const toolName of toolNames) {
       for (const [i, pair] of responseShapePairs().entries()) {
@@ -171,6 +196,7 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
           )
           if (result.hookType !== 'rewriteOutput') continue
           rewrote++
+          rewroteTools.add(toolName)
           if (result.updatedOutput.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
         }
       }
@@ -186,6 +212,23 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
     // Guards the guard again: if the fixtures above stopped reaching any rewrite branch (a raised
     // size floor, a changed response key), every handler would return `pass` and the assertion
     // above would hold without having tested anything.
+    // Guards the guard again, and specifically: a bare `rewrote > 0` floor would stay green if any
+    // single handler silently stopped reaching its rewrite branch, because the other eight would
+    // hold the count up -- which is exactly how Grep sat in this guard's population contributing
+    // nothing while carrying a real leak. Pinning the set makes a coverage loss fail by name.
+    // The remaining registered tools (Read, Glob, Write, Edit, MultiEdit, NotebookEdit, Skill) hint
+    // or annotate but never substitute a tool result, so they have no rewrite branch to reach.
+    expect([...rewroteTools].sort(), 'a handler that stopped rewriting has silently left this guard').toEqual([
+      'Agent',
+      'Bash',
+      'BashOutput',
+      'ExitPlanMode',
+      'Grep',
+      'TaskOutput',
+      'WebFetch',
+      'WebSearch',
+      'mcp__server__query',
+    ])
     expect(rewrote, 'fixtures must actually reach at least one handler rewrite branch').toBeGreaterThan(0)
   })
 })
