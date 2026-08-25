@@ -706,6 +706,49 @@ describe('redactSecrets — Azure storage account keys', () => {
     expect(redactSecrets(AZURE_KEY)).toEqual({ text: AZURE_KEY, count: 0 })
   })
 
+  // The spellings below are the ones this module has already been burned by on other patterns:
+  // auth_bearer_token's own comment records that demanding an unquoted value missed every
+  // JSON-carried header, and that demanding exactly one space made a second space the one thing
+  // that defeated the whole pattern. An Azure connection string arrives in exactly those shapes --
+  // a logged MCP result or api response quotes it, an appsettings file or a pretty-printed log
+  // aligns it -- so each gets its own case here rather than being assumed away.
+  it('redacts the JSON-quoted spelling a logged api response or MCP result carries', () => {
+    const { text, count } = redactSecrets(`{"AccountKey": "${AZURE_KEY}"}`)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain(AZURE_KEY)
+    expect(text).toBe('{"AccountKey": "[REDACTED:azure_storage_key]"}')
+  })
+
+  it('redacts a hand-aligned AccountKey = value, not just the tight spelling', () => {
+    const { text, count } = redactSecrets(`AccountKey = ${AZURE_KEY};EndpointSuffix=core.windows.net`)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain(AZURE_KEY)
+    expect(text).toContain('EndpointSuffix=core.windows.net')
+  })
+
+  it('redacts the lowercase and YAML-colon spellings', () => {
+    expect(redactSecrets(`accountkey=${AZURE_KEY}`).count).toBe(1)
+    expect(redactSecrets(`AccountKey: ${AZURE_KEY}`).count).toBe(1)
+  })
+
+  // Service Bus, Event Hubs and Relay spell the same credential SharedAccessKey.
+  // SharedAccessKeyName sitting immediately before it is a plain identifier and must survive: it
+  // is the case that proves the anchor keys on the separator rather than on the name prefix alone.
+  it('redacts a Service Bus SharedAccessKey while leaving SharedAccessKeyName readable', () => {
+    const sb = `Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=${AZURE_KEY}`
+    const { text, count } = redactSecrets(sb)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain(AZURE_KEY)
+    expect(text).toContain('SharedAccessKeyName=RootManageSharedAccessKey')
+    expect(text).toContain('SharedAccessKey=[REDACTED:azure_storage_key]')
+  })
+
+  it('does not reach into the middle of a longer identifier such as myaccountkey=', () => {
+    expect(redactSecrets(`myaccountkey=${AZURE_KEY}`).count).toBe(0)
+  })
   it('does not re-match its own placeholder when the connection string is redacted twice', () => {
     const once = redactSecrets(`AccountKey=${AZURE_KEY};EndpointSuffix=core.windows.net`).text
     const { text, count } = redactSecrets(once)
