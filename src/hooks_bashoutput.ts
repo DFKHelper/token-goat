@@ -28,7 +28,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, extractToolResultText, rewriteWithRedactionStat } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, extractToolResultText, emitRewrite } from './hooks_common.js'
 import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
@@ -81,15 +81,7 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     if (bashId === undefined) return passOutput()
     const rawOutput = extractToolResultText(event.raw)
     if (!rawOutput) return passOutput()
-    // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob
-    // (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value
-    // recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per
-    // call, so there is no living in-memory cache to hit instead) is always the REDACTED text.
-    // Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the
-    // instant a secret-shaped token appears anywhere in the accumulated output, permanently
-    // falling through to the "buffer reset" branch on every later poll for this bash_id. Redacting
-    // here keeps both sides of every comparison on equal footing (mirrors hooks_taskoutput.ts's
-    // fix for the same shared bug, and storeBashOutput's own redact-before-compare pattern).
+    // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per call, so there is no living in-memory cache to hit instead) is always the REDACTED text. Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the instant a secret-shaped token appears anywhere in the accumulated output, permanently falling through to the "buffer reset" branch on every later poll for this bash_id. Redacting here keeps both sides of every comparison on equal footing (mirrors hooks_taskoutput.ts's fix for the same shared bug, and storeBashOutput's own redact-before-compare pattern).
     const output = redactSecrets(rawOutput).text
     if (!output) return passOutput()
 
@@ -103,19 +95,11 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     }
 
     if (output === prior.output) {
-      // Unchanged since the last poll: the caller gains nothing from seeing the
-      // same accumulated text again. Below the size floor there is no
-      // meaningful savings from replacing it, so pass through untouched; at or
-      // above it, rewrite to a short no-new-output marker instead of repeating
-      // the whole blob -- see the module docstring for why replacing (not just
-      // annotating) is safe here.
+      // Unchanged since the last poll: the caller gains nothing from seeing the same accumulated text again. Below the size floor there is no meaningful savings from replacing it, so pass through untouched; at or above it, rewrite to a short no-new-output marker instead of repeating the whole blob -- see the module docstring for why replacing (not just annotating) is safe here.
       storePollSnapshot(event.sessionId, bashId, output)
       if (Buffer.byteLength(output, 'utf-8') < minBytes) return passOutput()
       const unchangedNotice = `[token-goat: bash_id ${bashId} unchanged since last poll -- no new output]`
-      // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
-      // bash_runner's filter pipeline): cache_min_bytes above only answers "is
-      // the input big enough to bother" -- this separately confirms the marker
-      // itself doesn't eat the whole saving before shipping the rewrite.
+      // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with bash_runner's filter pipeline): cache_min_bytes above only answers "is the input big enough to bother" -- this separately confirms the marker itself doesn't eat the whole saving before shipping the rewrite.
       if (
         !isRewriteWorthwhile({
           originalBytes: Buffer.byteLength(output, 'utf-8'),
@@ -126,13 +110,11 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return rewriteWithRedactionStat(unchangedNotice, 'bashoutput')
+      return emitRewrite(unchangedNotice, 'bashoutput', { kind: 'bashoutput:unchanged', originalBytes: Buffer.byteLength(output, 'utf-8') })
     }
 
     if (!output.startsWith(prior.output)) {
-      // The new output isn't a simple append of the cached snapshot (e.g. the
-      // harness rotated or reset the buffer) -- a suffix diff would misrepresent
-      // the result, so pass the fresh output through untouched and re-baseline.
+      // The new output isn't a simple append of the cached snapshot (e.g. the harness rotated or reset the buffer) -- a suffix diff would misrepresent the result, so pass the fresh output through untouched and re-baseline.
       storePollSnapshot(event.sessionId, bashId, output)
       return passOutput()
     }
@@ -151,7 +133,7 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     ) {
       return passOutput()
     }
-    return rewriteWithRedactionStat(`${deltaNotice}${delta}`, 'bashoutput')
+    return emitRewrite(`${deltaNotice}${delta}`, 'bashoutput', { kind: 'bashoutput:delta', originalBytes: Buffer.byteLength(output, 'utf-8') })
   } catch {
     return passOutput()
   }

@@ -22,7 +22,7 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, rewriteWithRedactionStat } from './hooks_common.js'
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, emitRewrite } from './hooks_common.js'
 import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
@@ -82,12 +82,7 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     if (getToolName(event) !== 'WebSearch') return passOutput()
     const resultText = extractToolResultText(event.raw)
     if (!resultText) return passOutput()
-    // A WebSearch result is third-party web content, exactly as untrusted as a WebFetch result --
-    // fenced with the same UNTRUSTED_WEB_TAG for consistency with hooks_fetch.ts's postFetchHandler.
-    // Scanned and the fence decision computed before every guard below that can return early with
-    // this text already extracted, per CLAUDE.arch.md's Security Boundaries: a guard that exists to
-    // save cache work (an in-band error, a missing session id, an unkeyable query) must never
-    // double as a way around the injection scan.
+    // A WebSearch result is third-party web content, exactly as untrusted as a WebFetch result -- fenced with the same UNTRUSTED_WEB_TAG for consistency with hooks_fetch.ts's postFetchHandler. Scanned and the fence decision computed before every guard below that can return early with this text already extracted, per CLAUDE.arch.md's Security Boundaries: a guard that exists to save cache work (an in-band error, a missing session id, an unkeyable query) must never double as a way around the injection scan.
     let injectionMatches: string[] = []
     try {
       if (loadConfig().injection.enabled) injectionMatches = scanForInjectionPatterns(resultText)
@@ -95,21 +90,14 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
       injectionMatches = []
     }
     if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
-    // Redact secrets on the same live path the fence above protects, computed here at the same
-    // point ahead of every early-return guard below rather than folded into any one of them -- a
-    // large WebSearch result can carry a credential (an API key pasted into a forum answer, a
-    // leaked token in an indexed gist) that trips no injection pattern at all, so gating
-    // redaction on injectionMatches would leave it unredacted. redactSecrets() is pure/synchronous
-    // and its own doc comment says it does not swallow a regex-engine failure itself, so it relies
-    // on this handler's outer try/catch the same way hooks_mcp.ts's postMcpHandler calls it
-    // unwrapped too.
+    // Redact secrets on the same live path the fence above protects, computed here at the same point ahead of every early-return guard below rather than folded into any one of them -- a large WebSearch result can carry a credential (an API key pasted into a forum answer, a leaked token in an indexed gist) that trips no injection pattern at all, so gating redaction on injectionMatches would leave it unredacted. redactSecrets() is pure/synchronous and its own doc comment says it does not swallow a regex-engine failure itself, so it relies on this handler's outer try/catch the same way hooks_mcp.ts's postMcpHandler calls it unwrapped too.
     const redacted = redactSecrets(resultText)
     const passOrFence = (): HookOutput => {
       if (injectionMatches.length > 0) {
-        return rewriteWithRedactionStat(fenceUntrustedContent(redacted.text, injectionMatches), 'websearch')
+        return emitRewrite(fenceUntrustedContent(redacted.text, injectionMatches), 'websearch')
       }
       if (redacted.count > 0) {
-        return rewriteWithRedactionStat(redacted.text, 'websearch')
+        return emitRewrite(redacted.text, 'websearch')
       }
       return passOutput()
     }
@@ -117,11 +105,7 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     if (!event.sessionId) return passOrFence()
     const signature = webSearchSignatureInput(getToolInput(event))
     if (signature === null) return passOrFence()
-    // An in-band error is a valid response, not a cacheable one. This cache is the one the
-    // pre-hook above denies against, so caching a failed search meant the next identical search
-    // was blocked and the model was pointed at the error message instead of being allowed to
-    // retry -- for the whole dedup window. Exactly the reasoning already written down in
-    // hooks_mcp.ts's isMcpErrorResponse, which WebSearch writes past into the same store.
+    // An in-band error is a valid response, not a cacheable one. This cache is the one the pre-hook above denies against, so caching a failed search meant the next identical search was blocked and the model was pointed at the error message instead of being allowed to retry -- for the whole dedup window. Exactly the reasoning already written down in hooks_mcp.ts's isMcpErrorResponse, which WebSearch writes past into the same store.
     if (isMcpErrorResponse(event.raw)) return passOrFence()
     storeMcpOutput(event.sessionId, 'WebSearch', signature, resultText)
     return passOrFence()

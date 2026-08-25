@@ -135,8 +135,28 @@ export function contextOutput(context: string): HookOutput {
 }
 
 /**
- * Emit a `rewriteOutput` and record how many secrets the redaction stripped from the text being
- * emitted, as one step.
+ * What a rewrite saved, for callers that replace tool output with something smaller.
+ *
+ * `originalBytes` is the size of the text the model WOULD have received; the helper subtracts the
+ * emitted size itself rather than trusting a caller-computed delta, so the recorded saving can
+ * never disagree with the string actually returned.
+ */
+export interface RewriteSavings {
+  /** Registered stat kind. Must appear in `stats.ts`'s KIND_TO_SOURCE or it silently files as `other`. */
+  kind: string
+  originalBytes: number
+}
+
+/**
+ * Emit a `rewriteOutput` and record its accounting -- both the secrets the redaction stripped from
+ * the emitted text and, when the caller passes `savings`, the bytes the rewrite removed.
+ *
+ * Both live here for the same reason. `postBashOutputHandler` has two rewrite returns and
+ * `postTaskOutputHandler` three, and a hand-written `recordStat` beside each is the same
+ * per-branch fragility in the accounting that the redaction-bypass class is in the security: the
+ * branch someone adds next is the one that forgets. Routing every emit through one function means
+ * a new branch accounts for itself. Both poll-diff handlers shipped with literally zero stat calls
+ * of any kind, so their entire savings were invisible -- exactly that failure, already realised.
  *
  * The two halves belong in different places and this is the second one. The redaction itself goes
  * at the point the risky value ARRIVES, so a later branch inherits it -- placing it beside a single
@@ -144,12 +164,6 @@ export function contextOutput(context: string): HookOutput {
  * whether a redaction protected anything is branch-dependent in a way the redaction is not: on a
  * `pass` the harness's own raw output is what reaches the model, so crediting a redaction there
  * would report a protection that did not apply to what was actually shown.
- *
- * "At the emit" and "beside one return" are not the same thing, though, and that is why this is a
- * helper rather than a line copied into each branch. `postBashOutputHandler` has two rewrite
- * returns and `postTaskOutputHandler` three; a hand-written `recordStat` next to each is the same
- * per-branch fragility in the accounting that the redaction-bypass class is in the security. Route
- * every emit through here and a branch added later counts itself.
  *
  * The count comes from the emitted text rather than from the redaction's own return value, because
  * most of these branches emit only part of it -- a suffix delta, a truncated prefix, or a notice
@@ -159,9 +173,14 @@ export function contextOutput(context: string): HookOutput {
  * `detail` is the stat's source label (`'bashoutput'`, `'taskoutput'`, ...), matching the `subdir`
  * argument the disk-cache path passes so both surfaces group the same way in `token-goat stats`.
  */
-export function rewriteWithRedactionStat(updatedOutput: string, detail: string): HookOutput {
+export function emitRewrite(updatedOutput: string, detail: string, savings?: RewriteSavings): HookOutput {
   const count = countRedactionPlaceholders(updatedOutput)
   if (count > 0) recordStat('secret_redacted', 0, count, undefined, detail)
+  if (savings !== undefined) {
+    const bytesSaved = savings.originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
+    // Only a positive delta is recorded. Every caller sits behind an `isRewriteWorthwhile` gate so this should always hold, but a stat kind that can log a negative saving silently corrupts every total that sums it, and the gate is a separate line a future edit could reorder.
+    if (bytesSaved > 0) recordStat(savings.kind, bytesSaved, Math.round(bytesSaved / 4))
+  }
   return { hookType: 'rewriteOutput', updatedOutput }
 }
 
