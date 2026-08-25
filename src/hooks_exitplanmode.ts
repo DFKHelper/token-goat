@@ -35,6 +35,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { redactSecrets } from './secret_redact.js'
 
 /**
  * Plan-body omission marker that replaces the echoed plan text after we
@@ -53,8 +54,28 @@ const APPROVED_PLAN_MARKER = '## Approved Plan:'
 export function postExitPlanModeHandler(event: HookEvent): HookOutput {
   try {
     if (getToolName(event) !== 'ExitPlanMode') return passOutput()
-    const output = extractToolResultText(event.raw)
-    if (!output) return passOutput()
+    // Unlike its siblings, this handler is not closing a demonstrated leak. The half the rewrite
+    // KEEPS is the text up to the approval marker -- harness-authored boilerplate -- while the plan
+    // body, the one place a credential realistically appears, is exactly what gets dropped. A probe
+    // confirms a secret placed before the marker does survive into the emitted text, so the path is
+    // reachable, but no realistic route was found for one to land there.
+    //
+    // It redacts regardless, because after the grep and subagent-report fixes this is the last
+    // rewriting handler without the discipline, and a lone exception is what a future reader copies
+    // or trusts. Uniformity is the point: "every handler that composes text redacts it" is a rule
+    // someone can rely on, whereas "every handler except this one, for reasons documented
+    // elsewhere" is how the same defect has now shipped seven times.
+    //
+    // No `secret_redacted` stat is recorded here, unlike the grep fold. The redaction runs over the
+    // whole result, but the rewrite emits only the prefix -- so a secret in the discarded plan body
+    // was removed by being dropped, not by being redacted, and counting it would credit this
+    // handler for a protection the truncation had already provided. Counting only the survivors
+    // would mean re-scanning the emitted slice for placeholders, which is more machinery than a
+    // path with no demonstrated occurrence warrants.
+    const rawOutput = extractToolResultText(event.raw)
+    if (!rawOutput) return passOutput()
+    const redacted = redactSecrets(rawOutput)
+    const output = redacted.text
 
     // Look for the marker that indicates plan approval with echo. If not found,
     // the result has a different shape (rejection, modified plan, etc.) so pass
