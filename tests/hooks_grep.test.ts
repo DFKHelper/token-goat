@@ -4,16 +4,14 @@ import { unlinkSync } from 'node:fs'
 
 import type { HookEvent } from '../src/hook_registry.js'
 
-// vi.mock is hoisted — spy on recordStat while still calling through to the real
-// implementation, mirroring tests/hooks_fetch.test.ts's injection-detection pattern.
+// vi.mock is hoisted — spy on recordStat while still calling through to the real implementation, mirroring tests/hooks_fetch.test.ts's injection-detection pattern.
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   const real = original['recordStat'] as (...args: unknown[]) => void
   return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
 })
 
-// Redirects configPath() to a per-test-file temp file so the grep_dedup_min_matches wiring
-// test can set a non-default config value deterministically. Mirrors tests/hooks_bash.test.ts.
+// Redirects configPath() to a per-test-file temp file so the grep_dedup_min_matches wiring test can set a non-default config value deterministically. Mirrors tests/hooks_bash.test.ts.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath }
@@ -114,11 +112,7 @@ describe('postGrepHandler content-mode path folding', () => {
   })
 
   it('redacts a credential out of the folded result it hands the model', () => {
-    // The fold REPLACES the tool's own output with text this handler composes, so a key sitting in
-    // a matched line was reaching the model inside token-goat-authored text. Every sibling handler
-    // that rewrites already redacts what it composes; grep was the last one that did not. Redaction
-    // is applied where the match text arrives, not beside the single rewrite return, so a second
-    // emit branch added later inherits it rather than repeating this defect an eighth time.
+    // The fold REPLACES the tool's own output with text this handler composes, so a key sitting in a matched line was reaching the model inside token-goat-authored text. Every sibling handler that rewrites already redacts what it composes; grep was the last one that did not. Redaction is applied where the match text arrives, not beside the single rewrite return, so a second emit branch added later inherits it rather than repeating this defect an eighth time.
     const secret = 'AKIAABCDEFGHIJKLMNOP'
     const lines: string[] = []
     for (let i = 1; i <= 20; i++) lines.push(`${FOLD_PATH}:${i}:const key = "${secret}" // ${i}`)
@@ -133,8 +127,7 @@ describe('postGrepHandler content-mode path folding', () => {
   })
 
   it('records a grep:fold stat with the correct UTF-8 byte delta, including a non-ASCII match line', () => {
-    // A CJK line inflates String.length vs UTF-8 byte length differently, so this would fail
-    // under a `.length`-based (rather than Buffer.byteLength-based) delta calculation.
+    // A CJK line inflates String.length vs UTF-8 byte length differently, so this would fail under a `.length`-based (rather than Buffer.byteLength-based) delta calculation.
     const lines: string[] = []
     for (let i = 1; i <= 20; i++) lines.push(`${FOLD_PATH}:${i}:const x = ${i}`)
     lines.push(`${FOLD_PATH}:21:const 你好世界 = '测试字符串内容'`)
@@ -152,10 +145,7 @@ describe('postGrepHandler content-mode path folding', () => {
   })
 
   it('records the redaction count on the branch that emits, and not on a branch that passes', () => {
-    // A redaction subsystem that reports zero redactions is indistinguishable from a broken one,
-    // so the count has to reach `stats`. It is recorded on the rewrite branch specifically: on a
-    // `pass` the harness's own raw output is what the model sees, so crediting a redaction there
-    // would claim a protection that did not apply to what was actually shown.
+    // A redaction subsystem that reports zero redactions is indistinguishable from a broken one, so the count has to reach `stats`. It is recorded on the rewrite branch specifically: on a `pass` the harness's own raw output is what the model sees, so crediting a redaction there would claim a protection that did not apply to what was actually shown.
     const secret = 'AKIAABCDEFGHIJKLMNOP'
     const lines: string[] = []
     for (let i = 1; i <= 20; i++) lines.push(`${FOLD_PATH}:${i}:const key = "${secret}" // ${i}`)
@@ -166,12 +156,7 @@ describe('postGrepHandler content-mode path folding', () => {
     expect(recorded![2]).toBe(20)
     expect(recorded![4]).toBe('grep')
 
-    // The negative half has to use a pass branch that occurs AFTER the redaction runs, or it
-    // proves nothing: `multiline` returns at the top of the handler before the text is ever read,
-    // so it stays green even when the stat is moved up to the entry point -- which is exactly the
-    // misplacement this assertion exists to catch. One match per file fails the `hasSharedFile`
-    // gate instead, which sits below the redaction, so here the redaction genuinely ran and its
-    // result genuinely was not emitted.
+    // The negative half has to use a pass branch that occurs AFTER the redaction runs, or it proves nothing: `multiline` returns at the top of the handler before the text is ever read, so it stays green even when the stat is moved up to the entry point -- which is exactly the misplacement this assertion exists to catch. One match per file fails the `hasSharedFile` gate instead, which sits below the redaction, so here the redaction genuinely ran and its result genuinely was not emitted.
     vi.mocked(recordStat).mockClear()
     const singles = ['src/a.ts', 'src/b.ts', 'src/c.ts'].map((f, i) => `${f}:${i + 1}:const key = "${secret}"`)
     const passed = postGrepHandler(contentEvent(singles.join('\n')))
@@ -274,11 +259,7 @@ describe('preGrepDedupHandler', () => {
     expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'grep_dedup_hint')).toBeUndefined()
   })
 
-  // Regression: Claude Code's real files_with_matches wire format prefixes the file list with a
-  // "Found N file(s)" summary line (confirmed against real transcript logs), which every other
-  // test in this file elides in favor of a bare synthetic file list. Recording that header line
-  // as an extra match inflated the recall count by exactly one and made a genuinely empty
-  // "No files found" result register as "1 match".
+  // Regression: Claude Code's real files_with_matches wire format prefixes the file list with a "Found N file(s)" summary line (confirmed against real transcript logs), which every other test in this file elides in favor of a bare synthetic file list. Recording that header line as an extra match inflated the recall count by exactly one and made a genuinely empty "No files found" result register as "1 match".
   it('reads the real "Found N files" wire format without off-by-one inflation from the header line', () => {
     postGrepHandler(grepPostEvent('useEffect', 'Found 6 files\na.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts'))
 
@@ -382,8 +363,7 @@ describe('preGrepDedupHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  // Mutation guard: a lowered grep_dedup_min_matches must actually change behavior, proving
-  // the field drives this gate rather than a hardcoded literal happening to match the default.
+  // Mutation guard: a lowered grep_dedup_min_matches must actually change behavior, proving the field drives this gate rather than a hardcoded literal happening to match the default.
   it('grep_dedup_min_matches wiring: a lowered threshold surfaces a hint 2 identical Greps would not otherwise clear', () => {
     postGrepHandler(grepPostEvent('rareTerm', 'only.ts\ntwo.ts\n'))
     expect(preGrepDedupHandler(grepEvent('rareTerm')).hookType).toBe('pass')

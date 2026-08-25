@@ -2,9 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-// Importing relay registers EVERY hook module (including hooks_agent_spawn) for its
-// side-effects, so runHook dispatches through the real production registry.
-// buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does.
+// Importing relay registers EVERY hook module (including hooks_agent_spawn) for its side-effects, so runHook dispatches through the real production registry. buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
@@ -14,15 +12,7 @@ import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.j
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences } from '../src/hooks_agent_spawn.js'
 
-// Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's
-// over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing
-// as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact
-// project map is far too small to trip BRIEFING_TARGET_TOKENS on its own.
-// Fixed-size project maps (not derived from this repo's own live index) so both the
-// over-budget path and the cache-ids-block regression path are exercised deterministically,
-// regardless of the host machine's index state or repo size -- see cycle 121: a test that reads
-// buildProjectMap()'s live output for this repo passes or fails depending on ambient index
-// staleness, not on the actual budget-vs-reminder-size coupling being tested.
+// Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact project map is far too small to trip BRIEFING_TARGET_TOKENS on its own. Fixed-size project maps (not derived from this repo's own live index) so both the over-budget path and the cache-ids-block regression path are exercised deterministically, regardless of the host machine's index state or repo size -- see cycle 121: a test that reads buildProjectMap()'s live output for this repo passes or fails depending on ambient index staleness, not on the actual budget-vs-reminder-size coupling being tested.
 let _hugeProjectMapOverride = false
 let _realisticProjectMapOverride = false
 vi.mock('../src/baseline.js', async (importOriginal) => {
@@ -31,17 +21,11 @@ vi.mock('../src/baseline.js', async (importOriginal) => {
     ...original,
     formatProjectMap: (...args: unknown[]) => {
       if (_hugeProjectMapOverride) {
-        // Sized so map+reminder+report-contract alone fits BRIEFING_TARGET_TOKENS but
-        // map+cache-ids+reminder+report-contract does not -- exercises the "drop cache-ids first,
-        // keep the reminder and report contract" path specifically, not the further last-resort
-        // tail-trim fallback for a still-oversized map alone.
+        // Sized so map+reminder+report-contract alone fits BRIEFING_TARGET_TOKENS but map+cache-ids+reminder+report-contract does not -- exercises the "drop cache-ids first, keep the reminder and report contract" path specifically, not the further last-resort tail-trim fallback for a still-oversized map alone.
         return 'huge-project-map-line '.repeat(40)
       }
       if (_realisticProjectMapOverride) {
-        // A fixed, realistic mid-size project's compact map (measured ~140 tokens): together with
-        // the current reminder text this lands right at the old 300-token budget's edge -- the
-        // exact shape of the cycle 121 regression, where the cache-ids block silently vanished on
-        // essentially every real indexed project, not just huge outliers.
+        // A fixed, realistic mid-size project's compact map (measured ~140 tokens): together with the current reminder text this lands right at the old 300-token budget's edge -- the exact shape of the cycle 121 regression, where the cache-ids block silently vanished on essentially every real indexed project, not just huge outliers.
         return [
           '# Project map: example-app',
           'Files: 640',
@@ -69,11 +53,7 @@ let tmpHome: string
 let prevHome: string | undefined
 let sessionId: string
 
-// Clears session.ts's in-memory state without touching the hook registry (clearModuleCaches()
-// from reset.ts would also wipe hook_registry.ts's registered handlers, which are only ever
-// registered once at module-import time via top-level registerHook() calls in hooks_agent_spawn.ts
-// -- clearing them mid-file would silently unregister every hook for the rest of this test file,
-// since nothing re-imports/re-registers afterward).
+// Clears session.ts's in-memory state without touching the hook registry (clearModuleCaches() from reset.ts would also wipe hook_registry.ts's registered handlers, which are only ever registered once at module-import time via top-level registerHook() calls in hooks_agent_spawn.ts -- clearing them mid-file would silently unregister every hook for the rest of this test file, since nothing re-imports/re-registers afterward).
 function resetSessionState(): void {
   importSessionState({
     files: [],
@@ -151,9 +131,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
       expect(updatedPrompt).toContain('Before your first read of any file')
       expect(updatedPrompt).toContain('instead of a full-file read or wide grep')
       expect(updatedPrompt).toContain('is a violation, not an oversight')
-      // Report contract: pin by concept (cite evidence by handle, fence only when load-bearing,
-      // state unverified claims explicitly), not by exact wording -- brittle-string-coupling
-      // lesson from this repo's own hint-text tests.
+      // Report contract: pin by concept (cite evidence by handle, fence only when load-bearing, state unverified claims explicitly), not by exact wording -- brittle-string-coupling lesson from this repo's own hint-text tests.
       expect(updatedPrompt).toContain('Report contract')
       expect(updatedPrompt).toContain('cite evidence')
       expect(updatedPrompt).toContain('load-bearing')
@@ -231,8 +209,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
         expect(typeof updatedPrompt).toBe('string')
         expect(updatedPrompt).toContain('token-goat bash-output')
         expect(updatedPrompt).toContain('Cached outputs this session')
-        // At a realistic mid-size project's map, there is still enough headroom for the report
-        // contract to survive alongside the cache-ids block -- it is not the first thing dropped.
+        // At a realistic mid-size project's map, there is still enough headroom for the report contract to survive alongside the cache-ids block -- it is not the first thing dropped.
         expect(updatedPrompt).toContain('Report contract')
       }
     } finally {
@@ -267,8 +244,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
   })
 
   it('handles Agent calls without throwing, even when briefing fails', async () => {
-    // This test ensures that the hook never throws, even if internal
-    // briefing construction fails. The handler catches all errors internally.
+    // This test ensures that the hook never throws, even if internal briefing construction fails. The handler catches all errors internally.
     const prompt = 'Proceed despite any errors.'
     const payload = {
       tool_name: 'Agent',
@@ -276,18 +252,12 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
       session_id: sessionId,
     }
 
-    // The hook either passes (if briefing failed) or rewrites (if briefing succeeded).
-    // Both are acceptable outcomes — the important thing is no exception is thrown.
+    // The hook either passes (if briefing failed) or rewrites (if briefing succeeded). Both are acceptable outcomes — the important thing is no exception is thrown.
     const result = await runHook(buildEvent('pre_tool_use', payload))
     expect(result.hookType === 'pass' || result.hookType === 'rewriteInput').toBe(true)
   })
 
-  // Regression: buildSubagentBriefing's over-budget truncation used to slice the assembled
-  // string from the end regardless of section order, contradicting its own "keep map + reminder,
-  // sacrifice cache ids if needed" comment -- since the reminder was appended LAST (after the
-  // cache-ids section), a tail-slice cut the reminder first, not the cache ids. The cache-ids
-  // block must now be dropped first, and the surgical-read reminder must survive whenever the
-  // map + reminder alone still fit the budget.
+  // Regression: buildSubagentBriefing's over-budget truncation used to slice the assembled string from the end regardless of section order, contradicting its own "keep map + reminder, sacrifice cache ids if needed" comment -- since the reminder was appended LAST (after the cache-ids section), a tail-slice cut the reminder first, not the cache ids. The cache-ids block must now be dropped first, and the surgical-read reminder must survive whenever the map + reminder alone still fit the budget.
   it('keeps the surgical-read reminder (and drops the cache-ids block first) when the briefing as a whole exceeds budget', async () => {
     _hugeProjectMapOverride = true
     try {
@@ -306,9 +276,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
         const updatedPrompt = result.updatedInput['prompt'] as string
         expect(typeof updatedPrompt).toBe('string')
         expect(updatedPrompt).toContain(prompt)
-        // The load-bearing gate reminder and report contract must survive even though the
-        // briefing overall had to be trimmed to fit budget: they sit in the same tail unit, one
-        // priority tier above the cache-ids block.
+        // The load-bearing gate reminder and report contract must survive even though the briefing overall had to be trimmed to fit budget: they sit in the same tail unit, one priority tier above the cache-ids block.
         expect(updatedPrompt).toContain('Before your first read of any file')
         expect(updatedPrompt).toContain('Report contract')
         // The nice-to-have cache-ids hint is the sacrificial section, so it's the one dropped.
@@ -340,8 +308,7 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     if (result.hookType === 'context') {
       const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.context)
       expect(m).not.toBeNull()
-      // The recalled id resolves to the exact original report -- lossless recall is the
-      // whole point of the conservative design (never truncate what the parent sees now).
+      // The recalled id resolves to the exact original report -- lossless recall is the whole point of the conservative design (never truncate what the parent sees now).
       const entry = getBashOutput(m![1] as string)
       expect(entry?.output).toBe(largeReport)
     }
@@ -463,16 +430,13 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     process.env['XDG_DATA_HOME'] = envRoot
     _resetDataDirCacheForTesting()
     try {
-      // A fence body just 1 line over fence_collapse_min_lines (20) elides only 21-6*2=9 single-char
-      // lines: real savings are a handful of bytes, dwarfed by the ~100+ byte recall notice, so the
-      // shared net-benefit gate declines even though collapseFencedBlocks() DID rewrite the fence.
+      // A fence body just 1 line over fence_collapse_min_lines (20) elides only 21-6*2=9 single-char lines: real savings are a handful of bytes, dwarfed by the ~100+ byte recall notice, so the shared net-benefit gate declines even though collapseFencedBlocks() DID rewrite the fence.
       const report = ['Intro.', '```', ...Array.from({ length: 21 }, (_, i) => `${i}`), '```', 'z'.repeat(8000)].join('\n')
       const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
       expect(result.hookType).toBe('context')
       const kind = summarize(3650).by_kind['agent_report_compact_declined']
       expect(kind?.events ?? 0).toBeGreaterThanOrEqual(1)
-      // A decline must never carry nonzero bytes -- that would inflate the headline savings number
-      // with a non-saving, the exact desync class this codebase keeps having to fix.
+      // A decline must never carry nonzero bytes -- that would inflate the headline savings number with a non-saving, the exact desync class this codebase keeps having to fix.
       expect(kind?.bytes_saved ?? 0).toBe(0)
     } finally {
       if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
@@ -509,16 +473,7 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
   })
 })
 
-// Invariant-based fixture corpus, deliberately NOT a ratio-band suite. A ratio band ("output is
-// >=25% smaller") is a wrong-oracle test: it bakes in today's output, so a future correctness fix
-// that legitimately lowers the ratio would read as a regression and get "fixed" back into a bug.
-// These fixtures instead pin the design rule itself as executable invariants:
-//   1. every non-fence (prose) line is byte-identical between input and output;
-//   2. an all-prose report produces EXACTLY zero rewrite (equality, not "mostly unchanged");
-//   3. the elided-line count printed in every marker equals the real number of dropped lines;
-//   4. a report whose only fence is under the min-lines floor collapses to nothing (filtered-to-
-//      empty must render as untouched, not as a phantom compaction) -- "empty/filtered store
-//      renders as populated" is a documented recurring bug class in this repo.
+// Invariant-based fixture corpus, deliberately NOT a ratio-band suite. A ratio band ("output is >=25% smaller") is a wrong-oracle test: it bakes in today's output, so a future correctness fix that legitimately lowers the ratio would read as a regression and get "fixed" back into a bug. These fixtures instead pin the design rule itself as executable invariants: 1. every non-fence (prose) line is byte-identical between input and output; 2. an all-prose report produces EXACTLY zero rewrite (equality, not "mostly unchanged"); 3. the elided-line count printed in every marker equals the real number of dropped lines; 4. a report whose only fence is under the min-lines floor collapses to nothing (filtered-to- empty must render as untouched, not as a phantom compaction) -- "empty/filtered store renders as populated" is a documented recurring bug class in this repo.
 describe('Fence-collapse invariant corpus (collapseFencedBlocks, direct)', () => {
   const RECALL_HINT = 'token-goat mcp-output mcp_deadbeefdeadbeef --full'
   const MIN_LINES = 20
@@ -710,8 +665,7 @@ describe('Intra-report cross-fence dedup (dedupeFencedBlocks, direct)', () => {
     const result1 = await runHook(buildEvent('post_tool_use', payload1))
     expect(result1.hookType).toBe('rewriteOutput')
     if (result1.hookType === 'rewriteOutput') {
-      // Report one has no earlier block in ITS OWN report to dedup against -- the fence survives via
-      // the ordinary collapse path (elided middle), not the dedup marker.
+      // Report one has no earlier block in ITS OWN report to dedup against -- the fence survives via the ordinary collapse path (elided middle), not the dedup marker.
       expect(result1.updatedOutput).toContain('lines elided --')
       expect(result1.updatedOutput).not.toContain('identical bytes to an earlier block')
     }
@@ -720,8 +674,7 @@ describe('Intra-report cross-fence dedup (dedupeFencedBlocks, direct)', () => {
     const result2 = await runHook(buildEvent('post_tool_use', payload2))
     expect(result2.hookType).toBe('rewriteOutput')
     if (result2.hookType === 'rewriteOutput') {
-      // Report two's identical fence body must ALSO be collapsed on its own merits (elided-middle
-      // marker), never silently pointed at report one's cache id -- cross-report dedup is out of scope.
+      // Report two's identical fence body must ALSO be collapsed on its own merits (elided-middle marker), never silently pointed at report one's cache id -- cross-report dedup is out of scope.
       expect(result2.updatedOutput).toContain('lines elided --')
       expect(result2.updatedOutput).not.toContain('identical bytes to an earlier block')
     }
@@ -804,7 +757,7 @@ describe('Blank-run collapse inside fences (collapseBlankRunsInFences, direct)',
   it('does not use dedupeConsecutive-style annotation formatting anywhere in its output', () => {
     const report = ['```', ...Array.from({ length: 3 }, () => 'x'), '', '', '', '', 'y', '```'].join('\n')
     const output = collapseBlankRunsInFences(report)
-    // dedupeConsecutive's default formatter is `${line}  (×${count})` -- this transform must never produce that shape.
+    // dedupeConsecutive's default formatter is `${line} (×${count})` -- this transform must never produce that shape.
     expect(output).not.toMatch(/\(×\d+\)/)
   })
 
@@ -879,8 +832,7 @@ describe('Duplicate-subagent-brief detection (real cross-process load/dispatch/s
     expect(preResult.hookType).toBe('rewriteInput')
     const spawnedInput = preResult.hookType === 'rewriteInput' ? preResult.updatedInput : { prompt: original }
 
-    // Complete the spawn via the real registered post-hook, using the actual (briefing-appended)
-    // tool_input Claude Code would have sent, with a small (non-cacheable) report.
+    // Complete the spawn via the real registered post-hook, using the actual (briefing-appended) tool_input Claude Code would have sent, with a small (non-cacheable) report.
     const postResult = await callAgentHook('post_tool_use', spawnedInput, sessionId, 'Done. Small report.')
     expect(postResult.hookType).toBe('pass')
 
@@ -923,12 +875,7 @@ describe('Duplicate-subagent-brief detection (real cross-process load/dispatch/s
 })
 
 describe('post_tool_use redacts secrets out of the report before the model sees it', () => {
-  // A subagent that ran `env`, printed a config file, or pasted a deploy log can put a live
-  // credential in its own report. storeMcpOutput redacts the copy it writes to disk (mcp_cache.ts),
-  // but the compacted envelope this handler hands back was built from the RAW result, so the
-  // credential was scrubbed on disk and left intact in the model's context -- in text token-goat
-  // itself authored. Both branches that emit (the rewrite and the annotate-only fallthrough) are
-  // asserted, because the rewrite is gated on a net-benefit check a report can simply fail.
+  // A subagent that ran `env`, printed a config file, or pasted a deploy log can put a live credential in its own report. storeMcpOutput redacts the copy it writes to disk (mcp_cache.ts), but the compacted envelope this handler hands back was built from the RAW result, so the credential was scrubbed on disk and left intact in the model's context -- in text token-goat itself authored. Both branches that emit (the rewrite and the annotate-only fallthrough) are asserted, because the rewrite is gated on a net-benefit check a report can simply fail.
   const SECRET = 'AKIAABCDEFGHIJKLMNOP'
 
   /** A report over agent_report.min_bytes whose fenced blocks are long enough to collapse. */
@@ -941,8 +888,7 @@ describe('post_tool_use redacts secrets out of the report before the model sees 
     const result = await callAgentHook('post_tool_use', { prompt: 'audit the deploy path' }, 'sid-redact-rewrite', {
       content: [{ type: 'text', text: reportWithSecret() }],
     })
-    // Guards the guard: if the rewrite branch stopped firing, a `pass` result would carry no
-    // output at all and the assertion below would hold vacuously.
+    // Guards the guard: if the rewrite branch stopped firing, a `pass` result would carry no output at all and the assertion below would hold vacuously.
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
     expect(result.updatedOutput).not.toContain(SECRET)

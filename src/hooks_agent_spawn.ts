@@ -63,8 +63,7 @@ function buildSubagentBriefing(): string {
       // Project map unavailable — skip it and continue with cached ids/reminder
     }
 
-    // 2. Recent cached output IDs (2-3 most recent) -- built separately from `head`/`tail` so it
-    // can be dropped as a whole when over budget, without touching either.
+    // 2. Recent cached output IDs (2-3 most recent) -- built separately from `head`/`tail` so it can be dropped as a whole when over budget, without touching either.
     let cacheIdsBlock = ''
     try {
       const outputs = getSessionBashOutputs()
@@ -83,11 +82,7 @@ function buildSubagentBriefing(): string {
       // Bash output unavailable — skip and continue with reminder
     }
 
-    // 3. Surgical-read reminder, plus the report-contract clause. Both are load-bearing (dropped
-    // only in the last-resort tail-slice below, after the cache-ids block is already gone) --
-    // the contract is what makes a spawned subagent's report cite evidence instead of pasting it,
-    // and its "state every unverified claim explicitly" clause is what has caught a subagent
-    // shipping something it never checked, three cycles running.
+    // 3. Surgical-read reminder, plus the report-contract clause. Both are load-bearing (dropped only in the last-resort tail-slice below, after the cache-ids block is already gone) -- the contract is what makes a spawned subagent's report cite evidence instead of pasting it, and its "state every unverified claim explicitly" clause is what has caught a subagent shipping something it never checked, three cycles running.
     const tail: string[] = []
     tail.push('')
     tail.push('Before your first read of any file, check for a token-goat command that returns just what you need and run it instead of a full-file read or wide grep: `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::<heading>"`. Skipping that check is a violation, not an oversight; the only exemptions are a file under ~200 lines you need whole, a never-indexed file, or an image.')
@@ -99,17 +94,14 @@ function buildSubagentBriefing(): string {
       return withCacheIds
     }
 
-    // Over budget: drop the cache-ids block first -- it's the nice-to-have re-use hint, not the
-    // load-bearing map/reminder content -- and re-check before falling back to a lossy trim.
+    // Over budget: drop the cache-ids block first -- it's the nice-to-have re-use hint, not the load-bearing map/reminder content -- and re-check before falling back to a lossy trim.
     const withoutCacheIds = head.join('\n') + '\n' + tail.join('\n')
     const tokens = estimateTokens(withoutCacheIds)
     if (tokens <= BRIEFING_TARGET_TOKENS) {
       return withoutCacheIds
     }
 
-    // Still over budget with the map alone (e.g. a very large project tree): trim from the end as
-    // a last resort. This can still cut into the reminder, but only once dropping the cache-ids
-    // block was already insufficient, not as the first thing tried.
+    // Still over budget with the map alone (e.g. a very large project tree): trim from the end as a last resort. This can still cut into the reminder, but only once dropping the cache-ids block was already insufficient, not as the first thing tried.
     return withoutCacheIds.slice(0, Math.floor((withoutCacheIds.length * BRIEFING_TARGET_TOKENS) / tokens))
   } catch {
     // Any error during briefing construction: fail open
@@ -266,16 +258,7 @@ export function collapseFencedBlocks(text: string, recallHint: string, minLines:
   return out.join('\n')
 }
 
-// Intra-report cross-fence dedup: when the SAME complete fenced-block body (byte-for-byte) appears
-// more than once in one report, every occurrence after the first is replaced with a marker pointing
-// at the cached full report -- never at "block N", since mcp-output has no way to address an
-// individual block. Deliberately intra-report only: comparing across sessions/reports would be "the
-// gate was not re-run", the exact admission this design exists to preserve, not a savings
-// opportunity. Body hashes are computed from `original` (pre-collapse) so two blocks that only look
-// alike after collapseFencedBlocks elided their middles are never mistaken for duplicates; block
-// BOUNDARIES for the actual replacement are read from `collapsed` (post-collapse) so a marker never
-// points at a block whose visible content collapseFencedBlocks already elided out from under it --
-// running dedup after collapse, on collapse's own output, is what keeps that in sync.
+// Intra-report cross-fence dedup: when the SAME complete fenced-block body (byte-for-byte) appears more than once in one report, every occurrence after the first is replaced with a marker pointing at the cached full report -- never at "block N", since mcp-output has no way to address an individual block. Deliberately intra-report only: comparing across sessions/reports would be "the gate was not re-run", the exact admission this design exists to preserve, not a savings opportunity. Body hashes are computed from `original` (pre-collapse) so two blocks that only look alike after collapseFencedBlocks elided their middles are never mistaken for duplicates; block BOUNDARIES for the actual replacement are read from `collapsed` (post-collapse) so a marker never points at a block whose visible content collapseFencedBlocks already elided out from under it -- running dedup after collapse, on collapse's own output, is what keeps that in sync.
 export function dedupeFencedBlocks(collapsed: string, original: string, recallHint: string): string {
   const originalLines = original.split('\n')
   const originalBlocks = findFencedBlockLines(originalLines)
@@ -283,8 +266,7 @@ export function dedupeFencedBlocks(collapsed: string, original: string, recallHi
 
   const collapsedLines = collapsed.split('\n')
   const collapsedBlocks = findFencedBlockLines(collapsedLines)
-  // Structural mismatch (should not happen: collapseFencedBlocks never adds or removes fence
-  // boundaries) -- fail safe by declining to touch anything rather than guessing at an index.
+  // Structural mismatch (should not happen: collapseFencedBlocks never adds or removes fence boundaries) -- fail safe by declining to touch anything rather than guessing at an index.
   if (collapsedBlocks.length !== originalBlocks.length) return collapsed
 
   const bodyHashes = originalBlocks.map(({ fenceStart, closerIndex }) =>
@@ -315,16 +297,7 @@ export function dedupeFencedBlocks(collapsed: string, original: string, recallHi
 /** Number of consecutive blank lines kept when a longer run is collapsed -- fixed, not configurable: this is deliberately the "safe half" of blank-line handling with no tunable surface. */
 const BLANK_RUN_KEEP = 2
 
-// Collapse runs of MORE THAN two blank lines to exactly two, but ONLY inside fenced blocks -- never
-// touching prose, which stays byte-identical per the core design rule. No count marker (a blank
-// line carries no evidence or caveat worth pointing a recall hint at) and no recomputation of
-// anything: this deliberately runs LAST, after collapseFencedBlocks and dedupeFencedBlocks have
-// already finished, on their combined output -- never before slicing -- so it can never perturb the
-// bodyLines count collapseFencedBlocks used to decide what to elide, nor the
-// `keep_lines <= floor((min_lines-1)/2)` clamp that keeps that math from going negative (see
-// config.ts). Explicitly NOT dedupeConsecutive (src/tool_filters/helpers.ts): that helper's default
-// `${line}  (×${count})` formatter would inject a token-goat annotation into a region this design
-// promises stays byte-identical.
+// Collapse runs of MORE THAN two blank lines to exactly two, but ONLY inside fenced blocks -- never touching prose, which stays byte-identical per the core design rule. No count marker (a blank line carries no evidence or caveat worth pointing a recall hint at) and no recomputation of anything: this deliberately runs LAST, after collapseFencedBlocks and dedupeFencedBlocks have already finished, on their combined output -- never before slicing -- so it can never perturb the bodyLines count collapseFencedBlocks used to decide what to elide, nor the `keep_lines <= floor((min_lines-1)/2)` clamp that keeps that math from going negative (see config.ts). Explicitly NOT dedupeConsecutive (src/tool_filters/helpers.ts): that helper's default `${line} (×${count})` formatter would inject a token-goat annotation into a region this design promises stays byte-identical.
 export function collapseBlankRunsInFences(text: string): string {
   const lines = text.split('\n')
   const blocks = findFencedBlockLines(lines)
@@ -357,34 +330,20 @@ function postAgentHandler(event: HookEvent): HookOutput {
   try {
     if (event.toolName !== 'Agent' || !event.sessionId) return passOutput()
 
-    // Clear this spawn's outstanding-prompt entry so a later, unrelated Agent spawn with similar
-    // wording is not incorrectly flagged as a duplicate of a call that has already finished.
+    // Clear this spawn's outstanding-prompt entry so a later, unrelated Agent spawn with similar wording is not incorrectly flagged as a duplicate of a call that has already finished.
     const finishedPrompt = event.toolInput['prompt']
     if (typeof finishedPrompt === 'string' && finishedPrompt !== '') {
       removeOutstandingAgentSpawn(finishedPrompt)
     }
 
-    // Redact BEFORE anything downstream reads the report, so the compacted envelope this handler
-    // hands the model and the blob storeMcpOutput() writes to disk are the same sanitized text.
-    // They were not: storeMcpOutput redacts its own copy (see mcp_cache.ts), while the
-    // rewriteOutput branch below built `updatedOutput` from the raw result -- so a credential a
-    // subagent pasted into its report was redacted on disk and raw in the model's context, in text
-    // token-goat itself authored. Redacting at the single point the report enters this handler is
-    // what keeps every consumer below on one sanitized source instead of each having to remember.
+    // Redact BEFORE anything downstream reads the report, so the compacted envelope this handler hands the model and the blob storeMcpOutput() writes to disk are the same sanitized text. They were not: storeMcpOutput redacts its own copy (see mcp_cache.ts), while the rewriteOutput branch below built `updatedOutput` from the raw result -- so a credential a subagent pasted into its report was redacted on disk and raw in the model's context, in text token-goat itself authored. Redacting at the single point the report enters this handler is what keeps every consumer below on one sanitized source instead of each having to remember.
     const redactedReport = redactSecrets(extractToolResultText(event.raw))
     const resultText = redactedReport.text
     const agentReportCfg = loadConfig().agent_report
     if (!resultText || resultText.length < agentReportCfg.min_bytes) return passOutput()
     const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)
     if (id === null) return passOutput()
-    // Recorded here rather than at the redaction above, and here rather than inside either branch
-    // below, because this is the first point past which the redacted report is guaranteed to reach
-    // someone: it is now in the cache, and both remaining returns (the compacted rewrite and the
-    // annotate-only notice) hand back or point at that same sanitized text. Recording at the
-    // redaction itself would credit the early `min_bytes` return, where the raw report reaches the
-    // model untouched. `storeMcpOutput`'s own redaction pass finds nothing left to strip now that
-    // the text arrives clean, so its disk_cache stat reports zero -- this replaces that count
-    // rather than double-counting it.
+    // Recorded here rather than at the redaction above, and here rather than inside either branch below, because this is the first point past which the redacted report is guaranteed to reach someone: it is now in the cache, and both remaining returns (the compacted rewrite and the annotate-only notice) hand back or point at that same sanitized text. Recording at the redaction itself would credit the early `min_bytes` return, where the raw report reaches the model untouched. `storeMcpOutput`'s own redaction pass finds nothing left to strip now that the text arrives clean, so its disk_cache stat reports zero -- this replaces that count rather than double-counting it.
     if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')
     recordStat('session_hint', 0, 0)
     // `--full` is load-bearing, not decoration: a bare `mcp-output <id>` render elides its own middle past the default head 30 / tail 80, so pointing at it would promise a full report the CLI cannot produce -- the elided fence middles would be exactly what a bare recall drops again.
