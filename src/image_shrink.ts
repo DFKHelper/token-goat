@@ -44,7 +44,7 @@ const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.heif',
 ])
 
-/** Claude Vision's optimal max edge: images larger than this gain nothing. */
+/** Long-edge resize target. 1568 is Claude's Standard resolution tier maximum; Claude 4.7 and later run a High-resolution tier whose maximum is 2576, so this is a conservative floor that every tier accepts rather than a universal optimum. It also divides evenly into Anthropic's 28px patch grid (56) and OpenAI's 32px one (49). */
 const DEFAULT_MAX_DIMENSION = 1568
 
 /** Below this byte count an image is left untouched (encode CPU > savings). */
@@ -183,7 +183,7 @@ export async function shrinkImage(
   const maxDimension = opts?.maxDimension ?? DEFAULT_MAX_DIMENSION
   const quality = opts?.quality ?? cfg.jpeg_quality
   const sizeThreshold = opts?.sizeThresholdBytes ?? DEFAULT_SIZE_THRESHOLD_BYTES
-  // max_image_pixels is sharp's decode-time decompression-bomb guard (mirrors Python's Image.MAX_IMAGE_PIXELS), not the resize target — the resize edge is always DEFAULT_MAX_DIMENSION (Claude Vision's fixed optimum, never configurable in the original Python port either). 0 means "no cap", matching the original TOKEN_GOAT_MAX_IMAGE_PIXELS semantics.
+  // max_image_pixels is sharp's decode-time decompression-bomb guard (mirrors Python's Image.MAX_IMAGE_PIXELS), not the resize target — the resize edge is always DEFAULT_MAX_DIMENSION unless a caller overrides it via opts.maxDimension (it was not configurable at all in the original Python port). 0 means "no cap", matching the original TOKEN_GOAT_MAX_IMAGE_PIXELS semantics.
   const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
 
   const originalBytes = input.length
