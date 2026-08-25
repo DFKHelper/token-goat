@@ -27,6 +27,7 @@ import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
 import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js'
+import { redactSecrets } from './secret_redact.js'
 
 /** Collapse whitespace and case so "React hooks" and "  react   HOOKS  " dedup as the
  *  same query, mirroring grepSignature's normalization intent in hooks_grep.ts. */
@@ -94,10 +95,24 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
       injectionMatches = []
     }
     if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
-    const passOrFence = (): HookOutput =>
-      injectionMatches.length > 0
-        ? { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(resultText, injectionMatches) }
-        : passOutput()
+    // Redact secrets on the same live path the fence above protects, computed here at the same
+    // point ahead of every early-return guard below rather than folded into any one of them -- a
+    // large WebSearch result can carry a credential (an API key pasted into a forum answer, a
+    // leaked token in an indexed gist) that trips no injection pattern at all, so gating
+    // redaction on injectionMatches would leave it unredacted. redactSecrets() is pure/synchronous
+    // and its own doc comment says it does not swallow a regex-engine failure itself, so it relies
+    // on this handler's outer try/catch the same way hooks_mcp.ts's postMcpHandler calls it
+    // unwrapped too.
+    const redacted = redactSecrets(resultText)
+    const passOrFence = (): HookOutput => {
+      if (injectionMatches.length > 0) {
+        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(redacted.text, injectionMatches) }
+      }
+      if (redacted.count > 0) {
+        return { hookType: 'rewriteOutput', updatedOutput: redacted.text }
+      }
+      return passOutput()
+    }
 
     if (!event.sessionId) return passOrFence()
     const signature = webSearchSignatureInput(getToolInput(event))
