@@ -35,7 +35,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, extractToolResultText, rewriteWithRedactionStat } from './hooks_common.js'
 import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
@@ -138,10 +138,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return {
-        hookType: 'rewriteOutput',
-        updatedOutput: collapsed,
-      }
+      return rewriteWithRedactionStat(collapsed, 'taskoutput')
     }
 
     if (output === prior.output) {
@@ -160,10 +157,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return {
-        hookType: 'rewriteOutput',
-        updatedOutput: unchangedNotice,
-      }
+      return rewriteWithRedactionStat(unchangedNotice, 'taskoutput')
     }
 
     if (!output.startsWith(prior.output)) {
@@ -189,10 +183,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     ) {
       return passOutput()
     }
-    return {
-      hookType: 'rewriteOutput',
-      updatedOutput: `${deltaNotice}${collapsedDelta}`,
-    }
+    return rewriteWithRedactionStat(`${deltaNotice}${collapsedDelta}`, 'taskoutput')
   } catch {
     return passOutput()
   }

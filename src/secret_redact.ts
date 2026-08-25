@@ -236,6 +236,29 @@ export interface RedactResult {
  * this function does not swallow them itself; see `storeBlob()` for the
  * fail-safe wrapping applied at the actual disk-write choke point).
  */
+/**
+ * Count the `[REDACTED:<kind>]` placeholders present in `text`.
+ *
+ * `redactSecrets().count` answers "how many secrets were in the input"; this answers "how many are
+ * gone from THIS string" -- and for the `secret_redacted` stat the second is the honest number,
+ * because handlers rarely emit the whole redacted text. A poll-diff handler emits a suffix slice,
+ * the approved-plan handler emits a truncated prefix, and several branches replace the output with
+ * a notice entirely. In each of those, a secret outside the emitted region was removed by slicing,
+ * truncation, or replacement -- not by redaction -- so crediting the input count would report a
+ * protection that some other mechanism had already provided.
+ *
+ * Counting the emitted text also makes the number correct by construction for a branch nobody has
+ * written yet, which a hand-computed count at each emit site is not.
+ *
+ * Known false positive, in the over-reporting direction: text that already contained a literal
+ * `[REDACTED:foo]` before redaction ran counts as one. That is accepted rather than defended
+ * against -- distinguishing them would mean diffing against the pre-redaction string, which
+ * reintroduces exactly the slice-alignment problem this exists to avoid.
+ */
+export function countRedactionPlaceholders(text: string): number {
+  return text.match(/\[REDACTED:[a-z0-9_]+\]/g)?.length ?? 0
+}
+
 export function redactSecrets(text: string): RedactResult {
   let count = 0
   let out = text

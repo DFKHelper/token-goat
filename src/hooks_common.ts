@@ -10,6 +10,7 @@
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { recordStat } from './stats.js'
+import { countRedactionPlaceholders } from './secret_redact.js'
 import { loadConfig } from './config.js'
 
 /** Return the event's tool name, or `undefined` for non-tool events. */
@@ -131,6 +132,37 @@ export function denyOutput(message: string): HookOutput {
 /** Build a `context` output — let the call proceed but inject `context`. */
 export function contextOutput(context: string): HookOutput {
   return { hookType: 'context', context }
+}
+
+/**
+ * Emit a `rewriteOutput` and record how many secrets the redaction stripped from the text being
+ * emitted, as one step.
+ *
+ * The two halves belong in different places and this is the second one. The redaction itself goes
+ * at the point the risky value ARRIVES, so a later branch inherits it -- placing it beside a single
+ * emit is how the same leak has shipped seven times. But the COUNT belongs at the emit, because
+ * whether a redaction protected anything is branch-dependent in a way the redaction is not: on a
+ * `pass` the harness's own raw output is what reaches the model, so crediting a redaction there
+ * would report a protection that did not apply to what was actually shown.
+ *
+ * "At the emit" and "beside one return" are not the same thing, though, and that is why this is a
+ * helper rather than a line copied into each branch. `postBashOutputHandler` has two rewrite
+ * returns and `postTaskOutputHandler` three; a hand-written `recordStat` next to each is the same
+ * per-branch fragility in the accounting that the redaction-bypass class is in the security. Route
+ * every emit through here and a branch added later counts itself.
+ *
+ * The count comes from the emitted text rather than from the redaction's own return value, because
+ * most of these branches emit only part of it -- a suffix delta, a truncated prefix, or a notice
+ * that replaces the output outright. See `countRedactionPlaceholders` for why that is the honest
+ * number and what it deliberately gets wrong.
+ *
+ * `detail` is the stat's source label (`'bashoutput'`, `'taskoutput'`, ...), matching the `subdir`
+ * argument the disk-cache path passes so both surfaces group the same way in `token-goat stats`.
+ */
+export function rewriteWithRedactionStat(updatedOutput: string, detail: string): HookOutput {
+  const count = countRedactionPlaceholders(updatedOutput)
+  if (count > 0) recordStat('secret_redacted', 0, count, undefined, detail)
+  return { hookType: 'rewriteOutput', updatedOutput }
 }
 
 /** Non-empty lines in `text`, used as a match-count proxy for tools whose output is a flat

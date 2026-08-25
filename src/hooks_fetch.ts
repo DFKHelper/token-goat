@@ -1,7 +1,7 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, getToolName, getToolInput, denyOutput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
+import { passOutput, getToolName, getToolInput, denyOutput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS, rewriteWithRedactionStat } from './hooks_common.js';
 import { recordStat } from './stats.js';
 import { storeWebOutput, getWebOutput } from './web_cache.js';
 import { recordWebFetch } from './session.js';
@@ -126,20 +126,20 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     // fence and redaction above must still apply to whatever was scanned.
     if (!event.sessionId) {
       if (injectionMatches.length > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(bodyRedacted.text, injectionMatches) };
+        return rewriteWithRedactionStat(fenceUntrustedContent(bodyRedacted.text, injectionMatches), 'fetch');
       }
       if (bodyRedacted.count > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: bodyRedacted.text };
+        return rewriteWithRedactionStat(bodyRedacted.text, 'fetch');
       }
       return passOutput();
     }
 
     if (!body || body.length < 1024) {
       if (injectionMatches.length > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(bodyRedacted.text, injectionMatches) };
+        return rewriteWithRedactionStat(fenceUntrustedContent(bodyRedacted.text, injectionMatches), 'fetch');
       }
       if (bodyRedacted.count > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: bodyRedacted.text };
+        return rewriteWithRedactionStat(bodyRedacted.text, 'fetch');
       }
       return passOutput();
     }
@@ -168,7 +168,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
 
     if (injectionMatches.length > 0) {
       // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing the raw body here would both defeat compress_bodies' token savings specifically on the injection-detected path and return content that disagrees with what a later `token-goat web-output <id>` recall of the same cache entry would return.
-      return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(storedRedacted.text, injectionMatches) };
+      return rewriteWithRedactionStat(fenceUntrustedContent(storedRedacted.text, injectionMatches), 'fetch');
     }
 
     // Normal path: ship the compressed copy already computed and cached above instead of discarding it -- previously storedBody was only ever consumed by the injection-detected branch, so a compressed HTML body's savings never reached the model. Gated on compression having actually happened (storedBody !== body) so an unchanged body is never rewritten, and on the same net-benefit floor bash_compress uses so a rewrite whose savings don't clear the recall notice's own cost isn't shipped.
@@ -188,7 +188,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
       ) {
         const bytesDelta = originalBytes - rewrittenBytes;
         recordStat('webfetch:compress', bytesDelta, Math.round(bytesDelta / 4))
-        return { hookType: 'rewriteOutput', updatedOutput: storedRedacted.text + notice };
+        return rewriteWithRedactionStat(storedRedacted.text + notice, 'fetch');
       }
     }
 
@@ -197,7 +197,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     // compress_bodies gate above: a short page with a bare credential and no other savings is
     // exactly the case those would drop.
     if (storedRedacted.count > 0) {
-      return { hookType: 'rewriteOutput', updatedOutput: storedRedacted.text };
+      return rewriteWithRedactionStat(storedRedacted.text, 'fetch');
     }
 
     return passOutput();
