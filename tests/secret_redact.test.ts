@@ -677,3 +677,40 @@ describe('redactSecrets — Authorization header spellings', () => {
     expect(text).toBe('Authorization: token [REDACTED:auth_bearer_token]')
   })
 })
+
+// An Azure storage account connection string carries a full read/write key to the account in its
+// AccountKey field. Nothing in generic_secret_assignment's keyword list (password|passwd|secret|
+// api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token) matches "AccountKey", so this key
+// went through storeBlob() and every live rewrite path in full plaintext until azure_storage_key
+// was added.
+describe('redactSecrets — Azure storage account keys', () => {
+  // A real-shaped, but not a real, key: 88 base64 characters (64 bytes) with trailing `==`
+  // padding, matching the length Azure actually issues.
+  const AZURE_KEY = 'ZGVmaW5pdGVseW5vdGFyZWFsa2V5ZGVmaW5pdGVseW5vdGFyZWFsa2V5ZGVmaW5pdGVseW5vdGFyZWFsa2V5PT=='
+
+  it('redacts the AccountKey field in a full Azure storage connection string, leaving every other field readable', () => {
+    const input = `DefaultEndpointsProtocol=https;AccountName=goat;AccountKey=${AZURE_KEY};EndpointSuffix=core.windows.net`
+    const { text, count } = redactSecrets(input)
+
+    expect(count).toBe(1)
+    expect(text).not.toContain(AZURE_KEY)
+    expect(text).toContain('[REDACTED:azure_storage_key]')
+    // The field name itself, and every field around it -- including the one immediately after the
+    // redacted value -- stay fully readable.
+    expect(text).toBe(
+      'DefaultEndpointsProtocol=https;AccountName=goat;AccountKey=[REDACTED:azure_storage_key];EndpointSuffix=core.windows.net',
+    )
+  })
+
+  it('does not flag a bare 88-char base64 blob with no AccountKey= anchor (regression guard against an unanchored base64-shape pattern)', () => {
+    expect(redactSecrets(AZURE_KEY)).toEqual({ text: AZURE_KEY, count: 0 })
+  })
+
+  it('does not re-match its own placeholder when the connection string is redacted twice', () => {
+    const once = redactSecrets(`AccountKey=${AZURE_KEY};EndpointSuffix=core.windows.net`).text
+    const { text, count } = redactSecrets(once)
+
+    expect(count).toBe(0)
+    expect(text).toBe(once)
+  })
+})

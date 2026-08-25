@@ -16,7 +16,14 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...original, configPath: () => _testConfigPath }
 })
 
-import { isImagePath, preReadImageHandler, resetShrinkCachePruneThrottleForTests, shrinkImage } from '../src/image_shrink.js'
+import {
+  isImagePath,
+  preReadImageHandler,
+  probeImageMeta,
+  resetShrinkCachePruneThrottleForTests,
+  shrinkImage,
+  ImageDecodeError,
+} from '../src/image_shrink.js'
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
 import { summarize } from '../src/stats.js'
 import type { HookEvent } from '../src/hook_registry.js'
@@ -165,6 +172,26 @@ describe('shrinkImage', () => {
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nmax_image_pixels = 1000000\n', 'utf8')
     invalidateConfigCache()
     expect(await shrinkImage(largeJpeg)).toBeNull()
+  })
+
+  it('honours a configured max_image_pixels probing metadata (cap below actual size => sharp rejects decode, thrown as ImageDecodeError not a silent null)', async () => {
+    // Same fixture and same reasoning as the shrinkImage max_image_pixels test above, but against
+    // probeImageMeta -- the image-meta command's own decode path, which used to hardcode
+    // limitInputPixels: false and so was the one sibling call site in image_shrink.ts with no
+    // pixel bound at all. A cap rejection here is a real ImageDecodeError (sharp declined to
+    // decode), not the "sharp unavailable" null return -- those two failure modes must stay
+    // distinguishable to the caller.
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nmax_image_pixels = 1000000\n', 'utf8')
+    invalidateConfigCache()
+    await expect(probeImageMeta(largeJpeg)).rejects.toBeInstanceOf(ImageDecodeError)
+  })
+
+  it('decodes normally under the schema-default max_image_pixels (cap comfortably above actual size)', async () => {
+    const meta = await probeImageMeta(largeJpeg)
+    expect(meta).not.toBeNull()
+    if (meta === null) return
+    expect(meta.width).toBe(3000)
+    expect(meta.height).toBe(3000)
   })
 
   it('preserves every frame of an animated GIF instead of collapsing to a single frame', async () => {

@@ -117,12 +117,27 @@ export async function probeImageMeta(input: Buffer): Promise<{ width: number; he
   const sharp = await loadSharp()
   if (sharp === null) return null
   try {
-    const meta = await sharp(input, { limitInputPixels: false }).metadata()
+    // Every sibling decode call site in this file threads the configured decompression-bomb cap
+    // (cfg.max_image_pixels, 0 meaning "no cap") instead of hardcoding limitInputPixels: false --
+    // this was the one that didn't, so `token-goat image-meta` would fully decode an unbounded
+    // image with no pixel bound at all. probeImageMeta takes only a Buffer (no caller threads a
+    // pre-loaded config through it, unlike shrinkImage/imageQualifiesForShrink which already have
+    // one in scope), so it loads config itself here.
+    const cfg = loadConfig().image_shrink
+    const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
+    const meta = await sharp(input, { limitInputPixels }).metadata()
     return { width: meta.width ?? 0, height: meta.height ?? 0, format: meta.format ?? null, pages: meta.pages ?? 1 }
   } catch (e) {
-    // sharp IS installed and still failed: these bytes are not a decodable image. Reporting that as
-    // null (the "not installed" signal) told the user to install a dependency they already have, at
-    // exit 0, for a file that is simply corrupt. Throw so the caller can say what is actually wrong.
+    // sharp IS installed and still failed: these bytes are not a decodable image (or, now that
+    // limitInputPixels is threaded above, decode was refused because the image exceeds the
+    // configured pixel cap -- a decompression-bomb rejection, which is deliberately folded into
+    // this same ImageDecodeError path rather than given its own error type. Both are "sharp
+    // declined to hand back pixel data for this input"; the cap rejection differs only in *why*,
+    // and sharp's own thrown message already names that reason, so the caller (runImageMeta in
+    // read_commands.ts) surfaces it verbatim as a real error instead of the "install sharp"
+    // notice. Reporting either case as null (the "not installed" signal) told the user to install
+    // a dependency they already have, at exit 0, for a file that is simply corrupt or oversized.
+    // Throw so the caller can say what is actually wrong.
     throw new ImageDecodeError((e as Error)?.message ?? 'image could not be decoded')
   }
 }
