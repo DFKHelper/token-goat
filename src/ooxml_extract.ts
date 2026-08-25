@@ -11,22 +11,14 @@ import * as fs from 'node:fs'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
 import { parseXml } from './xml_parser.js'
+import { MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, unzipBounded, ZipOutputTooLargeError, type ZipStreamModule } from './zip_bounds.js'
 
-interface FflateModule {
-  unzipSync: (data: Uint8Array) => Record<string, Uint8Array>
-}
+type FflateModule = ZipStreamModule
 
 const loadFflate = createLazyModuleLoader(
   async () => (await import('fflate')) as unknown as FflateModule,
   'office-file reading disabled (fflate unavailable)',
 )
-
-// DEFLATE's worst-case compression ratio is ~1032:1, so capping the compressed input
-// bounds unzipSync's eager, unstreamed decompression to a worst case of tens of GB
-// instead of fully unbounded -- a sanity cap against a malformed/crafted file, not a
-// hardened defense (a genuine zip bomb near this ratio would still be large; full
-// protection needs streaming decompression with an abort threshold, out of scope here).
-const MAX_OOXML_INPUT_BYTES = 50 * 1024 * 1024
 
 /** Reads a .pptx/.docx/.xlsx file and returns its ZIP entries as path -> decompressed bytes. */
 /**
@@ -65,8 +57,8 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
     throw new Error(accessFailureMessage(err, filePath), { cause: err })
   }
   if (!stat.isFile()) throw new Error(`not a valid ${kind} file: ${filePath}`)
-  if (stat.size > MAX_OOXML_INPUT_BYTES) {
-    throw new Error(`${filePath} is ${Math.round(stat.size / (1024 * 1024))}MB, over the ${MAX_OOXML_INPUT_BYTES / (1024 * 1024)}MB limit for OOXML files`)
+  if (stat.size > MAX_ZIP_INPUT_BYTES) {
+    throw new Error(`${filePath} is ${Math.round(stat.size / (1024 * 1024))}MB, over the ${MAX_ZIP_INPUT_BYTES / (1024 * 1024)}MB limit for OOXML files`)
   }
   let data: Buffer
   try {
@@ -77,8 +69,12 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
     throw new Error(accessFailureMessage(err, filePath), { cause: err })
   }
   try {
-    return fflate.unzipSync(new Uint8Array(data))
+    return unzipBounded(fflate, new Uint8Array(data), { limitBytes: MAX_ZIP_OUTPUT_BYTES, shouldExtract: () => true })
   } catch (err) {
+    // A ZipOutputTooLargeError already names the limit and how far over it the archive got --
+    // that message is more useful than "not a valid file", which would send the reader looking
+    // for a corrupt file instead of an oversized one.
+    if (err instanceof ZipOutputTooLargeError) throw err
     throw new Error(`not a valid ${kind} file: ${filePath}`, { cause: err })
   }
 }

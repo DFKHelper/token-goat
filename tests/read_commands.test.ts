@@ -101,6 +101,7 @@ import {
   parseDiffHunks,
   runScreenshot,
   runZipRead,
+  runZipList,
 } from '../src/read_commands.js'
 import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
@@ -8055,6 +8056,68 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// Gap 2: unlike readOoxmlZip's MAX_OOXML_INPUT_BYTES check, zip-list/zip-read had no cap at all
+// on the archive's on-disk (compressed) size before this fix -- readFileBytes read the whole
+// file unconditionally. Both commands now share MAX_ZIP_INPUT_BYTES with the OOXML readers.
+describe('zip-list / zip-read reject an over-large compressed archive before reading it', () => {
+  let dir: string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({
+      indexing: { cross_project_symbols: true },
+      overflow_guard: { enabled: true, max_tokens: 25000 },
+    } as unknown as ReturnType<typeof loadConfig>)
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zip-input-cap-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  // Sparse file: only metadata is touched, so the guard must reject by stat size before ever
+  // reading the (fake, all-zero) content into memory.
+  function writeSparseFile(name: string, sizeBytes: number): string {
+    const file = path.join(dir, name)
+    const fd = fs.openSync(file, 'w')
+    fs.ftruncateSync(fd, sizeBytes)
+    fs.closeSync(fd)
+    return file
+  }
+
+  it('zip-list rejects a file over the compressed-size cap', async () => {
+    const file = writeSparseFile('huge.zip', 51 * 1024 * 1024)
+
+    const { stderr } = await captureAsync(async () => {
+      const code = await runZipList({ file })
+      expect(code).toBe(1)
+    })
+    expect(stderr).toMatch(/over the 50MB limit/)
+  })
+
+  it('zip-read rejects a file over the compressed-size cap', async () => {
+    const file = writeSparseFile('huge.zip', 51 * 1024 * 1024)
+
+    const { stderr } = await captureAsync(async () => {
+      const code = await runZipRead({ file, entry: 'anything.txt' })
+      expect(code).toBe(1)
+    })
+    expect(stderr).toMatch(/over the 50MB limit/)
+  })
+
+  it('still reads an ordinary archive well under the cap (control: not over-rejected)', async () => {
+    const { zipSync, strToU8 } = await import('fflate')
+    const file = path.join(dir, 'small.zip')
+    fs.writeFileSync(file, zipSync({ 'a.txt': strToU8('hello\n') }))
+
+    const { stdout } = await captureAsync(async () => {
+      const code = await runZipList({ file })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('a.txt')
   })
 })
 

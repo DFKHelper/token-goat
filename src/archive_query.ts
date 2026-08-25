@@ -21,6 +21,7 @@
 import { displaySafeText } from './paths.js'
 
 import { createLazyModuleLoader } from './lazy_module.js'
+import { MAX_ZIP_OUTPUT_BYTES, unzipBounded, type ZipStreamModule } from './zip_bounds.js'
 
 interface UnzipFileInfo {
   name: string
@@ -28,7 +29,7 @@ interface UnzipFileInfo {
   originalSize: number
 }
 
-interface FflateModule {
+interface FflateModule extends ZipStreamModule {
   unzipSync: (
     data: Uint8Array,
     opts?: { filter?: (file: UnzipFileInfo) => boolean },
@@ -101,10 +102,12 @@ export function formatZipList(entries: readonly ZipEntry[]): string {
 
 /** Decompresses exactly one entry's bytes by its exact in-archive path. Returns `undefined` if
  * no entry matches (the caller emits a "not found" + did-you-mean message). Only the matching
- * entry is ever decompressed -- every other member's filter call returns `false`. Throws on a
- * malformed/corrupt zip, same as {@link listZipEntries}. */
+ * entry is ever decompressed -- every other member is skipped before decompression. Throws
+ * {@link ZipOutputTooLargeError} if the entry's real decompressed size exceeds
+ * `MAX_ZIP_OUTPUT_BYTES`, or fflate's own error on a malformed/corrupt zip, same as
+ * {@link listZipEntries}. */
 export async function extractZipEntry(data: Uint8Array, entryPath: string): Promise<Uint8Array | undefined> {
   const fflate = await requireFflate()
-  const result = fflate.unzipSync(data, { filter: (file) => file.name === entryPath })
+  const result = unzipBounded(fflate, data, { limitBytes: MAX_ZIP_OUTPUT_BYTES, shouldExtract: (name) => name === entryPath })
   return result[entryPath]
 }

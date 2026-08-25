@@ -52,6 +52,7 @@ import {
   ArchiveDependencyMissingError,
   type ZipEntry,
 } from './archive_query.js'
+import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -316,7 +317,18 @@ function readFileText(p: string): string | null {
 
 /** Raw-bytes counterpart to {@link readFileText}, for binary formats (zip-format archives)
  * that must never be decoded as UTF-8 before parsing -- decoding first would corrupt any byte
- * sequence that isn't valid UTF-8, which is the common case for compressed/binary member data. */
+ * sequence that isn't valid UTF-8, which is the common case for compressed/binary member data.
+ *
+ * The only callers are `zip-list`/`zip-read`, so the `MAX_ZIP_INPUT_BYTES` cap lives here rather
+ * than in a general-purpose helper: this file's ZIP entries get decompressed downstream, and
+ * DEFLATE's worst-case ~1032:1 ratio makes the on-disk (compressed) size the one lever available
+ * to bound before any decompression happens at all (see zip_bounds.ts for the decompressed-side
+ * bound). The unpinned path stats before reading, so an oversized file is never pulled into
+ * memory; the pinned path reads via the fd `readPinnedBytes` already opened for its identity
+ * check and rejects by the bytes actually returned; a compressed-input size cap does not carry
+ * the same unbounded-allocation risk decompression does, so reading up to the limit before
+ * rejecting on that path is an acceptable trade against duplicating `readPinnedBytes`'s fd
+ * handling. */
 function readFileBytes(p: string): Buffer | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
@@ -324,10 +336,16 @@ function readFileBytes(p: string): Buffer | null {
       verifyStillAbsent(p)
       return null
     }
-    if (pinned !== undefined) return readPinnedBytes(p, pinned)
+    if (pinned !== undefined) {
+      const bytes = readPinnedBytes(p, pinned)
+      if (bytes.length > MAX_ZIP_INPUT_BYTES) throw new ZipInputTooLargeError(p, bytes.length, MAX_ZIP_INPUT_BYTES)
+      return bytes
+    }
+    const stat = fs.statSync(p)
+    if (stat.size > MAX_ZIP_INPUT_BYTES) throw new ZipInputTooLargeError(p, stat.size, MAX_ZIP_INPUT_BYTES)
     return fs.readFileSync(p)
   } catch (err) {
-    if (err instanceof ConfinementIdentityError) throw err
+    if (err instanceof ConfinementIdentityError || err instanceof ZipInputTooLargeError) throw err
     return null
   }
 }
@@ -3559,12 +3577,21 @@ export interface ZipListCliOptions {
 /** One message for both zip commands: a missing optional dependency reads differently from a
  * corrupt archive, and saying the wrong one sends the reader to the wrong place. */
 function archiveReadFailure(err: unknown, file: string): string {
-  if (err instanceof ArchiveDependencyMissingError) return err.message
+  if (err instanceof ArchiveDependencyMissingError || err instanceof ZipOutputTooLargeError) return err.message
   return `Failed to read archive (not a valid zip-format file): ${file}`
 }
 
 export async function runZipList(opts: ZipListCliOptions): Promise<number> {
-  const data = readFileBytes(opts.file)
+  let data: Buffer | null
+  try {
+    data = readFileBytes(opts.file)
+  } catch (err) {
+    if (err instanceof ZipInputTooLargeError) {
+      emitErr(err.message)
+      return 1
+    }
+    throw err
+  }
   if (data === null) {
     emitErr(`Could not read: ${opts.file}`)
     return 1
@@ -3603,7 +3630,16 @@ export interface ZipReadCliOptions {
  * `[binary content elided by token-goat]` marker filters.ts uses for binary output elsewhere in
  * this codebase, rather than dumping raw bytes or crashing on the utf-8 decode. */
 export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
-  const data = readFileBytes(opts.file)
+  let data: Buffer | null
+  try {
+    data = readFileBytes(opts.file)
+  } catch (err) {
+    if (err instanceof ZipInputTooLargeError) {
+      emitErr(err.message)
+      return 1
+    }
+    throw err
+  }
   if (data === null) {
     emitErr(`Could not read: ${opts.file}`)
     return 1
