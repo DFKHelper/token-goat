@@ -23,7 +23,7 @@ import type { StdioServerTransport as StdioServerTransportClass } from './mcp_st
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
-import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
+import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1260,6 +1260,28 @@ function _applyFiltersAndPrint(
   return emit(result.join('\n'))
 }
 
+/**
+ * Scan-and-fence for the local document extractors (pdf/docx/pptx/xlsx). A path named on the
+ * command line is not the same thing as content authored by the person who ran the command: an
+ * emailed invoice, a downloaded report, a contract someone else drafted are all third-party text
+ * that happens to live in a local file. Mirrors the inlined scan in `cmdGdriveSections` and
+ * `fenceGithubTextIfMatched` in `read_commands.ts` -- those commands can't reuse
+ * `_applyFiltersAndPrint`'s `emit()` closure either, for the same reason: some of these commands
+ * have no head/tail-elision opts shape to route through, and some need to fence one field of a
+ * `--json` payload rather than the whole printed string.
+ */
+function fenceFileTextIfMatched(text: string): string {
+  let matches: string[] = []
+  try {
+    if (loadConfig().injection.enabled) matches = scanForInjectionPatterns(text)
+  } catch {
+    matches = []
+  }
+  if (matches.length === 0) return text
+  recordStat('injection_detected', 0, 0, undefined, matches.join(','))
+  return fenceUntrustedContent(text, matches, UNTRUSTED_FILE_TAG)
+}
+
 /** Best-effort on-disk size of a file; 0 if it can't be stat'd (never blocks stat recording). */
 function fileSizeOrZero(filePath: string): number {
   try {
@@ -1348,7 +1370,7 @@ async function cmdPdfExtract(
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean },
 ) {
   const text = await runPdfExtractText(file, opts.pages, opts.layout === true)
-  const printed = _applyFiltersAndPrint(text, opts)
+  const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
   // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `pdf-extract`/`pdf_extract` entry
   // and nothing ever called recordStat for this command -- the dashboard bucket was permanently
   // zero regardless of real usage, the same class of gap already fixed for
@@ -1375,18 +1397,23 @@ async function cmdPdfLocate(
   if (opts.pages !== undefined) locateOpts.pages = opts.pages
   const matches = await runPdfLocate(file, pattern, locateOpts)
 
-  const pages = matches.map((m) => m.page)
+  // Each snippet is text pulled straight out of the PDF -- fence it the same as pdf-extract's
+  // body text, per-snippet rather than around the whole printed string, so the --json shape
+  // above stays valid JSON (matching fenceGithubTextIfMatched's per-field approach in
+  // read_commands.ts's pr-slice diff/comments --json branches).
+  const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileTextIfMatched(m.snippet) }))
+  const pages = fencedMatches.map((m) => m.page)
   let printed: string
   if (opts.json === true) {
-    printed = JSON.stringify({ file, pattern, matchCount: matches.length, pages, matches }, null, 2)
+    printed = JSON.stringify({ file, pattern, matchCount: fencedMatches.length, pages, matches: fencedMatches }, null, 2)
     out(printed)
-  } else if (matches.length === 0) {
+  } else if (fencedMatches.length === 0) {
     // A clean "found nothing", not an error -- the caller asked where a term is and the answer is "nowhere".
     printed = '(no matches)'
     out(printed)
   } else {
-    const lines = matches.map((m) => `p${m.page}: ${m.snippet}`)
-    printed = `${lines.join('\n')}\n\n${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
+    const lines = fencedMatches.map((m) => `p${m.page}: ${m.snippet}`)
+    printed = `${lines.join('\n')}\n\n${countNoun(fencedMatches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
     out(printed)
   }
   // Same registry/producer desync guarded against as cmdPdfExtract above -- see the comment there.
@@ -1407,10 +1434,13 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
     }
     return
   }
+  // A PDF bookmark title is authored by whoever produced the PDF, not the caller who named the
+  // local path -- fence it the same as pdf-extract's body text (see fenceFileTextIfMatched above).
+  const fencedEntries = entries.map((e) => ({ ...e, title: fenceFileTextIfMatched(e.title) }))
   const text =
     opts.json === true
-      ? JSON.stringify(entries, null, 2)
-      : entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n')
+      ? JSON.stringify(fencedEntries, null, 2)
+      : fencedEntries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n')
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
@@ -1557,22 +1587,25 @@ function recordXlsxStat(kind: string, file: string, emitted: string): void {
 
 async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
   const sheets = await xlsxListSheets(file)
+  // A sheet name is authored by whoever built the spreadsheet -- fence it the same as the cell
+  // data xlsx-head/range/query return below.
+  const fencedSheets = sheets.map((s) => ({ ...s, name: fenceFileTextIfMatched(s.name) }))
   // Three sibling commands (xlsx-head, xlsx-range, xlsx-query) take a --sheet whose help text says "see xlsx-sheets", so this output exists to be fed straight back -- but the sheet name had to be copied out of a padded prose line that also carries the range and the dimensions. --json hands over the same {name, ref, rows, cols} the extractor already returns.
-  const text = opts.json === true ? JSON.stringify(sheets.map((s) => ({ name: s.name, ref: s.ref, rows: s.rows, cols: s.cols })), null, 2) : sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n')
+  const text = opts.json === true ? JSON.stringify(fencedSheets.map((s) => ({ name: s.name, ref: s.ref, rows: s.rows, cols: s.cols })), null, 2) : fencedSheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n')
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
 
 async function cmdXlsxHead(file: string, opts: { sheet: string; rows?: string }) {
   const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
-  const text = await xlsxHeadSheet(file, opts.sheet, rows)
+  const text = fenceFileTextIfMatched(await xlsxHeadSheet(file, opts.sheet, rows))
   out(text)
   recordXlsxStat('xlsx_head', file, text)
 }
 
 async function cmdXlsxRange(file: string, opts: { sheet: string; range: string; formulas?: boolean }) {
   const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
-  const text = formatXlsxRange(result)
+  const text = fenceFileTextIfMatched(formatXlsxRange(result))
   out(text)
   recordXlsxStat('xlsx_range', file, text)
 }
@@ -1590,7 +1623,7 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
     ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
-  const text = formatCsvTable(result)
+  const text = fenceFileTextIfMatched(formatCsvTable(result))
   out(text)
   recordXlsxStat('xlsx_query', file, text)
 }
@@ -1605,10 +1638,13 @@ function recordDocStat(kind: string, file: string, emitted: string): void {
 
 async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
   const slides = await pptxOutline(file)
+  // A slide title is authored by whoever built the deck -- fence it the same as pptx-text/slide/
+  // notes below.
+  const fencedSlides = slides.map((s) => ({ ...s, title: fenceFileTextIfMatched(s.title) }))
   const text =
     opts.json === true
-      ? JSON.stringify(slides, null, 2)
-      : slides
+      ? JSON.stringify(fencedSlides, null, 2)
+      : fencedSlides
           .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
           .join('\n')
   out(text)
@@ -1617,7 +1653,7 @@ async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
 
 async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }) {
   const n = requireNonNegativeInt('--slide', opts.slide)
-  const text = await pptxSlideText(file, n, opts.notes === true)
+  const text = fenceFileTextIfMatched(await pptxSlideText(file, n, opts.notes === true))
   out(text)
   recordDocStat('pptx_slide', file, text)
 }
@@ -1625,7 +1661,7 @@ async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean
 async function cmdPptxNotes(file: string, opts: { slide?: string }) {
   const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
   const text = await pptxNotesText(file, n)
-  const printed = text.length > 0 ? text : 'no speaker notes found'
+  const printed = text.length > 0 ? fenceFileTextIfMatched(text) : 'no speaker notes found'
   out(printed)
   recordDocStat('pptx_notes', file, printed)
 }
@@ -1636,7 +1672,7 @@ async function cmdPptxText(file: string, opts: { grep: string }) {
     out('no matches')
     return
   }
-  const text = matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n')
+  const text = fenceFileTextIfMatched(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
   out(text)
   recordDocStat('pptx_text', file, text)
 }
@@ -1651,10 +1687,13 @@ async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
     }
     return
   }
+  // A heading is authored by whoever wrote the document -- fence it the same as docx-text's body
+  // text.
+  const fencedHeadings = headings.map((h) => ({ ...h, text: fenceFileTextIfMatched(h.text) }))
   const text =
     opts.json === true
-      ? JSON.stringify(headings, null, 2)
-      : headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n')
+      ? JSON.stringify(fencedHeadings, null, 2)
+      : fencedHeadings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n')
   out(text)
   recordDocStat('docx_outline', file, text)
 }
@@ -1664,7 +1703,7 @@ async function cmdDocxText(
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ) {
   const text = await docxText(file)
-  const printed = _applyFiltersAndPrint(text, opts)
+  const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
   recordDocStat('docx_text', file, printed)
 }
 

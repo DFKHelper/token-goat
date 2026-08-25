@@ -9,6 +9,7 @@ import { shortFingerprint } from './fingerprint.js';
 import { loadConfig } from './config.js';
 import { looksLikeHtml, extractCleanText } from './web_extract.js';
 import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js';
+import { redactSecrets } from './secret_redact.js';
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/base.js';
 import { matchesAllowPattern, matchesDenyPattern } from './url_policy.js';
 
@@ -112,20 +113,33 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     if (injectionMatches.length > 0) {
       recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','));
     }
+    // Redact secrets on this same live path, computed here ahead of every early-return guard
+    // below -- neither WebFetch's caching store (storeWebOutput redacts its own persisted copy
+    // separately) nor this handler redacted what the model actually reads THIS turn, so a fetched
+    // page carrying a credential that trips no injection pattern (an API key pasted into a forum
+    // answer, a leaked token in an indexed gist) reached the model unredacted. Mirrors
+    // hooks_websearch.ts's postWebSearchHandler fix for the same gap.
+    const bodyRedacted = body ? redactSecrets(body) : { text: body, count: 0 };
 
     // Everything below this point (dedup cache lookup key reuse aside, the actual store) is
     // inherently session-scoped -- a missing session id has nothing to cache against, but the
-    // fence above must still apply to whatever was scanned.
+    // fence and redaction above must still apply to whatever was scanned.
     if (!event.sessionId) {
       if (injectionMatches.length > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(body, injectionMatches) };
+        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(bodyRedacted.text, injectionMatches) };
+      }
+      if (bodyRedacted.count > 0) {
+        return { hookType: 'rewriteOutput', updatedOutput: bodyRedacted.text };
       }
       return passOutput();
     }
 
     if (!body || body.length < 1024) {
       if (injectionMatches.length > 0) {
-        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(body, injectionMatches) };
+        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(bodyRedacted.text, injectionMatches) };
+      }
+      if (bodyRedacted.count > 0) {
+        return { hookType: 'rewriteOutput', updatedOutput: bodyRedacted.text };
       }
       return passOutput();
     }
@@ -147,9 +161,14 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     const cacheId = storeWebOutput(url, storedBody, `${url}\x00${prompt}`, storedBody !== body ? body : undefined);
     recordWebFetch(url, prompt, cacheId);
 
+    // storedBody may differ from body (extractCleanText above), so redact it fresh rather than
+    // reusing bodyRedacted -- same "redact what is actually about to be shown" reasoning as
+    // fencing storedBody rather than the raw body just below.
+    const storedRedacted = storedBody === body ? bodyRedacted : redactSecrets(storedBody);
+
     if (injectionMatches.length > 0) {
       // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing the raw body here would both defeat compress_bodies' token savings specifically on the injection-detected path and return content that disagrees with what a later `token-goat web-output <id>` recall of the same cache entry would return.
-      return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(storedBody, injectionMatches) };
+      return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(storedRedacted.text, injectionMatches) };
     }
 
     // Normal path: ship the compressed copy already computed and cached above instead of discarding it -- previously storedBody was only ever consumed by the injection-detected branch, so a compressed HTML body's savings never reached the model. Gated on compression having actually happened (storedBody !== body) so an unchanged body is never rewritten, and on the same net-benefit floor bash_compress uses so a rewrite whose savings don't clear the recall notice's own cost isn't shipped.
@@ -169,8 +188,16 @@ export function postFetchHandler(event: HookEvent): HookOutput {
       ) {
         const bytesDelta = originalBytes - rewrittenBytes;
         recordStat('webfetch:compress', bytesDelta, Math.round(bytesDelta / 4))
-        return { hookType: 'rewriteOutput', updatedOutput: storedBody + notice };
+        return { hookType: 'rewriteOutput', updatedOutput: storedRedacted.text + notice };
       }
+    }
+
+    // Reached when neither the fence nor the compression rewrite fired -- redaction is a security
+    // action, not a compression one, so it must not inherit the net-benefit floor or the
+    // compress_bodies gate above: a short page with a bare credential and no other savings is
+    // exactly the case those would drop.
+    if (storedRedacted.count > 0) {
+      return { hookType: 'rewriteOutput', updatedOutput: storedRedacted.text };
     }
 
     return passOutput();
