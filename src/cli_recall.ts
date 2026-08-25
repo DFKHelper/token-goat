@@ -10,6 +10,9 @@
 
 import { listRecentRecall, searchRecall, type RecallCacheType, type RecallHit } from './recall_index.js'
 import { pad } from './util.js'
+import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { loadConfig } from './config.js'
+import { recordStat } from './stats.js'
 
 export interface RecallCommandOptions {
   type?: RecallCacheType
@@ -28,6 +31,33 @@ const RECALL_COMMAND: Record<RecallCacheType, string> = {
 
 
 
+// recall reads back the same three cache stores that bash-output/web-output/mcp-output fence on
+// recall (see _applyFiltersAndPrint in cli.ts), so a recalled snippet carries the same third-party
+// provenance -- a fetched page for `web`, a dependency's build/test output or a remote MCP
+// server's result for `bash`/`mcp`. `web` gets the web-fetch tag; `bash`/`mcp` share the tool-
+// output tag cli.ts already uses for those two cache types.
+function fenceTagForCacheType(cacheType: RecallCacheType): string {
+  return cacheType === 'web' ? UNTRUSTED_WEB_TAG : UNTRUSTED_TOOL_TAG
+}
+
+/**
+ * Scan one hit's snippet and, on a match, return it fenced under its cache type's provenance tag.
+ * Snippets are already-truncated (160-char) excerpts, not full documents, but the excerpt itself
+ * is still attacker-authored text reaching the model unmarked, so it gets the same scan every
+ * other recall path runs.
+ */
+function fenceSnippetIfMatched(hit: RecallHit): string {
+  let matches: string[] = []
+  try {
+    if (loadConfig().injection.enabled) matches = scanForInjectionPatterns(hit.snippet)
+  } catch {
+    matches = []
+  }
+  if (matches.length === 0) return hit.snippet
+  recordStat('injection_detected', 0, 0, undefined, matches.join(','))
+  return fenceUntrustedContent(hit.snippet, matches, fenceTagForCacheType(hit.cacheType))
+}
+
 function printHits(query: string | undefined, hits: readonly RecallHit[]): void {
   const w = (text: string) => { process.stdout.write(text) }
   if (hits.length === 0) {
@@ -39,7 +69,7 @@ function printHits(query: string | undefined, hits: readonly RecallHit[]): void 
     const label = hit.label.length > 80 ? hit.label.slice(0, 77) + '...' : hit.label
     w(`[${pad(hit.cacheType, 4)}] ${hit.id}  (token-goat ${RECALL_COMMAND[hit.cacheType]} ${hit.id})\n`)
     w(`  ${label}\n`)
-    w(`  ${hit.snippet}\n\n`)
+    w(`  ${fenceSnippetIfMatched(hit)}\n\n`)
   }
 }
 
@@ -53,7 +83,11 @@ export function runRecallCommand(query: string | undefined, opts: RecallCommandO
   const hits = browse ? listRecentRecall(scope) : searchRecall(query, scope)
 
   if (opts.json === true) {
-    process.stdout.write(`${JSON.stringify(hits)}\n`)
+    // Fence only the `snippet` field's value, not the envelope: it stays the same string type at
+    // the same key, so a script parsing this JSON for id/cacheType/label/storedAt is unaffected,
+    // and one wrapped in fence markup that is itself scanned is safer than one silently unfenced.
+    const fenced = hits.map((hit) => ({ ...hit, snippet: fenceSnippetIfMatched(hit) }))
+    process.stdout.write(`${JSON.stringify(fenced)}\n`)
     return
   }
 

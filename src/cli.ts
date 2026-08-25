@@ -2997,13 +2997,32 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
     const sections = await getDocSections(fileId, { fresh: false })
     emitted = formatSections(sections)
   }
-  out(emitted)
+  // A Google Doc is authorable by anyone who can edit the shared file, exactly like a fetched web
+  // page -- scan and fence it the same way `_applyFiltersAndPrint` does for WebFetch/web-output,
+  // under the same UNTRUSTED_WEB_TAG (this doc *is* fetched over HTTP, via performHttpFetch in
+  // gdrive.ts). Inlined rather than routed through `_applyFiltersAndPrint` because that helper's
+  // default head/tail elision would silently truncate output this command has always emitted in
+  // full; `emitted` is used unmodified below except when a match is found.
+  let toEmit = emitted
+  try {
+    if (loadConfig().injection.enabled) {
+      const matches = scanForInjectionPatterns(emitted)
+      if (matches.length > 0) {
+        recordStat('injection_detected', 0, 0, undefined, matches.join(','))
+        toEmit = fenceUntrustedContent(emitted, matches, UNTRUSTED_WEB_TAG)
+      }
+    }
+  } catch {
+    // Best-effort, mirroring _applyFiltersAndPrint's own scan try/catch: a scanning failure must
+    // never block emitting the doc.
+  }
+  out(toEmit)
   // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `gdrive-sections`/`gdrive_sections`
   // entry and nothing ever called recordStat for this command -- the dashboard bucket was
   // permanently zero regardless of real usage, the same class of gap already fixed for
   // map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see
   // project_runchanged_missing_stat memory).
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(toEmit, 'utf8'))
   recordStat('gdrive_sections', bytesSaved, Math.round(bytesSaved / 4))
 }
 

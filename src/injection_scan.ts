@@ -124,3 +124,13 @@ export function fenceUntrustedFileContent(text: string): string {
  * escaped the other.
  */
 export const UNTRUSTED_TOOL_TAG = 'untrusted-tool-output'
+
+/**
+ * Fence tag for a GitHub pull request's title, description, review comments, or diff (`pr-slice`).
+ * Distinct from {@link UNTRUSTED_TOOL_TAG}: PR content is written by whoever opened the PR or left
+ * the review comment, not by a tool call token-goat made on its own behalf, and it is fetched
+ * fresh via `gh` rather than recalled from a prior cache write -- neither of {@link UNTRUSTED_WEB_TAG}
+ * nor {@link UNTRUSTED_TOOL_TAG}'s doc comments actually describe it. A separate tag keeps the label
+ * naming where the text came from, same rationale as the other three.
+ */
+export const UNTRUSTED_GITHUB_TAG = 'untrusted-github-content'
