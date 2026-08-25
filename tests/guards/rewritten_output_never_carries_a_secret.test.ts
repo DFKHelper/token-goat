@@ -46,8 +46,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-// Importing relay registers every hook module for its side effects, so both the matcher below and
-// runHook dispatch through the real production registry rather than a test-local subset.
+// Importing relay registers every hook module for its side effects, so both the matcher below and runHook dispatch through the real production registry rather than a test-local subset.
 import { buildEvent } from '../../src/relay.js'
 import { runHook, toolMatcherFor } from '../../src/hook_registry.js'
 
@@ -120,19 +119,14 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
   const clean = `starting the build\n${FILLER}\n`
   const withSecret = `${clean}export AWS_ACCESS_KEY_ID=${SECRET}\n${FILLER}\n`
   const report = `Findings.\n\n${FENCE}\nThe key is ${SECRET}.\n\n${FENCE}\n${FENCE}\n`
-  // Repeated files, not 300 distinct ones: the grep fold only rewrites when some file has at
-  // least two matches to group, so one-match-per-file output leaves its whole rewrite branch
-  // unreached -- which is how a real leak in that handler initially slipped past this guard.
+  // Repeated files, not 300 distinct ones: the grep fold only rewrites when some file has at least two matches to group, so one-match-per-file output leaves its whole rewrite branch unreached -- which is how a real leak in that handler initially slipped past this guard.
   const grepHits: string[] = []
   for (const f of ['src/config.ts', 'src/deploy.ts', 'src/env.ts']) {
     for (let i = 1; i <= 60; i++) {
       grepHits.push(`${f}:${i}:  const key = "${SECRET}" // occurrence ${i} with padding to clear the floor`)
     }
   }
-  // The credential goes BEFORE the `## Approved Plan:` marker on purpose. That handler's rewrite
-  // keeps the text up to the marker and discards the echoed body after it, so a secret placed in
-  // the body would be dropped by the truncation rather than by any redaction -- the assertion would
-  // pass while proving nothing about whether the handler redacts.
+  // The credential goes BEFORE the `## Approved Plan:` marker on purpose. That handler's rewrite keeps the text up to the marker and discards the echoed body after it, so a secret placed in the body would be dropped by the truncation rather than by any redaction -- the assertion would pass while proving nothing about whether the handler redacts.
   const plan = `User has approved your plan. Context: AWS_ACCESS_KEY_ID=${SECRET}\n\n## Approved Plan:\n${PLAN_BODY}`
   return [
     { first: { output: clean, exit_code: 0 }, second: { output: withSecret, exit_code: 0 } },
@@ -159,9 +153,7 @@ function toolInputFor(toolName: string): Record<string, unknown> {
     case 'WebFetch':
     case 'WebSearch':
       return { url: 'https://example.com/page', prompt: 'summarize' }
-    // Must match the echoed body in the fixture exactly: the handler verifies the echo really
-    // corresponds to this call's own plan before truncating, so a placeholder here would send it
-    // down a pass branch and quietly drop the tool out of this guard's coverage.
+    // Must match the echoed body in the fixture exactly: the handler verifies the echo really corresponds to this call's own plan before truncating, so a placeholder here would send it down a pass branch and quietly drop the tool out of this guard's coverage.
     case 'ExitPlanMode':
       return { plan: PLAN_BODY }
     default:
@@ -181,9 +173,7 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
 
     for (const toolName of toolNames) {
       for (const [i, pair] of responseShapePairs().entries()) {
-        // One session id across the pair so poll-diff handlers see the second call as a follow-up
-        // to the first; distinct across shapes so one shape's bookkeeping never diverts the next
-        // onto an early-return path it would not take in isolation.
+        // One session id across the pair so poll-diff handlers see the second call as a follow-up to the first; distinct across shapes so one shape's bookkeeping never diverts the next onto an early-return path it would not take in isolation.
         const sessionId = `guard-${toolName}-${i}`
         for (const [call, toolResponse] of [pair.first, pair.second].entries()) {
           const result = await runHook(
@@ -209,15 +199,7 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
         leaked.join(', '),
     ).toEqual([])
 
-    // Guards the guard again: if the fixtures above stopped reaching any rewrite branch (a raised
-    // size floor, a changed response key), every handler would return `pass` and the assertion
-    // above would hold without having tested anything.
-    // Guards the guard again, and specifically: a bare `rewrote > 0` floor would stay green if any
-    // single handler silently stopped reaching its rewrite branch, because the other eight would
-    // hold the count up -- which is exactly how Grep sat in this guard's population contributing
-    // nothing while carrying a real leak. Pinning the set makes a coverage loss fail by name.
-    // The remaining registered tools (Read, Glob, Write, Edit, MultiEdit, NotebookEdit, Skill) hint
-    // or annotate but never substitute a tool result, so they have no rewrite branch to reach.
+    // Guards the guard again: if the fixtures above stopped reaching any rewrite branch (a raised size floor, a changed response key), every handler would return `pass` and the assertion above would hold without having tested anything. Guards the guard again, and specifically: a bare `rewrote > 0` floor would stay green if any single handler silently stopped reaching its rewrite branch, because the other eight would hold the count up -- which is exactly how Grep sat in this guard's population contributing nothing while carrying a real leak. Pinning the set makes a coverage loss fail by name. The remaining registered tools (Read, Glob, Write, Edit, MultiEdit, NotebookEdit, Skill) hint or annotate but never substitute a tool result, so they have no rewrite branch to reach.
     expect([...rewroteTools].sort(), 'a handler that stopped rewriting has silently left this guard').toEqual([
       'Agent',
       'Bash',

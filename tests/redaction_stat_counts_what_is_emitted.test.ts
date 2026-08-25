@@ -27,8 +27,7 @@ vi.mock('../src/stats.js', async (importOriginal) => {
   return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
 })
 
-// Importing relay registers every hook module, so runHook dispatches through the production
-// registry rather than a directly-imported handler reference.
+// Importing relay registers every hook module, so runHook dispatches through the production registry rather than a directly-imported handler reference.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordStat } from '../src/stats.js'
@@ -91,12 +90,7 @@ describe('secret_redacted counts the emitted text, not the redaction input', () 
   })
 
   it('records nothing when the branch replaces the output with a notice instead of redacting it', async () => {
-    // This is the assertion that discriminates "count what you emit" from "count what you found".
-    // Both polls carry the credential, so the redaction finds one every time -- but the second poll
-    // is unchanged, so the handler emits a short no-new-output notice that contains no secret at
-    // all. The credential did not reach the model because the notice replaced the whole output, not
-    // because a redaction stripped it. Crediting one here would be claiming a protection this
-    // subsystem did not provide. Counting the redaction's own input count would do exactly that.
+    // This is the assertion that discriminates "count what you emit" from "count what you found". Both polls carry the credential, so the redaction finds one every time -- but the second poll is unchanged, so the handler emits a short no-new-output notice that contains no secret at all. The credential did not reach the model because the notice replaced the whole output, not because a redaction stripped it. Crediting one here would be claiming a protection this subsystem did not provide. Counting the redaction's own input count would do exactly that.
     const withSecret = `${BULK}\nexport AWS_KEY=${SECRET}\n${BULK}`
     const first = await runHook(buildEvent('post_tool_use', poll(withSecret)))
     expect(first.hookType).toBe('pass')
@@ -105,8 +99,7 @@ describe('secret_redacted counts the emitted text, not the redaction input', () 
     const second = await runHook(buildEvent('post_tool_use', poll(withSecret)))
     expect(second.hookType).toBe('rewriteOutput')
     if (second.hookType !== 'rewriteOutput') return
-    // Guards the guard: if this ever stopped being the notice branch, the test would be asserting
-    // zero against some other branch and would no longer discriminate anything.
+    // Guards the guard: if this ever stopped being the notice branch, the test would be asserting zero against some other branch and would no longer discriminate anything.
     expect(second.updatedOutput.length).toBeLessThan(400)
     expect(second.updatedOutput).not.toContain(SECRET)
     expect(redactionStats(), 'a wholesale replacement is not a redaction this subsystem performed').toEqual([])
@@ -131,8 +124,7 @@ describe('countRedactionPlaceholders', () => {
   })
 
   it('does not match a malformed or partial placeholder', () => {
-    // The pattern is deliberately narrow. A prose mention of the word must not inflate the count,
-    // or every changelog entry describing this feature would register as a live redaction.
+    // The pattern is deliberately narrow. A prose mention of the word must not inflate the count, or every changelog entry describing this feature would register as a live redaction.
     expect(countRedactionPlaceholders('[REDACTED]')).toBe(0)
     expect(countRedactionPlaceholders('[REDACTED:]')).toBe(0)
     expect(countRedactionPlaceholders('[REDACTED:UPPER]')).toBe(0)

@@ -54,62 +54,33 @@ const APPROVED_PLAN_MARKER = '## Approved Plan:'
 export function postExitPlanModeHandler(event: HookEvent): HookOutput {
   try {
     if (getToolName(event) !== 'ExitPlanMode') return passOutput()
-    // Unlike its siblings, this handler is not closing a demonstrated leak. The half the rewrite
-    // KEEPS is the text up to the approval marker -- harness-authored boilerplate -- while the plan
-    // body, the one place a credential realistically appears, is exactly what gets dropped. A probe
-    // confirms a secret placed before the marker does survive into the emitted text, so the path is
-    // reachable, but no realistic route was found for one to land there.
+    // Unlike its siblings, this handler is not closing a demonstrated leak. The half the rewrite KEEPS is the text up to the approval marker -- harness-authored boilerplate -- while the plan body, the one place a credential realistically appears, is exactly what gets dropped. A probe confirms a secret placed before the marker does survive into the emitted text, so the path is reachable, but no realistic route was found for one to land there.
     //
-    // It redacts regardless, because after the grep and subagent-report fixes this is the last
-    // rewriting handler without the discipline, and a lone exception is what a future reader copies
-    // or trusts. Uniformity is the point: "every handler that composes text redacts it" is a rule
-    // someone can rely on, whereas "every handler except this one, for reasons documented
-    // elsewhere" is how the same defect has now shipped seven times.
+    // It redacts regardless, because after the grep and subagent-report fixes this is the last rewriting handler without the discipline, and a lone exception is what a future reader copies or trusts. Uniformity is the point: "every handler that composes text redacts it" is a rule someone can rely on, whereas "every handler except this one, for reasons documented elsewhere" is how the same defect has now shipped seven times.
     //
-    // No `secret_redacted` stat is recorded here, unlike the grep fold. The redaction runs over the
-    // whole result, but the rewrite emits only the prefix -- so a secret in the discarded plan body
-    // was removed by being dropped, not by being redacted, and counting it would credit this
-    // handler for a protection the truncation had already provided. Counting only the survivors
-    // would mean re-scanning the emitted slice for placeholders, which is more machinery than a
-    // path with no demonstrated occurrence warrants.
+    // No `secret_redacted` stat is recorded here, unlike the grep fold. The redaction runs over the whole result, but the rewrite emits only the prefix -- so a secret in the discarded plan body was removed by being dropped, not by being redacted, and counting it would credit this handler for a protection the truncation had already provided. Counting only the survivors would mean re-scanning the emitted slice for placeholders, which is more machinery than a path with no demonstrated occurrence warrants.
     const rawOutput = extractToolResultText(event.raw)
     if (!rawOutput) return passOutput()
     const redacted = redactSecrets(rawOutput)
     const output = redacted.text
 
-    // Look for the marker that indicates plan approval with echo. If not found,
-    // the result has a different shape (rejection, modified plan, etc.) so pass
-    // it through untouched rather than guess-truncating.
+    // Look for the marker that indicates plan approval with echo. If not found, the result has a different shape (rejection, modified plan, etc.) so pass it through untouched rather than guess-truncating.
     const markerIndex = output.indexOf(APPROVED_PLAN_MARKER)
     if (markerIndex === -1) return passOutput()
 
-    // The marker is an unanchored substring match, so it can appear inside
-    // unrelated content (including this very file's own source, which quotes
-    // it as a literal string). Never truncate on marker presence alone --
-    // verify the text after the marker actually corresponds to this call's
-    // own approved plan (tool_input.plan) before treating it as the echo.
+    // The marker is an unanchored substring match, so it can appear inside unrelated content (including this very file's own source, which quotes it as a literal string). Never truncate on marker presence alone -- verify the text after the marker actually corresponds to this call's own approved plan (tool_input.plan) before treating it as the echo.
     const planValue = getToolInput(event)['plan']
     if (typeof planValue !== 'string' || planValue.trim() === '') return passOutput()
     const plan = planValue.trim()
     const suffix = output.slice(markerIndex + APPROVED_PLAN_MARKER.length).trim()
-    // Anchored at the start, not an unanchored `includes` either way round. The echo begins where
-    // the plan begins, so a genuine echo is a prefix of the plan (truncated) or starts with it
-    // (trailing extras); a match anywhere else is a coincidence. An unanchored test made a short
-    // plan match almost any body -- a one-word plan like "refactor" appearing anywhere in an
-    // unrelated approval message was enough -- and the body was then replaced with the omission
-    // pointer, losing content the plan had nothing to do with.
+    // Anchored at the start, not an unanchored `includes` either way round. The echo begins where the plan begins, so a genuine echo is a prefix of the plan (truncated) or starts with it (trailing extras); a match anywhere else is a coincidence. An unanchored test made a short plan match almost any body -- a one-word plan like "refactor" appearing anywhere in an unrelated approval message was enough -- and the body was then replaced with the omission pointer, losing content the plan had nothing to do with.
     if (!suffix.startsWith(plan) && !plan.startsWith(suffix)) return passOutput()
 
-    // Keep everything up to and including the marker, then add the pointer.
-    // This preserves the "User has approved your plan" confirmation line.
+    // Keep everything up to and including the marker, then add the pointer. This preserves the "User has approved your plan" confirmation line.
     const prefix = output.slice(0, markerIndex + APPROVED_PLAN_MARKER.length)
     const notice = `\n${PLAN_OMIT_POINTER}`
 
-    // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
-    // bash_runner's filter pipeline): for a short approved plan the pointer
-    // text can be as large as (or larger than) the echoed body it replaces --
-    // in that case shipping `output` untouched beats destabilising the bytes
-    // for a rewrite that saves nothing.
+    // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with bash_runner's filter pipeline): for a short approved plan the pointer text can be as large as (or larger than) the echoed body it replaces -- in that case shipping `output` untouched beats destabilising the bytes for a rewrite that saves nothing.
     if (
       !isRewriteWorthwhile({
         originalBytes: Buffer.byteLength(output, 'utf-8'),
