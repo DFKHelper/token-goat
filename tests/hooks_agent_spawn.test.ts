@@ -921,3 +921,32 @@ describe('Duplicate-subagent-brief detection (real cross-process load/dispatch/s
     expect(getOutstandingAgentSpawns().length).toBeLessThanOrEqual(MAX_OUTSTANDING_AGENT_SPAWNS)
   })
 })
+
+describe('post_tool_use redacts secrets out of the report before the model sees it', () => {
+  // A subagent that ran `env`, printed a config file, or pasted a deploy log can put a live
+  // credential in its own report. storeMcpOutput redacts the copy it writes to disk (mcp_cache.ts),
+  // but the compacted envelope this handler hands back was built from the RAW result, so the
+  // credential was scrubbed on disk and left intact in the model's context -- in text token-goat
+  // itself authored. Both branches that emit (the rewrite and the annotate-only fallthrough) are
+  // asserted, because the rewrite is gated on a net-benefit check a report can simply fail.
+  const SECRET = 'AKIAABCDEFGHIJKLMNOP'
+
+  /** A report over agent_report.min_bytes whose fenced blocks are long enough to collapse. */
+  function reportWithSecret(): string {
+    const fence = '```\n' + 'a filler line of captured build output, long enough to collapse\n'.repeat(90) + '```\n'
+    return `Findings from the run.\n\n${fence}\nThe deploy key is ${SECRET} and it sits in the prose.\n\n${fence}\n${fence}\n`
+  }
+
+  it('strips the credential from the rewritten envelope', async () => {
+    const result = await callAgentHook('post_tool_use', { prompt: 'audit the deploy path' }, 'sid-redact-rewrite', {
+      content: [{ type: 'text', text: reportWithSecret() }],
+    })
+    // Guards the guard: if the rewrite branch stopped firing, a `pass` result would carry no
+    // output at all and the assertion below would hold vacuously.
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType !== 'rewriteOutput') return
+    expect(result.updatedOutput).not.toContain(SECRET)
+    expect(result.updatedOutput).toContain('[REDACTED:aws_access_key]')
+  })
+
+})

@@ -21,6 +21,7 @@ import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
 import { storeMcpOutput } from './mcp_cache.js'
 import { recordStat } from './stats.js'
+import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
@@ -363,7 +364,15 @@ function postAgentHandler(event: HookEvent): HookOutput {
       removeOutstandingAgentSpawn(finishedPrompt)
     }
 
-    const resultText = extractToolResultText(event.raw)
+    // Redact BEFORE anything downstream reads the report, so the compacted envelope this handler
+    // hands the model and the blob storeMcpOutput() writes to disk are the same sanitized text.
+    // They were not: storeMcpOutput redacts its own copy (see mcp_cache.ts), while the
+    // rewriteOutput branch below built `updatedOutput` from the raw result -- so a credential a
+    // subagent pasted into its report was redacted on disk and raw in the model's context, in text
+    // token-goat itself authored. Redacting at the single point the report enters this handler is
+    // what keeps every consumer below on one sanitized source instead of each having to remember.
+    const redactedReport = redactSecrets(extractToolResultText(event.raw))
+    const resultText = redactedReport.text
     const agentReportCfg = loadConfig().agent_report
     if (!resultText || resultText.length < agentReportCfg.min_bytes) return passOutput()
     const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)
