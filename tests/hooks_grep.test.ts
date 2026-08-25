@@ -113,6 +113,25 @@ describe('postGrepHandler content-mode path folding', () => {
     }
   })
 
+  it('redacts a credential out of the folded result it hands the model', () => {
+    // The fold REPLACES the tool's own output with text this handler composes, so a key sitting in
+    // a matched line was reaching the model inside token-goat-authored text. Every sibling handler
+    // that rewrites already redacts what it composes; grep was the last one that did not. Redaction
+    // is applied where the match text arrives, not beside the single rewrite return, so a second
+    // emit branch added later inherits it rather than repeating this defect an eighth time.
+    const secret = 'AKIAABCDEFGHIJKLMNOP'
+    const lines: string[] = []
+    for (let i = 1; i <= 20; i++) lines.push(`${FOLD_PATH}:${i}:const key = "${secret}" // ${i}`)
+    const result = postGrepHandler(contentEvent(lines.join('\n')))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType !== 'rewriteOutput') return
+    expect(result.updatedOutput).not.toContain(secret)
+    expect(result.updatedOutput).toContain('[REDACTED:aws_access_key]')
+    // Folding still works on the redacted text: one path header, then the numbered lines under it.
+    expect(result.updatedOutput.startsWith(`${FOLD_PATH}\n`)).toBe(true)
+    expect(result.updatedOutput).toContain('  20: const key = "[REDACTED:aws_access_key]" // 20')
+  })
+
   it('records a grep:fold stat with the correct UTF-8 byte delta, including a non-ASCII match line', () => {
     // A CJK line inflates String.length vs UTF-8 byte length differently, so this would fail
     // under a `.length`-based (rather than Buffer.byteLength-based) delta calculation.
@@ -130,6 +149,37 @@ describe('postGrepHandler content-mode path folding', () => {
     const originalBytes = Buffer.byteLength(text, 'utf-8')
     const rewrittenBytes = Buffer.byteLength(result.updatedOutput as string, 'utf-8')
     expect(call![1]).toBe(originalBytes - rewrittenBytes)
+  })
+
+  it('records the redaction count on the branch that emits, and not on a branch that passes', () => {
+    // A redaction subsystem that reports zero redactions is indistinguishable from a broken one,
+    // so the count has to reach `stats`. It is recorded on the rewrite branch specifically: on a
+    // `pass` the harness's own raw output is what the model sees, so crediting a redaction there
+    // would claim a protection that did not apply to what was actually shown.
+    const secret = 'AKIAABCDEFGHIJKLMNOP'
+    const lines: string[] = []
+    for (let i = 1; i <= 20; i++) lines.push(`${FOLD_PATH}:${i}:const key = "${secret}" // ${i}`)
+    const folded = postGrepHandler(contentEvent(lines.join('\n')))
+    expect(folded.hookType).toBe('rewriteOutput')
+    const recorded = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
+    expect(recorded, 'the emitting branch must record the redaction').toBeDefined()
+    expect(recorded![2]).toBe(20)
+    expect(recorded![4]).toBe('grep')
+
+    // The negative half has to use a pass branch that occurs AFTER the redaction runs, or it
+    // proves nothing: `multiline` returns at the top of the handler before the text is ever read,
+    // so it stays green even when the stat is moved up to the entry point -- which is exactly the
+    // misplacement this assertion exists to catch. One match per file fails the `hasSharedFile`
+    // gate instead, which sits below the redaction, so here the redaction genuinely ran and its
+    // result genuinely was not emitted.
+    vi.mocked(recordStat).mockClear()
+    const singles = ['src/a.ts', 'src/b.ts', 'src/c.ts'].map((f, i) => `${f}:${i + 1}:const key = "${secret}"`)
+    const passed = postGrepHandler(contentEvent(singles.join('\n')))
+    expect(passed.hookType).toBe('pass')
+    expect(
+      vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted'),
+      'a pass branch must not claim a redaction the model never benefited from',
+    ).toBeUndefined()
   })
 
   it('bails unchanged when output_mode is not content', () => {

@@ -377,6 +377,15 @@ function postAgentHandler(event: HookEvent): HookOutput {
     if (!resultText || resultText.length < agentReportCfg.min_bytes) return passOutput()
     const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)
     if (id === null) return passOutput()
+    // Recorded here rather than at the redaction above, and here rather than inside either branch
+    // below, because this is the first point past which the redacted report is guaranteed to reach
+    // someone: it is now in the cache, and both remaining returns (the compacted rewrite and the
+    // annotate-only notice) hand back or point at that same sanitized text. Recording at the
+    // redaction itself would credit the early `min_bytes` return, where the raw report reaches the
+    // model untouched. `storeMcpOutput`'s own redaction pass finds nothing left to strip now that
+    // the text arrives clean, so its disk_cache stat reports zero -- this replaces that count
+    // rather than double-counting it.
+    if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')
     recordStat('session_hint', 0, 0)
     // `--full` is load-bearing, not decoration: a bare `mcp-output <id>` render elides its own middle past the default head 30 / tail 80, so pointing at it would promise a full report the CLI cannot produce -- the elided fence middles would be exactly what a bare recall drops again.
     const recallHint = `token-goat mcp-output ${id} --full`

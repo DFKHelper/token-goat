@@ -13,6 +13,7 @@ import { makeDedupHintHandlers, passOutput, getToolName, getToolInput, extractTo
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
 import { recordStat } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { redactSecrets } from './secret_redact.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
  *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
@@ -83,8 +84,19 @@ function foldGrepContentHandler(event: HookEvent): HookOutput {
     }
     if (toolInput['-n'] === false) return passOutput()
 
-    const text = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
-    if (!text) return passOutput()
+    // Redact at the point the match text arrives, not beside the return that emits it. The fold
+    // below replaces the tool's own result with text this handler composes, and every sibling
+    // handler that rewrites (bashoutput, taskoutput, mcp, websearch, fetch, agent) already redacts
+    // what it composes -- a lone exception here is one a future reader would trust or copy. Placing
+    // it at the entry rather than next to the single `rewriteOutput` is the whole lesson of this
+    // defect class: a second emit branch added later inherits the redaction for free, whereas one
+    // attached to a branch is exactly how the same bug has now shipped seven times. Measured at
+    // ~19 us/KB, linear -- 0.4-1.6 ms on realistic grep output, against the ~250 ms of process
+    // startup a hook invocation already pays.
+    const rawText = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+    if (!rawText) return passOutput()
+    const redacted = redactSecrets(rawText)
+    const text = redacted.text
 
     const rawLines = text.split(/\r\n|\r|\n/)
     const parsed: Array<{ file: string; lineNo: string; rest: string }> = []
@@ -136,6 +148,12 @@ function foldGrepContentHandler(event: HookEvent): HookOutput {
 
     const bytesDelta = originalBytes - rewrittenBytes
     recordStat('grep:fold', bytesDelta, Math.round(bytesDelta / 4))
+    // The redaction itself belongs at the entry point above, so a later branch inherits it. The
+    // COUNT belongs here, because whether a redaction actually protected anything is branch-
+    // dependent in a way the redaction is not: on the `pass` returns above, the harness's own raw
+    // output is what reaches the model, so crediting a redaction there would report a protection
+    // that did not apply to what was actually shown. Only this branch emits the redacted text.
+    if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, 'grep')
     return { hookType: 'rewriteOutput', updatedOutput: rewritten }
   } catch {
     return passOutput()

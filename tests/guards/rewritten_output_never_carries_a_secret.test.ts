@@ -103,13 +103,21 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
   const clean = `starting the build\n${FILLER}\n`
   const withSecret = `${clean}export AWS_ACCESS_KEY_ID=${SECRET}\n${FILLER}\n`
   const report = `Findings.\n\n${FENCE}\nThe key is ${SECRET}.\n\n${FENCE}\n${FENCE}\n`
-  const grepHits = Array.from({ length: 300 }, (_, i) => `src/f${i}.ts:${i}:  const k = "${SECRET}"`).join('\n')
+  // Repeated files, not 300 distinct ones: the grep fold only rewrites when some file has at
+  // least two matches to group, so one-match-per-file output leaves its whole rewrite branch
+  // unreached -- which is how a real leak in that handler initially slipped past this guard.
+  const grepHits: string[] = []
+  for (const f of ['src/config.ts', 'src/deploy.ts', 'src/env.ts']) {
+    for (let i = 1; i <= 60; i++) {
+      grepHits.push(`${f}:${i}:  const key = "${SECRET}" // occurrence ${i} with padding to clear the floor`)
+    }
+  }
   const plan = `User has approved your plan. The key ${SECRET} is noted.`
   return [
     { first: { output: clean, exit_code: 0 }, second: { output: withSecret, exit_code: 0 } },
     { first: { content: [{ type: 'text', text: report }] }, second: { content: [{ type: 'text', text: report }] } },
     { first: { output: plan }, second: { output: plan } },
-    { first: { output: grepHits }, second: { output: grepHits } },
+    { first: { output: grepHits.join('\n') }, second: { output: grepHits.join('\n') } },
   ]
 }
 
