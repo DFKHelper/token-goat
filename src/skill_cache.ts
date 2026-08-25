@@ -21,6 +21,8 @@ import { atomicWriteText, isCodeFenceDelimiter, stripLower } from './util.js'
 import { registerReset } from './reset.js'
 import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from 'node:fs'
 import { DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
+import { redactSecrets } from './secret_redact.js'
+import { recordStat } from './stats.js'
 
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
 
@@ -418,12 +420,28 @@ export async function storeOutput(
     const outId = outputIdFor(sessionId, skillName, sha)
     const dir = skillOutputsDir()
     const ts = Date.now()
+    // bodyBytes is deliberately the RAW pre-redaction size, not what actually lands on disk: it
+    // feeds sessionOutputBodyBytes, whose only consumer (preSkillHandler's session_hint deny
+    // credit) prices "the load that didn't happen" -- and a real reload's live path
+    // (postSkillHandler below) hands the model the raw body unredacted, never the cached copy.
+    // Sizing this off the redacted length would understate that counterfactual whenever a
+    // secret was actually stripped.
     const bodyBytes = Buffer.byteLength(body, 'utf-8')
     const truncated = bodyBytes > 256 * 1024
 
-    let storedBody = body
+    // Defense-in-depth funnel, mirroring disk_cache.ts's storeBlob(): redact before this body
+    // ever reaches disk. Fail-safe, not fail-open -- if the redaction pass itself throws, this
+    // propagates to the function's own outer try/catch below, which returns null without having
+    // written anything, exactly like every other failure path here (oversized name, write error).
+    const redactedBody = redactSecrets(body)
+    if (redactedBody.count > 0) recordStat('secret_redacted', 0, redactedBody.count, undefined, SKILLS_OUTPUT_SUBDIR)
+
+    // Truncate the redacted text, not the raw body: truncating raw text first and redacting the
+    // slice afterward could cut a secret pattern in half at the boundary and leave the remaining
+    // fragment unmatched.
+    let storedBody = redactedBody.text
     if (truncated) {
-      const buf = Buffer.from(body, 'utf-8')
+      const buf = Buffer.from(redactedBody.text, 'utf-8')
       let truncStart = Math.max(0, buf.length - 262144)
 
       // If truncStart is in the middle of a UTF-8 character, find a safe boundary.
@@ -494,7 +512,15 @@ export async function storeCompact(
     const fileId = `${safeSession}@${sanitizeSkillId(name)}@compact`
     const dir = skillOutputsDir()
 
-    let text = compactText
+    // Same funnel as storeOutput above: this slice is extracted from the same raw body
+    // (extractCompactFromMarker) and gets inlined straight into a model-visible hook reply by
+    // preSkillHandler's oversized-first-load path, so it needs the same redaction storeOutput's
+    // persisted body gets. Redact before prepending the source_sha marker, so the marker itself
+    // (a content hash, not secret-shaped) is never a redaction target.
+    const redacted = redactSecrets(compactText)
+    if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, SKILLS_OUTPUT_SUBDIR)
+
+    let text = redacted.text
     if (sourceSha) {
       text = `<!-- source_sha: ${sourceSha.slice(0, 12)} -->\n${text}`
     }
