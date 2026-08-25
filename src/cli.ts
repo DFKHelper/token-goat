@@ -1504,11 +1504,18 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   }
   let text: string
   if (opts.json === true) {
-    text = JSON.stringify(result, null, 2)
+    // Fence only the OCR text field, so a --json caller still gets a parseable envelope with
+    // just the risky value wrapped -- the same shape the outline- and list-shaped document
+    // commands above use.
+    text = JSON.stringify(
+      result.text === null ? result : { ...result, text: fenceFileTextIfMatched(result.text) },
+      null,
+      2,
+    )
   } else {
     const lines = [`Confidence: ${Math.round(result.confidence)}%`, `Characters: ${result.chars}`]
     text = result.textHeavy && result.text !== null
-      ? `${lines.join('\n')}\n\n${result.text}`
+      ? `${lines.join('\n')}\n\n${fenceFileTextIfMatched(result.text)}`
       : `${lines.join('\n')}\n(below usefulness threshold; text likely noise, not shown)`
   }
   out(text)
