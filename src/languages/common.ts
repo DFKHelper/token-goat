@@ -1261,6 +1261,14 @@ export interface BraceScanOpts {
    *  languages a backtick is not a delimiter (e.g. a JS template literal has its own `${}` nesting a
    *  plain scan cannot handle), so only callers whose language uses backtick this way should set it. */
   backtickQuote?: boolean
+  /** Which string-escape model the scan applies inside a quoted span. `'backslash'` (the default, and what every pre-existing caller gets) treats `\` as escaping the next character, which is right for the C family. `'none'` is for languages where a backslash is an ordinary character inside a string -- PowerShell escapes with a backtick, so a Windows path literal like `"C:\temp\"` really does end at that quote, and reading the `\"` as an escaped quote left the string "open" and swallowed every brace after it. `'csharp'` keeps backslash escapes for ordinary literals but also recognizes a verbatim string (`@"..."`, `$@"..."`, `@$"..."`), inside which `\` is literal and a doubled `""` is the escaped quote. */
+  stringEscapes?: 'backslash' | 'none' | 'csharp'
+}
+
+/** True when the `"` at `i` opens a C# verbatim string, i.e. it is prefixed by `@`, `$@` or `@$`. */
+function opensCsharpVerbatimString(content: string, i: number): boolean {
+  const prev = content[i - 1]
+  return prev === '@' || (prev === '$' && content[i - 2] === '@')
 }
 
 export function findMatchingBraceEndLine(
@@ -1273,12 +1281,23 @@ export function findMatchingBraceEndLine(
 ): number {
   const block = opts?.blockComment
   const backtick = opts?.backtickQuote === true
+  const escapes = opts?.stringEscapes ?? 'backslash'
   let depth = 0
   let quote: string | null = null
+  // Set when `quote` was opened by a C# verbatim string: inside one, `\` is an ordinary character and a doubled `""` is the escaped quote.
+  let verbatim = false
   for (let i = openBraceIndex; i < content.length; i++) {
     const ch = content[i]
     if (quote !== null) {
-      if (ch === '\\') { i++; continue }
+      if (verbatim) {
+        if (ch === quote) {
+          if (content[i + 1] === quote) { i++; continue }
+          quote = null
+          verbatim = false
+        }
+        continue
+      }
+      if (escapes !== 'none' && ch === '\\') { i++; continue }
       if (ch === quote) quote = null
       continue
     }
@@ -1295,7 +1314,11 @@ export function findMatchingBraceEndLine(
       while (i < content.length && content[i] !== '\n') i++
       continue
     }
-    if (ch === '"' || ch === "'" || (backtick && ch === '`')) { quote = ch; continue }
+    if (ch === '"' || ch === "'" || (backtick && ch === '`')) {
+      quote = ch
+      verbatim = escapes === 'csharp' && ch === '"' && opensCsharpVerbatimString(content, i)
+      continue
+    }
     if (ch === '{') depth++
     else if (ch === '}') {
       depth--
@@ -1337,6 +1360,7 @@ export function assignBraceBlockSpans(
   symbols: readonly SymbolEntry[],
   content: string,
   lineCommentPrefix?: string,
+  stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
 ): SymbolEntry[] {
   if (symbols.length === 0) return [...symbols]
   const lines = content.split('\n')
@@ -1354,11 +1378,11 @@ export function assignBraceBlockSpans(
     const nextStart = starts.find((s) => s > sym.lineStart)
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
     const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
-    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment)
+    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment, stringEscapes)
     if (openIndex === null) return sym
     // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
     const endLine = findMatchingBraceEndLine(content, openIndex, totalLines, lineIndex, lineCommentPrefix,
-      blockComment === undefined ? { noMatchValue: -1 } : { blockComment, noMatchValue: -1 })
+      blockComment === undefined ? { noMatchValue: -1, stringEscapes } : { blockComment, noMatchValue: -1, stringEscapes })
     // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
     if (endLine <= sym.lineStart) return sym
     return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
@@ -1386,6 +1410,7 @@ function findBlockOpenBrace(
   lastSearchLine: number,
   lineCommentPrefix?: string,
   blockComment?: readonly [string, string],
+  stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
 ): number | null {
   const from = lineIndex[startLine - 1]
   if (from === undefined) return null
@@ -1398,11 +1423,21 @@ function findBlockOpenBrace(
   // Lines consumed past `startLine`, and whether we are at the first non-space char of a line.
   let linesSeen = 0
   let atLineStart = false
+  // Mirrors findMatchingBraceEndLine's verbatim tracking, so the two halves of the span walk agree on where a C# verbatim string ends.
+  let verbatim = false
   for (let i = from; i < to; i++) {
     const ch = content[i]
     if (ch === undefined) break
     if (quote !== null) {
-      if (ch === '\\') { i++; continue }
+      if (verbatim) {
+        if (ch === quote) {
+          if (content[i + 1] === quote) { i++; continue }
+          quote = null
+          verbatim = false
+        }
+        continue
+      }
+      if (stringEscapes !== 'none' && ch === '\\') { i++; continue }
       if (ch === quote) quote = null
       continue
     }
@@ -1426,7 +1461,11 @@ function findBlockOpenBrace(
       // does not swallow the if-block (semicolon-optional languages have no `;` to mark the end).
       if (parenDepth === 0 && linesSeen >= 1 && startsWithBlockKeyword(content, i, to)) return null
     }
-    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      verbatim = stringEscapes === 'csharp' && ch === '"' && opensCsharpVerbatimString(content, i)
+      continue
+    }
     if (ch === '(' || ch === '[') parenDepth++
     else if (ch === ')' || ch === ']') { if (parenDepth > 0) parenDepth-- }
     else if (ch === ';') return null
