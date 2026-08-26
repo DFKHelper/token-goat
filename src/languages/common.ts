@@ -1259,6 +1259,8 @@ export interface BraceSpanOpts {
   nestedBlockComments?: boolean
   /** See {@link BraceScanOpts.tripleQuote}. */
   tripleQuote?: boolean
+  /** See {@link BraceScanOpts.rawStringQuotes}. */
+  rawStringQuotes?: boolean
   /** See {@link BraceScanOpts.lineStringPrefix}. */
   lineStringPrefix?: string
 }
@@ -1291,6 +1293,26 @@ export interface BraceScanOpts {
   lineStringPrefix?: string
   /** Literals that begin with a line-comment prefix but are not a comment, checked first so the prefix does not match them. PHP 8 spells an attribute `#[Attr]`, which starts with its `#` comment prefix; treating it as a comment skips to end of line and loses an opening brace that shares the line, as in `function f(#[SensitiveParameter] string $p) {`. */
   lineCommentExceptions?: readonly string[]
+  /** Whether a run of three or more """ opens a C# 11 raw string literal, closed by the next run of at least that many quotes. Unlike {@link tripleQuote} the delimiter length is not fixed: four opening quotes are closed by four, which is how a literal containing three quotes is written. Inside, nothing is an escape, so without this a raw path such as """"C:\Users\"""" reads as ordinary quotes plus a trailing backslash escape, which swallows the rest of the file and leaves the enclosing method and class at their signature lines. */
+  rawStringQuotes?: boolean
+}
+
+/** How many consecutive quote characters start at `i`. */
+function quoteRunLength(content: string, i: number): number {
+  let n = 0
+  while (content[i + n] === '"') n++
+  return n
+}
+
+/** Index just past the first run of at least `min` quotes at or after `from`, or -1 if there is none. A C# raw string closes on a quote run at least as long as the one that opened it, so a shorter run inside the literal is content rather than the closer. */
+function skipRawStringQuotes(content: string, from: number, min: number): number {
+  for (let i = from; i < content.length; i++) {
+    if (content[i] !== '"') continue
+    const run = quoteRunLength(content, i)
+    if (run >= min) return i + run
+    i += run - 1
+  }
+  return -1
 }
 
 /** One step through a PowerShell string literal: inside a double-quoted string a backtick escapes the next character, and a backslash escapes nothing in either kind. Returns the index the caller should resume from and whether the string is still open. PowerShell's other escape, a doubled delimiter, needs no rule here: it adds two quotes, so it cannot change which side of a string a later brace falls on. */
@@ -1350,6 +1372,7 @@ export function findMatchingBraceEndLine(
   const escapes = opts?.stringEscapes ?? 'backslash'
   const nestedBlock = opts?.nestedBlockComments === true
   const triple = opts?.tripleQuote === true
+  const rawString = opts?.rawStringQuotes === true
   const lineString = opts?.lineStringPrefix
   let depth = 0
   let quote: string | null = null
@@ -1393,6 +1416,15 @@ export function findMatchingBraceEndLine(
     if (lineString !== undefined && content.startsWith(lineString, i)) {
       while (i < content.length && content[i] !== '\n') i++
       continue
+    }
+    // A C# raw string is opaque and its delimiter length varies, so measure the opening run and jump past the first run at least as long.
+    if (rawString && ch === '"') {
+      const run = quoteRunLength(content, i)
+      if (run >= 3) {
+        const end = skipRawStringQuotes(content, i + run, run)
+        i = end === -1 ? content.length : end - 1
+        continue
+      }
     }
     // A triple-quoted literal is opaque: no escapes apply inside it, so jump straight past its closer rather than letting the single-quote rules below misread its contents.
     if (triple && content.startsWith('"""', i)) {
@@ -1471,6 +1503,7 @@ export function assignBraceBlockSpans(
     noMatchValue: -1,
     stringEscapes,
     tripleQuote,
+    rawStringQuotes: opts.rawStringQuotes ?? false,
     ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }),
     ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }),
     ...(opts.lineCommentExceptions === undefined ? {} : { lineCommentExceptions: opts.lineCommentExceptions }),
@@ -1517,6 +1550,7 @@ function findBlockOpenBrace(
   const stringEscapes = opts?.stringEscapes ?? 'backslash'
   const nestedBlockComments = opts?.nestedBlockComments === true
   const tripleQuote = opts?.tripleQuote === true
+  const rawString = opts?.rawStringQuotes === true
   const lineString = opts?.lineStringPrefix
   const linePrefixes = toLineCommentPrefixes(lineCommentPrefix)
   const lineExceptions = opts?.lineCommentExceptions ?? []
@@ -1579,6 +1613,16 @@ function findBlockOpenBrace(
     if (lineString !== undefined && content.startsWith(lineString, i)) {
       while (i + 1 < to && content[i + 1] !== '\n') i++
       continue
+    }
+    // Mirrors findMatchingBraceEndLine's raw-string skip, so both halves of the span walk agree on where a C# raw string ends.
+    if (rawString && ch === '"') {
+      const run = quoteRunLength(content, i)
+      if (run >= 3) {
+        const end = skipRawStringQuotes(content, i + run, run)
+        if (end === -1) return null
+        i = end - 1
+        continue
+      }
     }
     // Mirrors findMatchingBraceEndLine's triple-quote skip, so both halves of the span walk agree on where a `"""` literal ends.
     if (tripleQuote && content.startsWith('"""', i)) {

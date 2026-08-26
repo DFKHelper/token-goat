@@ -178,3 +178,78 @@ describe('brace span scanning honours the PowerShell escape character', () => {
     expect(m?.lineEnd).toBe(5)
   })
 })
+
+// A C# 11 raw string opens on a run of three or more quotes and closes on the next run at least as long, and takes no escapes at all. Read as three ordinary quotes, `"""C:\Users\"""` ends with a backslash "escaping" the closing quote, so the walk stayed inside a string for the rest of the file and the method and its class both fell back to their signature lines.
+describe('brace span scanning treats a C# raw string as opaque', () => {
+  it('keeps method and class spans across a raw string ending in a backslash', async () => {
+    const content = [
+      'class C {',
+      '  void M() {',
+      '    var path = """C:\\Users\\""";',
+      '    Use(path);',
+      '  }',
+      '',
+      '  void N() {',
+      '    Other();',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Raw.cs', content)
+    const m = result.symbols.find((s) => s.name === 'M')
+    expect(m?.lineStart).toBe(2)
+    expect(m?.lineEnd).toBe(5)
+    expect(m?.body).toContain('Use(path);')
+    expect(result.symbols.find((s) => s.name === 'C')?.lineEnd).toBe(10)
+    expect(result.symbols.find((s) => s.name === 'N')?.lineEnd).toBe(9)
+  })
+
+  it('closes a four-quote raw string only on a run of four, not on the three quotes inside it', async () => {
+    const content = [
+      'class C {',
+      '  void M() {',
+      '    var s = """"a """ } b"""";',
+      '    Use(s);',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Raw4.cs', content)
+    const m = result.symbols.find((s) => s.name === 'M')
+    expect(m?.lineStart).toBe(2)
+    expect(m?.lineEnd).toBe(5)
+    expect(result.symbols.find((s) => s.name === 'C')?.lineEnd).toBe(6)
+  })
+
+  it('still reads three adjacent quotes in Kotlin as a fixed three-quote literal', async () => {
+    const content = [
+      'class Sizes {',
+      '    fun label(): String {',
+      '        val s = """5" wide"""',
+      '        return s',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Sizes.kt', content)
+    const label = result.symbols.find((s) => s.name === 'label')
+    expect(label?.lineStart).toBe(2)
+    expect(label?.lineEnd).toBe(5)
+  })
+
+  it('still reads an empty C# string literal as two ordinary quotes', async () => {
+    const content = [
+      'class C {',
+      '  void M() {',
+      '    var s = "" + "}";',
+      '    Use(s);',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Empty.cs', content)
+    const m = result.symbols.find((s) => s.name === 'M')
+    expect(m?.lineStart).toBe(2)
+    expect(m?.lineEnd).toBe(5)
+  })
+})
