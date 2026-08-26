@@ -2569,7 +2569,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   css: extractCssSymbols,
   dockerfile: extractDockerfileSymbols,
   csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp' }),
-  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: '//' }),
+  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: ['//', '#'], lineCommentExceptions: ['#['] }),
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]

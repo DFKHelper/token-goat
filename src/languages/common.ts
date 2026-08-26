@@ -1246,8 +1246,10 @@ export function propagateEndLinesToSymbols(
 /** Per-language options for {@link assignBraceBlockSpans}. Named rather than positional because the
  *  set grew past what a reader can keep straight in a call like `(syms, src, '//', 'backslash', true, true)`. */
 export interface BraceSpanOpts {
-  /** The language's line-comment prefix, e.g. `'//'` or `'#'`. */
-  lineComment?: string
+  /** The language's line-comment prefixes, e.g. `'//'`, or `['//', '#']` for PHP, which has both. */
+  lineComment?: string | readonly string[]
+  /** See {@link BraceScanOpts.lineCommentExceptions}. */
+  lineCommentExceptions?: readonly string[]
   /** Block-comment delimiters. Omit to derive them from {@link lineComment} (`'//'` gives C-style,
    *  `'#'` gives PowerShell's `<# #>`); pass `null` for a language that has no block comment at all. */
   blockComment?: readonly [string, string] | null
@@ -1287,12 +1289,26 @@ export interface BraceScanOpts {
   tripleQuote?: boolean
   /** A prefix that opens a string literal running to the end of the line, with no escape sequences and no closing delimiter. Zig's multi-line string is written as a `\\` at the start of each line; its content is arbitrary text, so a `}` inside one is not a brace. Without this the scan reads that content as code and the enclosing symbol's span ends at the first `}` the text happens to contain. */
   lineStringPrefix?: string
+  /** Literals that begin with a line-comment prefix but are not a comment, checked first so the prefix does not match them. PHP 8 spells an attribute `#[Attr]`, which starts with its `#` comment prefix; treating it as a comment skips to end of line and loses an opening brace that shares the line, as in `function f(#[SensitiveParameter] string $p) {`. */
+  lineCommentExceptions?: readonly string[]
 }
 
 /** True when the `"` at `i` opens a C# verbatim string, i.e. it is prefixed by `@`, `$@` or `@$`. */
 function opensCsharpVerbatimString(content: string, i: number): boolean {
   const prev = content[i - 1]
   return prev === '@' || (prev === '$' && content[i - 2] === '@')
+}
+
+/** A language may have more than one line-comment prefix (PHP accepts both `//` and `#`), so both halves of the brace walk normalize to a list. */
+function toLineCommentPrefixes(prefix: string | readonly string[] | undefined): readonly string[] {
+  if (prefix === undefined) return []
+  return typeof prefix === 'string' ? [prefix] : prefix
+}
+
+/** Whether a line comment starts at `i`. An exception literal wins over a prefix it starts with, so PHP's `#[` attribute is not read as a `#` comment. */
+function atLineComment(content: string, i: number, prefixes: readonly string[], exceptions: readonly string[]): boolean {
+  if (exceptions.some((e) => content.startsWith(e, i))) return false
+  return prefixes.some((prefix) => content.startsWith(prefix, i))
 }
 
 /** Index just past the closer of the block comment opening at `start`, or -1 if it is never closed. With `nested` false this is a plain first-closer scan, byte-identical to the `indexOf` it replaces; with it true an inner opener increments a depth counter, so only the closer that balances the outermost opener ends the comment. */
@@ -1317,9 +1333,11 @@ export function findMatchingBraceEndLine(
   openBraceIndex: number,
   totalLines: number,
   lineIndex: readonly number[],
-  lineCommentPrefix?: string,
+  lineCommentPrefix?: string | readonly string[],
   opts?: BraceScanOpts,
 ): number {
+  const linePrefixes = toLineCommentPrefixes(lineCommentPrefix)
+  const lineExceptions = opts?.lineCommentExceptions ?? []
   const block = opts?.blockComment
   const backtick = opts?.backtickQuote === true
   const escapes = opts?.stringEscapes ?? 'backslash'
@@ -1354,7 +1372,7 @@ export function findMatchingBraceEndLine(
     }
     // Opt-in, because the callers that pass already-stripped content must not pay for a second
     // pass, and a prefix that is not a comment marker in their language would corrupt the walk.
-    if (lineCommentPrefix !== undefined && content.startsWith(lineCommentPrefix, i)) {
+    if (atLineComment(content, i, linePrefixes, lineExceptions)) {
       while (i < content.length && content[i] !== '\n') i++
       continue
     }
@@ -1421,6 +1439,7 @@ export function assignBraceBlockSpans(
   const nestedBlockComments = opts.nestedBlockComments ?? false
   const tripleQuote = opts.tripleQuote ?? false
   const lineStringPrefix = opts.lineStringPrefix
+  const firstLinePrefix = toLineCommentPrefixes(lineCommentPrefix)[0]
   if (symbols.length === 0) return [...symbols]
   const lines = content.split('\n')
   const totalLines = lines.length
@@ -1434,17 +1453,25 @@ export function assignBraceBlockSpans(
   const blockComment: readonly [string, string] | undefined =
     opts.blockComment !== undefined
       ? (opts.blockComment ?? undefined)
-      : lineCommentPrefix === '//' ? ['/*', '*/'] : lineCommentPrefix === '#' ? ['<#', '#>'] : undefined
+      : firstLinePrefix === '//' ? ['/*', '*/'] : firstLinePrefix === '#' ? ['<#', '#>'] : undefined
+  const scanOpts: BraceScanOpts = {
+    noMatchValue: -1,
+    stringEscapes,
+    tripleQuote,
+    ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }),
+    ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }),
+    ...(opts.lineCommentExceptions === undefined ? {} : { lineCommentExceptions: opts.lineCommentExceptions }),
+  }
   return symbols.map((sym) => {
     if (sym.lineEnd !== sym.lineStart) return sym
     const nextStart = starts.find((s) => s > sym.lineStart)
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
     const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
-    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment, stringEscapes, nestedBlockComments, tripleQuote, lineStringPrefix)
+    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, scanOpts)
     if (openIndex === null) return sym
     // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
     const endLine = findMatchingBraceEndLine(content, openIndex, totalLines, lineIndex, lineCommentPrefix,
-      { noMatchValue: -1, stringEscapes, tripleQuote, ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }), ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }) })
+      scanOpts)
     // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
     if (endLine <= sym.lineStart) return sym
     return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
@@ -1470,13 +1497,16 @@ function findBlockOpenBrace(
   lineIndex: readonly number[],
   startLine: number,
   lastSearchLine: number,
-  lineCommentPrefix?: string,
-  blockComment?: readonly [string, string],
-  stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
-  nestedBlockComments = false,
-  tripleQuote = false,
-  lineString?: string,
+  lineCommentPrefix?: string | readonly string[],
+  opts?: BraceScanOpts,
 ): number | null {
+  const blockComment = opts?.blockComment
+  const stringEscapes = opts?.stringEscapes ?? 'backslash'
+  const nestedBlockComments = opts?.nestedBlockComments === true
+  const tripleQuote = opts?.tripleQuote === true
+  const lineString = opts?.lineStringPrefix
+  const linePrefixes = toLineCommentPrefixes(lineCommentPrefix)
+  const lineExceptions = opts?.lineCommentExceptions ?? []
   const from = lineIndex[startLine - 1]
   if (from === undefined) return null
   // One past the last searchable line, so the scan covers lastSearchLine in full.
@@ -1513,7 +1543,7 @@ function findBlockOpenBrace(
       i = end - 1
       continue
     }
-    if (lineCommentPrefix !== undefined && content.startsWith(lineCommentPrefix, i)) {
+    if (atLineComment(content, i, linePrefixes, lineExceptions)) {
       // Advance to just before the newline so the loop's own `\n` handling still runs for it.
       while (i + 1 < to && content[i + 1] !== '\n') i++
       continue
