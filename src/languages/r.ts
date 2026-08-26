@@ -25,8 +25,14 @@ import { countContentLines } from '../util.js'
 // and R 4.1's (2021) native backslash-lambda shorthand `baz <- \(...)`. The `\` form is now
 // idiomatic; requiring the literal `function` keyword dropped every named lambda defined with
 // it. A bare `\` is only ever the lambda shorthand in R, so `<name> <- \(` is unambiguous.
-// Captures the variable name before the assignment operator.
-const FUNC_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_.]*)\s*(?:<-|=)\s*(?:function|\\)\s*\(/
+// Captures the variable name before the assignment operator, in either of R's two spellings.
+// A backtick-quoted name is how R defines an infix operator (`` `%+%` <- function(a, b) ``, the
+// form magrittr's `%>%` itself uses) and every S3 method on an operator or extractor generic
+// (`` `[.myclass` <- ``, `` `+.difftime` <- ``, `` `myattr<-` <- ``); a plain-name-only pattern
+// dropped all of them from the index. A leading dot is likewise a legal R name start, and it is
+// what every package's own load hooks are called (`.onLoad`, `.onAttach`, `.onUnload`), so those
+// went unindexed too.
+const FUNC_ASSIGN_RE = /^(?:`([^`]+)`|([A-Za-z._][A-Za-z0-9_.]*))\s*(?:<-|=)\s*(?:function|\\)\s*\(/
 
 // A definition is the whole statement, so both patterns are anchored to the start of the line,
 // optionally through an assignment (`Point <- setClass("Point", ...)` is idiomatic). Unanchored,
@@ -163,7 +169,8 @@ export function extractR(
         // offsets carry straight over to `content`. The match ends on the `(` of the parameter list.
         const parenIndex = (lineIndex[i] ?? 0) + fm[0].length - 1
         const endLine = bracedBodyEndLine(content, lineIndex, parenIndex, totalLines, lineNum)
-        symbols.push(makeSpanSymbol(filePath, fm[1] ?? '', 'function', { startLine: lineNum, endLine, body: spanBody(lineNum, endLine) }, undefined, lines, 'hash'))
+        // Group 1 is the backtick-quoted spelling, group 2 the plain one; only one ever matches. The stored name drops the backticks so `token-goat symbol '%+%'` resolves it by the name R code actually calls it by.
+        symbols.push(makeSpanSymbol(filePath, fm[1] ?? fm[2] ?? '', 'function', { startLine: lineNum, endLine, body: spanBody(lineNum, endLine) }, undefined, lines, 'hash'))
         continue
       }
 
