@@ -30,12 +30,13 @@
  *     `<template v-slot>`, not a second top-level `<template>` element) would mis-detect the
  *     block boundary. Mirrors the level of block-extraction simplicity already accepted
  *     elsewhere in this codebase (e.g. `maskHtmlNoise`'s `<script>` body regex).
- *   - Top-level declaration detection uses a per-line, string-literal-aware brace counter
- *     (`stripStringLiterals`, single-line only) to know when it's back at depth 0, not a real
- *     parser. A brace character inside a multi-line template literal is not tracked correctly
- *     (a known limitation `stripStringLiterals` itself carries, since it operates one line at a
- *     time); this can only ever under- or over-count depth inside a script block, never touch
- *     ref extraction or the whole-file component symbol.
+ *   - Top-level declaration detection uses a brace counter to know when it's back at depth 0,
+ *     not a real parser. The script is run through `blankJsStringLiterals` first, so braces
+ *     inside single- AND multi-line string/template-literal spans are correctly ignored. What
+ *     remains unhandled is a brace inside a regular-expression literal (`/[{]/`), and a stray
+ *     backtick inside one, which would open a template span that runs on; both are rare enough
+ *     to be out of proportionate scope, and either can only ever under- or over-count depth
+ *     inside a script block, never touch ref extraction or the whole-file component symbol.
  */
 
 import * as path from 'node:path'
@@ -47,7 +48,6 @@ import {
   offsetToLine,
   scanQuotedStringEnd,
   stripJsComments,
-  stripStringLiterals,
   stripXmlComments,
 } from './common.js'
 import { pushAll, countContentLines } from '../util.js'
@@ -133,7 +133,8 @@ function extractTopLevelDeclarations(
 ): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const commentFree = stripJsComments(scriptContent)
-  const lines = commentFree.split('\n')
+  // Blank string/template-literal BODIES across the whole script before splitting, so a brace inside a multi-line backtick template literal never moves the depth counter and a declaration-shaped line inside one is never indexed as a real declaration. The per-line stripStringLiterals this used to call cannot see that a backtick span opened on an earlier line, so an unbalanced `{` inside one pinned depth above 0 and silently dropped every later top-level declaration.
+  const lines = blankJsStringLiterals(commentFree).split('\n')
   let depth = 0
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -153,8 +154,7 @@ function extractTopLevelDeclarations(
         }
       }
     }
-    const braceLine = stripStringLiterals(rawLine)
-    depth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
+    depth += (rawLine.match(/\{/g) ?? []).length - (rawLine.match(/\}/g) ?? []).length
   }
   return symbols
 }
