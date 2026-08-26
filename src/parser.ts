@@ -2578,12 +2578,12 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
     const r = extractLiquid(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
-  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, '//', 'backslash', true),
-  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, '//', 'backslash', true),
-  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, '//', 'backslash', true),
+  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, '//', 'backslash', true, true),
+  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, '//', 'backslash', true, true),
+  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, '//', 'backslash', true, true),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
-  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, '//', 'backslash', true),
+  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, '//', 'backslash', true, true),
   zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, '//'),
   r: (content, filePath) => extractR(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
