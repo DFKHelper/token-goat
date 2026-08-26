@@ -1259,6 +1259,8 @@ export interface BraceSpanOpts {
   nestedBlockComments?: boolean
   /** See {@link BraceScanOpts.tripleQuote}. */
   tripleQuote?: boolean
+  /** See {@link BraceScanOpts.tripleSingleQuote}. */
+  tripleSingleQuote?: boolean
   /** See {@link BraceScanOpts.rawStringQuotes}. */
   rawStringQuotes?: boolean
   /** See {@link BraceScanOpts.lineStringPrefix}. */
@@ -1295,6 +1297,16 @@ export interface BraceScanOpts {
   lineCommentExceptions?: readonly string[]
   /** Whether a run of three or more """ opens a C# 11 raw string literal, closed by the next run of at least that many quotes. Unlike {@link tripleQuote} the delimiter length is not fixed: four opening quotes are closed by four, which is how a literal containing three quotes is written. Inside, nothing is an escape, so without this a raw path such as """"C:\Users\"""" reads as ordinary quotes plus a trailing backslash escape, which swallows the rest of the file and leaves the enclosing method and class at their signature lines. */
   rawStringQuotes?: boolean
+  /** Whether ''' opens a triple-quoted string on the same terms as {@link tripleQuote}. Dart has both spellings; Kotlin, Scala and Swift have only the double-quoted one, and there ''' is something else. Without this a Dart literal holding an odd number of single quotes, such as '''a ' } b''', re-pairs them so the brace between them is read as code and the enclosing method ends on it. */
+  tripleSingleQuote?: boolean
+}
+
+/** The triple-quote delimiters in play for a scan. A language may have one spelling, both, or neither. */
+function tripleQuoteDelimiters(opts: BraceScanOpts | undefined): readonly string[] {
+  const delims: string[] = []
+  if (opts?.tripleQuote === true) delims.push('"""')
+  if (opts?.tripleSingleQuote === true) delims.push("'''")
+  return delims
 }
 
 /** How many consecutive quote characters start at `i`. */
@@ -1371,8 +1383,8 @@ export function findMatchingBraceEndLine(
   const backtick = opts?.backtickQuote === true
   const escapes = opts?.stringEscapes ?? 'backslash'
   const nestedBlock = opts?.nestedBlockComments === true
-  const triple = opts?.tripleQuote === true
   const rawString = opts?.rawStringQuotes === true
+  const tripleDelims = tripleQuoteDelimiters(opts)
   const lineString = opts?.lineStringPrefix
   let depth = 0
   let quote: string | null = null
@@ -1427,8 +1439,9 @@ export function findMatchingBraceEndLine(
       }
     }
     // A triple-quoted literal is opaque: no escapes apply inside it, so jump straight past its closer rather than letting the single-quote rules below misread its contents.
-    if (triple && content.startsWith('"""', i)) {
-      const end = content.indexOf('"""', i + 3)
+    const tripleAt = tripleDelims.find((t) => content.startsWith(t, i))
+    if (tripleAt !== undefined) {
+      const end = content.indexOf(tripleAt, i + 3)
       i = end === -1 ? content.length : end + 2
       continue
     }
@@ -1504,6 +1517,7 @@ export function assignBraceBlockSpans(
     stringEscapes,
     tripleQuote,
     rawStringQuotes: opts.rawStringQuotes ?? false,
+    tripleSingleQuote: opts.tripleSingleQuote ?? false,
     ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }),
     ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }),
     ...(opts.lineCommentExceptions === undefined ? {} : { lineCommentExceptions: opts.lineCommentExceptions }),
@@ -1549,8 +1563,8 @@ function findBlockOpenBrace(
   const blockComment = opts?.blockComment
   const stringEscapes = opts?.stringEscapes ?? 'backslash'
   const nestedBlockComments = opts?.nestedBlockComments === true
-  const tripleQuote = opts?.tripleQuote === true
   const rawString = opts?.rawStringQuotes === true
+  const tripleDelims = tripleQuoteDelimiters(opts)
   const lineString = opts?.lineStringPrefix
   const linePrefixes = toLineCommentPrefixes(lineCommentPrefix)
   const lineExceptions = opts?.lineCommentExceptions ?? []
@@ -1625,8 +1639,9 @@ function findBlockOpenBrace(
       }
     }
     // Mirrors findMatchingBraceEndLine's triple-quote skip, so both halves of the span walk agree on where a `"""` literal ends.
-    if (tripleQuote && content.startsWith('"""', i)) {
-      const end = content.indexOf('"""', i + 3)
+    const tripleAt = tripleDelims.find((t) => content.startsWith(t, i))
+    if (tripleAt !== undefined) {
+      const end = content.indexOf(tripleAt, i + 3)
       if (end === -1) return null
       i = end + 2
       continue
