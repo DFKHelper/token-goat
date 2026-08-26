@@ -508,12 +508,27 @@ function lineCommentStartIndex(line: string, markers: string[], from = 0): numbe
  *    Handling that would need dedicated multi-line state tracking, similar in spirit to
  *    `stripBlockCommentSpan` above.
  */
-export function stripStringLiterals(line: string): string {
+/** Per-language options for {@link stripStringLiterals}. Each defaults to the pre-existing
+ *  behaviour, so every caller that passes none is byte-for-byte unaffected. */
+export interface StripStringOpts {
+  /** Treat `'''`/`"""` as a single three-character string delimiter (Dart, which spells both).
+   *  Without it a triple-quoted string holding an odd number of interior quotes desyncs the
+   *  frame stack, and any brace after that quote leaks out as real code. */
+  tripleQuotes?: boolean
+}
+export function stripStringLiterals(line: string, opts: StripStringOpts = {}): string {
   // A string frame blanks its content until the matching quote (unless a hole is open on top of
   // it). A hole frame passes its content through unblanked - it's real code - tracking nested
   // `{`/`}` depth so a nested code brace doesn't close the hole early, and pushing a new string
   // frame for any quote it encounters (e.g. the nested string in `Replace("}", "")`).
   type Frame = { kind: 'string'; quote: string; bareBraceHole: boolean } | { kind: 'hole'; depth: number }
+
+  // With `tripleQuotes`, a run of three identical quotes opens a frame whose delimiter is all three, so a lone interior quote stays blanked string content instead of closing the string and letting the rest of the line (braces included) through as code.
+  const openDelim = (idx: number): string => {
+    const q = line[idx] as string
+    if (opts.tripleQuotes && line[idx + 1] === q && line[idx + 2] === q) return q + q + q
+    return q
+  }
 
   let out = ''
   let i = 0
@@ -546,9 +561,10 @@ export function stripStringLiterals(line: string): string {
         // A `$` immediately before the opening `"` marks a C# interpolated string, where a bare
         // `{` (not `${`) opens an interpolation hole.
         const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
-        stack.push({ kind: 'string', quote: ch, bareBraceHole })
-        out += ch
-        i++
+        const delim = openDelim(i)
+        stack.push({ kind: 'string', quote: delim, bareBraceHole })
+        out += delim
+        i += delim.length
         continue
       }
       out += ch
@@ -559,9 +575,10 @@ export function stripStringLiterals(line: string): string {
     if (top.kind === 'hole') {
       if (ch === '"' || ch === "'") {
         const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
-        stack.push({ kind: 'string', quote: ch, bareBraceHole })
-        out += ch
-        i++
+        const delim = openDelim(i)
+        stack.push({ kind: 'string', quote: delim, bareBraceHole })
+        out += delim
+        i += delim.length
         continue
       }
       if (ch === '{') {
@@ -591,10 +608,10 @@ export function stripStringLiterals(line: string): string {
       i += 2
       continue
     }
-    if (ch === top.quote) {
+    if (ch === top.quote[0] && (top.quote.length === 1 || line.startsWith(top.quote, i))) {
       stack.pop()
-      out += ch
-      i++
+      out += top.quote
+      i += top.quote.length
       continue
     }
     if (top.quote === '"') {
