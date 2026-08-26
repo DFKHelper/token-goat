@@ -97,6 +97,29 @@ describe('BashOutput poll rewrites record what they saved', () => {
   })
 })
 
+describe('the baseline is the raw tool output, not the redacted copy the handler works from', () => {
+  it('records raw-minus-emitted when the output carries a credential', async () => {
+    // The handler redacts before it diffs, so an intermediate `output` exists that is neither what the model would have seen nor what it does see. Billing against that copy is wrong in the over-reporting direction: this placeholder is 25 bytes and the key it replaces is 20, so a redacted baseline would claim 5 bytes this rewrite did not keep out of the context -- the redaction added them.
+    const key = 'AKIAABCDEFGHIJKLMNOP'
+    const placeholder = '[REDACTED:aws_access_key]'
+    expect(placeholder.length - key.length, 'the fixture only discriminates if the placeholder differs in length from the secret').toBe(5)
+
+    await runHook(buildEvent('post_tool_use', bashPoll(BULK)))
+    vi.mocked(recordStat).mockClear()
+
+    const raw = `${BULK}\nexport AWS_ACCESS_KEY_ID=${key}\n${BULK}`
+    const second = await runHook(buildEvent('post_tool_use', bashPoll(raw)))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType !== 'rewriteOutput') return
+    expect(second.updatedOutput, 'the emitted delta must still be redacted').not.toContain(key)
+
+    const fromRaw = Buffer.byteLength(raw, 'utf-8') - Buffer.byteLength(second.updatedOutput, 'utf-8')
+    const fromRedacted = Buffer.byteLength(raw.replace(key, placeholder), 'utf-8') - Buffer.byteLength(second.updatedOutput, 'utf-8')
+    expect(fromRedacted - fromRaw, 'the two baselines must actually differ, or this asserts nothing').toBe(5)
+    expect(savingsStats()).toEqual([['bashoutput:delta', fromRaw]])
+  })
+})
+
 describe('TaskOutput poll rewrites record what they saved', () => {
   it('records the collapse branch under a taskoutput kind', async () => {
     const repeated = Array.from({ length: 400 }, () => 'identical progress line').join('\n')

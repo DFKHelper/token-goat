@@ -98,6 +98,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     if (!rawOutput) return passOutput()
     // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per call, so there is no living in-memory cache to hit instead) is always the REDACTED text. Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the instant a secret-shaped token appears anywhere in the accumulated output, permanently falling through to the "buffer reset" branch on every later poll for this task. Redacting here keeps both sides of every comparison on equal footing, mirroring the redact-before- compare pattern `storeBashOutput` already applies for the same reason.
     const output = redactSecrets(rawOutput).text
+    // originalBytes is the RAW length, not the redacted one: a `pass` hands the model the harness's own untouched output, so raw-minus-emitted is what this rewrite actually kept out of the context. The redacted length is the wrong baseline in the over-reporting direction, because a placeholder is frequently longer than the secret it replaces (`[REDACTED:aws_access_key]` is 25 bytes for a 20-byte key), which would credit this handler for bytes the redaction added.
     if (!output) return passOutput()
 
     const prior = getBashOutput(pollCacheId(event.sessionId, taskId))
@@ -121,7 +122,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return emitRewrite(collapsed, 'taskoutput', { kind: 'taskoutput:collapse', originalBytes: Buffer.byteLength(output, 'utf-8') })
+      return emitRewrite(collapsed, 'taskoutput', { kind: 'taskoutput:collapse', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
     }
 
     if (output === prior.output) {
@@ -139,7 +140,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       ) {
         return passOutput()
       }
-      return emitRewrite(unchangedNotice, 'taskoutput', { kind: 'taskoutput:unchanged', originalBytes: Buffer.byteLength(output, 'utf-8') })
+      return emitRewrite(unchangedNotice, 'taskoutput', { kind: 'taskoutput:unchanged', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
     }
 
     if (!output.startsWith(prior.output)) {
@@ -163,7 +164,7 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     ) {
       return passOutput()
     }
-    return emitRewrite(`${deltaNotice}${collapsedDelta}`, 'taskoutput', { kind: 'taskoutput:delta', originalBytes: Buffer.byteLength(output, 'utf-8') })
+    return emitRewrite(`${deltaNotice}${collapsedDelta}`, 'taskoutput', { kind: 'taskoutput:delta', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
   } catch {
     return passOutput()
   }
