@@ -1243,6 +1243,22 @@ export function propagateEndLinesToSymbols(
  * character inside a quoted value (e.g. `default = "{}"`, `option (x) = "{"`) is never miscounted
  * as real nesting. Returns `totalLines` if the brace is never closed.
  */
+/** Per-language options for {@link assignBraceBlockSpans}. Named rather than positional because the
+ *  set grew past what a reader can keep straight in a call like `(syms, src, '//', 'backslash', true, true)`. */
+export interface BraceSpanOpts {
+  /** The language's line-comment prefix, e.g. `'//'` or `'#'`. */
+  lineComment?: string
+  /** Block-comment delimiters. Omit to derive them from {@link lineComment} (`'//'` gives C-style,
+   *  `'#'` gives PowerShell's `<# #>`); pass `null` for a language that has no block comment at all. */
+  blockComment?: readonly [string, string] | null
+  /** See {@link BraceScanOpts.stringEscapes}. */
+  stringEscapes?: NonNullable<BraceScanOpts['stringEscapes']>
+  /** See {@link BraceScanOpts.nestedBlockComments}. */
+  nestedBlockComments?: boolean
+  /** See {@link BraceScanOpts.tripleQuote}. */
+  tripleQuote?: boolean
+}
+
 /** Opt-in extras for {@link findMatchingBraceEndLine}. Each defaults to the pre-existing behaviour,
  *  so the many callers that pass none are byte-for-byte unaffected. */
 export interface BraceScanOpts {
@@ -1388,11 +1404,12 @@ export function findMatchingBraceEndLine(
 export function assignBraceBlockSpans(
   symbols: readonly SymbolEntry[],
   content: string,
-  lineCommentPrefix?: string,
-  stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
-  nestedBlockComments = false,
-  tripleQuote = false,
+  opts: BraceSpanOpts = {},
 ): SymbolEntry[] {
+  const lineCommentPrefix = opts.lineComment
+  const stringEscapes = opts.stringEscapes ?? 'backslash'
+  const nestedBlockComments = opts.nestedBlockComments ?? false
+  const tripleQuote = opts.tripleQuote ?? false
   if (symbols.length === 0) return [...symbols]
   const lines = content.split('\n')
   const totalLines = lines.length
@@ -1402,8 +1419,11 @@ export function assignBraceBlockSpans(
   const starts = [...new Set(symbols.map((s) => s.lineStart))].sort((a, b) => a - b)
   // Block-comment delimiters for the two comment styles these callers use, so a brace inside a
   // `/* ... */` (C-style) or `<# ... #>` (PowerShell) comment never derails the brace search.
+  // An explicit `blockComment` overrides the guess, and `null` means the language has none at all: Zig writes `//` line comments but has no block comment, so deriving `/* */` from the prefix made an ordinary `a/*b` (divide then dereference) open a comment that never closed.
   const blockComment: readonly [string, string] | undefined =
-    lineCommentPrefix === '//' ? ['/*', '*/'] : lineCommentPrefix === '#' ? ['<#', '#>'] : undefined
+    opts.blockComment !== undefined
+      ? (opts.blockComment ?? undefined)
+      : lineCommentPrefix === '//' ? ['/*', '*/'] : lineCommentPrefix === '#' ? ['<#', '#>'] : undefined
   return symbols.map((sym) => {
     if (sym.lineEnd !== sym.lineStart) return sym
     const nextStart = starts.find((s) => s > sym.lineStart)

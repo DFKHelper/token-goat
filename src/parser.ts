@@ -2568,8 +2568,8 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   toml: extractTomlSymbols,
   css: extractCssSymbols,
   dockerfile: extractDockerfileSymbols,
-  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, '//', 'csharp'),
-  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, '//'),
+  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp' }),
+  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: '//' }),
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
@@ -2578,13 +2578,13 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
     const r = extractLiquid(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
-  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, '//', 'backslash', true, true),
-  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, '//', 'backslash', true, true),
-  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, '//', 'backslash', true, true),
+  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
+  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
+  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
-  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, '//', 'backslash', true, true),
-  zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, '//'),
+  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
+  zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, { lineComment: '//', blockComment: null }),
   r: (content, filePath) => extractR(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
   sql: extractSql,
@@ -2592,7 +2592,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   makefile: extractMakefile,
   proto: (content, filePath) => extractProto(content, filePath).symbols,
   terraform: extractTerraform,
-  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, '#', 'none'),
+  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, { lineComment: '#', stringEscapes: 'none' }),
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
