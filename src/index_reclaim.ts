@@ -37,6 +37,17 @@ export interface ReclaimResult {
   beforeBytes: number
   /** Size of the DB plus its WAL after the run, in bytes. */
   afterBytes: number
+  /** Size of the main DB file alone before the run, in bytes. */
+  beforeDbBytes: number
+  /**
+   * Size of the main DB file alone after the run, in bytes.
+   *
+   * VACUUM in WAL mode rewrites the whole database through the WAL, so between the vacuum and a
+   * successful checkpoint the sidecar briefly holds a second copy. When a reader blocks that
+   * checkpoint, {@link afterBytes} counts work in flight rather than space held, and only this
+   * figure is comparable with {@link beforeDbBytes}.
+   */
+  afterDbBytes: number
   /** Rows dropped, per table. Empty unless `rebuild` was requested. */
   dropped: Record<string, number>
   /** Whether derived rows were dropped (vs. a vacuum-only run). */
@@ -70,6 +81,39 @@ function indexSizeBytes(dbPath: string): number {
   return total
 }
 
+/**
+ * Pick the before/after pair a run's reclaim figure can honestly be computed from.
+ *
+ * VACUUM in WAL mode rewrites the whole database through the sidecar, so until a checkpoint folds
+ * it back the WAL briefly holds a second copy. When a reader blocks that checkpoint, the DB+WAL
+ * total measures work in flight rather than space held, and subtracting it reports a reclaim that
+ * is negative: one real run printed "1345.3 MB -> 2494.4 MB (freed -1149.0 MB)" for a vacuum that
+ * had in fact taken the database from 1310 MB to 1177 MB. In that case only the main file is
+ * comparable across the run, so report that pair and let the checkpoint note explain the rest.
+ *
+ * Nothing is switched when the checkpoint succeeded: a stale WAL that was folded back really was
+ * space held, and the DB+WAL total is the honest measure of it.
+ */
+export function comparableSizes(result: ReclaimResult): {
+  before: number
+  after: number
+  freed: number
+} {
+  const walInFlight = result.checkpointBusy && result.afterBytes > result.beforeBytes
+  const before = walInFlight ? result.beforeDbBytes : result.beforeBytes
+  const after = walInFlight ? result.afterDbBytes : result.afterBytes
+  return { before, after, freed: before - after }
+}
+
+/** Bytes on disk for the main DB file alone, excluding the sidecar WAL. */
+function dbFileBytes(dbPath: string): number {
+  try {
+    return fs.statSync(dbPath).size
+  } catch {
+    return 0
+  }
+}
+
 /** True when `table` exists in this DB. `chunk_vectors` is absent on installs without sqlite-vec. */
 function tableExists(db: ReturnType<typeof getDb>, table: string): boolean {
   const row = db
@@ -87,6 +131,7 @@ function tableExists(db: ReturnType<typeof getDb>, table: string): boolean {
 export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean } = {}): ReclaimResult {
   const rebuild = opts.rebuild === true
   const beforeBytes = indexSizeBytes(dbPath)
+  const beforeDbBytes = dbFileBytes(dbPath)
   const db = getDb(dbPath)
   const dropped: Record<string, number> = {}
 
@@ -140,6 +185,8 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean } = {}): 
   return {
     beforeBytes,
     afterBytes: indexSizeBytes(dbPath),
+    beforeDbBytes,
+    afterDbBytes: dbFileBytes(dbPath),
     dropped,
     rebuilt: rebuild,
     checkpointBusy: checkpointBusy || finalCheckpointBusy,
@@ -220,11 +267,14 @@ export function cmdReclaimIndex(opts: {
     return
   }
 
-  const freed = result.beforeBytes - result.afterBytes
+  const { before, after, freed } = comparableSizes(result)
+  // A negative saving is not a saving with a sign, it is a different outcome, and printing one is
+  // worse than printing nothing: a user reads "freed -0.2 MB" as the command having made things
+  // worse. It happens on a database that did not exist before the run, where the whole file is
+  // growth and there was never anything to reclaim.
+  const delta = freed >= 0 ? `freed ${mb(freed)}` : `grew ${mb(-freed)}`
   process.stdout.write(`reclaim-index: ${dbPath}\n`)
-  process.stdout.write(
-    `  ${mb(result.beforeBytes)} -> ${mb(result.afterBytes)} (freed ${mb(freed)})\n`,
-  )
+  process.stdout.write(`  ${mb(before)} -> ${mb(after)} (${delta})\n`)
   if (result.rebuilt) {
     for (const [table, n] of Object.entries(result.dropped)) {
       process.stdout.write(`  dropped ${n} row(s) from ${table}\n`)
@@ -248,7 +298,9 @@ export function cmdReclaimIndex(opts: {
   }
   if (result.checkpointBusy) {
     process.stdout.write(
-      `  note: a concurrent reader blocked WAL truncation, so some space may still be held in ${path.basename(dbPath)}-wal\n`,
+      `  note: a concurrent reader blocked WAL truncation, so some space is still held in ` +
+        `${path.basename(dbPath)}-wal and the figures above count the main file only. The next ` +
+        `checkpoint releases it\n`,
     )
   }
 }
