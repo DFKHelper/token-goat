@@ -2568,7 +2568,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   toml: extractTomlSymbols,
   css: extractCssSymbols,
   dockerfile: extractDockerfileSymbols,
-  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, '//'),
+  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, '//', 'csharp'),
   php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, '//'),
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
@@ -2592,7 +2592,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   makefile: extractMakefile,
   proto: (content, filePath) => extractProto(content, filePath).symbols,
   terraform: extractTerraform,
-  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, '#'),
+  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, '#', 'none'),
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
