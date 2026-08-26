@@ -3820,6 +3820,24 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(symbols.find((s) => s.name === 'active_users')?.kind).toBe('sql_view')
   })
 
+  it('keeps every part of a three- or four-part qualified name (regression: NAME_PAT allowed only one optional `.segment`, so a BigQuery/Snowflake/SQL Server name like analytics_db.reporting.daily_orders was captured as analytics_db.reporting and the real object name was silently dropped)', () => {
+    const content = [
+      'CREATE TABLE analytics_db.reporting.daily_orders (id INT);',
+      'CREATE OR REPLACE VIEW proj.dataset.v_orders AS SELECT 1;',
+      'CREATE TABLE [srv].[db].[dbo].[Widgets] (id INT);',
+    ].join('\n')
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('analytics_db.reporting.daily_orders')
+    expect(names).toContain('proj.dataset.v_orders')
+    expect(names).toContain('srv.db.dbo.Widgets')
+  })
+
+  it('control: a two-part qualified name still keeps its schema prefix rather than being reduced to the bare object name', () => {
+    const symbols = extractSql('CREATE TABLE reporting.daily_orders (id INT);', 'schema.sql')
+    expect(symbols.map((s) => s.name)).toContain('reporting.daily_orders')
+  })
+
   it('does not let a same-line, same-name symbol of a different kind suppress an earlier one (regression: the shared makeSymbolEmitter deduped by (name, line) with no kind component, so a table and a function sharing a name on one line had the second silently dropped as a false duplicate)', () => {
     const content = 'CREATE TABLE foo (id int); CREATE FUNCTION foo() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;'
     const symbols = extractSql(content, 'schema.sql')
