@@ -344,3 +344,116 @@ describe('single-file components with no lines', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Brace counting across string/template-literal spans
+// ---------------------------------------------------------------------------
+
+/** Wraps a bare script body in whichever container the given SFC format expects. */
+function wrapScript(ext: string, body: readonly string[]): string {
+  const script = body.join('\n')
+  if (ext === 'astro') return `---\n${script}\n---\n\n<div>markup</div>\n`
+  return `<script setup lang="ts">\n${script}\n</script>\n\n<template>\n  <div>markup</div>\n</template>\n`
+}
+
+const SFC_FORMATS = [
+  ['vue', extractVue],
+  ['svelte', extractSvelte],
+  ['astro', extractAstro],
+] as const
+
+describe('top-level declaration brace counting', () => {
+  it.each(SFC_FORMATS)(
+    'still finds %s declarations that follow a multi-line template literal holding an unbalanced brace (regression: the per-line brace counter could not see a backtick span opened on an earlier line, so depth stayed above 0 and every later declaration was silently dropped)',
+    (ext, extract) => {
+      const content = wrapScript(ext, [
+        'const before = 1',
+        '',
+        'const tpl = `',
+        '  a line with a brace {',
+        '  another line',
+        '`',
+        '',
+        'function visibleFn() {',
+        '  return 2',
+        '}',
+        '',
+        'const visibleConst = 3',
+      ])
+
+      const names = extract(content, `Tpl.${ext}`).symbols.map((s) => s.name)
+
+      expect(names, `${ext}: ${names.join(', ')}`).toEqual(
+        expect.arrayContaining(['before', 'tpl', 'visibleFn', 'visibleConst']),
+      )
+    },
+  )
+
+  it.each(SFC_FORMATS)(
+    'does not index a declaration-shaped line that only exists inside a %s template literal',
+    (ext, extract) => {
+      const content = wrapScript(ext, [
+        'const snippet = `',
+        '  function notReal() {}',
+        '  const alsoNotReal = 1',
+        '`',
+        '',
+        'const real = 2',
+      ])
+
+      const names = extract(content, `Snippet.${ext}`).symbols.map((s) => s.name)
+
+      expect(names, `${ext}: ${names.join(', ')}`).toContain('real')
+      expect(names, `${ext}: ${names.join(', ')}`).not.toContain('notReal')
+      expect(names, `${ext}: ${names.join(', ')}`).not.toContain('alsoNotReal')
+    },
+  )
+
+  // Control for the over-fix: a whole-file string state machine that opens a span and never
+  // closes it swallows the rest of the file. A lone quote inside a regex character class is the
+  // cheapest way to open one by accident, so the damage must stay bounded to that physical line.
+  it.each(SFC_FORMATS)(
+    'keeps a stray unclosed quote inside a %s regex literal from swallowing the declarations after it',
+    (ext, extract) => {
+      const content = wrapScript(ext, [
+        'const quoteRe = /[\'"]/',
+        '',
+        'function afterRegex() {',
+        '  return 1',
+        '}',
+        '',
+        'const tailConst = 2',
+      ])
+
+      const names = extract(content, `Regex.${ext}`).symbols.map((s) => s.name)
+
+      expect(names, `${ext}: ${names.join(', ')}`).toEqual(
+        expect.arrayContaining(['quoteRe', 'afterRegex', 'tailConst']),
+      )
+    },
+  )
+
+  // Control for the other half of the over-fix: blanking string bodies must not stop the counter
+  // from tracking real code braces, or nested declarations would leak out as top-level ones.
+  it.each(SFC_FORMATS)('still treats braces in real %s code as depth', (ext, extract) => {
+    const content = wrapScript(ext, [
+      'function outer() {',
+      '  const nestedConst = 1',
+      '  function nestedFn() {',
+      '    return nestedConst',
+      '  }',
+      '  return nestedFn',
+      '}',
+      '',
+      'const afterOuter = 3',
+    ])
+
+    const names = extract(content, `Nested.${ext}`).symbols.map((s) => s.name)
+
+    expect(names, `${ext}: ${names.join(', ')}`).toEqual(
+      expect.arrayContaining(['outer', 'afterOuter']),
+    )
+    expect(names, `${ext}: ${names.join(', ')}`).not.toContain('nestedConst')
+    expect(names, `${ext}: ${names.join(', ')}`).not.toContain('nestedFn')
+  })
+})
