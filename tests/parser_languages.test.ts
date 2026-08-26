@@ -469,6 +469,43 @@ value = 1
       expect(names).not.toContain('0, 1, 0')
       expect(result.symbols.filter((s) => s.kind === 'section')).toHaveLength(2)
     })
+
+    it('does not let a `#` comment containing an unbalanced `[` swallow the rest of the file (regression: the array-depth counter was not comment-aware, so a note like `# TODO: handle [ nested extras` opened a phantom multi-line array and every table and key after it vanished from the index)', async () => {
+      const content = `[package]
+name = "demo"
+
+# TODO: support [ nested extras
+[dependencies]
+serde = "1"
+
+[dev-dependencies]
+tempfile = "3"
+`
+
+      const result = await parseFixture('commented.toml', content)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('dependencies')
+      expect(names).toContain('serde')
+      expect(names).toContain('dev-dependencies')
+      expect(names).toContain('tempfile')
+    })
+
+    it('does not treat a `#` inside a string value as a comment (control against over-stripping: truncating at the first `#` regardless of quote state cuts a single-line \'\'\' value in half and leaves a phantom multi-line literal string open)', async () => {
+      const content = `[project]
+note = '''hash # inside a literal string'''
+
+[deps]
+value = 1
+`
+
+      const result = await parseFixture('hash_in_string.toml', content)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('note')
+      expect(names).toContain('deps')
+      expect(names).toContain('value')
+    })
   })
 
   describe('css symbols', () => {

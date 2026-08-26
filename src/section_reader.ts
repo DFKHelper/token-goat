@@ -19,7 +19,7 @@ import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './language
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import { decodeSource } from './util.js'
-import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta } from './parser.js'
+import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta, stripTomlComment } from './parser.js'
 import { _detectOpenQuote as envDetectOpenQuote, _lineClosesQuote as envLineClosesQuote } from './languages/ini_idx.js'
 
 /** One extracted section: its header text, body, and 1-based line span. */
@@ -186,20 +186,22 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
       const restStart = closeIdx + openDelim.length
       const m = TABLE_HEADER_RE.exec(line.slice(restStart))
       if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
-      openDelim = lineOpenDelimiterAfter(line, restStart)
+      openDelim = lineOpenDelimiterAfter(stripTomlComment(line.slice(restStart)), 0)
       continue
     }
 
     if (isToml && arrayDepth > 0) {
-      arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(line))
+      arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(stripTomlComment(line)))
       continue
     }
 
     const m = TABLE_HEADER_RE.exec(line)
     if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
     if (isToml) {
-      openDelim = lineOpenDelimiterAfter(line, 0)
-      if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
+      // Comment text must not feed the delimiter/array trackers, or a note such as `# see [docs` opens a phantom array that hides every table header after it. Shared with extractTomlSymbols so both surfaces agree.
+      const code = stripTomlComment(line)
+      openDelim = lineOpenDelimiterAfter(code, 0)
+      if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(code))
     }
   }
   return headers
