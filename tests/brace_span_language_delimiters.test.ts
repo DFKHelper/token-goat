@@ -34,3 +34,46 @@ describe('brace span scanning respects a language without block comments', () =>
     expect(f?.body).toContain('return 1;')
   })
 })
+
+// Zig writes a multi-line string as a `\\` at the start of each line, running to end of line with no closing delimiter and no escape sequences. The brace walk read those lines as code, so a `}` sitting in the text closed the enclosing function early.
+describe('brace span scanning treats a Zig line-prefixed string as opaque', () => {
+  it('keeps a function span across a multi-line string containing a brace', async () => {
+    const content = [
+      'pub fn g() void {',
+      '    const t =',
+      '        \\\\}',
+      '        \\\\still text',
+      '    ;',
+      '    use(t);',
+      '}',
+      '',
+      'pub fn h() void {',
+      '    other();',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('multiline.zig', content)
+    const g = result.symbols.find((s) => s.name === 'g')
+    expect(g?.lineStart).toBe(1)
+    expect(g?.lineEnd).toBe(7)
+    expect(g?.body).toContain('use(t);')
+    // The skip stops at the newline, not at end of content, so the next function is still found whole.
+    const h = result.symbols.find((s) => s.name === 'h')
+    expect(h?.lineStart).toBe(9)
+    expect(h?.lineEnd).toBe(11)
+  })
+
+  it('still reads a backslash inside a quoted Zig string as an escape', async () => {
+    const content = [
+      'pub fn e() void {',
+      '    const s = "a\\\\";',
+      '    use(s);',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('escape.zig', content)
+    const e = result.symbols.find((s) => s.name === 'e')
+    expect(e?.lineStart).toBe(1)
+    expect(e?.lineEnd).toBe(4)
+  })
+})

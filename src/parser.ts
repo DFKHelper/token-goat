@@ -2584,7 +2584,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
   dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
-  zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, { lineComment: '//', blockComment: null }),
+  zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, { lineComment: '//', blockComment: null, lineStringPrefix: '\\\\' }),
   r: (content, filePath) => extractR(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
   sql: extractSql,
