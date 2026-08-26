@@ -1263,12 +1263,31 @@ export interface BraceScanOpts {
   backtickQuote?: boolean
   /** Which string-escape model the scan applies inside a quoted span. `'backslash'` (the default, and what every pre-existing caller gets) treats `\` as escaping the next character, which is right for the C family. `'none'` is for languages where a backslash is an ordinary character inside a string -- PowerShell escapes with a backtick, so a Windows path literal like `"C:\temp\"` really does end at that quote, and reading the `\"` as an escaped quote left the string "open" and swallowed every brace after it. `'csharp'` keeps backslash escapes for ordinary literals but also recognizes a verbatim string (`@"..."`, `$@"..."`, `@$"..."`), inside which `\` is literal and a doubled `""` is the escaped quote. */
   stringEscapes?: 'backslash' | 'none' | 'csharp'
+  /** Whether the language's block comments nest, so an inner opener inside a block comment must be counted rather than ignored. Kotlin, Swift, Scala and Dart all specify nesting comments; C, C++, C#, Java, PHP and PowerShell do not, and for those a first-closer scan is correct. Scanning a nesting language without this ends the comment at the inner closer, so the text after it -- including a `}` that is really still commented out -- is read as code and the enclosing symbol's span stops early. */
+  nestedBlockComments?: boolean
 }
 
 /** True when the `"` at `i` opens a C# verbatim string, i.e. it is prefixed by `@`, `$@` or `@$`. */
 function opensCsharpVerbatimString(content: string, i: number): boolean {
   const prev = content[i - 1]
   return prev === '@' || (prev === '$' && content[i - 2] === '@')
+}
+
+/** Index just past the closer of the block comment opening at `start`, or -1 if it is never closed. With `nested` false this is a plain first-closer scan, byte-identical to the `indexOf` it replaces; with it true an inner opener increments a depth counter, so only the closer that balances the outermost opener ends the comment. */
+function skipBlockComment(content: string, start: number, block: readonly [string, string], nested: boolean): number {
+  let i = start + block[0].length
+  let depth = 1
+  while (i < content.length) {
+    if (nested && content.startsWith(block[0], i)) { depth++; i += block[0].length; continue }
+    if (content.startsWith(block[1], i)) {
+      depth--
+      i += block[1].length
+      if (depth === 0) return i
+      continue
+    }
+    i++
+  }
+  return -1
 }
 
 export function findMatchingBraceEndLine(
@@ -1282,6 +1301,7 @@ export function findMatchingBraceEndLine(
   const block = opts?.blockComment
   const backtick = opts?.backtickQuote === true
   const escapes = opts?.stringEscapes ?? 'backslash'
+  const nestedBlock = opts?.nestedBlockComments === true
   let depth = 0
   let quote: string | null = null
   // Set when `quote` was opened by a C# verbatim string: inside one, `\` is an ordinary character and a doubled `""` is the escaped quote.
@@ -1304,8 +1324,8 @@ export function findMatchingBraceEndLine(
     // Block comments before line comments: the two openers never overlap, but a `{`/`}` inside a
     // block comment must be skipped before the brace-depth checks below ever see it.
     if (block !== undefined && content.startsWith(block[0], i)) {
-      const close = content.indexOf(block[1], i + block[0].length)
-      i = close === -1 ? content.length : close + block[1].length - 1
+      const end = skipBlockComment(content, i, block, nestedBlock)
+      i = end === -1 ? content.length : end - 1
       continue
     }
     // Opt-in, because the callers that pass already-stripped content must not pay for a second
@@ -1361,6 +1381,7 @@ export function assignBraceBlockSpans(
   content: string,
   lineCommentPrefix?: string,
   stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
+  nestedBlockComments = false,
 ): SymbolEntry[] {
   if (symbols.length === 0) return [...symbols]
   const lines = content.split('\n')
@@ -1378,11 +1399,11 @@ export function assignBraceBlockSpans(
     const nextStart = starts.find((s) => s > sym.lineStart)
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
     const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
-    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment, stringEscapes)
+    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment, stringEscapes, nestedBlockComments)
     if (openIndex === null) return sym
     // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
     const endLine = findMatchingBraceEndLine(content, openIndex, totalLines, lineIndex, lineCommentPrefix,
-      blockComment === undefined ? { noMatchValue: -1, stringEscapes } : { blockComment, noMatchValue: -1, stringEscapes })
+      blockComment === undefined ? { noMatchValue: -1, stringEscapes } : { blockComment, noMatchValue: -1, stringEscapes, nestedBlockComments })
     // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
     if (endLine <= sym.lineStart) return sym
     return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
@@ -1411,6 +1432,7 @@ function findBlockOpenBrace(
   lineCommentPrefix?: string,
   blockComment?: readonly [string, string],
   stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
+  nestedBlockComments = false,
 ): number | null {
   const from = lineIndex[startLine - 1]
   if (from === undefined) return null
@@ -1443,9 +1465,9 @@ function findBlockOpenBrace(
     }
     if (ch === '\n') { linesSeen++; atLineStart = true; continue }
     if (blockComment !== undefined && content.startsWith(blockComment[0], i)) {
-      const close = content.indexOf(blockComment[1], i + blockComment[0].length)
-      if (close === -1) return null
-      i = close + blockComment[1].length - 1
+      const end = skipBlockComment(content, i, blockComment, nestedBlockComments)
+      if (end === -1) return null
+      i = end - 1
       continue
     }
     if (lineCommentPrefix !== undefined && content.startsWith(lineCommentPrefix, i)) {
