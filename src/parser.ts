@@ -2126,6 +2126,10 @@ export function tomlBracketDelta(line: string): number {
   return delta
 }
 
+// A TOML simple-key is an unquoted key (letters, digits, `_`, `-`), a basic string, or a literal string; a full key is one or more simple keys joined by dots (`serde.workspace = true`, `"*" = [...]`, `'my.key' = 1`).
+const TOML_SIMPLE_KEY = `(?:[A-Za-z0-9_-]+|"(?:[^"\\\\]|\\\\.)*"|'[^']*')`
+const TOML_KEY_RE = new RegExp(`^\\s*(${TOML_SIMPLE_KEY}(?:\\s*\\.\\s*${TOML_SIMPLE_KEY})*)\\s*=`)
+
 function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
@@ -2146,7 +2150,7 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
       })
     }
 
-    const keyMatch = /^\s*([a-zA-Z_][\w-]*)\s*=/.exec(line)
+    const keyMatch = TOML_KEY_RE.exec(line)
     if (keyMatch !== null && keyMatch[1] !== undefined) {
       out.push({
         filePath,
