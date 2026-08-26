@@ -2093,6 +2093,28 @@ export function lineOpenDelimiterAfter(line: string, startIdx: number): string |
   }
 }
 
+// A `#` outside a string starts a TOML comment, and comment prose carries no structure. Neither the triple-quote tracker nor the array-depth counter was comment-aware, so an ordinary note like `# TODO: handle [ nested extras` opened a phantom multi-line array that silently swallowed every table and key after it until an unrelated `]` happened to appear (a `'''` or `"""` inside a comment did the same via the delimiter tracker). Scans left to right tracking basic (`"`, backslash-escapable) and literal (`'`, no escapes) string state, so a `#` inside a value is never mistaken for a comment; a same-line `"""..."""` span stays protected by quote parity, and a span left open from an earlier line is consumed by the callers before this runs.
+export function stripTomlComment(line: string): string {
+  let inBasic = false
+  let inLiteral = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (inBasic) {
+      if (ch === '\\') i++
+      else if (ch === '"') inBasic = false
+      continue
+    }
+    if (inLiteral) {
+      if (ch === "'") inLiteral = false
+      continue
+    }
+    if (ch === '"') inBasic = true
+    else if (ch === "'") inLiteral = true
+    else if (ch === '#') return line.slice(0, i)
+  }
+  return line
+}
+
 // TOML arrays may legally span multiple physical lines (e.g. a matrix as an array of arrays, one row per line). A continuation row of such an array - especially a nested array-of-arrays row like `[1, 0, 0],` - starts with `[` and would otherwise be misread by the section regex as a new table header. Track the net bracket depth opened by an unclosed array so continuation lines are skipped from key/section matching entirely until the array actually closes. Brackets inside string literals are ignored (a quoted value like "a[b]" must never affect array depth). Exported for the same reason as lineOpenDelimiterAfter above.
 export function tomlBracketDelta(line: string): number {
   const stripped = stripStringLiterals(line)
@@ -2151,18 +2173,20 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
       if (closeIdx === -1) continue // whole line is inside the open string body
       const restStart = closeIdx + openDelim.length
       matchLine(line.slice(restStart), i)
-      openDelim = lineOpenDelimiterAfter(line, restStart)
+      openDelim = lineOpenDelimiterAfter(stripTomlComment(line.slice(restStart)), 0)
       continue
     }
 
     if (arrayDepth > 0) {
-      arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(line))
+      arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(stripTomlComment(line)))
       continue
     }
 
     matchLine(line, i)
-    openDelim = lineOpenDelimiterAfter(line, 0)
-    if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
+    // Comment text is stripped for the state machine only, never for matchLine: the symbol body deliberately keeps the trailing comment a reader would expect to see.
+    const code = stripTomlComment(line)
+    openDelim = lineOpenDelimiterAfter(code, 0)
+    if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(code))
   }
 
   return out

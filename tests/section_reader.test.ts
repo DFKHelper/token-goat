@@ -236,6 +236,19 @@ describe('listSections', () => {
     expect(listSections('/no/such/path/nope.md')).toEqual([])
   })
 
+  it('still finds TOML tables that follow a `#` comment holding an unbalanced `[` (regression: the shared array-depth tracker was not comment-aware, so the comment opened a phantom array and every later table header became unreachable)', () => {
+    const toml = ['[package]', 'name = "demo"', '', '# TODO: support [ nested extras', '[dependencies]', 'serde = "1"', ''].join('\n')
+    const file = tmpFile('commented.toml', toml)
+    expect(listSections(file)).toEqual(['package', 'dependencies'])
+    expect(readSection(file, 'dependencies')?.content).toContain('serde = "1"')
+  })
+
+  it('does not treat a `#` inside a string value as a comment (control against over-stripping at the first `#`, which would leave a single-line \'\'\' value looking like an unterminated multi-line string)', () => {
+    const toml = ['[project]', "note = '''hash # inside a literal string'''", '', '[deps]', 'value = 1', ''].join('\n')
+    const file = tmpFile('hash_in_string.toml', toml)
+    expect(listSections(file)).toEqual(['project', 'deps'])
+  })
+
   it('returns all headings at all nesting levels, deeper document', () => {
     const content = ['# Title', '## Sub A', '### Deep A1', '## Sub B'].join('\n')
     const file = tmpFile('nested.md', content)
