@@ -121,7 +121,7 @@ export function extractDart(
     const stripped = line.trim()
 
     if (!stripped) {
-      const braceLine = stripStringLiterals(line)
+      const braceLine = stripStringLiterals(line, { tripleQuotes: true })
       braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
       continue
     }
@@ -257,7 +257,7 @@ export function extractDart(
     }
 
     // Brace-count on a string-stripped copy
-    const braceLine = stripStringLiterals(line)
+    const braceLine = stripStringLiterals(line, { tripleQuotes: true })
     for (const ch of braceLine) {
       if (ch === '{') {
         braceDepth++
