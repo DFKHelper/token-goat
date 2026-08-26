@@ -1257,6 +1257,8 @@ export interface BraceSpanOpts {
   nestedBlockComments?: boolean
   /** See {@link BraceScanOpts.tripleQuote}. */
   tripleQuote?: boolean
+  /** See {@link BraceScanOpts.lineStringPrefix}. */
+  lineStringPrefix?: string
 }
 
 /** Opt-in extras for {@link findMatchingBraceEndLine}. Each defaults to the pre-existing behaviour,
@@ -1283,6 +1285,8 @@ export interface BraceScanOpts {
   nestedBlockComments?: boolean
   /** Whether `"""` opens a triple-quoted string that runs, verbatim, to the next `"""`. Kotlin, Scala, Swift and Dart all have one; C, C++, C#, Java, PHP and PowerShell do not, and for those three adjacent quotes mean something else entirely. Without this the scan reads `"""` as three ordinary quotes, so a lone `"` inside the literal (`"""5" wide"""`) flips the walk's idea of what is code, and a trailing backslash (`"""C:\Users\"""`, legal because these literals take no escapes) reads as an escaped quote and swallows the rest of the file -- either way the enclosing symbol never gets its block span. */
   tripleQuote?: boolean
+  /** A prefix that opens a string literal running to the end of the line, with no escape sequences and no closing delimiter. Zig's multi-line string is written as a `\\` at the start of each line; its content is arbitrary text, so a `}` inside one is not a brace. Without this the scan reads that content as code and the enclosing symbol's span ends at the first `}` the text happens to contain. */
+  lineStringPrefix?: string
 }
 
 /** True when the `"` at `i` opens a C# verbatim string, i.e. it is prefixed by `@`, `$@` or `@$`. */
@@ -1321,6 +1325,7 @@ export function findMatchingBraceEndLine(
   const escapes = opts?.stringEscapes ?? 'backslash'
   const nestedBlock = opts?.nestedBlockComments === true
   const triple = opts?.tripleQuote === true
+  const lineString = opts?.lineStringPrefix
   let depth = 0
   let quote: string | null = null
   // Set when `quote` was opened by a C# verbatim string: inside one, `\` is an ordinary character and a doubled `""` is the escaped quote.
@@ -1350,6 +1355,11 @@ export function findMatchingBraceEndLine(
     // Opt-in, because the callers that pass already-stripped content must not pay for a second
     // pass, and a prefix that is not a comment marker in their language would corrupt the walk.
     if (lineCommentPrefix !== undefined && content.startsWith(lineCommentPrefix, i)) {
+      while (i < content.length && content[i] !== '\n') i++
+      continue
+    }
+    // A line-prefixed string literal (Zig's `\\`) runs to end of line and is opaque, so a `}` in its text is not a brace.
+    if (lineString !== undefined && content.startsWith(lineString, i)) {
       while (i < content.length && content[i] !== '\n') i++
       continue
     }
@@ -1410,6 +1420,7 @@ export function assignBraceBlockSpans(
   const stringEscapes = opts.stringEscapes ?? 'backslash'
   const nestedBlockComments = opts.nestedBlockComments ?? false
   const tripleQuote = opts.tripleQuote ?? false
+  const lineStringPrefix = opts.lineStringPrefix
   if (symbols.length === 0) return [...symbols]
   const lines = content.split('\n')
   const totalLines = lines.length
@@ -1429,11 +1440,11 @@ export function assignBraceBlockSpans(
     const nextStart = starts.find((s) => s > sym.lineStart)
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
     const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
-    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment, stringEscapes, nestedBlockComments, tripleQuote)
+    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, blockComment, stringEscapes, nestedBlockComments, tripleQuote, lineStringPrefix)
     if (openIndex === null) return sym
     // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
     const endLine = findMatchingBraceEndLine(content, openIndex, totalLines, lineIndex, lineCommentPrefix,
-      blockComment === undefined ? { noMatchValue: -1, stringEscapes, tripleQuote } : { blockComment, noMatchValue: -1, stringEscapes, nestedBlockComments, tripleQuote })
+      { noMatchValue: -1, stringEscapes, tripleQuote, ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }), ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }) })
     // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
     if (endLine <= sym.lineStart) return sym
     return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
@@ -1464,6 +1475,7 @@ function findBlockOpenBrace(
   stringEscapes: NonNullable<BraceScanOpts['stringEscapes']> = 'backslash',
   nestedBlockComments = false,
   tripleQuote = false,
+  lineString?: string,
 ): number | null {
   const from = lineIndex[startLine - 1]
   if (from === undefined) return null
@@ -1513,6 +1525,11 @@ function findBlockOpenBrace(
       // that statement -- not this symbol's body. Stop so a `val x = 10` above a bare `if (...) {}`
       // does not swallow the if-block (semicolon-optional languages have no `;` to mark the end).
       if (parenDepth === 0 && linesSeen >= 1 && startsWithBlockKeyword(content, i, to)) return null
+    }
+    // Mirrors findMatchingBraceEndLine's line-string skip, so both halves of the span walk agree that a Zig `\\` line is text rather than code.
+    if (lineString !== undefined && content.startsWith(lineString, i)) {
+      while (i + 1 < to && content[i + 1] !== '\n') i++
+      continue
     }
     // Mirrors findMatchingBraceEndLine's triple-quote skip, so both halves of the span walk agree on where a `"""` literal ends.
     if (tripleQuote && content.startsWith('"""', i)) {
