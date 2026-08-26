@@ -134,6 +134,33 @@ describe('doctor reads the histogram', () => {
     expect(result.message).toContain('copilot_cli')
   })
 
+  it('does not warn when a stale row names itself as its own near miss', () => {
+    // A real global.db carried exactly this row: tool_name "Bash", near_miss "Bash", written by an
+    // in-development build 26 minutes before the exact-match guard was committed. Dispatch cannot
+    // produce it -- it returns before recording when a handler asked for that spelling -- so the
+    // only question is how the reader renders a row that should not exist. Warning printed a
+    // sentence that contradicted itself and could never clear, because nothing about a real
+    // harness had gone wrong for it to clear.
+    insert('Bash', 'Bash', 2)
+    const result = checkUnmappedTools(dbPath)
+
+    expect(result.status).toBe('ok')
+    expect(result.message).not.toContain('is very likely not being applied')
+    expect(result.message).toContain('Bash')
+  })
+
+  it('still warns about a genuine near miss sitting alongside a self-referential row', () => {
+    // The guard must drop the impossible row without disarming the check: a real bridge failure in
+    // the same database still has to surface.
+    insert('Bash', 'Bash', 2)
+    insert('web_fetch', 'WebFetch', 7)
+    const result = checkUnmappedTools(dbPath)
+
+    expect(result.status).toBe('warn')
+    expect(result.message).toContain('"web_fetch"')
+    expect(result.message).not.toContain('sent "Bash" where "Bash"')
+  })
+
   it('does not warn about names that merely have no handler', () => {
     insert('todo_write', null, 900)
     const result = checkUnmappedTools(dbPath)

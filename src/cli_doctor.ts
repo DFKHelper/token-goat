@@ -862,6 +862,12 @@ const UNMAPPED_TOOL_SAMPLE = 5
  * bridge's tool-rename step not being applied, and it is the only inference available without
  * knowing what the harness meant. Everything else is reported as-is rather than judged: a name
  * with no handler is usually just a tool token-goat has nothing to say about.
+ *
+ * A row whose near miss equals its own tool name is not a near miss at all -- the dispatcher
+ * returns before recording when a handler asked for that exact spelling, so such a row can only
+ * come from a database written by an older or in-development build. Warning on it would print a
+ * sentence that contradicts itself (sent "Bash" where "Bash" is handled) and would never clear,
+ * so it falls through to the informational line instead.
  */
 export function checkUnmappedTools(dbPath: string): DoctorResult {
   const name = 'Tool names'
@@ -873,7 +879,9 @@ export function checkUnmappedTools(dbPath: string): DoctorResult {
     if (rows.length === 0) {
       return { name, status: 'ok', message: 'every tool name seen so far reached a handler that wanted it' }
     }
-    const nearMisses = rows.filter((r) => r.near_miss !== null && r.near_miss !== undefined)
+    const nearMisses = rows.filter(
+      (r) => r.near_miss !== null && r.near_miss !== undefined && r.near_miss !== r.tool_name,
+    )
     if (nearMisses.length > 0) {
       const shown = nearMisses
         .slice(0, UNMAPPED_TOOL_SAMPLE)

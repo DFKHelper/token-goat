@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **`token-goat doctor` could print a tool-name warning that contradicted itself and would never clear.** The check that watches for a bridge forgetting to rename an inbound tool warns when a name differs from a handled one by case or separators alone. A real database held a row whose near miss was its own name, so the warning read `claudecode sent "Bash" where "Bash" is handled` -- a sentence with nothing in it to act on, and nothing a working harness could do to make it go away. Dispatch cannot produce such a row: it returns before recording when a handler asked for that exact spelling, so the row could only have come from an older or in-development build. The reader now treats a self-referential near miss as no near miss at all and reports the row on the informational line instead. A genuine near miss sitting in the same database still warns. See [src/cli_doctor.ts](src/cli_doctor.ts).
+
 ## [2.8.3] - 2026-08-26
 
 ### Security
