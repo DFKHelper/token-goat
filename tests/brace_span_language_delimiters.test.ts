@@ -130,3 +130,51 @@ describe('brace span scanning knows both PHP line-comment spellings', () => {
     expect(f?.lineEnd).toBe(4)
   })
 })
+
+// PowerShell was told a backslash escapes nothing, which is right, but nothing was put in its place: the real escape character is a backtick, so an escaped quote inside a double-quoted string closed the string early and the text after it -- including a brace -- was read as code.
+describe('brace span scanning honours the PowerShell escape character', () => {
+  it('keeps a function span across a backtick-escaped quote', async () => {
+    const content = [
+      'function f {',
+      '  $t = "a`" } still text"',
+      '  Write-Output $t',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('escape.ps1', content)
+    const f = result.symbols.find((s) => s.name === 'f')
+    expect(f?.lineStart).toBe(1)
+    expect(f?.lineEnd).toBe(4)
+    expect(f?.body).toContain('Write-Output $t')
+  })
+
+  it('does not treat a backtick as an escape inside a single-quoted PowerShell string', async () => {
+    const content = [
+      'function f {',
+      "  $t = 'a`'",
+      '  Write-Output $t',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('literal.ps1', content)
+    const f = result.symbols.find((s) => s.name === 'f')
+    expect(f?.lineStart).toBe(1)
+    expect(f?.lineEnd).toBe(4)
+  })
+
+  it('still treats a backslash as an escape in a language on the other side of the property', async () => {
+    const content = [
+      'class C {',
+      '  void M() {',
+      '    var s = "a\\" } still text";',
+      '    Use(s);',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Escape.cs', content)
+    const m = result.symbols.find((s) => s.name === 'M')
+    expect(m?.lineStart).toBe(2)
+    expect(m?.lineEnd).toBe(5)
+  })
+})

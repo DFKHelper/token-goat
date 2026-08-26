@@ -2592,7 +2592,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   makefile: extractMakefile,
   proto: (content, filePath) => extractProto(content, filePath).symbols,
   terraform: extractTerraform,
-  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, { lineComment: '#', stringEscapes: 'none' }),
+  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, { lineComment: '#', stringEscapes: 'powershell' }),
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,

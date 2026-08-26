@@ -1281,8 +1281,8 @@ export interface BraceScanOpts {
    *  languages a backtick is not a delimiter (e.g. a JS template literal has its own `${}` nesting a
    *  plain scan cannot handle), so only callers whose language uses backtick this way should set it. */
   backtickQuote?: boolean
-  /** Which string-escape model the scan applies inside a quoted span. `'backslash'` (the default, and what every pre-existing caller gets) treats `\` as escaping the next character, which is right for the C family. `'none'` is for languages where a backslash is an ordinary character inside a string -- PowerShell escapes with a backtick, so a Windows path literal like `"C:\temp\"` really does end at that quote, and reading the `\"` as an escaped quote left the string "open" and swallowed every brace after it. `'csharp'` keeps backslash escapes for ordinary literals but also recognizes a verbatim string (`@"..."`, `$@"..."`, `@$"..."`), inside which `\` is literal and a doubled `""` is the escaped quote. */
-  stringEscapes?: 'backslash' | 'none' | 'csharp'
+  /** Which string-escape model the scan applies inside a quoted span. `'backslash'` (the default, and what every pre-existing caller gets) treats `\` as escaping the next character, which is right for the C family. `'powershell'` is for PowerShell, where `\` is an ordinary character inside a string -- so a Windows path literal like `"C:\temp\"` really does end at that quote, and reading the `\"` as an escaped quote left the string "open" and swallowed every brace after it -- and the real escape is a backtick, valid only inside a double-quoted string, with a doubled quote (`""` or `''`) escaping the delimiter in either kind. `'csharp'` keeps backslash escapes for ordinary literals but also recognizes a verbatim string (`@"..."`, `$@"..."`, `@$"..."`), inside which `\` is literal and a doubled `""` is the escaped quote. */
+  stringEscapes?: 'backslash' | 'powershell' | 'csharp'
   /** Whether the language's block comments nest, so an inner opener inside a block comment must be counted rather than ignored. Kotlin, Swift, Scala and Dart all specify nesting comments; C, C++, C#, Java, PHP and PowerShell do not, and for those a first-closer scan is correct. Scanning a nesting language without this ends the comment at the inner closer, so the text after it -- including a `}` that is really still commented out -- is read as code and the enclosing symbol's span stops early. */
   nestedBlockComments?: boolean
   /** Whether `"""` opens a triple-quoted string that runs, verbatim, to the next `"""`. Kotlin, Scala, Swift and Dart all have one; C, C++, C#, Java, PHP and PowerShell do not, and for those three adjacent quotes mean something else entirely. Without this the scan reads `"""` as three ordinary quotes, so a lone `"` inside the literal (`"""5" wide"""`) flips the walk's idea of what is code, and a trailing backslash (`"""C:\Users\"""`, legal because these literals take no escapes) reads as an escaped quote and swallows the rest of the file -- either way the enclosing symbol never gets its block span. */
@@ -1291,6 +1291,13 @@ export interface BraceScanOpts {
   lineStringPrefix?: string
   /** Literals that begin with a line-comment prefix but are not a comment, checked first so the prefix does not match them. PHP 8 spells an attribute `#[Attr]`, which starts with its `#` comment prefix; treating it as a comment skips to end of line and loses an opening brace that shares the line, as in `function f(#[SensitiveParameter] string $p) {`. */
   lineCommentExceptions?: readonly string[]
+}
+
+/** One step through a PowerShell string literal: inside a double-quoted string a backtick escapes the next character, and a backslash escapes nothing in either kind. Returns the index the caller should resume from and whether the string is still open. PowerShell's other escape, a doubled delimiter, needs no rule here: it adds two quotes, so it cannot change which side of a string a later brace falls on. */
+function stepPowershellString(content: string, i: number, quote: string): { next: number; open: boolean } {
+  const ch = content[i]
+  if (quote === '"' && ch === '`') return { next: i + 1, open: true }
+  return { next: i, open: ch !== quote }
 }
 
 /** True when the `"` at `i` opens a C# verbatim string, i.e. it is prefixed by `@`, `$@` or `@$`. */
@@ -1359,7 +1366,13 @@ export function findMatchingBraceEndLine(
         }
         continue
       }
-      if (escapes !== 'none' && ch === '\\') { i++; continue }
+      if (escapes === 'powershell') {
+        const step = stepPowershellString(content, i, quote)
+        i = step.next
+        if (!step.open) quote = null
+        continue
+      }
+      if (ch === '\\') { i++; continue }
       if (ch === quote) quote = null
       continue
     }
@@ -1532,7 +1545,13 @@ function findBlockOpenBrace(
         }
         continue
       }
-      if (stringEscapes !== 'none' && ch === '\\') { i++; continue }
+      if (stringEscapes === 'powershell') {
+        const step = stepPowershellString(content, i, quote)
+        i = step.next
+        if (!step.open) quote = null
+        continue
+      }
+      if (ch === '\\') { i++; continue }
       if (ch === quote) quote = null
       continue
     }
