@@ -506,6 +506,49 @@ value = 1
       expect(names).toContain('deps')
       expect(names).toContain('value')
     })
+
+    it('indexes dotted bare keys and quoted keys (regression: the key regex only accepted a single unquoted segment, so ordinary Cargo `serde.workspace = true` rows and every quoted key a pyproject or Cargo target table uses were dropped from the index entirely)', async () => {
+      const content = `[package]
+name = "demo"
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde.features = ["derive"]
+
+[tool.setuptools.package-data]
+"*" = ["*.txt"]
+'my.key' = 1
+"quoted\\"inner" = 2
+`
+
+      const result = await parseFixture('quoted.toml', content)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('edition.workspace')
+      expect(names).toContain('serde.workspace')
+      expect(names).toContain('serde.features')
+      expect(names).toContain('"*"')
+      expect(names).toContain("'my.key'")
+      expect(names).toContain('"quoted\\"inner"')
+    })
+
+    it('does not let a dotted/quoted key pattern reach across the `=` into the value (control against an over-permissive key pattern swallowing an inline table or the value side)', async () => {
+      const content = `[deps]
+serde = { version = "1", features = ["derive"] }
+"pkg-a" = { "sub-key" = 1, version = "2" }
+plain = "a.b.c"
+`
+
+      const result = await parseFixture('inline_table.toml', content)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('serde')
+      expect(names).toContain('plain')
+      expect(names).not.toContain('version')
+      expect(names).not.toContain('features')
+      expect(names.filter((n) => n !== 'deps')).toEqual(['serde', '"pkg-a"', 'plain'])
+    })
   })
 
   describe('css symbols', () => {
