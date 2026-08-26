@@ -253,3 +253,62 @@ describe('brace span scanning treats a C# raw string as opaque', () => {
     expect(m?.lineEnd).toBe(5)
   })
 })
+
+// Dart writes a triple-quoted string with either `"""` or `'''`, but the brace walk only knew the double-quoted spelling. A `'''` literal holding an odd number of single quotes re-pairs them, so the text between is read as code and a brace in it closes the enclosing method.
+describe('brace span scanning knows both Dart triple-quote spellings', () => {
+  it('keeps method and class spans across a triple-single-quoted string holding a lone quote', async () => {
+    const content = [
+      'class C {',
+      '  void m() {',
+      "    var s = '''a ' } b''';",
+      '    use(s);',
+      '  }',
+      '',
+      '  void n() {',
+      '    other();',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Quotes.dart', content)
+    const m = result.symbols.find((s) => s.name === 'm')
+    expect(m?.lineStart).toBe(2)
+    expect(m?.lineEnd).toBe(5)
+    expect(m?.body).toContain('use(s);')
+    expect(result.symbols.find((s) => s.name === 'C')?.lineEnd).toBe(10)
+  })
+
+  it('still reads an ordinary single-quoted Dart string as a string', async () => {
+    const content = [
+      'class C {',
+      '  void m() {',
+      "    var s = 'a } b';",
+      '    use(s);',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('Plain.dart', content)
+    const m = result.symbols.find((s) => s.name === 'm')
+    expect(m?.lineStart).toBe(2)
+    expect(m?.lineEnd).toBe(5)
+    expect(result.symbols.find((s) => s.name === 'C')?.lineEnd).toBe(6)
+  })
+
+  it('does not treat three single quotes as a string opener in Kotlin, which has only the double-quoted spelling', async () => {
+    const content = [
+      'class K {',
+      '    fun label(): String {',
+      '        val s = """5" wide"""',
+      '        return s',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('K.kt', content)
+    const label = result.symbols.find((s) => s.name === 'label')
+    expect(label?.lineStart).toBe(2)
+    expect(label?.lineEnd).toBe(5)
+    expect(result.symbols.find((s) => s.name === 'K')?.lineEnd).toBe(6)
+  })
+})
