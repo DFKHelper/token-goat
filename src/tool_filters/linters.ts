@@ -83,13 +83,17 @@ const _RUFF_FOOTER_RE = /^Found \d+ error/
 const _RUFF_SUCCESS_RE = /^(?:All checks passed!|No errors found\.?)\s*$/
 const _RUFF_FORMAT_REFORMATTED_RE = /^reformatted\s+\S/
 const _RUFF_FORMAT_WOULD_REFORMAT_RE = /^would reformat\s+\S/i
-// ruff's actual DEFAULT ("full") output trails each violation header with an
-// optional context block: a bare "   |" separator, a numbered source line
-// ("12 | import os"), a caret-annotation line, and/or a "= help: ..." line.
-// These must be consumed together with their header so collapsing a
-// violation also drops its context instead of leaving it behind unfiltered.
+// ruff's DEFAULT ("full") output trails each violation header with an optional context block: a bare "   |" separator, a numbered source line ("12 | import os"), a caret-annotation line, and/or a help line. These must be consumed together with their header so collapsing a violation also drops its context instead of leaving it behind unfiltered.
 const _RUFF_CONTEXT_LINE_RE = /^\s*(?:\d+\s*)?\|/
-const _RUFF_HELP_LINE_RE = /^\s*=\s*help:/i
+const _RUFF_HELP_LINE_RE = /^\s*(?:=\s*)?help:/i
+// Since ruff 0.9 the "full" format leads with the rule code and puts the location on a following arrow line, so the concise-format _RUFF_LINE_RE matches none of it: a header is only a header when the very next line is its arrow location.
+const _RUFF_FULL_HEADER_RE = /^(?<code>[A-Z]+\d+)(?:\s+\[\*\])?\s+\S/
+const _RUFF_FULL_LOCATION_RE = /^\s*-->\s*(?<file>.+?):\d+:\d+\s*$/
+
+// True when lines[i] starts a new full-format violation record, i.e. a code header immediately followed by its arrow location line
+function _isRuffFullHeader(lines: string[], i: number): boolean {
+  return _RUFF_FULL_HEADER_RE.test(lines[i] ?? '') && _RUFF_FULL_LOCATION_RE.test(lines[i + 1] ?? '')
+}
 
 class RuffFilter extends ToolFilter {
   readonly name = 'ruff'
@@ -142,6 +146,23 @@ class RuffFilter extends ToolFilter {
           i < lines.length &&
           (_RUFF_CONTEXT_LINE_RE.test(lines[i]!) || _RUFF_HELP_LINE_RE.test(lines[i]!))
         ) {
+          text.push(lines[i]!)
+          i++
+        }
+        const bucket = byCode.get(code) ?? []
+        bucket.push({ file, text })
+        byCode.set(code, bucket)
+        indexed.push({ kind: 'viol', code, file, text })
+        continue
+      }
+      const fullHeader = _RUFF_FULL_HEADER_RE.exec(line)
+      const fullLoc = fullHeader?.groups ? _RUFF_FULL_LOCATION_RE.exec(lines[i + 1] ?? '') : null
+      if (fullHeader?.groups && fullLoc?.groups) {
+        const code = fullHeader.groups['code']!
+        const file = fullLoc.groups['file']!
+        const text = [line, lines[i + 1]!]
+        i += 2
+        while (i < lines.length && lines[i]!.trim() !== '' && !_RUFF_FOOTER_RE.test(lines[i]!) && !_isRuffFullHeader(lines, i)) {
           text.push(lines[i]!)
           i++
         }

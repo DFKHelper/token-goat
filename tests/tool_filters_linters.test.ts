@@ -216,6 +216,40 @@ describe('RuffFilter', () => {
 
     expect(result.text).toContain('Found 5 errors.')
   })
+
+  it('collapses the modern full format, where the code leads and the location is on an arrow line', () => {
+    // Literal capture from ruff 0.14.14 running "ruff check --select F401" over three files that each import os, sys and json without using them. Since ruff 0.9 the full format no longer starts a violation with "file:line:col:".
+    const record = (code: string, name: string, file: string, line: number): string[] => [
+      `${code} [*] \`${name}\` imported but unused`,
+      ` --> ${file}:${line}:8`,
+      '  |',
+      '1 | import os',
+      '2 | import sys',
+      '3 | import json',
+      '  |',
+      `help: Remove unused import: \`${name}\``,
+      '',
+    ]
+    const lines = [
+      ...['a.py', 'b.py', 'c.py'].flatMap((f) => [
+        ...record('F401', 'os', f, 1),
+        ...record('F401', 'sys', f, 2),
+        ...record('F401', 'json', f, 3),
+      ]),
+      'Found 9 errors.',
+      '[*] 9 fixable with the `--fix` option.',
+    ].join('\n')
+    const result = ruffFilter.apply(lines, '', 1, ['ruff', 'check', '.'])
+
+    expect(result.text.trim().split('\n').filter((l) => l.trim() !== '')).toEqual([
+      'F401: 9 occurrences in 3 files (example: F401 [*] `os` imported but unused)',
+      '[*] 9 fixable with the `--fix` option.',
+      'Found 9 errors.',
+    ])
+    expect(result.text).not.toContain('import sys')
+    expect(result.text).not.toContain('-->')
+    expect(result.text).not.toContain('help:')
+  })
 })
 
 // ---------------------------------------------------------------------------
