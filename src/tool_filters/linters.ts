@@ -5,7 +5,7 @@
 // `swiftlintFilter` is produced by the `makeLinterFilter` factory in families.ts — it shares the simple "per-rule warning dedup + always-keep error" loop with any future filter that fits that model.
 
 import { ToolFilter } from './base.js'
-import { makeLinterFilter } from './families.js'
+import { makeLinterFilter, plural } from './families.js'
 import { ERROR_SIGNAL_RE, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
 
 // ---------------------------------------------------------------------------
@@ -744,6 +744,8 @@ const _PYLINT_MODULE_RE = /^\*{10,}\s+Module\s/
 const _PYLINT_ISSUE_RE = /^[^\s].*:\d+:\d+:\s+[CWEFR]\d{4}/
 // pylint's default text format writes the message id followed by a colon ("a.py:1:0: C0114: Missing module docstring"), so the trailing boundary must accept ":" as well as whitespace or end-of-line; requiring whitespace on both sides matched no real pylint line, leaving every issue bucketed as "__unknown__".
 const _PYLINT_CODE_RE = /\s([CWEFR]\d{4})(?=[\s:]|$)/
+// Pylint's symbolic message name, always the last parenthesised token on an issue line ("... (consider-using-f-string)"). It is the half of the identity a reader can act on, so the over-cap placeholder quotes it instead of a slice of the numeric code.
+const _PYLINT_SYMBOL_RE = /\(([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\)\s*$/
 const _PYLINT_RATING_RE = /^Your code has been rated at/
 const _PYLINT_SEPARATOR_RE = /^-{10,}$/
 const _PYLINT_CONFIG_RE = /^(?:Using config file|Loading plugin|No config file found)/
@@ -758,7 +760,8 @@ class PylintFilter extends ToolFilter {
     const lines = merged.split('\n')
     const kept: string[] = []
     const codeCounts = new Map<string, number>()
-    const pendingPlaceholders: { index: number; code: string; codeName: string; key: string }[] = []
+    const pendingPlaceholders: { index: number; code: string; key: string }[] = []
+    const codeSymbols = new Map<string, string>()
     let deduplicated = 0
     let droppedSeparators = 0
     let droppedConfig = 0
@@ -783,6 +786,8 @@ class PylintFilter extends ToolFilter {
         const code = m ? m[1]! : '__unknown__'
         const severity = code[0] ?? '?'
         const key = `${currentModule ?? ''}\x00${code}`
+        const symM = _PYLINT_SYMBOL_RE.exec(line)
+        if (symM && !codeSymbols.has(key)) codeSymbols.set(key, symM[1]!)
         const count = codeCounts.get(key) ?? 0
         codeCounts.set(key, count + 1)
         const alwaysKeep = severity === 'E' || severity === 'F'
@@ -796,14 +801,13 @@ class PylintFilter extends ToolFilter {
           moduleHasKeptIssue = true
         } else {
           if (count === PylintFilter._KEEP_PER_CODE) {
-            const codeName = code.slice(1)
             // Flush pending module header before the over-cap placeholder too,
             // otherwise a module whose issues are entirely over-cap vanishes.
             if (pendingModule !== null) {
               kept.push(pendingModule)
               pendingModule = null
             }
-            pendingPlaceholders.push({ index: kept.length, code, codeName, key })
+            pendingPlaceholders.push({ index: kept.length, code, key })
             kept.push('')
             moduleHasKeptIssue = true
           }
@@ -822,16 +826,17 @@ class PylintFilter extends ToolFilter {
 
     // Patch placeholders now that codeCounts holds each code's final total,
     // so the elided count reflects reality instead of a literal "+?".
-    for (const { index, code, codeName, key } of pendingPlaceholders) {
+    for (const { index, code, key } of pendingPlaceholders) {
       const elided = (codeCounts.get(key) ?? 0) - PylintFilter._KEEP_PER_CODE
-      kept[index] =
-        `[token-goat: +${elided} more ${code} (${codeName}); disable via TOKEN_GOAT_BASH_COMPRESS]`
+      const symbol = codeSymbols.get(key)
+      const label = symbol !== undefined ? `${code} (${symbol})` : code
+      kept[index] = `[token-goat: +${elided} more ${label}; disable via TOKEN_GOAT_BASH_COMPRESS]`
     }
 
     const notes: string[] = []
-    maybeNote(notes, deduplicated, `deduplicated ${deduplicated} repeated-code issue lines`)
-    maybeNote(notes, droppedSeparators, `dropped ${droppedSeparators} separator lines`)
-    maybeNote(notes, droppedConfig, `dropped ${droppedConfig} config-loading lines`)
+    maybeNote(notes, deduplicated, `deduplicated ${deduplicated} repeated-code issue line${plural(deduplicated)}`)
+    maybeNote(notes, droppedSeparators, `dropped ${droppedSeparators} separator line${plural(droppedSeparators)}`)
+    maybeNote(notes, droppedConfig, `dropped ${droppedConfig} config-loading line${plural(droppedConfig)}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -1435,6 +1440,7 @@ class PrettierFilter extends ToolFilter {
 
 const _CPPCHECK_CHECKING_RE = /^Checking\s+\S.*\.\.\./
 const _CPPCHECK_PROGRESS_RE = /^\d+\/\d+\s+files\s+checked\s+\d+%\s+done/
+// Legacy-only by decision, not by oversight. This matches the pre-2.0 `[file.c:12]: (error) msg` layout; the default template since cppcheck 2.0 is `{file}:{line}:{column}: {severity}: {message} [{id}]` followed by a source line and a caret line (the old layout is now only reachable via --template=cppcheck1). Widening the matcher alone would change nothing: this filter never dedups, so an unmatched diagnostic already falls through to the keep branch, and a modern-format report round-trips byte for byte. Verified against the built bundle, not inferred: a modern-format report through `token-goat compress -f cppcheck` came back identical, and with the report scaled past bash_compress.min_net_savings_bytes the only lines removed were the Checking/percentage/Active-checkers noise, never a diagnostic, a source line, or a caret. The real gap is that nothing collapses the source+caret pair the way _CLANG_TIDY_CONTEXT_RE does for clang-tidy, which is new compression behaviour rather than a matcher repair, and building it needs a real cppcheck capture for tests/fixtures/tool_output/ (cppcheck is not installed here, and this corpus exists precisely because filters written against invented output shipped broken).
 const _CPPCHECK_DIAGNOSTIC_RE = /^\[.+\.(?:c|cpp|cxx|cc|h|hpp|hxx):\d+\]:/
 const _CPPCHECK_DIAG_NOLINE_RE = /^\[.+\]:\s*\((?:error|warning|style|performance|portability|information)\)/i
 const _CPPCHECK_CONFIG_RE =
@@ -1479,8 +1485,9 @@ class CppcheckFilter extends ToolFilter {
 
 const _CLANG_TIDY_WARNINGS_GENERATED_RE = /^\d+\s+warning(?:s)?\s+generated\./
 const _CLANG_TIDY_PROCESSING_RE = /^clang-tidy:\s+Processing\s+\d+/i
+// clang-tidy runs on every translation unit clang itself accepts, which is wider than the C/C++ core set: CUDA (.cu/.cuh), the two conventional template-implementation suffixes (.tcc/.inl), and Objective-C/C++ (.m/.mm). A diagnostic on one of those files used to miss this matcher, so it never opened a diagnostic context and its source/caret lines were all kept verbatim instead of collapsing to the first.
 const _CLANG_TIDY_DIAG_RE =
-  /^.+\.(?:c|cpp|cxx|cc|h|hpp|hxx):\d+:\d+:\s+(?:error|warning|note|remark):/
+  /^.+\.(?:c|cpp|cxx|cc|h|hpp|hxx|cuh|cu|tcc|inl|mm|m):\d+:\d+:\s+(?:error|warning|note|remark):/
 const _CLANG_TIDY_NOTE_RE = /^.+:\d+:\d+:\s+note:/
 const _CLANG_TIDY_CONTEXT_RE = /^\s+(?:\^[~^]*|~+)\s*$|^\s{4,}\S/
 const _CLANG_TIDY_INCLUDE_RE = /^In\s+file\s+included\s+from\s+/
