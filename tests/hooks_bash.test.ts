@@ -4457,3 +4457,103 @@ describe('postBashHandler — feeds Bash file dumps into the session read-cache'
     }
   })
 })
+
+// Loop-46 corpus census (8,179 real cat-headed and 916 real awk-headed Bash commands): the same read respelled with a trailing stderr redirect, a `cat FILE |` pipe into head/tail/sed, or an awk action block that prints each whole line, fell through every extractor and got no hint. Each cluster below was counted against the pre-fix predicates before being admitted.
+describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-46 census)', () => {
+  it('denies `cat FILE 2>&1` exactly like the bare cat of the same file', () => {
+    const result = preBashHandler(makeBashEvent('cat src/auth_loop46.ts 2>&1'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toBe('`cat` loads the entire file into context. Use `token-goat read "src/auth_loop46.ts::SymbolName"` to read one function or class.')
+    }
+  })
+
+  it('admits `cat FILE 2>/dev/null` advisory-only: guidance without a deny, since the spelling tolerates a missing file', () => {
+    const result = preBashHandler(makeBashEvent('cat docs/loop46_memory.md 2>/dev/null'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`cat` loads the entire file into context. Use `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section.')
+    }
+  })
+
+  it('control: a redirect to a real file (`2>errors.log`) is a write destination and stays unhinted', () => {
+    const result = preBashHandler(makeBashEvent('cat src/auth_loop46.ts 2>errors.log'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('admits the piped leading-lines spelling `cat FILE | head -50` with the same hint as `head -50 FILE`', () => {
+    const result = preBashHandler(makeBashEvent('cat src/loop46_pipe.ts | head -50'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`head` bypasses read hooks. Use `token-goat read "src/loop46_pipe.ts::SymbolName"` or `token-goat skeleton "src/loop46_pipe.ts"` to see the file structure.')
+    }
+  })
+
+  it('control: `cat FILE | head -5` is already surgical and stays unhinted, matching the direct head carve-out', () => {
+    const result = preBashHandler(makeBashEvent('cat src/loop46_pipe2.ts | head -5'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('admits the piped trailing-lines spelling with flags and a stderr redirect: `cat -n FILE 2>/dev/null | tail -60`', () => {
+    const result = preBashHandler(makeBashEvent('cat -n README_loop46.md 2>/dev/null | tail -60'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`tail` bypasses read hooks. Use `token-goat section "README_loop46.md::SectionHeading"` to read one section.')
+    }
+  })
+
+  it('control: `cat FILE | tail -c 400` is a byte read, not a line read, and stays unhinted', () => {
+    const result = preBashHandler(makeBashEvent('cat notes_loop46.md | tail -c 400'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('admits `cat FILE | sed -n RANGE` as the same line-range read as `sed -n RANGE FILE`', () => {
+    const result = preBashHandler(makeBashEvent("cat docs/loop46_guide.md | sed -n '29,36p'"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`sed -n` line-range reads bypass read hooks. For Markdown, `token-goat section "docs/loop46_guide.md::<heading>"` extracts a whole section by name (robust to line shifts); or `token-goat read "docs/loop46_guide.md@29-36"` for exactly those lines.')
+    }
+  })
+
+  it('the piped head spelling feeds the same line-range ledger: a repeat is told which lines it already served', async () => {
+    preBashHandler(makeBashEvent('cat docs/loop46_ledger.md | head -50'))
+    await postBashHandler(makePostBashEvent('cat docs/loop46_ledger.md | head -50', 'line\n'.repeat(50)))
+
+    const second = preBashHandler(makeBashEvent('cat docs/loop46_ledger.md | head -50'))
+    expect(second.hookType).toBe('context')
+    if (second.hookType === 'context') {
+      expect(second.context).toContain('already read lines 1-50')
+    }
+  })
+})
+
+describe('preBashHandler — awk range reads with a pure line-print action (loop-46 census)', () => {
+  it('admits an NR range whose action prints each whole line with its number', () => {
+    const result = preBashHandler(makeBashEvent('awk \'NR>=84 && NR<=116 {print NR": "$0}\' docs/loop46_awk.md'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`awk` line-range reads bypass read hooks. For Markdown, `token-goat section "docs/loop46_awk.md::<heading>"` extracts a whole section by name (robust to line shifts); or `token-goat read "docs/loop46_awk.md@84-116"` for exactly those lines.')
+    }
+  })
+
+  it('admits the printf spelling of the same whole-line print', () => {
+    const result = preBashHandler(makeBashEvent('awk \'NR>=10 && NR<=40 {printf "%d|%s\\n", NR, $0}\' src/loop46_awk.ts'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`awk` line-range reads bypass read hooks. For a whole function/class, `token-goat symbol <name>` or `token-goat read "src/loop46_awk.ts::<Symbol>"` is robust to line shifts; or `token-goat read "src/loop46_awk.ts@10-40"` for exactly those lines.')
+    }
+  })
+
+  it('control: a transforming action (substr/length projection) emits less than the span and stays unhinted', () => {
+    const result = preBashHandler(makeBashEvent('awk \'NR>=18 && NR<=65 {printf "%d(%d): %s\\n", NR, length($0), substr($0,1,220)}\' docs/loop46_awk_t.md'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('admits the `2>&1` suffix on a plain awk range, matching the sed suffix parity from loop 45', () => {
+    const result = preBashHandler(makeBashEvent("awk 'NR>=5 && NR<=30' src/loop46_awk2.ts 2>&1"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toBe('`awk` line-range reads bypass read hooks. For a whole function/class, `token-goat symbol <name>` or `token-goat read "src/loop46_awk2.ts::<Symbol>"` is robust to line shifts; or `token-goat read "src/loop46_awk2.ts@5-30"` for exactly those lines.')
+    }
+  })
+})

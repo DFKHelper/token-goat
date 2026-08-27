@@ -66,6 +66,7 @@ wrong escalates rather than acting.
 | DL-20 | No upper ratio bound in the real-output guard | a ceiling is satisfied by bumping a number; a must-not-drop entry is not |
 | DL-21 | `extractExitCode` stays dormant | 186,335 recorded Bash results carry no exit-code field; the only status field marks benign non-zero exits |
 | DL-22 | Loop-45 sed-hint admission stops at 80.1% of the 19,386-command corpus: single-address `sed -n 'Np' file` stays unhinted (one line is already surgical, matching the head/tail <=10 carve-out); pattern ranges (`/re/,/re2/p`, 50 corpus commands), `\| grep` pipes (a search, not a read), `>`-redirects (output never reaches context), edits, and multiline heredoc constructions reject the whole command | remaining 19.9% is out of the read class or too rare to describe safely |
+| DL-23 | Loop-46 cat/awk-hint admission stops at 21.1% of 8,179 cat-headed and 23.7% of 916 awk-headed corpus commands: the cat remainder is heredoc/redirect writes (~4,500), multi-segment compounds, `\| grep` pipes (a search, per DL-22), temp-path and unknown-extension reads (.log/.output by design); the awk remainder is transforming actions (substr/length/`%.Ns`, 41), computations (102), pattern ranges `/re1/,/re2/` (11, DL-22 parity), and single/multi `NR==n` line picks (already surgical). Census note: the loop-46 brief's claimed baseline (awk 324/916 admitted, 4,044 cat pipeline misses) did NOT reproduce against the real handler: measured baseline was awk 94/916 and ~1,314 cat pipeline misses | remaining pools are out of the read class or by-design silences |
 
 ## Blocked On Evidence
 
@@ -102,3 +103,5 @@ row go to the user.
 | 42 | 023e0eb3 | session-audit | high (65% of corpus unscanned) | yes | 170 |
 | 43 | 181cf7a7 | session-audit | n/a (survey) | n/a | 152 |
 | 44 | 707cdd3b | session-audit | n/a (survey, clean sweep) | n/a | 208 |
+| 45 | ec428146 | hooks_bash sed hint admission | medium (66.8% -> 80.1% of 19,380) | yes | n/a |
+| 46 | (this loop) | hooks_bash cat/awk hint admission | medium (cat 15.1% -> 21.1% of 8,179; awk 10.3% -> 23.7% of 916) | yes | ~180 |
