@@ -5,6 +5,22 @@ export function pathEqClause(column: string): string {
   return isCaseInsensitiveFs() ? `TG_LOWER(${column}) = ?` : `${column} = ?`
 }
 
+// Build a "this row's file_path has that final path segment" comparison, plus the params it binds. Used to narrow a name-only symbol query down to the rows a partial-path spec (`worker.ts::drain`) could possibly match, BEFORE the query's LIMIT truncates the candidate list -- a JS-side suffix filter applied after `ORDER BY file_path ... LIMIT n` silently loses the requested file whenever more than n rows share the symbol name. Basename equality is a necessary condition for either direction of the path-boundary suffix test the caller then applies, because a boundary suffix relation always aligns whole segments, so this narrowing never excludes a row the caller would have accepted. `substr(col, -length(x)) = x` is used instead of `LIKE '%/' || x` so a `_` or `%` in a real file name is not treated as a wildcard, and so the character-count semantics of the comparison come entirely from SQLite rather than being split across JS UTF-16 lengths and SQL character lengths.
+export function pathSuffixClause(column: string): {
+  clause: string
+  params: (baseName: string) => string[]
+} {
+  const col = isCaseInsensitiveFs() ? `TG_LOWER(${column})` : column
+  return {
+    // Both separators are accepted because not every writer into `symbols` stores a normalizePath'd (forward-slash) file_path, and the JS-side path-boundary test this narrowing feeds treats `/` and `\` alike.
+    clause: `(${col} = ? OR substr(${col}, -length(?)) = ? OR substr(${col}, -length(?)) = ?)`,
+    params: (baseName: string): string[] => {
+      const folded = foldPath(baseName)
+      return [folded, `/${folded}`, `/${folded}`, `\\${folded}`, `\\${folded}`]
+    },
+  }
+}
+
 /**
  * Build a half-open range predicate for "file_path is under this project root", plus a matching
  * `params()` function that turns a root directory into the two bounds it binds. Every indexed

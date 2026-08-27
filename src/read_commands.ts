@@ -1665,9 +1665,12 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
     // codebase (index_prune.ts, walk_index.ts, worker.ts) — this filter runs in plain JS, not
     // SQL, so it is not covered by querySymbols' own COLLATE NOCASE and needs its own fold.
     const foldedFile = foldPath(file)
+    // Narrow to the requested file's final path segment in SQL, not just in the `.filter` below: the query is `ORDER BY file_path, line_start LIMIT 50`, so for a symbol name with more than 50 definitions across the machine-wide index (`run`, `main`, `handler`) the requested file's row was cut before the filter ever saw it and a present symbol reported as missing, purely because its path sorted late. Basename equality holds for both directions of the path-boundary test below (a boundary suffix relation aligns whole segments), so this narrowing cannot drop a row the filter would have kept.
+    const baseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
     candidates = querySymbols({
       name: lookupName,
       limit: 50,
+      ...(baseName !== '' ? { fileBaseName: baseName } : {}),
       ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
     }).filter((s) => {
       const foldedFilePath = foldPath(s.filePath)
