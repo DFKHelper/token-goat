@@ -95,6 +95,11 @@ function largeFileDenyBytes(): number {
   return Math.round(base * DENY_THRESHOLD_TIER_MULTIPLIERS[tier])
 }
 
+/** Bytes a pre-read intercept may honestly claim it saved. The counterfactual is the Read this intercept replaced, and that Read would itself have been truncated, so it is capped at PER_FILE_COUNTERFACTUAL_CEILING before anything the intercept still emits (a compact body, a stripped notebook, a diff) is subtracted back off. */
+function counterfactualCredit(counterfactualBytes: number, emittedBytes = 0): number {
+  return Math.max(0, Math.min(counterfactualBytes, PER_FILE_COUNTERFACTUAL_CEILING) - emittedBytes)
+}
+
 /** Check if a path is under node_modules/. Case-insensitive on case-insensitive filesystems (Windows, macOS by default), case-sensitive elsewhere. */
 function isNodeModulesPath(p: string): boolean {
   const check = foldPath(p)
@@ -684,7 +689,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (compactBody !== null) {
         recordActualRead(event, normalized)
         const fullSize = statSize(normalized) ?? 0
-        const savedBytes = Math.max(0, fullSize - compactBody.length)
+        const savedBytes = counterfactualCredit(fullSize, compactBody.length)
         recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
         return denyOutput(
           'Serving the extractive compact sidecar in place of the full file ' +
@@ -718,7 +723,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const savedBytes = rawBytes.length - sidecarContent.length
       if (savedBytes >= NB_STRIP_MIN_SAVINGS) {
         recordActualRead(event, normalized)
-        recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+        const nbCredit = counterfactualCredit(rawBytes.length, sidecarContent.length)
+        recordStat('session_hint', nbCredit, Math.round(nbCredit / 4))
         return denyOutput(
           'Serving the output-stripped notebook in place of the full file ' +
           '(code-cell outputs and execution counts removed; source and metadata preserved):\n\n' +
@@ -861,7 +867,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
       if (snapDiff.kind === 'diff') {
         recordActualRead(event, normalized)
-        recordStat('session_hint', snapDiff.savedBytes, Math.round(snapDiff.savedBytes / 4))
+        const artifactDiffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
+        recordStat('session_hint', artifactDiffCredit, Math.round(artifactDiffCredit / 4))
         return denyOutput(
           'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
           fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized),
@@ -881,7 +888,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const outputSize = statSize(normalized)
       recordActualRead(event, normalized)
       if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
-        recordStat('session_hint', outputSize, Math.round(outputSize / 4))
+        const artifactDenyCredit = counterfactualCredit(outputSize)
+        recordStat('session_hint', artifactDenyCredit, Math.round(artifactDenyCredit / 4))
         return denyOutput(
           label + ' is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
         )
@@ -926,7 +934,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // clears the configured token-savings floor (hints.diff_hint_min_tokens_saved).
       if (Math.round(snapDiff.savedBytes / 4) >= loadConfig().hints.diff_hint_min_tokens_saved) {
         recordActualRead(event, normalized)
-        recordStat('diff_hint', snapDiff.savedBytes, Math.round(snapDiff.savedBytes / 4))
+        const diffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
+        recordStat('diff_hint', diffCredit, Math.round(diffCredit / 4))
         return denyOutput(
           ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
           fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
@@ -981,7 +990,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
     // What a blocked re-read may claim it saved. Gating below still uses the true size -- only the amount CREDITED is capped, because the counterfactual being priced is "the Read that didn't happen", and that Read would itself have been truncated. See PER_FILE_COUNTERFACTUAL_CEILING.
-    const rereadCredit = Math.min(rereadBytes, PER_FILE_COUNTERFACTUAL_CEILING)
+    const rereadCredit = counterfactualCredit(rereadBytes)
 
     const config = loadConfig()
     if (config.hints.log_large_file_hint_outcomes) {
@@ -1091,7 +1100,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
-      const denyCredit = Math.min(size, PER_FILE_COUNTERFACTUAL_CEILING)
+      const denyCredit = counterfactualCredit(size)
       recordStat('session_hint', denyCredit, Math.round(denyCredit / 4))
       return denyOutput(
         shown + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +

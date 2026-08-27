@@ -1437,6 +1437,23 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  // Serving a compact sidecar replaces a Read that would itself have been truncated at PER_FILE_COUNTERFACTUAL_CEILING, so the saving is that ceiling minus the compact body the model still pays for -- not the whole on-disk size minus the body, which credited a 400KB doc with roughly four times what it could ever have saved.
+  it('caps the compact-serving credit at the per-file counterfactual ceiling minus the body it still emits', () => {
+    const body = 'Summary line one.\nSummary line two.'
+    const p = _makeTmpMdFile('# Title\n\n' + 'x'.repeat(400 * 1024) + '\n')
+    writeCompact(compactPathFor(p), p, body)
+
+    const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Serving the extractive compact sidecar')
+    }
+
+    const delta = (summarize(30).by_kind['session_hint']?.bytes_saved ?? 0) - beforeBytes
+    expect(delta).toBe(PER_FILE_COUNTERFACTUAL_CEILING - body.length)
+  })
+
   it('does not intercept a Grep call against a .ipynb notebook — Grep must search the live content, not the output-stripped sidecar', () => {
     const bigOutput = 'A'.repeat(6000)
     const nb = {
@@ -2822,6 +2839,18 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
     }
+  })
+
+  // A denied first read of a session artifact replaces a Read that would itself have been truncated, so the whole on-disk size was never the real counterfactual -- crediting it uncapped booked a 400KB transcript as 400KB saved on a path where at most PER_FILE_COUNTERFACTUAL_CEILING bytes could ever have reached the model.
+  it('caps what a denied first read of tasks/*.output may claim against the per-file counterfactual ceiling', () => {
+    const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    const p = makeTasksOutputFile('x'.repeat(400 * 1024))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+
+    const delta = (summarize(30).by_kind['session_hint']?.bytes_saved ?? 0) - beforeBytes
+    // Not vacuous: it still credits the full ceiling, rather than collapsing to zero.
+    expect(delta).toBe(PER_FILE_COUNTERFACTUAL_CEILING)
   })
 
   function makeToolResultsFile(content = 'tool result data'): string {
