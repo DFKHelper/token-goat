@@ -33,9 +33,17 @@ interface ClassFrame {
 // an aliased using directive silently dropped both the type/namespace dependency it declares and
 // the import itself. When present, the second group (the aliased target) is what actually gets
 // pushed below -- the real dependency, not the local alias name.
-const USING_RE =
-  /^(?:global\s+)?using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*(?:=\s*([A-Za-z_][A-Za-z0-9_.<>,\s]*))?\s*;/
-const NAMESPACE_RE = /^(?:namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)/
+// C# lets any identifier be spelled with a leading `@` so that a keyword can be used as a name (`@class`, `@event`, `@operator`, `@params`), and code generators (protobuf, NSwag, EF scaffolding) emit those routinely. Every declaration pattern below therefore builds its identifier slots out of IDENT/DOTTED_IDENT rather than a bare `[A-Za-z_][A-Za-z0-9_]*`; without that, a generated `public class @class` or `using @System.Text;` matched nothing at all and the whole declaration was silently dropped from the index.
+const IDENT = '@?[A-Za-z_][A-Za-z0-9_]*'
+const DOTTED_IDENT = `${IDENT}(?:\\.${IDENT})*`
+// The `@` is purely lexical - the identifier's real name is the text after it, and that is what the compiler, and any other file referring to it, uses. Stripping it from the recorded name keeps `namespace @System.Text` and `namespace System.Text` the same name in the index, the same way r.ts drops the backticks from a quoted R name.
+function stripVerbatim(name: string): string {
+  return name.replace(/@/g, '')
+}
+const USING_RE = new RegExp(
+  `^(?:global\\s+)?using\\s+(?:static\\s+)?(${DOTTED_IDENT})\\s*(?:=\\s*(@?[A-Za-z_][A-Za-z0-9_.<>,@\\s]*))?\\s*;`,
+)
+const NAMESPACE_RE = new RegExp(`^(?:namespace\\s+)(${DOTTED_IDENT})`)
 
 // C# idiomatically places attributes on the same line as the declaration they decorate
 // (`[Obsolete] public class Foo`, `[Test] public Foo()`, `[JsonProperty("name")] public string
@@ -62,21 +70,21 @@ function stripLeadingAttributes(s: string): string {
 // every member declared with a namespace-qualified type was dropped. `(`/`)` stay excluded: the
 // expression-bodied-property regex relies on that exclusion to avoid matching an
 // expression-bodied METHOD, whose parens sit between the name and `=>`.
-const TYPE_FILLER = '[A-Za-z_][A-Za-z0-9_<>?,.\\[\\]\\s]*?'
+const TYPE_FILLER = '@?[A-Za-z_][A-Za-z0-9_<>?,.@\\[\\]\\s]*?'
 // The type slot proper: either a tuple type (`(int a, string b)`) or the filler above. The tuple
 // alternative is a separate branch rather than parens added to the filler class, so the
 // exclusion the arrow-property regex depends on is preserved.
 const TYPE_SLOT = `(?:\\([^()]+\\)|${TYPE_FILLER})`
 // Member names may carry an explicit-interface qualifier (`void IDisposable.Dispose()`); the
 // qualifier is matched but not captured, so the recorded name is the final segment.
-const MEMBER_NAME = '(?:[A-Za-z_][A-Za-z0-9_.]*\\.)?([A-Za-z_][A-Za-z0-9_]*)'
+const MEMBER_NAME = `(?:${DOTTED_IDENT}\\.)?(${IDENT})`
 // Members are matched with `^\s*`, not `^\s+`: a member written at column zero (legal, and common
 // in file-scoped-namespace code) is still a member. Nothing else can reach these regexes - they
 // only run one brace level inside a type body, where a bare statement cannot legally appear.
 const MEMBER_INDENT = '^\\s*'
 const DELEGATE_RE = new RegExp(
   `^\\s*(?:public|protected|private|internal)?\\s*delegate\\s+${TYPE_SLOT}\\s+` +
-  '([A-Za-z_][A-Za-z0-9_]*)\\s*[<(]',
+  `(${IDENT})\\s*[<(]`,
 )
 const PROPERTY_RE = new RegExp(
   `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*` +
@@ -108,11 +116,11 @@ const PROPERTY_ARROW_RE = new RegExp(
 // only caller additionally requires the captured name to equal the enclosing type's name.
 const CONSTRUCTOR_RE = new RegExp(
   `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static)\\s+)*` +
-  '([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
+  `(${IDENT})\\s*\\(`,
 )
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial|readonly|ref|unsafe|file)\\s+)*' +
-  '(class|struct|interface|enum|record)(?:\\s+(?:class|struct))?\\s+([A-Za-z_][A-Za-z0-9_]*)',
+  `(class|struct|interface|enum|record)(?:\\s+(?:class|struct))?\\s+(${IDENT})`,
 )
 // Methods may have no access modifier (implicitly private) or only a return type (e.g. `void Run()`), so the modifier group is zero-or-more. The leading negative-lookahead rejects statement-starting keywords in the return-type slot so a no-modifier match cannot mistake `return Helper();`-style lines for a method; `new` is omitted from the guard because it is also a valid method modifier (`new void Foo()`). Method detection only runs at one brace level inside a class body, where bare statements cannot legally appear, so this stays safe.
 // The name-suffix requires either a bare `(` or a generic-arg list `<...>` immediately followed
@@ -210,13 +218,13 @@ export function extractCsharp(
     // using import
     const usingM = USING_RE.exec(stripped)
     if (usingM) {
-      imports.push({ kind: 'import', target: usingM[2] ?? usingM[1] ?? '', line: lineNum })
+      imports.push({ kind: 'import', target: stripVerbatim(usingM[2] ?? usingM[1] ?? ''), line: lineNum })
     }
 
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
     if (nsM) {
-      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
+      symbols.push(makeLineSymbol(filePath, stripVerbatim(nsM[1] ?? ''), 'namespace', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
     }
 
     // delegate. Matched against stripLeadingAttributes(stripped), same as CLASS_HEADER_RE below --
@@ -232,7 +240,7 @@ export function extractCsharp(
     const delM = DELEGATE_RE.exec(stripLeadingAttributes(stripped))
     if (delM) {
       const delegateParent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200), delegateParent, lines, 'c'))
+      symbols.push(makeLineSymbol(filePath, stripVerbatim(delM[1] ?? ''), 'interface', lineNum, stripped.slice(0, 200), delegateParent, lines, 'c'))
     }
 
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
@@ -241,7 +249,7 @@ export function extractCsharp(
     const cm = CLASS_HEADER_RE.exec(stripLeadingAttributes(stripped))
     if (cm) {
       const keyword = cm[1] ?? 'class'
-      const cname = cm[2] ?? ''
+      const cname = stripVerbatim(cm[2] ?? '')
       // `record` is class-like (a record is still fundamentally a reference/value class), so it
       // maps to kind 'class' like the other adapters map their closest analog. struct/interface/
       // enum get their own distinct kinds instead of all collapsing to 'class'.
@@ -261,7 +269,7 @@ export function extractCsharp(
         const lineNoAttr = stripLeadingAttributes(line)
         // constructor
         const ctorM = CONSTRUCTOR_RE.exec(lineNoAttr)
-        if (ctorM && ctorM[1] === frame.name) {
+        if (ctorM && stripVerbatim(ctorM[1] ?? '') === frame.name) {
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
           symbols.push(makeLineSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
@@ -271,7 +279,7 @@ export function extractCsharp(
         const propM = PROPERTY_RE.exec(lineNoAttr)
         if (propM) {
           isPropertyLine = true
-          symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          symbols.push(makeLineSymbol(filePath, stripVerbatim(propM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         } else {
           // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
           // following lines rather than trailing the header line, so PROPERTY_RE (which
@@ -281,7 +289,7 @@ export function extractCsharp(
             const [braceLineNext = '', accessorLine = ''] = nextCodeLines(lines, i, 2)
             if (braceLineNext === '{' && (ALLMAN_ACCESSOR_RE.test(accessorLine) || ALLMAN_ACCESSOR_BODY_RE.test(accessorLine))) {
               isPropertyLine = true
-              symbols.push(makeLineSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+              symbols.push(makeLineSymbol(filePath, stripVerbatim(headerM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
             }
           } else {
             // Expression-bodied property (`Name => expr;`) - neither PROPERTY_RE nor the
@@ -289,7 +297,7 @@ export function extractCsharp(
             const arrowM = PROPERTY_ARROW_RE.exec(lineNoAttr)
             if (arrowM) {
               isPropertyLine = true
-              symbols.push(makeLineSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+              symbols.push(makeLineSymbol(filePath, stripVerbatim(arrowM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
             }
           }
         }
@@ -297,7 +305,7 @@ export function extractCsharp(
         // property/auto-property declaration is never double-processed as a phantom method too.
         const methM = isPropertyLine ? null : METHOD_RE.exec(lineNoAttr)
         if (methM) {
-          const mname = methM[1] ?? ''
+          const mname = stripVerbatim(methM[1] ?? '')
           if (mname && mname !== frame.name) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
