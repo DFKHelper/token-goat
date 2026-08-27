@@ -1505,6 +1505,39 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
+  // Partition-completeness regression: the --all summary used to report only the regenerated and skipped buckets, so markerless and unresolvable skills silently vanished from the count -- "Regenerated 0, skipped 1, total 3" read as complete while the skills actually needing operator action (adding a COMPACT_END marker) went unmentioned on the exact surface README and doctor point at for compact remediation.
+  it('skill-compact --all names the markerless and unresolvable buckets instead of silently dropping them', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillall-'))
+    const dataDir = path.join(base, 'data')
+    fs.mkdirSync(dataDir, { recursive: true })
+    const env = { CLAUDE_CODE_SESSION_ID: 'allbuckets-sess' }
+    const mkSkill = (dirName: string, content: string): string => {
+      const d = path.join(base, 'skills', dirName)
+      fs.mkdirSync(d, { recursive: true })
+      const f = path.join(d, 'SKILL.md')
+      fs.writeFileSync(f, content)
+      return f
+    }
+    try {
+      const marked = mkSkill('marked', 'Compact line\n<!-- COMPACT_END -->\nfull body details')
+      const markerless = mkSkill('markerless', 'A body with no marker at all, just prose.')
+      const doomed = mkSkill('doomed', 'Cached then deleted\n<!-- COMPACT_END -->\ndetails')
+      for (const f of [marked, markerless, doomed]) {
+        const r = runIsolated(['skill-compact', '--path', f], dataDir, env)
+        expect(r.status, r.stderr).toBe(0)
+      }
+      fs.rmSync(path.dirname(doomed), { recursive: true, force: true })
+      const all = runIsolated(['skill-compact', '--all'], dataDir, env)
+      expect(all.status, all.stderr).toBe(0)
+      expect(all.stdout.trim().split('\n')).toEqual([
+        'Regenerated 0, skipped 1 (fresh), no marker 1, unresolvable 1, total 3.',
+        '1 cached skill has no COMPACT_END marker and cannot be compacted; run `token-goat skill-size` for per-skill marker recommendations.',
+      ])
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+
   it('skill-compact with neither name nor --path exits 1', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
     try {
