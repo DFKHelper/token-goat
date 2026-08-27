@@ -71,6 +71,7 @@
  * secret redaction and output compression never reached an opencode session's model.
  */
 import { BRIDGE_RELAY_JS } from "./relay_block.js";
+import { MATERIALIZE_SHRUNK_IMAGE_JS } from "./shrink_block.js";
 
 export const OPENCODE_PLUGIN_SCRIPT = `// token-goat bridge plugin for opencode
 // Bridges opencode's plugin hooks to token-goat's subprocess hook protocol.
@@ -143,28 +144,7 @@ function extractUpdatedInput(resp) {
   return hso && typeof hso === "object" ? hso.updatedInput : undefined
 }
 
-// Decode a token-goat image-shrink additionalContext payload
-// ("<summary>\\ndata:image/<fmt>;base64,<data>") into a real file on disk,
-// since tool.execute.before has no context-injection channel to hand the
-// shrunk image to the model directly -- only output.args mutation. Returns
-// undefined (leaving output.args untouched) if the context isn't a shrink
-// payload or anything goes wrong writing it.
-function materializeShrunkImage(context) {
-  if (typeof context !== "string") return undefined
-  const idx = context.indexOf("data:image/")
-  if (idx === -1) return undefined
-  const match = /^data:image\\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(context.slice(idx).trim())
-  if (!match) return undefined
-  try {
-    const buf = Buffer.from(match[2], "base64")
-    const name = \`token-goat-shrink-\${process.pid}-\${Date.now()}-\${Math.random().toString(36).slice(2)}.\${match[1]}\`
-    const file = path.join(os.tmpdir(), name)
-    fs.writeFileSync(file, buf)
-    return file
-  } catch {
-    return undefined
-  }
-}
+${MATERIALIZE_SHRUNK_IMAGE_JS}
 
 export const TokenGoatPlugin = async ({ directory }) => {
   return {

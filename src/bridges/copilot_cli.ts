@@ -64,12 +64,29 @@
  * tools and no Read/Edit/Write is ever recorded -- token-goat stats and re-read hints
  * silently never engage for Copilot CLI sessions. This resolves the `toolArgs` key
  * question the block above previously flagged as unconfirmed.
+ *
+ * Image shrinking rides token-goat's pre_tool_use additionalContext, which Copilot's
+ * preToolUse output schema cannot carry (docs/hook-channel-matrix.md footnote 7). It is
+ * delivered here the same way opencode/pi do it: materializeShrunkImage decodes the
+ * payload's data URL to a temp file and translate() returns
+ * `{modifiedArgs: {...originalArgs, path: <shrunk copy>}}` for a `view` call. Verified
+ * against the shipping 1.0.80 bundle that this channel really is honored for any tool:
+ * the native hook-response schema string table parses `modifiedArgs`
+ * (runtime.node offset 101619638), and app.js applies `s.argMutations` tool-agnostically
+ * (offset ~2041790) via ESr (offset 2032225), which REPLACES the tool call's
+ * `function.arguments` wholesale with the returned JSON -- which is exactly why the
+ * shrink rewrite spreads the full original toolArgs and swaps only `path`, in Copilot's
+ * own key, rather than returning a bare path object.
  */
+import { MATERIALIZE_SHRUNK_IMAGE_JS } from './shrink_block.js'
+
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Copilot CLI hook shim. Translates Copilot's hook event names and
 // request/response schema to/from token-goat's internal hook protocol.
 'use strict'
 const { spawnSync } = require('node:child_process')
+const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
@@ -326,9 +343,11 @@ async function main() {
   if (typeof (payload && payload.prompt) === 'string' && payload.prompt !== '') {
     canonical.prompt = payload.prompt
   }
+  let originalToolArgs = {}
   if (toolName) {
+    originalToolArgs = parseMaybeJsonObject(payload && payload.toolArgs)
     canonical.tool_name = TOOL_TO_TG[toolName] || toolName
-    canonical.tool_input = remapToolInput(toolName, parseMaybeJsonObject(payload && payload.toolArgs))
+    canonical.tool_input = remapToolInput(toolName, originalToolArgs)
   }
 
   // postToolUse only: confirmed via https://docs.github.com/en/copilot/reference/hooks-reference
@@ -415,10 +434,12 @@ async function main() {
     return
   }
 
-  process.stdout.write(JSON.stringify(translate(copilotEvent, resp)))
+  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs)))
 }
 
-function translate(copilotEvent, resp) {
+${MATERIALIZE_SHRUNK_IMAGE_JS}
+
+function translate(copilotEvent, resp, toolName, originalToolArgs) {
   if (copilotEvent === 'preToolUse') {
     const hso = resp && resp.hookSpecificOutput
     const denied = resp && (resp.decision === 'block' || (hso && hso.permissionDecision === 'deny'))
@@ -430,6 +451,11 @@ function translate(copilotEvent, resp) {
     const updated = hso && hso.updatedInput
     if (updated && typeof updated === 'object') {
       return { modifiedArgs: updated }
+    }
+    // Image shrink has no context channel on this event (Copilot's preToolUse output schema carries no additionalContext; docs/hook-channel-matrix.md footnote 7) -- translate it into a rewritten view path pointing at a materialized shrunk copy instead, via the same modifiedArgs channel the updatedInput branch above already uses. modifiedArgs REPLACES the tool call's args wholesale (ESr in the 1.0.80 bundle, see this module's header docblock), so the full original toolArgs are spread and only Copilot's own path key is swapped.
+    if (toolName === 'view') {
+      const shrunkPath = materializeShrunkImage(extractContext(resp))
+      if (shrunkPath) return { modifiedArgs: Object.assign({}, originalToolArgs, { path: shrunkPath }) }
     }
     return {}
   }
