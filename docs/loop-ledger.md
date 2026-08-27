@@ -118,3 +118,4 @@ row go to the user.
 | 50 | 1bec3628 | cli skill-compact --all reporting | medium (markerless bucket dropped; ENOENT crash) | yes | 106 |
 | 51 | 8c6cb4a2 | hook channel matrix, copilot + opencode bridges | high (opencode redaction/fencing never applied; loop 49 advisory dead and misfiring on copilot) | yes | 232 |
 | 52 | 6a25ea3d | bridges image-shrink reroute, openclaw arg keys | high (all getFilePath hooks no-opped on openclaw; shrink dead on 2 bridges) | yes | 256 |
+| 53 | 5d4ccc36 | bridges tool-name and arg-key partition: qwen, pi, opencode, grok, kimi | high (every tool-scoped hook dead on qwen; pi powershell bypassed Bash hooks; 3 opencode mechanisms unreachable; grok web/glob unmapped) | yes | n/a (writer hit an API session limit; work recovered and finished by the orchestrator) |
