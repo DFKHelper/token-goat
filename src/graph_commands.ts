@@ -289,7 +289,8 @@ export function runCallers(opts: CallersOptions): number {
   // --grep is set, since both filter the resolved set client-side, AFTER the query -- slicing
   // to the requested limit before either filter runs would silently under-return by letting
   // suppressed/non-matching entries occupy slots ahead of the cutoff.
-  const unbounded = opts.excludeTests === true || opts.grep !== undefined
+  // A `file::symbol` spec is the third such filter, and had been missed: resolveCallers runs filterRefsForSymbol (same-name attribution) on the rows the SQL LIMIT already chose, so refs belonging to a different same-named definition occupied slots ahead of the cutoff and were then dropped. `callers "a.ts::foo" --limit 2` returned one caller with truncated:false when three attributable callers existed. Same headroom treatment: scan unbounded, attribute, then slice.
+  const unbounded = opts.excludeTests === true || opts.grep !== undefined || fileHint !== undefined
   // On the bounded path the SQL LIMIT is invisible once the rows come back: exactly `requestedLimit` rows reads the same whether that was the whole caller set or a page clipped out of a much larger one, so `truncated` reported false for a result that had silently dropped callers -- the same invocation with --grep (which forces the unbounded path) correctly reported true. Ask for one row past the limit and use the overflow purely as the truncation signal; the probe row is sliced off here and never reaches `filtered`, the counts, or the output.
   const requestedLimit = opts.limit ?? DEFAULT_REF_QUERY_LIMIT
   const probed = resolveCallers(name, unbounded ? opts.limit : requestedLimit + 1, fileHint, rootDir, unbounded)

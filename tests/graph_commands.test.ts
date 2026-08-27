@@ -5221,3 +5221,48 @@ describe('runCallers --limit truncation flag', () => {
     }
   })
 })
+
+describe('runCallers file::symbol attribution vs --limit', () => {
+  it('scans with full headroom so same-name attribution cannot eat slots ahead of the limit', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-attr-limit-'))
+    try {
+      // `shadowFn7q1` is defined in defFile AND, independently, in each shadow file. filterRefsForSymbol drops a ref living in a file that defines its own same-named symbol, so the two shadow refs are never attributable to defFile's definition -- but they sort first by file path, so a bounded SQL query hands them back and they are discarded afterwards.
+      const defFile = join(root, 'a-def.ts')
+      writeFileSync(defFile, 'export function shadowFn7q1() { return 1 }\n')
+      for (const n of ['b-shadow1', 'c-shadow2']) {
+        writeFileSync(join(root, `${n}.ts`), `function shadowFn7q1() { return 2 }\nfunction use_${n.replace('-', '_')}() { shadowFn7q1() }\n`)
+      }
+      for (const n of ['d-real1', 'e-real2', 'f-real3']) {
+        writeFileSync(join(root, `${n}.ts`), `function use_${n.replace('-', '_')}() { shadowFn7q1() }\n`)
+      }
+      for (const f of ['a-def', 'b-shadow1', 'c-shadow2', 'd-real1', 'e-real2', 'f-real3']) {
+        indexFileSync(normalizePath(join(root, `${f}.ts`)))
+      }
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Clipped page. Pre-fix the SQL asked for 3 rows, got b-shadow1/c-shadow2/d-real1, attribution dropped the two shadows, and the command emitted a single caller with truncated:false.
+        const clipped = captureStdout(() => { expect(runCallers({ symbol: 'a-def.ts::shadowFn7q1', json: true, limit: 2 })).toBe(0) })
+        const clippedPayload = JSON.parse(clipped) as { items: { caller: string }[]; truncated: boolean; totalCount: number }
+        expect(clippedPayload.items.map((i) => i.caller)).toEqual(['use_d_real1', 'use_e_real2'])
+        expect(clippedPayload.truncated).toBe(true)
+        expect(clippedPayload.totalCount).toBe(3)
+
+        // Control against over-fixing: a limit equal to the attributable caller count is not a truncation.
+        const exact = captureStdout(() => { expect(runCallers({ symbol: 'a-def.ts::shadowFn7q1', json: true, limit: 3 })).toBe(0) })
+        const exactPayload = JSON.parse(exact) as { items: { caller: string }[]; truncated: boolean; totalCount: number }
+        expect(exactPayload.items.map((i) => i.caller)).toEqual(['use_d_real1', 'use_e_real2', 'use_f_real3'])
+        expect(exactPayload.truncated).toBe(false)
+        expect(exactPayload.totalCount).toBe(3)
+
+        // Control against over-fixing in the other direction: attribution must still exclude the shadow callers entirely, not be widened to pass the counts above.
+        const text = captureStdout(() => { expect(runCallers({ symbol: 'a-def.ts::shadowFn7q1', limit: 10 })).toBe(0) })
+        expect(text.trim().split('\n').map((l) => l.split('\t')[0])).toEqual(['use_d_real1', 'use_e_real2', 'use_f_real3'])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
