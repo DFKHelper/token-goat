@@ -12,6 +12,7 @@ import type { MiniSection, MultilineStringState, AdapterImport } from './common.
 import {
   assignFlatEndLines,
   buildLineIndex,
+  findMatchingBraceEndLine,
   isInsideStringLiteral,
   makeSymbolEmitter,
   offsetToLine,
@@ -122,6 +123,28 @@ function stripGraphqlDescriptions(text: string): string {
   return outLines.join('\n')
 }
 
+/**
+ * Index of the `{` that opens a declaration's body, searching `text` from `from` up to (but not
+ * including) `until`, or -1 when the declaration has no body inside that window. A GraphQL
+ * declaration header can carry an `implements A & B` list and a directive list before its brace,
+ * and a directive argument may itself hold an object value (`@cache(policy: {ttl: 5})`) or a list
+ * (`@x(vals: [{a: 1}])`), so a `{` nested inside `(...)`/`[...]` is skipped: matching that one
+ * would end the symbol at the argument's closing brace instead of the body's. `text` is the
+ * already stripped form (comments removed, every string literal blanked), so no quote handling is
+ * needed here.
+ */
+function findDeclarationBraceIndex(text: string, from: number, until: number): number {
+  let nesting = 0
+  const limit = Math.min(until, text.length)
+  for (let i = Math.max(from, 0); i < limit; i++) {
+    const ch = text[i]
+    if (ch === '(' || ch === '[') nesting++
+    else if (ch === ')' || ch === ']') { if (nesting > 0) nesting-- }
+    else if (ch === '{' && nesting === 0) return i
+  }
+  return -1
+}
+
 export function extractGraphql(
   content: string,
   filePath: string,
@@ -169,6 +192,9 @@ export function extractGraphql(
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(stripped)
 
+  // name+lineStart -> offset just past the declaration header, so the post-pass below can locate the `{` that opens the declaration's body and end the symbol at its matching `}` instead of at the next declaration. assignFlatEndLines alone stretches every symbol to the line before the next one, which swallows the blank lines, `#` comments and (most misleadingly) the `"""..."""` description belonging to the NEXT declaration into this one's body -- the same over-reach proto_idx.ts and terraform_idx.ts already correct with findMatchingBraceEndLine.
+  const braceScanStarts = new Map<string, number>()
+
   // type / interface / input / enum / union / scalar (+ extend variants)
   for (const m of stripped.matchAll(TYPE_RE)) {
     const keyword = m.groups?.['keyword'] ?? ''
@@ -177,6 +203,7 @@ export function extractGraphql(
     if (name) {
       const kind = isExtend ? 'graphql_extend' : (KIND_MAP.get(keyword) ?? 'graphql_type')
       const line = offsetToLine(lineIndex, m.index ?? 0)
+      braceScanStarts.set(`${name}\0${line}`, (m.index ?? 0) + m[0].length)
       emit(name, kind, line)
     }
   }
@@ -195,6 +222,7 @@ export function extractGraphql(
     const name = m[1]?.trim() ?? ''
     if (name) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
+      braceScanStarts.set(`${name}\0${line}`, (m.index ?? 0) + m[0].length)
       emit(name, 'graphql_fragment', line)
     }
   }
@@ -205,6 +233,7 @@ export function extractGraphql(
     const name = m.groups?.['name']?.trim() ?? ''
     if (name) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
+      braceScanStarts.set(`${name}\0${line}`, (m.index ?? 0) + m[0].length)
       emit(name, `graphql_${op}`, line)
     }
   }
@@ -212,12 +241,26 @@ export function extractGraphql(
   // schema { }
   for (const m of stripped.matchAll(SCHEMA_RE)) {
     const line = offsetToLine(lineIndex, m.index ?? 0)
+    // SCHEMA_RE already consumes the opening brace, so start the scan on it rather than past it.
+    braceScanStarts.set(`schema\0${line}`, (m.index ?? 0) + m[0].length - 1)
     emit('schema', 'graphql_schema', line)
   }
 
   sections.sort((a, b) => a.line - b.line)
   assignFlatEndLines(sections, totalLines)
-  const finalSymbols = propagateEndLinesToSymbols(symbols, sections)
+  const finalSymbols = propagateEndLinesToSymbols(symbols, sections).map((sym) => {
+    const scanFrom = braceScanStarts.get(`${sym.name}\0${sym.lineStart}`)
+    if (scanFrom === undefined) return sym
+    // Bounded by the flat end line the pass above assigned: a brace-less declaration (`scalar
+    // DateTime`, `union A = B | C`, a bodyless `type Foo`) must not reach forward and adopt the
+    // NEXT declaration's block, so the correction can only ever shrink a span, never grow one.
+    const windowEnd = lineIndex[sym.lineEnd] ?? stripped.length
+    const braceIndex = findDeclarationBraceIndex(stripped, scanFrom, windowEnd)
+    if (braceIndex === -1) return sym
+    const braceEndLine = findMatchingBraceEndLine(stripped, braceIndex, totalLines, lineIndex)
+    if (braceEndLine < sym.lineStart || braceEndLine >= sym.lineEnd) return sym
+    return { ...sym, lineEnd: braceEndLine }
+  })
 
   return { symbols: finalSymbols, imports }
 }
