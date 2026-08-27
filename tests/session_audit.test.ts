@@ -89,6 +89,9 @@ describe('auditSessionCorpus', () => {
     expect(Object.keys(s.lineTypes).sort()).toEqual(['assistant', 'attachment', 'file-history-snapshot', 'system', 'user'])
     expect(s.lineTypes['assistant']!.lines).toBe(4)
     expect(s.lineTypes['user']!.lines).toBe(3)
+    // agent-1.jsonl is the only lane file: one usage (7+0+3 = 10 prefix tokens, 1 call), no user turn (brief 0). Billed-equiv on paper: round(10 x 1.25) = 13. The main-file Bash tool_result must NOT enter the Read-interception census.
+    expect(s.sidechainLanes).toEqual({ laneFiles: 1, lanesWithUsage: 1, meanFirstCallPrefixTokens: 10, medianFirstCallPrefixTokens: 10, p90FirstCallPrefixTokens: 10, meanCallsPerLane: 1, meanBriefBytes: 0, prefixBilledEquivTokens: 13 })
+    expect(s.readInterception).toEqual({ readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0 })
     const zero = { apiCalls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 }
     expect(s.positionDeciles).toEqual([
       { decile: 1, apiCalls: 2, inputTokens: 610, cacheReadTokens: 303, outputTokens: 42 },
@@ -163,6 +166,69 @@ describe('session-audit via the built bundle', () => {
  * content + 4 = 10). Est-tokens are bytes/3+1 on paper: 12 -> 5, 10 -> 4, 3 -> 2, 2 -> 1. Billed
  * equivalents on paper: round(1.25 x est + 0.1 x reread) = 14, 5, 3, 1.
  */
+/**
+ * Sidechain-lane and Read-interception fixture, expected values derived by hand from the
+ * literals. Lane 1: first usage 100+900+0 = 1000 prefix tokens, 2 distinct calls, brief
+ * "please do X" = 11 bytes; billed-equiv on paper: round(1000 x (1.25 + 0.1 x 1)) = 1350.
+ * Lane 2 carries no usage at all: it must count in laneFiles but stay OUT of every mean
+ * (counting it as prefix 0 would drag meanFirstCallPrefixTokens to 500). Reads, main file:
+ * R1 is a 52-byte divert message (counted); R2 is a 12,000-byte full serve (counted, and its
+ * trailing marker-like text must not divert it because it is over the size cap); R3 is a
+ * 5-byte ordinary result (neither); R4 is a 3,000-byte body mentioning a token-goat command
+ * (neither: over the divert cap, under the full-serve floor).
+ */
+describe('sidechain lane and read interception census', () => {
+  const DIVERT_TEXT = 'a.md was already read this session. Use the cache.'
+  const R_USE = (id: string): string => `{"type":"assistant","message":{"id":"msg_ru_${id}","role":"assistant","content":[{"type":"tool_use","id":"${id}","name":"Read","input":{"file_path":"a.md"}}]}}`
+  const R1 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","content":"${DIVERT_TEXT}"}]}}`
+  const BIG = 'A'.repeat(11950) + ' Use `token-goat section "a.md::H"' + 'B'.repeat(16)
+  const R2 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r2","content":"${BIG.replace(/"/g, '\\"')}"}]}}`
+  const R3 = '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r3","content":"hello"}]}}'
+  const MID = 'C'.repeat(2960) + ' Use `token-goat read "a.ts::fn"'
+  const R4 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r4","content":"${MID.replace(/"/g, '\\"')}"}]}}`
+  const LANE1 = [
+    '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"please do X"}]}}',
+    '{"type":"assistant","isSidechain":true,"message":{"id":"msg_L1a","role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":900,"cache_read_input_tokens":0,"output_tokens":1},"content":[]}}',
+    '{"type":"assistant","isSidechain":true,"message":{"id":"msg_L1b","role":"assistant","usage":{"input_tokens":5,"cache_creation_input_tokens":20,"cache_read_input_tokens":1000,"output_tokens":1},"content":[]}}',
+  ]
+  const LANE2 = ['{"type":"attachment","attachment":{"type":"task_status"}}']
+  let laneDir = ''
+
+  beforeAll(() => {
+    laneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-lanes-'))
+    const projectDir = path.join(laneDir, 'C--Projects-lanes')
+    const subagentsDir = path.join(projectDir, 'sess-uuid', 'subagents')
+    fs.mkdirSync(subagentsDir, { recursive: true })
+    fs.writeFileSync(path.join(projectDir, 'main.jsonl'), [R_USE('r1'), R1, R_USE('r2'), R2, R_USE('r3'), R3, R_USE('r4'), R4].join('\n') + '\n')
+    fs.writeFileSync(path.join(subagentsDir, 'agent-lane1.jsonl'), LANE1.join('\n') + '\n')
+    fs.writeFileSync(path.join(subagentsDir, 'agent-lane2.jsonl'), LANE2.join('\n') + '\n')
+  })
+
+  afterAll(() => {
+    fs.rmSync(laneDir, { recursive: true, force: true })
+  })
+
+  it('rolls up lane spawn prefixes over lanes with usage only, and classifies Read results into divert, full-serve, and neither', async () => {
+    const s = await auditSessionCorpus({ dir: laneDir })
+    expect(s.sidechainLanes).toEqual({ laneFiles: 2, lanesWithUsage: 1, meanFirstCallPrefixTokens: 1000, medianFirstCallPrefixTokens: 1000, p90FirstCallPrefixTokens: 1000, meanCallsPerLane: 2, meanBriefBytes: 11, prefixBilledEquivTokens: 1350 })
+    expect(s.readInterception).toEqual({ readResults: 4, divertedByMarker: 1, divertedBytes: Buffer.byteLength(DIVERT_TEXT, 'utf8'), fullServesOver10k: 1, fullServeBytesOver10k: Buffer.byteLength(BIG, 'utf8') })
+  })
+
+  it('renders both new sections and reports the same rollups through real CLI dispatch with --json', async () => {
+    const s = await auditSessionCorpus({ dir: laneDir })
+    const text = formatSessionAudit(s)
+    expect(text).toContain('Lane files: 2 (1 with usage)')
+    expect(text).toContain('First-call prefix tokens: mean 1,000, median 1,000, p90 1,000')
+    expect(text).toContain('Prefix billed-equiv tokens: 1,350 (write x 1.25, then x 0.1 per later call in the lane)')
+    expect(text).toContain('Read results: 4; diverted by marker: 1 (50 bytes); full serves >=10 KiB: 1 (12,000 bytes)')
+    const res = await runBatched(['session-audit', '--dir', laneDir, '--json'])
+    expect(res.status).toBe(0)
+    const parsed = JSON.parse(res.stdout) as { sidechainLanes: unknown; readInterception: unknown }
+    expect(parsed.sidechainLanes).toEqual(s.sidechainLanes)
+    expect(parsed.readInterception).toEqual(s.readInterception)
+  })
+})
+
 describe('attachment kind census', () => {
   const A1 = '{"type":"attachment","attachment":{"type":"skill_listing","content":"0123456789AB","skillCount":1}}'
   const C1 = '{"type":"assistant","message":{"id":"msg_C","role":"assistant","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1},"content":[]}}'

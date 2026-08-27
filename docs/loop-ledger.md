@@ -77,6 +77,8 @@ Not swept, and not to be attempted by inference. Each needs a real capture or a 
 | BE-04 | A real clang-tidy capture | LLVM install |
 | BE-05 | `hooks_bashoutput.ts` envelope | zero `BashOutput` results exist corpus-wide; needs the interactive client |
 | BE-06 | Codex, Gemini, Grok, Kimi wire maps | those harnesses |
+| BE-07 | Typed-vs-unrestricted split of the subagent spawn prefix (which share is MCP/tool manifest) | verifying a parent Task tool_use -> lane agentId join key exists in real transcripts; the lane file itself carries no subagent-type field |
+| BE-08 | Program-vs-ordinary-dev split of the token-goat project's own 1.41B billed input-equivalents | nothing: the split needs transcript content, which the privacy invariant forbids; treat as permanently confounded and say so when citing project-share numbers |
 
 ## Yield Ledger
 
