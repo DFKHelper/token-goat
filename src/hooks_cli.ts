@@ -331,6 +331,34 @@ function grokToCanonicalWire(obj: Record<string, unknown>): Record<string, unkno
 }
 
 /**
+ * Alias a gemini-family post-tool `tool_response.llmContent` onto `output`, in place.
+ *
+ * Gemini CLI's AfterTool payload carries the tool result as
+ * `tool_response: {llmContent, returnDisplay, error?}` -- stated verbatim in google-gemini/gemini-cli's
+ * own `docs/hooks/reference.md` (fetched 2026-08-27, lines 122-123: "`tool_response`: (`object`) The
+ * result containing `llmContent`, `returnDisplay`, and optional `error`."). Qwen Code, a fork of that
+ * CLI, builds the identical shape (coreToolScheduler.ts, serialized verbatim by toolHookTriggers.ts).
+ * Neither `llmContent` nor `returnDisplay` appears in OUTPUT_FIRST_TOOL_RESPONSE_KEYS or
+ * BODY_FIRST_TOOL_RESPONSE_KEYS (hooks_common.ts), so every post handler that measures, caches,
+ * redacts or compresses a tool result read an empty string on both harnesses and silently did
+ * nothing. `output` is the first key both lists read, and it is added ALONGSIDE the originals rather
+ * than renaming them, the same safe direction as every other inbound key fix in this file.
+ *
+ * `llmContent` is a PartListUnion upstream; only the plain-string case is representable here, so a
+ * non-string value (an image part array, for instance) falls through untouched rather than being
+ * coerced into an invented string. An existing `output` key always wins, so a harness that ever does
+ * send one keeps it.
+ */
+function aliasLlmContentToOutput(result: Record<string, unknown>): void {
+  const toolResponse = result['tool_response']
+  if (toolResponse === null || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) return
+  const responseRecord = toolResponse as Record<string, unknown>
+  if (typeof responseRecord['llmContent'] === 'string' && responseRecord['output'] === undefined) {
+    result['tool_response'] = { ...responseRecord, output: responseRecord['llmContent'] }
+  }
+}
+
+/**
  * Translate harness-specific payload to internal format.
  *
  * Codex sends snake_case tool names; Claude uses PascalCase.
@@ -392,14 +420,8 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
 
   if (harness === 'qwen') {
     const result = remapToolName(obj, toolName, QWEN_TOOL_NAME_MAP, QWEN_INPUT_KEY_MAP)
-    // Qwen's PostToolUse tool_response is `{llmContent, returnDisplay}` (coreToolScheduler.ts builds it, toolHookTriggers.ts serializes it verbatim) -- neither key is in OUTPUT_FIRST/BODY_FIRST_TOOL_RESPONSE_KEYS (hooks_common.ts), so every post handler that measures or compresses the result saw an empty string. Add `output` (the first key both lists read) ALONGSIDE the originals rather than renaming, the same safe direction as every other inbound key fix. llmContent is a PartListUnion upstream; only the plain-string case is representable here, and a non-string llmContent falls through untouched.
-    const toolResponse = result['tool_response']
-    if (toolResponse !== null && typeof toolResponse === 'object' && !Array.isArray(toolResponse)) {
-      const responseRecord = toolResponse as Record<string, unknown>
-      if (typeof responseRecord['llmContent'] === 'string' && responseRecord['output'] === undefined) {
-        result['tool_response'] = { ...responseRecord, output: responseRecord['llmContent'] }
-      }
-    }
+    // Qwen's PostToolUse tool_response is `{llmContent, returnDisplay}` (coreToolScheduler.ts builds it, toolHookTriggers.ts serializes it verbatim), a shape it inherits from its Gemini CLI ancestor -- see aliasLlmContentToOutput above for the full citation and for why `output` is added alongside rather than renamed.
+    aliasLlmContentToOutput(result)
     result['_tg_harness'] = harness
     return result
   }
@@ -410,6 +432,8 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
       result['toolUseId'] = result['functionCallId']
       delete result['functionCallId']
     }
+    // Gemini's own AfterTool payload puts the result under tool_response.llmContent, which is in neither shared key list -- the same gap loop 53 fixed on Qwen, and Qwen inherited it from here. See aliasLlmContentToOutput above for the docs citation.
+    aliasLlmContentToOutput(result)
     result['_tg_harness'] = harness
     return result
   }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { normalizePayload, type HookPayload } from '../src/hooks_cli.js'
+import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from '../src/hooks_common.js'
 
 describe('normalizePayload', () => {
   it('returns empty dict for non-dict payload', () => {
@@ -128,6 +129,54 @@ describe('normalizePayload', () => {
     const result = normalizePayload(payload, 'gemini')
     expect(result['toolUseId']).toBe('call_123')
     expect(result).not.toHaveProperty('functionCallId')
+  })
+
+  // FORMAT-DERIVED. The AfterTool tool_response shape below is read off Gemini CLI's own hook
+  // reference, not off token-goat's key lists: google-gemini/gemini-cli, docs/hooks/reference.md,
+  // https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/hooks/reference.md fetched
+  // 2026-08-27, lines 122-123 verbatim: "`tool_response`: (`object`) The result containing
+  // `llmContent`, `returnDisplay`, and optional `error`." The bodies ('hello from gemini', the
+  // inlineData part) are invented filler; only the KEY NAMES are load-bearing and only those come
+  // from the citation.
+  it('adds output alongside llmContent in a gemini post tool_response so the response-reading handlers see the body (llmContent is in neither tool_response key list, so every post handler read an empty string on Gemini)', () => {
+    const payload: HookPayload = {
+      tool_name: 'run_shell_command',
+      tool_input: { command: 'echo hi' },
+      tool_response: { llmContent: 'hello from gemini\n', returnDisplay: 'hello from gemini' },
+    }
+    const result = normalizePayload(payload, 'gemini')
+    expect(result['tool_response']).toEqual({ llmContent: 'hello from gemini\n', returnDisplay: 'hello from gemini', output: 'hello from gemini\n' })
+    expect(extractToolResponseField(result as Record<string, unknown>, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('hello from gemini\n')
+    expect(extractToolResponseField(result as Record<string, unknown>, BODY_FIRST_TOOL_RESPONSE_KEYS)).toBe('hello from gemini\n')
+  })
+
+  it('leaves a non-string gemini llmContent (PartListUnion array) untouched rather than inventing an output', () => {
+    const payload: HookPayload = {
+      tool_name: 'read_file',
+      tool_input: { path: '/tmp/x.png' },
+      tool_response: { llmContent: [{ inlineData: { data: 'AAAA' } }], returnDisplay: 'image' },
+    }
+    const result = normalizePayload(payload, 'gemini')
+    expect(result['tool_response']).toEqual({ llmContent: [{ inlineData: { data: 'AAAA' } }], returnDisplay: 'image' })
+  })
+
+  // Non-firing guard: the llmContent alias must not disturb any OTHER gemini tool_response shape it
+  // touches. Every case here is a real non-llmContent post payload the alias runs over, and each must
+  // come back byte-identical. Asserts over a non-empty collection, with the non-emptiness asserted
+  // before the loop.
+  it('non-firing: the gemini llmContent alias leaves every other tool_response shape byte-identical', () => {
+    const untouched: Array<Record<string, unknown>> = [
+      { output: 'already canonical', llmContent: 'ignored because output wins' },
+      { stdout: 'from a claude-shaped bash result', stderr: '' },
+      { result: '<html>page</html>', url: 'https://example.com' },
+      { returnDisplay: 'display only, no llmContent' },
+      { error: 'tool failed' },
+    ]
+    expect(untouched.length).toBeGreaterThan(0)
+    for (const toolResponse of untouched) {
+      const result = normalizePayload({ tool_name: 'run_shell_command', tool_input: { command: 'x' }, tool_response: { ...toolResponse } }, 'gemini')
+      expect(result['tool_response']).toEqual(toolResponse)
+    }
   })
 
   describe('grok harness', () => {
