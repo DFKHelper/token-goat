@@ -3441,8 +3441,8 @@ describe('read_commands', () => {
       // Third arg is the resolved symbol's own filePath -- runBrief passes it through so
       // resolveCallers can disambiguate a same-named symbol defined elsewhere (regression:
       // task #136, same-project name-collision merging in callers/dead).
-      // Original intent preserved: no explicit limit is passed, so the caller list comes back on resolveCallers' own default page and the elided count must come from the uncapped COUNT(*), not this list's length. The trailing rootDir/excludeTests args arrived with `brief --exclude-tests`; rootDir is already resolved here, so threading it avoids a second git shell-out for the same value, and `false` pins that the unbounded-scan path stays off by default.
-      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts', expect.any(String), false)
+      // Original intent preserved: no explicit limit is passed, so the elided count must come from the full scoped caller list, not from the display-limited slice. The trailing rootDir/excludeTests args arrived with `brief --exclude-tests`; rootDir is already resolved here, so threading it avoids a second git shell-out for the same value, and `true` pins that the unbounded scan is now unconditional so resolveCallers' own 500-row default page can never cut the total.
+      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts', expect.any(String), true)
       expect(stdout).toContain('Callers (10):')
       expect(stdout).toContain('...(5 more elided)')
     })
@@ -3461,30 +3461,29 @@ describe('read_commands', () => {
       expect(parsed.truncated).toBe(true)
     })
 
-    it('reports the true uncapped caller count via queryRefCounts, not the length of resolveCallers own (internally-capped) list', () => {
-      // Regression: resolveCallers(name) with no explicit limit still applies its own internal
-      // default cap (500, in graph_commands.ts's queryRefs call). A prior version of runBrief
-      // trusted callers.length as "the true count" (per a since-corrected comment claiming
-      // resolveCallers was queried with "its own much larger default limit"), so once a symbol
-      // had more references than that cap, totalCallers silently reported the capped number
-      // instead of the real one. Here resolveCallers is mocked to return a small capped-looking
-      // list while queryRefCounts (the real uncapped COUNT(*) query) reports a much larger true
-      // total -- proving runBrief reads the count from queryRefCounts, not callers.length.
+    it('takes the caller total from the scoped unbounded scan, never from queryRefCounts name-keyed count', () => {
+      // Regression: runBrief used to take its total from queryRefCounts, a COUNT(*) keyed by symbol
+      // NAME across the project, while the rows it printed came from resolveCallers, which also
+      // scopes to THIS definition site. For a name defined in two files the header counted the other
+      // definition's callers and promised elided rows that could never be listed. queryRefCounts is
+      // mocked to a wildly different number here: if runBrief still consults it for the total, the
+      // header and the elided tail both go wrong.
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      const cappedCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
-      mockResolveCallers.mockReturnValue(cappedCallers)
+      const scopedCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
+      mockResolveCallers.mockReturnValue(scopedCallers)
       mockQueryRefCounts.mockReturnValue(new Map([['myFunc', 800]]))
       mockFindContainingSection.mockReturnValue(null)
 
       const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5 }) })
-      expect(stdout).toContain('Callers (800):')
-      expect(stdout).toContain('...(795 more elided)')
+      expect(stdout).toContain('Callers (10):')
+      expect(stdout).toContain('...(5 more elided)')
+      expect(stdout).not.toContain('800')
 
       const { stdout: jsonOut } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5, json: true }) })
       const parsed = JSON.parse(jsonOut) as { totalCallers: number; truncated: boolean }
-      expect(parsed.totalCallers).toBe(800)
+      expect(parsed.totalCallers).toBe(10)
       expect(parsed.truncated).toBe(true)
     })
 

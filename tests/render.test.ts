@@ -549,7 +549,8 @@ describe('Stats rendering', () => {
   it('groups the webfetch: prefixed kind under Web, not Other (regression: only bash_compress: had a prefix special case in _kindGroupLabel)', () => {
     const stats = { ...minimalStats }
     stats.by_kind = [
-      { kind: 'web_dedup_hint', bytes: 10000, tokens: 1000, events: 20 },
+      // Companion literal Web kind. web_fetch, not the former web_dedup_hint: that name was one of the twenty-nine Python-port leftovers the renderer grouped but stats.ts never registered, so it now lands under Other and would fail this assertion for a reason that has nothing to do with the webfetch: prefix under test.
+      { kind: 'web_fetch', bytes: 10000, tokens: 1000, events: 20 },
       { kind: 'webfetch:recall', bytes: 4000, tokens: 400, events: 8 },
     ]
     const result = renderStats(stats)

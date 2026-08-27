@@ -504,12 +504,10 @@ const _KIND_GROUPS: KindGroup[] = [
       'session_hint_overhead',
       'session_hint_suppressed',
       'read_count_deny',
-      'read_dedup_hint',
       'grep_dedup_hint',
       'glob_dedup_hint',
       'diff_hint',
       'predictive_prefetch_hit',
-      'read_partial_overlap_hint',
       'structured_file_hint',
       'write_rewrite_hint',
       'websearch_dedup_hint',
@@ -517,33 +515,11 @@ const _KIND_GROUPS: KindGroup[] = [
       'large_file_hint_ignored',
     ]),
   },
-  {
-    label: 'Bash',
-    members: new Set([
-      'bash_dedup_hint',
-      'bash_output_cached',
-      'bash_output_recall',
-      'bash_output_recall_miss',
-      'bash_dedup_stale',
-      'bash_range_read_hint',
-      'bash_streak_hint',
-      'bash_poll_hint',
-      'env_probe_cache_hit',
-      'git_diff_scope_hint',
-      'dep_list_cache_hit',
-      'bash_read_equiv_already_read',
-      'bash_grep_result_cache_hit',
-      'git_diff_context_trimmed',
-    ]),
-  },
+  // Empty for the same reason as MCP below: every live Bash kind arrives through _kindGroupLabel's `bash_compress:` prefix branch, not through a literal name. The fifteen literal names this set used to carry (bash_output_cached, bash_dedup_hint, env_probe_cache_hit and the rest) came over with the Python port and were never recorded or registered anywhere in this tree, so they grouped rows that could not exist.
+  { label: 'Bash', members: new Set<string>() },
   {
     label: 'Web',
     members: new Set([
-      'web_dedup_hint',
-      'web_output_cached',
-      'web_output_recall',
-      'web_output_recall_miss',
-      'web_dedup_stale',
       'web_fetch',
       'injection_detected',
     ]),
@@ -556,20 +532,17 @@ const _KIND_GROUPS: KindGroup[] = [
   {
     label: 'Compact / Skills',
     members: new Set([
-      'compact_manifest',
-      'compact_assist',
-      'compact_recovery',
-      'skill_body_recall',
-      'skill_compact_served',
-      'skill_cached',
       'skill_load',
       'skill_oversized_first_load',
       'skill_compact_inlined',
-      'resume_packet',
-      'decision_log',
     ]),
   },
 ]
+
+/** Every kind name literally listed in a {@link _KIND_GROUPS} member set. Exported for guards/rendered_stat_kind_is_registered.test.ts, the third mirror in the stat-registry guard family: a name the renderer groups but that stats.ts never registered has no source, no producer, and can only ever render as an empty row. */
+export function _renderedKindNames(): string[] {
+  return _KIND_GROUPS.flatMap((g) => [...g.members])
+}
 
 function _kindGroupLabel(kind: string): string {
   if (kind.startsWith('bash_compress:')) {
