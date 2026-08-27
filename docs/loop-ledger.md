@@ -27,7 +27,7 @@ Surfaces audited and found sound. Do not re-sweep without a recheck condition fi
 | SC-08 | 1-21 | `config.ts::mergeRawConfig`, `stripLockedProjectKeys` | new lock-list key |
 | SC-09 | 22 | `url_policy.ts`; `zip_bounds.ts::unzipBounded`; `neutralizeFenceMarkers`; `redactGhBase64Content` statefulness; `isInsideRoot` | any redact/fence/confine edit |
 | SC-10 | 24-27 | All of `graph_commands.ts` including its full bound table | new command in the file |
-| SC-11 | 20,32 | All of `read_commands.ts` incl. `resolveSymbolSpec`, `formatAmbiguity`, `runSemantic`, `runBrief`, `runCsvQuery`, and the structured-file readers | new reader command |
+| SC-11 | 20,32 | CORRECTNESS DEFECTS ONLY in all of `read_commands.ts` incl. `resolveSymbolSpec`, `formatAmbiguity`, `runSemantic`, `runBrief`, `runCsvQuery`, and the structured-file readers | new reader command |
 | SC-12 | 28-31 | All hooks, for ACCOUNTING and PARTITION defects only | new hook or stat kind |
 | SC-13 | 30-33 | All four stat-registry mirrors now guarded by tests | guard allowlist grows |
 | SC-14 | 38-39 | `resident_context.ts` (`readTaskList`, `collectInvokedSkills`, `skillNameFromBody`); `waste.ts::parseTranscript`/`extractResultText`; `session_read.ts::toTurnBlocks`/`streamTurns`; `hooks_agent_spawn.ts` naming; `hooks_cli.ts::normalizePayload` claude path; `hooks_common.ts` key lists for Bash/WebFetch/TaskOutput | harness payload shape changes |
@@ -106,3 +106,4 @@ row go to the user.
 | 44 | 707cdd3b | session-audit | n/a (survey, clean sweep) | n/a | 208 |
 | 45 | ec428146 | hooks_bash sed hint admission | medium (66.8% -> 80.1% of 19,380) | yes | 117 |
 | 46 | 5ef2f7ca | hooks_bash cat/awk hint admission | medium (cat 15.1% -> 21.1% of 8,179; awk 10.3% -> 23.7% of 916) | yes | ~180 |
+| 47 | 605ae10c | read_commands outline output economy | medium (outline -11.2% over src/, -41% doc-heavy) | yes | 98 |
