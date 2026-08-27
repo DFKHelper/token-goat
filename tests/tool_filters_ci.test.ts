@@ -211,6 +211,40 @@ describe('GhRunLogFilter group collapsing', () => {
     expect(out).toContain('step 0')
     expect(out).toContain('step 4')
   })
+
+  it('keeps the step name of every kept group, so a failure stays attributable', () => {
+    // The per-line job/step TAB columns are stripped, so ##[group] is the only step attribution left. A kept group that loses its header makes its failure lines untraceable, while a collapsed group keeps its name -- exactly inverted.
+    const input = [
+      '##[group]Run npm run build',
+      'build line 0',
+      'build line 1',
+      '##[endgroup]',
+      '##[group]Run npm test',
+      'tests running',
+      'Error: expected 3 to be 4',
+      '##[endgroup]',
+      '##[group]Run npm run lint',
+      ...Array.from({ length: 25 }, (_, i) => `lint line ${i}`),
+      '##[endgroup]',
+      'Done.',
+      '',
+    ].join('\n')
+    const out = f.compress(input, '', 0, argv)
+    const body = out.split('\n').filter((ln) => !ln.startsWith('[token-goat:') && ln !== '')
+    expect(body).toEqual([
+      '[group: Run npm run build]',
+      'build line 0',
+      'build line 1',
+      '[group: Run npm test]',
+      'tests running',
+      'Error: expected 3 to be 4',
+      '[group: Run npm run lint — 25 lines collapsed by token-goat]',
+      'Done.',
+    ])
+    // Control: the large passing group is still collapsed, so the fix does not work by giving up on compression.
+    expect(out).not.toContain('lint line 0')
+    expect(out).not.toContain('lint line 24')
+  })
 })
 
 // ---------------------------------------------------------------------------
