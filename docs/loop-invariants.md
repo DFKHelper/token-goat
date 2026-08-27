@@ -85,8 +85,18 @@ does not run it: that is jurisdiction, not tiering. Verify emptiness mechanicall
 ## Method Notes
 
 - Run it against the built binary through real dispatch. Do not conclude from reading.
-- Derive expectations from the input, independently of the code under test. Five loops found
-  tests written from the implementation's own matcher, which cannot fail on a wrong assumption.
+- Derive expectations from the input, independently of the code under test. A fixture written
+  from the implementation is not evidence: it is the implementation restated, and it agrees
+  with the bug by construction. Six-plus loops across three unrelated subsystems (tool
+  filters, hook payload key lists, bridge argument keys) found tests that could not fail on a
+  wrong assumption because the fixture came from the matcher.
+- MANDATORY: every fixture carries a provenance line naming its external source. CAPTURE (real
+  output from a real run, strongest), FORMAT-DERIVED (read off the producer's own source or
+  schema, with the file or URL cited, weaker because it proves agreement with the source and
+  not that a shipped build emits it), or HAND-DERIVED (computed from the input independently of
+  the code, valid for logic and useless for wire formats). A fixture with no provenance line is
+  not evidence and does not count as coverage. "I read the extractor" is the wrong answer to
+  "where did these key names come from", and is the tell.
 - A property that holds identically with and without the bug is not an assertion.
 - A fixture is only evidence if someone re-captured it.
 - Watch the metric's direction: a broken filter once scored a BETTER compression ratio than its
