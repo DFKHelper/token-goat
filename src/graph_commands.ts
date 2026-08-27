@@ -878,7 +878,11 @@ export function runDead(opts: DeadOptions): number {
     // check can no longer stop at the first match, since that match might be filtered out below
     // as belonging to a different, same-named symbol elsewhere in the project.
     const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
-    const scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
+    let scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
+    // A "dead" verdict is an absence claim, so it must not be made over a truncated scan. queryRefs orders by (file_path, line) and caps at DEFAULT_REF_QUERY_LIMIT, while filterRefsForSymbol then DISCARDS every ref living in a file that defines its own same-named symbol -- so for a widely-used name, all 500 rows inside the cap can be discarded while the genuine callers sit just past it, and a live symbol is reported dead. Re-run the query uncapped, but only when the cap was actually reached and the scoped set came back empty, so the expensive scan is paid for the handful of candidate-dead common names rather than for every symbol. Same UNBOUNDED_REF_LIMIT rescue runTestFor and runCoverageGaps already use.
+    if (scoped.length === 0 && refs.length >= DEFAULT_REF_QUERY_LIMIT) {
+      scoped = filterRefsForSymbol(queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir }), sym.name, sym.filePath, getSyms)
+    }
     if (!isDeadSymbol(sym.name, scoped.length)) continue
     // Rescue check for methods only: a zero-ref method might be a polymorphic override reached
     // only through a base class's own self-dispatch (`this.<method>(...)`) -- see

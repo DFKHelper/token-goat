@@ -2265,6 +2265,54 @@ describe('runDead --grep', () => {
   })
 })
 
+describe('runDead ref-query cap', () => {
+  // Regression: queryRefs orders by (file_path, line) and runDead capped it at
+  // DEFAULT_REF_QUERY_LIMIT (500), while filterRefsForSymbol then discards every ref living in a
+  // file that defines its own same-named symbol. For a name used heavily inside such a file, all
+  // 500 rows inside the cap were discarded and the genuine caller sat just past it, so a live
+  // symbol was reported dead. The fixture crosses the cap on purpose: 600 refs from 'aaa.ts',
+  // which also defines both names, ahead of the real caller in 'mmm.ts'.
+  it('does not report a symbol dead when its only genuine ref sits past the 500-ref query cap', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-refcap-'))
+    try {
+      let aaa = 'export function deadCapFn8q4() { return 1 }\nexport function deadCapDud8q4() { return 1 }\n'
+      for (let i = 0; i < 600; i++) aaa += `export function deadCapNoise${i}() { return deadCapFn8q4() + deadCapDud8q4() }\n`
+      const aaaFile = join(root, 'aaa.ts')
+      const mmmFile = join(root, 'mmm.ts')
+      const zzzFile = join(root, 'zzz.ts')
+      writeFileSync(aaaFile, aaa)
+      writeFileSync(mmmFile, 'export function deadCapUser8q4() { return deadCapFn8q4() }\n')
+      writeFileSync(zzzFile, 'export function deadCapFn8q4() { return 2 }\nexport function deadCapDud8q4() { return 2 }\n')
+      indexFileSync(normalizePath(aaaFile))
+      indexFileSync(normalizePath(mmmFile))
+      indexFileSync(normalizePath(zzzFile))
+
+      // Proves the fixture actually crosses the bound the fix is about: without more than
+      // DEFAULT_REF_QUERY_LIMIT rows for this name the rescue branch is never selected and the
+      // assertions below would hold identically with and without the fix.
+      const selected = queryRefs({ name: 'deadCapFn8q4', limit: -1, rootDir: normalizePath(root) }).length
+      expect(selected).toBeGreaterThan(500)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const items = envelopeItems<{ name: string; file: string }>(
+          captureStdout(() => { expect(runDead({ json: true, top: 500, grep: 'deadCap(Fn|Dud|User)8q4' })).toBe(0) })
+        )
+        // Exact ordered set. 'deadCapUser8q4' is genuinely dead (nothing calls it) and
+        // 'deadCapDud8q4' in zzz.ts is genuinely dead too (its 600 refs all live in the file that
+        // defines its own copy) -- that second entry is the over-fix control: treating a
+        // cap-reached query as "alive" would drop it. 'deadCapFn8q4' must NOT appear: mmm.ts
+        // calls it.
+        expect(items.map((r) => `${r.name} ${r.file}`)).toEqual(['deadCapUser8q4 mmm.ts', 'deadCapDud8q4 zzz.ts'])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runDeps against the real repo -------------------------
 
 describe('runDeps integration', () => {
