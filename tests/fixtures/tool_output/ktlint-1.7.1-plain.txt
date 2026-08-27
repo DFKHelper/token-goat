@@ -1,0 +1,28 @@
+src/main/kotlin/com/example/Main.kt:1:1: Wildcard import (standard:no-wildcard-imports)
+src/main/kotlin/com/example/Main.kt:3:1: Wildcard import (standard:no-wildcard-imports)
+src/main/kotlin/com/example/Main.kt:12:5: Unexpected indentation (8) (should be 4) (standard:indent)
+src/main/kotlin/com/example/Main.kt:13:5: Unexpected indentation (8) (should be 4) (standard:indent)
+src/main/kotlin/com/example/Main.kt:14:141: Exceeded max line length (140) (standard:max-line-length)
+src/main/kotlin/com/example/Main.kt:18:141: Exceeded max line length (140) (standard:max-line-length)
+src/main/kotlin/com/example/Main.kt:22:30: Unnecessary semicolon (standard:no-semi)
+src/main/kotlin/com/example/Service.kt:2:1: Wildcard import (standard:no-wildcard-imports)
+src/main/kotlin/com/example/Service.kt:9:9: Unexpected indentation (12) (should be 8) (standard:indent)
+src/main/kotlin/com/example/Service.kt:15:141: Exceeded max line length (140) (standard:max-line-length)
+src/main/kotlin/com/example/Service.kt:21:141: Exceeded max line length (140) (standard:max-line-length)
+src/main/kotlin/com/example/Service.kt:24:141: Exceeded max line length (140) (standard:max-line-length)
+src/main/kotlin/com/example/Service.kt:27:9: Unexpected indentation (12) (should be 8) (standard:indent)
+src/main/kotlin/com/example/Service.kt:31:44: Unnecessary semicolon (standard:no-semi)
+src/test/kotlin/com/example/ServiceTest.kt:4:1: Wildcard import (standard:no-wildcard-imports)
+src/test/kotlin/com/example/ServiceTest.kt:11:141: Exceeded max line length (140) (standard:max-line-length)
+src/test/kotlin/com/example/ServiceTest.kt:12:141: Exceeded max line length (140) (standard:max-line-length)
+src/test/kotlin/com/example/ServiceTest.kt:13:141: Exceeded max line length (140) (standard:max-line-length)
+src/test/kotlin/com/example/ServiceTest.kt:17:13: Unexpected indentation (16) (should be 12) (standard:indent)
+src/test/kotlin/com/example/ServiceTest.kt:18:13: Unexpected indentation (16) (should be 12) (standard:indent)
+src/test/kotlin/com/example/ServiceTest.kt:40:1: File must end with a newline (\n) (standard:final-newline)
+
+Summary error count (descending) by rule:
+  standard:max-line-length: 8
+  standard:indent: 6
+  standard:no-wildcard-imports: 4
+  standard:no-semi: 2
+  standard:final-newline: 1

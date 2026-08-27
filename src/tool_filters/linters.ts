@@ -1073,7 +1073,8 @@ class LinterFilter extends ToolFilter {
 // KtlintFilter
 // ---------------------------------------------------------------------------
 
-const _KTLINT_ISSUE_RE = /^(.+\.kt):(\d+):(\d+):\s+(error|warning):\s+(.+)\s+\(([^)]+)\)$/i
+// ktlint's default `plain` reporter prints `<file>:<line>:<col>: <message> (<rule-id>)` with no severity token at all (see PlainReporter.onLintError and the pinned expectation in PlainReporterTest), so the severity group is optional and an unlabelled violation is dedupable like a warning; the labelled spelling is kept for wrappers such as Gradle that prefix `error:`/`warning:`. `.kts` scripts are linted too.
+const _KTLINT_ISSUE_RE = /^(.+\.kts?):(\d+):(\d+):\s+(?:(error|warning):\s+)?(.+)\s+\(([^)]+)\)$/i
 const _KTLINT_CHECKSTYLE_TAG_RE = /^\s*<(?:\?xml|checkstyle|file)\b/i
 const _KTLINT_CHECKSTYLE_ERROR_RE = /^\s*<error\b.*\bsource="([^"]+)"/i
 const _KTLINT_SUMMARY_RE =
@@ -1090,7 +1091,7 @@ class KtlintFilter extends ToolFilter {
     const lines = combined.split('\n')
     const kept: string[] = []
     const ruleCounts = new Map<string, number>()
-    const pendingPlaceholders: { index: number; rule: string; suffix: string }[] = []
+    const pendingPlaceholders: { index: number; rule: string; suffix: string; indent: string }[] = []
     let deduplicated = 0
     let droppedXmlTags = 0
 
@@ -1112,7 +1113,7 @@ class KtlintFilter extends ToolFilter {
           kept.push(line)
         } else {
           if (count === KtlintFilter._KEEP_PER_RULE + 1) {
-            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'violations' })
+            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'violations', indent: '  ' })
             kept.push('')
           }
           deduplicated++
@@ -1123,7 +1124,7 @@ class KtlintFilter extends ToolFilter {
       // Plain-text issue line
       const m = _KTLINT_ISSUE_RE.exec(line)
       if (m) {
-        const severity = m[4]!.toLowerCase()
+        const severity = (m[4] ?? '').toLowerCase()
         const rule = m[6]!
         const count = (ruleCounts.get(rule) ?? 0) + 1
         ruleCounts.set(rule, count)
@@ -1132,7 +1133,12 @@ class KtlintFilter extends ToolFilter {
           kept.push(line)
         } else {
           if (count === KtlintFilter._KEEP_PER_RULE + 1) {
-            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'warnings' })
+            pendingPlaceholders.push({
+              index: kept.length,
+              rule,
+              suffix: severity === 'warning' ? 'warnings' : 'violations',
+              indent: '',
+            })
             kept.push('')
           }
           deduplicated++
@@ -1146,9 +1152,8 @@ class KtlintFilter extends ToolFilter {
 
     // ruleCounts is never cleared for ktlint (single global tally across the whole
     // run), so patching after the loop yields each rule's real final elided count.
-    for (const { index, rule, suffix } of pendingPlaceholders) {
+    for (const { index, rule, suffix, indent } of pendingPlaceholders) {
       const elided = (ruleCounts.get(rule) ?? 0) - KtlintFilter._KEEP_PER_RULE
-      const indent = suffix === 'violations' ? '  ' : ''
       kept[index] =
         `${indent}[token-goat: +${elided} more ${rule} ${suffix}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`
     }
