@@ -376,6 +376,107 @@ describe('KubectlFilter', () => {
     expect(result).toMatch(/Event 1[34]/)
   })
 
+  // Regression: `kubectl describe svc` without a name emits one document per resource. The Events section used to swallow every remaining line in the output and then stop, so only the first resource survived, the second resource's body was reprinted as the first one's events, and the elision count counted non-event lines.
+  it('describe keeps every resource in a multi-document listing', () => {
+    const svc = (name: string, ip: string, events: string[]): string =>
+      [
+        `Name:              ${name}`,
+        'Namespace:         prod',
+        `Labels:            app=${name}`,
+        'Annotations:       <none>',
+        `Selector:          app=${name}`,
+        'Type:              ClusterIP',
+        `IP:                ${ip}`,
+        `IPs:               ${ip}`,
+        'Port:              http  80/TCP',
+        'TargetPort:        8080/TCP',
+        'Session Affinity:  None',
+        'Internal Traffic Policy:  Cluster',
+        ...(events.length > 0 ? ['Events:', ...events] : ['Events:            <none>']),
+      ].join('\n')
+
+    const text = [
+      svc('api-gateway', '10.96.0.10', []),
+      svc('payments', '10.96.0.11', [
+        '  Type     Reason                  Age   From                 Message',
+        '  ----     ------                  ----  ----                 -------',
+        '  Warning  FailedToUpdateEndpoint  4m    endpoint-controller  no ready backends',
+      ]),
+      svc('redis-cache', '10.96.0.12', []),
+    ].join('\n\n\n') + '\n'
+
+    const result = apply(f, text, '', 0, ['kubectl', 'describe', 'svc', '-n', 'prod'])
+
+    // Exact ordered survivor list: all three resources, each with its own Events section, and no bogus elision marker.
+    expect(result.split('\n')).toEqual([
+      'Name:              api-gateway',
+      'Namespace:         prod',
+      'Labels:            app=api-gateway',
+      'Annotations:       <none>',
+      'Selector:          app=api-gateway',
+      'Type:              ClusterIP',
+      'IP:                10.96.0.10',
+      '',
+      'Events:            <none>',
+      'Name:              payments',
+      'Namespace:         prod',
+      'Labels:            app=payments',
+      'Annotations:       <none>',
+      'Selector:          app=payments',
+      'Type:              ClusterIP',
+      'IP:                10.96.0.11',
+      '',
+      'Events:',
+      '  Type     Reason                  Age   From                 Message',
+      '  ----     ------                  ----  ----                 -------',
+      '  Warning  FailedToUpdateEndpoint  4m    endpoint-controller  no ready backends',
+      'Name:              redis-cache',
+      'Namespace:         prod',
+      'Labels:            app=redis-cache',
+      'Annotations:       <none>',
+      'Selector:          app=redis-cache',
+      'Type:              ClusterIP',
+      'IP:                10.96.0.12',
+      '',
+      'Events:            <none>',
+    ])
+    // Control: the filter still drops the fields it is meant to drop, so this is not a pass-through.
+    expect(result).not.toContain('TargetPort:')
+    expect(result).not.toContain('Internal Traffic Policy:')
+    expect(result.length).toBeLessThan(text.length)
+  })
+
+  // Regression: an events section that ends at a less-indented line must still elide, and its count must cover only that resource's event rows.
+  it('describe elision count covers only the current resource events', () => {
+    const events = Array.from({ length: 14 }, (_, i) => `  Normal  Pulled  ${i}m  kubelet  Pulled image ${i}`)
+    const text = [
+      'Name:         pod-a',
+      'Namespace:    default',
+      'Events:',
+      ...events,
+      '',
+      'Name:         pod-b',
+      'Namespace:    default',
+      'Status:       Running',
+      'Events:            <none>',
+      '',
+    ].join('\n')
+    const result = apply(f, text, '', 0, ['kubectl', 'describe', 'pods'])
+    expect(result.split('\n')).toEqual([
+      'Name:         pod-a',
+      'Namespace:    default',
+      '',
+      'Events:',
+      '  [token-goat: 4 earlier events elided]',
+      ...events.slice(-10),
+      'Name:         pod-b',
+      'Namespace:    default',
+      'Status:       Running',
+      '',
+      'Events:            <none>',
+    ])
+  })
+
   it('logs uses head+tail compression for >50 lines', () => {
     // Ported from Python test_logs_compresses_large_output
     const lines = Array.from({ length: 100 }, (_, i) => `Line ${i}: log message`)

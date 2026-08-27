@@ -347,20 +347,29 @@ function _compressKubectlDescribe(text: string): string {
       continue
     }
 
-    // Events: keep last 10 lines, elide older with a count
+    // Events: keep the last 10 event rows of THIS resource, elide older with a count. `kubectl describe` without a name emits one document per resource, so the section must stop at the first line indented no deeper than the `Events:` header itself: that line starts the next resource, and consuming it here would drop every later resource and misreport the elision count.
     if (stripped.startsWith('Events:')) {
       kept.push('')
-      kept.push('Events:')
-      const eventLines = lines.slice(i + 1).filter((l) => l.trim())
-      if (eventLines.length > 0) {
-        if (eventLines.length > 10) {
-          kept.push(`  [token-goat: ${eventLines.length - 10} earlier events elided]`)
-          kept.push(...eventLines.slice(-10))
-        } else {
-          kept.push(...eventLines)
+      kept.push(line.replace(/\s+$/, ''))
+      const eventIndent = line.length - line.trimStart().length
+      const eventLines: string[] = []
+      i++
+      while (i < lines.length) {
+        const nxt = lines[i]!
+        if (nxt.trim()) {
+          const nxtIndent = nxt.length - nxt.trimStart().length
+          if (nxtIndent <= eventIndent) break
+          eventLines.push(nxt)
         }
+        i++
       }
-      break
+      if (eventLines.length > 10) {
+        kept.push(`  [token-goat: ${eventLines.length - 10} earlier events elided]`)
+        kept.push(...eventLines.slice(-10))
+      } else {
+        kept.push(...eventLines)
+      }
+      continue
     }
 
     // Key single-line fields always kept
