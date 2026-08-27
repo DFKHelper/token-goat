@@ -40,8 +40,14 @@ const DOTTED_IDENT = `${IDENT}(?:\\.${IDENT})*`
 function stripVerbatim(name: string): string {
   return name.replace(/@/g, '')
 }
+// C# lets a namespace-or-type name carry an alias qualifier (`global::System.Text`, `MyAlias::Some.Type`), and generated code emits `global::` routinely so the emitted name cannot be captured by a local declaration that shadows it. Every slot that holds a namespace-or-type name therefore admits one leading `<alias>::` segment; without it a `using global::System.Text;` line, or any member whose type or explicit-interface qualifier was spelled that way, matched nothing and was dropped from the index entirely.
+const QUALIFIED_IDENT = `(?:${IDENT}::)?${DOTTED_IDENT}`
+// `global::X` and `X` name the same entity: the `global::` root qualifier only says "resolve from the global namespace, ignoring any shadowing alias", so it is as purely lexical as the verbatim `@` above and is stripped for the same reason - a cross-file link from `using global::System.Text;` has to land on the same key as one from `using System.Text;`. A NON-global alias qualifier (`MyAlias::Some.Type`) is kept: it names a different extern assembly root, so dropping it would conflate two genuinely distinct targets.
+function stripGlobalAlias(name: string): string {
+  return name.replace(/^global::/, '')
+}
 const USING_RE = new RegExp(
-  `^(?:global\\s+)?using\\s+(?:static\\s+)?(${DOTTED_IDENT})\\s*(?:=\\s*(@?[A-Za-z_][A-Za-z0-9_.<>,@\\s]*))?\\s*;`,
+  `^(?:global\\s+)?using\\s+(?:static\\s+)?(${QUALIFIED_IDENT})\\s*(?:=\\s*(@?[A-Za-z_](?:[A-Za-z0-9_.<>,@\\s]|::)*))?\\s*;`,
 )
 const NAMESPACE_RE = new RegExp(`^(?:namespace\\s+)(${DOTTED_IDENT})`)
 
@@ -70,14 +76,15 @@ function stripLeadingAttributes(s: string): string {
 // every member declared with a namespace-qualified type was dropped. `(`/`)` stay excluded: the
 // expression-bodied-property regex relies on that exclusion to avoid matching an
 // expression-bodied METHOD, whose parens sit between the name and `=>`.
-const TYPE_FILLER = '@?[A-Za-z_][A-Za-z0-9_<>?,.@\\[\\]\\s]*?'
+// The alias qualifier is admitted as the two-character `::` alternative rather than by adding `:` to the character class: a lone `:` must stay excluded so the filler can never run across a ternary's `? :`, a `case X:` label, or a constructor's `: base(...)` initializer and swallow the declaration boundary.
+const TYPE_FILLER = '@?[A-Za-z_](?:[A-Za-z0-9_<>?,.@\\[\\]\\s]|::)*?'
 // The type slot proper: either a tuple type (`(int a, string b)`) or the filler above. The tuple
 // alternative is a separate branch rather than parens added to the filler class, so the
 // exclusion the arrow-property regex depends on is preserved.
 const TYPE_SLOT = `(?:\\([^()]+\\)|${TYPE_FILLER})`
 // Member names may carry an explicit-interface qualifier (`void IDisposable.Dispose()`); the
 // qualifier is matched but not captured, so the recorded name is the final segment.
-const MEMBER_NAME = `(?:${DOTTED_IDENT}\\.)?(${IDENT})`
+const MEMBER_NAME = `(?:${QUALIFIED_IDENT}\\.)?(${IDENT})`
 // Members are matched with `^\s*`, not `^\s+`: a member written at column zero (legal, and common
 // in file-scoped-namespace code) is still a member. Nothing else can reach these regexes - they
 // only run one brace level inside a type body, where a bare statement cannot legally appear.
@@ -218,7 +225,7 @@ export function extractCsharp(
     // using import
     const usingM = USING_RE.exec(stripped)
     if (usingM) {
-      imports.push({ kind: 'import', target: stripVerbatim(usingM[2] ?? usingM[1] ?? ''), line: lineNum })
+      imports.push({ kind: 'import', target: stripGlobalAlias(stripVerbatim(usingM[2] ?? usingM[1] ?? '')), line: lineNum })
     }
 
     // namespace
