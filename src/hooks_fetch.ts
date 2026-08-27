@@ -173,9 +173,8 @@ export function postFetchHandler(event: HookEvent): HookOutput {
           minNetSavingsBytes: resolveMinNetSavingsBytes(),
         })
       ) {
-        const bytesDelta = originalBytes - rewrittenBytes;
-        recordStat('webfetch:compress', bytesDelta, Math.round(bytesDelta / 4))
-        return emitRewrite(storedRedacted.text + notice, 'fetch');
+        // Credit the delta against what is actually emitted (body + recall notice), not against `rewrittenBytes`. The gate above already prices the notice in, but a hand-written recordStat beside the emit did not, so every compressed fetch over-reported its saving by the notice's own length -- and by any growth the redaction placeholders added on top. `emitRewrite`'s savings parameter measures the emitted string itself, which is the only figure that describes what the model was spared.
+        return emitRewrite(storedRedacted.text + notice, 'fetch', { kind: 'webfetch:compress', originalBytes });
       }
     }
 

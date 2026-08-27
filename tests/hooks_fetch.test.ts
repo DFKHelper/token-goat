@@ -791,10 +791,10 @@ describe('postFetchHandler', () => {
       expect(compressCall).toBeDefined();
       const [, recordedBytesSaved, recordedTokensSaved] = compressCall as unknown[];
 
-      // Calculate the true UTF-8 byte delta.
+      // Calculate the true UTF-8 byte delta against the text actually emitted, which is the stored body plus the recall notice.
       const htmlBytes = Buffer.byteLength(html, 'utf-8');
-      const storedBytes = Buffer.byteLength(storedBody as string, 'utf-8');
-      const expectedBytesDelta = htmlBytes - storedBytes;
+      const emittedBytes = Buffer.byteLength(result.updatedOutput, 'utf-8');
+      const expectedBytesDelta = htmlBytes - emittedBytes;
 
       // The fix ensures recordedBytesSaved equals the true UTF-8 byte delta.
       expect(recordedBytesSaved).toBe(expectedBytesDelta);
@@ -837,6 +837,67 @@ describe('postFetchHandler', () => {
       const [, recordedBytesSaved, recordedTokensSaved] = compressCall as unknown[];
       expect(recordedBytesSaved).toBeGreaterThan(0);
       expect(recordedTokensSaved).toBe(Math.round((recordedBytesSaved as number) / 4));
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
+      } else {
+        process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'] = orig;
+      }
+      clearModuleCaches();
+    }
+  });
+
+  it('credits webfetch:compress against the emitted body PLUS its recall notice, not the stored body alone', () => {
+    const url = 'https://example.com/compress-notice-accounting';
+    const orig = process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
+    try {
+      process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'] = '1024';
+      clearModuleCaches();
+
+      const paragraph = '<p>Article content for notice accounting. '.repeat(800) + '</p>';
+      const html = `<!DOCTYPE html><html><head><title>Notice</title><script>tracking();</script></head><body>${paragraph}</body></html>`;
+      expect(html.length).toBeGreaterThanOrEqual(16 * 1024);
+
+      vi.mocked(recordStat).mockClear();
+      const result = postFetchHandler({
+        eventName: 'post_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId: 'compress-notice-session',
+        agentId: undefined,
+        raw: { tool_response: html },
+      });
+      expect(result.hookType).toBe('rewriteOutput');
+      if (result.hookType !== 'rewriteOutput') throw new Error('unreachable');
+
+      // The emitted text is the compressed body followed by the recall notice; both are billed to the model, so both must be subtracted from the credited saving.
+      const noticeMatch = /\n\[token-goat: WebFetch body compressed via extractCleanText; use `token-goat web-output [0-9a-f]+ --raw` to recall it\]$/.exec(
+        result.updatedOutput,
+      );
+      expect(noticeMatch, 'expected the emitted rewrite to end with the recall notice').not.toBeNull();
+      const noticeBytes = Buffer.byteLength((noticeMatch as RegExpExecArray)[0], 'utf-8');
+      expect(noticeBytes).toBeGreaterThan(0);
+
+      const emittedBody = result.updatedOutput.slice(0, result.updatedOutput.length - (noticeMatch as RegExpExecArray)[0].length);
+      const htmlBytes = Buffer.byteLength(html, 'utf-8');
+      const emittedBodyBytes = Buffer.byteLength(emittedBody, 'utf-8');
+
+      const compressCall = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:compress');
+      expect(compressCall).toBeDefined();
+      const [, recordedBytesSaved, recordedTokensSaved] = compressCall as unknown[];
+
+      // Honest figure: original minus everything actually emitted.
+      const honest = htmlBytes - (emittedBodyBytes + noticeBytes);
+      // The pre-fix figure ignored the notice, so it was larger by exactly noticeBytes.
+      const overCredited = htmlBytes - emittedBodyBytes;
+      expect(overCredited - honest).toBe(noticeBytes);
+
+      expect(
+        recordedBytesSaved,
+        `webfetch:compress credited ${String(recordedBytesSaved)} bytes but only ${String(honest)} were saved; the ${String(noticeBytes)}-byte recall notice is shipped to the model and must be paid for`,
+      ).toBe(honest);
+      expect(recordedTokensSaved).toBe(Math.round(honest / 4));
+      expect(recordedBytesSaved).not.toBe(overCredited);
     } finally {
       if (orig === undefined) {
         delete process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
