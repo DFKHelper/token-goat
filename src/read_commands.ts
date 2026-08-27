@@ -2977,6 +2977,25 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
 // ---- outline ----------------------------------------------------------------
 
 /**
+ * Character cap for the per-symbol doc annotation in `outline`'s text mode. The `split('\n')[0]`
+ * "first line" clip was written for conventional multi-line doc blocks, where line one is a short
+ * summary; a single-line `//` doc comment is ONE physical line however long, so without a
+ * character cap the "first line" is the entire doc essay and doc text can dominate the outline's
+ * bytes (measured ~80% of the output on doc-heavy files, on a command whose purpose is a compact
+ * map). 140 keeps roughly the first sentence; the ellipsis marks the cut, and the full text stays
+ * one `read`/`brief` on the symbol away. JSON mode is untouched: it carries the full docstring for
+ * machine consumers.
+ */
+const DOC_SUMMARY_MAX_CHARS = 140
+
+/** Clip a doc summary line to {@link DOC_SUMMARY_MAX_CHARS}, cutting at the last word boundary before the cap (falling back to a hard cut when the line has no usable space, e.g. one giant token) and appending an ellipsis so the clip is visible. Lines within the cap pass through byte-identical. */
+function clipDocSummary(firstLine: string): string {
+  if (firstLine.length <= DOC_SUMMARY_MAX_CHARS) return firstLine
+  const cut = firstLine.lastIndexOf(' ', DOC_SUMMARY_MAX_CHARS)
+  return `${firstLine.slice(0, cut > 40 ? cut : DOC_SUMMARY_MAX_CHARS).trimEnd()}…`
+}
+
+/**
  * `outline` takes exactly the options `skeleton` does -- same flags on the CLI, same shape through
  * `prepareSymbolListing`. Aliased rather than restated so a field added to one is never silently
  * missing from the other: the two were byte-identical copies, and the pair of `cli.ts` `.action`
@@ -3028,7 +3047,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     const bodyLen = sym.lineEnd - sym.lineStart + 1
     // Same overloaded-column guard as the stats flag: a bare parent name is not a doc comment
     // and must not be rendered as one (see hasRealDocstring).
-    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${sym.docstring.split('\n')[0] ?? ''}` : ''
+    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring.split('\n')[0] ?? '')}` : ''
     const statsStr = formatStatsSuffix(refCounts, sym)
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }

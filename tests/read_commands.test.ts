@@ -2060,6 +2060,40 @@ describe('read_commands', () => {
     })
   })
 
+  describe('outline text-mode doc summary clip', () => {
+    // The doc annotation takes the docstring's "first line" as a summary, but a single-line `//` doc comment is ONE physical line however long, so the first-line clip was a no-op and outline emitted entire doc essays per symbol -- measured ~80% of the output bytes on doc-heavy files, on the command whose purpose is a compact map.
+    it('clips a long single-line docstring at a word boundary under 140 chars and marks the cut', () => {
+      const docstring = `${'a'.repeat(100)} ${'b'.repeat(100)}`
+      mockQuerySymbols.mockReturnValue(
+        [{ name: 'alphaFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring, parent: '' }] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts' })
+      // Derived from the input, not the implementation: the only word boundary before char 140 is at index 100, so the summary is exactly the first word plus the ellipsis, and none of the second word survives.
+      expect(text).toContain(`# ${'a'.repeat(100)}…`)
+      expect(text).not.toContain('b'.repeat(10))
+    })
+
+    it('hard-cuts at 140 when the line has no word boundary', () => {
+      const docstring = 'x,'.repeat(100)
+      mockQuerySymbols.mockReturnValue(
+        [{ name: 'alphaFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring, parent: '' }] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts' })
+      expect(text).toContain(`# ${'x,'.repeat(70)}…`)
+      expect(text).not.toContain('x,'.repeat(71))
+    })
+
+    // Over-fix control: a short doc summary must pass through byte-identical, with no ellipsis -- the clip must never touch the summaries that were already fine.
+    it('renders a short docstring in full with no ellipsis', () => {
+      mockQuerySymbols.mockReturnValue(
+        [{ name: 'alphaFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: 'Parses the config file and returns its keys.', parent: '' }] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts' })
+      expect(text).toContain('# Parses the config file and returns its keys.')
+      expect(text).not.toContain('…')
+    })
+  })
+
   describe('outline/skeleton --grep', () => {
     // Without a name filter the only way to find one area of a large file is to dump every symbol in it (src/cli.ts alone lists 502), which is precisely the full-file read these commands exist to avoid.
     it('narrows outline to symbols whose name matches the pattern', () => {
