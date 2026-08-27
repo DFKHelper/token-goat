@@ -392,6 +392,8 @@ export class GhRunLogFilter extends ToolFilter {
     const flushGroup = (): void => {
       if (!groupLines.length) return
       if (groupHasFailure || groupLines.length <= GROUP_COLLAPSE_THRESHOLD) {
+        // Keep the step name too. The per-line job/step columns were already stripped above, so this header is the only attribution left: without it a failure inside a kept group cannot be traced to the step that produced it, while a collapsed group (below) keeps its name.
+        if (groupName) kept.push(`[group: ${groupName}]`)
         kept.push(...groupLines)
       } else {
         kept.push(`[group: ${groupName} — ${groupLines.length} lines collapsed by token-goat]`)
