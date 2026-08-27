@@ -144,9 +144,35 @@ export interface SessionAuditSummary {
   hookOutputs: HookOutputRollup[]
   positionDeciles: PositionDecile[]
   /** Aggregate per-line-type census (line counts and bytes by JSONL `type`). */
+  sidechainLanes: SidechainLaneRollup
+  readInterception: ReadInterceptionRollup
   lineTypes: Record<string, { lines: number; bytes: number }>
   /** Mid-trim marker census: `--- N lines omitted ---` fires inside tool results. */
   omissionMarkers: { fires: number; linesOmitted: number }
+}
+
+/** Per-corpus rollup of subagent lane files (transcripts under a `subagents/` directory). firstCallPrefixTokens is input + cache_creation + cache_read on the lane's FIRST API response: the spawn prefix (system prompt, tool and MCP manifests, inherited instruction files, and the task brief) before the subagent has done any work. prefixBilledEquivTokens models that prefix's billed carriage with the same residency model as the attachment census: written once at 1.25x, then re-read at 0.1x on each subsequent call in the lane. NOT billed units. */
+export interface SidechainLaneRollup {
+  /** Lane transcript files found (every *.jsonl under a subagents/ directory). */
+  laneFiles: number
+  /** Lane files that carried at least one assistant usage object; all statistics below cover only these. */
+  lanesWithUsage: number
+  meanFirstCallPrefixTokens: number
+  medianFirstCallPrefixTokens: number
+  p90FirstCallPrefixTokens: number
+  meanCallsPerLane: number
+  /** Mean bytes of the lane's first non-meta user turn: the task brief the parent wrote, as distinct from the inherited environment prefix. */
+  meanBriefBytes: number
+  prefixBilledEquivTokens: number
+}
+
+/** Read-interception census over every Read tool_result in the corpus. divertedByMarker counts results short enough to be a divert (under READ_DIVERT_MAX_BYTES) that match token-goat's own deny/serve message templates, so it UNDER-counts if those templates drift. fullServesOver10k counts non-diverted Read results above 10 KiB: the pool surgical reads exist to shrink. */
+export interface ReadInterceptionRollup {
+  readResults: number
+  divertedByMarker: number
+  divertedBytes: number
+  fullServesOver10k: number
+  fullServeBytesOver10k: number
 }
 
 export interface SessionAuditOptions {
@@ -210,6 +236,13 @@ const CACHE_WRITE_MULTIPLIER = 1.25
 const CACHE_READ_MULTIPLIER = 0.1
 
 /** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
+/** Matches token-goat's own pre-read deny/serve message templates (hooks_read.ts). A Read tool_result matching this AND smaller than READ_DIVERT_MAX_BYTES is a diverted read: token-goat replaced the file body with a pointer. Kept deliberately narrow; template drift makes this under-count, never over-count. */
+const READ_DIVERT_MARKER_RE = /(?:was already read this session|Already read |You've already read|Use `token-goat (?:section|read|bash-output|config-get|skeleton)|token-goat bash-output --file)/
+/** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
+const READ_DIVERT_MAX_BYTES = 2500
+/** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
+const READ_FULL_SERVE_MIN_BYTES = 10240
+
 function deepStringBytes(value: unknown): number {
   if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
   if (Array.isArray(value)) return value.reduce((acc: number, v) => acc + deepStringBytes(v), 0)
@@ -272,7 +305,17 @@ export function defaultCorpusDir(): string {
 }
 
 /** Stream one transcript into the accumulating summary. Throws only on stream-open failure. */
-async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>): Promise<void> {
+/** One subagent lane transcript's observation, consumed by the corpus-level SidechainLaneRollup. firstPrefixTokens stays null when the lane carried no assistant usage at all. */
+interface LaneObservation {
+  firstPrefixTokens: number | null
+  calls: number
+  briefBytes: number
+}
+
+async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[]): Promise<void> {
+  const isLane = filePath.split(/[\\/]/).includes('subagents')
+  let laneFirstPrefix: number | null = null
+  let laneBriefBytes = -1
   const toolNameById = new Map<string, string>()
   const usageSeenIds = new Set<string>()
   const perCall: PerCallUsage[] = []
@@ -338,6 +381,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             s.measuredSidechain.cacheReadTokens += cacheRead
             s.measuredSidechain.outputTokens += output
           }
+          if (isLane && laneFirstPrefix === null) laneFirstPrefix = input + cacheWrite + cacheRead
           perCall.push({ inputTotal: input + cacheWrite + cacheRead, cacheRead, output })
           const callLane = obj['isSidechain'] === true ? 1 : 0
           laneCalls[callLane] = laneCalls[callLane]! + 1
@@ -381,6 +425,16 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           if (!toolNameById.has(id)) roll.calls += 1
           roll.resultBytes += bytes
           roll.resultEstTokens += estimateTokensFromLength(bytes)
+          if (name === 'Read') {
+            s.readInterception.readResults += 1
+            if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
+              s.readInterception.divertedByMarker += 1
+              s.readInterception.divertedBytes += bytes
+            } else if (bytes >= READ_FULL_SERVE_MIN_BYTES) {
+              s.readInterception.fullServesOver10k += 1
+              s.readInterception.fullServeBytesOver10k += bytes
+            }
+          }
           OMISSION_MARKER_RE.lastIndex = 0
           for (const m of text.matchAll(OMISSION_MARKER_RE)) {
             s.omissionMarkers.fires += 1
@@ -400,6 +454,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             }
           }
           addCategory(target, contentBytes)
+          if (isLane && laneBriefBytes < 0 && obj['isMeta'] !== true) laneBriefBytes = contentBytes
         }
         continue
       }
@@ -461,6 +516,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   }
   flushLane(0)
   flushLane(1)
+  if (isLane) laneObservations.push({ firstPrefixTokens: laneFirstPrefix, calls: usageSeenIds.size, briefBytes: Math.max(0, laneBriefBytes) })
   const callCount = perCall.length
   for (let i = 0; i < callCount; i++) {
     const call = perCall[i]!
@@ -544,19 +600,35 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     attachmentKinds: [],
     hookOutputs: [],
     positionDeciles: Array.from({ length: 10 }, (_, i) => ({ decile: i + 1, apiCalls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 })),
+    sidechainLanes: { laneFiles: 0, lanesWithUsage: 0, meanFirstCallPrefixTokens: 0, medianFirstCallPrefixTokens: 0, p90FirstCallPrefixTokens: 0, meanCallsPerLane: 0, meanBriefBytes: 0, prefixBilledEquivTokens: 0 },
+    readInterception: { readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0 },
     lineTypes: {},
     omissionMarkers: { fires: 0, linesOmitted: 0 },
   }
   const toolMap = new Map<string, ToolRollup>()
   const attachmentMap = new Map<string, AttachmentKindRollup>()
   const hookMap = new Map<string, HookOutputRollup>()
+  const laneObservations: LaneObservation[] = []
   for (const file of files) {
     try {
-      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap)
+      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations)
       summary.filesScanned += 1
     } catch {
       summary.filesFailed += 1
     }
+  }
+  const withUsage = laneObservations.filter((l) => l.firstPrefixTokens !== null)
+  const prefixes = withUsage.map((l) => l.firstPrefixTokens as number).sort((a, b) => a - b)
+  const mean = (arr: number[]): number => (arr.length === 0 ? 0 : Math.round(arr.reduce((a, b) => a + b, 0) / arr.length))
+  summary.sidechainLanes = {
+    laneFiles: laneObservations.length,
+    lanesWithUsage: withUsage.length,
+    meanFirstCallPrefixTokens: mean(prefixes),
+    medianFirstCallPrefixTokens: prefixes.length === 0 ? 0 : prefixes[Math.floor(prefixes.length / 2)]!,
+    p90FirstCallPrefixTokens: prefixes.length === 0 ? 0 : prefixes[Math.min(prefixes.length - 1, Math.floor(prefixes.length * 0.9))]!,
+    meanCallsPerLane: mean(withUsage.map((l) => l.calls)),
+    meanBriefBytes: mean(withUsage.map((l) => l.briefBytes)),
+    prefixBilledEquivTokens: Math.round(withUsage.reduce((acc, l) => acc + (l.firstPrefixTokens as number) * (CACHE_WRITE_MULTIPLIER + CACHE_READ_MULTIPLIER * Math.max(0, l.calls - 1)), 0)),
   }
   summary.tools = [...toolMap.values()].sort((a, b) => b.resultBytes - a.resultBytes || a.name.localeCompare(b.name))
   for (const roll of attachmentMap.values()) {
@@ -637,6 +709,17 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   for (const d of s.positionDeciles) {
     lines.push(`decile ${d.decile.toString().padStart(2)}  calls ${fmt(d.apiCalls).padStart(9)}  input ${fmt(d.inputTokens).padStart(15)}  cache-read ${fmt(d.cacheReadTokens).padStart(15)}  output ${fmt(d.outputTokens).padStart(11)}`)
   }
+  lines.push('')
+  lines.push('## Subagent lanes (spawn-prefix carriage; same residency model as the attachment census; NOT billed units)')
+  const sl = s.sidechainLanes
+  lines.push(`Lane files: ${fmt(sl.laneFiles)} (${fmt(sl.lanesWithUsage)} with usage)`)
+  lines.push(`First-call prefix tokens: mean ${fmt(sl.meanFirstCallPrefixTokens)}, median ${fmt(sl.medianFirstCallPrefixTokens)}, p90 ${fmt(sl.p90FirstCallPrefixTokens)}`)
+  lines.push(`Calls per lane: mean ${fmt(sl.meanCallsPerLane)}; task-brief bytes: mean ${fmt(sl.meanBriefBytes)}`)
+  lines.push(`Prefix billed-equiv tokens: ${fmt(sl.prefixBilledEquivTokens)} (write x 1.25, then x 0.1 per later call in the lane)`)
+  lines.push('')
+  lines.push('## Read interception (token-goat divert markers inside Read tool results)')
+  const ri = s.readInterception
+  lines.push(`Read results: ${fmt(ri.readResults)}; diverted by marker: ${fmt(ri.divertedByMarker)} (${fmt(ri.divertedBytes)} bytes); full serves >=10 KiB: ${fmt(ri.fullServesOver10k)} (${fmt(ri.fullServeBytesOver10k)} bytes)`)
   lines.push('')
   lines.push('## Mid-trim omission markers inside tool results')
   lines.push(`fires: ${fmt(s.omissionMarkers.fires)}, lines discarded: ${fmt(s.omissionMarkers.linesOmitted)}`)
