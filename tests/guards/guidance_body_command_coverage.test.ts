@@ -81,6 +81,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'session-outline', reason: SESSION_REASON },
   { command: 'session-slice', reason: SESSION_REASON },
   { command: 'mcp-audit', reason: SESSION_REASON },
+  { command: 'session-audit', reason: SESSION_REASON },
   { command: 'recall', reason: SESSION_REASON },
   { command: 'bash-history', reason: SESSION_REASON },
   { command: 'web-history', reason: SESSION_REASON },

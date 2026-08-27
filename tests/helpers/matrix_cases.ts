@@ -1566,6 +1566,30 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rNoRange.status).not.toBe(0)
   },
 
+  'session-audit': () => {
+    const corpus = mkIsolated('tg-matrix-session-audit-')
+    const proj = path.join(corpus, 'C--Projects-sample')
+    fs.mkdirSync(proj, { recursive: true })
+    fs.writeFileSync(path.join(proj, 's.jsonl'), '{"type":"assistant","message":{"id":"m1","role":"assistant","usage":{"input_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":3},"content":[{"type":"text","text":"hi"}]}}\n', 'utf8')
+
+    let r = run(['session-audit', '--dir', corpus])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('# Session corpus audit')
+    expect(r.stdout).toContain('API calls: 1 (sidechain: 0)')
+
+    const rj = run(['session-audit', '--dir', corpus, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { measured: { apiCalls: number; outputTokens: number }; filesScanned: number }
+    expect(parsed.measured.apiCalls).toBe(1)
+    expect(parsed.measured.outputTokens).toBe(3)
+    expect(parsed.filesScanned).toBe(1)
+
+    // A missing corpus root is an error, never an empty-but-successful report.
+    r = run(['session-audit', '--dir', path.join(corpus, 'does-not-exist')])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('session corpus directory not found')
+  },
+
   'mcp-audit': () => {
     const proj = mkIsolated('tg-matrix-mcp-audit-')
 
