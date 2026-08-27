@@ -3884,6 +3884,60 @@ type Foo {
     const result = await parseFixture('schema.graphql', 'type Query { hello: String }')
     expect(result.language).toBe('graphql')
   })
+
+  it('ends a declaration at its own closing brace, not at the line before the next declaration', () => {
+    // Regression: graphql_idx relied on assignFlatEndLines alone, so every symbol was stretched to
+    // the line before the next declaration. That swallowed blank lines, `#` comments and -- worst
+    // of all -- the `"""..."""` description belonging to the NEXT declaration into this symbol's
+    // body, so `token-goat read "schema.graphql::User"` returned Post's docs as part of User.
+    // proto_idx/terraform_idx already correct their flat spans with findMatchingBraceEndLine.
+    const content = `type User {
+  id: ID!
+}
+
+# a comment about the next type
+
+"""
+The Post type.
+"""
+type Post {
+  title: String
+}
+
+enum Role {
+  ADMIN
+}
+
+input NewUser @cache(policy: {ttl: 5}) {
+  name: String!
+}
+
+interface Node implements Base {
+  id: ID!
+}
+
+scalar DateTime
+
+union SearchResult = User | Post
+
+schema {
+  query: User
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const spans = symbols.map((s) => `${s.name}:${s.lineStart}-${s.lineEnd}`)
+    expect(spans).toEqual([
+      'User:1-3',
+      'Post:10-12',
+      'Role:14-16',
+      'NewUser:18-20',
+      'Node:22-24',
+      // A brace-less declaration keeps its flat span: the correction can only shrink, never grow.
+      'DateTime:26-27',
+      'SearchResult:28-29',
+      'schema:30-32',
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------
