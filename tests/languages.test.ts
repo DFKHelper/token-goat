@@ -1722,6 +1722,73 @@ class Bar {
     expect(symbols.find((s) => s.name === 'help')).toBeUndefined()
   })
 
+  it('indexes backtick-quoted Kotlin declaration names, including the members of a backtick-named class', () => {
+    // Regression: FUN_RE/TOP_FUN_RE/CLASS_HEADER_RE/COMPANION_RE all admitted only a bare
+    // identifier, so a backtick-quoted name (the standard Kotlin test-naming idiom) produced no
+    // symbol at all -- and a backtick-quoted class header pushed no frame, so its members were
+    // dropped too.
+    const content = `class Calculator {
+    fun addPlain(a: Int, b: Int): Int = a + b
+
+    fun \`adds two numbers\`(a: Int, b: Int): Int = a + b
+
+    companion object \`Odd Companion\` {
+        fun helper(): Int = 1
+    }
+}
+
+class \`Odd Class Name\` {
+    fun inner(): Int = 1
+}
+
+fun topLevelPlain(): Int = 1
+
+fun \`top level quoted\`(): Int = 2
+`
+    const { symbols } = extractKotlin(content, 'Calculator.kt')
+    expect(symbols.map((s) => [s.name, s.kind, s.parent ?? '', s.lineStart])).toEqual([
+      ['Calculator', 'class', '', 1],
+      ['addPlain', 'method', 'Calculator', 2],
+      ['adds two numbers', 'method', 'Calculator', 4],
+      ['Odd Companion', 'object', 'Calculator', 6],
+      ['helper', 'method', 'Odd Companion', 7],
+      ['Odd Class Name', 'class', '', 11],
+      ['inner', 'method', 'Odd Class Name', 12],
+      ['topLevelPlain', 'function', '', 15],
+      ['top level quoted', 'function', '', 17],
+    ])
+  })
+
+  it('still indexes plain Kotlin declaration names exactly, with no delimiter bleed into the captured name', () => {
+    // Over-fix control for the backtick admission above: widening the bare identifier character
+    // class (rather than admitting a backtick-DELIMITED name as a separate alternative) lets a
+    // supertype clause or a companion keyword bleed into the captured name.
+    const content = `interface Animal {
+    fun speak(): String
+}
+
+class Dog : Animal {
+    override fun speak(): String = "woof"
+
+    companion object {
+        fun make(): Dog = Dog()
+    }
+}
+
+fun topLevel(): Int = 1
+`
+    const { symbols } = extractKotlin(content, 'Dog.kt')
+    expect(symbols.map((s) => [s.name, s.kind, s.parent ?? null, s.lineStart])).toEqual([
+      ['Animal', 'interface', '', 1],
+      ['speak', 'method', 'Animal', 2],
+      ['Dog', 'class', '', 5],
+      ['speak', 'method', 'Dog', 6],
+      ['Companion', 'object', 'Dog', 8],
+      ['make', 'method', 'Companion', 9],
+      ['topLevel', 'function', '', 13],
+    ])
+  })
+
   it('classifies interface and singleton object declarations with their own kind instead of collapsing everything CLASS_HEADER_RE matches to "class"', () => {
     // Regression: CLASS_HEADER_RE's single capture group only grabbed the declaration name, never
     // the keyword (class/interface/object) that introduced it, so the caller hardcoded kind
