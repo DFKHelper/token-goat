@@ -51,10 +51,16 @@ function stripLeadingAnnotations(s: string): string {
 // Kotlin extension functions (`fun String.reverse(): String {}`, `fun <T> List<T>.second(): T {}`) prefix the function name with a receiver type followed by a dot -- without this optional non-capturing receiver group, the capture group landed on the receiver's leading identifier (or the whole match failed once a generic `<...>` receiver like `List<T>` was involved), so every extension function/method in a Kotlin file was silently dropped from the index. RECEIVER_RE allows identifiers, generic brackets, `?` (nullable types), commas (multi-param generics), and dots (qualified receiver types) up to the final dot before the actual function name.
 const RECEIVER_RE = '(?:[A-Za-z_][A-Za-z0-9_<>?.,\\s]*\\.)?'
 
+// Kotlin lets any declaration be named with a backtick-quoted identifier holding characters a bare identifier cannot (spaces, punctuation, even reserved words), and the JUnit/Kotest convention of writing test names as prose (fun `returns empty list when input is null`() {}) makes that spelling routine in real Kotlin sources. Every declaration pattern below only admitted the bare identifier class, so a backtick-quoted function, class, interface, object, or companion object produced no symbol at all -- and for a quoted class header, no frame was pushed either, so every member declared inside it was dropped too. NAME_RE admits both spellings; unquoteName strips the delimiters so the stored name is the identifier Kotlin code actually refers to.
+const NAME_RE = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_]*)'
+function unquoteName(name: string): string {
+  return name.length >= 2 && name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1) : name
+}
+
 const FUN_RE = new RegExp(
   '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
   'suspend|inline|infix|operator|external|actual|expect|final|sealed|tailrec)\\s+)*' +
-  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
+  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
 )
 
 const CONST_RE = new RegExp(
@@ -72,7 +78,7 @@ const CONST_RE = new RegExp(
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|internal|protected|private|open|abstract|sealed|data|' +
   'inner|expect|actual|value|annotation|fun)\\s+)*' +
-  '(class|interface|object|enum\\s+class)\\s+([A-Za-z_][A-Za-z0-9_]*)',
+  '(class|interface|object|enum\\s+class)\\s+(' + NAME_RE + ')',
 )
 
 // A companion object precedes `object` with the `companion` keyword, which is not a member of
@@ -84,13 +90,13 @@ const CLASS_HEADER_RE = new RegExp(
 // members still resolve to a stable, real, referenceable parent name.
 const COMPANION_RE = new RegExp(
   '^(?:(?:public|internal|protected|private)\\s+)*' +
-  'companion\\s+object(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\b',
+  'companion\\s+object\\b(?:\\s+(' + NAME_RE + '))?',
 )
 
 const TOP_FUN_RE = new RegExp(
   '^(?:(?:public|internal|private|suspend|inline|infix|operator|' +
   'external|actual|expect|tailrec)\\s+)*' +
-  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
+  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
 )
 
 export function extractKotlin(
@@ -193,13 +199,13 @@ export function extractKotlin(
     const companionM = classStack.length > 0 && classDetectionGateOk ? COMPANION_RE.exec(strippedNoAnn) : null
     const cm = companionM === null && classDetectionGateOk && (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(strippedNoAnn) : null
     if (companionM) {
-      const cname = companionM[1] ?? 'Companion'
+      const cname = unquoteName(companionM[1] ?? 'Companion')
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent, lines, 'c'))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     } else if (cm) {
       const ckeyword = cm[1] ?? 'class'
-      const cname = cm[2] ?? ''
+      const cname = unquoteName(cm[2] ?? '')
       // `enum class` collapses to the `class` branch (matches csharp.ts's precedent of no
       // distinct 'enum' kind for a class-flavored declaration); `object` maps to 'object'
       // (matching the companion-object branch above's own kind) rather than 'class', since a
@@ -221,7 +227,7 @@ export function extractKotlin(
         const lineNoAnn = stripLeadingAnnotations(line)
         const fm = FUN_RE.exec(lineNoAnn)
         if (fm) {
-          const fname = fm[1] ?? ''
+          const fname = unquoteName(fm[1] ?? '')
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
           symbols.push(makeLineSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
@@ -235,7 +241,7 @@ export function extractKotlin(
       const lineNoAnn = stripLeadingAnnotations(line)
       const tfm = TOP_FUN_RE.exec(lineNoAnn)
       if (tfm) {
-        const fname = tfm[1] ?? ''
+        const fname = unquoteName(tfm[1] ?? '')
         const sigEnd = line.indexOf('{')
         const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200), undefined, lines, 'c'))
