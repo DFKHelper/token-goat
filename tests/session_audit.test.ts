@@ -91,7 +91,11 @@ describe('auditSessionCorpus', () => {
     expect(s.lineTypes['user']!.lines).toBe(3)
     // agent-1.jsonl is the only lane file: one usage (7+0+3 = 10 prefix tokens, 1 call), no user turn (brief 0). Billed-equiv on paper: round(10 x 1.25) = 13. The main-file Bash tool_result must NOT enter the Read-interception census.
     expect(s.sidechainLanes).toEqual({ laneFiles: 1, lanesWithUsage: 1, meanFirstCallPrefixTokens: 10, medianFirstCallPrefixTokens: 10, p90FirstCallPrefixTokens: 10, meanCallsPerLane: 1, meanBriefBytes: 0, prefixBilledEquivTokens: 13 })
-    expect(s.readInterception).toEqual({ readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0 })
+    // agent-1.jsonl has no sibling agent-1.meta.json, so its lane groups under '(none)'.
+    expect(s.laneAgentTypes).toEqual([{ agentType: '(none)', lanes: 1, lanesWithUsage: 1, meanFirstCallPrefixTokens: 10, medianFirstCallPrefixTokens: 10 }])
+    expect(s.readInterception).toEqual({ readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0, fullServesFirstRead: 0, fullServesRepeat: 0, repeatBytes: 0, repeatWithRange: 0, repeatFullNoRange: 0, repeatInHookedSessions: 0, repeatFullNoRangeInHookedSessions: 0, repeatFullNoRangeHookedAfterCompaction: 0, fullServesPathUnknown: 0 })
+    // L3's Bash result is 35 bytes with no [token-goat marker: one small-unmarked entry, nothing untouched.
+    expect(s.bashInterception).toEqual({ bashResults: 1, markedByFilter: 0, markedBytes: 0, smallUntouched: 1, smallUntouchedBytes: 35, untouched: 0, untouchedBytes: 0, untouchedEstTokens: 0, untouchedRereadTokens: 0, untouchedBilledEquivTokens: 0, untouchedHeads: [] })
     const zero = { apiCalls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 }
     expect(s.positionDeciles).toEqual([
       { decile: 1, apiCalls: 2, inputTokens: 610, cacheReadTokens: 303, outputTokens: 42 },
@@ -211,7 +215,10 @@ describe('sidechain lane and read interception census', () => {
   it('rolls up lane spawn prefixes over lanes with usage only, and classifies Read results into divert, full-serve, and neither', async () => {
     const s = await auditSessionCorpus({ dir: laneDir })
     expect(s.sidechainLanes).toEqual({ laneFiles: 2, lanesWithUsage: 1, meanFirstCallPrefixTokens: 1000, medianFirstCallPrefixTokens: 1000, p90FirstCallPrefixTokens: 1000, meanCallsPerLane: 2, meanBriefBytes: 11, prefixBilledEquivTokens: 1350 })
-    expect(s.readInterception).toEqual({ readResults: 4, divertedByMarker: 1, divertedBytes: Buffer.byteLength(DIVERT_TEXT, 'utf8'), fullServesOver10k: 1, fullServeBytesOver10k: Buffer.byteLength(BIG, 'utf8') })
+    // Both lanes lack a meta.json; only lane 1 carries usage.
+    expect(s.laneAgentTypes).toEqual([{ agentType: '(none)', lanes: 2, lanesWithUsage: 1, meanFirstCallPrefixTokens: 1000, medianFirstCallPrefixTokens: 1000 }])
+    // R2's full serve of a.md is a REPEAT: R1's earlier tool_use already targeted a.md, no offset/limit on R2's call, and no token-goat hook fire appears in the transcript.
+    expect(s.readInterception).toEqual({ readResults: 4, divertedByMarker: 1, divertedBytes: Buffer.byteLength(DIVERT_TEXT, 'utf8'), fullServesOver10k: 1, fullServeBytesOver10k: Buffer.byteLength(BIG, 'utf8'), fullServesFirstRead: 0, fullServesRepeat: 1, repeatBytes: Buffer.byteLength(BIG, 'utf8'), repeatWithRange: 0, repeatFullNoRange: 1, repeatInHookedSessions: 0, repeatFullNoRangeInHookedSessions: 0, repeatFullNoRangeHookedAfterCompaction: 0, fullServesPathUnknown: 0 })
   })
 
   it('renders both new sections and reports the same rollups through real CLI dispatch with --json', async () => {
@@ -221,6 +228,8 @@ describe('sidechain lane and read interception census', () => {
     expect(text).toContain('First-call prefix tokens: mean 1,000, median 1,000, p90 1,000')
     expect(text).toContain('Prefix billed-equiv tokens: 1,350 (write x 1.25, then x 0.1 per later call in the lane)')
     expect(text).toContain('Read results: 4; diverted by marker: 1 (50 bytes); full serves >=10 KiB: 1 (12,000 bytes)')
+    expect(text).toContain('first read 0, repeat 1 (12,000 bytes), path unknown 0')
+    expect(text).toContain('Repeats: with offset/limit 0 (deliberate paging), whole-file 1 (divert-miss candidates), in sessions with a token-goat hook fire 0')
     const res = await runBatched(['session-audit', '--dir', laneDir, '--json'])
     expect(res.status).toBe(0)
     const parsed = JSON.parse(res.stdout) as { sidechainLanes: unknown; readInterception: unknown }
@@ -281,5 +290,115 @@ describe('attachment kind census', () => {
     const parsed = JSON.parse(res.stdout) as { attachmentKinds: unknown; hookOutputs: unknown }
     expect(parsed.attachmentKinds).toEqual(EXPECTED_KINDS)
     expect(parsed.hookOutputs).toEqual(EXPECTED_HOOKS)
+  })
+})
+
+/**
+ * Bash fire-rate and Read first/repeat census fixture, expected values derived by hand from the
+ * inputs below, independently of the implementation. Bash: b1 is 2,000 bytes unmarked (untouched;
+ * head "rg" after stripping the FOO=1 env assignment, the cd prefix, the quoted Windows path, and
+ * .exe); b2 carries a literal [token-goat: marker (marked, 34 bytes); b3 is 4 bytes (small); b4 is
+ * 1,500 bytes mentioning token-goat WITHOUT a bracket marker (untouched, head "node"): the
+ * over-match control for the marker regex; b5 is 1,100 bytes untouched behind a NEWLINE-separated
+ * cd prefix (head "npm", not "cd"). Est-tokens on paper (floor(bytes/3)+1): 2,000 ->
+ * 667, 1,500 -> 501, 1,100 -> 367, sum 1,535. Residency: b1 lands at main call 0, two usage calls then a compact
+ * boundary flush it at 667 x 2 = 1,334; a third usage call follows the boundary (the flush-timing
+ * control: settling b1 at end of file instead would score 667 x 3 = 2,001); b4 and b5 land at call
+ * 3 and flush at end of file for 0. Billed equiv: round(1.25 x 1,535 + 0.1 x 1,334) = 2,052. Reads: rr1 is a first full serve (10,300 B);
+ * rr2 re-targets the same path under a different spelling and case with offset/limit (repeat,
+ * paging, 10,250 B); rr3 repeats it whole after a second compact boundary (a hooked whole-file
+ * repeat that is nonetheless correct by design: compaction evicted the content, 10,400 B); rr9's
+ * tool_use carries no file_path (path unknown, 10,240 B). A token-goat hook_success line makes both repeats count as hooked.
+ * The lane's sibling agent-t1.meta.json carries agentType "coder" (prefix 40+0+10 = 50).
+ */
+describe('bash filter fire-rate and read repeat census', () => {
+  const use = (id: string, name: string, input: Record<string, unknown>): string => JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
+  const result = (id: string, content: string): string => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
+  const call = (id: string): string => JSON.stringify({ type: 'assistant', message: { id, role: 'assistant', usage: { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }, content: [] } })
+  const MAIN = [
+    use('b1', 'Bash', { command: 'FOO=1 cd /somewhere && "C:\\Tools\\Rg.EXE" pattern' }),
+    result('b1', 'X'.repeat(2000)),
+    call('msg_bc1'),
+    call('msg_bc2'),
+    '{"type":"system","subtype":"compact_boundary"}',
+    call('msg_bc3'),
+    use('b2', 'Bash', { command: 'git status' }),
+    result('b2', 'ok [token-goat: collapsed 3 lines]'),
+    use('b3', 'Bash', { command: 'ls' }),
+    result('b3', 'tiny'),
+    use('b4', 'Bash', { command: 'node script.js' }),
+    result('b4', 'Y'.repeat(1479) + ' run token-goat stats'),
+    use('b5', 'Bash', { command: 'cd /some/dir\nnpm run build' }),
+    result('b5', 'Z'.repeat(1100)),
+    use('rr1', 'Read', { file_path: 'C:\\Proj\\Big.TXT' }),
+    result('rr1', 'A'.repeat(10300)),
+    use('rr2', 'Read', { file_path: 'c:/proj/big.txt', offset: 100, limit: 50 }),
+    result('rr2', 'B'.repeat(10250)),
+    '{"type":"system","subtype":"compact_boundary"}',
+    use('rr3', 'Read', { file_path: 'C:\\Proj\\Big.TXT' }),
+    result('rr3', 'C'.repeat(10400)),
+    use('rr9', 'Read', {}),
+    result('rr9', 'D'.repeat(10240)),
+    '{"type":"attachment","attachment":{"type":"hook_success","hookEvent":"PreToolUse","hookName":"PreToolUse:Read","command":"node token-goat hook pre-read","content":"","stdout":"","stderr":"","exitCode":0}}',
+  ]
+  const LANE = ['{"type":"assistant","isSidechain":true,"message":{"id":"msg_lt1","role":"assistant","usage":{"input_tokens":40,"cache_creation_input_tokens":0,"cache_read_input_tokens":10,"output_tokens":1},"content":[]}}']
+  const EXPECTED_BASH = { bashResults: 5, markedByFilter: 1, markedBytes: 34, smallUntouched: 1, smallUntouchedBytes: 4, untouched: 3, untouchedBytes: 4600, untouchedEstTokens: 1535, untouchedRereadTokens: 1334, untouchedBilledEquivTokens: 2052, untouchedHeads: [{ head: 'rg', results: 1, bytes: 2000 }, { head: 'node', results: 1, bytes: 1500 }, { head: 'npm', results: 1, bytes: 1100 }] }
+  const EXPECTED_READ = { readResults: 4, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 4, fullServeBytesOver10k: 41190, fullServesFirstRead: 1, fullServesRepeat: 2, repeatBytes: 20650, repeatWithRange: 1, repeatFullNoRange: 1, repeatInHookedSessions: 2, repeatFullNoRangeInHookedSessions: 1, repeatFullNoRangeHookedAfterCompaction: 1, fullServesPathUnknown: 1 }
+  const EXPECTED_LANE_TYPES = [{ agentType: 'coder', lanes: 1, lanesWithUsage: 1, meanFirstCallPrefixTokens: 50, medianFirstCallPrefixTokens: 50 }]
+  let censusDir = ''
+
+  beforeAll(() => {
+    censusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-bash-'))
+    const projectDir = path.join(censusDir, 'C--Projects-bashcensus')
+    const subagentsDir = path.join(projectDir, 'sess-b-uuid', 'subagents')
+    fs.mkdirSync(subagentsDir, { recursive: true })
+    fs.writeFileSync(path.join(projectDir, 'main.jsonl'), MAIN.join('\n') + '\n')
+    fs.writeFileSync(path.join(subagentsDir, 'agent-t1.jsonl'), LANE.join('\n') + '\n')
+    fs.writeFileSync(path.join(subagentsDir, 'agent-t1.meta.json'), '{"agentType":"coder","description":"x","parentAgentId":"root","spawnDepth":1,"toolUseId":"tux"}')
+  })
+
+  afterAll(() => {
+    fs.rmSync(censusDir, { recursive: true, force: true })
+  })
+
+  it('classifies Bash results into marked, small, and untouched with residency-based billed equivalents and command-head buckets', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    expect(s.bashInterception).toEqual(EXPECTED_BASH)
+  })
+
+  it('splits full serves into first read, ranged repeat, whole-file repeat, and unknown path, and attributes repeats to hooked sessions', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    expect(s.readInterception).toEqual(EXPECTED_READ)
+  })
+
+  it('rolls up lanes by agentType from the sibling meta.json', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    expect(s.laneAgentTypes).toEqual(EXPECTED_LANE_TYPES)
+  })
+
+  it('renders the new sections without leaking command lines or paths, and reports the same rollups through real CLI dispatch with --json', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const text = formatSessionAudit(s)
+    expect(text).toContain('## Bash filter fire-rate (token-goat in-band markers inside Bash tool results)')
+    expect(text).toContain('Bash results: 5; marked by a filter: 1 (34 bytes); small unmarked <1,024 B: 1 (4 bytes)')
+    expect(text).toContain('Untouched >=1,024 B: 3 (4,600 bytes, est-tokens 1,535, billed-equiv 2,052)')
+    expect(text).toContain('A filter that matched but fell under the 100-byte net-savings floor leaves no transcript trace and counts as untouched here.')
+    expect(text).toMatch(/^ {2}rg +results +1 {2}bytes +2,000$/m)
+    expect(text).toMatch(/^ {2}node +results +1 {2}bytes +1,500$/m)
+    expect(text).toMatch(/^ {2}npm +results +1 {2}bytes +1,100$/m)
+    expect(text).toContain('first read 1, repeat 2 (20,650 bytes), path unknown 1')
+    expect(text).toContain('Repeats: with offset/limit 1 (deliberate paging), whole-file 1 (divert-miss candidates), in sessions with a token-goat hook fire 2 (whole-file among them: 1, of which post-compaction and so correct by design: 1)')
+    expect(text).toMatch(/^ {2}type coder +lanes +1 \(1 with usage\) {2}prefix mean +50, median +50$/m)
+    expect(text).not.toContain('Rg.EXE')
+    expect(text).not.toContain('Big.TXT')
+    expect(text).not.toContain('script.js')
+    expect(text).not.toContain('big.txt')
+    expect(text).not.toContain('C--Projects-bashcensus')
+    const res = await runBatched(['session-audit', '--dir', censusDir, '--json'])
+    expect(res.status).toBe(0)
+    const parsed = JSON.parse(res.stdout) as { bashInterception: unknown; readInterception: unknown; laneAgentTypes: unknown }
+    expect(parsed.bashInterception).toEqual(EXPECTED_BASH)
+    expect(parsed.readInterception).toEqual(EXPECTED_READ)
+    expect(parsed.laneAgentTypes).toEqual(EXPECTED_LANE_TYPES)
   })
 })

@@ -21,9 +21,10 @@
  *    comparable and are labelled separately everywhere.
  *
  * Privacy: this module reads transcripts for structure and size only. Its
- * output contains aggregate counts, token totals, tool names and line-type
- * names -- never message bodies, file paths from inside sessions, or project
- * names.
+ * output contains aggregate counts, token totals, tool names, line-type
+ * names, agent-type names, and bare command heads (the binary name only) --
+ * never message bodies, full command lines, file paths from inside sessions,
+ * or project names.
  */
 
 import * as fs from 'node:fs'
@@ -145,7 +146,9 @@ export interface SessionAuditSummary {
   positionDeciles: PositionDecile[]
   /** Aggregate per-line-type census (line counts and bytes by JSONL `type`). */
   sidechainLanes: SidechainLaneRollup
+  laneAgentTypes: LaneTypeRollup[]
   readInterception: ReadInterceptionRollup
+  bashInterception: BashInterceptionRollup
   lineTypes: Record<string, { lines: number; bytes: number }>
   /** Mid-trim marker census: `--- N lines omitted ---` fires inside tool results. */
   omissionMarkers: { fires: number; linesOmitted: number }
@@ -166,13 +169,64 @@ export interface SidechainLaneRollup {
   prefixBilledEquivTokens: number
 }
 
-/** Read-interception census over every Read tool_result in the corpus. divertedByMarker counts results short enough to be a divert (under READ_DIVERT_MAX_BYTES) that match token-goat's own deny/serve message templates, so it UNDER-counts if those templates drift. fullServesOver10k counts non-diverted Read results above 10 KiB: the pool surgical reads exist to shrink. */
+/** Read-interception census over every Read tool_result in the corpus. divertedByMarker counts results short enough to be a divert (under READ_DIVERT_MAX_BYTES) that match token-goat's own deny/serve message templates, so it UNDER-counts if those templates drift. fullServesOver10k counts non-diverted Read results above 10 KiB: the pool surgical reads exist to shrink. The first/repeat split keys each full serve on whether an earlier Read tool_use in the SAME transcript file targeted the same normalized path; the session read-cache can span a session's subagent lane files, so a per-file split UNDER-counts repeats, never over-counts. */
 export interface ReadInterceptionRollup {
   readResults: number
   divertedByMarker: number
   divertedBytes: number
   fullServesOver10k: number
   fullServeBytesOver10k: number
+  /** Full serves whose path had no earlier Read tool_use in the transcript: the pool the re-read divert excludes by design. */
+  fullServesFirstRead: number
+  /** Full serves of a path already targeted by an earlier Read tool_use in the transcript: candidates the re-read divert could have caught. */
+  fullServesRepeat: number
+  repeatBytes: number
+  /** Repeats whose own call carried an offset or limit parameter: deliberate paging, not a divert miss. */
+  repeatWithRange: number
+  /** Repeats served whole with no range parameter: the divert-miss candidates. */
+  repeatFullNoRange: number
+  /** Repeats inside transcripts that show at least one token-goat hook_success attachment, so the hook was demonstrably installed there. */
+  repeatInHookedSessions: number
+  /** The intersection that names a live product defect: whole-file repeats (no offset/limit) in transcripts where a token-goat hook demonstrably fired, yet the divert did not. */
+  repeatFullNoRangeInHookedSessions: number
+  /** Of those, repeats with a compact boundary between the prior read and this one: compaction evicted the content, so re-reading is correct by design and NOT a divert miss. */
+  repeatFullNoRangeHookedAfterCompaction: number
+  /** Full serves whose Read tool_use carried no usable file_path, counted as neither first nor repeat. */
+  fullServesPathUnknown: number
+}
+
+/** One command-head bucket of the untouched Bash pool. The head is the binary name only (basename, .exe stripped, lowercased), never a command line. */
+export interface BashHeadRollup {
+  head: string
+  results: number
+  bytes: number
+}
+
+/** Bash-filter fire-rate census over every Bash tool_result in the corpus. markedByFilter counts results carrying a token-goat in-band marker. A matched-but-under-the-100-byte-net-savings-floor discard leaves NO trace in the transcript, so it is indistinguishable here from "no filter matched" and lands in the untouched buckets. */
+export interface BashInterceptionRollup {
+  bashResults: number
+  markedByFilter: number
+  markedBytes: number
+  /** Unmarked results under BASH_SMALL_RESULT_MAX_BYTES: too small for any filter to clear the 100-byte net-savings floor by a wide margin. */
+  smallUntouched: number
+  smallUntouchedBytes: number
+  untouched: number
+  untouchedBytes: number
+  untouchedEstTokens: number
+  /** Residency cost of the untouched pool: est-tokens re-read on every later call in the lane until the next compact boundary, same model as the attachment census. */
+  untouchedRereadTokens: number
+  /** round(1.25 x untouchedEstTokens + 0.1 x untouchedRereadTokens); NOT billed units. */
+  untouchedBilledEquivTokens: number
+  untouchedHeads: BashHeadRollup[]
+}
+
+/** Per-agentType lane rollup, from the lane's sibling agent-<id>.meta.json (agentType field). Prefix stats cover lanes with usage only, same convention as SidechainLaneRollup. */
+export interface LaneTypeRollup {
+  agentType: string
+  lanes: number
+  lanesWithUsage: number
+  meanFirstCallPrefixTokens: number
+  medianFirstCallPrefixTokens: number
 }
 
 export interface SessionAuditOptions {
@@ -243,6 +297,41 @@ const READ_DIVERT_MAX_BYTES = 2500
 /** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
 const READ_FULL_SERVE_MIN_BYTES = 10240
 
+/** In-band markers token-goat's bash filters and recall/delta hints leave inside a Bash tool_result. A filter that matched but fell under the 100-byte net-savings floor prints the original unchanged with no marker, so this UNDER-counts fires and cannot see that case. */
+const BASH_FILTER_MARKER_RE = /\[token-goat[:\]]/
+/** Unmarked Bash results under this size are bucketed as too small to be a meaningful compression target (the filter floor alone is 100 bytes of net savings). */
+const BASH_SMALL_RESULT_MAX_BYTES = 1024
+
+/** First binary name of a Bash command: strips leading parens, env assignments and a cd prefix, then basenames the first token, drops a trailing .exe and lowercases. Aggregation key only; the full command line is never stored or emitted. */
+function commandHead(raw: string): string {
+  let s = raw.trim()
+  for (let guard = 0; guard < 20; guard++) {
+    const stripped = s.replace(/^[(\s]+/, '')
+    const env = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/.exec(stripped)
+    if (env !== null) {
+      s = stripped.slice(env[0].length)
+      continue
+    }
+    const cd = /^cd\s+(?:"[^"]*"|'[^']*'|[^\s;&]+)[^\S\n]*(?:&&|;|\n)\s*/.exec(stripped)
+    if (cd !== null) {
+      s = stripped.slice(cd[0].length)
+      continue
+    }
+    if (stripped === s) break
+    s = stripped
+  }
+  const m = /^"([^"]+)"|^'([^']+)'|^(\S+)/.exec(s)
+  const tok = m === null ? '' : (m[1] ?? m[2] ?? m[3] ?? '')
+  const base = tok.split(/[\\/]/).pop() ?? ''
+  const head = base.replace(/\.exe$/i, '').toLowerCase()
+  return head === '' ? '(none)' : head
+}
+
+/** Normalizes a Read file_path for repeat detection only: forward slashes, lowercase (Windows paths are case-insensitive and the corpus mixes spellings). Never emitted. */
+function normalizeReadPath(p: string): string {
+  return p.replace(/\\/g, '/').toLowerCase()
+}
+
 function deepStringBytes(value: unknown): number {
   if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
   if (Array.isArray(value)) return value.reduce((acc: number, v) => acc + deepStringBytes(v), 0)
@@ -310,13 +399,26 @@ interface LaneObservation {
   firstPrefixTokens: number | null
   calls: number
   briefBytes: number
+  agentType: string
 }
 
-async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[]): Promise<void> {
+async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[], bashHeadMap: Map<string, BashHeadRollup>): Promise<void> {
   const isLane = filePath.split(/[\\/]/).includes('subagents')
   let laneFirstPrefix: number | null = null
   let laneBriefBytes = -1
   const toolNameById = new Map<string, string>()
+  // Bash census bookkeeping: tool_use id -> command head, plus the residency pending list for untouched results (same compact-boundary model as attachments).
+  const bashHeadById = new Map<string, string>()
+  let pendingBashReread: Array<{ tokens: number; atCall: number; lane: number }> = []
+  // Read first/repeat bookkeeping: tool_use id -> whether an earlier Read tool_use in THIS transcript already targeted the path, and whether this call carried offset/limit. Folded into the summary at end of file so repeatInHookedSessions can see hook fires that appear later in the stream.
+  const readCallById = new Map<string, { wasSeenBefore: boolean; hasRange: boolean; afterCompaction: boolean }>()
+  // Normalized path -> compact-boundary count at its last Read tool_use, so a repeat can tell whether a compaction intervened (the boundary count is file-wide, not per lane; reads are overwhelmingly main-chain).
+  const readPathEpoch = new Map<string, number>()
+  let compactEpoch = 0
+  let sawTokenGoatHook = false
+  let fileRepeats = 0
+  let fileRepeatsFullNoRange = 0
+  let fileRepeatsFullNoRangeAfterCompaction = 0
   const usageSeenIds = new Set<string>()
   const perCall: PerCallUsage[] = []
   // Residency model for attachment reread cost: each injection stays in context from its API-call index until the next compact boundary on its lane (main vs sidechain), or end of transcript. laneCalls[0] counts main-chain API calls, laneCalls[1] sidechain calls.
@@ -333,6 +435,15 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       attachmentRollup(attachmentMap, p.kind).rereadTokens += p.tokens * Math.max(0, laneCalls[lane]! - p.atCall)
     }
     pendingReread = kept
+    const keptBash: typeof pendingBashReread = []
+    for (const p of pendingBashReread) {
+      if (p.lane !== lane) {
+        keptBash.push(p)
+        continue
+      }
+      s.bashInterception.untouchedRereadTokens += p.tokens * Math.max(0, laneCalls[lane]! - p.atCall)
+    }
+    pendingBashReread = keptBash
   }
   const stream = fs.createReadStream(filePath)
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity })
@@ -398,6 +509,15 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             if (!toolNameById.has(block['id'])) {
               toolNameById.set(block['id'], name)
               toolRollup(toolMap, name).calls += 1
+              const input = (block['input'] !== null && typeof block['input'] === 'object' ? block['input'] : {}) as Record<string, unknown>
+              if (name === 'Bash' && typeof input['command'] === 'string') {
+                bashHeadById.set(block['id'], commandHead(input['command']))
+              } else if (name === 'Read' && typeof input['file_path'] === 'string') {
+                const norm = normalizeReadPath(input['file_path'])
+                const priorEpoch = readPathEpoch.get(norm)
+                readCallById.set(block['id'], { wasSeenBefore: priorEpoch !== undefined, hasRange: input['offset'] !== undefined || input['limit'] !== undefined, afterCompaction: priorEpoch !== undefined && compactEpoch > priorEpoch })
+                readPathEpoch.set(norm, compactEpoch)
+              }
             }
             let inputBytes: number
             try {
@@ -433,6 +553,48 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             } else if (bytes >= READ_FULL_SERVE_MIN_BYTES) {
               s.readInterception.fullServesOver10k += 1
               s.readInterception.fullServeBytesOver10k += bytes
+              const call = readCallById.get(id)
+              if (call === undefined) {
+                s.readInterception.fullServesPathUnknown += 1
+              } else if (call.wasSeenBefore) {
+                s.readInterception.fullServesRepeat += 1
+                s.readInterception.repeatBytes += bytes
+                fileRepeats += 1
+                if (call.hasRange) {
+                  s.readInterception.repeatWithRange += 1
+                } else {
+                  s.readInterception.repeatFullNoRange += 1
+                  fileRepeatsFullNoRange += 1
+                  if (call.afterCompaction) fileRepeatsFullNoRangeAfterCompaction += 1
+                }
+              } else {
+                s.readInterception.fullServesFirstRead += 1
+              }
+            }
+          } else if (name === 'Bash') {
+            const b = s.bashInterception
+            b.bashResults += 1
+            if (BASH_FILTER_MARKER_RE.test(text)) {
+              b.markedByFilter += 1
+              b.markedBytes += bytes
+            } else if (bytes < BASH_SMALL_RESULT_MAX_BYTES) {
+              b.smallUntouched += 1
+              b.smallUntouchedBytes += bytes
+            } else {
+              b.untouched += 1
+              b.untouchedBytes += bytes
+              const tokens = estimateTokensFromLength(bytes)
+              b.untouchedEstTokens += tokens
+              const lane = obj['isSidechain'] === true ? 1 : 0
+              pendingBashReread.push({ tokens, atCall: laneCalls[lane]!, lane })
+              const head = bashHeadById.get(id) ?? '(unknown)'
+              let headRoll = bashHeadMap.get(head)
+              if (headRoll === undefined) {
+                headRoll = { head, results: 0, bytes: 0 }
+                bashHeadMap.set(head, headRoll)
+              }
+              headRoll.results += 1
+              headRoll.bytes += bytes
             }
           }
           OMISSION_MARKER_RE.lastIndex = 0
@@ -489,6 +651,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
         if (kind === 'hook_success') {
           const command = typeof att['command'] === 'string' ? att['command'] : ''
           const origin: HookOutputRollup['origin'] = command.includes('token-goat') || command.includes('token_goat') ? 'token-goat' : 'other'
+          if (origin === 'token-goat') sawTokenGoatHook = true
           const event = typeof att['hookEvent'] === 'string' ? att['hookEvent'] : '(none)'
           const hook = hookRollup(hookMap, origin, event)
           hook.fires += 1
@@ -499,7 +662,10 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       }
       if (type === 'system' || type === 'summary') {
         // A compact boundary evicts the prior conversation from context: settle the reread cost of every attachment pending on this line's lane at the call count reached so far.
-        if (obj['subtype'] === 'compact_boundary') flushLane(obj['isSidechain'] === true ? 1 : 0)
+        if (obj['subtype'] === 'compact_boundary') {
+          flushLane(obj['isSidechain'] === true ? 1 : 0)
+          compactEpoch += 1
+        }
         addCategory(s.estimated.system, lineBytes)
         continue
       }
@@ -516,7 +682,22 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   }
   flushLane(0)
   flushLane(1)
-  if (isLane) laneObservations.push({ firstPrefixTokens: laneFirstPrefix, calls: usageSeenIds.size, briefBytes: Math.max(0, laneBriefBytes) })
+  if (sawTokenGoatHook) {
+    s.readInterception.repeatInHookedSessions += fileRepeats
+    s.readInterception.repeatFullNoRangeInHookedSessions += fileRepeatsFullNoRange
+    s.readInterception.repeatFullNoRangeHookedAfterCompaction += fileRepeatsFullNoRangeAfterCompaction
+  }
+  if (isLane) {
+    // The lane's sibling agent-<id>.meta.json carries agentType (plus parentAgentId, toolUseId, spawnDepth): the typed-vs-unrestricted key the lane file itself lacks.
+    let agentType = '(none)'
+    try {
+      const meta = JSON.parse(fs.readFileSync(filePath.replace(/\.jsonl$/i, '.meta.json'), 'utf8')) as Record<string, unknown>
+      if (typeof meta['agentType'] === 'string' && meta['agentType'] !== '') agentType = meta['agentType']
+    } catch {
+      // No meta file (older harness) or unparseable: keep '(none)'.
+    }
+    laneObservations.push({ firstPrefixTokens: laneFirstPrefix, calls: usageSeenIds.size, briefBytes: Math.max(0, laneBriefBytes), agentType })
+  }
   const callCount = perCall.length
   for (let i = 0; i < callCount; i++) {
     const call = perCall[i]!
@@ -601,7 +782,9 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     hookOutputs: [],
     positionDeciles: Array.from({ length: 10 }, (_, i) => ({ decile: i + 1, apiCalls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 })),
     sidechainLanes: { laneFiles: 0, lanesWithUsage: 0, meanFirstCallPrefixTokens: 0, medianFirstCallPrefixTokens: 0, p90FirstCallPrefixTokens: 0, meanCallsPerLane: 0, meanBriefBytes: 0, prefixBilledEquivTokens: 0 },
-    readInterception: { readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0 },
+    laneAgentTypes: [],
+    readInterception: { readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0, fullServesFirstRead: 0, fullServesRepeat: 0, repeatBytes: 0, repeatWithRange: 0, repeatFullNoRange: 0, repeatInHookedSessions: 0, repeatFullNoRangeInHookedSessions: 0, repeatFullNoRangeHookedAfterCompaction: 0, fullServesPathUnknown: 0 },
+    bashInterception: { bashResults: 0, markedByFilter: 0, markedBytes: 0, smallUntouched: 0, smallUntouchedBytes: 0, untouched: 0, untouchedBytes: 0, untouchedEstTokens: 0, untouchedRereadTokens: 0, untouchedBilledEquivTokens: 0, untouchedHeads: [] },
     lineTypes: {},
     omissionMarkers: { fires: 0, linesOmitted: 0 },
   }
@@ -609,9 +792,10 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   const attachmentMap = new Map<string, AttachmentKindRollup>()
   const hookMap = new Map<string, HookOutputRollup>()
   const laneObservations: LaneObservation[] = []
+  const bashHeadMap = new Map<string, BashHeadRollup>()
   for (const file of files) {
     try {
-      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations)
+      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations, bashHeadMap)
       summary.filesScanned += 1
     } catch {
       summary.filesFailed += 1
@@ -630,6 +814,18 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     meanBriefBytes: mean(withUsage.map((l) => l.briefBytes)),
     prefixBilledEquivTokens: Math.round(withUsage.reduce((acc, l) => acc + (l.firstPrefixTokens as number) * (CACHE_WRITE_MULTIPLIER + CACHE_READ_MULTIPLIER * Math.max(0, l.calls - 1)), 0)),
   }
+  const byType = new Map<string, LaneObservation[]>()
+  for (const l of laneObservations) {
+    const bucket = byType.get(l.agentType)
+    if (bucket === undefined) byType.set(l.agentType, [l])
+    else bucket.push(l)
+  }
+  summary.laneAgentTypes = [...byType.entries()].map(([agentType, obs]) => {
+    const typed = obs.filter((l) => l.firstPrefixTokens !== null).map((l) => l.firstPrefixTokens as number).sort((a, b) => a - b)
+    return { agentType, lanes: obs.length, lanesWithUsage: typed.length, meanFirstCallPrefixTokens: mean(typed), medianFirstCallPrefixTokens: typed.length === 0 ? 0 : typed[Math.floor(typed.length / 2)]! }
+  }).sort((a, b) => b.lanes - a.lanes || a.agentType.localeCompare(b.agentType))
+  summary.bashInterception.untouchedBilledEquivTokens = Math.round(CACHE_WRITE_MULTIPLIER * summary.bashInterception.untouchedEstTokens + CACHE_READ_MULTIPLIER * summary.bashInterception.untouchedRereadTokens)
+  summary.bashInterception.untouchedHeads = [...bashHeadMap.values()].sort((a, b) => b.bytes - a.bytes || b.results - a.results || a.head.localeCompare(b.head))
   summary.tools = [...toolMap.values()].sort((a, b) => b.resultBytes - a.resultBytes || a.name.localeCompare(b.name))
   for (const roll of attachmentMap.values()) {
     roll.billedEquivTokens = Math.round(CACHE_WRITE_MULTIPLIER * roll.estTokens + CACHE_READ_MULTIPLIER * roll.rereadTokens)
@@ -716,10 +912,26 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push(`First-call prefix tokens: mean ${fmt(sl.meanFirstCallPrefixTokens)}, median ${fmt(sl.medianFirstCallPrefixTokens)}, p90 ${fmt(sl.p90FirstCallPrefixTokens)}`)
   lines.push(`Calls per lane: mean ${fmt(sl.meanCallsPerLane)}; task-brief bytes: mean ${fmt(sl.meanBriefBytes)}`)
   lines.push(`Prefix billed-equiv tokens: ${fmt(sl.prefixBilledEquivTokens)} (write x 1.25, then x 0.1 per later call in the lane)`)
+  for (const t of s.laneAgentTypes.slice(0, 12)) {
+    lines.push(`  type ${t.agentType.padEnd(24)} lanes ${fmt(t.lanes).padStart(7)} (${fmt(t.lanesWithUsage)} with usage)  prefix mean ${fmt(t.meanFirstCallPrefixTokens).padStart(9)}, median ${fmt(t.medianFirstCallPrefixTokens).padStart(9)}`)
+  }
+  if (s.laneAgentTypes.length > 12) lines.push(`  (${s.laneAgentTypes.length - 12} smaller agent types omitted from this table; --json has all)`)
   lines.push('')
   lines.push('## Read interception (token-goat divert markers inside Read tool results)')
   const ri = s.readInterception
   lines.push(`Read results: ${fmt(ri.readResults)}; diverted by marker: ${fmt(ri.divertedByMarker)} (${fmt(ri.divertedBytes)} bytes); full serves >=10 KiB: ${fmt(ri.fullServesOver10k)} (${fmt(ri.fullServeBytesOver10k)} bytes)`)
+  lines.push(`Full-serve split (same transcript file; a session's lanes are separate files, so repeats UNDER-count): first read ${fmt(ri.fullServesFirstRead)}, repeat ${fmt(ri.fullServesRepeat)} (${fmt(ri.repeatBytes)} bytes), path unknown ${fmt(ri.fullServesPathUnknown)}`)
+  lines.push(`Repeats: with offset/limit ${fmt(ri.repeatWithRange)} (deliberate paging), whole-file ${fmt(ri.repeatFullNoRange)} (divert-miss candidates), in sessions with a token-goat hook fire ${fmt(ri.repeatInHookedSessions)} (whole-file among them: ${fmt(ri.repeatFullNoRangeInHookedSessions)}, of which post-compaction and so correct by design: ${fmt(ri.repeatFullNoRangeHookedAfterCompaction)})`)
+  lines.push('')
+  lines.push('## Bash filter fire-rate (token-goat in-band markers inside Bash tool results)')
+  const bi = s.bashInterception
+  lines.push(`Bash results: ${fmt(bi.bashResults)}; marked by a filter: ${fmt(bi.markedByFilter)} (${fmt(bi.markedBytes)} bytes); small unmarked <${fmt(BASH_SMALL_RESULT_MAX_BYTES)} B: ${fmt(bi.smallUntouched)} (${fmt(bi.smallUntouchedBytes)} bytes)`)
+  lines.push(`Untouched >=${fmt(BASH_SMALL_RESULT_MAX_BYTES)} B: ${fmt(bi.untouched)} (${fmt(bi.untouchedBytes)} bytes, est-tokens ${fmt(bi.untouchedEstTokens)}, billed-equiv ${fmt(bi.untouchedBilledEquivTokens)})`)
+  lines.push('A filter that matched but fell under the 100-byte net-savings floor leaves no transcript trace and counts as untouched here.')
+  for (const h of bi.untouchedHeads.slice(0, 15)) {
+    lines.push(`  ${h.head.padEnd(28)} results ${fmt(h.results).padStart(9)}  bytes ${fmt(h.bytes).padStart(15)}`)
+  }
+  if (bi.untouchedHeads.length > 15) lines.push(`  (${bi.untouchedHeads.length - 15} smaller command heads omitted from this table; --json has all)`)
   lines.push('')
   lines.push('## Mid-trim omission markers inside tool results')
   lines.push(`fires: ${fmt(s.omissionMarkers.fires)}, lines discarded: ${fmt(s.omissionMarkers.linesOmitted)}`)
