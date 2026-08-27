@@ -530,13 +530,16 @@ function classifyCatPath(
   return { filePath, ...flags, cmd0 }
 }
 
-export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
-  const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i.exec(cmd)
+export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string; advisoryOnly: boolean } | null {
+  // Loop-46 census (8,179 real cat-headed commands): 144 qualifying reads spelled the identical read with a trailing `2>&1` or `2>/dev/null` and got no hint at all, so the suffix is accepted like extractSedRange already does. The `2>/dev/null` spelling signals an existence-tolerant read (dominated by memory-recall probes of files that may not exist), so it is admitted advisory-only: denying it would push the agent at a possibly missing file.
+  const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*?)?(?:\s+2>(&1|\/dev\/null))?\s*$/i.exec(cmd)
   if (!m) return null
   const cmd0 = m[1]!
   const filePath = m[2] ?? m[3] ?? m[4]
   if (filePath === undefined) return null
-  return classifyCatPath(filePath, cmd0)
+  const r = classifyCatPath(filePath, cmd0)
+  if (r === null) return null
+  return { ...r, advisoryOnly: m[5] === '/dev/null' }
 }
 
 // Multi-file variant: `cat a.ts b.ts` (2+ path args) slips past the single-path extractCatFile (its `$` anchor rejects a trailing second path), so a multi-file cat used to bypass the deny entirely. Tokenizes every path argument and returns the qualifying ones so the same per-path deny/hint fires. Returns null unless the command is a bare cat/bat/type/Get-Content with 2+ arguments and at least one qualifying path.
@@ -894,11 +897,13 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
 
 /** Extracts file path from `head -n X <path>` or `head -X <path>` commands. Returns null for unrecognized patterns or temp files. Also checks N < 10 (already surgical). */
 function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; n: number } | null {
-  const m = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
-  if (!m) return null
-  const n = parseInt(m[1] ?? m[2] ?? '0', 10)
+  const direct = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  // Piped spelling of the same leading-lines read: `cat [flags] FILE [2>&1|2>/dev/null] | head -N`. Loop-46 census (8,179 real cat-headed commands): 284 qualifying reads used this spelling and got no hint, while the direct `head -N FILE` form was already admitted.
+  const piped = direct === null ? /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+2>(?:&1|\/dev\/null))?\s*\|\s*head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s*$/.exec(cmd) : null
+  if (direct === null && piped === null) return null
+  const n = parseInt((direct !== null ? (direct[1] ?? direct[2]) : (piped![4] ?? piped![5])) ?? '0', 10)
   if (n <= 10) return null // already surgical, no need to advise (0 means default 10 lines) -- matches extractTailFile's <=10 threshold so `head -n 10`/`tail -n 10` on the same file behave identically
-  const filePath = m[3] ?? m[4] ?? m[5]
+  const filePath = direct !== null ? (direct[3] ?? direct[4] ?? direct[5]) : (piped![1] ?? piped![2] ?? piped![3])
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
@@ -938,15 +943,16 @@ function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonl
  * ledger: reading lines 1-40 with `sed` and then with `awk` is one file read twice, not two files.
  */
 function extractAwkRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
-  const m = /^awk\s+(?:'([^']+)'|"([^"]+)")\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
+  const m = /^awk\s+(?:'([^']+)'|"([^"]+)")\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>(?:\/dev\/null|&1))?\s*$/.exec(cmd)
   if (!m) return null
   const program = m[1] ?? m[2]
   if (program === undefined) return null
-  // Two spellings of one range, and nothing else: a program carrying an action block or any further
-  // condition is doing more than showing a span, so it is left alone rather than described wrongly.
-  const cmp = /^\s*NR\s*>=\s*(\d+)\s*&&\s*NR\s*<=\s*(\d+)\s*$/.exec(program)
-  const rng = /^\s*NR\s*==\s*(\d+)\s*,\s*NR\s*==\s*(\d+)\s*$/.exec(program)
+  // Two spellings of one range: a program carrying a further condition, or an action that transforms the line (substr/length projections, %.Ns truncation), is doing more than showing a span, so it is left alone rather than described wrongly. But an action that prints each whole line, at most prefixed with its line number (`{print}`, `{print $0}`, `{print NR": "$0}`, `{printf "%d: %s\n", NR, $0}`), emits exactly the span and is the same read respelled — loop-46 census (916 real awk-headed commands): 91 qualifying range reads carried such an action and got no hint, vs 41 genuinely transforming actions which stay unhinted.
+  const cmp = /^\s*NR\s*>=\s*(\d+)\s*&&\s*NR\s*<=\s*(\d+)\s*(\{.*\})?\s*$/.exec(program)
+  const rng = /^\s*NR\s*==\s*(\d+)\s*,\s*NR\s*==\s*(\d+)\s*(\{.*\})?\s*$/.exec(program)
   const hit = cmp ?? rng
+  const action = hit?.[3]
+  if (action !== undefined && !/^\{\s*(?:print(?:\s+NR\s*"[^"%]*"\s*\$0|\s+\$0)?|printf\s*"%d[^%"]*%s\\n"\s*,\s*NR\s*,\s*\$0)\s*\}$/.test(action)) return null
   if (!hit) return null
   const start = parseInt(hit[1] as string, 10)
   const end = parseInt(hit[2] as string, 10)
@@ -958,7 +964,18 @@ function extractAwkRange(cmd: string): { filePath: string; ranges: Array<readonl
 }
 
 /** The line-range read this command is, whichever tool spells it, or null when it is neither. */
+// `cat FILE [2>&1|2>/dev/null] | sed -n 'N,Mp[;...]'` is the same line-range read as `sed -n 'N,Mp' FILE` with the file fed through stdin (loop-46 census: 35 qualifying commands). Rewrite it into the direct form so extractSedRange's own address validation applies unchanged.
+function normalizeCatSedPipe(cmd: string): string | null {
+  const m = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+2>(?:&1|\/dev\/null))?\s*\|\s*sed\s+-n\s+('[^']+'|"[^"]+"|\d+,\d+p)\s*$/.exec(cmd)
+  if (!m) return null
+  const filePath = m[1] ?? m[2] ?? m[3]
+  if (filePath === undefined || filePath.includes('"')) return null
+  return 'sed -n ' + m[4]! + ' "' + filePath + '"'
+}
+
 function extractLineRangeRead(cmd: string): { filePath: string; ranges: Array<readonly [number, number]>; tool: 'sed' | 'awk' } | null {
+  const catSed = normalizeCatSedPipe(cmd)
+  if (catSed !== null) cmd = catSed
   const sed = extractSedRange(cmd)
   if (sed !== null) return { ...sed, tool: 'sed' }
   const awk = extractAwkRange(cmd)
@@ -1115,11 +1132,13 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   if (/-f\b/.test(cmd)) return null // follow mode — legitimate streaming
   if (/-c\b/.test(cmd)) return null // byte mode
   if (/-n\s*\+/.test(cmd)) return null // tail from line N offset — legitimate
-  const m = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
-  if (!m) return null
-  const n = parseInt(m[1] ?? m[2] ?? '0', 10)
+  const direct = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  // Piped spelling of the same trailing-lines read: `cat [flags] FILE [2>&1|2>/dev/null] | tail -N` (loop-46 census: 26 qualifying reads). The -f/-c/-n + guards above already rejected streaming/byte/offset variants on the whole command.
+  const piped = direct === null ? /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+2>(?:&1|\/dev\/null))?\s*\|\s*tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s*$/.exec(cmd) : null
+  if (direct === null && piped === null) return null
+  const n = parseInt((direct !== null ? (direct[1] ?? direct[2]) : (piped![4] ?? piped![5])) ?? '0', 10)
   if (n <= 10) return null // already surgical
-  const filePath = m[3] ?? m[4] ?? m[5]
+  const filePath = direct !== null ? (direct[3] ?? direct[4] ?? direct[5]) : (piped![1] ?? piped![2] ?? piped![3])
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
@@ -2186,7 +2205,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig, isSql, cmd0 } = catResult
+    const { filePath, isDoc, isEnv, isConfig, isSql, cmd0, advisoryOnly } = catResult
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     if (isSql) {
@@ -2195,7 +2214,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       )
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
-    return cdStripped ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
+    // advisoryOnly: a `2>/dev/null`-suffixed read tolerates the file being absent, so it gets guidance rather than a deny (a deny would redirect the agent at a file that may not exist).
+    return cdStripped || advisoryOnly ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
 
   const catMulti = extractCatFilesMulti(cmd)
