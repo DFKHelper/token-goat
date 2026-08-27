@@ -89,12 +89,37 @@ function getTaskId(toolInput: Record<string, unknown>): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
+/**
+ * Pull the polled text out of a real TaskOutput `tool_response`.
+ *
+ * Claude Code sends `{retrieval_status, task: {task_id, task_type, description, status, output,
+ * exitCode?}}` -- the accumulated text lives at `task.output`, nested one level down, and nothing
+ * at the top level carries it. The shared {@link extractToolResultText} only looks at top-level
+ * `output`/`text`/`body`, so every real poll fell through to its `JSON.stringify` fallback: the
+ * delta path could never fire (a growing output is not a prefix of the serialised envelope, whose
+ * leading `{"retrieval_status":...` bytes shift) and the line collapse saw one line, because
+ * newlines are backslash-escaped inside a JSON string. Falls back to the shared extractor for any
+ * other envelope so a harness that does put the text at the top level keeps working.
+ */
+function extractTaskOutputText(raw: Record<string, unknown>): string {
+  const tr = raw['tool_response']
+  if (tr !== null && typeof tr === 'object' && !Array.isArray(tr)) {
+    const task = (tr as Record<string, unknown>)['task']
+    if (task !== null && typeof task === 'object' && !Array.isArray(task)) {
+      const output = (task as Record<string, unknown>)['output']
+      // Returned even when empty: an empty task.output means the task has produced nothing yet, which the caller must see as "no output" rather than fall through to a stringified envelope.
+      if (typeof output === 'string') return output
+    }
+  }
+  return extractToolResultText(raw)
+}
+
 export function postTaskOutputHandler(event: HookEvent): HookOutput {
   try {
     if (getToolName(event) !== 'TaskOutput' || !event.sessionId) return passOutput()
     const taskId = getTaskId(getToolInput(event))
     if (taskId === undefined) return passOutput()
-    const rawOutput = extractToolResultText(event.raw)
+    const rawOutput = extractTaskOutputText(event.raw)
     if (!rawOutput) return passOutput()
     // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per call, so there is no living in-memory cache to hit instead) is always the REDACTED text. Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the instant a secret-shaped token appears anywhere in the accumulated output, permanently falling through to the "buffer reset" branch on every later poll for this task. Redacting here keeps both sides of every comparison on equal footing, mirroring the redact-before- compare pattern `storeBashOutput` already applies for the same reason.
     const output = redactSecrets(rawOutput).text

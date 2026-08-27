@@ -1,4 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+// Importing relay registers every hook module for its side-effects, so runHook dispatches through the real production registry rather than a handler reference.
+import { buildEvent } from '../src/relay.js'
+import { runHook } from '../src/hook_registry.js'
 import { postBashHandler } from '../src/hooks_bash.js'
 import { postFetchHandler } from '../src/hooks_fetch.js'
 import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from '../src/hooks_common.js'
@@ -92,5 +98,87 @@ describe('real Claude Code tool_response shapes', () => {
     expect(result.updatedOutput).toContain(`<${UNTRUSTED_WEB_TAG}`)
     expect(result.updatedOutput).toContain('ignore-previous-instructions')
     expect(result.updatedOutput).toContain('Docs for the widget API.')
+  })
+
+  it('reads a stderr-only Bash result instead of stopping at the empty stdout', () => {
+    // Claude Code always sends BOTH streams, so a command that wrote only to stderr arrives with stdout present and empty. Measured at 24 of 186,335 recorded Bash results. Expected value is the literal written here, not anything read back out of the key list.
+    const body = { stdout: '', stderr: 'warning: unused variable `x`', interrupted: false, isImage: false, noOutputExpected: false }
+    expect(extractToolResponseField({ tool_response: body }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('warning: unused variable `x`')
+  })
+
+  it('never lets stderr beat a populated stdout', () => {
+    // Control for the over-fix direction: stderr is a last resort, not a merge. Goes red if stderr is promoted ahead of stdout or the two are concatenated.
+    const body = { stdout: 'the real output', stderr: 'a progress line', interrupted: false, isImage: false, noOutputExpected: false }
+    expect(extractToolResponseField({ tool_response: body }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('the real output')
+  })
+
+  it('returns empty when every candidate field is present but empty', () => {
+    // Control for the skip-empty change: skipping an empty field must not invent a value from a non-string field or the absence of one.
+    const body = { stdout: '', stderr: '', interrupted: false, isImage: false, noOutputExpected: true }
+    expect(extractToolResponseField({ tool_response: body }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('')
+  })
+})
+
+describe('real Claude Code TaskOutput envelope', () => {
+  let tmpHome: string
+  let prevHome: string | undefined
+  let sessionId: string
+
+  beforeEach(() => {
+    prevHome = process.env['TOKEN_GOAT_HOME']
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-real-taskoutput-'))
+    process.env['TOKEN_GOAT_HOME'] = tmpHome
+    sessionId = `rto-${path.basename(tmpHome)}`
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+    else process.env['TOKEN_GOAT_HOME'] = prevHome
+    try {
+      fs.rmSync(tmpHome, { recursive: true, force: true })
+    } catch {
+      // best-effort cleanup
+    }
+  })
+
+  /** The shape recorded off the wire: the polled text is nested at task.output, and nothing at the top level carries it. */
+  function realTaskOutputPayload(output: string, taskId: string): Record<string, unknown> {
+    return {
+      tool_name: 'TaskOutput',
+      tool_input: { task_id: taskId },
+      session_id: sessionId,
+      tool_response: {
+        retrieval_status: 'success',
+        task: { task_id: taskId, task_type: 'general-purpose', description: 'a background task', status: 'running', output },
+      },
+    }
+  }
+
+  it('takes the delta of a repeat poll delivered under tool_response.task.output', async () => {
+    const taskId = 'task_real_1'
+    const first = 'a'.repeat(600)
+    const added = 'b'.repeat(600)
+
+    const one = await runHook(buildEvent('post_tool_use', realTaskOutputPayload(first, taskId)))
+    expect(one.hookType).toBe('pass')
+
+    const two = await runHook(buildEvent('post_tool_use', realTaskOutputPayload(first + added, taskId)))
+    expect(two.hookType).toBe('rewriteOutput')
+    if (two.hookType === 'rewriteOutput') {
+      expect(two.updatedOutput).toBe(`[token-goat: task_id ${taskId} delta since last poll]\n${added}`)
+    }
+  })
+
+  it('collapses a line-repeat storm on a first poll delivered under tool_response.task.output', async () => {
+    // The JSON.stringify fallback escaped every newline, so the collapse saw one single line and never fired. Expected text is built here from the input, independent of the handler.
+    const taskId = 'task_real_2'
+    const repeated = 'WARN: retrying connection'
+    const output = `${`${repeated}\n`.repeat(60)}done`
+
+    const res = await runHook(buildEvent('post_tool_use', realTaskOutputPayload(output, taskId)))
+    expect(res.hookType).toBe('rewriteOutput')
+    if (res.hookType === 'rewriteOutput') {
+      expect(res.updatedOutput).toBe(`${repeated}  (×60)\ndone`)
+    }
   })
 })
