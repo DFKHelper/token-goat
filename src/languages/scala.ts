@@ -28,22 +28,25 @@ const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\._)?)/
 // non-actionable prefix `foo.bar.` and silently drops every selector actually being imported.
 const BRACE_IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*)\.\{([^}]*)\}/
 
-// `class Foo`, `class Foo[T]`, `class Foo(x: Int)`, `class Foo extends Base`
-// Also matches `case class Foo`. The modifier group is `(?:...\s+)*` (zero or MORE, not the
-// old `?` zero-or-one) because real Scala routinely stacks several modifiers before the keyword
-// -- `sealed abstract class Shape` (the idiomatic Scala ADT base-class pattern) and
-// `final case class Foo(...)` (an extremely common case-class form) both carry two modifiers.
-// With the old `?` cap, matching one modifier left the following keyword expected immediately
-// after it; the second modifier word sat where `class`/`object`/`trait`/`def`/`val`/`var` was
-// expected, so the WHOLE line failed to match and the declaration -- plus, for a type, every
-// symbol nested in its body -- was silently dropped from the index entirely.
-const CLASS_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|\(|:|$)/
+// The modifier prefix shared by every declaration pattern below. The group is `(?:...\s+)*` (zero or MORE, not the old `?` zero-or-one) because real Scala routinely stacks several modifiers before the keyword -- `sealed abstract class Shape` (the idiomatic Scala ADT base-class pattern) and `final case class Foo(...)` (an extremely common case-class form) both carry two modifiers. With the old `?` cap, matching one modifier left the following keyword expected immediately after it; the second modifier word sat where `class`/`object`/`trait`/`def`/`val`/`var` was expected, so the WHOLE line failed to match and the declaration -- plus, for a type, every symbol nested in its body -- was silently dropped from the index entirely.
+const MODS = '(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\\s+)*'
 
-// `object Singleton`, `object Foo extends Base`
-const OBJECT_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*object\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|:|$)/
+// Scala lets any declaration be named with a backtick-quoted identifier holding characters a bare identifier cannot (spaces, punctuation, reserved words), and the ScalaTest/munit convention of writing test and helper names as prose makes that spelling routine in real sources. Every pattern below admitted only the bare identifier class, so a backtick-quoted class, object, trait, def, val or var produced no symbol at all -- and for a quoted type header no frame was pushed either, so every member declared inside its body was dropped too. Widen by ALTERNATIVE: the quoted form carries its own backtick delimiters, so it cannot run past the declaration boundary. Adding a backtick and a space to the bare identifier class instead would let a name bleed into the following `extends`/`with`/self-type clause and capture trailing whitespace.
+const NAME = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_]*)'
+
+// Strip the backtick delimiters so the stored name is the identifier Scala code actually refers to (mirrors kotlin.ts's unquoteName).
+function unquoteName(name: string): string {
+  return name.length >= 2 && name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1) : name
+}
+
+// `class Foo`, `class Foo[T]`, `class Foo(x: Int)`, `class Foo extends Base`. Also matches `case class Foo`.
+const CLASS_RE = new RegExp('^\\s*' + MODS + 'class\\s+(' + NAME + ')(?:\\s|\\[|\\(|:|$)')
+
+// `object Singleton`, `object Foo extends Base`, and Scala's `package object util`. A package object spells the `package` keyword in front of `object`, and `package` is not one of the modifiers above, so the line matched nothing: the package object itself and every member of its body went unindexed.
+const OBJECT_RE = new RegExp('^\\s*(?:package\\s+)?' + MODS + 'object\\s+(' + NAME + ')(?:\\s|:|$)')
 
 // `trait Viewable`, `trait Comparable[T]`
-const TRAIT_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*trait\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|:|$)/
+const TRAIT_RE = new RegExp('^\\s*' + MODS + 'trait\\s+(' + NAME + ')(?:\\s|\\[|:|$)')
 
 // Scala 3 (2021) `enum` type declaration: `enum Color`, `enum Option[+T]`,
 // `enum Color(val rgb: Int)`. A brand-new type keyword absent from CLASS_RE/OBJECT_RE/
@@ -51,21 +54,21 @@ const TRAIT_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protecte
 // every `def` nested in its body were dropped from the index entirely -- the same
 // missing-type-keyword gap class already closed for Swift `actor` and Dart `mixin class`.
 // The only legal leading modifiers on an enum are access modifiers (`private`/`protected`).
-const ENUM_RE = /^\s*(?:private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|\(|:|$)/
+const ENUM_RE = new RegExp('^\\s*(?:private|protected)?\\s*enum\\s+(' + NAME + ')(?:\\s|\\[|\\(|:|$)')
 
-// Scala function/method: `def foo()`, `def bar[T]()`, `def baz: Int` (no-arg form),
-// can also be infix operators like `def +(other: Int)`. Generics come between name and params.
-// Modifier group allows multiple stacked modifiers (`private final def`, `override lazy def`),
-// same fix as CLASS_RE/OBJECT_RE/TRAIT_RE above.
-const FUNC_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*def\s+([A-Za-z_][A-Za-z0-9_]*|[+\-*/%=!<>&|^~]+)(?:\s*\[|\s*\(|\s*:)/
+// A Scala method name has three spellings a bare identifier cannot express, each added as its own ALTERNATIVE: backtick-quoted prose, a pure operator, and the alphanumeric-then-operator form Scala reserves behind a trailing underscore (`def unary_-` for a prefix operator, `def value_=` for a setter). `:` belongs in the operator class because it is a Scala operator character and the cons-style `:::`, `::` and `+:` operators are core collection API; the operator alternative can only fire when the name's first character is an operator character, so `def foo: Int` still captures `foo` via the bare-identifier alternative.
+const DEF_NAME = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_]*_[+\\-*/%=!<>&|^~:]+|[+\\-*/%=!<>&|^~:]+|[A-Za-z_][A-Za-z0-9_]*)'
+
+// Scala function/method: `def foo()`, `def bar[T]()`, `def baz: Int` (no-arg form), infix operators like `def +(other: Int)`. Generics come between name and params.
+const FUNC_RE = new RegExp('^\\s*' + MODS + 'def\\s+(' + DEF_NAME + ')(?:\\s*\\[|\\s*\\(|\\s*:)')
 
 // `val x: Int = 5`, `val y = "hello"`, `lazy val config = ...`, `private final val MAX = 5`
 // Scala allows `val` to bind multiple names in pattern-match style (`val (a, b) = tuple`),
 // but for simplicity we extract only the first word-boundary identifier after `val`.
-const VAL_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*val\s+([A-Za-z_][A-Za-z0-9_]*)/
+const VAL_RE = new RegExp('^\\s*' + MODS + 'val\\s+(' + NAME + ')')
 
 // `var x: Int = 5`, `var y = "hello"` — same pattern as val.
-const VAR_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*var\s+([A-Za-z_][A-Za-z0-9_]*)/
+const VAR_RE = new RegExp('^\\s*' + MODS + 'var\\s+(' + NAME + ')')
 
 export function extractScala(
   content: string,
@@ -139,7 +142,7 @@ export function extractScala(
 
     const cm = typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? CLASS_RE.exec(stripped) : null
     if (cm) {
-      const cname = cm[1] ?? ''
+      const cname = unquoteName(cm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
@@ -158,7 +161,7 @@ export function extractScala(
 
     const om = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? OBJECT_RE.exec(stripped) : null
     if (om) {
-      const oname = om[1] ?? ''
+      const oname = unquoteName(om[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false })
@@ -172,7 +175,7 @@ export function extractScala(
 
     const tm = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? TRAIT_RE.exec(stripped) : null
     if (tm) {
-      const tname = tm[1] ?? ''
+      const tname = unquoteName(tm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false })
@@ -181,7 +184,7 @@ export function extractScala(
 
     const enm = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? ENUM_RE.exec(stripped) : null
     if (enm) {
-      const enname = enm[1] ?? ''
+      const enname = unquoteName(enm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false })
@@ -197,20 +200,20 @@ export function extractScala(
       if (depthInType === 1) {
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
-          symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          symbols.push(makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
 
         const vm = !matched ? VAL_RE.exec(stripped) : null
         if (vm) {
-          symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          symbols.push(makeLineSymbol(filePath, unquoteName(vm[1] ?? ''), 'val', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
 
         if (!matched) {
           const varm = VAR_RE.exec(stripped)
           if (varm) {
-            symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+            symbols.push(makeLineSymbol(filePath, unquoteName(varm[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           }
         }
       }
@@ -220,20 +223,20 @@ export function extractScala(
       // both TOP_FUN_RE and CONST_RE, rather than only the function regex.
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
-        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
+        symbols.push(makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
 
       const vm = !matched ? VAL_RE.exec(stripped) : null
       if (vm) {
-        symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
+        symbols.push(makeLineSymbol(filePath, unquoteName(vm[1] ?? ''), 'val', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
 
       if (!matched) {
         const varm = VAR_RE.exec(stripped)
         if (varm) {
-          symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
+          symbols.push(makeLineSymbol(filePath, unquoteName(varm[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         }
       }
     }

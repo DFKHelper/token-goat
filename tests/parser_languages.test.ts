@@ -1042,6 +1042,99 @@ COPY . .
       expect(add?.body).toContain('x + base')
     })
 
+    it('indexes backtick-quoted names, package objects and operator defs, and keeps every span one line', async () => {
+      // Three separate admission gaps in scala.ts, all of which produced NO symbol at all: a
+      // backtick-quoted name (`def `adds two numbers``, `val `odd val``, `object `Odd Object``),
+      // Scala's `package object` form (the `package` keyword is not one of the modifiers the
+      // object pattern accepts), and the operator spellings the def pattern's operator class
+      // could not express (`:::`, because `:` was missing, and `unary_-`, which is alphanumeric
+      // followed by operator characters). A dropped type header also drops every member of its
+      // body, so `go` and `helper` went missing with their parents. The dropped starts then
+      // widened assignBraceBlockSpans' search window, whose cap is the NEXT known symbol start:
+      // with lines 9, 10, 13, 14, 17 and 18 unindexed, `plainDef` on line 8 searched all the way
+      // to line 20, latched onto the `{` opening `object `Odd Object`` on line 13 and recorded
+      // lineEnd 15 -- a span reaching past the end of its own enclosing class. The full ordered
+      // list is pinned with lineEnd on every row: membership assertions cannot see that.
+      const content = [
+        'package demo',
+        '',
+        'import scala.util.Try',
+        '',
+        'class Plain extends AnyRef {',
+        '  val plainVal: Int = 5',
+        '  var plainVar: String = "x"',
+        '  def plainDef(a: Int): Int = a + 1',
+        '  def `adds two numbers`(a: Int, b: Int): Int = a + b',
+        '  val `odd val`: Int = 7',
+        '}',
+        '',
+        'object `Odd Object` {',
+        '  def go(): Unit = println("go")',
+        '}',
+        '',
+        'package object util {',
+        '  def helper(s: String): String = s.trim',
+        '}',
+        '',
+        'class Ops {',
+        '  def ++(other: Ops): Ops = this',
+        '  def :::(other: Ops): Ops = this',
+        '  def unary_-(): Ops = this',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Sc3.scala', content)
+      expect(result.symbols.map((s) => [s.name, s.kind, s.parent, s.lineStart, s.lineEnd])).toEqual([
+        ['Plain', 'class', '', 5, 11],
+        ['plainVal', 'val', 'Plain', 6, 6],
+        ['plainVar', 'var', 'Plain', 7, 7],
+        ['plainDef', 'function', 'Plain', 8, 8],
+        ['adds two numbers', 'function', 'Plain', 9, 9],
+        ['odd val', 'val', 'Plain', 10, 10],
+        ['Odd Object', 'object', '', 13, 15],
+        ['go', 'function', 'Odd Object', 14, 14],
+        ['util', 'object', '', 17, 19],
+        ['helper', 'function', 'util', 18, 18],
+        ['Ops', 'class', '', 21, 25],
+        ['++', 'function', 'Ops', 22, 22],
+        [':::', 'function', 'Ops', 23, 23],
+        ['unary_-', 'function', 'Ops', 24, 24],
+      ])
+    })
+
+    it('leaves plain-form scala declarations byte-identical when the quoted-name alternative is added', async () => {
+      // The over-fix guard for the test above. The tempting way to admit a backtick name is to
+      // drop a backtick and a space into the bare identifier class; in kotlin.ts that made the
+      // name run past the declaration head and capture a trailing space bled in from the
+      // supertype clause ("Animal " instead of "Animal"). Nothing here is quoted, so this list
+      // must be identical before and after any widening of the name patterns.
+      const content = [
+        'sealed abstract class Animal extends Thing with Named {',
+        '  val legs: Int = 4',
+        '  def speak(): String = "..."',
+        '}',
+        '',
+        'trait Named extends Any {',
+        '  def name: String',
+        '}',
+        '',
+        'object Registry extends Named {',
+        '  var count: Int = 0',
+        '}',
+        '',
+      ].join('\n')
+      const result = await parseFixture('Sc4.scala', content)
+      expect(result.symbols.map((s) => [s.name, s.kind, s.parent, s.lineStart, s.lineEnd])).toEqual([
+        ['Animal', 'class', '', 1, 4],
+        ['legs', 'val', 'Animal', 2, 2],
+        ['speak', 'function', 'Animal', 3, 3],
+        ['Named', 'trait', '', 6, 8],
+        ['name', 'function', 'Named', 7, 7],
+        ['Registry', 'object', '', 10, 12],
+        ['count', 'var', 'Registry', 11, 11],
+      ])
+    })
+
     it('still widens an Allman-brace multi-line signature (keyword stop must not misfire)', async () => {
       // The brace opens on its own line after a `)` at depth 0. That line starts with `{`, not a
       // control keyword, so the finding-1 keyword stop must leave this legitimate widening intact.
