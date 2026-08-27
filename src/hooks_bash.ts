@@ -908,12 +908,13 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
 
 function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
   // Multi-range `sed -n 'N,Mp;X,Yp' file` is legal: a semicolon-separated list of `N,Mp` clauses inside a single quoted address block, followed by the same file-path argument and optional `2>/dev/null` suffix as the single-range form. The earlier single-range regex required exactly one range then end-of-string, so any `;`-joined command silently fell through with no hint at all, leaving an agent that grabs N+M ranges in one sed call getting zero guidance. The regex below matches the leading `N,Mp` plus zero or more `;N,Mp` continuations sharing the same surrounding quotes; the range list is reparsed from cmd so each clause is independently validated (start >= 1, end >= start) and empty/malformed inputs are rejected uniformly.
-  const m = /^sed\s+-n\s+['"](?:\d+,\d+p)(?:;\d+,\d+p)*['"]\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
+  // Corpus measurement (loop 45, 19,380 real sed commands): the quoted form dominates but 480 commands spell the identical read with no quotes (`sed -n 120,180p file`), and a further slice suffixes `2>&1` instead of `2>/dev/null`. Both are the same read class, so the address block accepts an unquoted single range (an unquoted `;` would be a shell separator, so multi-range stays quoted-only) and the stderr suffix accepts either spelling.
+  const m = /^sed\s+-n\s+(?:['"]((?:\d+,\d+p)(?:;\d+,\d+p)*)['"]|(\d+,\d+p))\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>(?:\/dev\/null|&1))?\s*$/.exec(cmd)
   if (!m) return null
-  const quotedAddress = /['"]([^'"]+)['"]/.exec(cmd)
-  if (!quotedAddress) return null
+  const addressList = m[1] ?? m[2]
+  if (addressList === undefined) return null
   const ranges: Array<readonly [number, number]> = []
-  for (const clause of quotedAddress[1]!.split(';')) {
+  for (const clause of addressList.split(';')) {
     const cm = /^(\d+),(\d+)p$/.exec(clause ?? '')
     if (!cm) return null
     const start = parseInt(cm[1] as string, 10)
@@ -922,7 +923,7 @@ function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonl
     ranges.push([start, end])
   }
   if (ranges.length === 0) return null
-  const filePath = m[1] ?? m[2] ?? m[3]
+  const filePath = m[3] ?? m[4] ?? m[5]
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
   return { filePath, ranges }
@@ -963,6 +964,36 @@ function extractLineRangeRead(cmd: string): { filePath: string; ranges: Array<re
   const awk = extractAwkRange(cmd)
   if (awk !== null) return { ...awk, tool: 'awk' }
   return null
+}
+
+// A pipe stage or standalone segment that only reformats or truncates the bytes flowing through it (fold/cut/cat/nl/head/tail with flag or numeric arguments and no file operand): the upstream line-range read is still the same read of the same span, so such stages must not hide it from the hint.
+const FORMATTING_STAGE_RE = /^(?:fold|cut|cat|nl|head|tail)(?:\s+(?:-\S+|[\d,+-]+))*\s*$/
+
+/** Compound spelling of the same line-range read: `sed -n 'A,Bp' f1; echo "=== f2 ==="; sed -n 'C,Dp' f2` (also with `&&` or newline separators), or a single read piped through formatting-only stages (`sed -n 'A,Bp' f | fold -w 160`). Loop-45 corpus measurement: these two families were 1,200+ and 550+ of the 6,438 real sed commands the single-command extractor missed, all of them ordinary reads. Every segment must be a line-range read, a bare echo separator, or a formatting-only stage; any other segment (a redirect into a file, an edit, an unknown command) rejects the whole command so nothing is described wrongly. Returns the per-file reads in first-seen order, ranges merged per file, or null. */
+function extractLineRangeReadsCompound(cmd: string): Array<{ filePath: string; ranges: Array<readonly [number, number]>; tool: 'sed' | 'awk' }> | null {
+  // `2>&1` and `2>/dev/null` are stripped up front: splitShellSegments treats a bare `&` as a separator, so an inline `2>&1` would otherwise shear the segment in two.
+  const cleaned = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+  const segments = splitShellSegments(cleaned)
+  if (segments.length < 2) return null
+  const reads: Array<{ filePath: string; ranges: Array<readonly [number, number]>; tool: 'sed' | 'awk' }> = []
+  for (const seg of segments) {
+    const r = extractLineRangeRead(seg)
+    if (r !== null) {
+      reads.push(r)
+      continue
+    }
+    if (/^echo\b[^<>]*$/.test(seg)) continue
+    if (FORMATTING_STAGE_RE.test(seg)) continue
+    return null
+  }
+  if (reads.length === 0) return null
+  const merged = new Map<string, { filePath: string; ranges: Array<readonly [number, number]>; tool: 'sed' | 'awk' }>()
+  for (const r of reads) {
+    const prev = merged.get(r.filePath)
+    if (prev !== undefined) prev.ranges.push(...r.ranges)
+    else merged.set(r.filePath, { filePath: r.filePath, ranges: [...r.ranges], tool: r.tool })
+  }
+  return [...merged.values()]
 }
 
 // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
@@ -2110,32 +2141,36 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range
-  const sedRange = extractLineRangeRead(cmd)
-  if (sedRange !== null) {
-    const { filePath, ranges, tool } = sedRange
-    // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve
-    // against the directory cd would actually leave the shell in, matching every other path-carrying
-    // hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd
-    // instead of the shell's real one, both mislabeling the hint and missing dedup against a
-    // non-cd-prefixed reference to the same file.
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+  // A single-command read is preferred; failing that, the compound spellings (echo-separated multi-span reads, formatting-only pipes) are the same read class and get the same per-file treatment.
+  const singleLineRangeRead = extractLineRangeRead(cmd)
+  const sedReads = singleLineRangeRead !== null ? [singleLineRangeRead] : extractLineRangeReadsCompound(cmd)
+  if (sedReads !== null) {
     recordStat('session_hint', 0, 0)
-    // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths.
-    // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
-    const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
-    const overlapHints: string[] = []
-    const freshRanges: Array<readonly [number, number]> = []
-    for (const [start, end] of ranges) {
-      const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
-      recordFileLineRange(sedDedupKey, start, end)
-      if (priorOverlap !== null) {
-        overlapHints.push(sedOverlapHint(hintPath, priorOverlap, start, end))
-      } else {
-        freshRanges.push([start, end])
+    const hints: string[] = []
+    for (const { filePath, ranges, tool } of sedReads) {
+      // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve
+      // against the directory cd would actually leave the shell in, matching every other path-carrying
+      // hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd
+      // instead of the shell's real one, both mislabeling the hint and missing dedup against a
+      // non-cd-prefixed reference to the same file.
+      const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+      // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths.
+      // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
+      const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
+      const overlapHints: string[] = []
+      const freshRanges: Array<readonly [number, number]> = []
+      for (const [start, end] of ranges) {
+        const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
+        recordFileLineRange(sedDedupKey, start, end)
+        if (priorOverlap !== null) {
+          overlapHints.push(sedOverlapHint(hintPath, priorOverlap, start, end))
+        } else {
+          freshRanges.push([start, end])
+        }
       }
+      hints.push(...overlapHints)
+      if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges, tool))
     }
-    const hints = [...overlapHints]
-    if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges, tool))
     return contextOutput(hints.join(' '))
   }
 

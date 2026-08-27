@@ -787,9 +787,91 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('passes through piped sed (not a whole-command line read)', () => {
-    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/app/page.tsx | head"))
+  it('hints on sed piped through a formatting-only stage (the read is the same span)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/pipe_fold_demo.tsx | fold -w 160"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/pipe_fold_demo.tsx@10-20')
+    }
+  })
+
+  it('hints on sed piped through chained formatting stages (cat -A then head)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '30,60p' src/pipe_cata_demo.ts | cat -A | head -50"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/pipe_cata_demo.ts@30-60')
+    }
+  })
+
+  it('passes through sed piped into a content-changing stage (grep is a search, not a read)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/pipe_grep_demo.ts | grep -n TODO"))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('hints on an unquoted sed range (same read, no quotes)', () => {
+    const result = preBashHandler(makeBashEvent('sed -n 120,180p src/unquoted_demo.ts'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/unquoted_demo.ts@120-180')
+    }
+  })
+
+  it('sed line-range hint handles a 2>&1 suffix like 2>/dev/null', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '250,300p' src/stderr_suffix_demo.tsx 2>&1"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/stderr_suffix_demo.tsx@250-300')
+    }
+  })
+
+  it('hints on an echo-separated compound of sed reads, one hint per file in command order', () => {
+    const result = preBashHandler(makeBashEvent('sed -n \'10,20p\' src/compound_a_demo.ts; echo "=== b ==="; sed -n \'30,40p\' src/compound_b_demo.ts'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      const aPos = result.context.indexOf('src/compound_a_demo.ts@10-20')
+      const bPos = result.context.indexOf('src/compound_b_demo.ts@30-40')
+      expect(aPos, 'first file hint present').toBeGreaterThanOrEqual(0)
+      expect(bPos, 'second file hint present').toBeGreaterThanOrEqual(0)
+      expect(aPos, 'hints follow command order').toBeLessThan(bPos)
+    }
+  })
+
+  it('hints on an &&-separated compound of sed reads', () => {
+    const result = preBashHandler(makeBashEvent('sed -n \'5,15p\' src/compound_and_a.ts && echo --- && sed -n \'25,35p\' src/compound_and_b.ts'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/compound_and_a.ts@5-15')
+      expect(result.context).toContain('src/compound_and_b.ts@25-35')
+    }
+  })
+
+  it('merges compound sed reads of the same file into one multi-range hint', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/compound_merge_demo.ts; echo x; sed -n '30,40p' src/compound_merge_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/compound_merge_demo.ts@10-20')
+      expect(result.context).toContain('src/compound_merge_demo.ts@30-40')
+      expect(result.context.match(/line-range reads bypass read hooks/g)?.length, 'one hint stanza for one file').toBe(1)
+    }
+  })
+
+  it('passes through a compound containing a non-read segment (redirect into a file)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/compound_reject_a.ts > out.txt"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through a compound containing an unknown command segment', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/compound_reject_b.ts; rm out.txt"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('records compound sed ranges for overlap dedup on a later single sed', () => {
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/compound_dedup_demo.ts; echo sep; sed -n '100,140p' src/compound_dedup_other.ts"))
+    const result = preBashHandler(makeBashEvent("sed -n '20,50p' src/compound_dedup_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('You already read lines 10-60 of src/compound_dedup_demo.ts')
+    }
   })
 
   it('passes through sed on a temp path', () => {

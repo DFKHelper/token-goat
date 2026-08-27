@@ -65,6 +65,7 @@ wrong escalates rather than acting.
 | DL-19 | golangci-lint capture recorded `clearsShippingFloor: false` | stated rather than papered over |
 | DL-20 | No upper ratio bound in the real-output guard | a ceiling is satisfied by bumping a number; a must-not-drop entry is not |
 | DL-21 | `extractExitCode` stays dormant | 186,335 recorded Bash results carry no exit-code field; the only status field marks benign non-zero exits |
+| DL-22 | Loop-45 sed-hint admission stops at 80.1% of the 19,386-command corpus: single-address `sed -n 'Np' file` stays unhinted (one line is already surgical, matching the head/tail <=10 carve-out); pattern ranges (`/re/,/re2/p`, 50 corpus commands), `\| grep` pipes (a search, not a read), `>`-redirects (output never reaches context), edits, and multiline heredoc constructions reject the whole command | remaining 19.9% is out of the read class or too rare to describe safely |
 
 ## Blocked On Evidence
 
