@@ -389,6 +389,28 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
 
     expect(observedToolName).toBe('Bash')
   })
+
+  it('normalizes a raw Qwen Code tool_name through the real relay() path so a toolName-filtered handler actually matches (regression: harnessForNormalization() collapsed qwen to claude, so every tool-scoped hook was silently dead on Qwen)', async () => {
+    // qwen_install.ts wires every hook as `token-goat hook <event> --harness qwen`, which sets TOKEN_GOAT_HARNESS_OVERRIDE=qwen before dispatch -- reproduced here directly. The fixture tool id run_shell_command is Qwen Code's own runtime id for its shell tool (QwenLM/qwen-code packages/core/src/tools/tool-names.ts; coreToolScheduler.ts serializes canonicalToolName(request.name) into the hook payload).
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'qwen'
+
+    let observedToolName: string | undefined
+    registerHook(
+      'pre_tool_use',
+      (event) => {
+        observedToolName = event.toolName
+        return { hookType: 'pass' }
+      },
+      { toolName: 'Bash' },
+    )
+
+    io.emit(
+      JSON.stringify({ tool_name: 'run_shell_command', tool_input: { command: 'echo hi' }, session_id: 'q' }),
+    )
+    await relay('pre_tool_use')
+
+    expect(observedToolName).toBe('Bash')
+  })
 })
 
 describe('relay Gemini deny wire format (regression: Gemini CLI has no output-reshaping bridge -- gemini_install.ts wires `token-goat hook <event>` directly into ~/.gemini/settings.json, with no shim script the way Codex/Copilot CLI have, so serializeOutput\'s wire JSON is exactly what a real Gemini CLI process reads from stdout -- this suite verifies token-goat\'s deny shape against Gemini CLI\'s documented BeforeTool contract instead of merely assuming compatibility, since a plausible fail-open regression here would mean a real Gemini user\'s dangerous-command/confirmed-re-read/dedup denials silently proceed)', () => {

@@ -221,6 +221,49 @@ describe('normalizePayload', () => {
       const result = normalizePayload(payload, 'grok')
       expect(result['tool_response']).toEqual({ content: 'hello world' })
     })
+
+    // Fixture tool id from the grok 0.2.93 binary's own registered-tool table (tool.run_terminal_cmd in ~/.grok/bin/agent.exe's tracing-id strings) and its newer embedded hooks doc's PreToolUse example ("toolName": "run_terminal_cmd") -- NOT from token-goat's map. The older doc revision and a 2026-07-09 live capture show run_terminal_command on the same version, so both spellings must resolve to Bash.
+    it('remaps the run_terminal_cmd spelling to Bash too (0.2.93 registers tool.run_terminal_cmd; a live capture on the same version sent run_terminal_command)', () => {
+      const result = normalizePayload(
+        { toolName: 'run_terminal_cmd', toolInput: { command: 'echo hi' } },
+        'grok',
+      )
+      expect(result['tool_name']).toBe('Bash')
+      expect(result['tool_input']).toEqual({ command: 'echo hi' })
+    })
+
+    // Fixture ids/keys from the 0.2.93 binary (tool.web_fetch / tool.web_search registered ids) and grok_build's input schemas: WebFetchInput carries the URL under `url`, WebSearchInput carries query/citations/allowed_domains.
+    it('remaps web_fetch and web_search to WebFetch/WebSearch with their schema keys untouched (previously unmapped: URL policy and search dedup never fired on grok)', () => {
+      const fetchResult = normalizePayload(
+        { toolName: 'web_fetch', toolInput: { url: 'https://example.com/page' } },
+        'grok',
+      )
+      expect(fetchResult['tool_name']).toBe('WebFetch')
+      expect(fetchResult['tool_input']).toEqual({ url: 'https://example.com/page' })
+
+      const searchResult = normalizePayload(
+        { toolName: 'web_search', toolInput: { query: 'token goat', allowed_domains: ['example.com'] } },
+        'grok',
+      )
+      expect(searchResult['tool_name']).toBe('WebSearch')
+      expect(searchResult['tool_input']).toEqual({ query: 'token goat', allowed_domains: ['example.com'] })
+    })
+
+    // Fixture id from the 0.2.93 binary's tracing-id table: tool.glob is a registered tool distinct from tool.list_dir.
+    it('remaps grok\'s distinct glob tool to Glob (previously only list_dir was mapped)', () => {
+      const result = normalizePayload({ toolName: 'glob', toolInput: { pattern: 'src/**/*.ts' } }, 'grok')
+      expect(result['tool_name']).toBe('Glob')
+    })
+
+    // Fixture ids from the 0.2.93 binary's tracing-id table (tool.hashline_read etc., paired with Read/Edit/Grep in grok's own hook alias table) and the GrokBuildConcise profile's *_concise registrations of the same core tools.
+    it('remaps the hashline_* and *_concise profile variants onto the same canonical tools', () => {
+      expect(normalizePayload({ toolName: 'hashline_read', toolInput: {} }, 'grok')['tool_name']).toBe('Read')
+      expect(normalizePayload({ toolName: 'hashline_edit', toolInput: {} }, 'grok')['tool_name']).toBe('Edit')
+      expect(normalizePayload({ toolName: 'hashline_grep', toolInput: {} }, 'grok')['tool_name']).toBe('Grep')
+      expect(normalizePayload({ toolName: 'read_file_concise', toolInput: {} }, 'grok')['tool_name']).toBe('Read')
+      expect(normalizePayload({ toolName: 'search_replace_concise', toolInput: {} }, 'grok')['tool_name']).toBe('Edit')
+      expect(normalizePayload({ toolName: 'run_terminal_cmd_concise', toolInput: {} }, 'grok')['tool_name']).toBe('Bash')
+    })
   })
 
   // Kimi is the reason remapToolName() keys its input-key map off the EFFECTIVE tool name rather
@@ -258,6 +301,17 @@ describe('normalizePayload', () => {
     expect(result['tool_input']).toEqual({ url: 'https://example.com' })
   })
 
+  // Fixture keys from Kimi's own ReadInputSchema (MoonshotAI/kimi-code packages/agent-core-v2/src/agent/tools/os/read/read.ts): `path`, `line_offset` ("the line number to start reading from"), `n_lines` ("the number of lines to read") -- NOT from token-goat's key map. Unmapped, a ranged Kimi read looked unbounded to estimateRequestedSlice (hooks_read.ts) and was gated on the whole file's size.
+  it('renames Kimi Read\'s line_offset/n_lines paging keys to offset/limit alongside the path rename', () => {
+    const payload: HookPayload = {
+      tool_name: 'Read',
+      tool_input: { path: '/tmp/big.log', line_offset: 100, n_lines: 40 },
+    }
+    const result = normalizePayload(payload, 'kimi')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['tool_input']).toEqual({ file_path: '/tmp/big.log', offset: 100, limit: 40 })
+  })
+
   it('leaves an unmapped Kimi tool name and its input untouched', () => {
     const payload: HookPayload = {
       tool_name: 'Bash',
@@ -279,6 +333,80 @@ describe('normalizePayload', () => {
     const result = normalizePayload(payload, 'grok')
     expect(result['tool_name']).toBe('Read')
     expect(result['tool_input']).toEqual({ file_path: '/tmp/test.txt' })
+  })
+
+  describe('qwen harness', () => {
+    // Fixture tool ids and input keys come from QwenLM/qwen-code's own source, not token-goat's maps: tool-names.ts (ToolNames runtime ids -- coreToolScheduler.ts passes canonicalToolName(request.name) into the hook triggers, so the wire carries these ids, never the display names), read-file.ts (file_path/offset/limit), shell.ts (command), grep.ts (pattern/path), web-fetch.ts (url), web-search.ts (query), ls.ts (LSToolParams.path -- NOT the dir_path its Gemini ancestor uses), and toolHookTriggers.ts (post payload tool_response = {llmContent, returnDisplay}).
+
+    it('remaps read_file to Read with its already-canonical keys untouched (regression: qwen fell through to the claude branch, so read_file matched no handler and every tool-scoped hook was dead)', () => {
+      const payload: HookPayload = {
+        tool_name: 'read_file',
+        tool_input: { file_path: '/tmp/test.txt', offset: 10, limit: 50 },
+        session_id: 'q-sess-1',
+      }
+      const result = normalizePayload(payload, 'qwen')
+      expect(result['tool_name']).toBe('Read')
+      expect(result['tool_input']).toEqual({ file_path: '/tmp/test.txt', offset: 10, limit: 50 })
+      expect(result['_tg_harness']).toBe('qwen')
+    })
+
+    it('remaps run_shell_command to Bash and grep_search/search_file_content to Grep', () => {
+      const bash = normalizePayload({ tool_name: 'run_shell_command', tool_input: { command: 'ls -la' } }, 'qwen')
+      expect(bash['tool_name']).toBe('Bash')
+      expect(bash['tool_input']).toEqual({ command: 'ls -la' })
+
+      const grep = normalizePayload({ tool_name: 'grep_search', tool_input: { pattern: 'foo', path: '/tmp' } }, 'qwen')
+      expect(grep['tool_name']).toBe('Grep')
+      expect(grep['tool_input']).toEqual({ pattern: 'foo', path: '/tmp' })
+
+      const legacyGrep = normalizePayload({ tool_name: 'search_file_content', tool_input: { pattern: 'foo' } }, 'qwen')
+      expect(legacyGrep['tool_name']).toBe('Grep')
+    })
+
+    it('remaps list_directory to Read and its path key to file_path (qwen ls.ts sends path, not Gemini\'s dir_path)', () => {
+      const result = normalizePayload({ tool_name: 'list_directory', tool_input: { path: '/tmp/project' } }, 'qwen')
+      expect(result['tool_name']).toBe('Read')
+      expect(result['tool_input']).toEqual({ file_path: '/tmp/project' })
+    })
+
+    it('remaps web_fetch/web_search to WebFetch/WebSearch with their schema keys untouched', () => {
+      const fetch = normalizePayload({ tool_name: 'web_fetch', tool_input: { url: 'https://example.com' } }, 'qwen')
+      expect(fetch['tool_name']).toBe('WebFetch')
+      expect(fetch['tool_input']).toEqual({ url: 'https://example.com' })
+
+      const search = normalizePayload({ tool_name: 'web_search', tool_input: { query: 'token goat' } }, 'qwen')
+      expect(search['tool_name']).toBe('WebSearch')
+      expect(search['tool_input']).toEqual({ query: 'token goat' })
+    })
+
+    it('adds output alongside llmContent in a post tool_response so the response-reading handlers see the body (llmContent is in neither tool_response key list)', () => {
+      const payload: HookPayload = {
+        tool_name: 'run_shell_command',
+        tool_input: { command: 'echo hi' },
+        tool_response: { llmContent: 'hi\n', returnDisplay: 'hi' },
+      }
+      const result = normalizePayload(payload, 'qwen')
+      expect(result['tool_response']).toEqual({ llmContent: 'hi\n', returnDisplay: 'hi', output: 'hi\n' })
+    })
+
+    it('leaves a non-string llmContent (PartListUnion array) untouched rather than inventing an output', () => {
+      const payload: HookPayload = {
+        tool_name: 'read_file',
+        tool_input: { file_path: '/tmp/x.png' },
+        tool_response: { llmContent: [{ inlineData: { data: 'AAAA' } }], returnDisplay: 'image' },
+      }
+      const result = normalizePayload(payload, 'qwen')
+      expect(result['tool_response']).toEqual({ llmContent: [{ inlineData: { data: 'AAAA' } }], returnDisplay: 'image' })
+    })
+
+    it('leaves an unmapped qwen tool (todo_write, agent) and its input untouched', () => {
+      const todo = normalizePayload({ tool_name: 'todo_write', tool_input: { todos: [] } }, 'qwen')
+      expect(todo['tool_name']).toBe('todo_write')
+
+      const agent = normalizePayload({ tool_name: 'agent', tool_input: { goal: 'x' } }, 'qwen')
+      expect(agent['tool_name']).toBe('agent')
+      expect(agent['tool_input']).toEqual({ goal: 'x' })
+    })
   })
 
   it('round-trip: normalizePayload then back works for Claude', () => {

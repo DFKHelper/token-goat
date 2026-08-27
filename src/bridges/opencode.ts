@@ -43,6 +43,9 @@
  *   grep:     pattern, path, include                     (tool/grep.ts)
  *   glob:     pattern, path                              (tool/glob.ts)
  *   webfetch: url, format, timeout                       (tool/webfetch.ts)
+ *   websearch: query, numResults, ...                    (tool/websearch.ts, v1.18.16)
+ *   skill:    name                                       (tool/skill.ts, v1.18.16)
+ *   task:     prompt, subagent_type, description, ...    (tool/task.ts, v1.18.16)
  *
  * `token-goat hook <event>` only accepts the exact snake_case event names in
  * HOOK_EVENTS (src/types.ts): pre_tool_use, post_tool_use, pre_compact,
@@ -83,7 +86,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-// opencode built-in tool id -> token-goat canonical tool name.
+// opencode built-in tool id -> token-goat canonical tool name. websearch/skill/task were re-verified against opencode's own source at the tag matching the installed release (anomalyco/opencode v1.18.16 packages/opencode/src/tool/): WebSearchTool registers as "websearch" (websearch.ts), SkillTool as "skill" (skill.ts), TaskTool as "task" (task.ts, params prompt/subagent_type/description -- the exact keys token-goat's hooks_agent_spawn.ts reads, which registers a lowercase 'task' handler). Unmapped, all three were dead mechanisms here: no WebSearch repeat-search deny/compression, no repeat-skill-load deny, no agent-spawn briefing or report compaction. apply_patch (patchText only, no per-file path) and lsp/plan/question/todo have no token-goat equivalent and stay unmapped.
 const TOOL_TO_TG = {
   read: "Read",
   bash: "Bash",
@@ -92,15 +95,15 @@ const TOOL_TO_TG = {
   grep: "Grep",
   glob: "Glob",
   webfetch: "WebFetch",
+  websearch: "WebSearch",
+  skill: "Skill",
+  task: "task",
 }
 
-// Tools with a real pre_tool_use handler registered server-side (hooks_read.ts,
-// image_shrink.ts, hooks_bash.ts, hooks_fetch.ts). Edit/Write have no pre-hook
-// in token-goat at all, so skip the subprocess call for them entirely. Glob
-// has none either, so it's excluded too rather than spawning a no-op call.
-const PRE_HOOK_TOOLS = new Set(["read", "bash", "grep", "webfetch"])
+// Tools with a pre_tool_use handler server-side whose OUTPUT SHAPE this hook can act on: deny (throw), updatedInput (args rewrite), or the Read image-shrink materialization. websearch (repeat-search deny within the dedup TTL, hooks_websearch.ts), skill (repeat-load deny, hooks_skill.ts) and task (briefing updatedInput rewrite, hooks_agent_spawn.ts) all qualify. Edit/Write have no pre-hook at all. Glob DOES have one (preGlobDedupHandler, hooks_glob.ts) -- the old claim here that it has none was stale -- but its only output is an advisory contextOutput hint, and tool.execute.before has no context channel (see the module docblock), so calling it would spawn a subprocess per glob only to drop the answer; it stays excluded for that reason, not the old one.
+const PRE_HOOK_TOOLS = new Set(["read", "bash", "grep", "webfetch", "websearch", "skill", "task"])
 
-// opencode tool args (camelCase) -> token-goat snake_case tool_input keys.
+// opencode tool args (camelCase) -> token-goat snake_case tool_input keys. websearch's query (websearch.ts Parameters), skill's name (skill.ts Parameters; hooks_skill.ts reads tool_input['skill']) and task's prompt/subagent_type/description (task.ts BaseParameterFields) are all from opencode's own schemas at v1.18.16.
 const ARGS_TO_TG = {
   read: { filePath: "file_path", offset: "offset", limit: "limit" },
   bash: { command: "command", timeout: "timeout" },
@@ -109,6 +112,9 @@ const ARGS_TO_TG = {
   grep: { pattern: "pattern", path: "path" },
   glob: { pattern: "pattern", path: "path" },
   webfetch: { url: "url" },
+  websearch: { query: "query" },
+  skill: { name: "skill" },
+  task: { prompt: "prompt", subagent_type: "subagent_type", description: "description" },
 }
 
 function reverseArgMap(tool) {
