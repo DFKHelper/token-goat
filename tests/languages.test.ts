@@ -4709,6 +4709,46 @@ real:
     expect(symbols.filter((s) => s.kind === 'makefile_target')).toHaveLength(2)
   })
 
+  it('honours backslash continuation in a CRLF Makefile, so a colon in the wrapped value is not a phantom target', () => {
+    // Regression: the continuation tracker tested `line.endsWith('\\')` against lines produced by splitting the source on `\n`, which on a CRLF file leaves a `\r` sitting after the backslash. Every line therefore read as "not continued", the continuation masking never fired, and the wrapped value line was rescanned by TARGET_RE as an independent rule header. Built entirely from explicit `\r\n` joins so the assertion is identical on Linux, macOS and Windows rather than depending on the host's checkout line endings.
+    const lines = [
+      'PATHS = /usr/bin:/usr/local/bin \\',
+      '        /opt/bin:/sbin',
+      '',
+      'all:',
+      '\techo hi',
+      '',
+    ]
+    const crlf = extractMakefile(lines.join('\r\n'), 'Makefile')
+    const lf = extractMakefile(lines.join('\n'), 'Makefile')
+    const shape = (ss: typeof crlf): unknown[] => ss.map((s) => [s.name, s.kind, s.lineStart])
+    expect(shape(crlf)).toEqual([['all', 'makefile_target', 4]])
+    // The two line-ending spellings of one Makefile must index identically.
+    expect(shape(crlf)).toEqual(shape(lf))
+  })
+
+  it('still treats a backslash followed by a trailing space as ending the continuation on a CRLF line', () => {
+    // Control for the over-fix: stripping ALL trailing whitespace (trimEnd) instead of exactly one CR would make this line look continued, swallowing the next line and dropping the `first` target. GNU make only joins on a backslash sitting immediately before the newline.
+    const lines = [
+      'PATHS = /usr/bin \\ ',
+      'first:second',
+      '',
+      'all:',
+      '\techo hi',
+      '',
+    ]
+    const shape = (ss: ReturnType<typeof extractMakefile>): unknown[] =>
+      ss.map((s) => [s.name, s.kind, s.lineStart])
+    expect(shape(extractMakefile(lines.join('\r\n'), 'Makefile'))).toEqual([
+      ['first', 'makefile_target', 2],
+      ['all', 'makefile_target', 4],
+    ])
+    expect(shape(extractMakefile(lines.join('\n'), 'Makefile'))).toEqual([
+      ['first', 'makefile_target', 2],
+      ['all', 'makefile_target', 4],
+    ])
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
