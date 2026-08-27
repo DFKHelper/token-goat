@@ -1287,6 +1287,79 @@ describe('SnykFilter output', () => {
     expect(collapsedIdx).toBeLessThan(licenseIdx)
   })
 
+  // Regression: _SNYK_TREE_LINE_RE treated ANY indented line as a dependency tree line, so snyk's two-space-indented vulnerability details and the "Issues to fix by upgrading:" remediation lines were charged against the 10-line tree budget and, past it, discarded under a marker calling them "dependency tree lines". The upgrade instructions are the whole point of running snyk test.
+  it('keeps every vulnerability detail and remediation line, none charged to the tree budget', () => {
+    const input =
+      'Testing /home/u/proj...\n' +
+      '\n' +
+      'Tested 412 dependencies for known issues, found 3 issues, 3 vulnerable paths.\n' +
+      '\n' +
+      VX +
+      ' High severity vulnerability found in tar\n' +
+      '  Description: Arbitrary File Overwrite\n' +
+      '  Introduced through: tar@4.4.13\n' +
+      '  From: tar@4.4.13\n' +
+      '  Fixed in: 4.4.15, 5.0.7, 6.1.2\n' +
+      '\n' +
+      VX +
+      ' Medium severity vulnerability found in lodash\n' +
+      '  Description: Prototype Pollution\n' +
+      '  Introduced through: lodash@4.17.11\n' +
+      '  From: lodash@4.17.11\n' +
+      '  Fixed in: 4.17.21\n' +
+      '\n' +
+      VX +
+      ' Low severity vulnerability found in minimist\n' +
+      '  Description: Prototype Pollution\n' +
+      '  Introduced through: minimist@1.2.0\n' +
+      '  From: minimist@1.2.0\n' +
+      '  Fixed in: 1.2.3\n' +
+      '\n' +
+      'Issues to fix by upgrading:\n' +
+      '\n' +
+      '  Upgrade tar@4.4.13 to tar@6.1.2 to fix\n' +
+      '  Upgrade lodash@4.17.11 to lodash@4.17.21 to fix\n' +
+      '  Upgrade minimist@1.2.0 to minimist@1.2.3 to fix\n'
+    const out = apply(f, input, argv)
+    expect(out.split('\n')).toEqual([
+      'Testing /home/u/proj...',
+      '',
+      'Tested 412 dependencies for known issues, found 3 issues, 3 vulnerable paths.',
+      '',
+      VX + ' High severity vulnerability found in tar',
+      '  Description: Arbitrary File Overwrite',
+      '  Introduced through: tar@4.4.13',
+      '  From: tar@4.4.13',
+      '  Fixed in: 4.4.15, 5.0.7, 6.1.2',
+      '',
+      VX + ' Medium severity vulnerability found in lodash',
+      '  Description: Prototype Pollution',
+      '  Introduced through: lodash@4.17.11',
+      '  From: lodash@4.17.11',
+      '  Fixed in: 4.17.21',
+      '',
+      VX + ' Low severity vulnerability found in minimist',
+      '  Description: Prototype Pollution',
+      '  Introduced through: minimist@1.2.0',
+      '  From: minimist@1.2.0',
+      '  Fixed in: 1.2.3',
+      '',
+      'Issues to fix by upgrading:',
+      '',
+      '  Upgrade tar@4.4.13 to tar@6.1.2 to fix',
+      '  Upgrade lodash@4.17.11 to lodash@4.17.21 to fix',
+      '  Upgrade minimist@1.2.0 to minimist@1.2.3 to fix',
+    ])
+  })
+
+  // Control for the test above: narrowing the tree regex must not stop the filter collapsing a genuine box-drawing dependency tree.
+  it('still collapses a real box-drawing dependency tree past 10 lines', () => {
+    const out = apply(f, snykOutput(30), argv)
+    expect(out).toContain('[token-goat: +25 dependency tree lines collapsed]')
+    expect(out).not.toContain('extra-pkg-29')
+    expect(out).toContain(TC + 'extra-pkg-0@1.0.0')
+  })
+
   it('keeps summary line', () => {
     const out = apply(f, snykOutput(), argv)
     expect(out).toMatch(/unique vulnerabilities|issues found/)

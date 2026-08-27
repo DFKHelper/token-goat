@@ -142,8 +142,8 @@ const _TRIVY_TARGET_RE =
 // ---------------------------------------------------------------------------
 
 const _SNYK_TESTING_RE = /^Testing\s/i
-// Dependency tree box-drawing characters
-const _SNYK_TREE_LINE_RE = /^(?:[├└│\s]|[|\\`][-\s]| {2})/
+// Dependency tree box-drawing characters. A bare indent is deliberately NOT a tree line: snyk indents vulnerability details ("Description:", "Fixed in:") and the "Issues to fix by upgrading:" remediation lines by two spaces, and counting those against the tree budget silently discarded the actionable half of the report.
+const _SNYK_TREE_LINE_RE = /^\s*(?:[├└│]|[|\\`][-\s])/
 // Vuln block opener: "✗ High severity vulnerability found in foo"
 const _SNYK_VULN_HEADER_RE = /(?:✗|x|X)?\s*(?:Critical|High|Medium|Low|Info)\s+severity/i
 // "More about this vulnerability:" URL-only lines
