@@ -35,6 +35,7 @@ Surfaces audited and found sound. Do not re-sweep without a recheck condition fi
 | SC-16 | 37,40 | Verified against authoritative source docs: swiftlint, clang-tidy matcher, cppcheck (non-defect, documented) | as above |
 | SC-17 | 9-13,33-34 | `base.ts`, `generic.ts`, `helpers.ts`, dispatch, `EnvFilter`, `MySQLFilter`, all ten AI CLI configs, `TrivyFilter`, `CodexExecFilter`, `BiomeFilter`, `compressGhList`, `TailTruncFilter`, `SeverityLogFilter`, `JsonArrayFilter`, `makeLinterFilter`, `TscFilter`, `_compressEslintStanza`, `OxlintFilter`, `shell_file.ts` caps, `build.ts` caps | a filter's tool changes format |
 | SC-18 | 40 | `helpers.ts::maybeNote` and the 203-site note-pluralisation family | new note family |
+| SC-19 | 44 | The re-read divert seam, measured end to end on the real corpus (8,545 files, 2026-08-27): 4,463 full serves >=10 KiB split into 4,027 first reads (90.2%, excluded by design), 347 ranged repeats (deliberate paging), 89 whole-file repeats of which 41 in hooked sessions of which 35 post-compaction (correct by design), leaving 6 corpus-wide unexplained. No fixable defect pool exists in the divert seam | divert or compaction-epoch policy changes |
 
 ## Deliberately Left
 
@@ -77,7 +78,7 @@ Not swept, and not to be attempted by inference. Each needs a real capture or a 
 | BE-04 | A real clang-tidy capture | LLVM install |
 | BE-05 | `hooks_bashoutput.ts` envelope | zero `BashOutput` results exist corpus-wide; needs the interactive client |
 | BE-06 | Codex, Gemini, Grok, Kimi wire maps | those harnesses |
-| BE-07 | Typed-vs-unrestricted split of the subagent spawn prefix (which share is MCP/tool manifest) | verifying a parent Task tool_use -> lane agentId join key exists in real transcripts; the lane file itself carries no subagent-type field |
+| BE-07 | RESOLVED loop 44: the join key exists. Every lane file has a sibling `agent-<id>.meta.json` carrying `agentType`, `parentAgentId`, `spawnDepth` and `toolUseId`; `toolUseId` joins to the `tool_use` block (name `Agent`/`Task`) in `agent-<parentAgentId>.jsonl` or the main transcript, verified on a real sample, and `agentType` alone gives the typed-vs-unrestricted split with no join at all. `session-audit` now reports a per-agentType lane rollup: general-purpose (2,793 lanes) median prefix 93,076 tokens vs researcher 32,392 and token-goat-bugfixer 28,753, so the sub-40k mode of the spawn-prefix histogram is the lean typed agents and the 60k+ mode is general-purpose/coder/workflow lanes | closed |
 | BE-08 | Program-vs-ordinary-dev split of the token-goat project's own 1.41B billed input-equivalents | nothing: the split needs transcript content, which the privacy invariant forbids; treat as permanently confounded and say so when citing project-share numbers |
 
 ## Yield Ledger
