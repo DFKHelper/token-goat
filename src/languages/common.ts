@@ -1674,6 +1674,8 @@ function findBlockOpenBrace(
     if (ch === '(' || ch === '[') parenDepth++
     else if (ch === ')' || ch === ']') { if (parenDepth > 0) parenDepth-- }
     else if (ch === ';') return null
+    // A `}` reached before any `{`, outside brackets, closes an enclosing block, so this declaration has no body of its own and every later brace belongs to something else. Without this stop a brace-less member such as Scala's `val timeout = 30` at the end of an object body latched onto the next unindexed brace construct below the object and recorded a span running past its own parent.
+    else if (ch === '}' && parenDepth === 0) return null
     else if (ch === '{') return i
   }
   return null
