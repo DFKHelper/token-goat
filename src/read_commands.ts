@@ -1093,9 +1093,20 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       // step instead of dead-ending into a full-file Read or a wide Grep.
       const rootDir = emptyIndexRoot
       const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
-      const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), opts.name)
-      // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
-      text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
+      // An EXACT name match in this scan cannot be a typo: the caller spelled the symbol correctly and the lookup above only came back empty because a scope filter (--kind/--file) narrowed it away. Reporting that as "Did you mean: alphaOne" for the query `alphaOne` prints a correction byte-identical to what was typed, and pairs it with a "No matches" line that reads as proof the symbol does not exist -- so the caller concludes it is absent and falls back to a full Read. Name the scope that hid it instead.
+      const exactMatches = rawSymbols.filter((s) => s.name === opts.name)
+      if (exactMatches.length > 0) {
+        const shown = exactMatches.slice(0, DIDYOUMEAN_LIMIT)
+        const where = shown.map((s) => `${s.kind} at ${toDisplayPath(rootDir, s.filePath)}:${s.lineStart}`).join('; ')
+        const more = exactMatches.length > shown.length ? ` (+${exactMatches.length - shown.length} more)` : ''
+        const flags = [opts.kind !== undefined ? '--kind' : null, opts.file !== undefined ? '--file' : null].filter((f): f is string => f !== null)
+        const widen = flags.length > 0 ? `drop ${flags.join('/')} to see it` : 'widen the search scope to see it'
+        text += `\n'${opts.name}' IS indexed (${where}${more}) -- ${widen}`
+      } else {
+        // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
+        const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), opts.name)
+        text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
+      }
       // Appended in BOTH branches on purpose: the didYouMean case is exactly the one that needs correcting, since a near-name suggestion ("Did you mean: sql" for `better-sqlite3`) reads as a confident answer and points away from the real one. Candidate files come from the scan already in hand above, so this costs no extra DB round trip.
       const structuredFiles = [...new Set(rawSymbols.map((s) => s.filePath))].sort()
       const hit = findStructuredKeyPath(opts.name, structuredFiles)
