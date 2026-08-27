@@ -44,7 +44,10 @@ export const ALL_SYMBOLS_IN_FILE_LIMIT = 10000
  * every ref regardless of ref count -- unlike the other {@link queryRefs} call sites in this
  * file, DEFAULT_REF_QUERY_LIMIT's alphabetical-by-file-path ordering has no reason to sort
  * test-file refs before the cutoff, so a capped query on a symbol with 500+ refs can silently
- * drop every test-file ref and produce a false "untested" verdict. */
+ * drop every test-file ref and produce a false "untested" verdict. Also used for the reachability
+ * walks ({@link runCallChain}, {@link runImpact}) and the whole-project kind scans
+ * ({@link runDead}, {@link runCoverageGaps}), where the same (file_path, line) ordering means a
+ * cap does not merely shorten the answer, it silently changes the verdict. */
 const UNBOUNDED_REF_LIMIT = -1
 
 function emit(text: string): void {
@@ -474,7 +477,8 @@ export function runCallChain(opts: CallChainOptions): number {
   let suppressedCount = 0
 
   const callersOf: CallersOfFn = (n: string): string[] => {
-    const refs = queryRefs({ name: n, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    // Scanned uncapped, like runTestFor/runCoverageGaps: a call chain is a reachability claim, and queryRefs orders by (file_path, line) with no preference for the files that matter here. Under DEFAULT_REF_QUERY_LIMIT a name referenced 500+ times from alphabetically-earlier files loses every later ref at the cutoff, so a real caller (and the entire chain hanging off it) silently disappears -- and at the root hop filterRefsForSymbol can discard all 500 in-cap rows outright, turning a reachable symbol into "No call chains found".
+    const refs = queryRefs({ name: n, limit: UNBOUNDED_REF_LIMIT, rootDir })
     if (refs.length === 0) return []
     // Only the ROOT hop (n === name, the exact symbol the spec asked to disambiguate) can be scoped by fileHint via filterRefsForSymbol, mirroring resolveCallers' own attribution pattern -- every hop beyond that resolves to a caller's bare symbol NAME with no file attached to disambiguate against, so it deliberately stays unscoped rather than fabricating a hint the BFS has no way to carry forward past the first hop.
     const scoped = fileHint !== undefined && n === name ? filterRefsForSymbol(refs, n, fileHint, getSyms) : refs
@@ -613,13 +617,16 @@ export function runImpact(opts: ImpactOptions): number {
   // message below can distinguish a filtered view from a genuinely caller-less symbol.
   // Flag-absent, this stays 0 and the message branch below is unreachable.
   let suppressedCount = 0
+  // Counts BFS nodes that reached DEPTH_CAP and were therefore never expanded. Non-zero means the impacted set below is a floor, not the whole set, and the notice at the end says so: without it a depth-truncated result is byte-identical to a complete one, the same gap call-chain closed with its own `(depth-limit)` sentinel.
+  let depthCapped = 0
 
   while (queue.length > 0) {
     const item = queue.shift()
     if (item === undefined) break
     const [name, depth] = item
-    if (depth >= DEPTH_CAP) continue
-    const refs = queryRefs({ name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    if (depth >= DEPTH_CAP) { depthCapped += 1; continue }
+    // Scanned uncapped for the same reason runCallChain's callersOf is: impact is a reachability claim, so a ref dropped at DEFAULT_REF_QUERY_LIMIT's (file_path, line) cutoff does not just omit one row, it prunes every symbol reachable only through that caller.
+    const refs = queryRefs({ name, limit: UNBOUNDED_REF_LIMIT, rootDir })
     // Only the ROOT hop (name === rootName, the exact symbol the spec asked to disambiguate) can be scoped by fileHint via filterRefsForSymbol, mirroring resolveCallers'/runCallChain's own attribution pattern -- every hop beyond that resolves to a caller's bare symbol NAME with no file attached to disambiguate against.
     const scoped = fileHint !== undefined && name === rootName ? filterRefsForSymbol(refs, name, fileHint, getSyms) : refs
     for (const ref of scoped) {
@@ -664,6 +671,14 @@ export function runImpact(opts: ImpactOptions): number {
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const grepped = matchesGrep !== undefined ? allSorted.filter(([symbol]) => matchesGrep(symbol)) : allSorted
   const sorted = grepped.slice(0, top)
+
+  // Both notices go to stderr because `impact --json` is a deliberate bare array (it is on json_envelope_shape's NON_ENVELOPE_JSON_COMMANDS list) with nowhere to carry a truncation flag -- same channel the --grep-filtered-to-empty notice below already uses, so stdout keeps its shape while the human (and anything reading both streams) can tell a clipped impact set from a complete one.
+  if (depthCapped > 0) {
+    emitErr(`Impact truncated at the ${DEPTH_CAP}-hop depth limit: ${depthCapped} symbol${depthCapped === 1 ? '' : 's'} at that depth ${depthCapped === 1 ? 'was' : 'were'} not expanded, so callers reachable only beyond ${DEPTH_CAP} hops are missing.`)
+  }
+  if (grepped.length > sorted.length) {
+    emitErr(`Showing top ${sorted.length} of ${grepped.length} impacted symbols (raise --top to see the rest).`)
+  }
 
   if (matchesGrep !== undefined && sorted.length === 0 && allSorted.length > 0) {
     // Distinguish "--grep matched none of the N impacted symbols that do exist" from a
@@ -863,10 +878,8 @@ export function runDead(opts: DeadOptions): number {
     return 1
   }
 
-  // 5000 kept PER KIND (not split across the requested kinds) so a two-kind query sees the same
-  // per-kind depth a one-kind query would -- splitting one 5000 across kinds would silently
-  // under-scan relative to running each kind separately.
-  const syms = kinds.flatMap((k) => querySymbols({ kind: k, limit: 5000, rootDir }))
+  // Scanned uncapped. The previous 5000-per-kind cap was exceeded by real projects (querySymbols orders by (file_path, line), so past 5000 every symbol in the alphabetically-later part of the tree went unexamined), and nothing downstream said so: `totalCount` counted the SCANNED set while reading as the whole one, so half a project's dead code was invisible with no notice at all.
+  const syms = kinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir }))
   const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
@@ -1786,8 +1799,9 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   // function untested here isn't hidden by a same-named symbol's test reference in an unrelated
   // project on the same machine.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const allFns = querySymbols({ kind: 'function', limit: 2000, rootDir })
-  const allMethods = querySymbols({ kind: 'method', limit: 2000, rootDir })
+  // Scanned uncapped, matching runDead's own kind scan: the previous 2000-per-kind cap is exceeded by this repo itself (3444 indexed functions), and querySymbols orders by (file_path, line), so every untested function in the alphabetically-later part of the tree was dropped before the gap check ever ran -- an under-report that reads exactly like a clean result.
+  const allFns = querySymbols({ kind: 'function', limit: UNBOUNDED_REF_LIMIT, rootDir })
+  const allMethods = querySymbols({ kind: 'method', limit: UNBOUNDED_REF_LIMIT, rootDir })
   const candidates = [...allFns, ...allMethods]
 
   const gaps: Array<{ name: string; kind: string; file: string; line: number }> = []
@@ -1801,6 +1815,11 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   }
 
   const sliced = gaps.slice(0, top)
+
+  // `coverage-gaps --json` is a deliberate bare array with no envelope to carry a truncation flag, so a --top-clipped page was indistinguishable from the complete gap list in both output modes. Report the clipped count on stderr (the channel runImpact already uses for the same reason) rather than changing the payload shape every consumer parses.
+  if (gaps.length > sliced.length) {
+    emitErr(`Showing top ${sliced.length} of ${gaps.length} coverage gaps (raise --top to see the rest).`)
+  }
 
   if (opts.json === true) {
     emit(JSON.stringify(sliced, null, 2))

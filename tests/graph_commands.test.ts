@@ -5366,3 +5366,234 @@ describe('runCallers file::symbol attribution vs --limit', () => {
     }
   })
 })
+
+// ---- graph bounds: caps that silently changed the answer (regression) --------
+
+describe('runImpact / runCallChain ref-query cap', () => {
+  // Regression: both walks queried refs at DEFAULT_REF_QUERY_LIMIT (500). queryRefs orders by
+  // (file_path, line), so a symbol referenced 600 times from 'a_noise.ts' filled the whole
+  // 0-499 window and the real caller in 'z_caller.ts' fell past the cutoff -- impact pruned it
+  // (and everything reachable only through it) from the impacted set, and call-chain never
+  // reported the chain that runs through it. Both are reachability claims, so a dropped ref is
+  // not a shorter answer, it is a wrong one.
+  const TARGET = 'refCapWalkTarget5m2'
+  const NOISE = 'refCapWalkNoise5m2'
+  const USER = 'refCapWalkUser5m2'
+  const OUTER = 'refCapWalkOuter5m2'
+
+  function buildWalkFixture(): string {
+    const root = mkdtempSync(join(tmpdir(), 'tg-walkcap-'))
+    const targetFile = normalizePath(join(root, 'target.ts'))
+    writeFileSync(targetFile, `export function ${TARGET}() { return 1 }\n`)
+    const noiseLines = [`import { ${TARGET} } from './target'`, `export function ${NOISE}() {`]
+    for (let i = 0; i < 600; i++) noiseLines.push(`  ${TARGET}()`)
+    noiseLines.push('}')
+    const noiseFile = normalizePath(join(root, 'a_noise.ts'))
+    writeFileSync(noiseFile, noiseLines.join('\n') + '\n')
+    const callerFile = normalizePath(join(root, 'z_caller.ts'))
+    writeFileSync(callerFile, [
+      `import { ${TARGET} } from './target'`,
+      `export function ${USER}() { return ${TARGET}() }`,
+      `export function ${OUTER}() { return ${USER}() }`,
+    ].join('\n') + '\n')
+    indexFileSync(targetFile)
+    indexFileSync(noiseFile)
+    indexFileSync(callerFile)
+    // Proves the fixture actually crosses the bound under test: with 500 or fewer refs the
+    // assertions below would hold identically with and without the fix.
+    expect(queryRefs({ name: TARGET, limit: -1, rootDir: normalizePath(root) }).length).toBeGreaterThan(500)
+    return root
+  }
+
+  it('runImpact keeps the caller whose ref sorts past the 500-row cutoff', () => {
+    const root = buildWalkFixture()
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => { expect(runImpact({ symbol: TARGET, json: true, top: 50 })).toBe(0) })
+        const parsed = JSON.parse(out) as Array<{ symbol: string; hops: number }>
+        // Exact ordered impacted set. Pre-fix this was the noise caller alone: the 600 refs from
+        // 'a_noise.ts' consumed the cap, so z_caller.ts's ref never came back and OUTER (only
+        // reachable through USER) was pruned with it.
+        expect(parsed).toEqual([
+          { symbol: NOISE, hops: 1 },
+          { symbol: USER, hops: 1 },
+          { symbol: OUTER, hops: 2 },
+        ])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runCallChain keeps the chain whose ref sorts past the 500-row cutoff', () => {
+    const root = buildWalkFixture()
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => { expect(runCallChain({ symbol: TARGET, json: true, depth: 5 })).toBe(0) })
+        const parsed = JSON.parse(out) as { chains: string[][] }
+        const rendered = parsed.chains.map((c) => c.join(' -> ')).sort()
+        expect(rendered).toEqual([
+          `${TARGET} -> ${NOISE}`,
+          `${TARGET} -> ${USER} -> ${OUTER}`,
+        ].sort())
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runImpact truncation notices', () => {
+  // Regression: runImpact stopped expanding the BFS at DEPTH_CAP (8) and sliced to --top, and
+  // said neither. A depth-truncated or top-clipped impact set was byte-identical to a complete
+  // one, so "these 20 symbols are impacted" read as the whole blast radius. call-chain already
+  // marks its own depth cutoff with a '(depth-limit)' sentinel; impact --json is a bare array
+  // with nowhere to put a flag, so the notices go to stderr.
+  function buildChainFixture(depth: number): string {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impactdepth-'))
+    const lines = ['export function depthCapFn0() { return 1 }']
+    for (let i = 1; i <= depth; i++) lines.push(`export function depthCapFn${i}() { return depthCapFn${i - 1}() }`)
+    const file = normalizePath(join(root, 'chain.ts'))
+    writeFileSync(file, lines.join('\n') + '\n')
+    indexFileSync(file)
+    return root
+  }
+
+  it('names the depth limit when the BFS stops short, and stays silent when it does not', () => {
+    const root = buildChainFixture(11)
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let out = ''
+        const err = captureStderr(() => {
+          out = captureStdout(() => { expect(runImpact({ symbol: 'depthCapFn0', json: true, top: 50 })).toBe(0) })
+        })
+        const parsed = JSON.parse(out) as Array<{ symbol: string; hops: number }>
+        // Exactly the eight hops the cap allows -- fn9, fn10 and fn11 are unreachable within it.
+        expect(parsed.map((p) => `${p.symbol}@${p.hops}`)).toEqual([
+          'depthCapFn1@1', 'depthCapFn2@2', 'depthCapFn3@3', 'depthCapFn4@4',
+          'depthCapFn5@5', 'depthCapFn6@6', 'depthCapFn7@7', 'depthCapFn8@8',
+        ])
+        expect(err).toContain('Impact truncated at the 8-hop depth limit')
+        // Control: the same command on a symbol whose whole chain fits must not print it, or the
+        // notice is decoration rather than a truncation signal.
+        const errShort = captureStderr(() => {
+          captureStdout(() => { expect(runImpact({ symbol: 'depthCapFn7', json: true, top: 50 })).toBe(0) })
+        })
+        expect(errShort).not.toContain('depth limit')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('names the clipped count when --top drops impacted symbols', () => {
+    const root = buildChainFixture(4)
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const err = captureStderr(() => {
+          captureStdout(() => { expect(runImpact({ symbol: 'depthCapFn0', json: true, top: 2 })).toBe(0) })
+        })
+        expect(err).toContain('Showing top 2 of 4 impacted symbols')
+        const errFull = captureStderr(() => {
+          captureStdout(() => { expect(runImpact({ symbol: 'depthCapFn0', json: true, top: 4 })).toBe(0) })
+        })
+        expect(errFull).not.toContain('Showing top')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runDead / runCoverageGaps whole-project kind scan', () => {
+  // Regression: the kind scans were capped (5000 per kind for dead, 2000 for coverage-gaps) and
+  // querySymbols orders by (file_path, line), so every symbol past the cutoff was never examined
+  // -- silently, with dead's `totalCount` describing the scanned set as if it were the project.
+  // This repo's own index already holds 3444 functions, so the 2000 cap was exceeded in practice.
+  const FN_COUNT = 5001
+
+  function buildManyFixture(): string {
+    const root = mkdtempSync(join(tmpdir(), 'tg-kindcap-'))
+    let src = ''
+    for (let i = 0; i < FN_COUNT; i++) src += `export function kindCapFn${i}7t3() { return ${i} }\n`
+    const file = normalizePath(join(root, 'many.ts'))
+    writeFileSync(file, src)
+    indexFileSync(file)
+    // Proves the fixture crosses both caps under test (2000 for coverage-gaps, 5000 for dead).
+    expect(querySymbols({ kind: 'function', limit: -1, rootDir: normalizePath(root) }).length).toBe(FN_COUNT)
+    return root
+  }
+
+  it('runDead examines symbols past the old 5000-per-kind cutoff', () => {
+    const root = buildManyFixture()
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Two names either side of the old cutoff: index 4999 was inside it, 5000 was not.
+        const items = envelopeItems<{ name: string }>(
+          captureStdout(() => { expect(runDead({ json: true, top: 500, kind: 'function', grep: '^kindCapFn(4999|5000)7t3$' })).toBe(0) })
+        )
+        expect(items.map((r) => r.name)).toEqual(['kindCapFn49997t3', 'kindCapFn50007t3'])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runCoverageGaps examines symbols past the old 2000-per-kind cutoff', () => {
+    const root = buildManyFixture()
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => { expect(runCoverageGaps({ json: true, top: 10000 })).toBe(0) })
+        const parsed = JSON.parse(out) as Array<{ name: string }>
+        expect(parsed.length).toBe(FN_COUNT)
+        expect(parsed[parsed.length - 1]?.name).toBe(`kindCapFn${FN_COUNT - 1}7t3`)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runCoverageGaps names the clipped count when --top drops gaps', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-gapstop-'))
+    try {
+      const file = normalizePath(join(root, 'few.ts'))
+      let src = ''
+      for (let i = 0; i < 5; i++) src += `export function gapsTopFn${i}9v4() { return ${i} }\n`
+      writeFileSync(file, src)
+      indexFileSync(file)
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const err = captureStderr(() => {
+          captureStdout(() => { expect(runCoverageGaps({ json: true, top: 2 })).toBe(0) })
+        })
+        expect(err).toContain('Showing top 2 of 5 coverage gaps')
+        const errFull = captureStderr(() => {
+          captureStdout(() => { expect(runCoverageGaps({ json: true, top: 5 })).toBe(0) })
+        })
+        expect(errFull).not.toContain('Showing top')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
