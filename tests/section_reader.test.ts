@@ -129,6 +129,39 @@ describe('extractSection', () => {
     expect(extractSection(md, 'install dependencies')).toBeNull()
   })
 
+  // A CRLF markdown file is the norm on a Windows checkout. findHeaders splits on '\n', so every line arrives with a trailing '\r'; the fence tracker's info-string tail used `.*`, which a JS regex refuses to match against `\r`, so no fence line matched, the `# install dependencies` comment became a real header, and the Install section was truncated at it. Both line endings are built explicitly so the assertion is identical on ubuntu, windows and macOS.
+  it('does not treat a #-comment inside a fenced code block as a header on a CRLF document', () => {
+    const doc = [
+      '# Title',
+      '',
+      '## Install',
+      '',
+      'Run the installer:',
+      '',
+      '```bash',
+      '# install dependencies',
+      'npm install -g token-goat',
+      '```',
+      '',
+      'More install notes here.',
+      '',
+      '## Usage',
+      '',
+      'Usage text.',
+    ]
+    const crlf = doc.join('\r\n')
+    const lf = doc.join('\n')
+
+    const result = extractSection(crlf, 'Install')
+    expect(result).not.toBeNull()
+    expect(result?.lineStart).toBe(3)
+    expect(result?.lineEnd).toBe(12)
+    expect(result?.content.replace(/\r/g, '')).toBe(extractSection(lf, 'Install')?.content)
+    // The fenced comment must not become a selectable section of its own on either line ending.
+    expect(listSections(tmpFile('crlf.md', crlf))).toEqual(['Title', 'Install', 'Usage'])
+    expect(listSections(tmpFile('lf.md', lf))).toEqual(['Title', 'Install', 'Usage'])
+  })
+
   it('extracts a TOML [section] table', () => {
     const toml = [
       '[project]',

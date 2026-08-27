@@ -203,7 +203,8 @@ function preAgentHandler(event: HookEvent): HookOutput {
 // Thresholds live in config (agent_report.*, see config.ts) rather than as literals here so an operator can retune or disable envelope compaction without a rebuild, matching how every other compaction subsystem in this codebase is tuned. A subagent's report is already-distilled PROSE with no safe way to shrink it losslessly, so prose is never touched by this handler -- caveats, limitations, and "I did not verify X" admissions live there, and those are precisely the sentences that catch a subagent shipping something it did not check (three consecutive self-improvement cycles caught a real defect exactly that way). What IS safely reducible is what agents paste INTO fenced blocks: gate transcripts, `git diff --stat` tables, dogfood output. Those are mechanically reproducible from the repo, and the full text stays one `mcp-output <id> --full` away, so eliding their middle costs the parent nothing it cannot recover on demand.
 
 // A fence line per CommonMark: up to 3 leading spaces, then a run of 3+ backticks or 3+ tildes, then an optional info string. Capturing the run (not just "starts with ```") is what makes nesting safe -- see collapseFencedBlocks.
-const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+// The info-string tail is `[^\n]*`, not `.*`, for the same reason markdown_lines.ts's eachUnfencedLine uses it: a JS regex `.` excludes `\r`, so a CRLF-terminated fence line (a report that pasted Windows command output into a block) matched nothing and every fenced block went uncollapsed.
+const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/
 
 interface FencedBlockLines {
   /** Line index of the opening fence marker. */

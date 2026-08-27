@@ -560,6 +560,24 @@ describe('Fence-collapse invariant corpus (collapseFencedBlocks, direct)', () =>
     })
   }
 
+  // A report that pastes Windows command output into a fenced block carries CRLF, and collapseFencedBlocks splits on '\n', so every line arrives with a trailing '\r'. FENCE_LINE_RE's info-string tail used `.*`, which a JS regex refuses to match against `\r` (a line terminator), so no fence line matched, findFencedBlockLines found no blocks, and the whole envelope went uncollapsed. Both line endings are built explicitly so the assertion is identical on ubuntu, windows and macOS.
+  it('collapses a CRLF-terminated fenced block, exactly as it does the LF form', () => {
+    const doc = ['PROSE:summary.', '```', ...Array.from({ length: 30 }, (_, i) => `file${i}.ts | 2 +-`), '```', 'PROSE:tail note.']
+    const crlfOut = collapseFencedBlocks(doc.join('\r\n'), RECALL_HINT, MIN_LINES, KEEP_LINES)
+    const lfOut = collapseFencedBlocks(doc.join('\n'), RECALL_HINT, MIN_LINES, KEEP_LINES)
+
+    expect([...lfOut.matchAll(/\[token-goat: (\d+) lines elided/g)].map((m) => Number(m[1]))).toEqual([18])
+    expect([...crlfOut.matchAll(/\[token-goat: (\d+) lines elided/g)].map((m) => Number(m[1]))).toEqual([18])
+    expect(crlfOut.replace(/\r/g, '')).toBe(lfOut)
+  })
+
+  it('a CRLF fence marker carrying an info string does not close an already-open fence', () => {
+    // Control for an over-fix that stopped requiring an empty info string on the closer: the '```js' line is content, so the block runs to the third marker and every body line counts toward the elision.
+    const doc = ['PROSE:summary.', '```', '```js', ...Array.from({ length: 30 }, (_, i) => `file${i}.ts | 2 +-`), '```', 'PROSE:tail note.']
+    const crlfOut = collapseFencedBlocks(doc.join('\r\n'), RECALL_HINT, MIN_LINES, KEEP_LINES)
+    expect([...crlfOut.matchAll(/\[token-goat: (\d+) lines elided/g)].map((m) => Number(m[1]))).toEqual([19])
+  })
+
   it('produces EXACTLY zero rewrite for an all-prose report (equality, not a loose "mostly unchanged" band)', () => {
     const allProse = Array.from({ length: 500 }, (_, i) => `PROSE:detailed finding line ${i} with no fenced content at all.`).join('\n')
     const output = collapseFencedBlocks(allProse, RECALL_HINT, MIN_LINES, KEEP_LINES)
