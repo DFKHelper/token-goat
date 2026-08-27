@@ -1946,6 +1946,14 @@ function resolveAgainstProjectRoot(file: string, projectRoot: string | undefined
 }
 
 /** Handle ``token-goat section "file::Heading"``. */
+// True when the file carries a heading whose text is exactly the given spec (case-insensitive, trimmed), optionally with a trailing `#<digits>` ordinal stripped off first. Deliberately literal rather than going through readSection: readSection's prefix and word-subset tiers would happily resolve a comma-separated fragment, which is the very ambiguity this check exists to settle.
+function literalHeadingExists(filePath: string, heading: string): boolean {
+  const ordinalMatch = /^([^#\r\n]+)#(\d+)$/.exec(heading)
+  const base = (ordinalMatch?.[1] ?? heading).trim().toLowerCase()
+  if (base.length === 0) return false
+  return listSections(filePath, readFileText).some((h) => h.trim().toLowerCase() === base)
+}
+
 export function runSection(opts: SectionOptions): { text: string; code: number } {
   // Cross-file multi-spec `src/a.ts::Commands,src/b.ts::Component Map`. Checked before the single-file `::` handling below for the same reason runRead checks it first (see parseCrossFileMultiSpec) -- lastIndexOf('::') would otherwise fold the whole spec into one bogus file/heading pair, and parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::A,B` multi-heading form.
   const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
@@ -1965,8 +1973,12 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
 
   // Multi-heading form: `file::A,B,C`. Mirrors runRead's `file::a,b,c` multi-symbol grammar
   // (see runReadMulti) -- section headings carry no numeric-range meaning of their own (unlike
-  // read's `file::N,M` line-range spec), so no guard is needed before splitting on the comma.
-  if (heading.includes(',')) {
+  // read's `file::N,M` line-range spec), so no numeric guard is needed before splitting on the
+  // comma. Unlike a symbol name, though, a heading may legitimately contain a comma ("## Setup,
+  // Teardown"), so a literal heading of that text wins over the multi-heading reading -- same
+  // precedence parseHeadingSpec applies to a trailing `#<digits>`. Without this, asking for a
+  // present heading returned two unrelated sections with exit 0 and no sign the real one existed.
+  if (heading.includes(',') && !literalHeadingExists(filePath, heading)) {
     const multiHeadings = heading.split(',').map((h) => h.trim()).filter((h) => h.length > 0)
     if (multiHeadings.length > 1) return runSectionMulti(specFilePath, filePath, multiHeadings, opts)
   }
