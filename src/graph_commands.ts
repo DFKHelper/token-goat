@@ -290,7 +290,11 @@ export function runCallers(opts: CallersOptions): number {
   // to the requested limit before either filter runs would silently under-return by letting
   // suppressed/non-matching entries occupy slots ahead of the cutoff.
   const unbounded = opts.excludeTests === true || opts.grep !== undefined
-  const resolved = resolveCallers(name, opts.limit, fileHint, rootDir, unbounded)
+  // On the bounded path the SQL LIMIT is invisible once the rows come back: exactly `requestedLimit` rows reads the same whether that was the whole caller set or a page clipped out of a much larger one, so `truncated` reported false for a result that had silently dropped callers -- the same invocation with --grep (which forces the unbounded path) correctly reported true. Ask for one row past the limit and use the overflow purely as the truncation signal; the probe row is sliced off here and never reaches `filtered`, the counts, or the output.
+  const requestedLimit = opts.limit ?? DEFAULT_REF_QUERY_LIMIT
+  const probed = resolveCallers(name, unbounded ? opts.limit : requestedLimit + 1, fileHint, rootDir, unbounded)
+  const sqlTruncated = !unbounded && probed.length > requestedLimit
+  const resolved = sqlTruncated ? probed.slice(0, requestedLimit) : probed
   // Filter target is the caller's call SITE, not the resolved symbol's own definition site.
   const suppressed = opts.excludeTests === true ? resolved.filter((e) => isTestFile(e.file)).length : 0
   let filtered = opts.excludeTests === true ? resolved.filter((e) => !isTestFile(e.file)) : resolved
@@ -365,13 +369,14 @@ export function runCallers(opts: CallersOptions): number {
     // post-`--grep`, PRE-`--limit`-slice count. In the `unbounded` path `entries` is a slice of
     // `filtered`, so that slice also feeds `truncated`; in the bounded path the limit was already
     // applied in SQL, `entries === filtered`, and `filtered.length` is the honest count of what
-    // this invocation actually resolved.
+    // this invocation actually resolved -- there, `sqlTruncated` (the +1 probe row above) is what
+    // tells the consumer more callers exist beyond the page it was handed.
     const rows = withContext.map((e) => {
       const displayPath = toDisplayPath(rootDir, e.file)
       return { ...e, file: displayPath, filePath: displayPath }
     })
     const capped = guardJsonRows(rows)
-    const limitTruncated = entries.length < filtered.length
+    const limitTruncated = entries.length < filtered.length || sqlTruncated
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
     // filtered page carries the count too rather than only the fully emptied one.
     const hiddenByGrep = preGrepCount - filtered.length
