@@ -15,7 +15,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { normalizePath, resolveIndexPath } from '../src/paths.js'
+import { normalizePath, resolveIndexPath, shellMountToWindowsPath } from '../src/paths.js'
 import { indexFileSync } from '../src/parser.js'
 import { querySymbols } from '../src/index_reader.js'
 import { closeDb } from '../src/db.js'
@@ -79,5 +79,64 @@ describe('index lookup contract: raw relative misses, resolved hits', () => {
   it('resolves a Windows-style backslash path to the same stored rows', () => {
     const rows = querySymbols({ filePath: resolveIndexPath('src\\mod.ts', dir), limit: 100 }, dbPath)
     expect(rows.map((s) => s.name)).toEqual(expect.arrayContaining(['alpha', 'beta']))
+  })
+})
+
+describe('shellMountToWindowsPath', () => {
+  it('rewrites a WSL mount path to drive-letter form on every platform', () => {
+    expect(shellMountToWindowsPath('/mnt/c/proj/a.ts')).toBe('c:/proj/a.ts')
+  })
+
+  it('leaves an ordinary POSIX path alone', () => {
+    expect(shellMountToWindowsPath('/usr/local/bin/tool')).toBe('/usr/local/bin/tool')
+  })
+})
+
+describe.runIf(process.platform === 'win32')('shell mount paths resolve to a real index key (Windows)', () => {
+  it('a Git Bash absolute path does not get the current drive grafted onto it', () => {
+    expect(resolveIndexPath('/c/proj/a.ts')).toBe('c:/proj/a.ts')
+  })
+
+  it('a WSL absolute path does not get the current drive grafted onto it', () => {
+    expect(resolveIndexPath('/mnt/c/proj/a.ts')).toBe('c:/proj/a.ts')
+  })
+
+  it('a Git Bash cwd as base resolves a relative file onto that drive', () => {
+    expect(resolveIndexPath('a.ts', '/c/proj')).toBe('c:/proj/a.ts')
+  })
+})
+
+describe.runIf(process.platform === 'win32')('index lookup contract: a Git Bash path hits the stored rows', () => {
+  let dir: string
+  let dbPath: string
+  let msysDir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-msys-'))
+    dbPath = path.join(dir, 'global.db')
+    const sub = path.join(dir, 'src')
+    fs.mkdirSync(sub)
+    const abs = path.join(sub, 'mod.ts')
+    fs.writeFileSync(abs, 'export function alpha(): number {\n  return 1\n}\n')
+    indexFileSync(normalizePath(abs), dbPath)
+    const key = normalizePath(dir)
+    msysDir = `/${key[0] as string}${key.slice(2)}`
+  })
+
+  afterEach(() => {
+    closeDb(dbPath)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('resolves a Git Bash absolute path onto the stored rows', () => {
+    const key = resolveIndexPath(`${msysDir}/src/mod.ts`)
+    expect(key).toBe(normalizePath(path.join(dir, 'src', 'mod.ts')))
+    expect(querySymbols({ filePath: key, limit: 100 }, dbPath).map((s) => s.name)).toEqual(['alpha'])
+  })
+
+  it('resolves a relative path against a Git Bash base onto the stored rows', () => {
+    const key = resolveIndexPath('src/mod.ts', msysDir)
+    expect(key).toBe(normalizePath(path.join(dir, 'src', 'mod.ts')))
+    expect(querySymbols({ filePath: key, limit: 100 }, dbPath).map((s) => s.name)).toEqual(['alpha'])
   })
 })
