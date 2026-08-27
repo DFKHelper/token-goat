@@ -148,6 +148,8 @@ function harnessForNormalization(): Harness {
   if (detected === 'grok') return 'grok'
   // Kimi Code's shim (src/bridges/kimi.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=kimi before dispatching, so detectHarness() resolves 'kimi' here for a real Kimi install. Its payload needs remapping because Kimi's v2 tools name their path argument `path` rather than `file_path` (and its URL fetcher is `FetchURL`, not `WebFetch`).
   if (detected === 'kimi') return 'kimi'
+  // Qwen Code's install wires `token-goat hook <event> --harness qwen` (qwen_install.ts), which sets TOKEN_GOAT_HARNESS_OVERRIDE=qwen, so detectHarness() resolves 'qwen' here. Before this branch existed, 'qwen' fell through to 'claude' and Qwen's runtime tool ids (read_file/run_shell_command/grep_search/...) reached dispatch unrenamed, matching no registered handler -- every tool-scoped hook was silently dead on Qwen (see QWEN_TOOL_NAME_MAP in hooks_cli.ts for the full producer-side derivation).
+  if (detected === 'qwen') return 'qwen'
   // Copilot CLI's shim (src/bridges/copilot_cli.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli,
   // so detectHarness() resolves it here. Its branch in normalizePayload() exists only to translate
   // Copilot's `<server>-<tool>` MCP tool names into the `mcp__<server>__<tool>` spelling the MCP

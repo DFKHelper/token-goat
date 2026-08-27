@@ -87,9 +87,7 @@ const TOOL_TO_TG = {
   web_fetch: "WebFetch",
 };
 
-// Tools with a registered pre_tool_use handler in token-goat (Edit/Write have
-// none; Glob has none either -- see pi.ts/opencode.ts's identical
-// PRE_HOOK_TOOLS note -- so it's excluded to avoid a wasted no-op spawn).
+// Tools with a pre_tool_use handler whose output shape this hook can act on: deny (block/blockReason), updatedInput (params rewrite), or the Read image-shrink materialization. Edit/Write have no pre handler at all. Glob (OpenClaw's find) DOES have one -- preGlobDedupHandler in hooks_glob.ts; the old claim here that it has none was stale -- but its only output is an advisory contextOutput hint and before_tool_call has no context channel, so calling it would spawn a hook subprocess per find only to drop the answer; it stays excluded for that reason (matching pi.ts/opencode.ts's corrected note).
 const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
 // OpenClaw tools whose file path travels under "path" (see the parameter-shapes note above). apply_patch is deliberately absent: its input is a patch document, not a single path.

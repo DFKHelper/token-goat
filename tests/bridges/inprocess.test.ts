@@ -223,6 +223,85 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     expect(out.output).toBe('Docs mention token [REDACTED:github_token] in the log.')
     expect(existsSync(markerPath)).toBe(false)
   })
+
+  // Fixture tool ids and arg keys below are opencode's own, from anomalyco/opencode at the v1.18.16 tag (matching the installed release): WebSearchTool registers as "websearch" with a `query` parameter (packages/opencode/src/tool/websearch.ts), SkillTool as "skill" with `name` (tool/skill.ts), TaskTool as "task" with prompt/subagent_type/description (tool/task.ts) -- NOT read out of this bridge's own maps. Unmapped, all three were dead mechanisms on opencode.
+
+  it('websearch: a repeat of an identical search is denied against the cached first result (previously unmapped: the dedup never fired)', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const sessionID = 'inprocess-websearch-test-' + Math.random().toString(36).slice(2)
+
+    // First search runs and its result is cached by the real post handler.
+    const out = { args: {}, output: 'Result: rust lifetimes explained at example.com', metadata: {} }
+    await hooks['tool.execute.after']!({ tool: 'websearch', sessionID, args: { query: 'rust lifetimes' } }, out)
+
+    // An identical repeat search is denied by the real session-state-backed dedup.
+    await expect(
+      hooks['tool.execute.before']!({ tool: 'websearch', sessionID, args: {} }, { args: { query: 'rust lifetimes' } }),
+    ).rejects.toThrow(/identical.*WebSearch|WebSearch.*already ran/)
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('skill: re-loading an already-loaded skill is denied with a pointer at the cached body (previously unmapped: repeat loads re-injected the whole body)', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const sessionID = 'inprocess-skill-test-' + Math.random().toString(36).slice(2)
+
+    // First load: the real post handler stores the skill body against the session.
+    const out = { args: {}, output: '# My Skill\n\nDo the thing carefully.\n', metadata: {} }
+    await hooks['tool.execute.after']!({ tool: 'skill', sessionID, args: { name: 'my-test-skill' } }, out)
+
+    // Second load of the same skill, same session: denied by the real repeat-load logic.
+    await expect(
+      hooks['tool.execute.before']!({ tool: 'skill', sessionID, args: {} }, { args: { name: 'my-test-skill' } }),
+    ).rejects.toThrow(/already loaded/)
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('task: a near-duplicate outstanding spawn gets the advisory appended to args.prompt via the updatedInput rewrite (previously unmapped: spawns got no briefing or duplicate warning)', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const sessionID = 'inprocess-task-test-' + Math.random().toString(36).slice(2)
+    const prompt = 'Audit the billing reconciliation module for rounding drift and report every affected ledger row.'
+
+    // First spawn registers the outstanding prompt (its own rewrite, if any, is incidental).
+    await hooks['tool.execute.before']!(
+      { tool: 'task', sessionID, args: {} },
+      { args: { prompt, subagent_type: 'general', description: 'audit billing' } },
+    )
+
+    // A near-identical second spawn must come back with the duplicate-spawn advisory appended in place on args.prompt.
+    const output2 = { args: { prompt, subagent_type: 'general', description: 'audit billing' } as Record<string, unknown> }
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID, args: {} }, output2)
+    const rewritten = output2.args['prompt'] as string
+    expect(rewritten.startsWith(prompt)).toBe(true)
+    expect(rewritten).toContain('A similar subagent spawn already appears to be outstanding')
+    expect(existsSync(markerPath)).toBe(false)
+  })
 })
 
 describe('openclaw plugin: in-process hook call replaces the second node spawn', () => {
@@ -309,6 +388,39 @@ describe('pi extension: in-process hook call replaces the second node spawn', ()
     expect(second?.block).toBe(true)
     expect(second?.reason).toContain('already read')
 
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('routes pi\'s powershell tool through the Bash hooks (previously unmapped: every shell command in a powershell-tool pi session bypassed them)', async () => {
+    // Fixture tool name and input keys are pi's own: badlogic/pi-mono packages/coding-agent/src/core/tools/powershell.ts registers "powershell" with PowerShellToolInput = BashToolInput (command/timeout) -- derived from the harness's schema, not this bridge's map. The command is the deterministic `find | xargs grep -l` deny in preBashHandler (hooks_bash.ts), which needs no index, config, or prior session state.
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const { code } = transformSync(PI_EXTENSION_SCRIPT, { loader: 'ts', format: 'esm' })
+    const extensionPath = join(cwd, 'extension.mjs')
+    writeFileSync(extensionPath, code, 'utf8')
+
+    const mod = (await import(pathToFileURL(extensionPath).href)) as {
+      default: (pi: { on: (event: string, handler: (...args: unknown[]) => unknown) => void; sendMessage: () => void }) => void
+    }
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    mod.default({
+      on(event, handler) {
+        handlers[event] = handler
+      },
+      sendMessage() {
+        // no-op
+      },
+    })
+    handlers['session_start']!({}, { cwd, sessionManager: undefined })
+
+    type ToolCallResult = { block?: boolean; reason?: string } | undefined
+    const result = (await handlers['tool_call']!(
+      { toolName: 'powershell', input: { command: 'find . -name "*.ts" | xargs grep -l TokenGoat' } },
+      {},
+    )) as ToolCallResult
+    expect(result?.block).toBe(true)
+    expect(result?.reason).toContain('slow symbol search')
     expect(existsSync(markerPath)).toBe(false)
   })
 })

@@ -27,7 +27,7 @@ const _LOG = {
  * Harness identifier: the Claude Code harness variant token-goat is running under.
  * Determines payload/response shape translation.
  */
-export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi'
+export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi' | 'qwen'
 
 /**
  * Hook payload: unstructured dict from harness stdin.
@@ -105,8 +105,22 @@ const GROK_TOOL_NAME_MAP: Record<string, string> = {
   write: 'Write',
   search_replace: 'Edit',
   run_terminal_command: 'Bash',
+  // The grok 0.2.93 binary registers its shell tool as `tool.run_terminal_cmd` (tracing-id table in ~/.grok/bin/agent.exe) and its newer embedded hooks doc's PreToolUse example sends `"toolName": "run_terminal_cmd"`, while the older embedded doc revision and a 2026-07-09 live capture on the same version both show `run_terminal_command`. Which spelling arrives is profile/version dependent, so BOTH are mapped: an unmatched extra entry is a harmless no-op, a missing one silently kills every Bash hook (compression, wrap, hints) on that profile.
+  run_terminal_cmd: 'Bash',
   grep: 'Grep',
   list_dir: 'Glob',
+  // `glob` is a distinct registered grok tool (tool.glob in the 0.2.93 binary's tracing-id table), separate from list_dir; unmapped it arrived as lowercase 'glob' and matched no handler.
+  glob: 'Glob',
+  // web_fetch/web_search were entirely absent from this map, so grok's URL fetches bypassed token-goat's WebFetch pipeline (URL-policy deny included) and its searches bypassed the WebSearch dedup/compression. Verified against the 0.2.93 binary: tool.web_fetch / tool.web_search registered ids, grok_build WebFetchInput's field described as "The URL to fetch content from" (i.e. `url`), grok_build WebSearchInput's fields query/citations/allowed_domains -- all matching the keys hooks_fetch.ts / hooks_websearch.ts already read, so a name map alone revives both.
+  web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
+  // The Hashline prompt profile registers hashline_read/hashline_edit/hashline_grep (tool.hashline_* in the binary; grok's own hook alias table pairs them with Read/Edit/Grep). Their input key shapes were not individually verified: if one differs, the mapped handler degrades to the same no-op as an unmapped name, never a wrong rewrite. The *_concise twins are the GrokBuildConcise profile's registrations of the same three core tools.
+  hashline_read: 'Read',
+  hashline_edit: 'Edit',
+  hashline_grep: 'Grep',
+  read_file_concise: 'Read',
+  search_replace_concise: 'Edit',
+  run_terminal_cmd_concise: 'Bash',
 }
 
 /**
@@ -155,9 +169,70 @@ const KIMI_TOOL_NAME_MAP: Record<string, string> = {
  * their handlers read, and Bash already sends `command`, so none is remapped.
  */
 const KIMI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
-  Read: { path: 'file_path' },
+  // line_offset/n_lines are Kimi's Read paging arguments (ReadInputSchema in MoonshotAI/kimi-code packages/agent-core-v2/src/agent/tools/os/read/read.ts: `path`, `line_offset` "the line number to start reading from", `n_lines` "the number of lines to read"). Unmapped, every ranged Kimi read looked unbounded to hooks_read.ts's estimateRequestedSlice and was gated on the whole file's size -- a small slice of a big file could draw the large-file deny meant for full reads. line_offset's 1-indexed positive form matches Read's own offset semantics exactly; its negative tail-read form has no token-goat equivalent and is clamped to 1 by estimateRequestedSlice's `offset >= 1` guard, degrading to a window of the right SIZE (which is all the gate consumes). ReadMediaFile shares this map via its Read rename and carries only `path`, so the extra entries never touch it.
+  Read: { path: 'file_path', line_offset: 'offset', n_lines: 'limit' },
   Write: { path: 'file_path' },
   Edit: { path: 'file_path' },
+}
+
+/**
+ * Qwen Code runtime tool id → internal PascalCase tool name.
+ *
+ * Qwen Code's hook payloads carry the CANONICAL runtime tool id in `tool_name`
+ * (coreToolScheduler.ts passes `canonicalToolName(request.name)` into
+ * firePreToolUseHook/firePostToolUseHook, and toolHookTriggers.ts serializes it
+ * verbatim), never the PascalCase display name. Ids from QwenLM/qwen-code's own
+ * packages/core/src/tools/tool-names.ts (ToolNames plus the ToolNamesMigration
+ * legacy aliases, which canonicalToolName resolves before the hook fires -- the
+ * legacy spellings are mapped here anyway in case an older Qwen Code build
+ * serializes them unresolved; an extra entry is a harmless no-op).
+ *
+ * Before this map existed, `token-goat install --qwen` wired hooks that FIRED
+ * on every tool call (the settings entry uses a catch-all matcher) but never
+ * DID anything: `--harness qwen` fell through harnessForNormalization()
+ * (src/relay.ts) to 'claude', no rename happened, and a tool_name of
+ * `read_file`/`run_shell_command`/... matched no registered handler. Every
+ * tool-scoped mechanism -- re-read denial, image shrink, bash compression,
+ * post-edit indexing, WebFetch policy, search dedup -- was silently dead on
+ * Qwen while the passive events (pre_compact manifest, user_prompt_submit
+ * hints) kept working, which is exactly what made the gap invisible.
+ *
+ * Unmapped on purpose: `agent` (and its `task` legacy alias) -- token-goat's
+ * Agent handlers read `prompt`/`subagent_type`, and qwen's agent tool input
+ * shape was not verified this pass; `read_many_files` uses an `include` glob
+ * array (same reason the Gemini map leaves it alone); everything else in
+ * ToolNames (todo_write, save_memory, lsp, cron_*, team_*, ...) has no
+ * token-goat equivalent.
+ */
+const QWEN_TOOL_NAME_MAP: Record<string, string> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit: 'Edit',
+  replace: 'Edit',
+  notebook_edit: 'NotebookEdit',
+  run_shell_command: 'Bash',
+  grep_search: 'Grep',
+  search_file_content: 'Grep',
+  glob: 'Glob',
+  web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
+  list_directory: 'Read',
+}
+
+/**
+ * Qwen Code's tool_input keys are already token-goat's own canonical names for
+ * every mapped tool except list_directory -- verified against qwen-code's own
+ * param interfaces: read_file `file_path`/`offset`/`limit` (read-file.ts), edit
+ * `file_path`/`old_string`/`new_string` (edit.ts), run_shell_command `command`
+ * (shell.ts ShellToolParams), grep_search `pattern`/`path` (grep.ts), web_fetch
+ * `url` (web-fetch.ts), web_search `query` (web-search.ts), notebook_edit
+ * `notebook_path` (notebook-edit.ts; getFilePath() reads notebook_path
+ * natively). list_directory's target is `path` (ls.ts LSToolParams -- NOT the
+ * `dir_path` its Gemini CLI ancestor uses), remapped so getFilePath() sees it.
+ * read_file carries no `path` key, so sharing the Read entry is safe.
+ */
+const QWEN_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
+  Read: { path: 'file_path' },
 }
 
 /**
@@ -311,6 +386,20 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
 
   if (harness === 'kimi') {
     const result = remapToolName(obj, toolName, KIMI_TOOL_NAME_MAP, KIMI_INPUT_KEY_MAP)
+    result['_tg_harness'] = harness
+    return result
+  }
+
+  if (harness === 'qwen') {
+    const result = remapToolName(obj, toolName, QWEN_TOOL_NAME_MAP, QWEN_INPUT_KEY_MAP)
+    // Qwen's PostToolUse tool_response is `{llmContent, returnDisplay}` (coreToolScheduler.ts builds it, toolHookTriggers.ts serializes it verbatim) -- neither key is in OUTPUT_FIRST/BODY_FIRST_TOOL_RESPONSE_KEYS (hooks_common.ts), so every post handler that measures or compresses the result saw an empty string. Add `output` (the first key both lists read) ALONGSIDE the originals rather than renaming, the same safe direction as every other inbound key fix. llmContent is a PartListUnion upstream; only the plain-string case is representable here, and a non-string llmContent falls through untouched.
+    const toolResponse = result['tool_response']
+    if (toolResponse !== null && typeof toolResponse === 'object' && !Array.isArray(toolResponse)) {
+      const responseRecord = toolResponse as Record<string, unknown>
+      if (typeof responseRecord['llmContent'] === 'string' && responseRecord['output'] === undefined) {
+        result['tool_response'] = { ...responseRecord, output: responseRecord['llmContent'] }
+      }
+    }
     result['_tg_harness'] = harness
     return result
   }

@@ -64,10 +64,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// pi built-in tool names -> token-goat internal tool names
+// pi built-in tool names -> token-goat internal tool names. powershell is pi's Windows shell twin of bash -- same input schema (PowerShellToolInput = BashToolInput, i.e. command/timeout) and registered under its own name (badlogic/pi-mono packages/coding-agent/src/core/tools/powershell.ts + tools/index.ts's ToolName union). Unmapped, every shell command in a powershell-tool pi session bypassed the Bash hooks entirely, the same shape as the Copilot shim's bash/powershell pairing.
 const TOOL_TO_TG: Record<string, string> = {
   read: "Read",
   bash: "Bash",
+  powershell: "Bash",
   edit: "Edit",
   write: "Write",
   grep: "Grep",
@@ -78,15 +79,14 @@ const TOOL_TO_TG: Record<string, string> = {
 const ARGS_TO_TG: Record<string, Record<string, string>> = {
   read: { path: "file_path", offset: "offset", limit: "limit" },
   bash: { command: "command", timeout: "timeout" },
+  powershell: { command: "command", timeout: "timeout" },
   edit: { path: "file_path" },
   write: { path: "file_path" },
   grep: { pattern: "pattern", path: "path" },
   find: { pattern: "pattern", path: "path" },
 };
 
-// Tools that have a pre-hook (read/search/fetch types only). Glob has no
-// pre_tool_use handler in token-goat (only Read/Grep/Bash/WebFetch do), so
-// it's excluded here rather than spawning a hook call that always no-ops.
+// Tools with a pre-hook whose output shape this extension can act on: deny ({block}), updatedInput (in-place arg rewrite), or the Read image-shrink materialization. Glob's pre handler (preGlobDedupHandler in hooks_glob.ts -- the old claim here that Glob has no pre handler was stale) emits only an advisory contextOutput hint, which pi's tool_call contract has no channel for (see the module docblock), so calling it would cost a hook call per find only to drop the answer; it stays excluded for that reason.
 const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
 // resolveEntryPath reads a sidecar JSON file (token-goat-entry.json, written by
