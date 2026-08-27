@@ -18,7 +18,8 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
+import { estimateTokensFromLength } from './overflow_guard.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
@@ -1771,12 +1772,28 @@ async function maybeCompressCompoundOutput(
     maxBytes: cfg.max_bytes,
   })
   const minNet = resolveMinNetSavingsBytes()
+  // Cheap necessary pre-check: the recall pointer below only ever makes the rewrite bigger, so anything failing here can never clear the gate once the pointer is priced in either. Failing fast keeps a hopeless case from paying for a cache write.
   if (!compressed.worthApplying(minNet)) return null
-  const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
-  recordStat('bash_compress:generic', compressed.bytesSaved, compressed.tokensSaved)
+  // The id is `commandHash(cmd, cwd)`, exactly what storeBashOutput would return, so the pointer's real byte cost is known before committing to the cache write.
+  const id = await commandHash(cmd, cwd)
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies
   // head/tail elision, so it would return a truncated view, not the complete original.
   const body = compressed.withMarker(minNet) + '\n[token-goat] full output: bash-output ' + id + ' --full'
+  // Unlike bash_runner's pipeline, this path appends a recall pointer on top of the filter's own marker, so `compressed.bytesSaved` (which prices in neither) is not what the model gains. Gate and record against the body actually emitted, matching the shared contract every other rewrite hook follows via isRewriteWorthwhile/emitRewrite.
+  const emittedBytes = Buffer.byteLength(body, 'utf-8')
+  if (
+    !isRewriteWorthwhile({
+      originalBytes: compressed.originalBytes,
+      rewrittenBytes: emittedBytes,
+      noticeBytes: 0,
+      minNetSavingsBytes: minNet,
+    })
+  ) {
+    return null
+  }
+  await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+  const netSaved = compressed.originalBytes - emittedBytes
+  recordStat('bash_compress:generic', netSaved, estimateTokensFromLength(netSaved))
   return { hookType: 'rewriteOutput', updatedOutput: body }
 }
 
