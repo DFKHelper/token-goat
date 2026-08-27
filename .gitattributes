@@ -1,3 +1,4 @@
 * text=auto
 *.sh text eol=lf
 *.pdf binary
+tests/fixtures/tool_output/*.txt text eol=lf

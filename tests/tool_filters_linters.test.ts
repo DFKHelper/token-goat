@@ -675,6 +675,49 @@ describe('GolangciLintFilter', () => {
     expect(result.text).not.toContain('golangci-lint version')
     expect(result.text).toContain('pkg/foo.go:1:')
   })
+
+  // golangci-lint runs with --print-issued-lines=true by default, so every issue is followed by the offending source line and a caret line. The filter used to have no concept of that block: it fell through the unmatched-line branch and was kept verbatim, which both nullified the compression and left the context of collapsed issues orphaned under the "+N more omitted" placeholder. Format below is real golangci-lint 2.12.2 output.
+  it('drops the issued-lines block and does not orphan the context of a collapsed issue', () => {
+    const input = [
+      'main.go:11:16: Error return value of `f0.Close` is not checked (errcheck)',
+      '\tdefer f0.Close()',
+      '\t              ^',
+      'main.go:13:16: Error return value of `f1.Close` is not checked (errcheck)',
+      '\tdefer f1.Close()',
+      '\t              ^',
+      'main.go:15:16: Error return value of `f2.Close` is not checked (errcheck)',
+      '\tdefer f2.Close()',
+      '\t              ^',
+      'main.go:17:16: Error return value of `f3.Close` is not checked (errcheck)',
+      '\tdefer f3.Close()',
+      '\t              ^',
+      'main.go:19:16: Error return value of `f4.Close` is not checked (errcheck)',
+      '\tdefer f4.Close()',
+      '\t              ^',
+      '6 issues:',
+      '* errcheck: 5',
+    ].join('\n')
+    const result = golangciFilter.apply(input, '', 1, ['golangci-lint', 'run', './...'])
+    expect(result.text.split('\n')).toEqual([
+      'main.go:11:16: Error return value of `f0.Close` is not checked (errcheck)',
+      'main.go:13:16: Error return value of `f1.Close` is not checked (errcheck)',
+      'main.go:15:16: Error return value of `f2.Close` is not checked (errcheck)',
+      '[token-goat: +2 more errcheck issues in main.go omitted]',
+      '6 issues:',
+      '* errcheck: 5',
+      '[token-goat: dropped 10 redundant source-context/caret lines; collapsed 2 issues (1 file/linter groups exceeded 3)]',
+    ])
+  })
+
+  it('keeps an unmatched line that only looks like a caret when no issue precedes it', () => {
+    const input = ['\t              ^', 'main.go:11:16: bad thing (errcheck)', 'trailing note'].join('\n')
+    const result = golangciFilter.apply(input, '', 1, ['golangci-lint', 'run', './...'])
+    expect(result.text.split('\n')).toEqual([
+      '\t              ^',
+      'main.go:11:16: bad thing (errcheck)',
+      'trailing note',
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------

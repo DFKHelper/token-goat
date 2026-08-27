@@ -1,0 +1,31 @@
+main.go:25:15: Error return value of `f.Close` is not checked (errcheck)
+	defer f.Close()
+	             ^
+main.go:33:15: Error return value of `f.Close` is not checked (errcheck)
+	defer f.Close()
+	             ^
+main.go:41:15: Error return value of `f.Close` is not checked (errcheck)
+	defer f.Close()
+	             ^
+main.go:26:2: S1021: should merge variable declaration with assignment on next line (staticcheck)
+	var a int
+	^
+main.go:34:2: S1021: should merge variable declaration with assignment on next line (staticcheck)
+	var b int
+	^
+main.go:42:2: S1021: should merge variable declaration with assignment on next line (staticcheck)
+	var c int
+	^
+main.go:8:6: func unusedOne is unused (unused)
+func unusedOne() int {
+     ^
+main.go:13:6: func unusedTwo is unused (unused)
+func unusedTwo() int {
+     ^
+main.go:18:6: func unusedThree is unused (unused)
+func unusedThree() int {
+     ^
+9 issues:
+* errcheck: 3
+* staticcheck: 3
+* unused: 3
