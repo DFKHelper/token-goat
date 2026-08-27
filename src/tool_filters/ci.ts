@@ -118,6 +118,8 @@ const _BANDIT_CODE_SCANNED_RE = /^Code scanned:/
 const _BANDIT_TOTAL_ISSUES_RE = /^Total issues \(by/
 const _BANDIT_STAT_LINE_RE = /^\s+\|?\s*\d/
 const _BANDIT_TESTING_RE = /^testing\s/
+// The dashed rule bandit prints between findings. It belongs to the block it closes, so when a LOW block is collapsed the rule that follows it is left orphaned next to the previous block's own rule, and the report shows two dashed rules in a row with nothing between them.
+const _BANDIT_SEPARATOR_RE = /^-{10,}\s*$/
 
 // ---------------------------------------------------------------------------
 // TrivyFilter regexes
@@ -680,18 +682,27 @@ export class BanditFilter extends ToolFilter {
     let currentSeverity = ''
     let issueBuf: string[] = []
 
+    // Set when the block just collapsed took its own dashed rule with it, so the rule that immediately follows is dropped too rather than doubling up with the previous kept block's rule. Only the very next line is eligible: anything else clears the flag untouched.
+    let dropTrailingSeparator = false
+
     const flushIssue = (): void => {
       const sev = currentSeverity.toUpperCase()
       if (sev === 'HIGH' || sev === 'MEDIUM') {
         kept.push(...issueBuf)
       } else {
         lowDropped++
+        dropTrailingSeparator = true
       }
     }
 
     let inStatsBlock = false
 
     for (const line of lines) {
+      if (dropTrailingSeparator) {
+        dropTrailingSeparator = false
+        if (_BANDIT_SEPARATOR_RE.test(line)) continue
+      }
+
       // Drop per-file progress lines
       if (_BANDIT_TESTING_RE.test(line)) continue
 

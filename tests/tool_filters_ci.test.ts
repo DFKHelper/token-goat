@@ -11,6 +11,9 @@
  *   tests/test_bash_compress_gh_enhanced.py
  *   tests/test_bash_compress_pre_commit_enhanced.py
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -25,7 +28,7 @@ import {
   SemgrepFilter,
   CI_FILTERS,
 } from '../src/tool_filters/ci.js'
-import { selectFilter } from '../src/tool_filters/dispatch.js'
+import { detectFromCommand, selectFilter } from '../src/tool_filters/dispatch.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1515,5 +1518,57 @@ describe('CI_FILTERS registry', () => {
 
   it('selectFilter dispatches act', () => {
     expect(selectFilter(['act', '-j', 'build'])).toBeInstanceOf(ActFilter)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Residue regression: collapsing a LOW block must not leave its dashed rule
+// stranded next to the previous block's own rule.
+// ---------------------------------------------------------------------------
+
+describe('BanditFilter separator hygiene, driven from the real 1.9.4 capture', () => {
+  const raw = readFileSync(
+    join(__dirname, 'fixtures', 'tool_output', 'bandit-1.9.4-recursive.txt'),
+    'utf-8',
+  )
+  const detected = detectFromCommand('bandit -r insecure.py insecure2.py')
+  const body = detected!.filter.compress(raw, '', 1, detected!.argv)
+  const isRule = (l: string): boolean => /^-{10,}\s*$/.test(l)
+
+  it('selects the bandit filter for the capture', () => {
+    expect(detected?.filter.name).toBe('bandit')
+  })
+
+  it('collapses exactly the four LOW blocks the capture contains', () => {
+    // Derived from the fixture: `grep -c 'Severity: Low'` is 4 (B404 and B101, once per module).
+    expect(raw.split('\n').filter((l) => /Severity:\s+Low/.test(l)).length).toBe(4)
+    expect(body).toContain('collapsed 4 LOW severity issue block(s)')
+  })
+
+  it('leaves no two dashed rules adjacent', () => {
+    const lines = body.split('\n')
+    const doubled = lines
+      .map((l, i) => (i > 0 && isRule(l) && isRule(lines[i - 1]!) ? i + 1 : -1))
+      .filter((i) => i > 0)
+    expect(doubled).toEqual([])
+  })
+
+  it('emits one dashed rule per surviving finding, matching the raw report shape', () => {
+    // The raw capture prints one rule after each of its 14 findings; 4 are collapsed, so 10 must remain. A stranded rule would push this to 14.
+    expect(raw.split('\n').filter(isRule).length).toBe(14)
+    expect(body.split('\n').filter(isRule).length).toBe(10)
+  })
+
+  it('keeps a dashed rule that no collapse is responsible for', () => {
+    // Control for over-fixing: a report with no LOW block at all must keep every rule it started with.
+    const highOnly = raw
+      .split('\n')
+      .filter((l) => !/Severity:\s+Low/.test(l))
+      .join('\n')
+      .replace(/>> Issue: \[B404[^\n]*\n/g, '')
+      .replace(/>> Issue: \[B101[^\n]*\n/g, '')
+    const out = detected!.filter.compress(highOnly, '', 1, detected!.argv)
+    expect(out).not.toContain('LOW severity issue block')
+    expect(out.split('\n').filter(isRule).length).toBe(highOnly.split('\n').filter(isRule).length)
   })
 })

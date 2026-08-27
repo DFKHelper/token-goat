@@ -1,5 +1,8 @@
 // Batch C golden tests — linter filters. Faithfully ported from the Python suite (test_bash_compress.py linter classes). These are the regression spec for the 16 filters in src/tool_filters/linters.ts.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { LINTER_FILTERS, TOOL_FILTERS, detectFromCommand, selectFilter } from '../src/tool_filters/index.js'
@@ -1160,5 +1163,85 @@ describe('detectFromCommand (linter dispatch)', () => {
   it('detects cppcheck src/ as cppcheck filter', () => {
     const r = detectFromCommand('cppcheck src/')
     expect(r?.filter.name).toBe('cppcheck')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Residue regressions: pylint's over-cap placeholder and note pluralisation,
+// and clang-tidy's translation-unit extension list.
+// ---------------------------------------------------------------------------
+
+describe('PylintFilter over-cap placeholder, driven from the real 4.0.7 capture', () => {
+  // Expectations derived from the fixture, not from the filter: `grep -c '^service.py.*C0209'` is 14 and the cap keeps 3, so 11 are elided; `grep -c '^service.py.*W0611'` is 4, so 1 is elided. The symbolic names are the trailing parenthesised token on those same lines.
+  const raw = readFileSync(
+    join(__dirname, 'fixtures', 'tool_output', 'pylint-4.0.7-run.txt'),
+    'utf-8',
+  )
+  const detected = detectFromCommand('pylint service.py worker.py')
+  const body = detected!.filter.compress(raw, '', 4, detected!.argv)
+  const markers = body.split('\n').filter((l) => l.includes('[token-goat:'))
+
+  it('selects the pylint filter for the capture', () => {
+    expect(detected?.filter.name).toBe('pylint')
+  })
+
+  it('names the symbolic message, not a slice of the numeric code', () => {
+    expect(markers).toEqual([
+      '[token-goat: +11 more C0209 (consider-using-f-string); disable via TOKEN_GOAT_BASH_COMPRESS]',
+      '[token-goat: +1 more W0611 (unused-import); disable via TOKEN_GOAT_BASH_COMPRESS]',
+      '[token-goat: +11 more C0209 (consider-using-f-string); disable via TOKEN_GOAT_BASH_COMPRESS]',
+      '[token-goat: +1 more W0611 (unused-import); disable via TOKEN_GOAT_BASH_COMPRESS]',
+      '[token-goat: deduplicated 24 repeated-code issue lines; dropped 1 separator line]',
+    ])
+  })
+
+  it('writes the count note in the singular when exactly one line was dropped', () => {
+    // The capture carries exactly one dashed rule (`grep -c '^-\{10,\}$'` is 1), so "separator lines" was wrong on real output, not only on a contrived one.
+    expect(markers.at(-1)).toContain('dropped 1 separator line]')
+    expect(markers.at(-1)).not.toContain('separator lines')
+  })
+
+  it('falls back to the bare code when the line carries no symbolic name', () => {
+    // Control for over-fixing: a message id with no trailing (symbol) must render as '+N more R0801', never as an empty or invented parenthetical.
+    const lines = ['************* Module m']
+    for (let i = 1; i <= 5; i++) lines.push('m.py:' + i + ':0: R0801: Similar lines in 2 files')
+    const out = detected!.filter.compress(lines.join('\n'), '', 4, detected!.argv)
+    expect(out).toContain('[token-goat: +2 more R0801; disable via TOKEN_GOAT_BASH_COMPRESS]')
+  })
+
+  it('still pluralises a count above one', () => {
+    const twoSeparators = raw + '\n----------------------------------\n'
+    const out = detected!.filter.compress(twoSeparators, '', 4, detected!.argv)
+    expect(out).toContain('dropped 2 separator lines]')
+  })
+})
+
+describe('ClangTidyFilter diagnostic matcher covers every translation unit clang accepts', () => {
+  const f = filterByName('clang-tidy')
+  const argv = ['clang-tidy', 'kernel.cu']
+
+  const diagBlock = (path: string): string =>
+    [
+      `${path}:12:7: warning: do not use pointer arithmetic [cppcoreguidelines-pro-bounds-pointer-arithmetic]`,
+      '    int v = *(base + i);',
+      '            ^',
+      '    ~~~~~~~~',
+    ].join('\n')
+
+  for (const ext of ['cu', 'cuh', 'tcc', 'inl', 'm', 'mm']) {
+    it(`opens a diagnostic context on a .${ext} file and collapses its source/caret block`, () => {
+      const out = f.compress(diagBlock(`src/kernel.${ext}`), '', 1, argv)
+      expect(out).toContain(`src/kernel.${ext}:12:7: warning: do not use pointer arithmetic`)
+      expect(out).toContain('    int v = *(base + i);')
+      expect(out).not.toContain('    ~~~~~~~~')
+      expect(out).toContain('dropped 2 redundant source-context/caret lines')
+    })
+  }
+
+  it('leaves a non-translation-unit path alone, so the widened list is not a wildcard', () => {
+    // Control for over-fixing: relaxing the extension group to `.+` would make this a diagnostic too and collapse its indented block. It must stay whole.
+    const out = f.compress(diagBlock('notes/design.txt'), '', 1, ['clang-tidy', 'notes/design.txt'])
+    expect(out).toContain('    ~~~~~~~~')
+    expect(out).not.toContain('redundant source-context/caret lines')
   })
 })
