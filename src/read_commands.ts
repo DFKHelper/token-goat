@@ -3337,6 +3337,8 @@ function resolveYamlMergeKeys(node: unknown): unknown {
 /** Exported for tests: parse YAML and expand merge keys, the transform `yaml-query` runs on input. */
 export function parseYamlDocument(text: string): unknown {
   const docs = loadAllYaml(text).map(resolveYamlMergeKeys)
+  // js-yaml's loadAll yields ZERO documents for an empty, whitespace-only or comment-only file. Falling through to the multi-document branch returned `[]`, so yaml-outline announced "array of 0 elements (unknown)" and yaml-query reported "does not exist on array value" for a document that is not an array at all. Per YAML 1.2 an empty node is the null value, which is exactly what an explicit bare `---` document already parses to here, so report the same thing.
+  if (docs.length === 0) return null
   return docs.length === 1 ? docs[0] : docs
 }
 
