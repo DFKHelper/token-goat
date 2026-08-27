@@ -894,5 +894,66 @@ describe('post_tool_use redacts secrets out of the report before the model sees 
     expect(result.updatedOutput).not.toContain(SECRET)
     expect(result.updatedOutput).toContain('[REDACTED:aws_access_key]')
   })
+})
 
+describe('Copilot CLI task tool support', () => {
+  it('appends briefing and reminder to Copilot task tool prompt in pre_tool_use', async () => {
+    const prompt = 'Run test suite and summarize results.'
+    const payload = {
+      tool_name: 'task',
+      tool_input: {
+        name: 'test-runner',
+        description: 'Runs tests',
+        prompt,
+        agent_type: 'task',
+      },
+      session_id: sessionId,
+    }
+    const result = await runHook(buildEvent('pre_tool_use', payload))
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      const updatedPrompt = result.updatedInput['prompt']
+      expect(typeof updatedPrompt).toBe('string')
+      expect(updatedPrompt).toContain(prompt)
+      expect(updatedPrompt).toContain('## Session briefing (for context)')
+      expect(updatedPrompt).toContain('token-goat symbol')
+      expect(result.updatedInput['name']).toBe('test-runner')
+      expect(result.updatedInput['agent_type']).toBe('task')
+    }
+  })
+
+  it('compacts and caches report on post_tool_use for Copilot task tool', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      const toolInput = { name: 'audit', prompt: 'Run audit', description: 'Run audit' }
+      const bigBody = Array.from({ length: 50 }, (_, i) => `audit log line ${i} with extra text`).join('\n')
+      const report = ['Audit finished.', '```', bigBody, '```', 'x'.repeat(8000)].join('\n')
+      const payload = {
+        tool_name: 'task',
+        tool_input: toolInput,
+        session_id: sessionId,
+        tool_response: report,
+      }
+      const result = await runHook(buildEvent('post_tool_use', payload))
+      expect(result.hookType).toBe('rewriteOutput')
+      if (result.hookType === 'rewriteOutput') {
+        expect(result.updatedOutput).toContain('lines elided -- full report via token-goat mcp-output')
+        const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
+        expect(m).not.toBeNull()
+        expect(getBashOutput(m![1] as string)?.output).toBe(report)
+      }
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
+  })
 })

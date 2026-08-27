@@ -147,6 +147,8 @@ function toolInputFor(toolName: string): Record<string, unknown> {
     case 'TaskOutput':
       return { task_id: 'task-1' }
     case 'Agent':
+    case 'task':
+    case 'Task':
       return { subagent_type: 'general-purpose', prompt: 'audit the deploy path' }
     case 'Grep':
       return { pattern: 'k', output_mode: 'content' }
@@ -206,10 +208,12 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
       'BashOutput',
       'ExitPlanMode',
       'Grep',
+      'Task',
       'TaskOutput',
       'WebFetch',
       'WebSearch',
       'mcp__server__query',
+      'task',
     ])
     expect(rewrote, 'fixtures must actually reach at least one handler rewrite branch').toBeGreaterThan(0)
   })

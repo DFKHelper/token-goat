@@ -304,6 +304,20 @@ async function main() {
     cwd: payload && (payload.workingDirectory || payload.cwd),
   }
 
+  // Subagent correlation and W3C Trace Context propagation from Copilot CLI payloads
+  const agentId = payload && (payload.agent_id || payload.agentId)
+  if (typeof agentId === 'string' && agentId !== '') {
+    canonical.agent_id = agentId
+  }
+  const traceparent = payload && (payload.traceparent || payload.traceParent)
+  if (typeof traceparent === 'string' && traceparent !== '') {
+    canonical.traceparent = traceparent
+  }
+  const tracestate = payload && (payload.tracestate || payload.traceState)
+  if (typeof tracestate === 'string' && tracestate !== '') {
+    canonical.tracestate = tracestate
+  }
+
   // userPromptSubmitted only: Copilot declares \`prompt\` required on UserPromptSubmittedHookInput.
   // hooks_session.ts's userPromptSubmitHandler reads it as \`event.raw['prompt']\` and gates every
   // branch it has on the text, so without this it saw '' on every Copilot prompt and the
