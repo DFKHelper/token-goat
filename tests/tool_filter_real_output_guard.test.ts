@@ -19,6 +19,18 @@ import { resolveMinNetSavingsBytes } from '../src/tool_filters/base.js'
  * a tool changes its default report layout, the entry here goes red instead of
  * silently degrading to a pass-through.
  *
+ * Every capture also carries a must-not-drop list, because the ratio floor is
+ * blind in one direction: over-collapsing *improves* the ratio. Broken pylint
+ * scored 0.696 and the fix scores 0.413, so a ratio floor alone would have
+ * passed the bug and failed the fix.
+ *
+ * No upper ratio bound, deliberately. It would catch over-collapse that no
+ * must-not-drop line covers, but a ceiling can be cleared by bumping a number,
+ * which is the same reflex that produced the invented fixtures this corpus
+ * exists to replace. A must-not-drop entry cannot be satisfied that way: it
+ * forces someone to say out loud that a specific line of real tool output is
+ * allowed to disappear.
+ *
  * Decay: the fixtures pin the format as of their capture date. They do not
  * re-capture themselves, so an entry left untouched for years proves the
  * filter still handles *that* version's format, not today's. Re-capture on a
@@ -72,6 +84,23 @@ const CAPTURES: Capture[] = [
     clearsShippingFloor: false,
     floorNote:
       'the capture is only 944 bytes of nine distinct issues: 172 bytes come off, but the compression marker costs 78, leaving 94 net against a floor of 100. The filter is healthy here; the report is simply too small. Before the issued-lines fix this same capture compressed by 0 bytes.',
+    // Only the source/caret block under each issue is redundant: all nine distinct issue locations and the per-linter tally survive.
+    mustContain: [
+      'main.go:25:15: Error return value of `f.Close` is not checked (errcheck)',
+      'main.go:33:15: Error return value of `f.Close` is not checked (errcheck)',
+      'main.go:41:15: Error return value of `f.Close` is not checked (errcheck)',
+      'main.go:26:2: S1021: should merge variable declaration with assignment on next line (staticcheck)',
+      'main.go:34:2: S1021: should merge variable declaration with assignment on next line (staticcheck)',
+      'main.go:42:2: S1021: should merge variable declaration with assignment on next line (staticcheck)',
+      'main.go:8:6: func unusedOne is unused (unused)',
+      'main.go:13:6: func unusedTwo is unused (unused)',
+      'main.go:18:6: func unusedThree is unused (unused)',
+      '9 issues:',
+      '* errcheck: 3',
+      '* staticcheck: 3',
+      '* unused: 3',
+    ],
+    mustNotContain: ['defer f.Close()', 'var a int'],
   },
   {
     fixture: 'ruff-0.14.14-check.txt',
@@ -82,6 +111,13 @@ const CAPTURES: Capture[] = [
     rawBytes: 2625,
     minRatio: 0.5,
     clearsShippingFloor: true,
+    // Counted straight off the fixture: 6 stanzas start with "F401 ", 8 with "F841 ", across a.py and b.py. The multi-file collapse trades locations for counts, so the counts themselves are the only surviving evidence and must be right.
+    mustContain: [
+      'F401: 6 occurrences in 2 files',
+      'F841: 8 occurrences in 2 files',
+      'Found 14 errors.',
+      '[*] 6 fixable with the `--fix` option (8 hidden fixes can be enabled with the `--unsafe-fixes` option).',
+    ],
   },
   {
     fixture: 'pre-commit-4.5.1-run.txt',
@@ -92,6 +128,16 @@ const CAPTURES: Capture[] = [
     rawBytes: 1160,
     minRatio: 0.25,
     clearsShippingFloor: true,
+    // Passed hooks collapse to a count; every Failed hook keeps its header, its hook id, and the diagnostic body that says what actually went wrong.
+    mustContain: [
+      'trim trailing whitespace.................................................Failed',
+      '- hook id: trailing-whitespace',
+      'Fixing a.py',
+      'check json...............................................................Failed',
+      '- hook id: check-json',
+      'c.json: Failed to json decode (Illegal trailing comma before end of object: line 1 column 7 (char 6))',
+    ],
+    mustNotContain: ['check for merge conflicts', 'mixed line ending'],
   },
   {
     fixture: 'ruff-0.14.14-check-single-file.txt',
@@ -132,6 +178,29 @@ const CAPTURES: Capture[] = [
       '+11 more C0209',
     ],
     mustNotContain: ['__unknown__'],
+  },
+  {
+    fixture: 'ktlint-1.7.1-plain.txt',
+    command: 'ktlint',
+    filter: 'ktlint',
+    provenance:
+      'FORMAT-DERIVED, not an installed-tool capture: layout taken from ktlint\'s own default `plain` reporter, https://github.com/pinterest/ktlint/blob/master/ktlint-cli-reporter-plain/src/main/kotlin/io/github/ktlint/core/cli/reporter/plain/PlainReporter.kt (onLintError prints `<file>:<line>:<col>: <message> (<rule-id>)`, afterAll prints the "Summary error count (descending) by rule:" block) and pinned byte-for-byte in that module\'s own PlainReporterTest.kt. Rule ids and message wording are the real emit() strings from the standard ruleset (MaxLineLengthRule, IndentationRule, NoWildcardImportsRule, NoSemicolonsRule, FinalNewlineRule). Consulted 2026-08-27',
+    rawBytes: 2298,
+    minRatio: 0.15,
+    clearsShippingFloor: true,
+    // Real ktlint emits no severity token, so every violation must still be dedupable: the first three of each rule survive, singleton rules survive whole, and the trailing summary block is never touched.
+    mustContain: [
+      'src/main/kotlin/com/example/Main.kt:1:1: Wildcard import (standard:no-wildcard-imports)',
+      'src/main/kotlin/com/example/Service.kt:15:141: Exceeded max line length (140) (standard:max-line-length)',
+      'src/main/kotlin/com/example/Service.kt:31:44: Unnecessary semicolon (standard:no-semi)',
+      'src/test/kotlin/com/example/ServiceTest.kt:40:1: File must end with a newline (\\n) (standard:final-newline)',
+      '+5 more standard:max-line-length',
+      '+3 more standard:indent',
+      '+1 more standard:no-wildcard-imports',
+      'Summary error count (descending) by rule:',
+      '  standard:max-line-length: 8',
+    ],
+    mustNotContain: ['src/test/kotlin/com/example/ServiceTest.kt:13:141', '+? more'],
   },
   {
     fixture: 'bandit-1.9.4-recursive.txt',
