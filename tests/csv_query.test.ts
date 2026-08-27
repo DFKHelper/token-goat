@@ -305,6 +305,16 @@ describe('formatCsvTable', () => {
     expect(text).toContain('3 more rows elided');
   });
 
+  // The notice lives in the shared formatter rather than in csv-query's CLI wrapper, so xlsx-query
+  // (the other formatCsvTable caller) gets the same distinction instead of printing a bare header.
+  it('appends a filtered-to-empty notice for any caller whose --where matched nothing', () => {
+    const result = queryCsv(CSV, { wheres: parseWhereSpecs(['status=zzznone']) });
+    expect(formatCsvTable(result, ['--where status=zzznone']).split('\n')).toEqual([
+      'id,name,status',
+      '  (all 4 data rows were filtered out by --where status=zzznone -- widen or drop the filter to see them)',
+    ]);
+  });
+
   it('omits the elision note when nothing was truncated', () => {
     const result = queryCsv(CSV, {});
     const text = formatCsvTable(result);

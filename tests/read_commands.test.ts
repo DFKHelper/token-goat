@@ -4206,6 +4206,49 @@ describe('read_commands', () => {
       expect(parsed.totalCount).toBe(parsed.items.length)
     })
 
+    // A --where that matched nothing printed a bare header line and stopped: byte-for-byte the shape of a file with data, and indistinguishable from "this file has nothing" -- which has its own "No data rows found" message. Reuses the shared filtered-to-empty notice skeleton/outline already use.
+    it('says the filter emptied the result instead of printing a bare header', () => {
+      const f = path.join(tempDir, 'wherenone.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, where: ['status=zzznone'] }) })
+      expect(stdout.trim().split('\n')).toEqual([
+        'id,name,status',
+        '  (all 2 data rows were filtered out by --where status=zzznone -- widen or drop the filter to see them)',
+      ])
+    })
+
+    it('names every active --where in the filtered-to-empty notice, not just the first', () => {
+      const f = path.join(tempDir, 'wherenone2.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, where: ['status=active', 'name=Bob'] }) })
+      expect(stdout).toContain('  (all 2 data rows were filtered out by --where status=active + --where name=Bob -- widen or drop the filters to see them)')
+    })
+
+    it('carries the filtered-to-empty distinction into --json as filteredFromRows', () => {
+      const f = path.join(tempDir, 'wherenone3.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, where: ['status=zzznone'], json: true }) })
+      expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0, filteredFromRows: 2 })
+    })
+
+    // Over-fix control: a header-only file keeps its own "No data rows found" message and must never grow the filter notice, since no filter emptied anything.
+    it('keeps the no-data message for a header-only file', () => {
+      const f = path.join(tempDir, 'headeronly.csv')
+      fs.writeFileSync(f, 'id,name,status\n')
+      const { stdout } = capture(() => { runCsvQuery({ file: f, where: ['status=zzznone'] }) })
+      expect(stdout.trim()).toBe(`No data rows found in ${f}`)
+      expect(stdout).not.toContain('filtered out by')
+    })
+
+    // Over-fix control: --head 0 empties the rendered rows without any filter doing it, and must keep the elision note rather than claiming the filter emptied the result.
+    it('keeps the elision note for --head 0 instead of claiming a filter emptied the result', () => {
+      const f = path.join(tempDir, 'headzero.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, head: '0' }) })
+      expect(stdout).toContain('...(2 more rows elided; use --head to see more)')
+      expect(stdout).not.toContain('filtered out by')
+    })
+
     it('returns 1 and reports the error for an unknown --where column', () => {
       const f = path.join(tempDir, 'badwhere.csv')
       fs.writeFileSync(f, CSV)

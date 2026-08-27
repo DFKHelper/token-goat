@@ -1551,11 +1551,19 @@ function canonicalCycleKey(cyclePath: string[]): string {
  * subgraph has combinatorially many simple cycles).
  */
 export function findCycles(graph: Map<string, string[]>): string[][] {
+  return findCyclesCapped(graph).cycles
+}
+
+/** Same enumeration as findCycles, but also reports whether the MAX_CYCLES bound actually cut the search short. Callers that render a count (runArch's `cycles (N found)`) need this: at the cap the count is exactly MAX_CYCLES, byte-identical to a project that genuinely has that many, so a truncated result reads as a complete one -- the same gap runCallChain closed with `(depth-limit)` and runImpact with its depth-cap notice. The flag is set at the point enumeration stops rather than derived from `cycles.length === MAX_CYCLES`, so a project with exactly MAX_CYCLES real cycles is not mislabelled truncated. */
+export function findCyclesCapped(graph: Map<string, string[]>): { cycles: string[][]; truncated: boolean } {
   const cycles: string[][] = []
   const seen = new Set<string>()
   const sccs = tarjanSCCs(graph)
+  // Enumerate one cycle past the reported cap and use that overflow purely as the truncation signal, the same probe-row convention resolveCallers uses for its SQL LIMIT: deriving the flag from `cycles.length === MAX_CYCLES` would mislabel a graph that genuinely has exactly MAX_CYCLES cycles. The probe entry is sliced off below and never reaches the caller.
+  const probeLimit = MAX_CYCLES + 1
 
   for (const component of sccs) {
+    if (cycles.length >= probeLimit) break
     if (component.length === 1) {
       const [only] = component
       if (only !== undefined && (graph.get(only) ?? []).includes(only)) cycles.push([only, only])
@@ -1565,11 +1573,11 @@ export function findCycles(graph: Map<string, string[]>): string[][] {
     const stack = new Set<string>()
 
     function dfs(start: string, node: string, pathSoFar: string[]): void {
-      if (cycles.length >= MAX_CYCLES) return
+      if (cycles.length >= probeLimit) return
       stack.add(node)
       for (const nb of graph.get(node) ?? []) {
         if (!sccSet.has(nb)) continue
-        if (cycles.length >= MAX_CYCLES) break
+        if (cycles.length >= probeLimit) break
         if (nb === start) {
           const cyclePath = [...pathSoFar, node, start]
           const key = canonicalCycleKey(cyclePath)
@@ -1585,12 +1593,13 @@ export function findCycles(graph: Map<string, string[]>): string[][] {
     }
 
     for (const start of component) {
-      if (cycles.length >= MAX_CYCLES) break
+      if (cycles.length >= probeLimit) break
       dfs(start, start, [])
     }
   }
 
-  return cycles
+  if (cycles.length > MAX_CYCLES) return { cycles: cycles.slice(0, MAX_CYCLES), truncated: true }
+  return { cycles, truncated: false }
 }
 
 // ---- similar ----------------------------------------------------------------
@@ -1919,10 +1928,11 @@ export function runArch(opts: ArchOptions): number {
 
   const entryPoints = files.filter((f) => !importedBy.has(f) && (graph.get(f) ?? []).length > 0).slice(0, top).map((f) => ({ file: f }))
 
-  const cycles = findCycles(graph)
+  // findCycles stops enumerating at MAX_CYCLES, so at the bound `cycles.length` is exactly that number and the `cycles (N found)` line below reads identically to a project that genuinely has N -- a truncated report presented as a complete one. Carry the flag through to both surfaces, the same treatment call-chain's `(depth-limit)` sentinel and impact's depth-cap notice already give their own bounds.
+  const { cycles, truncated: cyclesTruncated } = findCyclesCapped(graph)
 
   if (opts.json === true) {
-    emit(JSON.stringify({ hubs, entryPoints, cycles }, null, 2))
+    emit(JSON.stringify({ hubs, entryPoints, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}) }, null, 2))
     return 0
   }
 
@@ -1930,7 +1940,7 @@ export function runArch(opts: ArchOptions): number {
   for (const h of hubs) emit(`  ${h.importedBy} importers\t${toDisplayPath(getDisplayRoot(opts.cwd), h.file)}`)
   emit(`entry points (imported by nobody, top ${top}):`)
   for (const e of entryPoints) emit(`  ${toDisplayPath(getDisplayRoot(opts.cwd), e.file)}`)
-  emit(`cycles (${cycles.length} found):`)
+  emit(cyclesTruncated ? `cycles (first ${cycles.length}, truncated at the ${MAX_CYCLES}-cycle enumeration limit: more cycles exist):` : `cycles (${cycles.length} found):`)
   for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(getDisplayRoot(opts.cwd), f)).join(' -> ')}`)
   return 0
 }
@@ -2022,23 +2032,29 @@ export function runAsk(opts: AskOptions): number {
   interface AskEntry { file: string; symbol: string; kind: string; line: number; readCmd: string }
   const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read "${h.filePath}::${h.name}@${h.lineStart}"` }))
 
-  const degrade = (): number => {
+  // Every degrade path used to print one message: "set TOKEN_GOAT_ASK_BACKEND". That advice is only true for the unset case -- for a correctly-set backend that simply matched nothing, or one whose binary is missing from PATH, it tells the user to set a variable that is already set and hides the real reason. Each caller now supplies its own reason, the way runScope separates "cannot read" / "nothing indexed" / "no enclosing symbol".
+  const degrade = (reason: string, extraNote?: string): number => {
     if (opts.json === true) {
-      emit(JSON.stringify({ degraded: true, note: `Set ${BACKEND_ENV}=claude|codex for LLM synthesis`, context: entries }, null, 2))
+      emit(JSON.stringify({ degraded: true, note: reason, ...(extraNote !== undefined ? { hint: extraNote } : {}), context: entries }, null, 2))
       return 0
     }
-    emit(`[degraded mode - set ${BACKEND_ENV}=claude|codex for LLM synthesis]`)
+    emit(`[degraded mode - ${reason}]`)
+    if (extraNote !== undefined) emit(extraNote)
     for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}@${e.line}"`)
     return 0
   }
 
-  if (!backendLabel) return degrade()
+  if (!backendLabel) return degrade(`set ${BACKEND_ENV}=claude|codex for LLM synthesis`)
 
   // A configured backend with zero retrieval hits has no grounding context to answer from --
   // calling the LLM anyway would hand it an empty SNIPPETS block and risk a hallucinated answer
-  // presented as if it were grounded in this codebase. Degrade the same way an unconfigured
-  // backend does rather than proceeding to synthesis.
-  if (hits.length === 0) return degrade()
+  // presented as if it were grounded in this codebase. Degrade rather than proceeding to
+  // synthesis, but say which of the two zero-hit causes it was: an empty index (nothing to
+  // retrieve from at all) or a live index in which nothing matched this question.
+  if (hits.length === 0) {
+    if (isIndexEmptyForProject(globalDbPath(), rootDir)) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but nothing is indexed for this project yet, so there is no context to answer from`, emptyIndexMessage(rootDir))
+    return degrade(`${BACKEND_ENV}=${backendLabel} is set, but no indexed symbol matched this question, so there is no context to answer from -- try different wording or token-goat semantic`)
+  }
 
   const isWin = process.platform === 'win32'
   let backendPath: string | null = null
@@ -2048,7 +2064,7 @@ export function runAsk(opts: AskOptions): number {
     if (found) backendPath = found
   } catch { /* fall through */ }
 
-  if (!backendPath) return degrade()
+  if (!backendPath) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but '${backendLabel}' was not found on PATH`)
 
   const context = hits.map((h, i) => `[${i + 1}] ${h.filePath}\n${h.body ?? ''}`).join('\n\n')
   const prompt = `Answer the QUESTION using only the CODE SNIPPETS below.\nQUESTION: ${opts.question}\n\nSNIPPETS:\n${context}\n\nANSWER:`
@@ -2107,5 +2123,5 @@ export function runAsk(opts: AskOptions): number {
     }
   }
 
-  return degrade()
+  return degrade(`${BACKEND_ENV}=${backendLabel} ran but returned no answer`)
 }

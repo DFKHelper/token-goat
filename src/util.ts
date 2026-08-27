@@ -796,6 +796,24 @@ export function grepFilteredToEmptyNotice(preFilterCount: number, grep: string, 
 }
 
 /**
+ * The multi-filter sibling of {@link grepFilteredToEmptyNotice}, for surfaces where more than one
+ * filter flag can be active at once (skeleton/outline's `--min-lines` + `--grep`, csv-query's
+ * repeatable `--where`). Names every active filter rather than blaming the first one, and takes an
+ * optional `reassurance` clause for callers that also need to say the underlying store is fine
+ * (e.g. "the file is indexed"). Same "filtered store renders as populated" trap as its sibling.
+ */
+export function filtersFilteredToEmptyNotice(preFilterCount: number, activeFilters: string[], nounSingular: string, nounPlural: string, reassurance?: string): string {
+  const noun = preFilterCount === 1 ? nounSingular : nounPlural
+  // Name every filter that is actually active, not just the first one: with both set, blaming one of them sends the caller to widen the wrong knob.
+  const cause = activeFilters.length === 0 ? 'the active filter' : activeFilters.join(' + ')
+  const knob = activeFilters.length > 1 ? 'filters' : 'filter'
+  // The verb has to agree with the noun the count already selects: "all 1 indexed symbol were filtered out" reads as a typo in the tool rather than as a report about the file.
+  const verb = preFilterCount === 1 ? 'was' : 'were'
+  const tail = reassurance === undefined ? '' : `; ${reassurance}`
+  return `  (all ${preFilterCount} ${noun} ${verb} filtered out by ${cause}${tail} -- widen or drop the ${knob} to see them)`
+}
+
+/**
  * `3 references` / `1 reference` -- a count and a noun that agrees with it. Trivial, but the
  * agreement was getting dropped: `refs --exclude-tests` rendered `1 references` because five
  * call sites interpolated `${results.length} references` directly, and a test pinned that
