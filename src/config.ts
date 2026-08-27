@@ -1220,10 +1220,9 @@ function mergeRawConfig(base: Record<string, unknown>, override: Record<string, 
         : {}
       merged[key] = { ...baseSection, ...(overrideVal as Record<string, unknown>) }
     } else {
-      // A non-object value at a section-level key (e.g. a project file that sets `hints = 5`)
-      // is not a valid section shape — section() already treats any non-object raw value as {}
-      // at build time, so pass it through as-is and let that existing guard handle it exactly
-      // like a malformed value in the global config.toml.
+      // A value at a section-level key that is not a plain object (a project file that writes `hints = 5`, or a `[[hints]]` array-of-tables, which TOML parses to an array) is not a valid section shape: section() maps it to {} at build time, so it can never carry a legitimate override. Assigning it here would still replace whatever the global config.toml holds at that key, wiping the whole section back to defaults -- including the individual keys stripLockedProjectKeys exists to keep a project file from setting at all. Keep the global section instead and ignore the malformed project value.
+      const baseVal = base[key]
+      if (baseVal !== null && typeof baseVal === 'object' && !Array.isArray(baseVal)) continue
       merged[key] = overrideVal
     }
   }
