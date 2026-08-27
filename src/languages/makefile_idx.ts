@@ -170,5 +170,12 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
 
   sections.sort((a, b) => a.line - b.line)
   assignFlatEndLines(sections, totalLines)
+  // The flat model ends each target at the line before the next one, so the blank lines and the `#` comment block that document the NEXT target were reported as part of THIS target's recipe. A make recipe ends at its last real line, so walk the end back over trailing lines that are blank once comments are stripped (stripComments blanks a comment to spaces in place, keeping line numbers exact). Bounded by the flat end line and by the declaration's own line, so this can only ever shorten a span.
+  const strippedLines = stripped.split('\n')
+  for (const s of sections) {
+    let end = s.endLine
+    while (end > s.line && (strippedLines[end - 1] ?? '').trim() === '') end--
+    s.endLine = end
+  }
   return propagateEndLinesToSymbols(symbols, sections)
 }

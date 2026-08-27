@@ -1201,9 +1201,12 @@ export function makeSymbolEmitter(
  */
 export function assignFlatEndLines(sections: MiniSection[], totalLines: number): void {
   for (let i = 0; i < sections.length; i++) {
-    const next = sections[i + 1]
     const s = sections[i]
     if (s === undefined) continue
+    // Skip past any siblings that start on the same line as this one and end at the next section that actually starts later. Two sections sharing a start line are co-extensive (an HTML heading and its inline id anchor, both targets of a multi-target Makefile rule): ending the earlier one at `next.line - 1` collapsed it to a single line and handed its whole body to whichever sibling happened to sort last.
+    let j = i + 1
+    while (j < sections.length && (sections[j]?.line ?? 0) <= s.line) j++
+    const next = sections[j]
     const end = next !== undefined ? next.line - 1 : totalLines
     s.endLine = end < s.line ? s.line : end
   }
