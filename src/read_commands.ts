@@ -4269,19 +4269,12 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   }
   const match = resolution.entry
 
-  // resolveCallers(name) with no explicit limit still applies its own internal default cap
-  // (500, in graph_commands.ts's queryRefs call) -- so callers.length is NOT the true count
-  // once more than 500 references exist, despite what an earlier version of this comment
-  // claimed. Get the real uncapped total via a separate COUNT(*) query (queryRefCounts,
-  // batched GROUP BY, no LIMIT) instead of trusting the capped list's length.
+  // resolveCallers(name) with no explicit limit still applies its own internal default cap (500, in graph_commands.ts's queryRefs call) -- so a capped callers.length is not the true count once more than 500 references exist. The earlier fix for that took the total from a separate COUNT(*) query (queryRefCounts), but queryRefCounts keys by symbol NAME project-wide while resolveCallers additionally scopes to THIS definition site (filterRefsForSymbol drops refs living in a file that defines its own same-named symbol), so for a name defined in two files brief printed the other definition's callers into its own "Callers (N)" header and invented an "...(N more elided)" tail for rows that were never going to be listed. The scoped scan is the only thing that knows the real total, so it always runs unbounded here and its post-filter length is the total.
   const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
   const excludeTests = opts.excludeTests === true
-  // --grep filters client-side too (below), so it needs the same unbounded scan --exclude-tests
-  // already gets -- otherwise a high-fanout symbol's grep match could hide inside the callers that
-  // fell past resolveCallers' 500-row default page before the filter ever ran.
-  const unboundedQuery = excludeTests || opts.grep !== undefined
-  // Passing excludeTests through makes resolveCallers scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
-  const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, unboundedQuery)
+  // The unbounded scan also covers --grep and --exclude-tests, which both filter client-side below -- otherwise a high-fanout symbol's grep match could hide inside the callers that fell past resolveCallers' 500-row default page before the filter ever ran.
+  // resolveCallers' last argument makes it scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
+  const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, true)
   const testFiltered = excludeTests ? allCallers.filter((c) => !isTestFile(c.file)) : allCallers
   const hiddenByExcludeTests = excludeTests ? allCallers.length - testFiltered.length : 0
   // --grep narrows by the caller's enclosing symbol NAME, same field/convention as
@@ -4291,13 +4284,8 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const callers = matchesGrep !== undefined ? testFiltered.filter((c) => matchesGrep(c.caller)) : testFiltered
   const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - callers.length : 0
-  // The uncapped COUNT(*) counts test refs (and every caller name, grep-matched or not) too, so it
-  // would disagree with a filtered caller list and make the "Callers (N)" header and the
-  // "...(N more elided)" tail both overstate. With either filter on, the unbounded scan above IS
-  // the complete in-project set, so its post-filter length is the true total.
-  const totalCallers = unboundedQuery
-    ? callers.length
-    : queryRefCounts([match.name], globalDbPath(), rootDir).get(match.name) ?? callers.length
+  // The unbounded scan above IS the complete in-project, definition-scoped set, so its post-filter length is the true total: it counts exactly the rows that can appear in the list below, which is what the "Callers (N)" header and the "...(N more elided)" tail both describe.
+  const totalCallers = callers.length
   const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd, readFileText)
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
