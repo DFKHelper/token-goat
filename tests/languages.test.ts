@@ -230,6 +230,37 @@ public class Widget {
     expect(add?.kind).toBe('method')
   })
 
+  it('indexes verbatim (@-escaped) identifiers and records the name without the @ (regression: every declaration pattern took a bare [A-Za-z_] identifier class, so generator-emitted `public class @class` / `using @System.Text;` matched nothing and was dropped)', () => {
+    const content = `using @System.Text;
+namespace @namespace.Generated;
+
+public class @class
+{
+    public int @event { get; set; }
+    public void @operator(int @params)
+    {
+    }
+    public @class(int x)
+    {
+    }
+}
+
+public delegate void @Handler(int a);
+`
+    const { symbols, imports } = extractCsharp(content, 'Generated.cs')
+    const names = symbols.map((s) => s.name)
+    // The `@` is a lexical escape, not part of the identifier, so the stored name is the bare
+    // one every other file refers to. An over-fix that merely widens the character class while
+    // keeping the `@` in the capture fails right here.
+    expect(names).toEqual(['namespace.Generated', 'class', 'event', 'operator', 'class', 'Handler'])
+    expect(names.some((n) => n.includes('@'))).toBe(false)
+    expect(imports.map((i) => i.target)).toEqual(['System.Text'])
+    expect(symbols.find((s) => s.name === 'event')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'operator')?.kind).toBe('method')
+    expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('interface')
+    expect(symbols.filter((s) => s.name === 'class').map((s) => s.kind)).toEqual(['class', 'method'])
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractCsharp('', 'empty.cs')
     expect(symbols).toHaveLength(0)
