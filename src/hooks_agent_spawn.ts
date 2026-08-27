@@ -11,11 +11,14 @@
  */
 
 import { createHash } from 'node:crypto'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
-import { getOutstandingAgentSpawns, getSessionBashOutputs, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn } from './session.js'
+import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
@@ -331,6 +334,146 @@ export function collapseBlankRunsInFences(text: string): string {
   return changedAny ? out.join('\n') : text
 }
 
+/** Session-hint dedupe key for the unrestricted-spawn advisory below: fires at most once per session. */
+const SPAWN_RESTRICT_HINT_KEY = 'agent-spawn-restrict-hint'
+
+/** How many restricted agent names the advisory lists by name before collapsing the rest into a count. */
+const SPAWN_RESTRICT_MAX_NAMES = 3
+
+/** Depth cap for the roster walk. The common layouts are flat files in ~/.claude/agents and symlinked collection directories one level down, so 4 leaves margin without letting a pathological tree run away. */
+const ROSTER_WALK_MAX_DEPTH = 4
+
+/** Hard cap on definition files parsed per scan, so a mispointed or gigantic roster directory cannot stall a post-tool hook. */
+const ROSTER_WALK_MAX_FILES = 400
+
+/**
+ * Parse a Claude Code agent-definition markdown file's YAML frontmatter, answering the one question
+ * the unrestricted-spawn advisory needs: does this definition carry a `tools:` allowlist? Corpus
+ * measurement (loop 48, 5,988 lanes) showed the allowlist is the causal lever on spawn-prefix cost:
+ * an agent WITHOUT one inherits every tool and MCP schema into its lane's system prompt, and typing
+ * alone changes nothing. Returns null when the file has no parseable frontmatter at all.
+ *
+ * `restricted` means: a `tools:` key exists and its value is neither empty nor the inherit-everything
+ * `*`. Both the inline comma-list form and the indented block-list form count; a `tools:` line with
+ * no value and no block items is treated as absent (unrestricted), the conservative direction for a
+ * gate whose false positive would recommend an agent that saves nothing.
+ */
+export function parseAgentDefinition(text: string, fallbackName: string): { name: string; restricted: boolean } | null {
+  const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)
+  if (!fmMatch) return null
+  const fm = fmMatch[1] as string
+  // `(.*)$` under /m stops before \n but captures a trailing \r, so every capture below is trimmed before use (see the CRLF line-end-predicate defect class).
+  const nameMatch = /^name:(.*)$/m.exec(fm)
+  const rawName = nameMatch ? (nameMatch[1] as string).trim().replace(/^["']|["']$/g, '') : ''
+  const name = rawName !== '' ? rawName : fallbackName
+  const toolsMatch = /^tools:(.*)$/m.exec(fm)
+  if (!toolsMatch) return { name, restricted: false }
+  const inline = (toolsMatch[1] as string).trim()
+  if (inline === '*' || inline === '"*"' || inline === "'*'") return { name, restricted: false }
+  if (inline !== '') return { name, restricted: true }
+  // Bare `tools:` line: the allowlist, if any, is an indented block list on the following lines. Stop at the first non-indented line, which is the next top-level frontmatter key.
+  const after = fm.slice(toolsMatch.index + toolsMatch[0].length)
+  for (const line of after.split(/\r?\n/)) {
+    if (/^\s+-\s*\S/.test(line)) return { name, restricted: true }
+    if (/^\S/.test(line)) break
+  }
+  return { name, restricted: false }
+}
+
+/**
+ * Scan the machine-level agent roster (~/.claude/agents, recursively, following symlinked collection
+ * directories with a realpath cycle guard) and return the sorted names of every definition that
+ * carries a `tools:` allowlist. This is the advisory's existence gate: with no restricted definition
+ * on the machine there is nothing actionable to recommend, and an unclearable warning trains the
+ * user to ignore every warning the tool emits. Deliberately home-level only, not <cwd>/.claude/agents:
+ * the gate asks whether a restricted definition exists ON THE MACHINE, and a cwd-relative root would
+ * make the answer flap with the directory the harness happened to launch the hook from.
+ */
+export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
+  const scanRoots = roots ?? [path.join(os.homedir(), '.claude', 'agents')]
+  const names = new Set<string>()
+  const visited = new Set<string>()
+  let filesSeen = 0
+  const walk = (dir: string, depth: number): void => {
+    if (depth > ROSTER_WALK_MAX_DEPTH || filesSeen >= ROSTER_WALK_MAX_FILES) return
+    let real: string
+    try {
+      real = fs.realpathSync(dir)
+    } catch {
+      return
+    }
+    const key = process.platform === 'win32' ? real.toLocaleLowerCase() : real
+    if (visited.has(key)) return
+    visited.add(key)
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (filesSeen >= ROSTER_WALK_MAX_FILES) return
+      const full = path.join(dir, entry.name)
+      // statSync rather than the Dirent flags because a symlinked collection directory reports isDirectory() false on its Dirent; the visited-set above keeps a link cycle from recursing forever.
+      let stat: fs.Stats
+      try {
+        stat = fs.statSync(full)
+      } catch {
+        continue
+      }
+      if (stat.isDirectory()) {
+        walk(full, depth + 1)
+        continue
+      }
+      if (!stat.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue
+      filesSeen++
+      let text: string
+      try {
+        text = fs.readFileSync(full, 'utf-8')
+      } catch {
+        continue
+      }
+      const parsed = parseAgentDefinition(text, path.basename(entry.name, path.extname(entry.name)))
+      if (parsed !== null && parsed.restricted) names.add(parsed.name)
+    }
+  }
+  for (const root of scanRoots) walk(root, 0)
+  return Array.from(names).sort()
+}
+
+/**
+ * Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply.
+ *
+ * Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent
+ * (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are
+ * definitionally unrestricted with no definition file to resolve, which is the only restriction
+ * status observable at the hook without reading a roster file for the spawned type. Gate: at least
+ * one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and
+ * the hint clearable. Dedupe: once per session via the persisted hints-shown set.
+ *
+ * Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it
+ * observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn,
+ * or their roster) is not a branch this code blocks, so crediting anything would repeat the
+ * advisory-credited-the-full-file defect class. The text says so explicitly for the same reason.
+ */
+export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
+  try {
+    const rawType = toolInput['subagent_type']
+    const spawnType = typeof rawType === 'string' ? rawType.trim() : ''
+    if (spawnType !== '' && spawnType !== 'general-purpose') return ''
+    if (wasHintShown(SPAWN_RESTRICT_HINT_KEY)) return ''
+    const names = findRestrictedAgentNames()
+    if (names.length === 0) return ''
+    markHintShown(SPAWN_RESTRICT_HINT_KEY)
+    recordStat('session_hint', 0, 0, undefined, 'agent-spawn-restrict')
+    const shown = names.slice(0, SPAWN_RESTRICT_MAX_NAMES).join(', ')
+    const more = names.length > SPAWN_RESTRICT_MAX_NAMES ? ` and ${names.length - SPAWN_RESTRICT_MAX_NAMES} more` : ''
+    return `[token-goat] This spawn ran as general-purpose (the default when subagent_type is omitted), which is unrestricted: its lane starts by paying for every tool and MCP schema on the machine. Tools-restricted agent definitions exist here: ${shown}${more}. A future spawn that fits one of them can pass that name as subagent_type to start with a much smaller prefix. Advisory only: this spawn has already run, and this notice saved nothing.`
+  } catch {
+    return ''
+  }
+}
+
 function postAgentHandler(event: HookEvent): HookOutput {
   try {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
@@ -345,15 +488,19 @@ function postAgentHandler(event: HookEvent): HookOutput {
     const redactedReport = redactSecrets(extractToolResultText(event.raw))
     const resultText = redactedReport.text
     const agentReportCfg = loadConfig().agent_report
-    if (!resultText || resultText.length < agentReportCfg.min_bytes) return passOutput()
+    // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
+    const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput)
+    if (!resultText || resultText.length < agentReportCfg.min_bytes) {
+      return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
+    }
     const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)
-    if (id === null) return passOutput()
+    if (id === null) return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     // Recorded here rather than at the redaction above, and here rather than inside either branch below, because this is the first point past which the redacted report is guaranteed to reach someone: it is now in the cache, and both remaining returns (the compacted rewrite and the annotate-only notice) hand back or point at that same sanitized text. Recording at the redaction itself would credit the early `min_bytes` return, where the raw report reaches the model untouched. `storeMcpOutput`'s own redaction pass finds nothing left to strip now that the text arrives clean, so its disk_cache stat reports zero -- this replaces that count rather than double-counting it.
     if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')
     recordStat('session_hint', 0, 0)
     // `--full` is load-bearing, not decoration: a bare `mcp-output <id>` render elides its own middle past the default head 30 / tail 80, so pointing at it would promise a full report the CLI cannot produce -- the elided fence middles would be exactly what a bare recall drops again.
     const recallHint = `token-goat mcp-output ${id} --full`
-    const notice = `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}`
+    const notice = `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}${spawnAdvisory === '' ? '' : `\n${spawnAdvisory}`}`
 
     // Compact the envelope only when the combined rewrite (fence collapse, then intra-report cross-fence dedup, then blank-run collapse) actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
     const collapsed = collapseFencedBlocks(resultText, recallHint, agentReportCfg.fence_collapse_min_lines, agentReportCfg.fence_collapse_keep_lines)

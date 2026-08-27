@@ -10,7 +10,7 @@ import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
-import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences } from '../src/hooks_agent_spawn.js'
+import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences, parseAgentDefinition, findRestrictedAgentNames } from '../src/hooks_agent_spawn.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact project map is far too small to trip BRIEFING_TARGET_TOKENS on its own. Fixed-size project maps (not derived from this repo's own live index) so both the over-budget path and the cache-ids-block regression path are exercised deterministically, regardless of the host machine's index state or repo size -- see cycle 121: a test that reads buildProjectMap()'s live output for this repo passes or fails depending on ambient index staleness, not on the actual budget-vs-reminder-size coupling being tested.
 let _hugeProjectMapOverride = false
@@ -972,6 +972,120 @@ describe('Copilot CLI task tool support', () => {
       if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
       else process.env['XDG_DATA_HOME'] = prevXdg
       _resetDataDirCacheForTesting()
+    }
+  })
+})
+
+describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted roster, once per session)', () => {
+  const RESTRICTED_DEF = '---\nname: lean-coder\ndescription: scoped coder\ntools: Read, Grep, Bash\nmodel: inherit\n---\n\nBody.\n'
+  const UNRESTRICTED_DEF = '---\nname: heavy-implementer\ndescription: full inheritance is intentional\nmodel: inherit\n---\n\nBody.\n'
+  // Pinned in full, not by fragment: the honesty constraint lives in the closing sentence, and a fragment match would stay green if the text ever drifted into implying a saving.
+  const EXPECTED_ADVISORY = '[token-goat] This spawn ran as general-purpose (the default when subagent_type is omitted), which is unrestricted: its lane starts by paying for every tool and MCP schema on the machine. Tools-restricted agent definitions exist here: lean-coder. A future spawn that fits one of them can pass that name as subagent_type to start with a much smaller prefix. Advisory only: this spawn has already run, and this notice saved nothing.'
+
+  // The scanner's default root is ~/.claude/agents; the suite-wide setup sandboxes HOME/USERPROFILE, so this writes into the isolated home, never the developer's real roster.
+  function writeRoster(files: Record<string, string>): void {
+    const dir = path.join(os.homedir(), '.claude', 'agents')
+    fs.mkdirSync(dir, { recursive: true })
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body)
+  }
+
+  afterEach(() => {
+    fs.rmSync(path.join(os.homedir(), '.claude'), { recursive: true, force: true })
+  })
+
+  it('emits the exact advisory once for an untyped spawn, then never again in the same session (real cross-process load/dispatch/save cycle)', async () => {
+    writeRoster({ 'lean-coder.md': RESTRICTED_DEF, 'heavy-implementer.md': UNRESTRICTED_DEF })
+    const sid = `${sessionId}-advisory`
+    const first = await callAgentHook('post_tool_use', { prompt: 'p1', description: 'd' }, sid, 'short report')
+    expect(first.hookType).toBe('context')
+    if (first.hookType === 'context') expect(first.context).toBe(EXPECTED_ADVISORY)
+    const second = await callAgentHook('post_tool_use', { prompt: 'p2', description: 'd' }, sid, 'short report')
+    expect(second.hookType).toBe('pass')
+  })
+
+  it('also fires on an explicit subagent_type of general-purpose, which is the same unrestricted default spelled out', async () => {
+    writeRoster({ 'lean-coder.md': RESTRICTED_DEF })
+    const sid = `${sessionId}-advisory-explicit`
+    const result = await callAgentHook('post_tool_use', { subagent_type: 'general-purpose', prompt: 'p', description: 'd' }, sid, 'short report')
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toBe(EXPECTED_ADVISORY)
+  })
+
+  it('stays silent on a typed spawn: restriction status of a named type is not observable at the hook, so only the definitionally-unrestricted default triggers', async () => {
+    writeRoster({ 'lean-coder.md': RESTRICTED_DEF })
+    const sid = `${sessionId}-advisory-typed`
+    const result = await callAgentHook('post_tool_use', { subagent_type: 'researcher', prompt: 'p', description: 'd' }, sid, 'short report')
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('stays silent when no tools-restricted definition exists on the machine (an unclearable hint trains the user to ignore every hint)', async () => {
+    writeRoster({ 'heavy-implementer.md': UNRESTRICTED_DEF })
+    const sid = `${sessionId}-advisory-gate`
+    const result = await callAgentHook('post_tool_use', { prompt: 'p', description: 'd' }, sid, 'short report')
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('rides along with the report-cache notice on the large-prose path instead of being dropped by it', async () => {
+    writeRoster({ 'lean-coder.md': RESTRICTED_DEF })
+    const sid = `${sessionId}-advisory-large`
+    const largeReport = 'Detailed finding line.\n'.repeat(400)
+    const result = await callAgentHook('post_tool_use', { prompt: 'p', description: 'd' }, sid, largeReport)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toMatch(/^\[token-goat\] This subagent report \([\d.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full\n/)
+      expect(result.context.endsWith(`\n${EXPECTED_ADVISORY}`)).toBe(true)
+    }
+  })
+
+  it('records the advisory as a zero-credit session_hint: it fires after the spawn it observed and cannot save that spawn', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      writeRoster({ 'lean-coder.md': RESTRICTED_DEF })
+      const before = summarize(3650).by_kind['session_hint']
+      const sid = `${sessionId}-advisory-stats`
+      // Small-report path, so the advisory is the ONLY session_hint producer this dispatch touches: the cached-report path records its own session_hint sibling and would confound the event delta.
+      const result = await callAgentHook('post_tool_use', { prompt: 'p', description: 'd' }, sid, 'short report')
+      expect(result.hookType).toBe('context')
+      const after = summarize(3650).by_kind['session_hint']
+      expect((after?.events ?? 0) - (before?.events ?? 0)).toBe(1)
+      expect((after?.bytes_saved ?? 0) - (before?.bytes_saved ?? 0)).toBe(0)
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
+  })
+
+  it('parses restriction out of every producer shape the roster can carry: inline list, block list, star, absent, bare, and CRLF frontmatter', () => {
+    expect(parseAgentDefinition('---\nname: a\ntools: Read, Grep\n---\nb', 'f')).toEqual({ name: 'a', restricted: true })
+    expect(parseAgentDefinition('---\nname: b\ntools:\n  - Read\n  - Bash\n---\nb', 'f')).toEqual({ name: 'b', restricted: true })
+    expect(parseAgentDefinition('---\nname: c\ntools: *\n---\nb', 'f')).toEqual({ name: 'c', restricted: false })
+    expect(parseAgentDefinition('---\nname: d\nmodel: inherit\n---\nb', 'f')).toEqual({ name: 'd', restricted: false })
+    expect(parseAgentDefinition('---\nname: e\ntools:\nmodel: inherit\n---\nb', 'f')).toEqual({ name: 'e', restricted: false })
+    expect(parseAgentDefinition('---\r\nname: g\r\ntools: Read\r\n---\r\nb', 'f')).toEqual({ name: 'g', restricted: true })
+    expect(parseAgentDefinition('---\ntools: Read\n---\nb', 'fallback-name')).toEqual({ name: 'fallback-name', restricted: true })
+    expect(parseAgentDefinition('no frontmatter here', 'f')).toBeNull()
+  })
+
+  it('walks a roster with nested and mixed content and returns exactly the sorted restricted names', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-roster-'))
+    try {
+      fs.writeFileSync(path.join(root, 'zeta.md'), '---\nname: zeta-restricted\ntools: Read\n---\nb')
+      fs.writeFileSync(path.join(root, 'open.md'), UNRESTRICTED_DEF)
+      fs.writeFileSync(path.join(root, 'notes.txt'), 'not an agent definition')
+      fs.mkdirSync(path.join(root, 'collection'))
+      fs.writeFileSync(path.join(root, 'collection', 'alpha.md'), '---\ntools:\n  - Grep\n---\nb')
+      expect(findRestrictedAgentNames([root])).toEqual(['alpha', 'zeta-restricted'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
     }
   })
 })
