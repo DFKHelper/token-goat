@@ -115,8 +115,13 @@ export function bfsCallChains(start: string, callersOf: CallersOfFn, maxDepth: n
     const tip = chain[chain.length - 1]
     if (tip === undefined) continue
     const callers = callersOf(tip)
-    if (callers.length === 0 || chain.length > maxDepth) {
+    if (callers.length === 0) {
       complete.push(chain)
+      continue
+    }
+    if (chain.length > maxDepth) {
+      // The tip still HAS callers, the walk just ran out of depth. Without a sentinel this chain renders exactly like one that ended at a real entry point, so a truncated result reads as a complete one -- same convention as the (cycle:X)/(visited:X) markers below.
+      complete.push([...chain, '(depth-limit)'])
       continue
     }
     let expanded = false

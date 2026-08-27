@@ -279,8 +279,22 @@ describe('bfsCallChains', () => {
     const callersOf = (n: string): string[] => [`${n}x`]
     const chains = bfsCallChains('a', callersOf, 3)
     for (const chain of chains) {
-      expect(chain.length).toBeLessThanOrEqual(4)
+      // The sentinel is a marker, not a traversed hop, so it does not count against maxDepth.
+      expect(chain.filter((n) => !n.startsWith('(')).length).toBeLessThanOrEqual(4)
     }
+  })
+
+  it('marks a chain cut short by maxDepth with a (depth-limit) sentinel instead of rendering it like a completed chain', () => {
+    // leaf <- h1 <- h2 <- h3: an unbounded walk reaches h3, a --depth 2 walk stops at h2. Without a
+    // sentinel both render as `... -> h2` / `... -> h3` and a truncated answer is indistinguishable
+    // from one that genuinely reached an entry point.
+    const graph: Record<string, string[]> = { leaf: ['h1'], h1: ['h2'], h2: ['h3'] }
+    const callersOf = (n: string): string[] => graph[n] ?? []
+    const truncated = bfsCallChains('leaf', callersOf, 2).map((c) => c.join('->'))
+    expect(truncated).toEqual(['leaf->h1->h2->(depth-limit)'])
+    // Control: the same graph walked deep enough terminates on a real root and carries NO sentinel.
+    const full = bfsCallChains('leaf', callersOf, 8).map((c) => c.join('->'))
+    expect(full).toEqual(['leaf->h1->h2->h3'])
   })
 
   it('fails if the cycle guard is removed — mutation verification target', () => {
@@ -2865,6 +2879,44 @@ describe('runCallChain file-symbol cache hoisting', () => {
       // references inside the same file. With the cache correctly hoisted once outside the BFS
       // loop, that file's symbols are fetched exactly once and reused for every hop.
       expect(callsForFile.length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runCallChain depth truncation (regression) ------------------------------
+
+describe('runCallChain depth-limit sentinel', () => {
+  // Regression: a chain the BFS abandoned because it hit --depth rendered exactly like a chain
+  // that terminated at a real entry point. Cycles and cross-branch revisits both got a sentinel,
+  // a depth cut got none, so a truncated answer reported itself as complete.
+  it('names the depth cut in text output and leaves an unbounded walk unmarked', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-chain-depth-'))
+    try {
+      const file = join(dir, 'depth.ts')
+      writeFileSync(file, [
+        'export function depthLeaf9q() { return 1 }',
+        'export function depthHop1q() { return depthLeaf9q() }',
+        'export function depthHop2q() { return depthHop1q() }',
+        'export function depthHop3q() { return depthHop2q() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+      try {
+        const truncated = captureStdout(() => {
+          expect(runCallChain({ symbol: 'depthLeaf9q', depth: 2 })).toBe(0)
+        })
+        expect(truncated.trim()).toBe('depthLeaf9q -> depthHop1q -> depthHop2q -> (depth-limit)')
+        const full = captureStdout(() => {
+          expect(runCallChain({ symbol: 'depthLeaf9q', depth: 8 })).toBe(0)
+        })
+        expect(full.trim()).toBe('depthLeaf9q -> depthHop1q -> depthHop2q -> depthHop3q')
+      } finally {
+        cwdSpy.mockRestore()
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
