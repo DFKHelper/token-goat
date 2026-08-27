@@ -1983,12 +1983,27 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
     const skills = await listSkills(sessionId)
     let regenerated = 0
     let skipped = 0
+    let noMarker = 0
+    let unresolvable = 0
     for (const skill of skills) {
       const filePath = await getSkillFilePath(skill.name)
-      if (!filePath) continue
-      const body = decodeSource(fs.readFileSync(filePath))
+      if (!filePath) {
+        unresolvable++
+        continue
+      }
+      // getSkillFilePath returns a cached sourcePath without checking it still exists, so a skill whose source file was deleted or renamed used to throw a raw ENOENT here and crash the whole --all pass -- the exact command doctor prints as the compact remediation. A vanished source is the same operator-visible state as an unresolvable name: count it there and keep going.
+      let body: string
+      try {
+        body = decodeSource(fs.readFileSync(filePath))
+      } catch {
+        unresolvable++
+        continue
+      }
       const compact = extractCompactFromMarker(body)
-      if (compact === null) continue
+      if (compact === null) {
+        noMarker++
+        continue
+      }
       const sourceSha = contentHash(body)
       if (skill.compactStale === false) {
         skipped++
@@ -1997,7 +2012,14 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
         regenerated++
       }
     }
-    out(`Regenerated ${regenerated}, skipped ${skipped} (fresh), total ${skills.length}.`)
+    // Every skill lands in exactly one bucket and every non-empty bucket is named: the old two-bucket summary silently dropped markerless and unresolvable skills, so "Regenerated 0, skipped 2, total 30" read as complete while the 28 skills that actually need operator action (adding a COMPACT_END marker) vanished from the report -- the one surface the docs and doctor point at for compact remediation.
+    const parts = [`Regenerated ${regenerated}, skipped ${skipped} (fresh)`]
+    if (noMarker > 0) parts.push(`no marker ${noMarker}`)
+    if (unresolvable > 0) parts.push(`unresolvable ${unresolvable}`)
+    out(`${parts.join(', ')}, total ${skills.length}.`)
+    if (noMarker > 0) {
+      out(`${noMarker} cached skill${noMarker === 1 ? ' has' : 's have'} no COMPACT_END marker and cannot be compacted; run \`token-goat skill-size\` for per-skill marker recommendations.`)
+    }
     return
   }
 
