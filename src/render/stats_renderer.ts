@@ -483,6 +483,50 @@ const _KIND_GROUPS: KindGroup[] = [
       'imports',
       'changed_lookup',
       'dep_docs',
+      // Every other SOURCE_READ kind in stats.ts's KIND_TO_SOURCE: the surgical-read commands over documents, structured data and session/PR state. They were registered and produced but grouped nowhere, so `stats --full` printed the whole family under 'Other', away from the read-savings siblings they are measured against. image_meta/image_text sit here rather than under 'Images' because stats.ts files them as SOURCE_READ: they save read bytes, they do not shrink an image.
+      'brief_view',
+      'conflicts',
+      'coverage_report_gaps',
+      'csv_query',
+      'csv_profile',
+      'compact_doc',
+      'docx_outline',
+      'docx_text',
+      'gdrive_sections',
+      'image_meta',
+      'image_text',
+      'json_query',
+      'json_outline',
+      'note_read',
+      'note_list',
+      'openapi_op',
+      'openapi_outline',
+      'pdf_extract',
+      'pdf_locate',
+      'pdf_outline',
+      'pdf_meta',
+      'pptx_outline',
+      'pptx_slide',
+      'pptx_notes',
+      'pptx_text',
+      'pr_slice',
+      'session_outline',
+      'session_slice',
+      'sqlite_query',
+      'sqlite_schema',
+      'transcript',
+      'transcript_outline',
+      'video_chapters',
+      'xlsx_sheets',
+      'xlsx_head',
+      'xlsx_range',
+      'xlsx_query',
+      'xml_query',
+      'xml_outline',
+      'yaml_query',
+      'yaml_outline',
+      'zip_list',
+      'zip_read',
     ]),
   },
   { label: 'Lookups', members: new Set(['symbol_lookup', 'semantic_search', 'map_lookup']) },
@@ -513,6 +557,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'websearch_dedup_hint',
       'large_file_hint_followed',
       'large_file_hint_ignored',
+      'evidence_cache_hit',
     ]),
   },
   // Empty for the same reason as MCP below: every live Bash kind arrives through _kindGroupLabel's `bash_compress:` prefix branch, not through a literal name. The fifteen literal names this set used to carry (bash_output_cached, bash_dedup_hint, env_probe_cache_hit and the rest) came over with the Python port and were never recorded or registered anywhere in this tree, so they grouped rows that could not exist.
@@ -537,6 +582,20 @@ const _KIND_GROUPS: KindGroup[] = [
       'skill_compact_inlined',
     ]),
   },
+  // SOURCE_CONTENT: real rewrites of tool output that remove real bytes (agent report compaction, Grep fold, browser tab dedup, bash/content compression and the handoff pair). The by-source table has shown a 'content' row since the source was added, but the by-kind table had no member set for it, so every one of these kinds printed under 'Other'. The taskoutput: prefix branch in _kindGroupLabel routes here too.
+  {
+    label: 'Content',
+    members: new Set([
+      'content_compress',
+      'content_retrieve',
+      'agent_report_compact',
+      'agent_report_compact_declined',
+      'browser_tab_dedup',
+      'grep:fold',
+      'handoff_create',
+      'handoff_resolve',
+    ]),
+  },
 ]
 
 /** Every kind name literally listed in a {@link _KIND_GROUPS} member set. Exported for guards/rendered_stat_kind_is_registered.test.ts, the third mirror in the stat-registry guard family: a name the renderer groups but that stats.ts never registered has no source, no producer, and can only ever render as an empty row. */
@@ -544,14 +603,15 @@ export function _renderedKindNames(): string[] {
   return _KIND_GROUPS.flatMap((g) => [...g.members])
 }
 
-function _kindGroupLabel(kind: string): string {
-  if (kind.startsWith('bash_compress:')) {
+/** The "By kind" group heading a stat kind renders under, or 'Other' when no literal member set and no prefix branch claims it. Exported for guards/every_registered_stat_kind_is_grouped.test.ts, the fourth mirror in the stat-registry guard family: a kind stats.ts registers but the renderer groups nowhere falls to 'Other', so it prints away from its siblings and reads as uncategorised. */
+export function _kindGroupLabel(kind: string): string {
+  if (kind.startsWith('bash_compress:') || kind.startsWith('bashoutput:')) {
     return 'Bash'
   }
   // Mirrors the bash_compress: special case above for stats.ts's other live colon-prefixed kind
   // (webfetch:recall) -- KIND_PREFIX_TO_SOURCE maps it to SOURCE_WEB, but without this branch it
   // fell through every literal _KIND_GROUPS member set to 'Other' instead of 'Web'.
-  if (kind.startsWith('webfetch:')) {
+  if (kind.startsWith('webfetch:') || kind.startsWith('gdrive:')) {
     return 'Web'
   }
   // Same special case for the mcp: prefix (mcp:compress, mcp:recall). KIND_PREFIX_TO_SOURCE maps
@@ -564,8 +624,12 @@ function _kindGroupLabel(kind: string): string {
   // Same special case for the skill_body: prefix (skill_body:compact). Its literal siblings below
   // already sit in the 'Compact / Skills' set, so without this branch a colon-prefixed skill kind
   // would render under 'Other', separated from the very rows it belongs beside.
-  if (kind.startsWith('skill_body:')) {
+  if (kind.startsWith('skill_body:') || kind.startsWith('skill_compact:')) {
     return 'Compact / Skills'
+  }
+  // taskoutput: is KIND_PREFIX_TO_SOURCE's other SOURCE_CONTENT entry (subagent report recall); it groups with the literal Content names below.
+  if (kind.startsWith('taskoutput:')) {
+    return 'Content'
   }
   for (const group of _KIND_GROUPS) {
     if (group.members.has(kind)) {

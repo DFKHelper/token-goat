@@ -952,6 +952,39 @@ describe('EnvFilter compression', () => {
     expect(out).toMatch(/\d+ env vars suppressed/)
   })
 
+  it('drops a suppressed variable together with its multi-line value, and keeps a kept variable together with its multi-line value (regression: ENV_LINE_RE only matches the NAME= line, so the continuation lines of a suppressed value fell through to the default keep branch and the secret body survived in the output with its name stripped off)', () => {
+    const noise = Array.from({ length: 22 }, (_, i) => `RANDOM_${i}=x`).join('\n')
+    const stdout = [
+      'MY_SIGNING_KEY=-----BEGIN RSA PRIVATE KEY-----',
+      'MIIEpAIBAAKCAQEAsecretbodyline1',
+      'MIIEpAIBAAKCAQEAsecretbodyline2',
+      '-----END RSA PRIVATE KEY-----',
+      'AWS_CA_BUNDLE=-----BEGIN CERTIFICATE-----',
+      'MIIDdTCCAl2gAwIBAgIkeptbodyline1',
+      '-----END CERTIFICATE-----',
+      noise,
+    ].join('\n')
+    const out = apply(envFilter, stdout, ['env'])
+
+    // The suppressed variable's body must go with its name.
+    expect(out, 'the suppressed variable name leaked').not.toContain('MY_SIGNING_KEY')
+    expect(out, 'the suppressed variable body survived with its name stripped off').not.toContain('MIIEpAIBAAKCAQEAsecretbodyline1')
+    expect(out, 'the suppressed variable body survived with its name stripped off').not.toContain('MIIEpAIBAAKCAQEAsecretbodyline2')
+    // The kept variable's body must stay with it.
+    expect(out, 'the kept variable lost its multi-line value').toContain('AWS_CA_BUNDLE=-----BEGIN CERTIFICATE-----')
+    expect(out, 'the kept variable lost its multi-line value').toContain('MIIDdTCCAl2gAwIBAgIkeptbodyline1')
+    expect(out, 'the kept variable lost its multi-line value').toContain('-----END CERTIFICATE-----')
+    // 24 NAME= lines total (MY_SIGNING_KEY, AWS_CA_BUNDLE, RANDOM_0..21), of which only AWS_CA_BUNDLE is kept.
+    expect(out).toContain('[token-goat: 23 env vars suppressed (24 total)')
+  })
+
+  it('keeps a trailing stderr block even when the last stdout variable was suppressed (the --- stream separator is not part of any value)', () => {
+    const noise = Array.from({ length: 25 }, (_, i) => `RANDOM_${i}=x`).join('\n')
+    const out = apply(envFilter, noise, ['env'], { stderr: 'env: warning: could not read /etc/environment' })
+    expect(out, 'the stream separator was eaten as a continuation line').toContain('---')
+    expect(out, 'stderr was eaten as a continuation of the last suppressed variable').toContain('env: warning: could not read /etc/environment')
+  })
+
   it('keeps AWS_ prefixed vars', () => {
     const vars = Array.from({ length: 25 }, (_, i) => `RANDOM_${i}=x`).join('\n')
     const out = apply(envFilter, `AWS_ACCESS_KEY_ID=AKIA...\n${vars}`, ['env'])

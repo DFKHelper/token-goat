@@ -1148,14 +1148,23 @@ export class EnvFilter extends ToolFilter {
 
     const kept: string[] = []
     let suppressed = 0
+    let inSuppressedValue = false
     for (const line of lines) {
       const m = ENV_LINE_RE.exec(line)
-      if (!m) { kept.push(line); continue }
+      if (!m) {
+        // Not a NAME=... line, so it is a continuation of the preceding variable's value: `env` prints a multi-line value (a PEM key, an inline service-account JSON) verbatim across several lines and only the first carries the name. Keeping these unconditionally dropped the NAME= line of a suppressed variable while leaving its body behind, so the output ended up holding an unlabelled secret body and nothing else. The `---` separator combineStreams inserts between stdout and stderr belongs to no value, so it ends the current one and is always kept.
+        if (line === '---') { inSuppressedValue = false; kept.push(line); continue }
+        if (inSuppressedValue) continue
+        kept.push(line)
+        continue
+      }
       const varName = m[1]!
       if (ENV_KEEP_VARS.has(varName) || ENV_KEEP_PREFIXES.some((p) => varName.startsWith(p))) {
         kept.push(line)
+        inSuppressedValue = false
       } else {
         suppressed++
+        inSuppressedValue = true
       }
     }
     if (suppressed) {
