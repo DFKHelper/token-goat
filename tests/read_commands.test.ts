@@ -4597,6 +4597,39 @@ describe('read_commands', () => {
       expect(code).toBe(1)
       expect(stderr).toContain('Failed to parse YAML')
     })
+
+    // Regression: js-yaml's loadAll returns ZERO documents for an empty, whitespace-only or comment-only file, and parseYamlDocument's multi-document branch handed that `[]` straight through -- so an empty YAML file was announced as "array of 0 elements (unknown)" and a yaml-query against it said the key "does not exist on array value". Both claim a shape the document does not have. An empty YAML node is null (exactly what a bare `---` document already parses to), so all three inputs must render as the null scalar the bare `---` control below produces.
+    it.each([
+      ['empty.yaml', ''],
+      ['whitespace.yaml', '   \n'],
+      ['comment-only.yaml', '# just a comment\n'],
+    ])('outlines a document-less YAML file (%s) as the null scalar, not an empty array', (name, body) => {
+      const f = path.join(tempDir, name)
+      fs.writeFileSync(f, body)
+      let code = -1
+      const { stdout } = capture(() => { code = runYamlOutline({ file: f }) })
+      expect(code).toBe(0)
+      expect(stdout).toBe('(scalar null)\n')
+    })
+
+    it('reports a document-less YAML file identically to an explicit bare --- document', () => {
+      const empty = path.join(tempDir, 'nodoc.yaml')
+      const bare = path.join(tempDir, 'baredoc.yaml')
+      fs.writeFileSync(empty, '')
+      fs.writeFileSync(bare, '---\n')
+      const a = capture(() => { runYamlOutline({ file: empty, json: true }) }).stdout
+      const b = capture(() => { runYamlOutline({ file: bare, json: true }) }).stdout
+      expect(a).toBe('{"kind":"primitive","type":"null"}\n')
+      expect(b).toBe(a)
+    })
+
+    // Control: a genuine multi-document stream must still outline as an array, so the fix above cannot be over-applied by collapsing every stream to its first document.
+    it('still outlines a two-document stream as an array of 2 objects', () => {
+      const f = path.join(tempDir, 'twodocs.yaml')
+      fs.writeFileSync(f, 'kind: Service\n---\nkind: Deployment\n')
+      const { stdout } = capture(() => { runYamlOutline({ file: f, json: true }) })
+      expect(JSON.parse(stdout)).toEqual({ kind: 'array', length: 2, elementType: 'object', sampleKeys: [{ name: 'kind', type: 'string' }], heterogeneous: false })
+    })
   })
 
   describe('runYamlQuery', () => {
@@ -4684,6 +4717,16 @@ describe('read_commands', () => {
       const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'items[0].doesNotExist' }) })
       expect(code).toBe(1)
       expect(stderr).toContain('path not found')
+    })
+
+    // Regression companion to runYamlOutline's document-less cases above: the error names the container type the key was looked up on, so an empty file must not tell the caller their manifest is an array.
+    it('names the null document, not an array, when querying a key on an empty YAML file', () => {
+      const f = path.join(tempDir, 'emptyq.yaml')
+      fs.writeFileSync(f, '')
+      let code = -1
+      const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'a' }) })
+      expect(code).toBe(1)
+      expect(stderr).toBe("path not found: key 'a' does not exist on null value\n")
     })
 
     it('returns 1 with a clear error for an out-of-range array index', () => {
