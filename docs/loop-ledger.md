@@ -108,3 +108,4 @@ row go to the user.
 | 45 | ec428146 | hooks_bash sed hint admission | medium (66.8% -> 80.1% of 19,380) | yes | 117 |
 | 46 | 5ef2f7ca | hooks_bash cat/awk hint admission | medium (cat 15.1% -> 21.1% of 8,179; awk 10.3% -> 23.7% of 916) | yes | ~180 |
 | 47 | 605ae10c | read_commands outline output economy | medium (outline -11.2% over src/, -41% doc-heavy) | yes | 98 |
+| 48 | c2f1b165 | hooks_agent_spawn advisory premise | n/a (kill condition fired, no code) | n/a | 94 |
