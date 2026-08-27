@@ -198,6 +198,29 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
 
     expect(existsSync(markerPath)).toBe(false)
   })
+
+  it('applies a rewriteOutput to the tool result: a fetched body carrying a secret is replaced with the redacted text, not passed through raw', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const sessionID = 'inprocess-rewrite-test-' + Math.random().toString(36).slice(2)
+
+    // Under 1024 bytes on purpose: postFetchHandler's small-body branch redacts and emits a rewriteOutput without touching the web cache, so this drives the exact serializeOutput shape (hookSpecificOutput.updatedToolOutput) the plugin used to drop on the floor -- opencode sessions got hint appends but never a redacted or fenced result.
+    const secret = 'ghp_' + 'a'.repeat(36)
+    const out = { args: {}, output: `Docs mention token ${secret} in the log.` }
+    await hooks['tool.execute.after']!({ tool: 'webfetch', sessionID, args: { url: 'https://example.com/page' } }, out)
+
+    // Exact full value: the whole tool result is replaced by the redacted text, not annotated alongside the raw secret.
+    expect(out.output).toBe('Docs mention token [REDACTED:github_token] in the log.')
+    expect(existsSync(markerPath)).toBe(false)
+  })
 })
 
 describe('openclaw plugin: in-process hook call replaces the second node spawn', () => {

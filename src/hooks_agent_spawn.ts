@@ -27,6 +27,7 @@ import { recordStat } from './stats.js'
 import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { getHarnessName } from './bridges/registry.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder + report
@@ -458,6 +459,8 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
  */
 export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
   try {
+    // Gated off entirely on Copilot CLI, for two independent reasons established in src/bridges/copilot_cli.ts: (1) this advisory rides post_tool_use additionalContext, which Copilot's 1.0.80 bundle drops on the JS path (no onAdditionalContext supplier, no additional_contexts key in that event's native return payload), so it would be emitted into a void while still burning the once-per-session hint budget and recording a session_hint stat for text nobody received; (2) the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters) -- Copilot's own task tool carries no subagent_type argument, so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn even if the channel delivered. Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference.
+    if (getHarnessName() === 'copilot_cli') return ''
     const rawType = toolInput['subagent_type']
     const spawnType = typeof rawType === 'string' ? rawType.trim() : ''
     if (spawnType !== '' && spawnType !== 'general-purpose') return ''

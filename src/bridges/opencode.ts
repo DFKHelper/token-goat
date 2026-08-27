@@ -61,7 +61,14 @@
  *   - context (other events): {"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}
  *   - rewriteInput (pre_tool_use only, e.g. Bash command compression):
  *     {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{...}}}
+ *   - rewriteOutput (post_tool_use only, e.g. WebFetch fencing/redaction, output compression):
+ *     {"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"..."}}
  *   - pass: {}
+ *
+ * This list is the complete producer set from serializeOutput, on purpose: an earlier revision
+ * enumerated only four of the five shapes, and the missing one (rewriteOutput) silently shipped
+ * dead -- tool.execute.after applied the context append and nothing else, so injection fencing,
+ * secret redaction and output compression never reached an opencode session's model.
  */
 import { BRIDGE_RELAY_JS } from "./relay_block.js";
 
@@ -206,6 +213,14 @@ export const TokenGoatPlugin = async ({ directory }) => {
         cwd: directory,
       })
       if (!resp) return
+
+      // rewriteOutput: replace the tool result wholesale. This is the shape every post_tool_use rewrite producer emits (WebFetch injection fencing and secret redaction, websearch redaction, bash/grep output compression, agent-report compaction), and it went unapplied here for the same whitelist reason the response-contract docblock above used to omit it -- the plugin only handled the shapes its author listed, so opencode sessions got the appended hint channel but never a fenced, redacted or compressed result. Mutating output.output is the exact mechanism the context append below already relies on, so this claims no capability the append did not.
+      const hso = resp.hookSpecificOutput
+      const updatedToolOutput = hso && typeof hso.updatedToolOutput === "string" ? hso.updatedToolOutput : undefined
+      if (updatedToolOutput !== undefined) {
+        output.output = updatedToolOutput
+        return
+      }
 
       const context = extractContext(resp)
       if (context && typeof output.output === "string") {
