@@ -67,11 +67,28 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   return ''
 }
 
-/** Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`. */
-export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body']
+/**
+ * Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`.
+ *
+ * `stdout` is last but is the key Claude Code itself actually uses: its Bash `tool_response` is
+ * `{stdout, stderr, interrupted, isImage, noOutputExpected}`, carrying none of the four names ahead
+ * of it. Without it every post-Bash path that needs the command's output (the bash-output cache,
+ * the `gh api` scope/`--jq` hints, the failing-test-runner advisory, compound-command compression)
+ * read an empty string and did nothing on the harness token-goat primarily targets. It is appended
+ * rather than promoted so no harness that does send `output`/`content`/`text`/`body` changes which
+ * field wins.
+ */
+export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body', 'stdout']
 
-/** Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`. */
-export const BODY_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'body', 'text', 'content']
+/**
+ * Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`.
+ *
+ * `result` is appended for the same reason `stdout` is above: Claude Code's WebFetch `tool_response`
+ * is `{result, url, code, codeText, bytes, durationMs}`, so the fetched page body arrives under
+ * `result` and nothing else. Without it the injection scan, the secret redaction and the body cache
+ * all ran against an empty string on every real fetch.
+ */
+export const BODY_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'body', 'text', 'content', 'result']
 
 /**
  * Return true when a tool_response is an MCP `CallToolResult` carrying an in-band `isError: true`
