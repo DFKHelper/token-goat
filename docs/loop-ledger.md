@@ -117,3 +117,4 @@ row go to the user.
 | 49 | 47452cc4 | hooks_agent_spawn restriction advisory | n/a (new advisory, zero credit) | n/a | 145 |
 | 50 | 1bec3628 | cli skill-compact --all reporting | medium (markerless bucket dropped; ENOENT crash) | yes | 106 |
 | 51 | 8c6cb4a2 | hook channel matrix, copilot + opencode bridges | high (opencode redaction/fencing never applied; loop 49 advisory dead and misfiring on copilot) | yes | 232 |
+| 52 | 6a25ea3d | bridges image-shrink reroute, openclaw arg keys | high (all getFilePath hooks no-opped on openclaw; shrink dead on 2 bridges) | yes | 256 |
