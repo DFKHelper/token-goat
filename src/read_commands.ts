@@ -23,7 +23,7 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isA
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, filtersFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -2786,16 +2786,10 @@ function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { na
  */
 // A file whose symbols were ALL removed by a filter renders as "(0 symbols)", which is the same thing an unindexed or symbol-less file shows -- except that case gets noSymbolsMessage explaining itself, and this one silently looked like a definitive answer about the file. Emitted only when the file genuinely had symbols before filtering, so the honest empty case keeps its own dedicated message untouched.
 function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefined, grep: string | undefined): string {
-  const plural = preFilterCount === 1 ? 'symbol' : 'symbols'
-  // Name every filter that is actually active, not just the first one: with both set, blaming one of them sends the caller to widen the wrong knob.
   const parts: string[] = []
   if (minLines !== undefined) parts.push(`--min-lines ${minLines}`)
   if (grep !== undefined) parts.push(`--grep ${grep}`)
-  const cause = parts.length === 0 ? 'the active filter' : parts.join(' + ')
-  const knob = parts.length > 1 ? 'filters' : 'filter'
-  // The verb has to agree with the noun the count already selects: "all 1 indexed symbol were filtered out" reads as a typo in the tool rather than as a report about the file.
-  const verb = preFilterCount === 1 ? 'was' : 'were'
-  return `  (all ${preFilterCount} indexed ${plural} ${verb} filtered out by ${cause}; the file is indexed -- widen or drop the ${knob} to see them)`
+  return filtersFilteredToEmptyNotice(preFilterCount, parts, 'indexed symbol', 'indexed symbols', 'the file is indexed')
 }
 
 function prepareSymbolListing(
@@ -3118,11 +3112,12 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
       const headTruncated = result.rows.length < result.totalRows
       const capped = guardJsonRows(rowsJson)
-      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows })
+      // Text mode says "all N data rows were filtered out"; --json needs the same distinction or a consumer sees totalCount 0 for both "the filter matched nothing" and "the file has no data".
+      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows, ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}) })
       emit(jsonText)
       recordReadStat('csv_query', fullSourceBytes, jsonText, opts.file)
     } else {
-      const tableText = formatCsvTable(result)
+      const tableText = formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`))
       emit(tableText)
       recordReadStat('csv_query', fullSourceBytes, tableText, opts.file)
     }

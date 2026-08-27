@@ -9,6 +9,8 @@ import { displaySafeText } from './paths.js'
 
 import { parse } from 'csv-parse/sync'
 
+import { filtersFilteredToEmptyNotice } from './util.js'
+
 export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
 
 export interface CsvWhere {
@@ -83,6 +85,8 @@ export interface CsvQueryResult {
   header: string[]
   rows: string[][]
   totalRows: number
+  /** Data rows present in the file before any --where filtering, so the CLI layer can tell "this filter matched nothing" apart from "this file has no data rows" -- totalRows alone is 0 in both cases. */
+  preFilterRows: number
 }
 
 // The column-capture excludes = < > ~ outright (they can each start a real single-char
@@ -212,7 +216,7 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
   const limited = opts.head !== undefined ? filtered.slice(0, opts.head) : filtered
   const rows = limited.map((r) => columns.map((c) => r[c] ?? ''))
 
-  return { header: columns, rows, totalRows }
+  return { header: columns, rows, totalRows, preFilterRows: records.length }
 }
 
 export function quoteCsvCell(cell: string): string {
@@ -226,13 +230,17 @@ export function quoteCsvCell(cell: string): string {
   return cell
 }
 
-export function formatCsvTable(result: CsvQueryResult): string {
+export function formatCsvTable(result: CsvQueryResult, activeFilters: string[] = []): string {
   const lines = [
     result.header.map(quoteCsvCell).join(','),
     ...result.rows.map((r) => r.map(quoteCsvCell).join(','))
   ]
   if (result.totalRows > result.rows.length) {
     lines.push(`...(${result.totalRows - result.rows.length} more rows elided; use --head to see more)`)
+  }
+  // A --where that matched nothing rendered as a bare header line, byte-identical to a file that has no data at all -- except the latter gets its own "No data rows found" message and this silently read as a definitive answer about the file. Checked on totalRows (post-where, pre-head) so a --head 0 keeps the elision line above instead of claiming the filter emptied the result. Shared here rather than in each CLI wrapper so xlsx-query gets the same notice as csv-query.
+  if (result.totalRows === 0 && result.preFilterRows > 0) {
+    lines.push(filtersFilteredToEmptyNotice(result.preFilterRows, activeFilters, 'data row', 'data rows'))
   }
   return lines.join('\n')
 }

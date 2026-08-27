@@ -21,6 +21,7 @@ import {
   compareHopEntries,
   enclosingSymbol,
   findCycles,
+  findCyclesCapped,
   isDeadSymbol,
   isTestFile,
   looksLikeTypeClass,
@@ -3890,6 +3891,29 @@ describe('findCycles', () => {
     expect(() => findCycles(g)).not.toThrow()
     expect(findCycles(g)).toHaveLength(0)
   })
+
+  // findCycles stops enumerating at MAX_CYCLES (200) and used to return only the array, so runArch's `cycles (N found)` printed exactly "200 found" for a graph with thousands -- a truncated report indistinguishable from a complete one. findCyclesCapped enumerates one past the bound and reports the overflow.
+  it('reports truncated=true when enumeration stops at the 200-cycle bound', () => {
+    // A complete digraph on 8 nodes has thousands of simple cycles, far past the bound.
+    const nodes = ['n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7']
+    const g = new Map<string, string[]>()
+    for (const a of nodes) g.set(a, nodes.filter((b) => b !== a))
+    const result = findCyclesCapped(g)
+    expect(result.truncated).toBe(true)
+    // Exactly the reported cap: the probe cycle enumerated past it must never reach the caller.
+    expect(result.cycles).toHaveLength(200)
+    // The public wrapper keeps its old shape and its old cap.
+    expect(findCycles(g)).toHaveLength(200)
+  })
+
+  // The over-fix control: a graph genuinely under the bound must keep truncated=false, so the flag cannot be a constant true.
+  it('reports truncated=false for a graph genuinely under the bound', () => {
+    const g = new Map<string, string[]>([['a', ['b']], ['b', ['a']], ['c', ['a']]])
+    const result = findCyclesCapped(g)
+    expect(result.truncated).toBe(false)
+    // Pinned rotation: tarjanSCCs visits 'c' first, so the single cycle is enumerated from 'b' (verified stable across repeat runs).
+    expect(result.cycles).toEqual([['b', 'a', 'b']])
+  })
 })
 
 // ---- runSimilar (integration) -----------------------------------------------
@@ -4777,6 +4801,77 @@ describe('runArch', () => {
     }
   })
 
+  // A real repo whose import graph crosses the 200-cycle enumeration bound printed "cycles (200 found):" -- the same line a project with exactly 200 cycles prints, so the truncation was invisible on both the text and the --json surface.
+  it('says the cycle list was truncated when the import graph crosses the enumeration bound', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-cyclecap-'))
+    try {
+      // Eight files each importing all seven others: a complete digraph, thousands of simple cycles.
+      const names = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7']
+      for (const n of names) {
+        const imports = names.filter((o) => o !== n).map((o) => `import './${o}'`).join('\n')
+        writeFileSync(join(repo, `${n}.ts`), `${imports}\nexport const ${n} = 1\n`)
+      }
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      const runCaptured = (json: boolean): string => {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+        try {
+          expect(runArch({ cwd: repo, top: 10, ...(json ? { json: true } : {}) })).toBe(0)
+        } finally {
+          process.stdout.write = origWrite
+        }
+        return captured
+      }
+
+      const text = runCaptured(false)
+      // Proves the fixture really crossed the bound rather than merely producing some cycles.
+      expect(text).toContain('cycles (first 200, truncated at the 200-cycle enumeration limit: more cycles exist):')
+      expect(text).not.toContain('cycles (200 found)')
+
+      const parsed = JSON.parse(runCaptured(true)) as { cycles: string[][]; cyclesTruncated?: boolean }
+      expect(parsed.cyclesTruncated).toBe(true)
+      expect(parsed.cycles).toHaveLength(200)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // Over-fix control: a project genuinely under the bound must keep the plain "N found" line and must not grow a cyclesTruncated key.
+  it('keeps the plain cycle count for a project under the enumeration bound', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-cyclecap-under-'))
+    try {
+      writeFileSync(join(repo, 'a.ts'), "import './b'\nexport const a = 1\n")
+      writeFileSync(join(repo, 'b.ts'), "import './a'\nexport const b = 1\n")
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      try {
+        expect(runArch({ cwd: repo, top: 10 })).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(captured).toContain('cycles (1 found):')
+      expect(captured).not.toContain('truncated')
+
+      let capturedJson = ''
+      process.stdout.write = (chunk: unknown) => { capturedJson += String(chunk); return true }
+      try {
+        expect(runArch({ cwd: repo, top: 10, json: true })).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(Object.keys(JSON.parse(capturedJson) as Record<string, unknown>)).toEqual(['hubs', 'entryPoints', 'cycles'])
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('reports entryPoints and cycles, not just hubs', () => {
     const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fields-'))
     try {
@@ -5106,6 +5201,82 @@ describe('runAsk', () => {
     }
     expect(code).toBe(0)
     expect(captured).toMatch(/degraded mode/)
+  })
+
+  // Every degrade path used to print the same "set TOKEN_GOAT_ASK_BACKEND" header, so a correctly-set backend was told to set the variable it had already set, and the three genuinely different causes (unset / nothing indexed / nothing matched / binary missing) collapsed onto one wrong message.
+  describe('degraded-mode reason is specific to the cause', () => {
+    const withBackend = (label: string | undefined, root: string, fn: () => void): void => {
+      const orig = process.env['TOKEN_GOAT_ASK_BACKEND']
+      if (label === undefined) delete process.env['TOKEN_GOAT_ASK_BACKEND']
+      else process.env['TOKEN_GOAT_ASK_BACKEND'] = label
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        fn()
+      } finally {
+        cwdSpy.mockRestore()
+        if (orig !== undefined) process.env['TOKEN_GOAT_ASK_BACKEND'] = orig
+        else delete process.env['TOKEN_GOAT_ASK_BACKEND']
+      }
+    }
+
+    it('says the retrieval matched nothing when the backend is set and the project IS indexed', () => {
+      const root = mkdtempSync(join(tmpdir(), 'tg-ask-nomatch-'))
+      try {
+        const file = join(root, 'indexed.ts')
+        writeFileSync(file, 'export function askIndexedAnchor7q4() { return 1 }\n')
+        indexFileSync(normalizePath(file))
+        withBackend('__nonexistent_backend_xyzzy__', root, () => {
+          const captured = captureStdout(() => { expect(runAsk({ question: 'zzzunmatchablequery7q4' })).toBe(0) })
+          expect(captured).toContain('[degraded mode - TOKEN_GOAT_ASK_BACKEND=__nonexistent_backend_xyzzy__ is set, but no indexed symbol matched this question, so there is no context to answer from -- try different wording or token-goat semantic]')
+          // The old message told a user who had already set the variable to set it.
+          expect(captured).not.toContain('set TOKEN_GOAT_ASK_BACKEND=claude|codex')
+        })
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('says the project is not indexed when the backend is set and nothing is indexed', () => {
+      const root = mkdtempSync(join(tmpdir(), 'tg-ask-noindex-'))
+      try {
+        withBackend('__nonexistent_backend_xyzzy__', root, () => {
+          const captured = captureStdout(() => { expect(runAsk({ question: 'zzzunmatchablequery7q4' })).toBe(0) })
+          expect(captured).toContain('[degraded mode - TOKEN_GOAT_ASK_BACKEND=__nonexistent_backend_xyzzy__ is set, but nothing is indexed for this project yet, so there is no context to answer from]')
+          expect(captured).not.toContain('no indexed symbol matched this question')
+        })
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('says the binary is missing when the backend is set, the query matched, but the label is not on PATH', () => {
+      const root = mkdtempSync(join(tmpdir(), 'tg-ask-nopath-'))
+      try {
+        const file = join(root, 'hit.ts')
+        writeFileSync(file, 'export function askPathAnchor7q4() { return 1 }\n')
+        indexFileSync(normalizePath(file))
+        withBackend('__nonexistent_backend_xyzzy__', root, () => {
+          const captured = captureStdout(() => { expect(runAsk({ question: 'askPathAnchor7q4' })).toBe(0) })
+          expect(captured).toContain("[degraded mode - TOKEN_GOAT_ASK_BACKEND=__nonexistent_backend_xyzzy__ is set, but '__nonexistent_backend_xyzzy__' was not found on PATH]")
+        })
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    // The over-fix control: with the variable genuinely unset, "set it" is the right advice and must survive verbatim.
+    it('keeps the original set-the-variable advice when the backend is genuinely unset', () => {
+      const root = mkdtempSync(join(tmpdir(), 'tg-ask-unset-'))
+      try {
+        withBackend(undefined, root, () => {
+          const captured = captureStdout(() => { expect(runAsk({ question: 'zzzunmatchablequery7q4' })).toBe(0) })
+          expect(captured).toContain('[degraded mode - set TOKEN_GOAT_ASK_BACKEND=claude|codex for LLM synthesis]')
+          expect(captured).not.toContain('is set, but')
+        })
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
   })
 
   // Regression: on Windows, `where.exe <label>` for an npm-installed CLI resolves to a .cmd

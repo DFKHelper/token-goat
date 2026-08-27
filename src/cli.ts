@@ -1630,7 +1630,7 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
     ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
-  const text = fenceFileTextIfMatched(formatCsvTable(result))
+  const text = fenceFileTextIfMatched(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
   out(text)
   recordXlsxStat('xlsx_query', file, text)
 }
