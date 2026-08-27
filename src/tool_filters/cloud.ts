@@ -34,6 +34,10 @@ const _TF_RESOURCE_COMPLETE_RE =
 
 const _TF_PLAN_ATTR_DIFF_RE = /^\s+[~+-]\s+\S/
 
+// The per-resource action header a plan emits above each block ("# aws_db_instance.prod must be replaced", "# aws_instance.web will be created"). This one line per resource is the whole point of reading a plan, so it survives the tail cap that discards the attribute detail below it.
+const _TF_PLAN_ACTION_HDR_RE =
+  /^\s*#\s+\S+\s+(?:will be|must be|has been|has moved|will no longer be)\b/
+
 const _TF_KNOWN_AFTER_APPLY_RE = /\(known after apply\)/
 
 const _TF_INIT_PROVIDER_RE =
@@ -203,10 +207,15 @@ export class TerraformFilter extends ToolFilter {
 
     let finalKept: string[]
     if (summaryLine !== null) {
-      const tailLines = kept.filter((ln) => !_TF_REFRESH_RE.test(ln))
-      finalKept = [summaryLine]
+      const tailLines = kept.filter((ln) => !_TF_REFRESH_RE.test(ln) && ln !== summaryLine)
       const tailStart = Math.max(0, tailLines.length - 20)
-      finalKept.push(...tailLines.slice(tailStart).filter((ln) => ln !== summaryLine))
+      const head = tailLines.slice(0, tailStart)
+      // Everything above the tail used to be discarded outright and without a marker, so a plan long enough to matter reported its own summary over three unrelated attribute lines and lost every resource action above them -- including a "must be replaced" on a production database. Keep the one-line action header for each of those resources and account for the detail lines that really were dropped.
+      const headActions = head.filter((ln) => _TF_PLAN_ACTION_HDR_RE.test(ln))
+      finalKept = [summaryLine, ...headActions]
+      const omitted = head.length - headActions.length
+      if (omitted > 0) finalKept.push(`[token-goat: ${omitted} plan detail lines omitted]`)
+      finalKept.push(...tailLines.slice(tailStart))
     } else {
       finalKept = kept
     }
