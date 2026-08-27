@@ -548,6 +548,11 @@ const _KIND_GROUPS: KindGroup[] = [
       'injection_detected',
     ]),
   },
+  // Membership comes from _kindGroupLabel's `mcp:` prefix branch, not from this set, which is why
+  // it is empty. The entry still has to exist: _renderByKindSection iterates _KIND_GROUPS' labels
+  // (plus 'Other') to decide what to print, so a label _kindGroupLabel returns but that is missing
+  // here does not fall back to 'Other' -- its rows disappear from the table entirely.
+  { label: 'MCP', members: new Set<string>() },
   {
     label: 'Compact / Skills',
     members: new Set([
@@ -575,6 +580,13 @@ function _kindGroupLabel(kind: string): string {
   // fell through every literal _KIND_GROUPS member set to 'Other' instead of 'Web'.
   if (kind.startsWith('webfetch:')) {
     return 'Web'
+  }
+  // Same special case for the mcp: prefix (mcp:compress, mcp:recall). KIND_PREFIX_TO_SOURCE maps
+  // it to SOURCE_MCP, which the by-source table shows, but the by-kind table -- the one users
+  // read -- has no literal member set for it, so without this branch every MCP row would land
+  // under 'Other' and the mechanism would still be effectively unreadable.
+  if (kind.startsWith('mcp:')) {
+    return 'MCP'
   }
   for (const group of _KIND_GROUPS) {
     if (group.members.has(kind)) {

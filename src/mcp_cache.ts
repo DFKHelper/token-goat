@@ -147,6 +147,11 @@ export function storeMcpOutput(
  * miss. Resolves through the shared bash-output store, so a value cached by an
  * earlier hook process is found.
  */
+/** Stored byte size of a cached MCP result, or 0 when the blob is gone. Reads `sizeBytes`, which storeMcpOutput computes from the REDACTED output, so this is exactly the payload a recall would serve rather than the raw pre-redaction text. Exists so preMcpHandler's dedup deny can price the re-arrival it blocked; getBashOutput memoizes by id, so calling it again right after getMcpOutput costs no second disk read. */
+export function mcpOutputBytes(id: string): number {
+  return getBashOutput(id)?.sizeBytes ?? 0
+}
+
 export function getMcpOutput(
   sessionId: string,
   toolName: string,
