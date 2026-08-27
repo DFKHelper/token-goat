@@ -250,6 +250,68 @@ describe('RuffFilter', () => {
     expect(result.text).not.toContain('-->')
     expect(result.text).not.toContain('help:')
   })
+
+  it('collapses repeated context blocks when every occurrence is in one file', () => {
+    // "ruff check one_file.py" is a common invocation, and the summary rule needs two files, so it used to return its input byte for byte no matter how long the report. Summarising would be wrong here: a one-file report is read for its line numbers. So the locations all stay and only the repeated caret/context/help blocks go.
+    const record = (name: string, line: number): string[] => [
+      `F401 [*] \`${name}\` imported but unused`,
+      ` --> only.py:${line}:8`,
+      '  |',
+      '1 | import os',
+      '2 | import sys',
+      '3 | import json',
+      '  |',
+      `help: Remove unused import: \`${name}\``,
+      '',
+    ]
+    const lines = [
+      ...record('os', 1),
+      ...record('sys', 2),
+      ...record('json', 3),
+      'Found 3 errors.',
+    ].join('\n')
+    const result = ruffFilter.apply(lines, '', 1, ['ruff', 'check', 'only.py'])
+
+    expect(result.text.trim().split('\n').filter((l) => l.trim() !== '')).toEqual([
+      'F401 [*] `os` imported but unused',
+      ' --> only.py:1:8',
+      '  |',
+      '1 | import os',
+      '2 | import sys',
+      '3 | import json',
+      '  |',
+      'help: Remove unused import: `os`',
+      'F401 [*] `sys` imported but unused',
+      ' --> only.py:2:8',
+      'F401 [*] `json` imported but unused',
+      ' --> only.py:3:8',
+      'Found 3 errors.',
+      '[token-goat: dropped 2 repeated source-context blocks (locations kept)]',
+    ])
+    expect(result.text.length).toBeLessThan(lines.length)
+  })
+
+  it('leaves a single-file report alone when the code repeats fewer than three times', () => {
+    const lines = [
+      'F401 [*] `os` imported but unused',
+      ' --> only.py:1:8',
+      '  |',
+      '1 | import os',
+      '  |',
+      'help: Remove unused import: `os`',
+      '',
+      'F401 [*] `sys` imported but unused',
+      ' --> only.py:2:8',
+      '  |',
+      '2 | import sys',
+      '  |',
+      'help: Remove unused import: `sys`',
+      '',
+      'Found 2 errors.',
+    ].join('\n')
+    const result = ruffFilter.apply(lines, '', 1, ['ruff', 'check', 'only.py'])
+    expect(result.text.trim()).toBe(lines.trim())
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -427,6 +489,41 @@ describe('PylintFilter', () => {
     const result = pylintFilter.apply(lines.join('\n'), '', 4, ['pylint', 'src/'])
     // All 6 E-severity lines kept
     expect(result.text).toContain('src/foo.py:6:')
+  })
+
+  it('recognises the message id in pylint default text format, where a colon follows it', () => {
+    // Real pylint writes "{path}:{line}:{col}: {msg_id}: {msg} ({symbol})". A matcher requiring whitespace on both sides of the id matched nothing, so every issue landed in one "__unknown__" bucket per module: the per-code cap became a per-module cap, and the E/F always-keep rule never fired because "__unknown__"[0] is "_".
+    const lines = [
+      '************* Module e',
+      'e.py:1:0: C0114: Missing module docstring (missing-module-docstring)',
+      'e.py:6:8: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)',
+      'e.py:7:8: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)',
+      'e.py:8:8: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)',
+      "e.py:9:11: E0602: Undefined variable 'undefined_name' (undefined-variable)",
+      'e.py:2:0: W0611: Unused import sys (unused-import)',
+      'Your code has been rated at 0.00/10',
+    ]
+    const result = pylintFilter.apply(lines.join('\n'), '', 4, ['pylint', 'e.py'])
+    expect(result.text).not.toContain('__unknown__')
+    // The error and the unused-import warning sit past the third issue line, so a per-module bucket would have elided both.
+    expect(result.text).toContain("e.py:9:11: E0602: Undefined variable 'undefined_name' (undefined-variable)")
+    expect(result.text).toContain('e.py:2:0: W0611: Unused import sys (unused-import)')
+    expect(result.text).toContain('e.py:8:8: C0209:')
+  })
+
+  it('caps per message id, not per module, on pylint default text format', () => {
+    const lines = ['************* Module e']
+    for (let i = 1; i <= 5; i++) {
+      lines.push(`e.py:${i}:0: C0301: Line too long (95/88) (line-too-long)`)
+    }
+    lines.push('e.py:9:0: C0116: Missing function or method docstring (missing-function-docstring)')
+    lines.push('Your code has been rated at 3.00/10')
+    const result = pylintFilter.apply(lines.join('\n'), '', 4, ['pylint', 'e.py'])
+    expect(result.text).toContain('e.py:3:0: C0301:')
+    expect(result.text).not.toContain('e.py:4:0: C0301:')
+    expect(result.text).toContain('+2 more C0301')
+    // C0116 has its own bucket, so it survives even though five C0301 lines precede it.
+    expect(result.text).toContain('e.py:9:0: C0116:')
   })
 
   it('drops separator lines', () => {
