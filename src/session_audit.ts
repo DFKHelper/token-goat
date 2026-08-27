@@ -67,6 +67,39 @@ export interface ToolRollup {
   resultEstTokens: number
 }
 
+/** Per-attachment-kind census with a billed-cost model over the model-visible content. */
+export interface AttachmentKindRollup {
+  /** The harness's `attachment.type` discriminator (a fixed vocabulary, never content). */
+  kind: string
+  injections: number
+  /** Raw JSONL line bytes, including the local-only envelope (uuid, timestamps, metadata). */
+  lineBytes: number
+  /** Bytes of the fields the harness actually injects into model context for this kind. */
+  visibleBytes: number
+  /** chars/3 estimate over visibleBytes. An estimate, never a billed number. */
+  estTokens: number
+  /** Sum over injections of estTokens x API calls the content stays in context (capped at the next compact boundary in the same transcript, or end of file). */
+  rereadTokens: number
+  /** Modeled billed cost in base-input-token equivalents: estTokens x 1.25 (cache write) + rereadTokens x 0.1 (cache read). A model, never a billed number. */
+  billedEquivTokens: number
+  /** Consecutive injections of this kind (within one transcript) whose visible content was byte-identical to the previous one. */
+  repeatedIdentical: number
+  /** Consecutive injections whose visible content changed from the previous one. */
+  repeatedChanged: number
+}
+
+/** Model-visible cost of the hook_success stdout channel, split by hook origin. */
+export interface HookOutputRollup {
+  /** 'token-goat' when the recorded hook command invokes token-goat, else 'other'. */
+  origin: 'token-goat' | 'other'
+  event: string
+  fires: number
+  /** Raw hook stdout bytes recorded locally (display-only unless copied into `content`). */
+  stdoutBytes: number
+  /** Bytes of the `content` field: the portion the harness injects into model context. */
+  contextBytes: number
+}
+
 /** One tenth of a session's life, by API-call index within its transcript. */
 export interface PositionDecile {
   decile: number
@@ -105,6 +138,10 @@ export interface SessionAuditSummary {
   }
   /** Ranked by result bytes, descending; complete (never truncated). */
   tools: ToolRollup[]
+  /** Per-attachment-kind census, ranked by billedEquivTokens descending; complete. */
+  attachmentKinds: AttachmentKindRollup[]
+  /** hook_success stdout-channel census, ranked by contextBytes descending; complete. */
+  hookOutputs: HookOutputRollup[]
   positionDeciles: PositionDecile[]
   /** Aggregate per-line-type census (line counts and bytes by JSONL `type`). */
   lineTypes: Record<string, { lines: number; bytes: number }>
@@ -144,6 +181,44 @@ const LOCAL_ONLY_TYPES = new Set([
   'ai-title',
 ])
 
+/** Which fields of each `attachment.type` the harness injects into model context. Kinds absent here carry no model-visible payload (their bytes are local envelope only); confirmed empirically per kind against a real corpus, e.g. hook_success `stdout` is display-only and only `content` reaches the model. */
+const ATTACHMENT_VISIBLE_FIELDS: Record<string, string[]> = {
+  hook_success: ['content'],
+  hook_additional_context: ['content'],
+  task_reminder: ['content'],
+  skill_listing: ['content'],
+  agent_listing_delta: ['addedLines'],
+  file: ['content'],
+  queued_command: ['prompt'],
+  plan_file_reference: ['planContent'],
+  edited_text_file: ['snippet'],
+  read_truncation_notice: ['banner'],
+  total_tokens_reminder: ['text'],
+  nested_memory: ['content'],
+  mcp_instructions_delta: ['addedBlocks'],
+  invoked_skills: ['skills'],
+  date_change: ['newDate'],
+  goal_status: ['condition'],
+  task_status: ['deltaSummary', 'description'],
+  command_permissions: ['allowedTools'],
+}
+
+/** Prompt-cache write premium over the base input rate (Anthropic pricing: 1.25x). */
+const CACHE_WRITE_MULTIPLIER = 1.25
+
+/** Prompt-cache read discount against the base input rate (Anthropic pricing: 0.1x). */
+const CACHE_READ_MULTIPLIER = 0.1
+
+/** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
+function deepStringBytes(value: unknown): number {
+  if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
+  if (Array.isArray(value)) return value.reduce((acc: number, v) => acc + deepStringBytes(v), 0)
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).reduce((acc: number, v) => acc + deepStringBytes(v), 0)
+  }
+  return 0
+}
+
 /** The generic mid-trim marker every tool filter's line cap emits (tool_filters/helpers.ts), plus the git.ts spellings. */
 const OMISSION_MARKER_RE = /(?:--- (\d+) lines omitted ---|\[token-goat: \+?(\d+) more [a-z ]*lines omitted\]|--- patch: (\d+) lines omitted by token-goat ---|\.\.\. (\d+) lines omitted by token-goat \.\.\.)/g
 
@@ -171,22 +246,24 @@ interface PerCallUsage {
 /** List every `*.jsonl` transcript under `corpusDir` (one level of project dirs, plus loose files). */
 export function listCorpusTranscripts(corpusDir: string): string[] {
   const found: string[] = []
-  const entries = fs.readdirSync(corpusDir, { withFileTypes: true })
-  for (const entry of entries) {
-    if (entry.name.endsWith('.jsonl')) {
-      found.push(path.join(corpusDir, entry.name))
-    } else if (entry.isDirectory()) {
-      let inner: fs.Dirent[]
-      try {
-        inner = fs.readdirSync(path.join(corpusDir, entry.name), { withFileTypes: true })
-      } catch {
-        continue
-      }
-      for (const f of inner) {
-        if (f.isFile() && f.name.endsWith('.jsonl')) found.push(path.join(corpusDir, entry.name, f.name))
+  // Recurse the whole tree: modern Claude Code stores subagent and workflow transcripts under <project>/<session>/subagents/**, and a two-level walk misses them (measured on one real corpus: 6,022 of 11,555 transcripts, carrying 65% of all API calls and 57% of cache-read billing).
+  const walk = (dir: string, entries: fs.Dirent[]): void => {
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      if (entry.name.endsWith('.jsonl')) {
+        found.push(full)
+      } else if (entry.isDirectory()) {
+        let inner: fs.Dirent[]
+        try {
+          inner = fs.readdirSync(full, { withFileTypes: true })
+        } catch {
+          continue
+        }
+        walk(full, inner)
       }
     }
   }
+  walk(corpusDir, fs.readdirSync(corpusDir, { withFileTypes: true }))
   return found.sort()
 }
 
@@ -195,10 +272,25 @@ export function defaultCorpusDir(): string {
 }
 
 /** Stream one transcript into the accumulating summary. Throws only on stream-open failure. */
-async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>): Promise<void> {
+async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>): Promise<void> {
   const toolNameById = new Map<string, string>()
   const usageSeenIds = new Set<string>()
   const perCall: PerCallUsage[] = []
+  // Residency model for attachment reread cost: each injection stays in context from its API-call index until the next compact boundary on its lane (main vs sidechain), or end of transcript. laneCalls[0] counts main-chain API calls, laneCalls[1] sidechain calls.
+  const laneCalls = [0, 0]
+  let pendingReread: Array<{ kind: string; tokens: number; atCall: number; lane: number }> = []
+  const lastVisibleByKind = new Map<string, string>()
+  const flushLane = (lane: number): void => {
+    const kept: typeof pendingReread = []
+    for (const p of pendingReread) {
+      if (p.lane !== lane) {
+        kept.push(p)
+        continue
+      }
+      attachmentRollup(attachmentMap, p.kind).rereadTokens += p.tokens * Math.max(0, laneCalls[lane]! - p.atCall)
+    }
+    pendingReread = kept
+  }
   const stream = fs.createReadStream(filePath)
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity })
   const streamFailure = new Promise<never>((_, reject) => stream.on('error', reject))
@@ -247,6 +339,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             s.measuredSidechain.outputTokens += output
           }
           perCall.push({ inputTotal: input + cacheWrite + cacheRead, cacheRead, output })
+          const callLane = obj['isSidechain'] === true ? 1 : 0
+          laneCalls[callLane] = laneCalls[callLane]! + 1
         }
         const blocks = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of blocks) {
@@ -311,9 +405,46 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       }
       if (type === 'attachment') {
         addCategory(s.estimated.attachments, lineBytes)
+        const att = (obj['attachment'] !== null && typeof obj['attachment'] === 'object' ? obj['attachment'] : {}) as Record<string, unknown>
+        const kind = typeof att['type'] === 'string' ? att['type'] : '(untyped)'
+        const lane = obj['isSidechain'] === true ? 1 : 0
+        const roll = attachmentRollup(attachmentMap, kind)
+        roll.injections += 1
+        roll.lineBytes += lineBytes
+        const fields = ATTACHMENT_VISIBLE_FIELDS[kind]
+        if (fields !== undefined) {
+          const visibleBytes = fields.reduce((acc, f) => acc + deepStringBytes(att[f]), 0)
+          roll.visibleBytes += visibleBytes
+          const tokens = visibleBytes > 0 ? estimateTokensFromLength(visibleBytes) : 0
+          roll.estTokens += tokens
+          if (tokens > 0) pendingReread.push({ kind, tokens, atCall: laneCalls[lane]!, lane })
+          let serialized: string
+          try {
+            serialized = JSON.stringify(fields.map((f) => att[f]))
+          } catch {
+            serialized = ''
+          }
+          const previous = lastVisibleByKind.get(kind)
+          if (previous !== undefined) {
+            if (previous === serialized) roll.repeatedIdentical += 1
+            else roll.repeatedChanged += 1
+          }
+          lastVisibleByKind.set(kind, serialized)
+        }
+        if (kind === 'hook_success') {
+          const command = typeof att['command'] === 'string' ? att['command'] : ''
+          const origin: HookOutputRollup['origin'] = command.includes('token-goat') || command.includes('token_goat') ? 'token-goat' : 'other'
+          const event = typeof att['hookEvent'] === 'string' ? att['hookEvent'] : '(none)'
+          const hook = hookRollup(hookMap, origin, event)
+          hook.fires += 1
+          hook.stdoutBytes += typeof att['stdout'] === 'string' ? Buffer.byteLength(att['stdout'], 'utf8') : 0
+          hook.contextBytes += typeof att['content'] === 'string' ? Buffer.byteLength(att['content'], 'utf8') : 0
+        }
         continue
       }
       if (type === 'system' || type === 'summary') {
+        // A compact boundary evicts the prior conversation from context: settle the reread cost of every attachment pending on this line's lane at the call count reached so far.
+        if (obj['subtype'] === 'compact_boundary') flushLane(obj['isSidechain'] === true ? 1 : 0)
         addCategory(s.estimated.system, lineBytes)
         continue
       }
@@ -328,6 +459,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
     rl.close()
     stream.destroy()
   }
+  flushLane(0)
+  flushLane(1)
   const callCount = perCall.length
   for (let i = 0; i < callCount; i++) {
     const call = perCall[i]!
@@ -345,6 +478,25 @@ function toolRollup(toolMap: Map<string, ToolRollup>, name: string): ToolRollup 
   if (roll === undefined) {
     roll = { name, calls: 0, resultBytes: 0, resultEstTokens: 0 }
     toolMap.set(name, roll)
+  }
+  return roll
+}
+
+function attachmentRollup(attachmentMap: Map<string, AttachmentKindRollup>, kind: string): AttachmentKindRollup {
+  let roll = attachmentMap.get(kind)
+  if (roll === undefined) {
+    roll = { kind, injections: 0, lineBytes: 0, visibleBytes: 0, estTokens: 0, rereadTokens: 0, billedEquivTokens: 0, repeatedIdentical: 0, repeatedChanged: 0 }
+    attachmentMap.set(kind, roll)
+  }
+  return roll
+}
+
+function hookRollup(hookMap: Map<string, HookOutputRollup>, origin: HookOutputRollup['origin'], event: string): HookOutputRollup {
+  const key = `${origin}|${event}`
+  let roll = hookMap.get(key)
+  if (roll === undefined) {
+    roll = { origin, event, fires: 0, stdoutBytes: 0, contextBytes: 0 }
+    hookMap.set(key, roll)
   }
   return roll
 }
@@ -389,20 +541,29 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
       otherLocal: emptyCategory(),
     },
     tools: [],
+    attachmentKinds: [],
+    hookOutputs: [],
     positionDeciles: Array.from({ length: 10 }, (_, i) => ({ decile: i + 1, apiCalls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 })),
     lineTypes: {},
     omissionMarkers: { fires: 0, linesOmitted: 0 },
   }
   const toolMap = new Map<string, ToolRollup>()
+  const attachmentMap = new Map<string, AttachmentKindRollup>()
+  const hookMap = new Map<string, HookOutputRollup>()
   for (const file of files) {
     try {
-      await auditOneFile(file, summary, toolMap)
+      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap)
       summary.filesScanned += 1
     } catch {
       summary.filesFailed += 1
     }
   }
   summary.tools = [...toolMap.values()].sort((a, b) => b.resultBytes - a.resultBytes || a.name.localeCompare(b.name))
+  for (const roll of attachmentMap.values()) {
+    roll.billedEquivTokens = Math.round(CACHE_WRITE_MULTIPLIER * roll.estTokens + CACHE_READ_MULTIPLIER * roll.rereadTokens)
+  }
+  summary.attachmentKinds = [...attachmentMap.values()].sort((a, b) => b.billedEquivTokens - a.billedEquivTokens || b.injections - a.injections || a.kind.localeCompare(b.kind))
+  summary.hookOutputs = [...hookMap.values()].sort((a, b) => b.contextBytes - a.contextBytes || b.fires - a.fires || a.origin.localeCompare(b.origin) || a.event.localeCompare(b.event))
   summary.runtimeMs = Date.now() - started
   return summary
 }
@@ -459,6 +620,18 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
     lines.push(`${t.name.padEnd(42)} calls ${fmt(t.calls).padStart(9)}  bytes ${fmt(t.resultBytes).padStart(15)}  est-tokens ${fmt(t.resultEstTokens).padStart(12)}`)
   }
   if (s.tools.length > 25) lines.push(`(${s.tools.length - 25} smaller tools omitted from this table; --json has all)`)
+  lines.push('')
+  lines.push('## Attachment kinds by modeled billed cost (model-visible fields only; NOT billed units)')
+  lines.push('Model: est-tokens x 1.25 cache-write + reread-tokens x 0.1 cache-read; an injection stays in context until the next compact boundary on its lane, or end of transcript.')
+  for (const a of s.attachmentKinds.slice(0, 15)) {
+    lines.push(`${a.kind.padEnd(28)} inj ${fmt(a.injections).padStart(9)}  visible-bytes ${fmt(a.visibleBytes).padStart(13)}  est-tok ${fmt(a.estTokens).padStart(12)}  reread-tok ${fmt(a.rereadTokens).padStart(14)}  billed-equiv ${fmt(a.billedEquivTokens).padStart(12)}  identical-reinject ${fmt(a.repeatedIdentical).padStart(8)}`)
+  }
+  if (s.attachmentKinds.length > 15) lines.push(`(${s.attachmentKinds.length - 15} smaller kinds omitted from this table; --json has all)`)
+  lines.push('')
+  lines.push('## Hook stdout channel (hook_success attachments; context-bytes is the model-visible share)')
+  for (const h of s.hookOutputs) {
+    lines.push(`${h.origin.padEnd(11)} ${h.event.padEnd(18)} fires ${fmt(h.fires).padStart(9)}  stdout-bytes ${fmt(h.stdoutBytes).padStart(13)}  context-bytes ${fmt(h.contextBytes).padStart(13)}`)
+  }
   lines.push('')
   lines.push('## Measured billed tokens by session position (deciles of each session\'s API calls)')
   for (const d of s.positionDeciles) {
