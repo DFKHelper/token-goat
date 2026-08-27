@@ -110,3 +110,4 @@ row go to the user.
 | 47 | 605ae10c | read_commands outline output economy | medium (outline -11.2% over src/, -41% doc-heavy) | yes | 98 |
 | 48 | c2f1b165 | hooks_agent_spawn advisory premise | n/a (kill condition fired, no code) | n/a | 94 |
 | 49 | 47452cc4 | hooks_agent_spawn restriction advisory | n/a (new advisory, zero credit) | n/a | 145 |
+| 50 | 1bec3628 | cli skill-compact --all reporting | medium (markerless bucket dropped; ENOENT crash) | yes | 106 |
