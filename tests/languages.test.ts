@@ -261,6 +261,69 @@ public delegate void @Handler(int a);
     expect(symbols.filter((s) => s.name === 'class').map((s) => s.kind)).toEqual(['class', 'method'])
   })
 
+  it('indexes declarations written with a `global::`/extern alias qualifier, stripping only the global:: root from an import target (regression: no slot admitted `::`, so a generator-emitted `public global::System.String Thing { get; set; }` and `using global::System.Text;` were dropped entirely)', () => {
+    const content = `using global::System.Text;
+using static global::System.Math;
+using Alias = global::System.Collections.Generic.List<int>;
+using Ext = MyAlias::Some.Type;
+
+public class Q
+{
+    public global::System.String Thing { get; set; }
+    public global::System.Int32 Count => 5;
+    public global::System.String Header
+    {
+        get;
+        set;
+    }
+    void global::System.IDisposable.Dispose()
+    {
+    }
+    public global::System.Void Run()
+    {
+    }
+}
+`
+    const { symbols, imports } = extractCsharp(content, 'Generated.cs')
+    expect(symbols.map((s) => s.name)).toEqual(['Q', 'Thing', 'Count', 'Header', 'Dispose', 'Run'])
+    // The recorded name is the final segment, never the alias qualifier: an over-fix that
+    // captures the qualifier too (`global::System.IDisposable.Dispose`) fails right here.
+    expect(symbols.find((s) => s.kind === 'method' && s.name === 'Dispose')).toBeTruthy()
+    expect(symbols.some((s) => s.name.includes('::'))).toBe(false)
+    // `global::X` and `X` are the same entity, so the import key drops the root qualifier; a
+    // non-global extern alias names a different assembly root and is kept verbatim.
+    expect(imports.map((i) => i.target)).toEqual([
+      'System.Text',
+      'System.Math',
+      'System.Collections.Generic.List<int>',
+      'MyAlias::Some.Type',
+    ])
+  })
+
+  it('still indexes members whose line carries a single colon (generic constraint, ternary) after the alias-qualifier widening', () => {
+    // The alias qualifier must be admitted as the two-character `::` alternative, never by adding
+    // a bare `:` to the type filler's character class. With a bare `:` the lazy filler runs past
+    // the real declaration boundary and every member below is DROPPED, not over-matched: the
+    // `where T : IComparable` constraint, the `? :` in an expression body, and the `? :` in a
+    // property initializer each swallow the name slot. This is the control for that over-fix.
+    const content = `public class Guarded
+{
+    public void Constrained<T>() where T : IComparable
+    {
+    }
+    public int Pick(bool flag) => flag ? 1 : 2;
+    public string Label { get; set; } = flag ? "a" : "b";
+}
+`
+    const { symbols } = extractCsharp(content, 'Guarded.cs')
+    expect(symbols.map((s) => `${s.kind}:${s.name}`)).toEqual([
+      'class:Guarded',
+      'method:Constrained',
+      'method:Pick',
+      'var:Label',
+    ])
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractCsharp('', 'empty.cs')
     expect(symbols).toHaveLength(0)
