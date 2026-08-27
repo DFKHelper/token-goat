@@ -45,6 +45,11 @@ function stripComments(text: string): string {
 const DEFINE_LINE_RE = /^ *(?:(?:override|export|private)\s+)*define\s+/
 const ENDEF_LINE_RE = /^ *endef\b/
 
+// True when this physical line is continued into the next one. GNU make joins lines only when the backslash sits immediately before the newline, and it strips a CR from a CRLF line ending before applying that rule -- but splitting the source on `\n` leaves that CR sitting after the backslash, so a bare `endsWith('\\')` reports every line of a CRLF Makefile as unterminated and the continuation masking below never fires at all (a wrapped assignment's continuation line was then rescanned as an independent rule header, emitting a phantom target). Strip exactly one trailing CR and nothing else: a genuine trailing space after the backslash really does end the continuation in GNU make, so trimEnd() here would be wrong in the other direction.
+function isContinued(line: string): boolean {
+  return (line.endsWith('\r') ? line.slice(0, -1) : line).endsWith('\\')
+}
+
 interface MaskResult {
   // Continuation lines blanked, but define...endef bodies left intact (DEFINE_RE still scans
   // this so a nested `define` inside a block's body still gets its own symbol, matching
@@ -92,7 +97,7 @@ function maskContinuationAndDefines(text: string): MaskResult {
       // new rule header or a real define opener.
       contLines[i] = ' '.repeat(line.length)
       targetLines[i] = ' '.repeat(line.length)
-      continuing = line.endsWith('\\')
+      continuing = isContinued(line)
       continue
     }
     if (DEFINE_LINE_RE.test(line)) {
@@ -101,7 +106,7 @@ function maskContinuationAndDefines(text: string): MaskResult {
       continuing = false
       continue
     }
-    continuing = line.endsWith('\\')
+    continuing = isContinued(line)
   }
   return { noContinuation: contLines.join('\n'), forTargets: targetLines.join('\n') }
 }
