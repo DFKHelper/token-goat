@@ -54,6 +54,11 @@ function renderReadRow(entry: FileEntry): string {
   return `- ${entry.path} (${kb}kb, ${entry.readCount} ${plural}${edited})`
 }
 
+/** Render one surgically-read row: `path (symbols: a, b)`. The symbol list is what the preamble tells the summarizer to keep verbatim, so it is spelled out rather than counted. */
+function renderSymbolReadRow(entry: FileEntry): string {
+  return `- ${entry.path} (symbols: ${(entry.symbols_read ?? []).join(', ')})`
+}
+
 /**
  * Fold sibling subagent file entries into the parent's own file list, keyed
  * by {@link foldPath} (case-insensitive-filesystem-safe path identity, same
@@ -114,6 +119,8 @@ export function buildManifest(sessionId?: string, cwd?: string): string {
   const files = siblingFiles.length > 0 ? mergeManifestFiles(ownFiles, siblingFiles) : ownFiles
   const editedFiles = files.filter((f) => f.wasEdited)
   const readFiles = files.filter((f) => f.readCount > 0 && !f.wasEdited)
+  // A file reached only through `token-goat read "file::symbol"` gets a readCount: 0, wasEdited: false entry carrying symbols_read (see recordSymbolRead in session.ts), so it falls through BOTH filters above and used to vanish from the manifest entirely -- while computeAdaptiveBudget was still granting it a symbolsBonus for content that was never emitted, and postCompactHandler's survival canary was sampling a path the manifest never printed. Give it its own bucket.
+  const symbolOnlyFiles = files.filter((f) => f.readCount === 0 && !f.wasEdited && (f.symbols_read?.length ?? 0) > 0)
   const webFetches = [...getSessionWebFetches().entries()]
 
   const lines: string[] = []
@@ -128,6 +135,7 @@ export function buildManifest(sessionId?: string, cwd?: string): string {
     editedFiles.map((entry) => `- ${entry.path}`),
     MAX_ROWS,
   )
+  appendCappedSection(lines, '### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles.map(renderSymbolReadRow), MAX_ROWS)
   // The map key is the redactedUrl + redactedPrompt + digest composite (see webFetchKey in session.ts), so split it back apart for display instead of treating the whole key as the url. Taking only the first two fields drops the trailing digest, which exists for identity and means nothing to a reader.
   appendCappedSection(
     lines,

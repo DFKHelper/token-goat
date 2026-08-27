@@ -21,7 +21,8 @@ const _testConfigPath = tempConfigPath('tg-hooks-compact-config-test.toml')
 import type { HookEvent } from '../src/hook_registry.js'
 import { buildManifest, preCompactHandler } from '../src/hooks_compact.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileEdit, recordFileRead, recordWebFetch, recordBashOutput, recordBashRerun } from '../src/session.js'
+import { recordFileEdit, recordFileRead, recordSymbolRead, recordWebFetch, recordBashOutput, recordBashRerun } from '../src/session.js'
+import { normalizePath } from '../src/paths.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 
@@ -404,5 +405,73 @@ describe('compact_assist.max_manifest_chars wiring', () => {
 
     const manifest = buildManifest()
     expect(manifest).not.toContain('manifest truncated at')
+  })
+})
+
+describe('surgically-read files in the manifest', () => {
+  // Regression: a file reached only through `token-goat read "file::symbol"` gets a
+  // readCount: 0 / wasEdited: false entry carrying symbols_read (recordSymbolRead in
+  // session.ts, driven by the post-Bash hook at hooks_bash.ts). buildManifest's two filters
+  // are readCount > 0 && !wasEdited and wasEdited, so such an entry matched NEITHER and was
+  // dropped from the PreCompact manifest entirely -- the manifest, which IS the summarizer's
+  // prompt, reported "Files read: 0 / Files edited: 0" and nothing else, while
+  // computeAdaptiveBudget went on granting the session a symbolsBonus for that same file.
+  it('renders a symbol-only file as its own section, with exact manifest text', () => {
+    const p = makeTmpFile('export function alpha() {}\n')
+    recordSymbolRead(p, 'alpha')
+    recordSymbolRead(p, 'beta')
+
+    const key = normalizePath(p)
+    expect(buildManifest().split('\n')).toEqual([
+      '## Session context',
+      'Files read: 0',
+      'Files edited: 0',
+      '',
+      '### Surgically read files (symbol/section reads, never read whole)',
+      `- ${key} (symbols: alpha, beta)`,
+    ])
+  })
+
+  it('reaches the same text through the registered pre_compact handler, not just buildManifest', () => {
+    const p = makeTmpFile('export function alpha() {}\n')
+    recordSymbolRead(p, 'alpha')
+
+    const result = preCompactHandler(compactEvent)
+    expect(result.hookType).toBe('context')
+    if (result.hookType !== 'context') return
+    const manifest = result.context.slice(result.context.indexOf('## Session context'))
+    expect(manifest.split('\n')).toEqual([
+      '## Session context',
+      'Files read: 0',
+      'Files edited: 0',
+      '',
+      '### Surgically read files (symbol/section reads, never read whole)',
+      `- ${normalizePath(p)} (symbols: alpha)`,
+    ])
+  })
+
+  // Over-fix control: a file that WAS read whole and also symbol-read already appears under
+  // "Read files". Widening the new bucket to every entry with symbols_read would list it
+  // twice. This must stay selected -- it asserts a full ordered manifest, so a duplicate row
+  // fails the equality rather than passing silently.
+  it('does not duplicate a whole-read file that also carries symbols_read', () => {
+    const p = makeTmpFile('export function alpha() {}\n')
+    recordFileRead(p)
+    recordSymbolRead(p, 'alpha')
+
+    const key = normalizePath(p)
+    expect(buildManifest().split('\n')).toEqual([
+      '## Session context',
+      'Files read: 1',
+      'Files edited: 0',
+      '',
+      '### Read files',
+      `- ${key} (1kb, 1 read)`,
+    ])
+  })
+
+  it('omits the section entirely when no file was surgically read', () => {
+    recordFileRead(makeTmpFile('plain'))
+    expect(buildManifest()).not.toContain('Surgically read files')
   })
 })
