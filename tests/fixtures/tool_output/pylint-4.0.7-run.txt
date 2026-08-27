@@ -1,0 +1,74 @@
+************* Module service
+service.py:1:0: C0114: Missing module docstring (missing-module-docstring)
+service.py:6:0: C0116: Missing function or method docstring (missing-function-docstring)
+service.py:7:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:8:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:9:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:10:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:11:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:12:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:13:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:14:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:16:11: E0602: Undefined variable 'missing_helper' (undefined-variable)
+service.py:18:0: C0116: Missing function or method docstring (missing-function-docstring)
+service.py:19:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:20:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:21:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:22:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:23:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:24:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+service.py:25:11: E0602: Undefined variable 'also_missing' (undefined-variable)
+service.py:1:0: W0611: Unused import os (unused-import)
+service.py:2:0: W0611: Unused import sys (unused-import)
+service.py:3:0: W0611: Unused import json (unused-import)
+service.py:4:0: W0611: Unused import re (unused-import)
+************* Module worker
+worker.py:1:0: C0114: Missing module docstring (missing-module-docstring)
+worker.py:6:0: C0116: Missing function or method docstring (missing-function-docstring)
+worker.py:7:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:8:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:9:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:10:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:11:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:12:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:13:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:14:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:16:11: E0602: Undefined variable 'missing_helper' (undefined-variable)
+worker.py:18:0: C0116: Missing function or method docstring (missing-function-docstring)
+worker.py:19:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:20:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:21:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:22:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:23:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:24:9: C0209: Formatting a regular string which could be an f-string (consider-using-f-string)
+worker.py:25:11: E0602: Undefined variable 'also_missing' (undefined-variable)
+worker.py:1:0: W0611: Unused import os (unused-import)
+worker.py:2:0: W0611: Unused import sys (unused-import)
+worker.py:3:0: W0611: Unused import json (unused-import)
+worker.py:4:0: W0611: Unused import re (unused-import)
+worker.py:1:0: R0801: Similar lines in 2 files
+==service:[6:25]
+==worker:[6:25]
+    v0 = "value %s" % event
+    v1 = "value %s" % event
+    v2 = "value %s" % event
+    v3 = "value %s" % event
+    v4 = "value %s" % event
+    v5 = "value %s" % event
+    v6 = "value %s" % event
+    v7 = "value %s" % event
+    total = len(v0) + len(v1) + len(v2) + len(v3) + len(v4) + len(v5) + len(v6) + len(v7)
+    return missing_helper(total, context)
+
+def other(payload):
+    w0 = "row %s" % payload
+    w1 = "row %s" % payload
+    w2 = "row %s" % payload
+    w3 = "row %s" % payload
+    w4 = "row %s" % payload
+    w5 = "row %s" % payload
+    return also_missing(w0, w1, w2, w3, w4, w5) (duplicate-code)
+
+-----------------------------------
+Your code has been rated at 0.00/10
+

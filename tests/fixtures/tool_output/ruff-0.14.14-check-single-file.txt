@@ -1,0 +1,66 @@
+F401 [*] `os` imported but unused
+ --> service.py:1:8
+  |
+1 | import os
+  |        ^^
+2 | import sys
+3 | import json
+  |
+help: Remove unused import: `os`
+
+F401 [*] `sys` imported but unused
+ --> service.py:2:8
+  |
+1 | import os
+2 | import sys
+  |        ^^^
+3 | import json
+4 | import re
+  |
+help: Remove unused import: `sys`
+
+F401 [*] `json` imported but unused
+ --> service.py:3:8
+  |
+1 | import os
+2 | import sys
+3 | import json
+  |        ^^^^
+4 | import re
+  |
+help: Remove unused import: `json`
+
+F401 [*] `re` imported but unused
+ --> service.py:4:8
+  |
+2 | import sys
+3 | import json
+4 | import re
+  |        ^^
+5 |
+6 | def handler(event, context):
+  |
+help: Remove unused import: `re`
+
+F821 Undefined name `missing_helper`
+  --> service.py:16:12
+   |
+14 |     v7 = "value %s" % event
+15 |     total = len(v0) + len(v1) + len(v2) + len(v3) + len(v4) + len(v5) + len(v6) + len(v7)
+16 |     return missing_helper(total, context)
+   |            ^^^^^^^^^^^^^^
+17 |
+18 | def other(payload):
+   |
+
+F821 Undefined name `also_missing`
+  --> service.py:25:12
+   |
+23 |     w4 = "row %s" % payload
+24 |     w5 = "row %s" % payload
+25 |     return also_missing(w0, w1, w2, w3, w4, w5)
+   |            ^^^^^^^^^^^^
+   |
+
+Found 6 errors.
+[*] 4 fixable with the `--fix` option.

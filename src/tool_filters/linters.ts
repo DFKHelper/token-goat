@@ -124,7 +124,7 @@ class RuffFilter extends ToolFilter {
     type Segment =
       | { kind: 'footer'; line: string }
       | { kind: 'other'; line: string }
-      | { kind: 'viol'; code: string; file: string; text: string[] }
+      | { kind: 'viol'; code: string; file: string; text: string[]; headerLines: number }
     const indexed: Segment[] = []
     const byCode = new Map<string, Array<{ file: string; text: string[] }>>()
 
@@ -152,7 +152,7 @@ class RuffFilter extends ToolFilter {
         const bucket = byCode.get(code) ?? []
         bucket.push({ file, text })
         byCode.set(code, bucket)
-        indexed.push({ kind: 'viol', code, file, text })
+        indexed.push({ kind: 'viol', code, file, text, headerLines: 1 })
         continue
       }
       const fullHeader = _RUFF_FULL_HEADER_RE.exec(line)
@@ -169,7 +169,7 @@ class RuffFilter extends ToolFilter {
         const bucket = byCode.get(code) ?? []
         bucket.push({ file, text })
         byCode.set(code, bucket)
-        indexed.push({ kind: 'viol', code, file, text })
+        indexed.push({ kind: 'viol', code, file, text, headerLines: 2 })
       } else {
         indexed.push({ kind: 'other', line })
         i++
@@ -178,11 +178,15 @@ class RuffFilter extends ToolFilter {
 
     // Decide which codes get summarised (>= 3 occurrences across >= 2 files)
     const summarised = new Map<string, string>()
+    // Codes repeated within a single file are not summarised, because the whole point of a one-file report is its line numbers and the summary keeps only one of them. They still get their repeated source-context/caret/help blocks dropped after the first occurrence, which is where nearly all the bytes are: without this, "ruff check one_file.py" was a guaranteed pass-through no matter how long the report.
+    const contextCollapsed = new Set<string>()
     for (const [code, entries] of byCode) {
       const files = new Set(entries.map((e) => e.file))
       if (entries.length >= 3 && files.size >= 2) {
         const example = entries[0]!.text[0]
         summarised.set(code, `${code}: ${entries.length} occurrences in ${files.size} files (example: ${example})`)
+      } else if (entries.length >= 3 && entries.some((e) => e.text.length > 1)) {
+        contextCollapsed.add(code)
       }
     }
 
@@ -193,6 +197,8 @@ class RuffFilter extends ToolFilter {
     const out: string[] = []
     const emittedSummary = new Set<string>()
     const footerLines: string[] = []
+    const seenPerCode = new Map<string, number>()
+    let contextBlocksDropped = 0
 
     for (const seg of indexed) {
       if (seg.kind === 'footer') {
@@ -208,11 +214,27 @@ class RuffFilter extends ToolFilter {
           out.push(summarised.get(seg.code)!)
           emittedSummary.add(seg.code)
         }
+      } else if (contextCollapsed.has(seg.code)) {
+        const seen = seenPerCode.get(seg.code) ?? 0
+        seenPerCode.set(seg.code, seen + 1)
+        if (seen === 0 || seg.text.length <= seg.headerLines) {
+          out.push(...seg.text)
+        } else {
+          out.push(...seg.text.slice(0, seg.headerLines))
+          contextBlocksDropped++
+        }
       } else {
         out.push(...seg.text)
       }
     }
     out.push(...footerLines)
+    const notes: string[] = []
+    maybeNote(
+      notes,
+      contextBlocksDropped,
+      `dropped ${contextBlocksDropped} repeated source-context blocks (locations kept)`,
+    )
+    this.emitNotes(out, notes)
     return squeezeBlankLines(out.join('\n'))
   }
 
@@ -720,7 +742,8 @@ class GolangciLintFilter extends ToolFilter {
 
 const _PYLINT_MODULE_RE = /^\*{10,}\s+Module\s/
 const _PYLINT_ISSUE_RE = /^[^\s].*:\d+:\d+:\s+[CWEFR]\d{4}/
-const _PYLINT_CODE_RE = /\s([CWEFR]\d{4})\s/
+// pylint's default text format writes the message id followed by a colon ("a.py:1:0: C0114: Missing module docstring"), so the trailing boundary must accept ":" as well as whitespace or end-of-line; requiring whitespace on both sides matched no real pylint line, leaving every issue bucketed as "__unknown__".
+const _PYLINT_CODE_RE = /\s([CWEFR]\d{4})(?=[\s:]|$)/
 const _PYLINT_RATING_RE = /^Your code has been rated at/
 const _PYLINT_SEPARATOR_RE = /^-{10,}$/
 const _PYLINT_CONFIG_RE = /^(?:Using config file|Loading plugin|No config file found)/

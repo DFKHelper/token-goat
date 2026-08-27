@@ -49,6 +49,15 @@ interface Capture {
   clearsShippingFloor: boolean
   /** Why `clearsShippingFloor` is false, when it is. */
   floorNote?: string
+  /**
+   * Exact lines the compressed body must still carry. A ratio floor alone
+   * cannot catch a filter that over-collapses: pylint's broken code matcher
+   * scored a *better* ratio than the fix, because it was throwing away the
+   * errors it is supposed to always keep.
+   */
+  mustContain?: string[]
+  /** Substrings the compressed body must not carry. */
+  mustNotContain?: string[]
 }
 
 const CAPTURES: Capture[] = [
@@ -84,6 +93,65 @@ const CAPTURES: Capture[] = [
     minRatio: 0.25,
     clearsShippingFloor: true,
   },
+  {
+    fixture: 'ruff-0.14.14-check-single-file.txt',
+    command: 'ruff check service.py',
+    filter: 'ruff',
+    provenance:
+      'ruff 0.14.14, "ruff check service.py" against one throwaway module with four F401 and two F821 violations, default full output on 2026-08-27',
+    rawBytes: 1273,
+    minRatio: 0.15,
+    clearsShippingFloor: true,
+    // Every location survives the context collapse: the point of a one-file report is its line numbers.
+    mustContain: [
+      ' --> service.py:1:8',
+      ' --> service.py:2:8',
+      ' --> service.py:3:8',
+      ' --> service.py:4:8',
+      '  --> service.py:16:12',
+      '  --> service.py:25:12',
+      'Found 6 errors.',
+    ],
+  },
+  {
+    fixture: 'pylint-4.0.7-run.txt',
+    command: 'pylint service.py worker.py',
+    filter: 'pylint',
+    provenance:
+      'pylint 4.0.7 on Python 3.14.0, run against two throwaway modules with C0209/C0116/W0611/E0602/R0801 violations, default text output on 2026-08-27',
+    rawBytes: 5018,
+    minRatio: 0.25,
+    clearsShippingFloor: true,
+    // E-severity issues are always kept, and every code buckets under its own message id rather than one "__unknown__" pile per module.
+    mustContain: [
+      "service.py:16:11: E0602: Undefined variable 'missing_helper' (undefined-variable)",
+      "service.py:25:11: E0602: Undefined variable 'also_missing' (undefined-variable)",
+      "worker.py:16:11: E0602: Undefined variable 'missing_helper' (undefined-variable)",
+      "worker.py:25:11: E0602: Undefined variable 'also_missing' (undefined-variable)",
+      'service.py:1:0: W0611: Unused import os (unused-import)',
+      '+11 more C0209',
+    ],
+    mustNotContain: ['__unknown__'],
+  },
+  {
+    fixture: 'bandit-1.9.4-recursive.txt',
+    command: 'bandit -r insecure.py insecure2.py',
+    filter: 'bandit',
+    provenance:
+      'bandit 1.9.4 on Python 3.14.0, "bandit -r" over two throwaway modules with B404/B602/B605/B324/B307/B101 findings, default screen output on 2026-08-27',
+    rawBytes: 7197,
+    minRatio: 0.12,
+    clearsShippingFloor: true,
+    // Only LOW-severity blocks are collapsed: every HIGH and MEDIUM finding and the run-metrics tail survive.
+    mustContain: [
+      '[B602:subprocess_popen_with_shell_equals_true]',
+      '[B605:start_process_with_a_shell]',
+      '[B324:hashlib]',
+      '[B307:blacklist]',
+      'Total issues (by severity):',
+      'High: 8',
+    ],
+  },
 ]
 
 function fixturePath(name: string): string {
@@ -116,6 +184,26 @@ describe('tool filters against real captured tool output', () => {
           `${cap.filter} removed ${saved} of ${raw.length} bytes (ratio ${ratio.toFixed(3)}, floor ${cap.minRatio}) on real ${cap.fixture} output: a ratio near zero means the filter no longer recognises its tool's current report format and is a silent pass-through`,
         ).toBeGreaterThanOrEqual(cap.minRatio)
       })
+
+      if (cap.mustContain || cap.mustNotContain) {
+        it('keeps the lines a healthy filter must never collapse away', () => {
+          const detected = detectFromCommand(cap.command)
+          if (!detected) throw new Error(`no filter selected for ${cap.command}`)
+          const result = detected.filter.apply(raw, '', 1, detected.argv)
+          for (const needle of cap.mustContain ?? []) {
+            expect(
+              result.text.includes(needle),
+              `${cap.filter} dropped "${needle}" from real ${cap.fixture} output: the filter is over-collapsing, which a ratio floor alone cannot detect because over-collapsing improves the ratio`,
+            ).toBe(true)
+          }
+          for (const needle of cap.mustNotContain ?? []) {
+            expect(
+              result.text.includes(needle),
+              `${cap.filter} emitted "${needle}" on real ${cap.fixture} output, which means it failed to classify the tool's own records`,
+            ).toBe(false)
+          }
+        })
+      }
 
       it(
         cap.clearsShippingFloor
