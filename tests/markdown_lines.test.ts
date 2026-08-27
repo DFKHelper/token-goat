@@ -88,4 +88,52 @@ describe('eachUnfencedLine', () => {
   it('returns nothing for an empty input', () => {
     expect(collect([])).toEqual([])
   })
+
+  // A CRLF document split on '\n' leaves a trailing '\r' on every line. A JS regex `.` excludes `\r` (it is a line terminator), so a `(.*)$` info-string tail could never reach `$` and no fence line matched at all: every fence went invisible and a `#` comment inside a fenced block was scanned as a real heading. Both line endings are built explicitly here so the assertion is identical on ubuntu, windows and macOS.
+  const FENCED_DOC = ['# Title', '', '## Sub', '```sh', '# not a heading', '```', 'after']
+
+  it('skips a fenced block on a CRLF document, exactly as on LF', () => {
+    const lf = FENCED_DOC.join('\n').split('\n')
+    const crlf = FENCED_DOC.join('\r\n').split('\n')
+
+    expect(collect(lf)).toEqual([
+      [0, '# Title'],
+      [1, ''],
+      [2, '## Sub'],
+      [6, 'after'],
+    ])
+    expect(collect(crlf)).toEqual([
+      [0, '# Title\r'],
+      [1, '\r'],
+      [2, '## Sub\r'],
+      [6, 'after'],
+    ])
+    // The same structural shape on both line endings: same indices, same text once the CR is removed.
+    expect(collect(crlf).map(([i, l]) => [i, l.replace(/\r$/, '')])).toEqual(collect(lf))
+  })
+
+  it('a CRLF fence still only closes on a same-char run of at least the opening length', () => {
+    const doc = ['a', '````', '```', '~~~~', '````', 'b']
+    const crlf = doc.join('\r\n').split('\n')
+    const lf = doc.join('\n').split('\n')
+    // Control for an over-fix that merely made every marker-looking line toggle the fence: the inner ``` and ~~~~ lines are literal content, so only 'a' and 'b' survive.
+    expect(collect(lf)).toEqual([
+      [0, 'a'],
+      [5, 'b'],
+    ])
+    expect(collect(crlf)).toEqual([
+      [0, 'a\r'],
+      [5, 'b'],
+    ])
+  })
+
+  it('a CRLF marker line carrying an info string does not close an open fence', () => {
+    const doc = ['a', '```', '```js', '```', 'b']
+    const crlf = doc.join('\r\n').split('\n')
+    // Control for an over-fix that dropped the rest.trim() === '' check: the '```js' line is content, so the block closes on the third marker and only 'a' and 'b' are yielded.
+    expect(collect(crlf)).toEqual([
+      [0, 'a\r'],
+      [4, 'b'],
+    ])
+  })
 })

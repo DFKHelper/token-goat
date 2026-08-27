@@ -14,7 +14,8 @@ export function* eachUnfencedLine(lines: readonly string[]): Generator<[number, 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
-    const fm = /^\s*(`{3,}|~{3,})(.*)$/.exec(line)
+    // `[^\n]*`, not `.*`: a JS regex `.` excludes every line terminator, and `\r` is one of them, so on a CRLF document (the norm for a Windows checkout) a `.*` tail could not reach the un-anchored `$` and the fence line matched nothing at all. Every fence was then invisible, a `#` comment inside a fenced block was scanned as a real heading, and `section` truncated the enclosing section at it.
+    const fm = /^\s*(`{3,}|~{3,})([^\n]*)$/.exec(line)
     if (fm !== null && fm[1] !== undefined) {
       const run = fm[1]
       const ch = run[0] ?? ''
