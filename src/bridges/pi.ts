@@ -238,6 +238,30 @@ function extractUpdatedInput(resp: Record<string, unknown>): Record<string, unkn
 // since pi's tool_call handler has no context-injection channel -- only
 // in-place arg mutation. Returns undefined (leaving the read path untouched)
 // if the context isn't a shrink payload or anything goes wrong writing it.
+// Best-effort sweep of previously materialized shrunk copies in the OS temp dir: typed twin of pruneMaterializedShrinks in shrink_block.ts (MATERIALIZE_SHRUNK_IMAGE_JS), which documents why pi keeps its own copy. The temp file only needs to outlive the single tool call whose path was rewritten to it, so anything older than an hour is finished with; the "token-goat-shrink-" prefix check confines the sweep to this mechanism's own files.
+const MATERIALIZED_SHRINK_MAX_AGE_MS = 60 * 60 * 1000;
+let lastMaterializedShrinkSweepAtMs = 0;
+function pruneMaterializedShrinks(): void {
+  const now = Date.now();
+  if (now - lastMaterializedShrinkSweepAtMs < MATERIALIZED_SHRINK_MAX_AGE_MS) return;
+  lastMaterializedShrinkSweepAtMs = now;
+  try {
+    const dir = os.tmpdir();
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.startsWith("token-goat-shrink-")) continue;
+      const full = path.join(dir, file);
+      try {
+        const st = fs.statSync(full);
+        if (st.isFile() && now - st.mtimeMs > MATERIALIZED_SHRINK_MAX_AGE_MS) fs.unlinkSync(full);
+      } catch {
+        // Best-effort per-file cleanup; one bad stat/unlink must not abort the sweep.
+      }
+    }
+  } catch {
+    // Best-effort; a readdir failure must never break the materialization below.
+  }
+}
+
 function materializeShrunkImage(context: string | undefined): string | undefined {
   if (typeof context !== "string") return undefined;
   const idx = context.indexOf("data:image/");
@@ -245,6 +269,7 @@ function materializeShrunkImage(context: string | undefined): string | undefined
   const match = /^data:image\\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(context.slice(idx).trim());
   if (!match) return undefined;
   try {
+    pruneMaterializedShrinks();
     const buf = Buffer.from(match[2], "base64");
     const name = \`token-goat-shrink-\${process.pid}-\${Date.now()}-\${Math.random().toString(36).slice(2)}.\${match[1]}\`;
     const file = path.join(os.tmpdir(), name);

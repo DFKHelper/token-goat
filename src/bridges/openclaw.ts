@@ -19,24 +19,30 @@
  *  - An earlier, independent verification against OpenClaw's own
  *    `aristotle-agent/types.ts` source (prior session, `reference-openclaw-api`
  *    memory): confirms `register()` must be synchronous (`api.on()` handlers
- *    may be async), the `before_tool_call` event shape
- *    (`{toolName, toolCallId, params}`), and -- most importantly -- that
- *    `event.params` keys are **already snake_case** (`file_path`, `command`,
- *    etc.), matching token-goat's own `tool_input` convention exactly. That is
- *    why, unlike every other bridge in this directory (Gemini, Codex, pi),
- *    there is no `ARGS_TO_TG` key-remapping table here: `event.params` is
- *    forwarded to `tool_input` unchanged. Blindly adding a remap table for an
- *    already-correct key is exactly the bug the Gemini bridge shipped with
- *    initially (`GEMINI_INPUT_KEY_MAP` renamed an already-correct `file_path`
- *    to `path`, silently corrupting every real Read/Write/Edit call) -- not
- *    repeating that here is a deliberate, evidence-based choice.
+ *    may be async) and the `before_tool_call` event shape
+ *    (`{toolName, toolCallId, params}`). That pass also claimed `event.params`
+ *    keys were already snake_case (`file_path`, `command`, ...), which turned
+ *    out to be wrong for the path-carrying tools: OpenClaw's own tool input
+ *    schemas (openclaw/openclaw src/agents/sessions/tools/read-tool-contract.ts,
+ *    edit.ts, bash.ts) declare `path` for read/edit/write and `command`/`timeout`
+ *    for bash. So `command` really did line up with token-goat's key, but
+ *    `file_path` never arrived, and every Read/Edit/Write hook that calls
+ *    getFilePath() (re-read denial, image shrink, post-edit indexing) silently
+ *    no-opped. PATH_ARG_TOOLS/toToolInput below fix that by ADDING the
+ *    canonical `file_path` alongside the original `path` (the Copilot shim's
+ *    remapToolInput convention) rather than renaming it -- renaming an
+ *    already-correct key is the bug the Gemini bridge shipped with initially
+ *    (`GEMINI_INPUT_KEY_MAP`), and keeping the original key means a wrong
+ *    mapping degrades to the old no-op rather than corrupting the call.
  *
  * What's still genuinely unverified against a live OpenClaw instance (no
  * instance was available this pass -- see README's "openclaw users" section
  * and this bridge's own follow-up note): the exact current built-in tool-name
- * list (the two sources above disagree slightly -- `grep`/`glob`/`webfetch`/
- * `apply_patch` per the older source vs. `web_search`/`web_fetch` per the
- * fresher docs; TOOL_TO_TG below includes both, since an unmatched key is
+ * list (the sources disagree -- `grep`/`glob`/`webfetch`/`apply_patch`/`exec`
+ * per the older source vs. `web_search`/`web_fetch` per the fresher docs vs.
+ * `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` per openclaw/openclaw's own
+ * sessions/tools ToolName union, whose bash.ts registers `name: "bash"`, not
+ * `exec`; TOOL_TO_TG below includes every spelling, since an unmatched key is
  * harmless no-op, not a wrong guess), and whether tool-call context (`ctx`)
  * actually carries a stable per-session identifier (the older source says
  * OpenClaw "has no session concept"; this session's fresh research found
@@ -51,20 +57,17 @@
  * compaction events, but it cannot re-inject a manifest.
  */
 import { BRIDGE_RELAY_JS } from "./relay_block.js";
+import { MATERIALIZE_SHRUNK_IMAGE_JS } from "./shrink_block.js";
 
 export const OPENCLAW_PLUGIN_SCRIPT = `// token-goat bridge plugin for OpenClaw
 // Bridges OpenClaw's tool-call and session hooks to token-goat's subprocess
 // hook protocol. https://github.com/DFKHelper/token-goat
 //
-// NOTE ON PARAMETER SHAPES: OpenClaw's tool-call params are forwarded to
-// token-goat's tool_input unchanged (no key remapping) -- verified against
-// OpenClaw's own event-type source that these keys are already snake_case
-// (file_path, command, etc.), matching token-goat's own convention. The
-// built-in tool NAME list below is broader than any single source confirms,
-// since an unmatched name is a harmless no-op here, not a wrong rewrite.
+// NOTE ON PARAMETER SHAPES: OpenClaw's bash tool really does use token-goat's own key names (command/timeout), but the path-carrying tools (read/edit/write) send the file path under "path", not "file_path" -- read out of OpenClaw's own tool input schemas (src/agents/sessions/tools/read-tool-contract.ts, edit.ts, bash.ts in openclaw/openclaw). toToolInput below ADDS the canonical file_path alongside the original path so token-goat's getFilePath()-based handlers can see it, without renaming anything. The built-in tool NAME list below is broader than any single source confirms, since an unmatched name is a harmless no-op here, not a wrong rewrite.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -75,8 +78,10 @@ const TOOL_TO_TG = {
   edit: "Edit",
   apply_patch: "Edit",
   exec: "Bash",
+  bash: "Bash",
   grep: "Grep",
   glob: "Glob",
+  find: "Glob",
   webfetch: "WebFetch",
   web_search: "WebFetch",
   web_fetch: "WebFetch",
@@ -87,7 +92,30 @@ const TOOL_TO_TG = {
 // PRE_HOOK_TOOLS note -- so it's excluded to avoid a wasted no-op spawn).
 const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
+// OpenClaw tools whose file path travels under "path" (see the parameter-shapes note above). apply_patch is deliberately absent: its input is a patch document, not a single path.
+const PATH_ARG_TOOLS = new Set(["read", "write", "edit"]);
+
+// Build token-goat's tool_input from OpenClaw's params: same object, plus the canonical file_path added alongside the original path for the tools that carry one. Never renames or drops a key.
+function toToolInput(toolName, params) {
+  const p = params || {};
+  if (PATH_ARG_TOOLS.has(toolName) && typeof p.path === "string" && p.file_path === undefined) {
+    return { ...p, file_path: p.path };
+  }
+  return p;
+}
+
+// Pull the additionalContext / systemMessage string out of a hook response, whichever shape it came back as (see the response-contract note in this module's header comment).
+function extractContext(resp) {
+  if (!resp) return undefined;
+  const hso = resp["hookSpecificOutput"];
+  if (hso && typeof hso["additionalContext"] === "string") return hso["additionalContext"];
+  if (typeof resp["systemMessage"] === "string") return resp["systemMessage"];
+  return undefined;
+}
+
 ${BRIDGE_RELAY_JS}
+
+${MATERIALIZE_SHRUNK_IMAGE_JS}
 
 export default definePluginEntry({
   id: "token-goat",
@@ -124,7 +152,7 @@ export default definePluginEntry({
       const resp = await callHook("pre_tool_use", {
         session_id: sid,
         tool_name: tg,
-        tool_input: event.params || {},
+        tool_input: toToolInput(event.toolName, event.params),
         cwd: process.cwd(),
       });
       if (!resp) return {};
@@ -141,6 +169,12 @@ export default definePluginEntry({
       const updated = hso ? hso["updatedInput"] : undefined;
       if (updated) {
         return { params: { ...(event.params || {}), ...updated } };
+      }
+
+      // Image shrink has no context channel here -- translate it into a rewritten path pointing at a materialized shrunk copy instead, via the same params-rewrite channel the updatedInput merge above already relies on. OpenClaw's read tool takes the path under "path" (see the parameter-shapes note above), and the rest of the original params are preserved.
+      if (tg === "Read") {
+        const shrunkPath = materializeShrunkImage(extractContext(resp));
+        if (shrunkPath) return { params: { ...(event.params || {}), path: shrunkPath } };
       }
 
       return {};
@@ -162,7 +196,7 @@ export default definePluginEntry({
       await callHook("post_tool_use", {
         session_id: sid,
         tool_name: tg,
-        tool_input: event.params || {},
+        tool_input: toToolInput(event.toolName, event.params),
         cwd: process.cwd(),
         tool_response: toolResponse,
       });

@@ -15,16 +15,18 @@
  *      real hook registry and that session state persists correctly across two calls.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { transformSync } from 'esbuild'
+import sharp from 'sharp'
 
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
+import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from '../../src/bridges/openclaw.js'
 import { OPENCODE_PLUGIN_SCRIPT } from '../../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
@@ -307,6 +309,157 @@ describe('pi extension: in-process hook call replaces the second node spawn', ()
     expect(second?.block).toBe(true)
     expect(second?.reason).toContain('already read')
 
+    expect(existsSync(markerPath)).toBe(false)
+  })
+})
+
+// A large noisy JPEG that qualifies for a real shrink (well over DEFAULT_SIZE_THRESHOLD_BYTES at quality 100) and reliably re-encodes smaller at the default quality, driving the REAL preReadImageHandler -> shrinkImage pipeline through the hook lib rather than a stubbed payload.
+async function makeLargeJpegFixture(cwd: string): Promise<string> {
+  const side = 1200
+  const noise = Buffer.alloc(side * side * 3)
+  for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256)
+  const imgPath = join(cwd, 'big-screenshot.jpeg')
+  const data = await sharp(noise, { raw: { width: side, height: side, channels: 3 } })
+    .jpeg({ quality: 100 })
+    .toBuffer()
+  writeFileSync(imgPath, data)
+  return imgPath
+}
+
+describe('image shrink materialization: the shrink payload becomes a rewritten path argument on the bridges with no pre-tool context channel', () => {
+  it('opencode: tool.execute.before rewrites args.filePath to a materialized shrunk copy of a large image', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+
+    // A stale previously-materialized copy in the OS temp dir: the materialize step's best-effort sweep must remove it (prefix-confined, age-gated), proving temp files from prior calls do not accumulate forever.
+    const stalePath = join(tmpdir(), `token-goat-shrink-999999-0-staletest${Math.random().toString(36).slice(2)}.jpeg`)
+    writeFileSync(stalePath, 'stale')
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    utimesSync(stalePath, old, old)
+
+    const imgPath = await makeLargeJpegFixture(cwd)
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+    const sessionID = 'inprocess-shrink-test-' + Math.random().toString(36).slice(2)
+
+    const output = { args: { filePath: imgPath } as Record<string, unknown> }
+    await hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, output)
+
+    const rewritten = output.args['filePath'] as string
+    expect(rewritten).not.toBe(imgPath)
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9]+\.(jpeg|webp)$/)
+    expect(existsSync(rewritten)).toBe(true)
+    expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
+    expect(existsSync(stalePath)).toBe(false)
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('openclaw: before_tool_call returns rewritten params with OpenClaw\'s own "path" key pointing at the shrunk copy, preserving every other original param', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const transformed = OPENCLAW_PLUGIN_SCRIPT.replace(
+      'import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";',
+      'function definePluginEntry(cfg) { return cfg }',
+    )
+    expect(transformed).not.toBe(OPENCLAW_PLUGIN_SCRIPT)
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, transformed, 'utf8')
+
+    const imgPath = await makeLargeJpegFixture(cwd)
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      default: { register: (api: { on: (event: string, handler: (...args: unknown[]) => unknown) => void }) => void }
+    }
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    mod.default.register({
+      on(event, handler) {
+        handlers[event] = handler
+      },
+    })
+    const ctx = { sessionId: 'inprocess-shrink-test-' + Math.random().toString(36).slice(2) }
+
+    // The params use OpenClaw's REAL read-tool input key ("path", from openclaw/openclaw src/agents/sessions/tools/read-tool-contract.ts), not token-goat's file_path -- deriving the fixture from the harness's own schema rather than from this bridge's forwarding code.
+    const result = (await handlers['before_tool_call']!(
+      { toolName: 'read', params: { path: imgPath, offset: 1 } },
+      ctx,
+    )) as { block?: boolean; params?: Record<string, unknown> }
+    expect(result.block).toBeFalsy()
+    const rewritten = result.params?.['path'] as string
+    expect(typeof rewritten).toBe('string')
+    expect(rewritten).not.toBe(imgPath)
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9]+\.(jpeg|webp)$/)
+    expect(existsSync(rewritten)).toBe(true)
+    expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
+    expect(result.params?.['offset']).toBe(1)
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('openclaw: a re-read arriving under OpenClaw\'s real "path" key is denied on the second call (the inbound path -> file_path mapping feeds getFilePath)', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const transformed = OPENCLAW_PLUGIN_SCRIPT.replace(
+      'import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";',
+      'function definePluginEntry(cfg) { return cfg }',
+    )
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, transformed, 'utf8')
+
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      default: { register: (api: { on: (event: string, handler: (...args: unknown[]) => unknown) => void }) => void }
+    }
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    mod.default.register({
+      on(event, handler) {
+        handlers[event] = handler
+      },
+    })
+    const envPath = makeEnvFixture(cwd)
+    const ctx = { sessionId: 'inprocess-pathkey-test-' + Math.random().toString(36).slice(2) }
+
+    type BeforeToolCallResult = { block?: boolean; blockReason?: string } | undefined
+    const first = (await handlers['before_tool_call']!({ toolName: 'read', params: { path: envPath } }, ctx)) as BeforeToolCallResult
+    expect(first?.block).toBeFalsy()
+    const second = (await handlers['before_tool_call']!({ toolName: 'read', params: { path: envPath } }, ctx)) as BeforeToolCallResult
+    expect(second?.block).toBe(true)
+    expect(second?.blockReason).toContain('already read')
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('copilot shim: preToolUse on a large image view returns modifiedArgs carrying the FULL original args with only the Copilot-native path key swapped to the shrunk copy', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    const scriptPath = join(cwd, 'copilot-shim.js')
+    writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+    const imgPath = await makeLargeJpegFixture(cwd)
+
+    const payload = JSON.stringify({
+      sessionId: 'inprocess-copilot-shrink-' + Math.random().toString(36).slice(2),
+      workingDirectory: cwd,
+      toolName: 'view',
+      toolArgs: { path: imgPath, viewRange: [1, 40] },
+    })
+    const res = spawnSync(process.execPath, [scriptPath, 'preToolUse', entryPath], {
+      cwd,
+      input: payload,
+      encoding: 'utf8',
+      timeout: 30000,
+    })
+    expect(res.status).toBe(0)
+    const parsed = JSON.parse(res.stdout || '{}') as { modifiedArgs?: Record<string, unknown> }
+    const rewritten = parsed.modifiedArgs?.['path'] as string
+    expect(typeof rewritten).toBe('string')
+    expect(rewritten).not.toBe(imgPath)
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9]+\.(jpeg|webp)$/)
+    expect(existsSync(rewritten)).toBe(true)
+    expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
+    // Copilot's modifiedArgs REPLACES the tool call's arguments wholesale (ESr in the 1.0.80 bundle), so the rewrite must carry every original arg, not a bare path object.
+    expect(parsed.modifiedArgs?.['viewRange']).toEqual([1, 40])
     expect(existsSync(markerPath)).toBe(false)
   })
 })

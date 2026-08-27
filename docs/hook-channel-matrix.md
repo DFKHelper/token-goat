@@ -41,8 +41,8 @@ paper over.
 |---|---|---|---|---|---|---|---|---|---|---|
 | pre deny | M (d) | M (w)¹ | ? (doc, BE-06) | M (doc)² | ? (doc)³ | ? (doc)⁴ | M (w)⁵ | M (w)⁶ | M (doc) | M (w) |
 | pre context (hints) | M (c) | D (w)⁷ | ? (u, BE-06) | D (b)⁸ | ? (u) | ? (doc) | ? (u)⁹ | D (b)¹⁰ | D (b)¹⁰ | D (b)¹⁰ |
-| pre context (image shrink) | M (c) | **D (w)¹¹** | ? (u) | D (b) | ? (u) | ? (doc) | D (w) | M (b)¹² | D (b)¹¹ | M (b)¹² |
-| pre rewriteInput | M (d) | M (doc)¹³ | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (doc) | M (w) |
+| pre context (image shrink) | M (c) | M (w)¹¹ | ? (u) | D (b) | ? (u) | ? (doc) | D (w) | M (b)¹² | M (w)¹¹ | M (b)¹² |
+| pre rewriteInput | M (d) | M (w)¹³ | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (w)¹¹ | M (w) |
 | post rewriteOutput | M (d) | M (w)¹⁴ | ? (doc, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁵ | D (b, u)¹⁶ | D (b, u)¹⁶ |
 | post context | M (d) | D (w)¹⁷ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁸ | D (b, u)¹⁶ | D (b, u)¹⁶ |
 | failure context | X | M (w)¹⁹ | X | X | X | X | X | X | X | X |
@@ -60,9 +60,9 @@ paper over.
 8. Dropped by the shim itself: `GROK_HOOK_SCRIPT` translates only the deny shape on pre_tool_use and answers `{"decision":"allow"}` for everything else, per Grok's documented response schema (`decision`/`reason` only).
 9. The Kimi shim folds hints into the top-level `message` field Kimi's schema reads, but WHERE `message` lands per event (model context vs UI) is only pinned for user_prompt_submit; see BE-11 in `docs/loop-ledger.md`.
 10. No pre-tool context-injection channel exists in the plugin API.
-11. **Image shrinking is dead on Copilot CLI and OpenClaw.** The shrink payload rides pre_tool_use additionalContext, which their pre-tool responses cannot carry. opencode and pi prove the reroute (footnote 12): materialize the shrunk copy to a temp file and rewrite the path argument — Copilot honors `modifiedArgs` and OpenClaw honors `params`, so the same reroute is buildable on both. Recorded as the top candidate for a next loop, not silently.
+11. Rerouted loop 52 (was: dead on both, since the shrink payload rides pre_tool_use additionalContext, which their pre-tool responses cannot carry). Both bridges now materialize the shrunk copy to a temp file (shared `MATERIALIZE_SHRUNK_IMAGE_JS`, `src/bridges/shrink_block.ts`) and rewrite the path argument, the opencode/pi pattern (footnote 12). Premise re-derived before shipping, at (w) on both receive sides: Copilot 1.0.80's native response schema parses `modifiedArgs` (runtime.node offset 101619638) and app.js applies `argMutations` tool-agnostically via ESr (offset 2032225), which REPLACES `function.arguments` wholesale — so the shim spreads the full original toolArgs and swaps only Copilot's own `path` key on a `view` call; OpenClaw's `runBeforeToolCallHook` (openclaw/openclaw src/agents/agent-tools.before-tool-call.policy.ts) merges `hookResult.params` into `finalParams` tool-agnostically and the wrapper executes with them (`finalizeBeforeToolCallExecutionParams`). The same re-derivation disproved the OpenClaw bridge's inherited claim that its params were already snake_case: read/edit/write send `path`, not `file_path` (read-tool-contract.ts / edit.ts), so every getFilePath()-based OpenClaw hook (image shrink, re-read deny, post-edit indexing) had silently no-opped — fixed by adding `file_path` alongside `path` inbound, and the shrink rewrite is returned under `path`. The OCR branch (text summary, no data URL) still has no representation on any materializing bridge and falls through to the original image, by design. Not live-run on either harness (Copilot CLI runs are out of bounds; no OpenClaw instance): evidence is bundle/source-level plus the real-pipeline bridge tests in tests/bridges/inprocess.test.ts.
 12. `materializeShrunkImage` in the opencode/pi bridges decodes the data-URL payload to a temp file and rewrites the path arg, so the model reads the shrunk copy.
-13. `modifiedArgs` is documented on Copilot's preToolUse and forwarded verbatim by the shim. Caveat: the agent-briefing rewrite keys on a `prompt` arg; Copilot's `task` toolArgs shape is unverified, and if the key differs the handler no-ops (safe).
+13. `modifiedArgs` is documented on Copilot's preToolUse and forwarded verbatim by the shim; upgraded to (w) loop 52 — the 1.0.80 bundle evidence in footnote 11 (native schema parse, tool-agnostic argMutations application, wholesale replacement via ESr). Caveat: the agent-briefing rewrite keys on a `prompt` arg; Copilot's `task` toolArgs shape is unverified, and if the key differs the handler no-ops (safe). Second caveat, new with the (w) finding: replacement is WHOLESALE, so any updatedInput forwarded as modifiedArgs must carry every arg the tool still needs — token-goat's bash command wrap emits the full updated tool_input, which is why the existing forward is sound.
 14. Bundle-verified 1.0.80: `postToolExecution` assigns the returned `toolResultJson` in place (offsets 2043150/2032350/1793926).
 15. Fixed this loop: the plugin's `tool.execute.after` used to apply only the context append and silently dropped `updatedToolOutput` — the whitelist shape (`project_copilot_shim_canonical_builder_is_a_whitelist`) on the receive side. WebFetch injection fencing, secret redaction and output compression never reached an opencode session. The fix mutates `output.output`, the same mechanism the append already relied on; not yet run against a live opencode instance.
 16. The bridge fires post_tool_use for token-goat's side effects and ignores the response. Whether OpenClaw's `after_tool_call` / pi's `tool_result` could mutate the result at all is unverified (BE-12); until then the drop is the honest state, not a gap to code around.
@@ -87,9 +87,10 @@ paper over.
   ungated because suppressing them would rest on inference (their task-tool wire shapes are
   BE-06).
 - **opencode dropped every post_tool_use rewriteOutput** (footnote 15). Fixed this loop.
-- **Image shrinking is dead on Copilot CLI and OpenClaw** (footnote 11). Recorded; the
-  materialize-to-temp-file reroute both opencode and pi already use is the identified fix for a
-  future loop.
+- **Image shrinking was dead on Copilot CLI and OpenClaw** (footnote 11). Rerouted loop 52 via
+  the materialize-to-temp-file pattern opencode and pi already used, now a shared block
+  (`src/bridges/shrink_block.ts`); the same premise check found and fixed OpenClaw's
+  `path`-vs-`file_path` inbound key gap, which had every getFilePath()-based hook no-opping there.
 - Grok (deny-only), Kimi (no rewrite channels, post fire-and-forget), OpenClaw/pi post-response
   drops: harness-design limitations, recorded here and in the bridges' own comments, deliberately
   not coded around.
