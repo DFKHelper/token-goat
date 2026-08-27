@@ -92,7 +92,24 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
   const rawAgentId = obj['agent_id'] ?? obj['agentId']
   const agentId = typeof rawAgentId === 'string' && rawAgentId !== '' ? rawAgentId : undefined
 
-  return { eventName, toolName, toolInput, sessionId, agentId, raw: obj }
+  // traceparent / tracestate: W3C Trace Context headers from Claude Code / OTel spans or environment.
+  const rawTraceparent =
+    obj['traceparent'] ??
+    obj['traceParent'] ??
+    process.env['TRACEPARENT'] ??
+    process.env['traceparent']
+  const traceparent =
+    typeof rawTraceparent === 'string' && rawTraceparent.trim() !== '' ? rawTraceparent.trim() : undefined
+
+  const rawTracestate =
+    obj['tracestate'] ??
+    obj['traceState'] ??
+    process.env['TRACESTATE'] ??
+    process.env['tracestate']
+  const tracestate =
+    typeof rawTracestate === 'string' && rawTracestate.trim() !== '' ? rawTracestate.trim() : undefined
+
+  return { eventName, toolName, toolInput, sessionId, agentId, traceparent, tracestate, raw: obj }
 }
 
 /**
@@ -168,6 +185,13 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually.
     if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
       process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId
+    }
+    // Propagate W3C trace context to environment if delivered on the payload wire, so child subprocesses/tools can correlate spans.
+    if (!process.env['TRACEPARENT'] && event.traceparent) {
+      process.env['TRACEPARENT'] = event.traceparent
+    }
+    if (!process.env['TRACESTATE'] && event.tracestate) {
+      process.env['TRACESTATE'] = event.tracestate
     }
     // Load persisted session state before handlers run; save the mutated state after. Each is isolated in its own try/catch so a persistence failure can never suppress the handler's real output (the cardinal rule above).
     const stateKey = sessionStateKey(event)

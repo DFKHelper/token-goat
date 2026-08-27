@@ -177,6 +177,29 @@ describe('installCopilotCli (user scope)', () => {
     }
   })
 
+  it('populates allowedEnvVars including TRACEPARENT and TRACESTATE on every generated hook entry', () => {
+    const result = installCopilotCli()
+    const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
+      hooks: Record<string, Array<{ allowedEnvVars?: string[] }>>
+    }
+    for (const event of [
+      'sessionStart',
+      'preToolUse',
+      'postToolUse',
+      'preCompact',
+      'agentStop',
+      'subagentStop',
+      'userPromptSubmitted',
+      'postToolUseFailure',
+    ]) {
+      const allowed = config.hooks[event]?.[0]?.allowedEnvVars
+      expect(allowed).toBeDefined()
+      expect(allowed).toContain('TRACEPARENT')
+      expect(allowed).toContain('TRACESTATE')
+      expect(allowed).toContain('COPILOT_HOME')
+    }
+  })
+
   it('is idempotent: a second install reports alreadyInstalled and does not duplicate or alter entries', () => {
     installCopilotCli()
     const second = installCopilotCli()
@@ -1183,5 +1206,38 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
 
     expect(captured1.session_id).toBeTruthy()
     expect(captured1.session_id).toBe(captured2.session_id)
+  })
+
+  it('forwards agent_id, traceparent, and tracestate from Copilot payload to canonical', () => {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+    runShim(
+      'preToolUse',
+      JSON.stringify({
+        sessionId: 's1',
+        cwd: '/tmp',
+        agent_id: 'subagent-abc',
+        traceparent: '00-1234567890abcdef1234567890abcdef-1234567890abcdef-01',
+        tracestate: 'rojo=1',
+        toolName: 'view',
+        toolArgs: { path: '/f.txt' },
+      }),
+      cwd,
+      env,
+    )
+
+    const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+    expect(captured.agent_id).toBe('subagent-abc')
+    expect(captured.traceparent).toBe('00-1234567890abcdef1234567890abcdef-1234567890abcdef-01')
+    expect(captured.tracestate).toBe('rojo=1')
   })
 })
