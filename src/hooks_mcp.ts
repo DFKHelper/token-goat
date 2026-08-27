@@ -14,7 +14,8 @@
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, emitRewrite } from './hooks_common.js'
-import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
+import { isMcpReadOnly, getMcpOutput, mcpOutputBytes, storeMcpOutput } from './mcp_cache.js'
+import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
@@ -34,6 +35,9 @@ function preMcpHandler(event: HookEvent): HookOutput {
   const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
   const id = getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)
   if (!id) return passOutput()
+  // The denied call never runs, so its result never reaches the model a second time. Credit that blocked re-arrival the way preSkillHandler credits a blocked skill re-load: the cached entry's stored (redacted) size, capped at PER_FILE_COUNTERFACTUAL_CEILING because the counterfactual being priced is a response that would itself have been truncated. The full raw result is the right counterfactual here specifically because postMcpHandler returns early on a cache hit (see its getMcpOutput guard), so the allowed second call would have shipped the result uncompressed. No sibling stat double-counts these bytes: mcp:compress only ever fires on a call that actually ran, which this deny prevents.
+  const denyCredit = Math.min(mcpOutputBytes(id), PER_FILE_COUNTERFACTUAL_CEILING)
+  recordStat('mcp:recall', denyCredit, Math.round(denyCredit / 4))
   return denyOutput(
     'Identical read-only MCP call already cached this session. Use `token-goat bash-output ' +
       id +
@@ -91,18 +95,21 @@ function postMcpHandler(event: HookEvent): HookOutput {
         const redactedBody = redactSecrets(compressed).text
         const notice = `[token-goat: compressed, full via mcp-output ${id}]\n`
         // Net-benefit gate (shared with bash_runner's filter pipeline, see tool_filters/base.ts::isRewriteWorthwhile): a rewrite that barely beats the original after paying for its own notice destabilises bytes that could otherwise be served from the provider's cached prefix for no real gain -- below the floor, ship resultText untouched instead.
+        const originalBytes = Buffer.byteLength(resultText, 'utf-8')
         const worthwhile = isRewriteWorthwhile({
-          originalBytes: Buffer.byteLength(resultText, 'utf-8'),
+          originalBytes,
           rewrittenBytes: Buffer.byteLength(redactedBody, 'utf-8'),
           noticeBytes: Buffer.byteLength(notice, 'utf-8'),
           minNetSavingsBytes: resolveMinNetSavingsBytes(),
         })
         if (worthwhile) {
+          // MCP compression shipped for releases without recording anything, so the whole mechanism was invisible in `token-goat stats` even though the `mcp:` prefix was already registered in KIND_TO_SOURCE. Credited through emitRewrite's savings parameter rather than a hand-written recordStat beside the emit, because that parameter measures the emitted string itself -- notice, fence and redaction placeholders included -- which is the only figure that describes what the model was actually spared. A recordStat here would have to re-derive that per branch and would drift the moment either branch changed, which is exactly how the WebFetch over-report happened.
           return emitRewrite(
             injectionMatches.length > 0
               ? `${notice}${fenceUntrustedContent(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`
               : `${notice}${redactedBody}`,
             'mcp',
+            { kind: 'mcp:compress', originalBytes },
           )
         }
       }

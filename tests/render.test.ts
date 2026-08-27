@@ -558,6 +558,20 @@ describe('Stats rendering', () => {
     expect(byKindBlock).not.toContain('Other')
   })
 
+  it('groups the mcp: prefixed kinds under MCP, not Other (regression: hooks_mcp.ts recorded no savings at all, so mcp:compress/mcp:recall had no _kindGroupLabel branch when they started being recorded)', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'mcp:compress', bytes: 12000, tokens: 3000, events: 6 },
+      { kind: 'mcp:recall', bytes: 4000, tokens: 1000, events: 2 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    expect(byKindBlock).toContain('mcp:compress')
+    expect(byKindBlock).toContain('mcp:recall')
+    expect(byKindBlock).toContain('MCP')
+    expect(byKindBlock).not.toContain('Other')
+  })
+
   it('groups read_count_deny under Hints, not Other (regression: it is SOURCE_HINT and recorded alongside session_hint but was missing from _KIND_GROUPS)', () => {
     const stats = { ...minimalStats }
     stats.by_kind = [
