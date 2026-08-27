@@ -113,6 +113,15 @@ const _CLINE_WANTS_EXECUTE_RE = /^\s*Cline\s+wants\s+to\s+(?:execute|run|write|r
 const _CODEX_SEPARATOR_RE = /^-{4,}$/
 const _CODEX_MODEL_RE = /^model\s*:\s*(?<model>\S+)/i
 const _CODEX_TOKENS_USED_RE = /^tokens used$/i
+const _CODEX_TOKEN_COUNT_RE = /^\d[\d,]*$/
+
+// Drop leading and trailing blank lines from a slice of transcript lines
+function _trimBlankEdges(input: string[]): string[] {
+  let out = input
+  while (out.length && !(out[0] ?? '').trim()) out = out.slice(1)
+  while (out.length && !(out[out.length - 1] ?? '').trim()) out = out.slice(0, -1)
+  return out
+}
 
 // ===========================================================================
 // Filter instances
@@ -303,7 +312,7 @@ export const clineFilter = makeAiCliFilter({
 // ---------------------------------------------------------------------------
 // CodexExecFilter — bespoke structural algorithm
 //
-// Codex output has a distinctive two-separator header block followed by a role-labelled transcript. The algorithm: 1. Scan the first 20 lines for two `--------` separators. 2. Bail (passthrough) if fewer than two separators are found. 3. Extract the model name from the config block between the separators. 4. Find the last "codex" role label after the second separator. 5. Scan backward (last 6 lines from the last codex label) for a "tokens used" footer and capture the count on the next non-blank line. 6. Extract the answer body between the last codex label and the footer. 7. Emit `[codex: model=X, tokens=Y]` followed by the answer body.
+// Codex output has a distinctive two-separator header block followed by a role-labelled transcript. The algorithm: 1. Scan the first 20 lines for two `--------` separators. 2. Bail (passthrough) if fewer than two separators are found. 3. Extract the model name from the config block between the separators. 4. Scan backward over the whole transcript for a "tokens used" footer whose next non-blank line is a token count. 5. `codex exec` echoes the final agent message verbatim after that count line, so when anything follows it, that echo is the answer: it carries no role labels, so there is nothing to guess at. 6. Otherwise fall back to the last "codex" role label before the footer, and say in the header how many earlier turns were dropped, because a bare `codex` line inside an answer body is indistinguishable from a role label. 7. Emit `[codex: model=X, tokens=Y]` followed by the answer body.
 // ---------------------------------------------------------------------------
 
 export class CodexExecFilter extends ToolFilter {
@@ -341,40 +350,48 @@ export class CodexExecFilter extends ToolFilter {
       }
     }
 
-    // Find the last 'codex' role label after the second separator
-    let lastCodexIdx: number | null = null
-    for (let i = secondSepIdx + 1; i < lines.length; i++) {
-      if ((lines[i] ?? '').trim().toLowerCase() === 'codex') lastCodexIdx = i
-    }
-    if (lastCodexIdx === null) return combined // no role label found
-
-    // Scan backward for 'tokens used' footer (last 6 lines from end of transcript)
+    // Scan backward over the whole transcript for the 'tokens used' footer whose next non-blank line is a token count
     let tokensLineIdx: number | null = null
+    let countLineIdx: number | null = null
     let tokensCount = '?'
-    const searchFloor = Math.max(lastCodexIdx + 1, lines.length - 6)
-    for (let i = lines.length - 1; i >= searchFloor; i--) {
-      if (_CODEX_TOKENS_USED_RE.test((lines[i] ?? '').trim())) {
-        tokensLineIdx = i
-        for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
-          const candidate = (lines[j] ?? '').trim()
-          if (candidate) {
-            tokensCount = candidate
-            break
-          }
+    for (let i = lines.length - 1; i > secondSepIdx; i--) {
+      if (!_CODEX_TOKENS_USED_RE.test((lines[i] ?? '').trim())) continue
+      for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+        const candidate = (lines[j] ?? '').trim()
+        if (!candidate) continue
+        if (_CODEX_TOKEN_COUNT_RE.test(candidate)) {
+          tokensLineIdx = i
+          countLineIdx = j
+          tokensCount = candidate
         }
         break
       }
+      if (tokensLineIdx !== null) break
     }
 
-    // Extract answer: from last codex label to the tokens footer (or end)
-    const answerEnd = tokensLineIdx !== null ? tokensLineIdx : lines.length
-    let answerLines = lines.slice(lastCodexIdx + 1, answerEnd)
-    while (answerLines.length && !(answerLines[0] ?? '').trim()) answerLines = answerLines.slice(1)
-    while (answerLines.length && !(answerLines[answerLines.length - 1] ?? '').trim()) {
-      answerLines = answerLines.slice(0, -1)
+    // Preferred anchor: the verbatim final-message echo codex exec writes after the token count
+    let answerLines: string[] | null = null
+    let droppedTurns = 0
+    if (countLineIdx !== null) {
+      const echo = _trimBlankEdges(lines.slice(countLineIdx + 1))
+      if (echo.length) answerLines = echo
     }
 
-    const summary = `[codex: model=${model}, tokens=${tokensCount}]`
+    if (answerLines === null) {
+      // Fallback: the last 'codex' role label before the footer, which a bare 'codex' line inside an answer body can impersonate
+      const scanEnd = tokensLineIdx !== null ? tokensLineIdx : lines.length
+      const labelIdxs: number[] = []
+      for (let i = secondSepIdx + 1; i < scanEnd; i++) {
+        if ((lines[i] ?? '').trim().toLowerCase() === 'codex') labelIdxs.push(i)
+      }
+      const lastCodexIdx = labelIdxs.length ? labelIdxs[labelIdxs.length - 1]! : null
+      if (lastCodexIdx === null) return combined // no role label found
+      droppedTurns = labelIdxs.length - 1
+      answerLines = _trimBlankEdges(lines.slice(lastCodexIdx + 1, scanEnd))
+    }
+
+    const dropped = droppedTurns > 0 ? `, ${droppedTurns} earlier turn(s) dropped` : ''
+    const summary = `[codex: model=${model}, tokens=${tokensCount}${dropped}]`
     return this.finalize([summary, ...answerLines])
   }
 }

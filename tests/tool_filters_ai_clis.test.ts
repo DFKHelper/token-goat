@@ -849,9 +849,102 @@ describe('CodexExecFilter compression', () => {
       '42',
     ].join('\n')
     const out = apply(codexExecFilter, multiTurn, argv)
-    expect(out).toContain('[codex: model=gpt-4o, tokens=42]')
+    expect(out).toContain('[codex: model=gpt-4o, tokens=42, 1 earlier turn(s) dropped]')
     expect(out).toContain('Answer 2 — this is the final answer')
     expect(out).not.toContain('Answer 1')
+  })
+})
+
+// Transcripts below are literal captures from codex-cli 0.148.0 (only the workdir path is rewritten to avoid backslash escapes). codex exec echoes the final agent message verbatim after the 'tokens used' footer.
+const _CODEX_REAL_HEADER = [
+  'Reading additional input from stdin...',
+  'OpenAI Codex v0.148.0',
+  '--------',
+  'workdir: /tmp/codexprobe',
+  'model: gpt-5.6-terra',
+  'provider: openai',
+  'approval: never',
+  'sandbox: read-only',
+  'reasoning effort: high',
+  'reasoning summaries: none',
+  'session id: 01a0438e-eed2-7371-bf08-5e673e6196d5',
+  '--------',
+]
+
+describe('CodexExecFilter compression on real codex-cli 0.148.0 output', () => {
+  const argv = ['codex', 'exec', 'prompt']
+
+  it('keeps a multi-line answer whole and reads the real token count instead of leaking the footer', () => {
+    const answer = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']
+    const transcript = [
+      ..._CODEX_REAL_HEADER,
+      'user',
+      'Output exactly the numbers 1 through 10, one per line, nothing else.',
+      'codex',
+      ...answer,
+      'tokens used',
+      '5,285',
+      ...answer,
+    ].join('\n')
+    const out = apply(codexExecFilter, transcript, argv)
+    expect(out.trimEnd().split('\n')).toEqual(['[codex: model=gpt-5.6-terra, tokens=5,285]', ...answer])
+  })
+
+  it('does not truncate an answer body that contains a bare codex line', () => {
+    const answer = ['alpha', 'codex', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta']
+    const transcript = [
+      ..._CODEX_REAL_HEADER,
+      'user',
+      'Output the first nine letters of the Greek alphabet but replace the second with the single word codex.',
+      'codex',
+      ...answer,
+      'tokens used',
+      '5,279',
+      ...answer,
+    ].join('\n')
+    const out = apply(codexExecFilter, transcript, argv)
+    expect(out.trimEnd().split('\n')).toEqual(['[codex: model=gpt-5.6-terra, tokens=5,279]', ...answer])
+  })
+
+  it('anchors on the real footer, not a tokens used line inside the answer body', () => {
+    const answer = [
+      'tokens used',
+      'is the footer codex exec prints after the transcript, followed by the count.',
+      'Everything after that count line is the final message echoed back verbatim.',
+    ]
+    const transcript = [
+      ..._CODEX_REAL_HEADER,
+      'user',
+      'What does the tokens used line mean?',
+      'codex',
+      ...answer,
+      'tokens used',
+      '7,412',
+      ...answer,
+    ].join('\n')
+    const out = apply(codexExecFilter, transcript, argv)
+    expect(out.trimEnd().split('\n')).toEqual(['[codex: model=gpt-5.6-terra, tokens=7,412]', ...answer])
+  })
+
+  it('says how many earlier turns it dropped when it has to guess at role labels', () => {
+    const transcript = [
+      ..._CODEX_REAL_HEADER,
+      'user',
+      'Question 1',
+      'codex',
+      'Answer 1 padded out so the compressed body clears the net-savings floor comfortably.',
+      'user',
+      'Question 2',
+      'codex',
+      'Answer 2 is the final one.',
+      'tokens used',
+      '4,096',
+    ].join('\n')
+    const out = apply(codexExecFilter, transcript, argv)
+    expect(out.trimEnd().split('\n')).toEqual([
+      '[codex: model=gpt-5.6-terra, tokens=4,096, 1 earlier turn(s) dropped]',
+      'Answer 2 is the final one.',
+    ])
   })
 })
 
