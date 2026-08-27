@@ -58,6 +58,7 @@ interface CopilotHookEntry {
   bash: string
   powershell: string
   timeoutSec: number
+  allowedEnvVars?: string[]
 }
 
 interface CopilotCliConfig {
@@ -244,6 +245,15 @@ function hookPowershellCommandFor(scriptPath: string, event: CopilotCliHookEvent
 // Double Copilot's own default as cheap, harmless headroom.
 const HOOK_TIMEOUT_SEC = 60
 
+/** Environment variables forwarded to hook processes by Copilot CLI. */
+const ALLOWED_ENV_VARS = [
+  'TRACEPARENT',
+  'TRACESTATE',
+  'COPILOT_HOME',
+  'COPILOT_CACHE_HOME',
+  'TOKEN_GOAT_LOG',
+]
+
 function buildConfig(scriptPath: string): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   for (const event of COPILOT_CLI_HOOK_EVENTS) {
@@ -254,6 +264,7 @@ function buildConfig(scriptPath: string): CopilotCliConfig {
         bash: hookCommandFor(scriptPath, event),
         powershell: hookPowershellCommandFor(scriptPath, event),
         timeoutSec: HOOK_TIMEOUT_SEC,
+        allowedEnvVars: [...ALLOWED_ENV_VARS],
       },
     ]
   }

@@ -44,6 +44,15 @@ export interface HookEvent {
    * sibling agents get independent re-read dedup ledgers instead of conflating them.
    */
   readonly agentId: string | undefined
+  /**
+   * W3C Trace Context traceparent header (e.g. `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`),
+   * passed by Claude Code / OpenTelemetry-instrumented harnesses to correlate hook execution spans.
+   */
+  readonly traceparent?: string | undefined
+  /**
+   * W3C Trace Context tracestate header containing vendor-specific routing / state information.
+   */
+  readonly tracestate?: string | undefined
   readonly raw: Record<string, unknown>
 }
 
