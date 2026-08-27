@@ -159,9 +159,13 @@ function truncateForWarning(text: string, max: number): string {
   return text.length > max ? text.slice(0, max) + '...' : text
 }
 
+function isAgentTool(toolName: string | undefined): boolean {
+  return toolName === 'Agent' || toolName === 'task' || toolName === 'Task'
+}
+
 function preAgentHandler(event: HookEvent): HookOutput {
-  // Only fire on Agent tool
-  if (event.toolName !== 'Agent') return passOutput()
+  // Only fire on Agent or Copilot task tool
+  if (!isAgentTool(event.toolName)) return passOutput()
 
   const toolInput = event.toolInput
   const prompt = toolInput['prompt']
@@ -328,7 +332,7 @@ export function collapseBlankRunsInFences(text: string): string {
 
 function postAgentHandler(event: HookEvent): HookOutput {
   try {
-    if (event.toolName !== 'Agent' || !event.sessionId) return passOutput()
+    if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
 
     // Clear this spawn's outstanding-prompt entry so a later, unrelated Agent spawn with similar wording is not incorrectly flagged as a duplicate of a call that has already finished.
     const finishedPrompt = event.toolInput['prompt']
@@ -341,7 +345,7 @@ function postAgentHandler(event: HookEvent): HookOutput {
     const resultText = redactedReport.text
     const agentReportCfg = loadConfig().agent_report
     if (!resultText || resultText.length < agentReportCfg.min_bytes) return passOutput()
-    const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)
+    const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)
     if (id === null) return passOutput()
     // Recorded here rather than at the redaction above, and here rather than inside either branch below, because this is the first point past which the redacted report is guaranteed to reach someone: it is now in the cache, and both remaining returns (the compacted rewrite and the annotate-only notice) hand back or point at that same sanitized text. Recording at the redaction itself would credit the early `min_bytes` return, where the raw report reaches the model untouched. `storeMcpOutput`'s own redaction pass finds nothing left to strip now that the text arrives clean, so its disk_cache stat reports zero -- this replaces that count rather than double-counting it.
     if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')
@@ -382,4 +386,8 @@ function postAgentHandler(event: HookEvent): HookOutput {
 }
 
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'Agent' })
+registerHook('pre_tool_use', preAgentHandler, { toolName: 'task' })
+registerHook('pre_tool_use', preAgentHandler, { toolName: 'Task' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'Agent' })
+registerHook('post_tool_use', postAgentHandler, { toolName: 'task' })
+registerHook('post_tool_use', postAgentHandler, { toolName: 'Task' })

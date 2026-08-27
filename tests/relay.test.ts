@@ -136,6 +136,51 @@ describe('buildEvent', () => {
     })
     expect(ev.agentId).toBeUndefined()
   })
+
+  it('extracts traceparent and tracestate from wire payload', () => {
+    const ev = buildEvent('pre_tool_use', {
+      tool_name: 'Read',
+      tool_input: { file_path: '/x.ts' },
+      session_id: 's1',
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      tracestate: 'rojo=1,congo=2',
+    })
+    expect(ev.traceparent).toBe('00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01')
+    expect(ev.tracestate).toBe('rojo=1,congo=2')
+  })
+
+  it('supports camelCase traceParent and traceState', () => {
+    const ev = buildEvent('pre_tool_use', {
+      tool_name: 'Read',
+      tool_input: { file_path: '/x.ts' },
+      session_id: 's1',
+      traceParent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      traceState: 'vendor=abc',
+    })
+    expect(ev.traceparent).toBe('00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01')
+    expect(ev.tracestate).toBe('vendor=abc')
+  })
+
+  it('falls back to environment TRACEPARENT / TRACESTATE if absent in payload', () => {
+    const origTraceparent = process.env['TRACEPARENT']
+    const origTracestate = process.env['TRACESTATE']
+    try {
+      process.env['TRACEPARENT'] = '00-11111111111111111111111111111111-2222222222222222-01'
+      process.env['TRACESTATE'] = 'vendor=env'
+      const ev = buildEvent('pre_tool_use', {
+        tool_name: 'Read',
+        tool_input: { file_path: '/x.ts' },
+        session_id: 's1',
+      })
+      expect(ev.traceparent).toBe('00-11111111111111111111111111111111-2222222222222222-01')
+      expect(ev.tracestate).toBe('vendor=env')
+    } finally {
+      if (origTraceparent === undefined) delete process.env['TRACEPARENT']
+      else process.env['TRACEPARENT'] = origTraceparent
+      if (origTracestate === undefined) delete process.env['TRACESTATE']
+      else process.env['TRACESTATE'] = origTracestate
+    }
+  })
 })
 
 describe('readStdinJson', () => {
@@ -530,5 +575,24 @@ describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Cla
     await relay('pre_tool_use')
 
     expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('preexisting-session')
+  })
+
+  it('propagates wire traceparent and tracestate to process.env', async () => {
+    delete process.env['TRACEPARENT']
+    delete process.env['TRACESTATE']
+
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/trace-file.ts' },
+        session_id: 'trace-session',
+        traceparent: '00-abcdef0123456789abcdef0123456789-0123456789abcdef-01',
+        tracestate: 'vendor1=val1',
+      }),
+    )
+    await relay('pre_tool_use')
+
+    expect(process.env['TRACEPARENT']).toBe('00-abcdef0123456789abcdef0123456789-0123456789abcdef-01')
+    expect(process.env['TRACESTATE']).toBe('vendor1=val1')
   })
 })

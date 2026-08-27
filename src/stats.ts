@@ -329,7 +329,8 @@ CREATE TABLE IF NOT EXISTS stats (
   tokens_saved INTEGER NOT NULL DEFAULT 0,
   bytes_saved INTEGER NOT NULL DEFAULT 0,
   detail TEXT,
-  harness TEXT
+  harness TEXT,
+  traceparent TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
@@ -370,6 +371,11 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
+  try {
+    db.exec('ALTER TABLE stats ADD COLUMN traceparent TEXT')
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
 }
 
 /**
@@ -393,6 +399,22 @@ function statsHasHarnessColumn(db: SqliteDatabase): boolean {
     present = false
   }
   _harnessColumnByDb.set(db as unknown as object, present)
+  return present
+}
+
+const _traceparentColumnByDb = new WeakMap<object, boolean>()
+function statsHasTraceparentColumn(db: SqliteDatabase): boolean {
+  const cached = _traceparentColumnByDb.get(db as unknown as object)
+  if (cached !== undefined) return cached
+  let present: boolean
+  try {
+    present = (db.prepare('PRAGMA table_info(stats)').all() as { name?: string }[]).some(
+      (c) => c.name === 'traceparent',
+    )
+  } catch {
+    present = false
+  }
+  _traceparentColumnByDb.set(db as unknown as object, present)
   return present
 }
 
@@ -433,11 +455,20 @@ export function recordStat(
   tokensSaved = 0,
   _testDb?: SqliteDatabase,
   detail?: string,
+  traceparent?: string,
 ): void {
   try {
     const db = _testDb ?? getGlobalDb()
     const ts = Math.floor(Date.now() / 1000)
-    if (statsHasHarnessColumn(db)) {
+    const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
+    const hasHarness = statsHasHarnessColumn(db)
+    const hasTraceparent = statsHasTraceparentColumn(db)
+
+    if (hasHarness && hasTraceparent) {
+      db.prepare(
+        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness, traceparent) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName(), tp)
+    } else if (hasHarness) {
       db.prepare(
         'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness) VALUES (?, ?, ?, ?, ?, ?)',
       ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName())
