@@ -5179,3 +5179,45 @@ describe('--top <= 0 rejection across graph_commands.ts', () => {
   })
 })
 
+
+describe('runCallers --limit truncation flag', () => {
+  it('reports truncated: true when the SQL limit clipped the caller set, and false when it did not', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-limit-trunc-'))
+    try {
+      const defFile = join(root, 'limit-def.ts')
+      const callerFile = join(root, 'limit-caller.ts')
+      writeFileSync(defFile, 'export function limitTruncFn6p4() { return 1 }\n')
+      writeFileSync(
+        callerFile,
+        'function callerA6p4() { limitTruncFn6p4() }\nfunction callerB6p4() { limitTruncFn6p4() }\nfunction callerC6p4() { limitTruncFn6p4() }\n',
+      )
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Clipped page: two of the three callers come back, so `truncated` must say so. Before the +1 probe row this reported `truncated: false` -- indistinguishable from a symbol that genuinely has exactly two callers.
+        const clipped = captureStdout(() => { expect(runCallers({ symbol: 'limitTruncFn6p4', json: true, limit: 2 })).toBe(0) })
+        const clippedPayload = JSON.parse(clipped) as { items: { caller: string }[]; truncated: boolean; totalCount: number }
+        expect(clippedPayload.items.map((i) => i.caller)).toEqual(['callerA6p4', 'callerB6p4'])
+        expect(clippedPayload.truncated).toBe(true)
+        expect(clippedPayload.totalCount).toBe(2)
+
+        // Control against over-fixing: a limit that exactly equals the caller count is NOT a truncation, so the probe row must find nothing and `truncated` must stay false.
+        const exact = captureStdout(() => { expect(runCallers({ symbol: 'limitTruncFn6p4', json: true, limit: 3 })).toBe(0) })
+        const exactPayload = JSON.parse(exact) as { items: { caller: string }[]; truncated: boolean; totalCount: number }
+        expect(exactPayload.items.map((i) => i.caller)).toEqual(['callerA6p4', 'callerB6p4', 'callerC6p4'])
+        expect(exactPayload.truncated).toBe(false)
+        expect(exactPayload.totalCount).toBe(3)
+
+        // The probe row must never leak into the emitted page: text mode prints exactly the requested limit.
+        const text = captureStdout(() => { expect(runCallers({ symbol: 'limitTruncFn6p4', limit: 2 })).toBe(0) })
+        expect(text.trim().split('\n').map((l) => l.split('\t')[0])).toEqual(['callerA6p4', 'callerB6p4'])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
