@@ -2514,7 +2514,20 @@ function extractBashOutput(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
 }
 
-/** Best-effort exit code from a Bash tool_response (absent on many harnesses). */
+/**
+ * Best-effort exit code from a Bash tool_response (absent on many harnesses).
+ *
+ * On Claude Code this is always null, and deliberately so. Measured over 186,335 recorded Bash
+ * results: not one carried `exit_code`, `exitCode`, `returncode` or `code`. The only status-shaped
+ * field the harness ever sends is `returnCodeInterpretation` (2,133 results), and its every observed
+ * value is a BENIGN non-zero exit -- "No matches found", "Files differ", "Some directories were
+ * inaccessible" -- never a genuine failure, and it never co-occurred with non-empty stderr. Treating
+ * it as "exit != 0" would fire the failing-test-runner advisory on a clean grep that matched
+ * nothing, so it is not consulted. Non-empty stderr is no better: plenty of green runs write to it.
+ * Every caller but the test-runner advisory reads null as success, so the rest of the handler is
+ * unaffected; that one advisory stays dormant on this harness until a real exit status is on the
+ * wire, which is the correct trade against a false "your test run failed" nudge on a passing run.
+ */
 function extractExitCode(raw: Record<string, unknown>): number | null {
   const resp = raw['tool_response']
   if (resp !== null && typeof resp === 'object') {

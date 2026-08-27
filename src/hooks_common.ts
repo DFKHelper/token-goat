@@ -54,6 +54,12 @@ export function getCwd(event: HookEvent): string | undefined {
  * priority order rather than this helper guessing one, since a shared
  * default order could silently change which field wins for a caller that
  * genuinely depends on its own priority.
+ *
+ * A present-but-EMPTY string does not win. Claude Code always sends both `stdout` and `stderr` for
+ * Bash, so a command that wrote only to stderr arrives as `{stdout: '', stderr: '...'}`; stopping at
+ * the empty `stdout` returned '' and every output-gated post-Bash path did nothing. Measured on
+ * recorded harness traffic: 24 of 186,335 real Bash results. Empty means "this field carried no
+ * output", which is exactly the case a later key should be allowed to answer.
  */
 export function extractToolResponseField(raw: Record<string, unknown>, keys: readonly string[]): string {
   const resp = raw['tool_response']
@@ -61,7 +67,7 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   if (resp !== null && typeof resp === 'object') {
     const r = resp as Record<string, unknown>
     for (const key of keys) {
-      if (typeof r[key] === 'string') return r[key] as string
+      if (typeof r[key] === 'string' && r[key] !== '') return r[key] as string
     }
   }
   return ''
@@ -77,8 +83,13 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
  * read an empty string and did nothing on the harness token-goat primarily targets. It is appended
  * rather than promoted so no harness that does send `output`/`content`/`text`/`body` changes which
  * field wins.
+ *
+ * `stderr` is last of all, so it only answers when every earlier field is missing or empty. A
+ * command that writes only to stderr (a compiler diagnostic, a linter that reports on the error
+ * stream) still produced real output the post-Bash paths should see; without this the whole result
+ * read as empty.
  */
-export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body', 'stdout']
+export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body', 'stdout', 'stderr']
 
 /**
  * Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`.
