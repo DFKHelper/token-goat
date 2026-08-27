@@ -147,6 +147,45 @@ describe('TerraformFilter', () => {
     expect(result.compressedBytes).toBeLessThan(stdout.length)
   })
 
+  it('terraform plan keeps every resource action header above the tail cap, and accounts for what it dropped', () => {
+    const lines = [
+      'Terraform used the selected providers to generate the following execution plan.',
+      '',
+      'Terraform will perform the following actions:',
+      '',
+      '  # aws_db_instance.prod must be replaced',
+      '-/+ resource "aws_db_instance" "prod" {',
+      '      ~ engine_version = "13.4" -> "14.2" # forces replacement',
+      '    }',
+      '',
+    ]
+    for (let i = 0; i < 60; i++) {
+      lines.push(`  # aws_instance.node${i} will be created`)
+      lines.push(`  + resource "aws_instance" "node${i}" {`)
+      lines.push('      + ami           = "ami-0123"')
+      lines.push('      + instance_type = "t3.micro"')
+      lines.push('    }')
+      lines.push('')
+    }
+    lines.push('Plan: 60 to add, 0 to change, 1 to destroy.')
+    const stdout = lines.join('\n')
+    const { text } = apply(new TerraformFilter(), stdout, '', 0, ['terraform', 'plan'])
+    const out = text.split('\n')
+
+    // The destroy-and-recreate of a production database sits at the very top of the plan, far above the 20-line tail the filter keeps. It is the single line a reader must not lose.
+    expect(out).toContain('  # aws_db_instance.prod must be replaced')
+    // Every resource action header survives: the full 61-line set, in plan order, not a sample of it.
+    expect(out.filter((ln) => ln.trimStart().startsWith('# '))).toEqual([
+      '  # aws_db_instance.prod must be replaced',
+      ...Array.from({ length: 60 }, (_, i) => `  # aws_instance.node${i} will be created`),
+    ])
+    expect(text).toContain('Plan: 60 to add, 0 to change, 1 to destroy.')
+    // Control: the attribute detail below each header is still compressed away, and the drop is declared rather than silent.
+    expect(out.filter((ln) => ln.includes('+ instance_type = "t3.micro"')).length).toBe(3)
+    expect(text).toContain('[token-goat: 291 plan detail lines omitted]')
+    expect(out.length).toBeLessThan(lines.length / 4)
+  })
+
   it('terraform apply keeps Apply complete! line', () => {
     const stdout = [
       'aws_instance.example: Refreshing state… [id=i-1234]',
