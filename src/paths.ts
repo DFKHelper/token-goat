@@ -83,6 +83,29 @@ const EXTENDED_UNC_PREFIX_RE = /^\\\\\?\\UNC\\/i
 // Matches a plain `\\?\` extended-length-path prefix.
 const EXTENDED_PREFIX_RE = /^\\\\\?\\/
 
+/**
+ * Convert backslashes to forward slashes, then rewrite a WSL (`/mnt/c/rest`) or Git Bash/MSYS
+ * (`/c/rest`) mount path into Windows drive-letter form (`c:/rest`).
+ *
+ * Extracted so {@link resolveIndexPath} can apply it *before* `path.resolve` rather than only
+ * after. A mount-form path is rooted but carries no drive letter, so `path.win32.resolve` treats
+ * it as drive-relative and grafts the current drive onto it -- `/c/proj/a.ts` resolves to
+ * `c:/c/proj/a.ts`, an index key no writer ever produces, so the lookup silently misses. Running
+ * the rewrite after resolve cannot recover from that: the drive letter is already there and the
+ * mount pattern no longer matches. The MSYS form stays Windows-only because `/c/foo` is a real
+ * path on Linux and macOS; the WSL form is unconditional because a WSL process emits it on Linux.
+ */
+export function shellMountToWindowsPath(p: string): string {
+  const s = p.includes('\\') ? p.replace(/\\/g, '/') : p
+  const m = WSL_PATH_RE.exec(s)
+  if (m) return `${(m[1] as string).toLowerCase()}:/${(m[2] as string).replace(/^\/+/, '')}`
+  if (process.platform === 'win32') {
+    const g = MSYS_PATH_RE.exec(s)
+    if (g) return `${(g[1] as string).toLowerCase()}:${g[2] ?? '/'}`
+  }
+  return s
+}
+
 export function normalizePath(p: string): string {
   let s = p
 
@@ -93,25 +116,8 @@ export function normalizePath(p: string): string {
     s = s.slice(4)
   }
 
-  // Step 1: backslashes -> forward slashes (before the WSL check so mixed separators like /mnt/c/foo\bar normalize fully before the regex runs).
-  if (s.includes('\\')) {
-    s = s.replace(/\\/g, '/')
-  }
-
-  // Step 2: WSL /mnt/<single-letter-drive>/rest -> <drive>:/rest
-  const m = WSL_PATH_RE.exec(s)
-  if (m) {
-    const driveLetter = (m[1] as string).toLowerCase()
-    const rest = m[2] as string
-    const restStripped = rest.replace(/^\/+/, '')
-    s = `${driveLetter}:/${restStripped}`
-  }
-
-  // Step 2b: Git Bash / MSYS mount form /<drive>/rest -> <drive>:/rest, Windows only. On Linux/macOS `/c/foo` is a real path and must not be rewritten. Single letter only so a real `/cab/` dir is untouched; bare `/c` becomes `c:/`.
-  if (process.platform === 'win32') {
-    const g = MSYS_PATH_RE.exec(s)
-    if (g) s = `${(g[1] as string).toLowerCase()}:${g[2] ?? '/'}`
-  }
+  // Steps 1-2b: backslashes -> forward slashes, then the WSL and Git Bash/MSYS mount forms -> drive-letter form.
+  s = shellMountToWindowsPath(s)
 
   // Step 2c: expand a Windows 8.3 short-name segment (e.g. `JOHNDO~1.ACM`) to its long form, so a path where %TEMP% is pinned to short form normalizes identically to git's always-long-form output. Must run after steps 1-2b so `s` is already in drive-letter/forward-slash form (the native fs call needs a real Windows-shaped path, not a WSL mount path).
   s = expandShortPath(s)
@@ -160,8 +166,11 @@ export function normalizeDarwinSystemAlias(p: string): string {
 export function resolveIndexPath(file: string, base: string = process.cwd()): string {
   // A Windows-drive-absolute file or base (C:/foo, from a WSL-Windows-interop process, a Windows caller, or a cwd carried over from a Windows session) must resolve using Windows semantics regardless of host: the ambient path.resolve is POSIX on a non-Windows host and doesn't recognize a drive letter as absolute in either argument, so it would join a drive-letter file onto base (or a relative file onto a drive-letter base) as if neither were absolute, corrupting the index key. path.win32.resolve recognizes drive letters on any host; when neither argument is Windows-absolute this still behaves like plain resolve.
   const isWindowsAbsolute = (s: string): boolean => /^[a-zA-Z]:[/\\]/.test(s)
-  const resolve = isWindowsAbsolute(file) || isWindowsAbsolute(base) ? path.win32.resolve : path.resolve
-  return normalizePath(resolve(base, file))
+  // A shell mount path (`/c/proj`, `/mnt/c/proj`) is rooted but drive-less, so it has to become drive-letter form BEFORE resolve or resolve grafts the current drive onto it and normalizePath's own rewrite can no longer match. Applied to `base` as well: a Git Bash cwd arrives in exactly that form.
+  const f = shellMountToWindowsPath(file)
+  const b = shellMountToWindowsPath(base)
+  const resolve = isWindowsAbsolute(f) || isWindowsAbsolute(b) ? path.win32.resolve : path.resolve
+  return normalizePath(resolve(b, f))
 }
 
 /**
