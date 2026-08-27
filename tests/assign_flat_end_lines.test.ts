@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { assignFlatEndLines, type MiniSection } from '../src/languages/common.js'
 import { extractSql } from '../src/languages/sql_idx.js'
 import { extractHtml } from '../src/languages/html.js'
+import { extractMakefile } from '../src/languages/makefile_idx.js'
 
 describe('assignFlatEndLines', () => {
   it('never produces an inverted range when two sections share a start line', () => {
@@ -18,9 +19,68 @@ describe('assignFlatEndLines', () => {
     for (const s of sections) {
       expect(s.endLine).toBeGreaterThanOrEqual(s.line)
     }
-    expect(sections[0]?.endLine).toBe(3)
-    expect(sections[1]?.endLine).toBe(4)
-    expect(sections[2]?.endLine).toBe(10)
+    // Two sections that share a start line are co-extensive: both must run to the line before the next section that actually starts later. The clamp used to leave the first one pinned at its own start line (a 1-line span) while the second got the whole body.
+    expect(sections.map((s) => `${s.heading}:${s.line}-${s.endLine}`)).toEqual([
+      'first:3-4',
+      'second:3-4',
+      'third:5-10',
+    ])
+  })
+})
+
+describe('same-line siblings are co-extensive, not collapsed to one line', () => {
+  it('Makefile: every target of a multi-target rule gets the full recipe span (regression: `all clean:` gave `all` a 1-line span ending at its own declaration, so `token-goat read "Makefile::all"` returned just the target line and dropped the entire recipe, while `clean` got the real range)', () => {
+    const content = 'all clean:\n\techo hi\n\techo bye\n\ntest:\n\techo t\n'
+    const symbols = extractMakefile(content, 'Makefile')
+
+    expect(symbols.map((s) => `${s.name}:${s.lineStart}-${s.lineEnd}`)).toEqual([
+      'all:1-3',
+      'clean:1-3',
+      'test:5-6',
+    ])
+  })
+
+  it('Makefile: a target ends at its last recipe line, not at the blank lines and comment block documenting the next target', () => {
+    const content = [
+      'all:',
+      '\techo hi',
+      '',
+      '# a comment about clean',
+      'clean:',
+      '\trm -rf x',
+      '',
+      'define FOO',
+      'body',
+      'endef',
+      '',
+      '# trailing comment',
+      '',
+    ].join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+
+    expect(symbols.map((s) => `${s.name}:${s.lineStart}-${s.lineEnd}`)).toEqual([
+      'all:1-2',
+      'clean:5-6',
+      'FOO:8-10',
+    ])
+  })
+
+  it('HTML: a heading with an inline id anchor keeps its own body instead of handing it to the anchor section', () => {
+    const content = [
+      '<h2 id="sec-1">Pricing</h2>',
+      '<p>line2</p>',
+      '<p>line3</p>',
+      '<h2 id="sec-2">Contact</h2>',
+      '<p>line5</p>',
+    ].join('\n')
+    const { sections } = extractHtml(content, 'x.html')
+
+    expect(sections.map((s) => `${s.heading}:${s.line}-${s.endLine}`)).toEqual([
+      'Pricing:1-3',
+      'sec-1:1-3',
+      'Contact:4-5',
+      'sec-2:4-5',
+    ])
   })
 })
 
