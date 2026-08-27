@@ -1952,7 +1952,11 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
 
   const body = decodeSource(fs.readFileSync(filePath))
   if (opts.compact === true) {
-    out(extractCompactFromMarker(body) ?? body)
+    const emitted = extractCompactFromMarker(body) ?? body
+    out(emitted)
+    // stats.ts registers the `skill_body:` prefix and its skill_oversized_first_load entry states in so many words that the pointer deny books zero because "the follow-up command does" record the saving -- but this, the follow-up command, recorded nothing, so the whole oversized-skill chain summed to zero however often it fired. Same body-minus-slice counterfactual skill_compact_inlined already uses, measured against the string actually printed.
+    const bytesSaved = Buffer.byteLength(body, 'utf8') - Buffer.byteLength(emitted, 'utf8')
+    if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, Math.round(bytesSaved / 4), undefined, name)
   } else {
     out(body)
   }

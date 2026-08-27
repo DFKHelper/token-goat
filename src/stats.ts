@@ -185,6 +185,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Decline counterpart to agent_report_compact: the fence-collapse net-benefit gate ran and found at least one over-long fence, but declined to rewrite because net savings did not clear the notice cost. Always recorded at (0, 0) -- see the recordStat call site -- so it never contributes to any savings total; it exists purely to make gate hit-rate and near-misses visible instead of the decline being invisible.
   agent_report_compact_declined: SOURCE_CONTENT,
   content_compress: SOURCE_CONTENT,
+  // Verbatim-repeat collapse of a browser tool's "Tab Context:" text block (hooks_browser_image.ts postBrowserImageHandler). SOURCE_CONTENT for the same reason as agent_report_compact above: it is a real rewrite with real bytes removed, not an advisory nudge. Deliberately not SOURCE_IMAGE -- it shares a handler with image_shrink but collapses text, and folding text bytes into the image ledger is the two-units-under-one-label mistake this file's image_shrink entry was just fixed for.
+  browser_tab_dedup: SOURCE_CONTENT,
   // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
   'grep:fold': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
@@ -888,4 +890,14 @@ export function isRegisteredKind(kind: string): boolean {
   if (KIND_TO_SOURCE[kind] !== undefined) return true
   if (kind.endsWith(OVERHEAD_SUFFIX) && KIND_TO_SOURCE[kind.slice(0, -OVERHEAD_SUFFIX.length)] !== undefined) return true
   return KIND_PREFIX_TO_SOURCE.some(([prefix]) => kind.startsWith(prefix))
+}
+
+/** Every explicitly registered kind name, in declaration order. Exported for the reverse registration guard: isRegisteredKind() answers "is this recorded kind known", which cannot detect the mirror failure of a registered name that no producer ever records. */
+export function _registeredKinds(): string[] {
+  return Object.keys(KIND_TO_SOURCE)
+}
+
+/** Every registered kind prefix, in declaration order. Companion to {@link _registeredKinds} for the reverse registration guard. */
+export function _registeredKindPrefixes(): string[] {
+  return KIND_PREFIX_TO_SOURCE.map(([prefix]) => prefix)
 }

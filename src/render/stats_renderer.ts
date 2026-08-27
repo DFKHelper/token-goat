@@ -588,6 +588,12 @@ function _kindGroupLabel(kind: string): string {
   if (kind.startsWith('mcp:')) {
     return 'MCP'
   }
+  // Same special case for the skill_body: prefix (skill_body:compact). Its literal siblings below
+  // already sit in the 'Compact / Skills' set, so without this branch a colon-prefixed skill kind
+  // would render under 'Other', separated from the very rows it belongs beside.
+  if (kind.startsWith('skill_body:')) {
+    return 'Compact / Skills'
+  }
   for (const group of _KIND_GROUPS) {
     if (group.members.has(kind)) {
       return group.label

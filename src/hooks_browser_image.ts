@@ -107,7 +107,8 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
       return {
         text: SCREENSHOT_REPEAT_NOTICE,
         changed: true,
-        savedBytes: originalDataUrl.length - SCREENSHOT_REPEAT_NOTICE.length,
+        // Decoded image bytes, not base64 characters. Both branches of this function file under the same `image_shrink` kind, and the shrink branch below credits `result.originalBytes - result.shrunkBytes` -- decoded bytes, the convention documented at image_shrink.ts's own recordStat call. Base64 inflates by 4/3, so crediting `originalDataUrl.length` here booked roughly 33% more for a repeat screenshot than an identical shrink of the same image, and the ledger summed the two units into one row. The gate above deliberately still measures the data URL: it decides whether the rewrite pays off on the wire, where base64 characters are what is actually sent.
+        savedBytes: buffer.length - Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8'),
       }
     }
   }
@@ -166,7 +167,12 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
         parts.push(text)
       } else if (block.type === 'text' && typeof block.text === 'string') {
         const { text, changed } = dedupTabContext(block.text)
-        if (changed) anyChanged = true
+        if (changed) {
+          anyChanged = true
+          // Measured against the string this loop actually emits, the same way emitRewrite computes its savings, rather than from the notice constant: a hand-written figure beside an emit is the per-branch fragility that has produced a wrong credit here before. Without this the tab-context dedup shipped a real saving and recorded nothing at all, so `token-goat stats` showed a total that omitted the whole mechanism while the image branch beside it was credited.
+          const savedBytes = Buffer.byteLength(block.text, 'utf-8') - Buffer.byteLength(text, 'utf-8')
+          if (savedBytes > 0) recordStat('browser_tab_dedup', savedBytes, Math.round(savedBytes / 4), undefined, toolName)
+        }
         parts.push(text)
       } else {
         // Any block type this loop doesn't shrink/dedup (MCP resource/audio blocks, or a text block with a non-string .text) must still round-trip through rewriteOutput once anyChanged fires elsewhere in the same result, or it silently vanishes from what the model sees.
