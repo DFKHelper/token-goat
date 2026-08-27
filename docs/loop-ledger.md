@@ -99,3 +99,5 @@ row go to the user.
 |---|---|---|---|---|---|
 | 41 | 47681a46 | session-audit | n/a (new command) | n/a | 127 |
 | 42 | 023e0eb3 | session-audit | high (65% of corpus unscanned) | yes | 170 |
+| 43 | 181cf7a7 | session-audit | n/a (survey) | n/a | 152 |
+| 44 | 707cdd3b | session-audit | n/a (survey, clean sweep) | n/a | 208 |
