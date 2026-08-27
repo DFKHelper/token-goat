@@ -15,7 +15,7 @@
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
-import { pathEqClause as pathEq, projectScopeClause } from './sql_path.js'
+import { pathEqClause as pathEq, pathSuffixClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 
 /** Raw `symbols` row as returned by SQLite (snake_case columns). */
@@ -102,6 +102,7 @@ interface SymbolQueryOpts {
   filePath?: string
   kind?: string
   rootDir?: string
+  fileBaseName?: string
 }
 
 /** Shared WHERE-clause builder for {@link querySymbols} and {@link countSymbols} -- both filter the same `symbols` table by the same name/filePath/kind/rootDir combination, so the clause/params construction lives in one place instead of drifting between a "fetch rows" and a "count rows" copy. */
@@ -120,6 +121,11 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
   if (opts.kind !== undefined) {
     where.push('kind = ?')
     params.push(opts.kind)
+  }
+  if (opts.fileBaseName !== undefined) {
+    const { clause: suffixClause, params: suffixParams } = pathSuffixClause('file_path')
+    where.push(suffixClause)
+    params.push(...suffixParams(opts.fileBaseName))
   }
   applyRootDirScope(opts.rootDir, 'file_path', where, params)
 
