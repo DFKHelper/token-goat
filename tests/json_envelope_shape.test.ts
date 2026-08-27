@@ -51,7 +51,7 @@ const ENVELOPE_COMMANDS = [
  */
 const NON_ENVELOPE_JSON_COMMANDS = [
   'read', 'brief', 'section', 'map', 'bridges-status', 'commands', 'stats', 'doctor',
-  'context-stats', 'bootstrap-audit', 'waste', 'session-outline', 'session-slice', 'mcp-audit',
+  'context-stats', 'bootstrap-audit', 'waste', 'session-outline', 'session-slice', 'session-audit', 'mcp-audit',
   'recall', 'hint-stats', 'statusline', 'exports', 'imports', 'find', 'grep', 'skill-list',
   'skill-history', 'call-chain', 'impact', 'deps', 'scope', 'similar', 'context-for',
   'coverage-gaps', 'arch', 'blame', 'ask', 'tokens', 'budget', 'failures', 'todo', 'trace',

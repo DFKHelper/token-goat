@@ -198,6 +198,7 @@ import { runBootstrapAudit } from './cli_bootstrap_audit.js'
 import { runMemoryCommand } from './cli_memory.js'
 import { runWasteCommand } from './cli_waste.js'
 import { buildSessionOutline, formatSessionOutline, formatSessionSlice, parseTurnRange, resolveSessionTranscript, sliceSessionTurns } from './session_read.js'
+import { auditSessionCorpus, formatSessionAudit } from './session_audit.js'
 import { runMcpAuditCommand } from './cli_mcp_audit.js'
 import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
@@ -1060,6 +1061,16 @@ function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean;
     ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
     ...(opts.copilot === true ? { copilot: true } : {}),
   })
+}
+
+async function cmdSessionAudit(opts: { dir?: string; json?: boolean } = {}): Promise<void> {
+  let summary
+  try {
+    summary = await auditSessionCorpus({ ...(opts.dir !== undefined ? { dir: opts.dir } : {}) })
+  } catch (err) {
+    throw new CliError(err instanceof Error ? err.message : String(err))
+  }
+  out(opts.json === true ? JSON.stringify(summary) : formatSessionAudit(summary))
 }
 
 async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean } = {}): Promise<void> {
@@ -3748,6 +3759,13 @@ export function buildProgram(): Command {
     .option('--project <path>', 'project root to resolve the session transcript against')
     .option('--json', 'output JSON')
     .action(guard(cmdSessionSlice))
+
+  program
+    .command('session-audit')
+    .description('corpus-wide token attribution across every local Claude Code session transcript: measured billed usage, estimated content size by source and by tool, and billed cost by session position (aggregate counts only, never transcript content)')
+    .option('--dir <path>', 'transcript corpus root to scan (default: ~/.claude/projects)')
+    .option('--json', 'output JSON')
+    .action(guard(cmdSessionAudit))
 
   program
     .command('mcp-audit')
