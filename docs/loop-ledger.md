@@ -103,5 +103,5 @@ row go to the user.
 | 42 | 023e0eb3 | session-audit | high (65% of corpus unscanned) | yes | 170 |
 | 43 | 181cf7a7 | session-audit | n/a (survey) | n/a | 152 |
 | 44 | 707cdd3b | session-audit | n/a (survey, clean sweep) | n/a | 208 |
-| 45 | ec428146 | hooks_bash sed hint admission | medium (66.8% -> 80.1% of 19,380) | yes | n/a |
-| 46 | (this loop) | hooks_bash cat/awk hint admission | medium (cat 15.1% -> 21.1% of 8,179; awk 10.3% -> 23.7% of 916) | yes | ~180 |
+| 45 | ec428146 | hooks_bash sed hint admission | medium (66.8% -> 80.1% of 19,380) | yes | 117 |
+| 46 | 5ef2f7ca | hooks_bash cat/awk hint admission | medium (cat 15.1% -> 21.1% of 8,179; awk 10.3% -> 23.7% of 916) | yes | ~180 |
