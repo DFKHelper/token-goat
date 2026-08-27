@@ -1,0 +1,25 @@
+[INFO] Initializing environment for https://github.com/pre-commit/pre-commit-hooks.
+[INFO] Installing environment for https://github.com/pre-commit/pre-commit-hooks.
+[INFO] Once installed this environment will be reused.
+[INFO] This may take a few minutes...
+trim trailing whitespace.................................................Failed
+- hook id: trailing-whitespace
+- exit code: 1
+- files were modified by this hook
+
+Fixing a.py
+Fixing b.py
+Fixing d.txt
+
+fix end of files.........................................................Passed
+check yaml...............................................................Passed
+check json...............................................................Failed
+- hook id: check-json
+- exit code: 1
+
+c.json: Failed to json decode (Illegal trailing comma before end of object: line 1 column 7 (char 6))
+
+check for added large files..............................................Passed
+check for merge conflicts................................................Passed
+mixed line ending........................................................Passed
+check for case conflicts.................................................Passed

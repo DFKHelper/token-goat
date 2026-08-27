@@ -610,6 +610,8 @@ const _GOLANGCI_SUMMARY_RE =
   /^(?:Found \d+ issues?\.|Issues? found\.|Run with --fix)|^(?:ERRO\s|WARN\s)/i
 const _GOLANGCI_NOISE_RE =
   /^(?:golangci-lint\s+version|time=|level=(?:info|debug)|msg="(?:Running|Starting|Finishing))/i
+// golangci-lint runs with --print-issued-lines=true by default, echoing the offending source line and a caret line under every issue.
+const _GOLANGCI_CARET_RE = /^\s*\^[~^]*\s*$/
 
 class GolangciLintFilter extends ToolFilter {
   readonly name = 'golangci-lint'
@@ -630,13 +632,31 @@ class GolangciLintFilter extends ToolFilter {
     const kept: string[] = []
     let noiseDropped = 0
     let issuesCollapsed = 0
+    let contextDropped = 0
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!
       if (_GOLANGCI_NOISE_RE.test(line)) { noiseDropped++; continue }
       if (_GOLANGCI_SUMMARY_RE.test(line)) { kept.push(line); continue }
 
       const m = _GOLANGCI_ISSUE_RE.exec(line)
       if (m?.groups) {
+        // Consume the issued-lines block so it travels with its issue instead of being left orphaned when the issue is collapsed.
+        const next = lines[i + 1] ?? ''
+        let source: string | null = null
+        let caret: string | null = null
+        if (
+          !_GOLANGCI_ISSUE_RE.test(next) &&
+          !_GOLANGCI_SUMMARY_RE.test(next) &&
+          _GOLANGCI_CARET_RE.test(lines[i + 2] ?? '')
+        ) {
+          source = next
+          caret = lines[i + 2]!
+          i += 2
+        } else if (_GOLANGCI_CARET_RE.test(next)) {
+          caret = next
+          i += 1
+        }
         const filePath = m.groups['file']!
         const linter = m.groups['linter']!
         const key = `${filePath}\x00${linter}`
@@ -644,9 +664,16 @@ class GolangciLintFilter extends ToolFilter {
         issueCounts.set(key, count + 1)
         if (count < GolangciLintFilter._KEEP_FIRST_N) {
           kept.push(line)
-        } else if (count === GolangciLintFilter._KEEP_FIRST_N) {
-          kept.push(`[token-goat: __placeholder__${filePath}__${linter}__]`)
-          issuesCollapsed++
+          // The echo restates source the reader already has at file:line:col, and the caret restates the column, so both go even for a kept issue.
+          if (source !== null) contextDropped++
+          if (caret !== null) contextDropped++
+        } else {
+          if (count === GolangciLintFilter._KEEP_FIRST_N) {
+            kept.push(`[token-goat: __placeholder__${filePath}__${linter}__]`)
+            issuesCollapsed++
+          }
+          if (source !== null) contextDropped++
+          if (caret !== null) contextDropped++
         }
         continue
       }
@@ -671,6 +698,7 @@ class GolangciLintFilter extends ToolFilter {
 
     const notes: string[] = []
     maybeNote(notes, noiseDropped, `dropped ${noiseDropped} structured-log noise lines`)
+    maybeNote(notes, contextDropped, `dropped ${contextDropped} redundant source-context/caret lines`)
     if (issuesCollapsed) {
       const totalIssues = [...issueCounts.values()].reduce((a, b) => a + b, 0)
       const keptIssues = [...issueCounts.values()].reduce(

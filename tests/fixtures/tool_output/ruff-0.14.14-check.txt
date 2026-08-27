@@ -1,0 +1,150 @@
+F401 [*] `os` imported but unused
+ --> a.py:1:8
+  |
+1 | import os
+  |        ^^
+2 | import sys
+3 | import json
+  |
+help: Remove unused import: `os`
+
+F401 [*] `sys` imported but unused
+ --> a.py:2:8
+  |
+1 | import os
+2 | import sys
+  |        ^^^
+3 | import json
+  |
+help: Remove unused import: `sys`
+
+F401 [*] `json` imported but unused
+ --> a.py:3:8
+  |
+1 | import os
+2 | import sys
+3 | import json
+  |        ^^^^
+4 |
+5 | def f(a,b):
+  |
+help: Remove unused import: `json`
+
+F841 Local variable `x` is assigned to but never used
+ --> a.py:6:5
+  |
+5 | def f(a,b):
+6 |     x = 1
+  |     ^
+7 |     y = 2
+8 |     return a+b
+  |
+help: Remove assignment to unused variable `x`
+
+F841 Local variable `y` is assigned to but never used
+ --> a.py:7:5
+  |
+5 | def f(a,b):
+6 |     x = 1
+7 |     y = 2
+  |     ^
+8 |     return a+b
+  |
+help: Remove assignment to unused variable `y`
+
+F841 Local variable `z` is assigned to but never used
+  --> a.py:11:5
+   |
+10 | def g(c,d):
+11 |     z = 3
+   |     ^
+12 |     return c-d
+   |
+help: Remove assignment to unused variable `z`
+
+F841 Local variable `w` is assigned to but never used
+  --> a.py:15:5
+   |
+14 | def h(e,q):
+15 |     w = 4
+   |     ^
+16 |     return e*q
+   |
+help: Remove assignment to unused variable `w`
+
+F401 [*] `os` imported but unused
+ --> b.py:1:8
+  |
+1 | import os
+  |        ^^
+2 | import sys
+3 | import json
+  |
+help: Remove unused import: `os`
+
+F401 [*] `sys` imported but unused
+ --> b.py:2:8
+  |
+1 | import os
+2 | import sys
+  |        ^^^
+3 | import json
+  |
+help: Remove unused import: `sys`
+
+F401 [*] `json` imported but unused
+ --> b.py:3:8
+  |
+1 | import os
+2 | import sys
+3 | import json
+  |        ^^^^
+4 |
+5 | def f(a,b):
+  |
+help: Remove unused import: `json`
+
+F841 Local variable `x` is assigned to but never used
+ --> b.py:6:5
+  |
+5 | def f(a,b):
+6 |     x = 1
+  |     ^
+7 |     y = 2
+8 |     return a+b
+  |
+help: Remove assignment to unused variable `x`
+
+F841 Local variable `y` is assigned to but never used
+ --> b.py:7:5
+  |
+5 | def f(a,b):
+6 |     x = 1
+7 |     y = 2
+  |     ^
+8 |     return a+b
+  |
+help: Remove assignment to unused variable `y`
+
+F841 Local variable `z` is assigned to but never used
+  --> b.py:11:5
+   |
+10 | def g(c,d):
+11 |     z = 3
+   |     ^
+12 |     return c-d
+   |
+help: Remove assignment to unused variable `z`
+
+F841 Local variable `w` is assigned to but never used
+  --> b.py:15:5
+   |
+14 | def h(e,q):
+15 |     w = 4
+   |     ^
+16 |     return e*q
+   |
+help: Remove assignment to unused variable `w`
+
+Found 14 errors.
+[*] 6 fixable with the `--fix` option (8 hidden fixes can be enabled with the `--unsafe-fixes` option).
