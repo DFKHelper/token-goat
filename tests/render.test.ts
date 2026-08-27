@@ -602,6 +602,52 @@ describe('Stats rendering', () => {
     expect(byKindBlock).not.toContain('Other')
   })
 
+  it('groups the document/structured read kinds, the SOURCE_CONTENT kinds and the four unbranched prefixes under real headings, not Other (regression: brief_view and 57 sibling registered kinds, plus the gdrive:/skill_compact:/bashoutput:/taskoutput: prefixes, had no _KIND_GROUPS membership and no prefix branch, so `stats --full` printed the whole family under "Other")', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'brief_view', bytes: 9000, tokens: 900, events: 9 },
+      { kind: 'pdf_extract', bytes: 8000, tokens: 800, events: 8 },
+      { kind: 'evidence_cache_hit', bytes: 7000, tokens: 700, events: 7 },
+      { kind: 'content_compress', bytes: 6000, tokens: 600, events: 6 },
+      { kind: 'taskoutput:recall', bytes: 5000, tokens: 500, events: 5 },
+      { kind: 'gdrive:doc', bytes: 4000, tokens: 400, events: 4 },
+      { kind: 'bashoutput:tail', bytes: 3000, tokens: 300, events: 3 },
+      { kind: 'skill_compact:body', bytes: 2000, tokens: 200, events: 2 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    // eslint-disable-next-line no-control-regex
+    const plain = byKindBlock.replace(/\x1b\[[0-9;]*m/g, '')
+    const headings = ['Read savings', 'Lookups', 'Images', 'Hints', 'Bash', 'Web', 'MCP', 'Compact / Skills', 'Content', 'Other']
+    // Each row is grouped by walking the rendered block: a line whose only content is a known heading opens a group, every later line naming one of the seeded kinds belongs to it. The expectation below is derived from stats.ts's KIND_TO_SOURCE for each seeded kind, not from _KIND_GROUPS.
+    const seeded = stats.by_kind.map((k) => k.kind)
+    const grouped: Array<[string, string]> = []
+    let current = ''
+    for (const line of plain.split('\n')) {
+      const trimmed = line.trim()
+      if (headings.includes(trimmed)) {
+        current = trimmed
+        continue
+      }
+      for (const kind of seeded) {
+        if (trimmed.startsWith(kind)) {
+          grouped.push([kind, current])
+        }
+      }
+    }
+    expect(grouped).toEqual([
+      ['brief_view', 'Read savings'],
+      ['pdf_extract', 'Read savings'],
+      ['evidence_cache_hit', 'Hints'],
+      ['bashoutput:tail', 'Bash'],
+      ['gdrive:doc', 'Web'],
+      ['skill_compact:body', 'Compact / Skills'],
+      ['content_compress', 'Content'],
+      ['taskoutput:recall', 'Content'],
+    ])
+    expect(plain, 'no seeded kind should reach the Other heading').not.toContain('Other')
+  })
+
   it('renderStats handles project with path stripping', () => {
     const stats = { ...minimalStats }
     stats.by_project = [
