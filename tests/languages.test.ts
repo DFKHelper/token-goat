@@ -3630,6 +3630,31 @@ const Vector = struct {
     expect(imports).toHaveLength(0)
   })
 
+  it('indexes pub-qualified top-level const and var declarations', () => {
+    // HAND-DERIVED: `pub const` / `pub var` are the ordinary spelling of a public top-level
+    // declaration in Zig (language reference, "Container Level Variables" / "Keyword pub"); the
+    // expected names below are read off this source text, not off the adapter's own regex.
+    // CONST_RE/VAR_RE were anchored at `^const`/`^var` with no `pub` prefix, so every public
+    // constant and variable -- the re-export block at the top of a typical root module -- was
+    // dropped from the index entirely, while `pub const Point = struct` still resolved because
+    // CONTAINER_RE does allow the prefix.
+    const content = `pub const std = @import("std");
+pub const max_len: usize = 4096;
+pub var global_counter: u32 = 0;
+const private_pi = 3.14;
+`
+    const { symbols } = extractZig(content, 'root.zig')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('std')
+    expect(names).toContain('max_len')
+    expect(names).toContain('global_counter')
+    expect(names).toContain('private_pi')
+    expect(symbols.find((s) => s.name === 'max_len')?.kind).toBe('const')
+    expect(symbols.find((s) => s.name === 'global_counter')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'max_len')?.lineStart).toBe(2)
+    expect(symbols.find((s) => s.name === 'global_counter')?.lineStart).toBe(3)
+  })
+
   it('does not misattribute a method-local struct as a direct member of the enclosing type', () => {
     // Regression: a local `const Inner = struct { ... }` declared inside a method's body -- a
     // common Zig idiom for local helper types -- sits at depthInType 2+ relative to the
