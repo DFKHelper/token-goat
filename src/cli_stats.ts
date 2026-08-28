@@ -10,7 +10,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { summarize, renderStats, renderShortStats } from './stats.js'
+import { summarize, renderStats, renderShortStats, type StatsSummary } from './stats.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
@@ -156,6 +156,34 @@ function renderMethodology(json = false): void {
 }
 
 /** Run the ``token-goat stats`` command. */
+
+/**
+ * The object `stats --json` prints.
+ *
+ * Spelled out field by field rather than emitting the summary directly, because the JSON shape is a
+ * published surface that `src/vscode_savings.ts` and any script a user has written both parse: a
+ * field renamed inside StatsSummary must not silently rename itself on the wire. The cost of that
+ * choice is that this is a whitelist, so a new summary field ships dead here unless it is added --
+ * which is exactly what happened to `counts`, caught only by running the built binary rather than by
+ * any of the 11,000 tests. The guard in tests/stats_json_payload_covers_summary.test.ts now fails on
+ * the next omission instead.
+ */
+export function statsJsonPayload(summary: StatsSummary): Record<string, unknown> {
+  return {
+    total_events: summary.total_events,
+    total_bytes_saved: summary.total_bytes_saved,
+    total_tokens_saved: summary.total_tokens_saved,
+    by_kind: summary.by_kind,
+    by_day: summary.by_day,
+    by_project: summary.by_project,
+    by_command: summary.by_command,
+    by_source: summary.by_source,
+    by_harness: summary.by_harness,
+    counts: summary.counts,
+    window_days: summary.window_days,
+  }
+}
+
 export function runStats(opts: StatsOptions = {}): void {
   if (opts.methodology === true) {
     renderMethodology(opts.json === true)
@@ -165,19 +193,7 @@ export function runStats(opts: StatsOptions = {}): void {
   const summary = summarize(window, undefined, opts.homeDir)
 
   if (opts.json === true) {
-    const out = {
-      total_events: summary.total_events,
-      total_bytes_saved: summary.total_bytes_saved,
-      total_tokens_saved: summary.total_tokens_saved,
-      by_kind: summary.by_kind,
-      by_day: summary.by_day,
-      by_project: summary.by_project,
-      by_command: summary.by_command,
-      by_source: summary.by_source,
-      by_harness: summary.by_harness,
-      window_days: summary.window_days,
-    }
-    process.stdout.write(JSON.stringify(out) + '\n')
+    process.stdout.write(JSON.stringify(statsJsonPayload(summary)) + '\n')
     return
   }
 

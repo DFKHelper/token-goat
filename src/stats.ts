@@ -64,6 +64,12 @@ export interface StatsSummary {
    * measured zero, and folding it into a real harness would overstate that harness's share.
    */
   by_harness: Record<string, StatsBucket>
+  /**
+   * Totals for kinds whose recorded number is a count rather than a token quantity, keyed by kind.
+   * Reported here instead of in the token columns so a count is never summed into a token total;
+   * see {@link COUNT_ONLY_KINDS}. Absent kinds simply had no rows in the window.
+   */
+  counts: Record<string, number>
   window_days: number
 }
 
@@ -84,6 +90,25 @@ export const SOURCE_CONTENT = 'content'
 export const SOURCE_OTHER = 'other'
 
 const _BYTES_MODE_ONLY_KINDS = new Set(['webfetch_image', 'gdrive_image'])
+
+/**
+ * Kinds whose third `recordStat` argument is a COUNT, not a number of tokens.
+ *
+ * There is one, and it is the reason this set exists rather than a comment: `secret_redacted`
+ * passes the number of redaction placeholders it emitted, because the row has no other numeric slot
+ * to put it in. That is fine as a per-kind figure and wrong the moment it is added to anything: a
+ * count of placeholders summed into `total_tokens_saved` puts a unit-less quantity inside the one
+ * headline number this project asks to be believed, which is the same defect class as pricing an
+ * image in bytes -- a credit in a unit that does not bill.
+ *
+ * The codebase had already reached half of this conclusion: `secret_redacted` is deliberately left
+ * out of the renderer's kind groups because "a redaction removes secret bytes, it does not save a
+ * read". That reasoning stopped at grouping and never reached aggregation, so the display hid the
+ * figure while the total kept adding it. {@link summarize} now routes these kinds into
+ * {@link StatsSummary.counts} and contributes zero tokens to every aggregate, so no bucket, day,
+ * source, command or harness carries it either.
+ */
+export const COUNT_ONLY_KINDS: ReadonlySet<string> = new Set(['secret_redacted'])
 
 const KIND_TO_SOURCE: Record<string, string> = {
   image_shrink: SOURCE_IMAGE,
@@ -578,11 +603,17 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   const rows = sinceTs !== null ? stmt.all(sinceTs) : stmt.all()
 
   const tsToDateCache: Record<number, string> = {}
+  const counts: Record<string, number> = {}
 
   for (const row of rows) {
     const bytesSaved = (row as { bytes_saved?: number }).bytes_saved ?? 0
-    const tokensSaved = (row as { tokens_saved?: number }).tokens_saved ?? 0
+    const recorded = (row as { tokens_saved?: number }).tokens_saved ?? 0
     const kind = (row as { kind: string }).kind
+    // A count-only kind contributes its number to `counts` and zero tokens to everything else, so no
+    // aggregate below has to remember to exclude it. See COUNT_ONLY_KINDS for why.
+    const isCount = COUNT_ONLY_KINDS.has(kind)
+    if (isCount) counts[kind] = (counts[kind] ?? 0) + recorded
+    const tokensSaved = isCount ? 0 : recorded
     const tsRaw = (row as { ts?: number }).ts
     if (tsRaw === undefined) continue
     const ts = tsRaw
@@ -658,6 +689,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     by_project: byProjectList,
     by_source: bySourceDict,
     by_harness: byHarness,
+    counts,
     by_command: Object.entries(byCommandDict)
       .map(([command, bucket]) => ({ ...bucket, command }))
       .filter((r) => r.events > 0),
@@ -674,6 +706,12 @@ function _totalsLines(summary: StatsSummary): string[] {
     `Total events:   ${summary.total_events}`,
     `Bytes saved:    ${fmtBytes(summary.total_bytes_saved)}`,
     `Tokens saved:   ${summary.total_tokens_saved}`,
+    // Printed on its own line, below the token total and never inside it, because it counts
+    // placeholders rather than tokens. Omitted entirely when nothing was redacted, so the line is
+    // information rather than a permanent zero. See COUNT_ONLY_KINDS.
+    ...(summary.counts['secret_redacted']
+      ? [`Secrets hidden: ${summary.counts['secret_redacted']} (a count, not tokens)`]
+      : []),
     `Window:         ${summary.window_days} days`,
   ]
 }
