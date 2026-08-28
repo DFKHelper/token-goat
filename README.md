@@ -1337,9 +1337,9 @@ I built this because long Claude Code and Codex sessions on my machine kept burn
 
 This is a solo project. I use it daily on Windows 11. The full test suite runs on Node.js 22 across Windows, macOS, and Linux, and all three must pass before anything merges.
 
-## Sister project
+## Sister project: token-goat-mem
 
-[Token-Goat Mem](https://github.com/DFKHelper/token-goat-mem) is a companion project: durable, local-first memory for AI coding agents, with trust levels and anchor-based staleness detection, so a decision like "we use pnpm, not npm" survives a compaction instead of getting re-explained every session. Token-Goat controls what gets read into context; Mem controls what gets remembered across sessions. The two are independent — neither requires the other — but Mem has an optional one-way seam that feeds its facts into Token-Goat's compaction manifest.
+[Token-Goat Mem](https://github.com/DFKHelper/token-goat-mem) (`token-goat-mem`) is a companion project: durable, local-first memory for AI coding agents, with trust levels and anchor-based staleness detection, so a decision like "we use pnpm, not npm" survives a compaction instead of getting re-explained every session. Token-Goat controls what gets read into context; Mem controls what gets remembered across sessions. The two are independent — neither requires the other — but Mem has an optional one-way seam that feeds its facts into Token-Goat's compaction manifest.
 
 ## Requests and issues
 
