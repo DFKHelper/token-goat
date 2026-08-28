@@ -37,7 +37,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, passOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
-import { formatShrinkSummary, imageQualifiesForShrink, shrinkImage } from './image_shrink.js'
+import { formatShrinkSummary, imageQualifiesForShrink, probeImageMeta, shrinkImage, visionTokens, visionTokensSaved } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
 import { getLastTabContext, hasSeenImage, recordSeenImage, setLastTabContext } from './session.js'
 import { recordStat } from './stats.js'
@@ -75,24 +75,29 @@ function screenshotFingerprint(data: string): string {
   return createHash('sha256').update(data).digest('hex').slice(0, 32)
 }
 
-async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; changed: boolean; savedBytes: number }> {
+async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; changed: boolean; savedBytes: number; savedTokens: number }> {
   const source = block.source
   const mediaType = typeof source?.media_type === 'string' ? source.media_type : 'image/png'
   const data = typeof source?.data === 'string' ? source.data : ''
   const originalDataUrl = `data:${mediaType};base64,${data}`
-  if (source?.type !== 'base64' || data === '') return { text: originalDataUrl, changed: false, savedBytes: 0 }
+  if (source?.type !== 'base64' || data === '') return { text: originalDataUrl, changed: false, savedBytes: 0, savedTokens: 0 }
 
   let buffer: Buffer
   try {
     buffer = Buffer.from(data, 'base64')
   } catch {
-    return { text: originalDataUrl, changed: false, savedBytes: 0 }
+    return { text: originalDataUrl, changed: false, savedBytes: 0, savedTokens: 0 }
   }
 
   // A screenshot the model has already been shown is the one case where the cheapest thing to
   // send is no image at all. "Identical to the last one" is not a lossy summary of those pixels --
   // it is strictly more informative than the pixels, because it answers the question the second
   // screenshot was taken to ask. Same shape as dedupTabContext below, on the block beside this one.
+  // Decoded once here rather than inside each branch below: the repeat-screenshot notice and the
+  // resize both price their saving from the original's dimensions, and this is a header-only read.
+  const meta = await probeImageMeta(buffer)
+  const tier = loadConfig().image_shrink.vision_tier
+
   const fingerprint = screenshotFingerprint(data)
   const alreadyShown = hasSeenImage(fingerprint)
   recordSeenImage(fingerprint)
@@ -109,6 +114,11 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
         changed: true,
         // Decoded image bytes, not base64 characters. Both branches of this function file under the same `image_shrink` kind, and the shrink branch below credits `result.originalBytes - result.shrunkBytes` -- decoded bytes, the convention documented at image_shrink.ts's own recordStat call. Base64 inflates by 4/3, so crediting `originalDataUrl.length` here booked roughly 33% more for a repeat screenshot than an identical shrink of the same image, and the ledger summed the two units into one row. The gate above deliberately still measures the data URL: it decides whether the rewrite pays off on the wire, where base64 characters are what is actually sent.
         savedBytes: buffer.length - Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8'),
+        // The whole image is withheld here rather than resized, so the visual tokens saved are its
+        // entire billed cost less the notice standing in for it. Billed cost, not raw patch count:
+        // an oversized screenshot would have been capped by the API's own downscale, so pricing the
+        // untouched dimensions would credit a bill that was never going to be sent.
+        savedTokens: Math.max(0, visionTokens(meta?.width ?? 0, meta?.height ?? 0, tier) - Math.round(Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8') / 4)),
       }
     }
   }
@@ -118,11 +128,17 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
   // on dimensions instead -- which is most of them, since a screenshot is flat colour and
   // compresses far below the byte threshold while still decoding well past the vision optimum.
   const result = (await imageQualifiesForShrink(buffer)) ? await shrinkImage(buffer, { sizeThresholdBytes: 0 }) : null
-  if (result === null) return { text: originalDataUrl, changed: false, savedBytes: 0 }
+  if (result === null) return { text: originalDataUrl, changed: false, savedBytes: 0, savedTokens: 0 }
 
   const saved = result.originalBytes - result.shrunkBytes
   const { summary, dataUrl } = formatShrinkSummary(result, 'an inline browser screenshot')
-  return { text: `${summary}\n${dataUrl}`, changed: true, savedBytes: saved }
+  // A browser tool_result image is the one case the API does NOT downscale: it rejects an oversized
+  // one with a validation error instead. So where the original is past the tier limits, the true
+  // counterfactual is a failed request rather than a bigger bill, and that is not a token quantity
+  // at all. Pricing it at the capped cost is the conservative reading: it under-credits a resize
+  // that actually rescued the call, and never over-credits one that did not.
+  const savedTokens = visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier)
+  return { text: `${summary}\n${dataUrl}`, changed: true, savedBytes: saved, savedTokens }
 }
 
 const TAB_CONTEXT_UNCHANGED_NOTICE = '(tabs unchanged since last check)'
@@ -159,10 +175,10 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
     const parts: string[] = []
     for (const block of blocks) {
       if (block.type === 'image') {
-        const { text, changed, savedBytes } = await shrinkImageBlock(block)
+        const { text, changed, savedBytes, savedTokens } = await shrinkImageBlock(block)
         if (changed) {
           anyChanged = true
-          recordStat('image_shrink', savedBytes, Math.round(savedBytes / 4), undefined, toolName)
+          recordStat('image_shrink', savedBytes, savedTokens, undefined, toolName)
         }
         parts.push(text)
       } else if (block.type === 'text' && typeof block.text === 'string') {

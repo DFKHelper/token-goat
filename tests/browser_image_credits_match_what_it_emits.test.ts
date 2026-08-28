@@ -105,11 +105,15 @@ describe('browser image handler credits the unit its stat kind is denominated in
 
     // Independent measurement: decode the fixture ourselves and subtract the literal notice the handler returned.
     const expectedBytes = jpegDecodedBytes - Buffer.byteLength(second.updatedOutput, 'utf-8')
-    expect(calls[0]!.slice(0, 3), 'a repeat screenshot must be credited in decoded bytes, not base64 characters').toEqual([
-      'image_shrink',
-      expectedBytes,
-      Math.round(expectedBytes / 4),
-    ])
+    expect(calls[0]!.slice(0, 2), 'a repeat screenshot must be credited in decoded bytes, not base64 characters').toEqual(['image_shrink', expectedBytes])
+
+    // The tokens column is deliberately NOT bytes/4. An image is billed as 28x28-pixel patches, so the
+    // two columns of this one row are denominated in different units on purpose: bytes for the wire,
+    // visual tokens for the bill. The fixture is 3000x3000, which the standard tier caps at 39 x 39 =
+    // 1521 patches, less round(121 / 4) = 30 for the notice sent in its place. Before this split the
+    // row credited a quarter of a twelve-megabyte delta as three million tokens.
+    expect(calls[0]![2], 'the tokens column is visual tokens, not a byte count divided by four').toBe(1521 - 30)
+    expect(calls[0]![2]).not.toBe(Math.round(expectedBytes / 4))
 
     // The pre-fix number, pinned as a control so a regression back to base64 characters cannot pass this file. 4/3 inflation makes it strictly larger, so the two can never coincide.
     const base64Credit = `data:image/jpeg;base64,${jpegB64}`.length - SCREENSHOT_NOTICE.length

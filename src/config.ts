@@ -92,6 +92,9 @@ export interface SkillPreservationConfig {
   post_compact_full_loads: boolean
 }
 
+/** The resolution tier of the model that will be shown an image, which decides what its pixels cost. Anthropic runs two and they bill the same image very differently; see `image_shrink.ts::visionTokens`. */
+export type VisionTier = 'standard' | 'high'
+
 export interface ImageShrinkConfig {
   enabled: boolean
   jpeg_quality: number
@@ -99,6 +102,7 @@ export interface ImageShrinkConfig {
   screenshot_redirect: boolean
   ocr_enabled: boolean
   ocr_min_confidence: number
+  vision_tier: VisionTier
 }
 
 export interface ScreenshotConfig {
@@ -392,6 +396,14 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // noisier -- padding the threshold below the terminal/code norm still comfortably
     // excludes photographic false positives without needing a second heuristic.
     ocr_min_confidence: 65,
+    // Which resolution tier the model being shown the image is on, which decides what its pixels
+    // cost. 'standard' (1568px long edge, 1568 visual tokens) is every model before Claude 4.7;
+    // 'high' (2576px, 4784 tokens) is 4.7 and later, and bills the same large image up to roughly
+    // three times higher. Only the saving *reported* by `token-goat stats` depends on this -- no
+    // image is encoded differently -- and 'standard' is the default because it is the floor: it
+    // caps the counterfactual at the smaller of the two bills and so can never credit a saving
+    // that was not there. Set it to 'high' on a Claude 4.7+ model to see the larger real figure.
+    vision_tier: 'standard',
   },
   screenshot: {
     chrome_path: '',
@@ -559,6 +571,11 @@ function validatedFloat(raw: unknown, def: number, min: number, max: number): nu
   const n = typeof raw === 'number' ? raw : def
   if (!Number.isFinite(n)) return def
   return Math.max(min, Math.min(max, n))
+}
+
+/** Accept only the two tier names. An unknown string is a typo or a stale config, and silently pricing every image on the wrong tier is worse than ignoring the key, so this falls back to the default rather than guessing which one was meant. */
+function validatedVisionTier(raw: unknown, def: VisionTier): VisionTier {
+  return raw === 'standard' || raw === 'high' ? raw : def
 }
 
 function validatedStr(raw: unknown, def: string): string {
@@ -1536,8 +1553,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
   is_cfg.ocr_enabled = validatedBool(is_raw['ocr_enabled'], is_cfg.ocr_enabled)
   is_cfg.ocr_min_confidence = validatedInt(is_raw['ocr_min_confidence'], is_cfg.ocr_min_confidence, ...boundsOf('image_shrink.ocr_min_confidence'))
+  is_cfg.vision_tier = validatedVisionTier(is_raw['vision_tier'], is_cfg.vision_tier)
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
   is_cfg.ocr_enabled = envBool('TOKEN_GOAT_OCR_ENABLED', is_cfg.ocr_enabled)
+  is_cfg.vision_tier = validatedVisionTier(process.env['TOKEN_GOAT_VISION_TIER'], is_cfg.vision_tier)
 
   const sc_raw = section(raw, 'screenshot')
   const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
@@ -1793,6 +1812,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
   'image_shrink.ocr_enabled': ['TOKEN_GOAT_OCR_ENABLED'],
+  'image_shrink.vision_tier': ['TOKEN_GOAT_VISION_TIER'],
   'screenshot.block_private_targets': ['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
   'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
@@ -1925,6 +1945,7 @@ export function saveConfig(config: Config): void {
       screenshot_redirect: is_cfg.screenshot_redirect,
       ocr_enabled: is_cfg.ocr_enabled,
       ocr_min_confidence: is_cfg.ocr_min_confidence,
+      vision_tier: is_cfg.vision_tier,
     },
     screenshot: {
       chrome_path: config.screenshot.chrome_path,
