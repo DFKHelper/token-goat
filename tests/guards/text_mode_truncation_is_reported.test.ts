@@ -35,7 +35,7 @@ function run(args: string[]): { status: number; out: string } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
-    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir },
+    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir },
   })
   return { status: res.status ?? 1, out: (res.stdout ?? '') + (res.stderr ?? '') }
 }

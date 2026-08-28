@@ -43,6 +43,8 @@ beforeEach(() => {
     ...process.env,
     TOKEN_GOAT_HOME: path.join(scratch, 'home'),
     LOCALAPPDATA: path.join(scratch, 'local'),
+    // XDG_DATA_HOME is what picks the data dir on Linux and macOS, exactly as LOCALAPPDATA does on Windows, so pinning only the Windows one leaves both spawns below sharing the Vitest worker's ledger everywhere else: the second case then reads the first case's credit and fails on CI while passing on Windows.
+    XDG_DATA_HOME: path.join(scratch, 'local'),
     APPDATA: path.join(scratch, 'roaming'),
     USERPROFILE: scratch,
     HOME: scratch,

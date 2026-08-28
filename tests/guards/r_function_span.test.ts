@@ -37,7 +37,7 @@ function run(args: string[]): { status: number; out: string } {
     cwd: projectDir,
     encoding: 'utf-8',
     timeout: 30000,
-    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, HOME: homeDir, USERPROFILE: homeDir },
+    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir, HOME: homeDir, USERPROFILE: homeDir },
   })
   return { status: res.status ?? 1, out: (res.stdout ?? '') + (res.stderr ?? '') }
 }

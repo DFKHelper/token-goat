@@ -44,6 +44,7 @@ function run(args: string[]): { status: number; stdout: string; stderr: string }
       ...process.env,
       TOKEN_GOAT_HOME: homeDir,
       LOCALAPPDATA: homeDir,
+      XDG_DATA_HOME: homeDir,
       HOME: homeDir,
       USERPROFILE: homeDir,
     },
