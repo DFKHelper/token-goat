@@ -39,7 +39,13 @@
  *   - context (other events): `{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}`
  *   - rewriteInput (pre_tool_use only, e.g. Bash command compression):
  *     `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{...}}}`
+ *   - rewriteOutput (post_tool_use only, e.g. WebFetch fencing/redaction, output compression):
+ *     `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"..."}}`
  *   - pass: `{}`
+ *
+ * That list is the complete producer set from `serializeOutput`, on purpose: an earlier
+ * revision enumerated only four of the five shapes and the missing one (rewriteOutput)
+ * shipped dead, the same whitelist-shaped drop fixed for the opencode plugin.
  * pi's `tool_call` handler bridges this into pi's own `{block, reason}` /
  * in-place `input` mutation contract. What works, matching README's "pi
  * users" section: bash output compression and confirmed re-read denial (both
@@ -355,13 +361,35 @@ export default function (pi: ExtensionAPI) {
       .filter((c: { type?: string }) => c && c.type === "text")
       .map((c: { text?: string }) => c.text ?? "")
       .join("\\n");
-    await callHook("post_tool_use", {
+    const resp = await callHook("post_tool_use", {
       session_id: sessionId,
       tool_name: tg,
       tool_input: toToolInput(event.toolName, (event.input ?? {}) as Record<string, unknown>),
       cwd,
       tool_response: { output },
     });
+    if (!resp) return;
+
+    // rewriteOutput: replace the tool result the model sees. pi's tool_result handler CAN modify the result: its own types declare "Fired after a tool executes. Can modify result." over ToolResultEvent and a ToolResultEventResult of { content, details, isError, usage }, and the shipped runtime applies it (dist/core/extensions/runner.js emitToolResult assigns handlerResult.content onto the event, and dist/core/agent-session.js afterToolCall returns hookResult.content as the tool result content). Without this, injection fencing, secret redaction and output compression were computed and thrown away on every pi session, the same whitelist-shaped drop fixed for opencode.
+    const hso = resp["hookSpecificOutput"] as Record<string, unknown> | undefined;
+    const updatedToolOutput = hso && typeof hso["updatedToolOutput"] === "string" ? (hso["updatedToolOutput"] as string) : undefined;
+    if (updatedToolOutput === undefined) return;
+
+    // Replace only the text blocks, in place, and keep every non-text block (images) untouched: emitToolResult overwrites content wholesale, so anything not carried here is dropped from what the model sees. details/isError/usage are deliberately not returned, since runner.js only overwrites the fields a handler actually provides.
+    const rewritten: typeof contentBlocks = [];
+    let replaced = false;
+    for (const block of contentBlocks) {
+      const isText = Boolean(block) && (block as { type?: string }).type === "text";
+      if (!isText) {
+        rewritten.push(block);
+        continue;
+      }
+      if (replaced) continue;
+      replaced = true;
+      rewritten.push({ type: "text", text: updatedToolOutput });
+    }
+    if (!replaced) rewritten.push({ type: "text", text: updatedToolOutput });
+    return { content: rewritten };
   });
 
   // Compaction: pi's session_before_compact REPLACES the summary rather than
