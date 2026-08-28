@@ -47,7 +47,11 @@ describe('compound-output compression savings accounting', () => {
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const original = Buffer.byteLength(dup, 'utf-8')
     const expectedBytes = original - emitted
-    expect(genericSavings()).toEqual([[expectedBytes, Math.max(1, Math.floor(expectedBytes / 3) + 1)]])
+    // The token half of this pair used to restate the producer's own formula, floor(bytes / 3) + 1,
+    // which is how this path came to be the only saving in the database credited on a different scale
+    // from its siblings: the expectation was written from the code and so agreed with it whatever it
+    // did. It is now the savings convention every other kind uses, stated independently here.
+    expect(genericSavings()).toEqual([[expectedBytes, Math.round(expectedBytes / 4)]])
   })
 
   // Control for the over-fix direction: the saving must still be the real (large) reduction, not
@@ -88,6 +92,6 @@ describe('compound-output compression savings accounting', () => {
     if (result.hookType !== 'rewriteOutput') return
     const expectedBytes = Buffer.byteLength(output, 'utf-8') - Buffer.byteLength(result.updatedOutput, 'utf-8')
     expect(expectedBytes).toBeGreaterThanOrEqual(100)
-    expect(genericSavings()).toEqual([[expectedBytes, Math.max(1, Math.floor(expectedBytes / 3) + 1)]])
+    expect(genericSavings()).toEqual([[expectedBytes, Math.round(expectedBytes / 4)]])
   })
 })

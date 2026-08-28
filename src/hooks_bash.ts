@@ -16,10 +16,9 @@ import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
-import { estimateTokensFromLength } from './overflow_guard.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
@@ -1843,7 +1842,10 @@ async function maybeCompressCompoundOutput(
   }
   await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
   const netSaved = compressed.originalBytes - emittedBytes
-  recordStat('bash_compress:generic', netSaved, estimateTokensFromLength(netSaved))
+  // savedTokensFromBytes, not estimateTokensFromLength: the latter divides by three because it exists
+  // to keep an overflow guard from guessing low, and using an intentional over-estimate as a credit
+  // booked this kind about a third richer than every other saving in the same total.
+  recordStat('bash_compress:generic', netSaved, savedTokensFromBytes(netSaved))
   return { hookType: 'rewriteOutput', updatedOutput: body }
 }
 
