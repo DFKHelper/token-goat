@@ -418,10 +418,13 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
       // preempts), not the original file -- the shrink-step savings are recorded above, on the
       // shared path before this branch, so this avoids double-counting the same bytes under two
       // stat rows.
-      const textBytes = Buffer.byteLength(ocr.text, 'utf8')
-      const saved = Math.max(0, result.shrunkBytes - textBytes)
+      // Priced on the payload actually emitted, not on ocr.text alone: the summary line and the
+      // untrusted-content fence around the text are both part of what this branch puts into context,
+      // so crediting only the bare text would bill a smaller thing than the one that ships.
+      const emitted = formatOcrSummary(ocr, basename, result.originalBytes)
+      const saved = Math.max(0, result.shrunkBytes - Buffer.byteLength(emitted, 'utf8'))
       recordStat('image_ocr', saved, Math.round(saved / 4), undefined, basename)
-      return contextOutput(formatOcrSummary(ocr, basename, result.originalBytes))
+      return contextOutput(emitted)
     }
   }
 

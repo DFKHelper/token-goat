@@ -23,7 +23,7 @@ import type { StdioServerTransport as StdioServerTransportClass } from './mcp_st
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
-import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { scanForInjectionPatterns, fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1505,6 +1505,25 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   recordStat('image_meta', bytesSaved, Math.round(bytesSaved / 4))
 }
 
+/**
+ * Fence text OCR recovered from an image, always.
+ *
+ * Unlike `fenceFileTextIfMatched`, this does not wait for a pattern to match: see
+ * `fenceUntrustedOcrText` for why decoded pixels are fenced on provenance rather than on a scan hit.
+ * The scan still runs, purely so a match is still counted where it was counted before.
+ */
+function fenceOcrText(text: string): string {
+  try {
+    if (loadConfig().injection.enabled) {
+      const matches = scanForInjectionPatterns(text)
+      if (matches.length > 0) recordStat('injection_detected', 0, 0, undefined, matches.join(','))
+    }
+  } catch {
+    // Unreadable config must not cost the fence below, which does not depend on it.
+  }
+  return fenceUntrustedOcrText(text)
+}
+
 async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   const result = await runImageText(file)
   if (!result.ocrAvailable) {
@@ -1519,14 +1538,14 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
     // just the risky value wrapped -- the same shape the outline- and list-shaped document
     // commands above use.
     text = JSON.stringify(
-      result.text === null ? result : { ...result, text: fenceFileTextIfMatched(result.text) },
+      result.text === null ? result : { ...result, text: fenceOcrText(result.text) },
       null,
       2,
     )
   } else {
     const lines = [`Confidence: ${Math.round(result.confidence)}%`, `Characters: ${result.chars}`]
     text = result.textHeavy && result.text !== null
-      ? `${lines.join('\n')}\n\n${fenceFileTextIfMatched(result.text)}`
+      ? `${lines.join('\n')}\n\n${fenceOcrText(result.text)}`
       : `${lines.join('\n')}\n(below usefulness threshold; text likely noise, not shown)`
   }
   out(text)
