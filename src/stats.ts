@@ -212,6 +212,9 @@ const KIND_TO_SOURCE: Record<string, string> = {
   content_compress: SOURCE_CONTENT,
   // Verbatim-repeat collapse of a browser tool's "Tab Context:" text block (hooks_browser_image.ts postBrowserImageHandler). SOURCE_CONTENT for the same reason as agent_report_compact above: it is a real rewrite with real bytes removed, not an advisory nudge. Deliberately not SOURCE_IMAGE -- it shares a handler with image_shrink but collapses text, and folding text bytes into the image ledger is the two-units-under-one-label mistake this file's image_shrink entry was just fixed for.
   browser_tab_dedup: SOURCE_CONTENT,
+  // Collapse of the plan echo in an approved ExitPlanMode result (hooks_exitplanmode.ts). SOURCE_CONTENT for the same reason as agent_report_compact: real bytes removed from a tool result, not an advisory nudge. The handler shipped for releases emitting this rewrite and recording nothing at all, so the mechanism was invisible in `stats` and its net benefit could not be checked against the gate that admits it.
+  plan_echo_collapse: SOURCE_CONTENT,
+
   // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
   'grep:fold': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,

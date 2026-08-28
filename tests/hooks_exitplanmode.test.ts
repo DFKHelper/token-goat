@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // a HookEvent exactly as relay() does on stdin.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
+import { summarize } from '../src/stats.js'
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -60,6 +61,44 @@ ${unrelatedBody}`
     const res = await runHook(buildEvent('post_tool_use', postPayload(output, plan)))
 
     expect(res.hookType).toBe('pass')
+  })
+
+  it('records the bytes it removed, priced on what it actually emitted', async () => {
+    // Provenance: HAND-DERIVED. Both sides are measured here from the strings this test built, not
+    // read back out of the handler. The handler emitted this rewrite for several releases while
+    // recording nothing at all, so the mechanism was invisible in `token-goat stats` and its net
+    // benefit could never be checked against the gate that admits it.
+    const marker = '## Approved Plan:'
+    const output = `User has approved your plan.
+
+${marker}
+${bigPlanBody}`
+
+    const before = summarize(30).by_kind['plan_echo_collapse']?.bytes_saved ?? 0
+    const res = await runHook(buildEvent('post_tool_use', postPayload(output, bigPlanBody)))
+    expect(res.hookType).toBe('rewriteOutput')
+    if (res.hookType !== 'rewriteOutput') return
+    const delta = (summarize(30).by_kind['plan_echo_collapse']?.bytes_saved ?? 0) - before
+
+    const expected = Buffer.byteLength(output, 'utf-8') - Buffer.byteLength(res.updatedOutput, 'utf-8')
+    expect(expected, 'the fixture must actually shrink, or this asserts nothing').toBeGreaterThan(100)
+    expect(delta, 'the saving must be the difference between the result that arrived and the one that left').toBe(expected)
+  })
+
+  it('records nothing on the branch that declines to rewrite, rather than a zero-byte saving', async () => {
+    // The mirror. A stat kind that fires on a pass branch would report a saving for a call where the
+    // original text went through untouched.
+    const marker = '## Approved Plan:'
+    const tiny = 'do the thing'
+    const output = `User has approved your plan.
+
+${marker}
+${tiny}`
+
+    const before = summarize(30).by_kind['plan_echo_collapse']?.events ?? 0
+    const res = await runHook(buildEvent('post_tool_use', postPayload(output, tiny)))
+    expect(res.hookType).toBe('pass')
+    expect((summarize(30).by_kind['plan_echo_collapse']?.events ?? 0) - before).toBe(0)
   })
 
   it('rewrites a result with the "## Approved Plan:" marker to omit the plan body', async () => {

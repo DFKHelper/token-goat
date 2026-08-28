@@ -594,6 +594,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'grep:fold',
       'handoff_create',
       'handoff_resolve',
+      'plan_echo_collapse',
     ]),
   },
 ]
