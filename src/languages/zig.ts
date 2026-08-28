@@ -34,9 +34,9 @@ const CONTAINER_RE = /^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:exte
 // Generics in Zig are complex; we keep it simple and just match the name.
 const FUNC_RE = /(?:^|[\s(])(pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `const foo = ...`, `var bar: i32 = ...`
-const CONST_RE = /^const\s+([A-Za-z_][A-Za-z0-9_]*)/
-const VAR_RE = /^var\s+([A-Za-z_][A-Za-z0-9_]*)/
+// `const foo = ...`, `var bar: i32 = ...`, and their `pub` forms. The optional `pub` prefix mirrors CONTAINER_RE and FUNC_RE above, both of which already accept it: without it here, `pub const max_len = 4096;` and `pub var counter: u32 = 0;` matched nothing at all and were dropped from the index outright, even though a `pub const Point = struct {...}` on the next line still resolved. A Zig root module is largely public re-exports (`pub const io = @import("io.zig");`), so this silently emptied the most looked-up part of the file.
+const CONST_RE = /^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)/
+const VAR_RE = /^(?:pub\s+)?var\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 export function extractZig(
   content: string,
