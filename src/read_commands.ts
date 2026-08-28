@@ -72,7 +72,7 @@ import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } fro
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, type PdfLocateMatch, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
-import { ocrImage, isTextHeavy, isOcrEngineAvailable } from './image_ocr.js'
+import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
 import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
@@ -4190,6 +4190,12 @@ export async function runImageText(file: string): Promise<ImageTextResult> {
     // A null result means "engine not installed" only when the engine is genuinely absent. If it
     // is present, OCR ran and produced nothing for this input -- a corrupt image, a timeout, an
     // offline model fetch -- which must not be reported as a missing dependency at exit 0.
+    // An integrity refusal is not one of those three, and the engine is installed, so it would
+    // otherwise be reported as a bad image. Name it instead: the model was discarded, the input was
+    // fine, and the next run starts from a cold cache and re-downloads from the pinned source.
+    if (ocrIntegrityFailed()) {
+      throw new Error(`${file} was not OCRed: the cached language model failed its checksum and was discarded, so the next run re-downloads it`)
+    }
     if (isOcrEngineAvailable()) {
       throw new Error(`${file} could not be processed by OCR (unreadable image, timeout, or offline model fetch)`)
     }

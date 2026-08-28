@@ -1,0 +1,56 @@
+# Socket.dev supply-chain configuration.
+#
+# Schema: https://docs.socket.dev/docs/socket-yml
+#
+# Scan of 2.8.3 (scan 92d974d5-06db-42ae-84b1-9ac10ea33895) reported 729 alerts and a PASSING health
+# status. This file records which of those are noise, which are known and accepted, and which are
+# not covered by any scanner at all.
+#
+# Where this takes effect: socket.dev reads this file from the repository. A local
+# `socket scan create` does not apply it, so the rules below were confirmed against the documented
+# schema rather than by observing a local scan change its output.
+version: 2
+
+triggerPaths:
+  - 'package.json'
+  - 'package-lock.json'
+
+issueRules:
+  # 724 of the 729 alerts. Fires on any package whose licence is a disjunction such as
+  # "MIT OR Apache-2.0". A choice of permissive licences is a licensing fact, not a security signal,
+  # and at this volume it buries everything else in the report.
+  licenseSpdxDisj: false
+
+  # Left ENABLED on purpose, despite being the source of the other 5 alerts.
+  #
+  # All five are known and none is evidence of tampering. Three (better-sqlite3, exceljs,
+  # underscore) are devDependencies and reach no user of the published package. The remaining two
+  # arrive under the optional tesseract.js dependency: tesseract.js-core@7.0.0, whose flagged file
+  # is Emscripten-generated WASM glue, and zlibjs@0.3.1, a zero-dependency library last published
+  # in 2022.
+  #
+  # Turning this rule off would silence those five, and would equally silence a genuinely malicious
+  # minified payload in some future dependency, which is the case the rule exists for. Five
+  # documented instances are cheaper than that blind spot.
+  obfuscatedFile: true
+
+  # Explicit rather than inherited, because these are the classes that would actually matter here.
+  malware: true
+  installScripts: true
+  gitDependency: true
+  httpDependency: true
+  shellScriptOverride: true
+  hasNativeCode: true
+  troll: true
+  didYouMean: true
+
+# Known gap this file cannot close.
+#
+# Socket scores packages as published. It cannot see a binary a package downloads at runtime, so a
+# passing scan says nothing about that artifact. tesseract.js fetches its ~2.9 MB OCR language model
+# from a CDN on first use, and ships no checksum, signature, or size check for it.
+#
+# That gap is owned by src/image_ocr.ts, not by this file: the download URL is pinned to an explicit
+# package version (an npm CDN path without one resolves to whatever is newest), the cached model is
+# verified against a recorded SHA-256 before it is handed to the parser, and a model that fails is
+# deleted and refused. See tests/image_ocr_integrity.test.ts.

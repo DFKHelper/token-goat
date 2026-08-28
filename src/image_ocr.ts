@@ -39,6 +39,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
@@ -65,6 +66,79 @@ export function setOcrTimeoutForTesting(ms: number | undefined): void {
 const OCR_LANG_FILE = 'eng.traineddata'
 
 /**
+ * Where the language model is fetched from, pinned to an immutable npm version.
+ *
+ * tesseract.js's own default is `https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng/4.0.0_best_int`
+ * (`worker-script/index.js`, the `lstmOnly` branch this module takes by passing OEM 1). That URL
+ * looks pinned and is not: jsDelivr's npm route is `/npm/<package>[@<version>]/<path>`, the default
+ * carries no `@<version>`, so the package resolves to whatever `latest` points at and `4.0.0_best_int`
+ * is a directory inside it. Any future publish of `@tesseract.js-data/eng` therefore changes the bytes
+ * every token-goat install downloads, with no lockfile entry to notice it, because this is an HTTP
+ * fetch rather than a dependency. Naming the version closes that.
+ */
+export const OCR_LANG_PATH = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int'
+
+/**
+ * SHA-256 of the decompressed `eng.traineddata` that {@link OCR_LANG_PATH} serves. tesseract.js
+ * downloads `eng.traineddata.gz`, gunzips it, and writes the decompressed bytes to the cache
+ * directory, so this is the hash of the cached file rather than of the download.
+ *
+ * Provenance: CAPTURE, computed from `npm pack @tesseract.js-data/eng@1.0.0` rather than from the
+ * CDN. Deriving the expected value from the registry and checking it against what the CDN serves
+ * means the two channels have to agree; taking it from the CDN would only prove the CDN agrees with
+ * itself.
+ */
+export const OCR_LANG_SHA256 = '5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747'
+
+/** Verification outcome for the cached language model. `absent` is the ordinary cold-cache state, not a failure. */
+export type OcrLangCacheState = 'ok' | 'absent' | 'mismatch' | 'unreadable'
+
+/**
+ * Hash the cached language model against {@link OCR_LANG_SHA256}.
+ *
+ * tesseract.js performs no integrity check of any kind on this artifact: a grep of the installed
+ * package for `createHash`, `integrity`, `sha256` or `sha512` matches nothing. So the check has to
+ * live here, on the cache directory this module already owns and passes in as `cachePath`.
+ */
+export function verifyOcrLangCache(): OcrLangCacheState {
+  const file = path.join(ocrCacheDir(), OCR_LANG_FILE)
+  let bytes: Buffer
+  try {
+    if (!fs.existsSync(file)) return 'absent'
+    bytes = fs.readFileSync(file)
+  } catch {
+    return 'unreadable'
+  }
+  return createHash('sha256').update(bytes).digest('hex') === OCR_LANG_SHA256 ? 'ok' : 'mismatch'
+}
+
+/**
+ * Delete a language model that failed verification, so the next call starts from a cold cache and
+ * re-downloads from the pinned URL. Quarantining rather than retrying in-process keeps the failure
+ * path free of retry logic: one call refuses, the next one is a normal cold start.
+ */
+function quarantineOcrLangCache(): void {
+  try {
+    fs.rmSync(path.join(ocrCacheDir(), OCR_LANG_FILE), { force: true })
+  } catch {
+    // Best effort. A cache we cannot delete is still one we refuse to use, because the sticky flag
+    // below is what gates the next call, not the file's absence.
+  }
+}
+
+/** Set once a cached model fails verification, so the rest of this process declines OCR rather than re-hashing a file it has already rejected. */
+let _ocrIntegrityFailed = false
+
+/**
+ * Did OCR decline because the cached language model failed its hash check? Callers use this to tell
+ * an integrity refusal apart from the other reasons {@link ocrImage} returns null, which otherwise
+ * all look identical and would be reported as a missing dependency.
+ */
+export function ocrIntegrityFailed(): boolean {
+  return _ocrIntegrityFailed
+}
+
+/**
  * tesseract.js downloads its language data from a CDN on a cold cache and offers no option to
  * forbid that, so offline mode checks the cache itself: a machine that already has the file still
  * does OCR, and one that does not declines instead of reaching cdn.jsdelivr.net.
@@ -76,6 +150,16 @@ export function ocrBlockedOffline(): boolean {
 
 function ocrCacheDir(): string {
   return path.join(tokenGoatHome(), 'ocr-cache')
+}
+
+/** Create the model cache directory if it is missing. Best effort: a cache we cannot create costs a
+ * re-download per call, which is the pre-existing behaviour, so it must not fail the OCR itself. */
+function ensureOcrCacheDir(): void {
+  try {
+    fs.mkdirSync(ocrCacheDir(), { recursive: true })
+  } catch {
+    // Read-only or otherwise unwritable home. tesseract.js will skip its cache write the same way.
+  }
 }
 
 const _require = createRequire(import.meta.url)
@@ -115,6 +199,7 @@ let _ocrUnavailableThisProcess = false
 /** Test seam to reset the sticky-disable flag between test cases. */
 export function resetOcrStateForTesting(): void {
   _ocrUnavailableThisProcess = false
+  _ocrIntegrityFailed = false
   _tesseractEntryPath = undefined
   _ocrTimeoutMs = 12_000
 }
@@ -138,7 +223,7 @@ function buildChildScript(entryPath: string, cacheDir: string): string {
     "process.stdin.on('end', async () => {",
     '  try {',
     '    const buf = Buffer.concat(chunks);',
-    `    const worker = await createWorker('eng', 1, { cachePath: ${JSON.stringify(cacheDir)}, errorHandler: () => {} });`,
+    `    const worker = await createWorker('eng', 1, { cachePath: ${JSON.stringify(cacheDir)}, langPath: ${JSON.stringify(OCR_LANG_PATH)}, errorHandler: () => {} });`,
     '    const { data } = await worker.recognize(buf);',
     "    process.stdout.write(JSON.stringify({ text: data.text || '', confidence: data.confidence || 0 }));",
     '    await worker.terminate();',
@@ -163,10 +248,26 @@ export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
 
   if (ocrBlockedOffline()) return null
 
+  if (_ocrIntegrityFailed) return null
+
+  // A warm cache is verified before the model is ever handed to the parser, which is the common
+  // case once the first OCR of the install has run. A cold cache cannot be: the file does not exist
+  // until tesseract.js downloads it, so that first pass is verified after the fact below, which
+  // guards the returned text and every later call rather than that one parse.
+  if (verifyOcrLangCache() === 'mismatch') {
+    _ocrIntegrityFailed = true
+    quarantineOcrLangCache()
+    return null
+  }
+
   return new Promise<OcrResult | null>((resolve) => {
     let settled = false
     let child: ReturnType<typeof spawn>
     try {
+      // tesseract.js swallows a failed cache write, so an absent directory does not fail the OCR --
+      // it silently re-downloads the ~2.9 MB language model on every single call, and leaves the
+      // warm-cache verification above with nothing to verify. Nothing else creates this directory.
+      ensureOcrCacheDir()
       child = spawn(process.execPath, ['-e', buildChildScript(entryPath, ocrCacheDir())], {
         stdio: ['pipe', 'pipe', 'ignore'],
       })
@@ -200,6 +301,15 @@ export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
     child.on('error', () => finish(null, true))
     child.on('close', (code) => {
       if (code !== 0) {
+        finish(null, false)
+        return
+      }
+      // The child has run, so a cold cache is now populated. Verify before the text it produced is
+      // allowed out: a model that fails its hash is one whose output nothing should trust, and
+      // leaving it cached would let every later call use it without a download to re-check.
+      if (verifyOcrLangCache() === 'mismatch') {
+        _ocrIntegrityFailed = true
+        quarantineOcrLangCache()
         finish(null, false)
         return
       }
