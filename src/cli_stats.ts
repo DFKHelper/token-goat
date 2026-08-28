@@ -130,7 +130,7 @@ export interface StatsOptions {
 const METHODOLOGY = {
   estimate_scope: 'Local estimate of content avoided or reduced by token-goat.',
   billing: 'They are not GitHub Copilot usage, provider-reported token consumption, or billing data.',
-  byte_derived_formula: 'Most read, hook, and command entries use Math.round(bytes_saved / 4).',
+  byte_derived_formula: 'Most read, hook, and command entries go through savedTokensFromBytes in src/stats.ts, which is Math.round(bytes_saved / 4).',
   filter_estimates: 'Output compressors record their filter-calculated delta; image entries use the byte-derived approximation unless the source provides a narrower estimate.',
   advisory_events: 'Zero-byte, zero-token advisory events show that guidance fired, not that an agent followed it.',
   audit: 'Use stats --full or stats --json for source and command breakdowns; reconcile billing with provider-exported usage data.',

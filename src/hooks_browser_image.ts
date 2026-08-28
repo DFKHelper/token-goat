@@ -118,7 +118,7 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
         // entire billed cost less the notice standing in for it. Billed cost, not raw patch count:
         // an oversized screenshot would have been capped by the API's own downscale, so pricing the
         // untouched dimensions would credit a bill that was never going to be sent.
-        savedTokens: Math.max(0, visionTokens(meta?.width ?? 0, meta?.height ?? 0, tier) - Math.round(Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8') / 4)),
+        savedTokens: Math.max(0, visionTokens(meta?.width ?? 0, meta?.height ?? 0, tier) - savedTokensFromBytes(Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8'))),
       }
     }
   }

@@ -38,7 +38,7 @@ import {
 } from './hints/markdown_hints.js'
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 import { isImagePath } from './image_shrink.js'
@@ -690,7 +690,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordActualRead(event, normalized)
         const fullSize = statSize(normalized) ?? 0
         const savedBytes = counterfactualCredit(fullSize, compactBody.length)
-        recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+        recordStat('session_hint', savedBytes, savedTokensFromBytes(savedBytes))
         return denyOutput(
           'Serving the extractive compact sidecar in place of the full file ' +
           '(source unchanged since the last `compact-doc` build):\n\n' +
@@ -724,7 +724,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (savedBytes >= NB_STRIP_MIN_SAVINGS) {
         recordActualRead(event, normalized)
         const nbCredit = counterfactualCredit(rawBytes.length, sidecarContent.length)
-        recordStat('session_hint', nbCredit, Math.round(nbCredit / 4))
+        recordStat('session_hint', nbCredit, savedTokensFromBytes(nbCredit))
         return denyOutput(
           'Serving the output-stripped notebook in place of the full file ' +
           '(code-cell outputs and execution counts removed; source and metadata preserved):\n\n' +
@@ -868,7 +868,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (snapDiff.kind === 'diff') {
         recordActualRead(event, normalized)
         const artifactDiffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
-        recordStat('session_hint', artifactDiffCredit, Math.round(artifactDiffCredit / 4))
+        recordStat('session_hint', artifactDiffCredit, savedTokensFromBytes(artifactDiffCredit))
         return denyOutput(
           'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
           fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized),
@@ -889,7 +889,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordActualRead(event, normalized)
       if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
         const artifactDenyCredit = counterfactualCredit(outputSize)
-        recordStat('session_hint', artifactDenyCredit, Math.round(artifactDenyCredit / 4))
+        recordStat('session_hint', artifactDenyCredit, savedTokensFromBytes(artifactDenyCredit))
         return denyOutput(
           label + ' is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
         )
@@ -932,10 +932,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (snapDiff.kind === 'diff') {
       // Savings guard, uniform for doc and source files: only serve the diff if it
       // clears the configured token-savings floor (hints.diff_hint_min_tokens_saved).
-      if (Math.round(snapDiff.savedBytes / 4) >= loadConfig().hints.diff_hint_min_tokens_saved) {
+      // The gate prices the saving with savedTokensFromBytes, the same function the credit three lines below uses, so a change to the divisor can never leave the threshold that admits the hint and the figure booked for it on two different scales.
+      if (savedTokensFromBytes(snapDiff.savedBytes) >= loadConfig().hints.diff_hint_min_tokens_saved) {
         recordActualRead(event, normalized)
         const diffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
-        recordStat('diff_hint', diffCredit, Math.round(diffCredit / 4))
+        recordStat('diff_hint', diffCredit, savedTokensFromBytes(diffCredit))
         return denyOutput(
           ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
           fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
@@ -1017,14 +1018,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
-          recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
+          recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
           return denyOutput(truncatedReadDenyMessage(normalized))
         }
       }
 
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
       if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
-        recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
+        recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.' +
           ' ' + editAnywayHint(normalized),
@@ -1039,7 +1040,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // row here would double the same blocked bytes into the by_source rollup that
         // hint-stats reads -- one deny, one blocked read, one credit. session_hint is still
         // recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
-        recordStat('read_count_deny', rereadCredit, Math.round(rereadCredit / 4))
+        recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         return denyOutput(
           'Read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.' +
@@ -1052,7 +1053,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
-      recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
+      recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
       return denyOutput(
         shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
         ' ' + editAnywayHint(normalized),
@@ -1101,7 +1102,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
       const denyCredit = counterfactualCredit(size)
-      recordStat('session_hint', denyCredit, Math.round(denyCredit / 4))
+      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit))
       return denyOutput(
         shown + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
         ' ' + editAnywayHint(normalized),

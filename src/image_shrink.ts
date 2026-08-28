@@ -26,7 +26,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, passOutput } from './hooks_common.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
 import { formatOcrSummary, isTextHeavy, ocrImage } from './image_ocr.js'
 
@@ -543,7 +543,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
       // bytes/4 text approximation for the string it emits instead -- rather than by one rule applied
       // to both. Pairs with the image_shrink row above, which covers original -> shrunk, so the two
       // rows still sum to the true original -> text saving with nothing counted twice.
-      const tokensSaved = Math.max(0, visionTokens(result.width, result.height, tier) - Math.round(emittedBytes / 4))
+      const tokensSaved = Math.max(0, visionTokens(result.width, result.height, tier) - savedTokensFromBytes(emittedBytes))
       recordStat('image_ocr', saved, tokensSaved, undefined, basename)
       return contextOutput(emitted)
     }

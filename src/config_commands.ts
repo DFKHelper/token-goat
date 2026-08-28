@@ -28,7 +28,7 @@ import { normalizePath } from './paths.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 
 function emit(text: string): void {
   const payload = colorStdout() ? text : stripAnsi(text)
@@ -652,7 +652,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
 // Records a surgical-read stat event for compact-doc, mirroring recordReadStat's convention in read_commands.ts (bytes saved = full on-disk source size minus the emitted text, floored at 1, tokens approximated as bytesSaved/4) -- compact-doc had no live registry entry or recordStat call at all until now, so its usage never showed up in `token-goat stats --full`.
 function recordCompactDocStat(fullSourceBytes: number, emittedText: string, detail: string): void {
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emittedText, 'utf8'))
-  recordStat('compact_doc', bytesSaved, Math.round(bytesSaved / 4), undefined, detail)
+  recordStat('compact_doc', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, detail)
 }
 
 export function cmdCompactDoc(opts: {

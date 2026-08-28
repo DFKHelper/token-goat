@@ -22,7 +22,7 @@ import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
-import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
+import { formatLocalTimestamp, recordStat, savedTokensFromBytes, _useRichStats } from './stats.js'
 import { scanForInjectionPatterns, fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
@@ -503,7 +503,7 @@ function cmdMap(opts: { compact?: boolean; json?: boolean }): void {
   // recentFiles-vs-topSymbols path canonicalization needed for the dedup) lives in
   // mapLookupBytesSaved so cmdMap and the MCP `map` tool share one implementation.
   const bytesSaved = mapLookupBytesSaved(map, text)
-  recordStat('map_lookup', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('map_lookup', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 function cmdBridgesStatus(opts: { json?: boolean }): void {
@@ -1097,7 +1097,7 @@ async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { pr
   // convention in read_commands.ts.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('session_outline', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('session_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 /** Best-effort on-disk size of a session transcript file; 0 if it can't be stat'd (never blocks stat recording). */
@@ -1128,7 +1128,7 @@ async function cmdSessionSlice(
   // Same registry/producer desync as cmdSessionOutline above -- see the comment there.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('session_slice', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('session_slice', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<void> {
@@ -1393,7 +1393,7 @@ async function cmdPdfExtract(
   // after --pages/--head/--tail/--grep filtering, mirroring recordReadStat's convention.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
-  recordStat('pdf_extract', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('pdf_extract', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 async function cmdPdfLocate(
@@ -1435,7 +1435,7 @@ async function cmdPdfLocate(
   // which is what a locate-then-extract caller pays instead of pulling whole pages.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
-  recordStat('pdf_locate', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('pdf_locate', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
@@ -1459,7 +1459,7 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('pdf_outline', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('pdf_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
@@ -1478,7 +1478,7 @@ async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('pdf_meta', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('pdf_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
@@ -1505,7 +1505,7 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('image_meta', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('image_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 /**
@@ -1555,7 +1555,7 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('image_text', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('image_text', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 function cmdVideoChapters(file: string) {
@@ -1585,7 +1585,7 @@ function cmdVideoChapters(file: string) {
   // permanently zero regardless of real usage (see project_runchanged_missing_stat memory).
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('video_chapters', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('video_chapters', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 function formatVideoTimestamp(totalSeconds: number): string {
@@ -1622,7 +1622,7 @@ function cmdSharepointResolve(url: string) {
 function recordXlsxStat(kind: string, file: string, emitted: string): void {
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
-  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4))
+  recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
@@ -1673,7 +1673,7 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
 function recordDocStat(kind: string, file: string, emitted: string): void {
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
-  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4))
+  recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
@@ -1989,7 +1989,7 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
     out(emitted)
     // stats.ts registers the `skill_body:` prefix and its skill_oversized_first_load entry states in so many words that the pointer deny books zero because "the follow-up command does" record the saving -- but this, the follow-up command, recorded nothing, so the whole oversized-skill chain summed to zero however often it fired. Same body-minus-slice counterfactual skill_compact_inlined already uses, measured against the string actually printed.
     const bytesSaved = Buffer.byteLength(body, 'utf8') - Buffer.byteLength(emitted, 'utf8')
-    if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, Math.round(bytesSaved / 4), undefined, name)
+    if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, name)
   } else {
     out(body)
   }
@@ -3128,7 +3128,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   // map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see
   // project_runchanged_missing_stat memory).
   const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(toEmit, 'utf8'))
-  recordStat('gdrive_sections', bytesSaved, Math.round(bytesSaved / 4))
+  recordStat('gdrive_sections', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
 /**

@@ -4,7 +4,7 @@ import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, denyOutput, getToolName, getToolInput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
 import { loadConfig } from './config.js';
-import { recordStat } from './stats.js';
+import { recordStat, savedTokensFromBytes } from './stats.js';
 import {
   storeOutput,
   installedSkillPath,
@@ -81,7 +81,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       // (0 bytes) and only fires on an actual load, which this deny prevents.
       const cachedBytes = await sessionOutputBodyBytes(event.sessionId, skillName);
       const denyCredit = cachedBytes !== null ? Math.min(cachedBytes, PER_FILE_COUNTERFACTUAL_CEILING) : 0;
-      recordStat('session_hint', denyCredit, Math.round(denyCredit / 4));
+      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit));
       return denyOutput(
         'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-body ' +
           skillName + ' --compact` to recall the compact slice (or `token-goat skill-body ' + skillName +
@@ -102,7 +102,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
           // At least half the body has to disappear for inlining to beat pointing. "Any saving at all" is too weak a test: a marker placed at the very end makes the slice the whole body minus the marker line, which passes a bare `compactBytes < bodyBytes` while handing over every byte and booking it as a saving. Past that ratio the pointer is the better trade, because the agent may not need the body at all.
           if (compactBytes * 2 <= bodyBytes && compactBytes <= COMPACT_INLINE_MAX_BYTES) {
             const savedBytes = bodyBytes - compactBytes;
-            recordStat('skill_compact_inlined', savedBytes, Math.round(savedBytes / 4));
+            recordStat('skill_compact_inlined', savedBytes, savedTokensFromBytes(savedBytes));
             return denyOutput(
               'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
                 ' bytes) is inlined below instead of the full body. Run `token-goat skill-body ' + skillName +

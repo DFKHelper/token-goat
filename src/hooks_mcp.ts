@@ -21,7 +21,7 @@ import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 import { redactSecrets } from './secret_redact.js'
 import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 // Defined in hooks_common.ts alongside extractToolResultText, whose output the rule is about, and re-exported here because this module was its only caller for a while.
@@ -37,7 +37,7 @@ function preMcpHandler(event: HookEvent): HookOutput {
   if (!id) return passOutput()
   // The denied call never runs, so its result never reaches the model a second time. Credit that blocked re-arrival the way preSkillHandler credits a blocked skill re-load: the cached entry's stored (redacted) size, capped at PER_FILE_COUNTERFACTUAL_CEILING because the counterfactual being priced is a response that would itself have been truncated. The full raw result is the right counterfactual here specifically because postMcpHandler returns early on a cache hit (see its getMcpOutput guard), so the allowed second call would have shipped the result uncompressed. No sibling stat double-counts these bytes: mcp:compress only ever fires on a call that actually ran, which this deny prevents.
   const denyCredit = Math.min(mcpOutputBytes(id), PER_FILE_COUNTERFACTUAL_CEILING)
-  recordStat('mcp:recall', denyCredit, Math.round(denyCredit / 4))
+  recordStat('mcp:recall', denyCredit, savedTokensFromBytes(denyCredit))
   return denyOutput(
     'Identical read-only MCP call already cached this session. Use `token-goat bash-output ' +
       id +

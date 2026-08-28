@@ -41,7 +41,7 @@ import {
   pinKey,
   withPinnedReads,
 } from './read_commands.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import {
   compressText,
   type CompressionResult,
@@ -780,7 +780,7 @@ export async function createMcpServer(): Promise<McpServer> {
       // even when projectRoot differs from this server process's cwd -- lives in mapLookupBytesSaved,
       // shared with cmdMap so the two accountings cannot drift.
       const bytesSaved = mapLookupBytesSaved(map, text)
-      recordStat('map_lookup', bytesSaved, Math.round(bytesSaved / 4))
+      recordStat('map_lookup', bytesSaved, savedTokensFromBytes(bytesSaved))
       return toCallToolResult({ text, code: 0 })
     },
   )
