@@ -8,7 +8,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput, denyOutput, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
+import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
@@ -16,7 +16,7 @@ import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
-import { recordStat, savedTokensFromBytes } from './stats.js'
+import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
@@ -1841,12 +1841,8 @@ async function maybeCompressCompoundOutput(
     return null
   }
   await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
-  const netSaved = compressed.originalBytes - emittedBytes
-  // savedTokensFromBytes, not estimateTokensFromLength: the latter divides by three because it exists
-  // to keep an overflow guard from guessing low, and using an intentional over-estimate as a credit
-  // booked this kind about a third richer than every other saving in the same total.
-  recordStat('bash_compress:generic', netSaved, savedTokensFromBytes(netSaved))
-  return { hookType: 'rewriteOutput', updatedOutput: body }
+  // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing.
+  return emitRewrite(body, 'bash', { kind: 'bash_compress:generic', originalBytes: compressed.originalBytes })
 }
 
 /**

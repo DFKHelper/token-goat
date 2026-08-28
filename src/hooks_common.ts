@@ -9,7 +9,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { countRedactionPlaceholders } from './secret_redact.js'
 import { loadConfig } from './config.js'
 
@@ -176,6 +176,18 @@ export interface RewriteSavings {
 }
 
 /**
+ * Whether this emit is the place that books its `secret_redacted` count.
+ *
+ * `'count-here'` is the default and what nearly every caller wants: the placeholders in the text
+ * being emitted are counted and recorded now. `'counted-elsewhere'` exists because two handlers
+ * book the same count at a point that covers branches this emit does not, and counting again here
+ * would double-book the identical placeholders into a number the project asks readers to believe.
+ * A caller passing it must say in a comment where the count is booked instead, because a silent
+ * opt-out is indistinguishable from a forgotten one.
+ */
+export type RedactionAccounting = 'count-here' | 'counted-elsewhere'
+
+/**
  * Emit a `rewriteOutput` and record its accounting -- both the secrets the redaction stripped from
  * the emitted text and, when the caller passes `savings`, the bytes the rewrite removed.
  *
@@ -201,13 +213,20 @@ export interface RewriteSavings {
  * `detail` is the stat's source label (`'bashoutput'`, `'taskoutput'`, ...), matching the `subdir`
  * argument the disk-cache path passes so both surfaces group the same way in `token-goat stats`.
  */
-export function emitRewrite(updatedOutput: string, detail: string, savings?: RewriteSavings): HookOutput {
-  const count = countRedactionPlaceholders(updatedOutput)
-  if (count > 0) recordStat('secret_redacted', 0, count, undefined, detail)
+export function emitRewrite(
+  updatedOutput: string,
+  detail: string,
+  savings?: RewriteSavings,
+  redaction: RedactionAccounting = 'count-here',
+): HookOutput {
+  if (redaction === 'count-here') {
+    const count = countRedactionPlaceholders(updatedOutput)
+    if (count > 0) recordStat('secret_redacted', 0, count, undefined, detail)
+  }
   if (savings !== undefined) {
     const bytesSaved = savings.originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
     // Only a positive delta is recorded. Every caller sits behind an `isRewriteWorthwhile` gate so this should always hold, but a stat kind that can log a negative saving silently corrupts every total that sums it, and the gate is a separate line a future edit could reorder.
-    if (bytesSaved > 0) recordStat(savings.kind, bytesSaved, Math.round(bytesSaved / 4))
+    if (bytesSaved > 0) recordStat(savings.kind, bytesSaved, savedTokensFromBytes(bytesSaved))
   }
   return { hookType: 'rewriteOutput', updatedOutput }
 }
