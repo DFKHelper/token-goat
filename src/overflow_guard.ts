@@ -16,6 +16,7 @@ import { safeSlice } from './util.js'
  * ratio instead of reimplementing it or materializing a throwaway string of that length. The two
  * have drifted apart in this codebase before; this keeps the arithmetic in one place.
  */
+/** Never use this to credit a saving. It divides by three, which over-estimates on purpose: this is an overflow guard's estimator, and guessing high is its safe direction. Crediting a saving reverses that, so savings go through `stats.ts::savedTokensFromBytes` instead. A guard test pins the separation. */
 export function estimateTokensFromLength(length: number): number {
   return Math.max(1, Math.floor(Math.max(0, length) / 3) + 1)
 }

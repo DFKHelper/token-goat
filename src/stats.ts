@@ -110,6 +110,26 @@ const _BYTES_MODE_ONLY_KINDS = new Set(['webfetch_image', 'gdrive_image'])
  */
 export const COUNT_ONLY_KINDS: ReadonlySet<string> = new Set(['secret_redacted'])
 
+/**
+ * Tokens to credit for `bytes` of text removed from what reaches the model.
+ *
+ * One function because the divisor is an assumption, and an assumption spelled out at each of forty
+ * callsites drifts without anyone noticing. It drifted here: `bash_compress:generic` credited itself
+ * through `estimateTokensFromLength`, which divides by three rather than four, so one kind was booked
+ * roughly a third richer than every sibling inside a column that sums them all. On real data that was
+ * 469,422 tokens over 520 events.
+ *
+ * Four, not three, and deliberately the more conservative of the two. `estimateTokensFromLength` is
+ * an overflow guard's estimator, where over-estimating is the safe direction because the cost of
+ * guessing low is blowing a budget. A saving is the mirror: over-estimating credits work that was
+ * never done, so the safe direction reverses and the larger number is the wrong one to reach for.
+ * Neither figure is a real tokenizer, and this is text only -- an image is billed in 28x28 pixel
+ * patches and must go through `visionTokens` instead.
+ */
+export function savedTokensFromBytes(bytes: number): number {
+  return Math.round(Math.max(0, bytes) / 4)
+}
+
 const KIND_TO_SOURCE: Record<string, string> = {
   image_shrink: SOURCE_IMAGE,
   image_shrink_cache_hit: SOURCE_IMAGE,
