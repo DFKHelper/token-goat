@@ -7,7 +7,7 @@
  * Node CLI with no guaranteed network at runtime: it is pure JS/WASM (no
  * native binary to cross-compile, unlike a Tesseract C++ binding), and its
  * one genuinely network-dependent piece — the `eng.traineddata` language
- * model (~4 MB) — is fetched once and then cached under `tokenGoatHome()`,
+ * model (5.2 MB, ~2.9 MB gzipped in transit) — is fetched once and then cached under `tokenGoatHome()`,
  * so every read after the first works fully offline. It is registered as
  * `optionalDependencies` and added to `esbuild.config.mjs`'s
  * `EXTERNAL_NATIVE_DEPS` (see that file's comment) so an install that skips
@@ -46,6 +46,7 @@ import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
+import { fenceUntrustedOcrText } from './injection_scan.js'
 
 /** Result of a successful OCR pass. `confidence` is Tesseract's own 0-100 mean-word-confidence score. */
 export interface OcrResult {
@@ -61,8 +62,7 @@ export function setOcrTimeoutForTesting(ms: number | undefined): void {
   _ocrTimeoutMs = ms ?? 12_000
 }
 
-/** Where the language-model cache lives, so `token-goat`'s own installs share the download and it survives across CLI invocations (each hook event is normally its own short-lived process). */
-/** The file tesseract.js writes into its cache directory for the one language this module uses. */
+/** The file tesseract.js writes into its cache directory for the one language this module uses. Cached under `tokenGoatHome()` so installs share one download and it survives across CLI invocations, each hook event normally being its own short-lived process. */
 const OCR_LANG_FILE = 'eng.traineddata'
 
 /**
@@ -352,5 +352,5 @@ export function formatOcrSummary(result: OcrResult, subject: string, originalByt
     `token-goat OCR'd ${subject} instead of shrinking it: text-heavy image detected ` +
     `(${Math.round(result.confidence)}% confidence), extracted ${result.text.length} chars ` +
     `of text from ${kb}kb of pixels.`
-  return `${summary}\n\n${result.text}`
+  return `${summary}\n\n${fenceUntrustedOcrText(result.text)}`
 }

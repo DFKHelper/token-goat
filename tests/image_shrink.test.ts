@@ -597,6 +597,18 @@ describe('preReadImageHandler + OCR wiring', () => {
     expect(shrinkAfter).toBeDefined()
     expect(shrinkAfter?.events ?? 0).toBeGreaterThan(shrinkEventsBefore)
     expect(shrinkAfter?.bytes_saved ?? 0).toBeGreaterThan(shrinkBytesBefore)
+
+    // This path decodes an image into text and puts it straight into model context without anyone
+    // asking for OCR, so the recovered text is fenced on provenance rather than on a pattern hit.
+    expect(out.context).toContain('<untrusted-image-text>')
+
+    // The saving must be priced on the payload this branch actually emits, header and fence
+    // included. Crediting only the bare recognized text bills a smaller thing than the one that
+    // ships, which is the recurring shape of over-credit in this codebase.
+    const shrinkDelta = (shrinkAfter?.bytes_saved ?? 0) - shrinkBytesBefore
+    const shrunkBytes = fs.statSync(largePngPath).size - shrinkDelta
+    const ocrDelta = (ocrAfter?.bytes_saved ?? 0) - (ocrBefore?.bytes_saved ?? 0)
+    expect(ocrDelta).toBe(Math.max(0, shrunkBytes - Buffer.byteLength(out.context, 'utf8')))
   })
 
   it('falls back to the pixel-shrink data URL when OCR confidence is below the configured threshold', async () => {
