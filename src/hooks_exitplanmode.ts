@@ -33,7 +33,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
+import { emitRewrite, getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { redactSecrets } from './secret_redact.js'
 
@@ -92,10 +92,18 @@ export function postExitPlanModeHandler(event: HookEvent): HookOutput {
       return passOutput()
     }
 
-    return {
-      hookType: 'rewriteOutput',
-      updatedOutput: `${prefix}${notice}`,
-    }
+    // Through emitRewrite rather than a hand-built object, which is what finally settles the stat
+    // question the comment at the top of this handler left open. That comment declined to count
+    // redactions because counting every one would credit this handler for secrets the truncation had
+    // already dropped, and counting only the survivors "would mean re-scanning the emitted slice for
+    // placeholders": emitRewrite does exactly that re-scan, on the emitted text and nothing else, so
+    // the survivors-only count is now free rather than machinery. It also records the byte saving,
+    // which this handler produced for several releases without ever reporting, leaving a real
+    // mechanism invisible in `token-goat stats`.
+    return emitRewrite(`${prefix}${notice}`, 'exitplanmode', {
+      kind: 'plan_echo_collapse',
+      originalBytes: Buffer.byteLength(output, 'utf-8'),
+    })
   } catch {
     return passOutput()
   }
