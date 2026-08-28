@@ -59,4 +59,34 @@ describe('savedTokensFromBytes', () => {
     walk(path.join(process.cwd(), 'src'))
     expect(offenders, 'each of these credits a saving through the overflow guard\'s deliberately high estimator: use savedTokensFromBytes from src/stats.ts instead').toEqual([])
   })
+
+  it('leaves no callsite converting bytes to tokens by hand next to recordStat', () => {
+    // The scan above only catches the one wrong helper by name. It would not have caught a hand-written
+    // Math.round(bytes / 3), which is the same defect typed out instead of imported, so this scan bans
+    // inline byte arithmetic on a recordStat line outright rather than banning one spelling of it.
+    const offenders: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (entry.name.endsWith('.ts')) {
+          // src/stats.ts owns the conversion, so it is the one file allowed to spell the divisor out.
+          if (path.resolve(full) === path.resolve(process.cwd(), 'src', 'stats.ts')) continue
+          const lines = fs.readFileSync(full, 'utf8').split('\n')
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]
+            if (line.trimStart().startsWith('//') || line.trimStart().startsWith('*')) continue
+            if (!/recordStat\(/.test(line)) continue
+            if (!/Math\.(round|floor)\(/.test(line)) continue
+            offenders.push(`${path.relative(process.cwd(), full)}:${i + 1}: ${line.trim()}`)
+          }
+        }
+      }
+    }
+    walk(path.join(process.cwd(), 'src'))
+    expect(
+      offenders,
+      'each of these converts bytes to tokens inline on a recordStat line: call savedTokensFromBytes from src/stats.ts instead. The divisor is not cosmetic. One callsite reaching for a divide-by-three estimator instead of the divide-by-four credit overstated a real database by 469,422 tokens across 520 events, and nothing typechecked or linted wrong because both take a byte count and return a number.',
+    ).toEqual([])
+  })
 })

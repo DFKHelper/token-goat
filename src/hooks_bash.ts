@@ -16,7 +16,7 @@ import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
@@ -2408,7 +2408,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       const monBytes = monEntry.sizeBytes
       const catFile = extractCatSourceFile(cmd)
       if (catFile !== null) {
-        recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
+        recordStat('bash_compress:recall', monBytes, savedTokensFromBytes(monBytes))
         return contextOutput(
           'Prior output from `' + cmd + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
@@ -2416,7 +2416,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         )
       }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
-      recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
+      recordStat('bash_compress:recall', monBytes, savedTokensFromBytes(monBytes))
       return contextOutput(
         'Prior output from `' + cmdSummary + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached.\n' +
         'Use `token-goat bash-output ' + monOutputId + ' ' + monitoringHint + '` to re-inspect without re-running.'
@@ -2453,7 +2453,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const curlEntry = curlEntryRaw !== null && !isBashEntryStale(curlEntryRaw, cmd, preHookCwd) ? curlEntryRaw : null
     if (curlOutputId !== null && curlEntry !== null && curlEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(curlEntry.sizeBytes)) {
       const curlBytes = curlEntry.sizeBytes
-      recordStat('bash_compress:recall', curlBytes, Math.round(curlBytes / 4))
+      recordStat('bash_compress:recall', curlBytes, savedTokensFromBytes(curlBytes))
       const curlPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
         'curl response cached (`' + curlPreview + '`).' + pipelineDivergenceNote(cmd, curlEntry.command) + ' ' +
@@ -2471,7 +2471,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const ghEntry = ghEntryRaw !== null && !isBashEntryStale(ghEntryRaw, cmd, preHookCwd) ? ghEntryRaw : null
     if (ghOutputId !== null && ghEntry !== null && ghEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(ghEntry.sizeBytes)) {
       const ghBytes = ghEntry.sizeBytes
-      recordStat('bash_compress:recall', ghBytes, Math.round(ghBytes / 4))
+      recordStat('bash_compress:recall', ghBytes, savedTokensFromBytes(ghBytes))
       const ghPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
         'gh api response cached (`' + ghPreview + '`).' + pipelineDivergenceNote(cmd, ghEntry.command) + ' ' +
@@ -2489,7 +2489,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const gitScopedEntry = gitScopedEntryRaw !== null && !isBashEntryStale(gitScopedEntryRaw, cmd, preHookCwd) ? gitScopedEntryRaw : null
     if (gitScopedOutputId !== null && gitScopedEntry !== null && gitScopedEntry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(gitScopedEntry.sizeBytes)) {
       const gitScopedBytes = gitScopedEntry.sizeBytes
-      recordStat('bash_compress:recall', gitScopedBytes, Math.round(gitScopedBytes / 4))
+      recordStat('bash_compress:recall', gitScopedBytes, savedTokensFromBytes(gitScopedBytes))
       const gitScopedPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
         'Output from `' + gitScopedPreview + '`' + pipelineDivergenceNote(cmd, gitScopedEntry.command) + ' is cached and unchanged (no edits to that path or HEAD since). ' +
@@ -2544,7 +2544,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const entry = entryRaw !== null && !isBashEntryStale(entryRaw, cmd, preHookCwd) ? entryRaw : null
   if (outputId !== null && entry !== null && entry.sizeBytes >= loadConfig().hints.bash_dedup_min_bytes && meetsSavingsFloor(entry.sizeBytes)) {
     const bytes = entry.sizeBytes
-    recordStat('bash_compress:recall', bytes, Math.round(bytes / 4))
+    recordStat('bash_compress:recall', bytes, savedTokensFromBytes(bytes))
     return contextOutput(buildRecallHint(cmd, outputId))
   }
 

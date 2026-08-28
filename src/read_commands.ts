@@ -74,7 +74,7 @@ import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, type
 import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -586,7 +586,7 @@ function sumFileSizes(filePaths: Iterable<string>): number {
 function recordReadStat(kind: string, fullSourceBytes: number, emittedText: string, detail?: string): void {
   const emittedBytes = Buffer.byteLength(emittedText, 'utf8')
   const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
-  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4), undefined, detail)
+  recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved), undefined, detail)
 }
 
 // Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST

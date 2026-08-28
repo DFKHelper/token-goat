@@ -30,7 +30,7 @@ import type TsModule from 'typescript'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
 import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { suggestPackageNames } from './util.js'
 
 const _require = createRequire(import.meta.url)
@@ -309,7 +309,7 @@ function guardDeclarationRows(rows: readonly DeclarationRow[], budgetTokens: num
 function recordDepDocsStat(fullSourceBytes: number, emittedText: string, packageName: string): void {
   const emittedBytes = Buffer.byteLength(emittedText, 'utf8')
   const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
-  recordStat('dep_docs', bytesSaved, Math.round(bytesSaved / 4), undefined, packageName)
+  recordStat('dep_docs', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, packageName)
 }
 
 // ---- public entry point ------------------------------------------------------

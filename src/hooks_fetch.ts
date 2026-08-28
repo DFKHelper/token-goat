@@ -2,7 +2,7 @@ import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, getToolName, getToolInput, denyOutput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS, emitRewrite } from './hooks_common.js';
-import { recordStat } from './stats.js';
+import { recordStat, savedTokensFromBytes } from './stats.js';
 import { storeWebOutput, getWebOutput } from './web_cache.js';
 import { recordWebFetch } from './session.js';
 import { shortFingerprint } from './fingerprint.js';
@@ -75,7 +75,7 @@ export function preFetchHandler(event: HookEvent): HookOutput {
     if (cached !== null) {
       const cachedBytes = Buffer.byteLength(cached, 'utf-8');
       if (cachedBytes >= loadConfig().hints.web_dedup_min_bytes) {
-        recordStat('webfetch:recall', cachedBytes, Math.round(cachedBytes / 4));
+        recordStat('webfetch:recall', cachedBytes, savedTokensFromBytes(cachedBytes));
         return denyOutput(
           'Already fetched this URL with this prompt; the response is cached. ' +
           'Use `token-goat web-output ' + cacheId + '` to recall it ' +
