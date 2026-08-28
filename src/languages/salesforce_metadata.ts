@@ -28,8 +28,9 @@ const FLOW_TAG_KIND: Readonly<Record<string, string>> = {
 }
 
 function xmlText(content: string, tag: string): string | null {
+  // XML 1.0 section 3.1 spells an end tag as `'</' Name S? '>'`, so whitespace before the `>` is legal: without the `\s*` a `</fullName >` never closes here and the lazy body runs on into the NEXT element's close tag, swallowing it.
   const re = new RegExp(
-    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}>`,
+    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`,
     'i',
   )
   const match = re.exec(content)
@@ -45,8 +46,12 @@ function xmlText(content: string, tag: string): string | null {
 // A first-match-anywhere search like xmlText would then return the wrong, deeply-nested name
 // instead of the flow element's own.
 function directChildText(content: string, tag: string): string | null {
-  const candidateRe = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'gi')
-  const tagRe = /<(\/?)([A-Za-z][A-Za-z0-9_]*)\b[^>]*?(\/?)>/g
+  const candidateRe = new RegExp(
+    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`,
+    'gi',
+  )
+  // The depth walk has to see EVERY element, so its name pattern is the XML 1.0 Name production (leading `_` or `:`, and `.`/`-` inside), not just `[A-Za-z][A-Za-z0-9_]*`: a tag this misses is never counted and the depth reading goes wrong for every candidate after it.
+  const tagRe = /<(\/?)([A-Za-z_:][\w.:-]*)\b[^>]*?(\/?)>/g
   for (const cand of content.matchAll(candidateRe)) {
     const idx = cand.index ?? 0
     let depth = 0
@@ -148,8 +153,9 @@ function metadataArtifactName(filePath: string): string {
 }
 
 function elementBlocks(content: string, tag: string): Array<{ inner: string; offset: number; text: string }> {
+  // Same XML 1.0 `'</' Name S? '>'` allowance as xmlText: without it one unclosed block merges with the next and both elements collapse into one symbol.
   const re = new RegExp(
-    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}>`,
+    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`,
     'gi',
   )
   return [...content.matchAll(re)].map((match) => ({
@@ -219,7 +225,8 @@ function addFlowElements(
 ): void {
   const lineIndex = buildLineIndex(content)
   const tagAlternation = Object.keys(FLOW_TAG_KIND).join('|')
-  const re = new RegExp(`<(${tagAlternation})>\\s*([\\s\\S]*?)\\s*</\\1>`, 'g')
+  // `\s*>` on the close for the same XML 1.0 reason as xmlText: a `</variables >` that failed to close here merged this flow element with the next one of the same tag, so the second element lost its symbol and the first's span swallowed it.
+  const re = new RegExp(`<(${tagAlternation})>\\s*([\\s\\S]*?)\\s*</\\1\\s*>`, 'g')
 
   for (const match of content.matchAll(re)) {
     if (symbols.length >= MAX_SYMBOLS) return

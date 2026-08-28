@@ -2,7 +2,7 @@
  * INI/CFG section extractor and .env key extractor.
  *
  * `extractIni` — one symbol+section per `[header]` at column 0.
- * `extractEnv` — one symbol per `KEY=value` assignment at column 0, with an optional leading `export `.
+ * `extractEnv` — one symbol per `KEY=value` assignment, with optional leading blanks and an optional leading `export `, matching dotenv's own LINE regex.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -100,8 +100,10 @@ export function extractEnv(content: string, filePath: string): SymbolEntry[] {
       continue
     }
 
-    if (!line || line[0] === '#' || line[0] === ';' || line[0] === ' ' || line[0] === '\t') continue
-    const m = ENV_KEY_RE.exec(line)
+    // dotenv's own LINE regex opens with `^\s*(?:export\s+)?([\w.-]+)`, so an indented assignment is a real key; skipping every line that starts with a space or tab dropped it entirely. Leading blanks are stripped first and the comment test applied to what is left.
+    const trimmed = line.replace(/^[ \t]+/, '')
+    if (!trimmed || trimmed[0] === '#' || trimmed[0] === ';') continue
+    const m = ENV_KEY_RE.exec(trimmed)
     if (m === null) continue
     const name = m[1]?.trim() ?? ''
     if (!name || name.length > MAX_HEADING_LEN) continue
@@ -109,7 +111,7 @@ export function extractEnv(content: string, filePath: string): SymbolEntry[] {
     if (seen.has(key)) continue
     seen.add(key)
     symbols.push(makeLineSymbol(filePath, name, 'env_key', i + 1))
-    openQuote = _detectOpenQuote(line.slice(m[0].length))
+    openQuote = _detectOpenQuote(trimmed.slice(m[0].length))
   }
 
   return symbols
