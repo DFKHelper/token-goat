@@ -100,6 +100,11 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'image_shrink.ocr_enabled',
   'image_shrink.ocr_min_confidence',
   'image_shrink.screenshot_redirect',
+  // Overridable rather than locked: it changes no image and no protection, only which tier's
+  // price token-goat reports an already-taken shrink at. A repository choosing it can flatter
+  // that project's savings figure, which is a reason to keep the default at the honest floor
+  // (it is) rather than a reason to stop a repository from stating which models it is read on.
+  'image_shrink.vision_tier',
   'indexing.embeddings_enabled',
   'indexing.large_file_skip_kb',
   'indexing.large_file_symbol_only_kb',

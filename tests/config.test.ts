@@ -67,6 +67,35 @@ describe('loadConfig', () => {
     vi.restoreAllMocks()
   })
 
+  it('reads image_shrink.vision_tier, and ignores a value that is not one of the two tiers', () => {
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "high"' + '\n', 'utf8')
+    invalidateConfigCache()
+    expect(loadConfig().image_shrink.vision_tier).toBe('high')
+
+    // A typo or a stale name must not silently price every image on a tier nobody chose. There are
+    // only two valid values and no sensible way to guess which was meant, so an unknown one falls
+    // back to the default rather than being accepted or throwing.
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "ultra"' + '\n', 'utf8')
+    invalidateConfigCache()
+    expect(loadConfig().image_shrink.vision_tier).toBe('standard')
+
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = 47' + '\n', 'utf8')
+    invalidateConfigCache()
+    expect(loadConfig().image_shrink.vision_tier).toBe('standard')
+  })
+
+  it('lets TOKEN_GOAT_VISION_TIER override the configured tier', () => {
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "standard"' + '\n', 'utf8')
+    invalidateConfigCache()
+    vi.stubEnv('TOKEN_GOAT_VISION_TIER', 'high')
+    expect(loadConfig().image_shrink.vision_tier).toBe('high')
+
+    invalidateConfigCache()
+    vi.stubEnv('TOKEN_GOAT_VISION_TIER', 'nonsense')
+    expect(loadConfig().image_shrink.vision_tier).toBe('standard')
+    vi.unstubAllEnvs()
+  })
+
   it('returns all defaults when config file is absent', () => {
     const cfg = loadConfig()
     const def = defaultConfig()
@@ -595,6 +624,10 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.image_shrink.screenshot_redirect).toBe(true)
     expect(cfg.image_shrink.ocr_enabled).toBe(true)
     expect(cfg.image_shrink.ocr_min_confidence).toBe(65)
+    // The floor of the two billing tiers, on purpose. Reporting a saving against the cheaper of the
+    // two bills can never credit one that was not there; the other direction is the over-credit
+    // class this repository has shipped repeatedly.
+    expect(cfg.image_shrink.vision_tier).toBe('standard')
   })
 })
 

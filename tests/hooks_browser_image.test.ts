@@ -12,6 +12,7 @@ import { postBrowserImageHandler } from '../src/hooks_browser_image.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { getLastTabContext } from '../src/session.js'
+import { summarize } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -109,6 +110,45 @@ describe('postBrowserImageHandler', () => {
       expect(second.updatedOutput).toContain('identical to one already shown')
       expect(second.updatedOutput).not.toContain('data:image/')
     }
+  })
+
+  // Provenance for the token figures below: HAND-DERIVED from Anthropic's published patch rule,
+  // computed here rather than read out of visionTokens. The fixture is 3000x3000. On the standard
+  // tier the API caps it at the largest square whose grid fits 1568 tokens, 39x39 = 1521, so 1521 is
+  // what withholding it saves before the replacement notice is paid for. tests/vision_tokens.test.ts
+  // pins the same arithmetic against the published table.
+  it('credits a withheld repeat screenshot with the whole billed cost of the image, less the notice standing in for it', async () => {
+    await postBrowserImageHandler(imageEvent(largeJpegB64))
+
+    const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+    const second = await postBrowserImageHandler(imageEvent(largeJpegB64))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType !== 'rewriteOutput') return
+    const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
+
+    // The replacement notice is 121 bytes, which this repository's text-token approximation prices at
+    // round(121 / 4) = 30. Pixels go out and text comes back on this branch, so the two sides are
+    // priced by their own rules rather than one rule applied to both.
+    expect(second.updatedOutput).toContain('not re-sent')
+    expect(delta).toBe(1521 - 30)
+
+    // A guard against silently returning to a bytes-shaped figure: this fixture is megabytes of
+    // incompressible noise, so bytes/4 books over a million tokens for the same event.
+    expect(delta).toBeLessThan(2000)
+  })
+
+  it('prices a resized browser screenshot in visual tokens on the tier that would have paid for it', async () => {
+    saveConfig({ ...defaultConfig(), image_shrink: { ...defaultConfig().image_shrink, vision_tier: 'high' } })
+    invalidateConfigCache()
+
+    const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+    const out = await postBrowserImageHandler(imageEvent(largeJpegB64))
+    expect(out.hookType).toBe('rewriteOutput')
+    const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
+
+    // 3000x3000 is capped at 69x69 = 4761 on the high-resolution tier; the 1568x1568 resize fits
+    // that tier untouched at 56x56 = 3136.
+    expect(delta).toBe(4761 - 3136)
   })
 
   it('still sends a genuinely different screenshot after one it has already shown', async () => {

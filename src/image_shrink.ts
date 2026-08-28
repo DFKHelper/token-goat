@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { loadConfig } from './config.js'
+import { loadConfig, type VisionTier } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
@@ -47,6 +47,89 @@ const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
 /** Long-edge resize target. 1568 is Claude's Standard resolution tier maximum; Claude 4.7 and later run a High-resolution tier whose maximum is 2576, so this is a conservative floor that every tier accepts rather than a universal optimum. It also divides evenly into Anthropic's 28px patch grid (56) and OpenAI's 32px one (49). */
 const DEFAULT_MAX_DIMENSION = 1568
 
+/**
+ * Anthropic bills an image as a grid of 28x28-pixel patches, one visual token per patch, so an
+ * image costs `ceil(width / 28) * ceil(height / 28)` tokens. Every constant and every step of the
+ * arithmetic below is transcribed from Anthropic's own published rule and reference implementation:
+ * https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size and
+ * https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images
+ *
+ * This exists because the byte count an image shrink saves is not what an image is billed in. A
+ * saving is only real in the unit that bills, and bytes are not that unit for pixels.
+ */
+const VISION_PATCH_PX = 28
+
+/** Per-tier limits, from the "Resolution and token cost" table in Anthropic's vision documentation. High-resolution covers Claude 4.7 and later; Standard covers every other model. */
+const VISION_TIER_LIMITS: Readonly<Record<VisionTier, { readonly maxEdge: number; readonly maxTokens: number }>> = {
+  standard: { maxEdge: 1568, maxTokens: 1568 },
+  high: { maxEdge: 2576, maxTokens: 4784 },
+}
+
+/** Visual tokens an image of these exact dimensions costs, with no resize applied. */
+function countImagePatches(width: number, height: number): number {
+  return Math.ceil(width / VISION_PATCH_PX) * Math.ceil(height / VISION_PATCH_PX)
+}
+
+/** Round half to even (banker's rounding), matching Python's `round()`. Anthropic's reference implementation is explicit that the live API resolves exact .5 ties toward the even neighbour, so `Math.round` -- which rounds halves up -- computes a different resized size for some images. */
+function roundTiesToEven(value: number): number {
+  const floor = Math.floor(value)
+  if (value - floor !== 0.5) return Math.round(value)
+  return floor % 2 === 0 ? floor : floor + 1
+}
+
+/** Whether an image of this size is served as-is: both padded edges within the tier's edge limit, and the patch count within its token budget. The edge test is on the PADDED edge (`ceil(w / 28) * 28`), not the raw one, because the API pads every image up to the next patch boundary before measuring. */
+function fitsVisionLimits(width: number, height: number, maxEdge: number, maxTokens: number): boolean {
+  return (
+    Math.ceil(width / VISION_PATCH_PX) * VISION_PATCH_PX <= maxEdge &&
+    Math.ceil(height / VISION_PATCH_PX) * VISION_PATCH_PX <= maxEdge &&
+    countImagePatches(width, height) <= maxTokens
+  )
+}
+
+/** The dimensions the API resizes an image to before billing it: the largest aspect-preserving size that satisfies both tier limits. A direct port of Anthropic's published TypeScript reference implementation, binary search included -- scaling to the edge limit by hand gets this wrong, since for nearly every photo and screenshot it is the token budget rather than the edge that binds (a 1920x1080 screenshot resizes to 1456x819 on the Standard tier, not to 1568x882). */
+function resizedForVision(width: number, height: number, maxEdge: number, maxTokens: number): [number, number] {
+  if (fitsVisionLimits(width, height, maxEdge, maxTokens)) return [width, height]
+  if (height > width) {
+    const [resizedH, resizedW] = resizedForVision(height, width, maxEdge, maxTokens)
+    return [resizedW, resizedH]
+  }
+  const aspectRatio = width / height
+  let lo = 1
+  let hi = width
+  while (lo + 1 < hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (fitsVisionLimits(mid, Math.max(roundTiesToEven(mid / aspectRatio), 1), maxEdge, maxTokens)) lo = mid
+    else hi = mid
+  }
+  return [lo, Math.max(roundTiesToEven(lo / aspectRatio), 1)]
+}
+
+/**
+ * Visual tokens an image of `width` x `height` actually costs on `tier`, after the API's own
+ * downscale.
+ *
+ * The downscale is the whole point of routing through this rather than multiplying out the raw
+ * dimensions: the API caps an oversized image's cost itself, so a saving measured against the
+ * untouched original is measured against a bill that is never sent. On the Standard tier a 4K
+ * screenshot and a 1080p screenshot cost the identical 1560 tokens, and shrinking the former to
+ * 1568px wide saves nothing at all in the unit that bills.
+ *
+ * Returns 0 for a non-positive or non-finite size rather than throwing: dimensions reach here from
+ * image metadata that a decoder may not have populated, and a stat row must never be the thing
+ * that fails a read.
+ */
+export function visionTokens(width: number, height: number, tier: VisionTier): number {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return 0
+  const limits = VISION_TIER_LIMITS[tier]
+  const [w, h] = resizedForVision(Math.floor(width), Math.floor(height), limits.maxEdge, limits.maxTokens)
+  return countImagePatches(w, h)
+}
+
+/** Visual tokens saved by showing the model a `toWidth` x `toHeight` image where it would otherwise have been shown a `fromWidth` x `fromHeight` one. Clamped at zero: a "shrink" that costs more visual tokens than it saves is not a negative saving to be booked, it is a branch that should not have been taken. */
+export function visionTokensSaved(fromWidth: number, fromHeight: number, toWidth: number, toHeight: number, tier: VisionTier): number {
+  return Math.max(0, visionTokens(fromWidth, fromHeight, tier) - visionTokens(toWidth, toHeight, tier))
+}
+
 /** Below this byte count an image is left untouched (encode CPU > savings). */
 const DEFAULT_SIZE_THRESHOLD_BYTES = 512 * 1024
 
@@ -58,6 +141,10 @@ export interface ShrinkResult {
   readonly originalBytes: number
   /** Byte count after shrinking. */
   readonly shrunkBytes: number
+  /** Input width in pixels, before the resize. Carried so a caller can price the shrink in visual tokens (see {@link visionTokensSaved}) rather than in bytes, which is not the unit an image is billed in. Read before `.rotate()` applies EXIF orientation, so for a rotated source this pair may be transposed relative to what the model would have seen -- harmless here, because a patch count multiplies its two axes and is therefore identical either way round. */
+  readonly originalWidth: number
+  /** Input height in pixels, before the resize. See {@link ShrinkResult.originalWidth}. */
+  readonly originalHeight: number
   /** Output width in pixels. */
   readonly width: number
   /** Output height in pixels. */
@@ -241,6 +328,8 @@ export async function shrinkImage(
       data,
       originalBytes,
       shrunkBytes: data.length,
+      originalWidth: inputMeta.width ?? 0,
+      originalHeight: inputMeta.height ?? 0,
       width: meta.width ?? 0,
       height: meta.height ?? 0,
       format,
@@ -289,22 +378,42 @@ function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, qua
 }
 
 /**
- * Look for an already-cached re-encode of this exact (path, size, mtime, quality), in either output
- * format {@link shrinkImage} can produce -- the format isn't known ahead of time (shrinkImage
- * picks WEBP or JPEG based on content), so both candidate extensions are checked. Checked BEFORE
- * running the shrink so a repeat Read of an unchanged image can skip the sharp re-encode
- * entirely instead of always re-running it.
+ * Look for an already-cached re-encode of this exact (path, size, mtime, quality). Checked BEFORE
+ * running the shrink so a repeat Read of an unchanged image can skip the sharp re-encode entirely
+ * instead of always re-running it.
+ *
+ * A directory scan rather than two `existsSync` probes, because the entry's name now carries the
+ * ORIGINAL image's dimensions as well as the output format, and neither is known ahead of the
+ * lookup. Those dimensions are what lets a cache hit price its saving in the unit an image is
+ * actually billed in: this path never decodes the original, so without them the branch could only
+ * report a zero visual-token saving on every hit -- an entire mechanism reading as worthless in
+ * `token-goat stats` while doing exactly the same work as the miss path beside it. The scan costs
+ * nothing measurable next to the readdir `pruneShrinkCache` already performs on the same directory
+ * one line earlier in the same handler.
+ *
+ * Entries written by an older version carry no dimensions, so they no longer match and are treated
+ * as a miss. That is a single re-encode per image, after which the sweep in `pruneShrinkCache`
+ * collects the stale file on age like any other.
  */
-function findCachedShrink(originalPath: string, size: number, mtimeMs: number, quality: number): { filePath: string; format: 'webp' | 'jpeg' } | null {
-  const key = shrinkCacheKey(originalPath, size, mtimeMs, quality)
+function findCachedShrink(originalPath: string, size: number, mtimeMs: number, quality: number): { filePath: string; format: 'webp' | 'jpeg'; originalWidth: number; originalHeight: number } | null {
+  const prefix = `token-goat-shrink-${shrinkCacheKey(originalPath, size, mtimeMs, quality)}-`
   const dir = imageShrinkCacheDir()
-  const candidates: Array<{ ext: string; format: 'webp' | 'jpeg' }> = [
-    { ext: '.webp', format: 'webp' },
-    { ext: '.jpg', format: 'jpeg' },
-  ]
-  for (const { ext, format } of candidates) {
-    const candidate = path.join(dir, `token-goat-shrink-${key}${ext}`)
-    if (fs.existsSync(candidate)) return { filePath: candidate, format }
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return null
+  }
+  for (const file of entries) {
+    if (!file.startsWith(prefix)) continue
+    const m = /^(\d+)x(\d+)(\.webp|\.jpg)$/.exec(file.slice(prefix.length))
+    if (m === null) continue
+    return {
+      filePath: path.join(dir, file),
+      format: m[3] === '.jpg' ? 'jpeg' : 'webp',
+      originalWidth: Number(m[1]),
+      originalHeight: Number(m[2]),
+    }
   }
   return null
 }
@@ -316,7 +425,7 @@ function writeCachedShrink(originalPath: string, result: ShrinkResult, mtimeMs: 
     ensureDirSync(dir)
     const key = shrinkCacheKey(originalPath, result.originalBytes, mtimeMs, quality)
     const ext = result.format === 'jpeg' ? '.jpg' : '.webp'
-    atomicWriteBytes(path.join(dir, `token-goat-shrink-${key}${ext}`), result.data)
+    atomicWriteBytes(path.join(dir, `token-goat-shrink-${key}-${result.originalWidth}x${result.originalHeight}${ext}`), result.data)
   } catch {
     // Best-effort; failing to cache must not block returning the freshly computed shrink.
   }
@@ -395,12 +504,17 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
   // image, whose recognized text is far smaller than its downscaled pixels.)
   // This recordStat previously sat after the OCR early-return, so a text-heavy image (exactly what
   // OCR targets) recorded image_ocr alone and dropped the whole shrink saving from the ledger.
-  // The Python original (hooks_read.py) recorded this via an exact vision-token delta (Claude's
-  // per-tile cost at the pre/post dimensions); that formula was never ported to shrinkImage's
-  // return shape, so this uses the same bytes/4 token-cost approximation the rest of this codebase
-  // applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls).
+  // Bytes and tokens are measured in different units here on purpose. The byte figure is the real
+  // wire saving. The token figure is NOT bytes/4: an image is billed as 28x28-pixel patches, so the
+  // bytes/4 approximation this used to record (a text-token rule of thumb, inherited because the
+  // Python original's exact vision-token delta was never ported to shrinkImage's return shape) was
+  // simply the wrong unit, and it was wrong in the direction that flatters -- it credited a
+  // megabyte-scale byte delta as a quarter-million tokens. visionTokensSaved prices both sides the
+  // way the API does, downscale included, so an original the API would have capped anyway is
+  // credited at the capped cost rather than at its full pixel count.
   const shrinkSaved = result.originalBytes - result.shrunkBytes
-  recordStat('image_shrink', shrinkSaved, Math.round(shrinkSaved / 4), undefined, basename)
+  const tier = loadConfig().image_shrink.vision_tier
+  recordStat('image_shrink', shrinkSaved, visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier), undefined, basename)
 
   // OCR runs on the already-shrunk bytes, not the raw file: it is resized to Claude Vision's
   // optimal edge already (plenty of resolution for legible screenshot text) and is much
@@ -422,8 +536,15 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
       // untrusted-content fence around the text are both part of what this branch puts into context,
       // so crediting only the bare text would bill a smaller thing than the one that ships.
       const emitted = formatOcrSummary(ocr, basename, result.originalBytes)
-      const saved = Math.max(0, result.shrunkBytes - Buffer.byteLength(emitted, 'utf8'))
-      recordStat('image_ocr', saved, Math.round(saved / 4), undefined, basename)
+      const emittedBytes = Buffer.byteLength(emitted, 'utf8')
+      const saved = Math.max(0, result.shrunkBytes - emittedBytes)
+      // This branch swaps units mid-trade: pixels go out, text comes back. So the two sides are
+      // priced by their own rules -- visual tokens for the image this branch preempts, the codebase's
+      // bytes/4 text approximation for the string it emits instead -- rather than by one rule applied
+      // to both. Pairs with the image_shrink row above, which covers original -> shrunk, so the two
+      // rows still sum to the true original -> text saving with nothing counted twice.
+      const tokensSaved = Math.max(0, visionTokens(result.width, result.height, tier) - Math.round(emittedBytes / 4))
+      recordStat('image_ocr', saved, tokensSaved, undefined, basename)
       return contextOutput(emitted)
     }
   }
@@ -495,6 +616,8 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
         data: cachedData,
         originalBytes: stat.size,
         shrunkBytes: cachedData.length,
+        originalWidth: cached.originalWidth,
+        originalHeight: cached.originalHeight,
         width: meta.width,
         height: meta.height,
         format: cached.format,

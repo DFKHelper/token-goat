@@ -395,6 +395,63 @@ describe('preReadImageHandler shrink cache', () => {
     expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
   })
 
+  // Provenance for the token figures below: HAND-DERIVED from Anthropic's published rule, computed
+  // here independently of visionTokens rather than read out of it. The fixture is 3000x3000 and is
+  // resized to 1568x1568. On the standard tier both sizes are downscaled by the API itself to the
+  // largest square whose patch grid fits the 1568-token budget -- 39x39 = 1521 patches, i.e.
+  // 1092x1092 -- so both are billed 1521 and the shrink saves nothing at all in visual tokens. On
+  // the high-resolution tier the original is capped at 69x69 = 4761 while the 1568px resize fits
+  // untouched at 56x56 = 3136, a real saving of 1625. tests/vision_tokens.test.ts pins the same
+  // arithmetic against the doc's own published table.
+  //
+  // Nothing asserted the tokens column of an image stat row before this, which is exactly how the
+  // wrong unit shipped: image_shrink recorded bytes/4, so a 6 MB screenshot was booked as saving
+  // roughly 1.5 million tokens. Every existing test checked bytes_saved and passed regardless.
+  it('prices the shrink in visual tokens, not bytes/4, and reports zero on a tier where the API had already capped the original', async () => {
+    const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+    const out = await preReadImageHandler(makeEvent(filePath))
+    expect(out.hookType).toBe('context')
+    const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
+
+    // The default tier is standard, where 3000x3000 and 1568x1568 cost the identical 1521 tokens.
+    // Megabytes come off the wire and not one visual token comes off the bill, and saying so is the
+    // point. bytes/4 would have reported six figures here.
+    expect(delta).toBe(0)
+    expect(summarize(30).by_kind['image_shrink']?.bytes_saved ?? 0).toBeGreaterThan(100_000)
+  })
+
+  it('reports the real token saving for the same image once the configured tier is one that would have paid for it', async () => {
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "high"\n', 'utf8')
+    invalidateConfigCache()
+
+    const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+    const out = await preReadImageHandler(makeEvent(filePath))
+    expect(out.hookType).toBe('context')
+    const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
+
+    // 4761 for the original the high-resolution tier would have billed, 3136 for the resize.
+    expect(delta).toBe(4761 - 3136)
+  })
+
+  it('reports the identical token saving on a warm cache hit as on the fresh shrink that filled it', async () => {
+    // The cache-hit path never decodes the original, so it can only price its saving if the entry
+    // carries the original dimensions. Without them this branch would book a zero token saving on
+    // every hit -- a whole mechanism reading as worthless in `token-goat stats` while doing the same
+    // work as the miss beside it. Asserted under the high tier because the standard tier's honest
+    // answer for this fixture is zero, which a broken cache-hit path would match by accident.
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "high"\n', 'utf8')
+    invalidateConfigCache()
+
+    const start = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+    await preReadImageHandler(makeEvent(filePath))
+    const afterMiss = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+    await preReadImageHandler(makeEvent(filePath))
+    const afterHit = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
+
+    expect(afterMiss - start).toBe(4761 - 3136)
+    expect(afterHit - afterMiss).toBe(afterMiss - start)
+  })
+
   it('invalidates the cache when the source file mtime changes, even at the same byte length (regression: mtime, not just path+size, must be part of the key)', async () => {
     await preReadImageHandler(makeEvent(filePath))
     const entriesBefore = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
