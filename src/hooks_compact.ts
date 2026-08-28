@@ -22,8 +22,7 @@ import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB, runGit } from './util.js'
 import type { HookOutput } from './types.js'
 import { getBashOutput } from './bash_output_cache.js'
-import { recordStat } from './stats.js'
-import { estimateTokensFromLength } from './overflow_guard.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, loadSessionCache } from './compact.js'
 
@@ -469,7 +468,7 @@ export function postCompactHandler(event: HookEvent): HookOutput {
     0,
     0,
     undefined,
-    `trigger=${trigger} bytes=${bytes} est_tokens=${estimateTokensFromLength(summary.length)} manifest_paths=${survived}/${sample.length}`,
+    `trigger=${trigger} bytes=${bytes} est_tokens=${savedTokensFromBytes(bytes)} manifest_paths=${survived}/${sample.length}`,
   )
   return passOutput()
 }

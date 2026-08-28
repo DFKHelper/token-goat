@@ -89,4 +89,33 @@ describe('savedTokensFromBytes', () => {
       'each of these converts bytes to tokens inline on a recordStat line: call savedTokensFromBytes from src/stats.ts instead. The divisor is not cosmetic. One callsite reaching for a divide-by-three estimator instead of the divide-by-four credit overstated a real database by 469,422 tokens across 520 events, and nothing typechecked or linted wrong because both take a byte count and return a number.',
     ).toEqual([])
   })
+
+  it('keeps the overflow guard out of every file that records a statistic at all', () => {
+    // Both scans above are line-scoped, so a credit computed on one line and passed by name on the
+    // next slips through either of them. Banning the wrong helper from the whole file closes that
+    // without needing to read the code: a file that never imports the divide-by-three estimator
+    // cannot reach it under any spelling, on any line, through any intermediate variable. It also
+    // covered a subtler case than a miscredited saving. hooks_compact.ts recorded a zero-credit
+    // observation, so no total was wrong, but printed est_tokens in its detail string off the guard
+    // and off a UTF-16 length while printing bytes beside it off a byte count: two scales and two
+    // units in one line a user reads next to real /4 figures elsewhere in the same command.
+    const offenders: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (entry.name.endsWith('.ts')) {
+          const text = fs.readFileSync(full, 'utf8')
+          if (/import\s[^\n]*estimateTokensFromLength/.test(text) && /\brecordStat\(/.test(text)) {
+            offenders.push(path.relative(process.cwd(), full).split(path.sep).join('/'))
+          }
+        }
+      }
+    }
+    walk(path.join(process.cwd(), 'src'))
+    expect(
+      offenders,
+      'each of these files both imports the overflow guard\'s divide-by-three estimator and records statistics, so a figure booked or displayed there can land on a different scale from every sibling. Compute what you record with savedTokensFromBytes from src/stats.ts, and keep the guard estimator in files that only guard buffers.',
+    ).toEqual([])
+  })
 })
