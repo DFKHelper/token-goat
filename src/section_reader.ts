@@ -278,11 +278,13 @@ function findKeyValueHeaders(lines: readonly string[], language: string): Sectio
       continue
     }
 
-    const m = (isEnv ? ENV_KEYVALUE_HEADER_RE : KEYVALUE_HEADER_RE).exec(line)
+    // dotenv permits leading blanks before a key (its LINE regex opens `^\s*(?:export\s+)?`), so an indented assignment is stripped before matching here, exactly as ini_idx.ts's extractEnv does: without this the indexer would find INDENTED_KEY as a symbol while `section` reported no such heading. YAML indentation is semantic, so only the env branch is trimmed.
+    const scanned = isEnv ? line.replace(/^[ \t]+/, '') : line
+    const m = (isEnv ? ENV_KEYVALUE_HEADER_RE : KEYVALUE_HEADER_RE).exec(scanned)
     if (m === null || m[1] === undefined) continue
     headers.push({ heading: m[1], level: 1, index: i })
     openQuote = isEnv
-      ? envDetectOpenQuote(line.slice(m[0].length))
+      ? envDetectOpenQuote(scanned.slice(m[0].length))
       : yamlOpenQuoteAfter(line, m[0].length)
   }
   return headers
