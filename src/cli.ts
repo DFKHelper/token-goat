@@ -29,6 +29,7 @@ import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
+import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
@@ -418,7 +419,9 @@ export async function cmdIndex(
     // indexedPathSpellingIsStale. Reindexing rewrites the row under the spelling the file
     // actually has.
     const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, key)
-    const parseUnchanged = !force && !spellingStale && sha !== null && entry?.sha === sha
+    // entry.parserSha gates on WHICH parser wrote the rows, not just whether the content moved -- see PARSER_FINGERPRINT and the same gate in worker.ts's makeIndexer. This is what makes the --force escape hatch described above unnecessary after a parser change: the mismatch reparses the file on its own.
+    const parseUnchanged =
+      !force && !spellingStale && sha !== null && entry?.sha === sha && entry.parserSha === PARSER_FINGERPRINT
     // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.

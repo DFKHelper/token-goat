@@ -47,6 +47,7 @@ interface FileRow {
   readonly language: string | null
   readonly indexed_at: number | null
   readonly embed_sha: string | null
+  readonly parser_sha: string | null
 }
 
 function toSymbolEntry(row: SymbolRow): SymbolEntry {
@@ -292,7 +293,7 @@ export function getFileEntry(
   const db = getDb(dbPath)
   const row = db
     .prepare(
-      `SELECT path, sha, mtime, language, indexed_at, embed_sha FROM files WHERE ${pathEq('path')}`,
+      `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,
     )
     .get(foldPath(filePath)) as FileRow | undefined
 
@@ -304,6 +305,7 @@ export function getFileEntry(
     language: row.language ?? 'unknown',
     indexedAt: row.indexed_at ?? 0,
     embedSha: row.embed_sha ?? '',
+    parserSha: row.parser_sha ?? '',
   }
 }
 
