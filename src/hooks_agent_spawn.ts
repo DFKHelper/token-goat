@@ -16,14 +16,14 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
+import { emitRewrite, passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
 import { storeMcpOutput } from './mcp_cache.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
@@ -523,8 +523,9 @@ function postAgentHandler(event: HookEvent): HookOutput {
         const updatedOutput = `${final}\n\n${notice}`
         // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the rewritten body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
         const savedBytes = originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
-        if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, Math.round(savedBytes / 4))
-        return { hookType: 'rewriteOutput', updatedOutput }
+        if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, savedTokensFromBytes(savedBytes))
+        // 'counted-elsewhere': the `secret_redacted` count for this text is booked above, at the point the redacted report enters the cache, because that one record covers the annotate-only return below as well as this one. Letting emitRewrite count the placeholders again here would book the identical redaction twice.
+        return emitRewrite(updatedOutput, 'agent', undefined, 'counted-elsewhere')
       }
       // The gate declined: collapse and/or dedup rewrote something but the net savings did not clear the notice cost. Record this at (0, 0) -- like the sibling session_hint event above -- so hit-rate and near-misses are visible instead of the gate's declines being invisible, without inflating any savings total with a non-saving.
       recordStat('agent_report_compact_declined', 0, 0)

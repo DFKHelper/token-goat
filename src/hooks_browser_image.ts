@@ -35,12 +35,12 @@
 import { createHash } from 'node:crypto'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, passOutput } from './hooks_common.js'
+import { emitRewrite, getToolName, passOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
 import { formatShrinkSummary, imageQualifiesForShrink, probeImageMeta, shrinkImage, visionTokens, visionTokensSaved } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
 import { getLastTabContext, hasSeenImage, recordSeenImage, setLastTabContext } from './session.js'
-import { recordStat } from './stats.js'
+import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 interface ContentBlock {
@@ -187,7 +187,7 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
           anyChanged = true
           // Measured against the string this loop actually emits, the same way emitRewrite computes its savings, rather than from the notice constant: a hand-written figure beside an emit is the per-branch fragility that has produced a wrong credit here before. Without this the tab-context dedup shipped a real saving and recorded nothing at all, so `token-goat stats` showed a total that omitted the whole mechanism while the image branch beside it was credited.
           const savedBytes = Buffer.byteLength(block.text, 'utf-8') - Buffer.byteLength(text, 'utf-8')
-          if (savedBytes > 0) recordStat('browser_tab_dedup', savedBytes, Math.round(savedBytes / 4), undefined, toolName)
+          if (savedBytes > 0) recordStat('browser_tab_dedup', savedBytes, savedTokensFromBytes(savedBytes), undefined, toolName)
         }
         parts.push(text)
       } else {
@@ -201,7 +201,8 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
     }
 
     if (!anyChanged) return passOutput()
-    return { hookType: 'rewriteOutput', updatedOutput: parts.join('\n') }
+    // No `savings` argument: each block above already recorded its own, in the unit that block bills in -- visual tokens for a shrunk image, bytes-over-four for a deduped text block. A single figure computed here would have to pick one of those units for both.
+    return emitRewrite(parts.join('\n'), toolName)
   } catch {
     return passOutput()
   }
