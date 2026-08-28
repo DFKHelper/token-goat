@@ -36,7 +36,7 @@ function run(args: string[], cwd: string, home: string): { status: number; out: 
     const stdout = execFileSync(process.execPath, [BUNDLE, ...args], {
       cwd,
       encoding: 'utf-8',
-      env: { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home },
+      env: { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home },
     })
     return { status: 0, out: stdout }
   } catch (e) {

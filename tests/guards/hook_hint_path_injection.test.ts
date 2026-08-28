@@ -42,6 +42,7 @@ function hook(event: string, payload: unknown): { status: number; stdout: string
       ...process.env,
       TOKEN_GOAT_HOME: homeDir,
       LOCALAPPDATA: homeDir,
+      XDG_DATA_HOME: homeDir,
       HOME: homeDir,
       USERPROFILE: homeDir,
       TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode',
