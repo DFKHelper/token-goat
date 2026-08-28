@@ -54,6 +54,8 @@ export interface FileIndexEntry {
   // never gets masked by the parse-sha gate -- see makeIndexer in worker.ts. Empty string when
   // the file has never been embedded (or its last embedding attempt never completed).
   readonly embedSha: string
+  // The fingerprint of the extraction logic that produced this file's symbol and ref rows, tracked separately from `sha` for the same reason `embedSha` is: content freshness and parse freshness are different questions. Empty string for a row written before the column existed, which the freshness gates read as stale and reparse once.
+  readonly parserSha: string
 }
 
 /** Languages token-goat can recognise. `unknown` is the catch-all fallback. */

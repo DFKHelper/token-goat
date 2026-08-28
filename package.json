@@ -31,6 +31,8 @@
     "typecheck:vscode-extension:tests": "npm --prefix vscode-extension run typecheck:tests",
     "dev": "tsx src/main.ts",
     "prepare": "node scripts/install-git-hooks.mjs",
+    "parser:fingerprint": "node scripts/parser-fingerprint.mjs",
+    "parser:fingerprint:check": "node scripts/parser-fingerprint.mjs --check",
     "schema:copilot": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json",
     "schema:copilot:check": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json --check"
   },
