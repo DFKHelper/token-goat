@@ -342,6 +342,75 @@ describe('runScope integration', () => {
     expect(result).toBe(0)
   })
 
+  // Regression: `scope` documents exactly one ordering guarantee, "innermost first", and broke it
+  // on every line where two symbols share a start. The comparator sorted on descending lineStart
+  // alone, which returns 0 for a tie and left those rows in `querySymbols`'s order -- its SQL
+  // sorts by line_start with no tiebreak, so the widest span came back first, printing a
+  // container above the member nested inside it.
+  //
+  // Provenance: CAPTURE. The fixture is real source parsed by the real indexer, and the shared
+  // start line is the indexer's own output rather than an asserted constant: an earlier draft used
+  // a function whose return type declared the members, guessed that indexed them at the signature
+  // line, and indexed only the function -- proving nothing. The expectation, that a strictly
+  // narrower span at the same start is the more deeply nested one, is stated without reference to
+  // the comparator under test.
+  it('lists a narrower span before a wider one that starts on the same line', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-scope-tie-'))
+    try {
+      const file = join(dir, 'ObjLit.ts')
+      // The container is named to sort BEFORE its member, so a comparator falling back to the name
+      // alone puts the outermost first and fails here. An earlier draft named them the other way
+      // round, where alphabetical order happened to agree with span order, and a mutation deleting
+      // the span tiebreak entirely still passed.
+      writeFileSync(file, ['export const alpha = { zeta() {', '  return 1', '}, mid() {', '  return 2', '} }', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      const onLine1 = querySymbols({ filePath: normalizePath(file), limit: 50 }).filter(
+        (sym) => sym.lineStart <= 1 && 1 <= sym.lineEnd,
+      )
+      expect(onLine1.length, 'the fixture must put more than one symbol on line 1, or there is no tie to order').toBeGreaterThan(1)
+      expect(new Set(onLine1.map((sym) => sym.lineEnd)).size, 'and their spans must differ, or the tie is between siblings rather than a container and its member').toBeGreaterThan(1)
+      const widest = onLine1.reduce((a, b) => (b.lineEnd > a.lineEnd ? b : a))
+
+      const printed = captureStdout(() => {
+        expect(runScope({ spec: `${file}:1` })).toBe(0)
+      })
+      const names = printed.trim().split('\n').map((l) => l.split('\t')[0])
+      expect(names.length, 'every symbol enclosing that line must be printed').toBe(onLine1.length)
+      expect(names[names.length - 1], 'the widest span at a shared start encloses the others, so it is outermost and must print last').toBe(widest.name)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The same comparator decides the order of symbols sharing BOTH bounds, where no nesting order
+  // exists to get right. Those came back in the database's unspecified row order, so the same
+  // query could print a different order after a reindex. A CLI whose output gets diffed or
+  // scripted cannot do that. A one-line class and its one-line method is the real shape.
+  it('orders symbols that share both bounds deterministically rather than by database row order', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-scope-bothbounds-'))
+    try {
+      const file = join(dir, 'Tiny.ts')
+      writeFileSync(file, ['export class Tiny { run(): number { return 1 } }', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      const rows = querySymbols({ filePath: normalizePath(file), limit: 50 }).filter((sym) => sym.lineStart === 1 && sym.lineEnd === 1)
+      expect(rows.length, 'the fixture must put two symbols on the same single line, or there is nothing to break a tie between').toBeGreaterThan(1)
+
+      const printed = captureStdout(() => {
+        expect(runScope({ spec: `${file}:1` })).toBe(0)
+      })
+      const names = printed.trim().split('\n').map((l) => l.split('\t')[0])
+      // Sorted by name, which is the only stable key left once both bounds match. Asserting the
+      // literal order rather than "is sorted" keeps the expectation from restating the comparator.
+      // en collation orders by base letter before case, so 'run' precedes 'Tiny'. Asserted as the
+      // literal expected output rather than as "is sorted", which would restate the comparator.
+      expect(names).toEqual(['run', 'Tiny'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('exits 1 for a nonsense file', () => {
     const result = runScope({ spec: 'src/__nonexistent_file_xyzzy__.ts:1' })
     expect(result).toBe(1)

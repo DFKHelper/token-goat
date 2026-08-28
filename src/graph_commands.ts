@@ -1404,7 +1404,20 @@ export function runScope(opts: ScopeOptions): number {
 
   const enclosing = syms
     .filter((s) => s.lineStart <= line && line <= s.lineEnd)
-    .sort((a, b) => b.lineStart - a.lineStart)
+    // Innermost first, which a later start alone does not establish. Symbols sharing a start line
+    // are common -- a signature that declares an inline object type indexes the function and each
+    // of its members at the signature's own line -- and on those the descending-start comparator
+    // returned 0 and left the order to `querySymbols`, whose SQL sorts by `line_start` with no
+    // tiebreak. That handed back the widest span first: `scope src/batch_serve.ts:58` listed the
+    // 23-line function above the three one-line symbols nested inside it, the exact inversion of
+    // what this command's one sentence of documentation promises. Same start plus an earlier end
+    // is a strictly narrower span, so it is the more deeply nested of the two. The name is a last
+    // resort for symbols that share both bounds: they are siblings rather than nested, so no
+    // nesting order exists to get right, but leaving them to the database's unspecified row order
+    // means the same query can print a different order after a reindex. The locale is pinned for
+    // the reason runArch's comparator pins it: an unlocaled localeCompare sorts differently across
+    // hosts, so leaving it off would trade one source of instability for another.
+    .sort((a, b) => b.lineStart - a.lineStart || a.lineEnd - b.lineEnd || a.name.localeCompare(b.name, 'en'))
 
   // "the file isn't there" and "nothing wraps that line" are different answers, and both printed
   // the identical no-symbols line — so a typo'd path read as a real file with a bare line, which
