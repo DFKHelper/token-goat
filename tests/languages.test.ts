@@ -2772,6 +2772,35 @@ end
     expect(symbols.find((s) => s.name === 'count')?.kind).toBe('variable')
   })
 
+  it('indexes every name in a multi-name local declaration', () => {
+    // HAND-DERIVED: the shape comes from the Lua 5.4 reference manual, section 3.3.7 "Local
+    // Declarations": `stat ::= local attnamelist ['=' explist]`,
+    // `attnamelist ::= Name attrib {',' Name attrib}`, `attrib ::= ['<' Name '>']`. So one
+    // `local` statement binds a whole list of names, each optionally carrying a `<const>` or
+    // `<close>` attribute. The expected names below are read off this source text, not off the
+    // adapter's own regex. The old pattern captured only the first name, so every name after the
+    // comma was dropped from the index outright.
+    const content = `local ok, err = pcall(dofile, "cfg.lua")
+local sqrt, floor, ceil = math.sqrt, math.floor, math.ceil
+local limit <const> = 10
+local first, second <close> = a, b
+local solo = 1
+`
+    const { symbols } = extractLua(content, 'multi.lua')
+    const names = symbols.map((s) => s.name)
+    for (const expected of ['ok', 'err', 'sqrt', 'floor', 'ceil', 'limit', 'first', 'second', 'solo']) {
+      expect(names, `missing Lua local binding: ${expected}`).toContain(expected)
+    }
+    expect(symbols.find((s) => s.name === 'err')?.kind).toBe('variable')
+    expect(symbols.find((s) => s.name === 'err')?.lineStart).toBe(1)
+    expect(symbols.find((s) => s.name === 'ceil')?.lineStart).toBe(2)
+    expect(symbols.find((s) => s.name === 'limit')?.kind).toBe('variable')
+    expect(symbols.find((s) => s.name === 'second')?.lineStart).toBe(4)
+    // The attribute itself is not a binding.
+    expect(names, 'attribute name leaked in as a symbol').not.toContain('const')
+    expect(names, 'attribute name leaked in as a symbol').not.toContain('close')
+  })
+
   it('extracts local function declarations', () => {
     const content = `local function helper()
   return 42
@@ -3653,6 +3682,69 @@ const private_pi = 3.14;
     expect(symbols.find((s) => s.name === 'global_counter')?.kind).toBe('var')
     expect(symbols.find((s) => s.name === 'max_len')?.lineStart).toBe(2)
     expect(symbols.find((s) => s.name === 'global_counter')?.lineStart).toBe(3)
+  })
+
+  it('indexes export, extern and threadlocal top-level declarations', () => {
+    // HAND-DERIVED: the prefixes and their legal ordering are read off the Zig grammar comment
+    // above `expectTopLevelDecl` in ziglang/zig `lib/std/zig/Parse.zig`:
+    //   Decl <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline /
+    //            KEYWORD_noinline)? FnProto (SEMICOLON / Block)
+    //         / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? VarDecl
+    // with `pub` eaten one level up in ContainerDeclarations, so `pub` always comes first. The
+    // names below are read off this source text, not off the adapter's regexes. Before the fix
+    // the four patterns accepted only a bare optional `pub`, so every one of these declarations
+    // produced no symbol at all.
+    const content = `export const build_id: u32 = 7;
+export var error_count: usize = 0;
+threadlocal var scratch: [64]u8 = undefined;
+pub threadlocal var current_task: ?*Task = null;
+extern "c" var environ: [*c][*c]u8;
+export fn zig_entry() callconv(.C) void {}
+pub extern "c" fn printf(fmt: [*:0]const u8, ...) c_int;
+inline fn fastPath() void {}
+pub inline fn hotLoop() void {}
+noinline fn coldPath() void {}
+pub export const Wrapper = struct {
+    pub fn get() u8 {
+        return 1;
+    }
+};
+`
+    const { symbols } = extractZig(content, 'decls.zig')
+    const names = symbols.map((s) => s.name)
+    for (const expected of [
+      'build_id',
+      'error_count',
+      'scratch',
+      'current_task',
+      'environ',
+      'zig_entry',
+      'printf',
+      'fastPath',
+      'hotLoop',
+      'coldPath',
+      'Wrapper',
+    ]) {
+      expect(names, `missing Zig declaration: ${expected}`).toContain(expected)
+    }
+    expect(symbols.find((s) => s.name === 'build_id')?.kind).toBe('const')
+    expect(symbols.find((s) => s.name === 'error_count')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'scratch')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'current_task')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'environ')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'printf')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'Wrapper')?.kind).toBe('struct')
+    // The container frame must still be pushed for a prefixed container, so its methods keep
+    // their parent instead of being dropped.
+    expect(symbols.find((s) => s.name === 'get')?.parent).toBe('Wrapper')
+    // `inline`/`noinline` are legal on functions only, so the widened variable prefix must not
+    // admit them. (The mirror case `threadlocal fn` is not asserted: FUNC_RE deliberately allows
+    // `fn` after any whitespace so function-type expressions still match, and `threadlocal fn` is
+    // not legal Zig anyway, so over-matching it costs nothing.)
+    expect(
+      extractZig('inline var bogus_b: u8 = 0;\n', 'x.zig').symbols.map((s) => s.name),
+      'inline var is not legal Zig and must not be admitted as a variable',
+    ).not.toContain('bogus_b')
   })
 
   it('does not misattribute a method-local struct as a direct member of the enclosing type', () => {

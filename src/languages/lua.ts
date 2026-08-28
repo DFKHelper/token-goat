@@ -52,8 +52,8 @@ const LOCAL_FUNC_RE = /^local\s+function\s+([A-Za-z_][A-Za-z0-9_]*)/
 // Captures the assigned name (dotted/colon path allowed); must be tested before LOCAL_VAR_RE.
 const ASSIGN_FUNC_RE = /^(?:local\s+)?([A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z_][A-Za-z0-9_]*)?)\s*=\s*function\s*\(/
 
-// `local x`, `local x, y, z = ...` — extract only the first variable name.
-const LOCAL_VAR_RE = /^local\s+([A-Za-z_][A-Za-z0-9_]*)/
+// `local x`, `local x <const>`, `local x, y, z = ...`. Lua's `local` statement is `local namelist ['=' explist]` with `namelist ::= Name {',' Name}` (Lua 5.4 reference manual, section 3.3.7 "Local Declarations"), and Lua 5.4 allows an attribute `<const>`/`<close>` after any name. The old pattern captured only the FIRST name, so `local ok, err = pcall(f)` and the module-header form `local sqrt, floor = math.sqrt, math.floor` silently dropped every name but the first from the index -- the same "one binding indexed per multi-name declaration" data loss already fixed for Go var/const specs. Group 1 is the whole name list; split it on commas and strip attributes.
+const LOCAL_VAR_RE = /^local\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*<\s*[A-Za-z_][A-Za-z0-9_]*\s*>)?(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*<\s*[A-Za-z_][A-Za-z0-9_]*\s*>)?)*)/
 
 // Non-function control-flow blocks that also close with `end` (`if ... then`, `for ... do`,
 // `while ... do`, bare `do ... end`). elseif/else don't open their own block (they share the
@@ -235,7 +235,10 @@ export function extractLua(
     if (!isIndented) {
       const lvm = LOCAL_VAR_RE.exec(stripped)
       if (lvm) {
-        symbols.push(makeLineSymbol(filePath, lvm[1] ?? '', 'variable', lineNum, stripped.slice(0, 200)))
+        for (const part of (lvm[1] ?? '').split(',')) {
+          const name = part.replace(/<[^>]*>/, '').trim()
+          if (name) symbols.push(makeLineSymbol(filePath, name, 'variable', lineNum, stripped.slice(0, 200)))
+        }
       }
     }
 

@@ -28,15 +28,20 @@ interface ScopeFrame {
 // syntax no real Zig file contains, so every actual container was misfiled as a plain `const`
 // AND -- because no scope frame was pushed for it -- every `pub fn` method nested in its body
 // was dropped from the index entirely. Group 1 is the bound name, group 2 the container keyword.
-const CONTAINER_RE = /^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:extern\s+|packed\s+)?(struct|enum|union|opaque)\b/
+// Top-level declaration prefixes, straight off the Zig grammar (ziglang/zig lib/std/zig/Parse.zig, doc comment above `expectTopLevelDecl`): `ContainerDeclarations <- ... KEYWORD_pub? Decl ...` and `Decl <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)? FnProto (SEMICOLON / Block) / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? VarDecl`. So `pub` always comes first, then at most one of export/extern/inline/noinline, then `threadlocal` for variables only. `inline`/`noinline` are legal on functions only and `threadlocal` on variables only, so the two fragments differ exactly there rather than sharing one over-wide prefix that would admit `threadlocal fn` or `inline var`. `extern` may carry a calling-convention string (`extern "c" fn printf(...) c_int;`).
+const VAR_PREFIX = String.raw`(?:pub\s+)?(?:export\s+|extern\s+(?:"[^"]*"\s+)?)?(?:threadlocal\s+)?`
+const FN_PREFIX = String.raw`(?:pub\s+)?(?:export\s+|extern\s+(?:"[^"]*"\s+)?|inline\s+|noinline\s+)?`
+const NAME = String.raw`([A-Za-z_][A-Za-z0-9_]*)`
+
+const CONTAINER_RE = new RegExp(String.raw`^${VAR_PREFIX}const\s+${NAME}\s*=\s*(?:extern\s+|packed\s+)?(struct|enum|union|opaque)\b`)
 
 // `fn foo()`, `fn foo() type`, `pub fn bar()`, `fn name() return_type`
 // Generics in Zig are complex; we keep it simple and just match the name.
-const FUNC_RE = /(?:^|[\s(])(pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)/
+const FUNC_RE = new RegExp(String.raw`(?:^|[\s(])${FN_PREFIX}fn\s+${NAME}`)
 
 // `const foo = ...`, `var bar: i32 = ...`, and their `pub` forms. The optional `pub` prefix mirrors CONTAINER_RE and FUNC_RE above, both of which already accept it: without it here, `pub const max_len = 4096;` and `pub var counter: u32 = 0;` matched nothing at all and were dropped from the index outright, even though a `pub const Point = struct {...}` on the next line still resolved. A Zig root module is largely public re-exports (`pub const io = @import("io.zig");`), so this silently emptied the most looked-up part of the file.
-const CONST_RE = /^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)/
-const VAR_RE = /^(?:pub\s+)?var\s+([A-Za-z_][A-Za-z0-9_]*)/
+const CONST_RE = new RegExp(String.raw`^${VAR_PREFIX}const\s+${NAME}`)
+const VAR_RE = new RegExp(String.raw`^${VAR_PREFIX}var\s+${NAME}`)
 
 export function extractZig(
   content: string,
@@ -107,7 +112,7 @@ export function extractZig(
     if (!matched && !isIndented && frame === null) {
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
-        const fname = fm[2] ?? ''
+        const fname = fm[1] ?? ''
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
@@ -119,7 +124,7 @@ export function extractZig(
       if (depthInType === 1) {
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
-          const fname = fm[2] ?? ''
+          const fname = fm[1] ?? ''
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
