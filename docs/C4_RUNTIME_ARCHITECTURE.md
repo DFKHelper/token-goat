@@ -58,7 +58,7 @@ flowchart TB
 
 ### Trust Boundaries & Threat Surfaces
 1. **Harness Hook Boundary (Local IPC)**: Hook inputs arrive via standard I/O (JSON payloads over `stdin`). Token-Goat fails soft (`{ continue: true }`) on any parsing or processing error so agent operations never block.
-2. **Untrusted Payload Boundary (Web/Documents)**: Web pages (`webfetch.ts`) and document attachments (`pdf_extract.ts`, `docx_extract.ts`) pass through `injection_scan.ts` heuristics. Detected adversarial instructions are marked untrusted and fenced before model exposure.
+2. **Untrusted Payload Boundary (Web/Documents)**: Web pages (`webfetch.ts`) and document attachments (`pdf_extract.ts`, `docx_extract.ts`) are fenced before model exposure because of where they came from, never because a scanner recognized them. `untrusted_fence.ts` is the single decision point; `injection_scan.ts` runs alongside it and decides only whether the fence's notice names the patterns it matched.
 3. **Storage Boundary (Local User Isolation)**: All persistent databases and caches are stored in user-scoped directories (`%LOCALAPPDATA%\dfk-helper\token-goat` on Windows, `~/.token-goat` on POSIX) with no multi-tenant cross-talk.
 4. **Child Process Execution Boundary**: Bash command compression wraps commands inside a controlled runner (`bash_runner.ts`) capturing output with stream bounds (32 MiB/stream cap) and preserves exit codes.
 
@@ -275,13 +275,15 @@ sequenceDiagram
     participant Cache as web_outputs/{id}.json
 
     Agent->>WebFetch: Fetches external doc/URL
-    WebFetch->>Scanner: scanForInjection(content)
-    alt Injection Heuristics Triggered
+    WebFetch->>Scanner: scanForInjectionPatterns(content)
+    alt Patterns Matched
         Scanner-->>WebFetch: Match: "Ignore previous instructions", "System Prompt Override", etc.
-        WebFetch->>WebFetch: Wrap content in <untrusted_content> fence and inject safety caveat
-    else Content Clean
-        Scanner-->>WebFetch: Clean content
+        WebFetch->>WebFetch: Notice names the matched patterns
+    else No Pattern Matched
+        Scanner-->>WebFetch: No match
+        WebFetch->>WebFetch: Notice says content is untrusted, names nothing
     end
+    WebFetch->>WebFetch: Wrap in the surface's untrusted fence either way
     WebFetch->>Redactor: Redact sensitive tokens (Bearer, AWS keys, JWTs)
     Redactor->>Cache: Persist to content-addressed cache
     WebFetch-->>Agent: Returns safe, token-compressed extract
@@ -293,7 +295,7 @@ sequenceDiagram
 
 | Threat / Attack Surface | Risk | Token-Goat Architectural Mitigation |
 |-------------------------|------|-------------------------------------|
-| **Prompt Injection via Web/Docs** | Malicious instructions in external pages hijack the AI agent. | `injection_scan.ts` scans all ingested external content; wraps matches in explicit `<untrusted_content>` fences; enforces that documents are reference data, not directives. |
+| **Prompt Injection via Web/Docs** | Malicious instructions in external pages hijack the AI agent. | `untrusted_fence.ts` wraps every ingested external payload in a per-surface fence (`untrusted-web-content`, `untrusted-file-content`, `untrusted-tool-output`, `untrusted-github-content`) whether or not anything matched, so a novel phrasing gets no unmarked channel; `injection_scan.ts` names what it found in the notice and records it. Enforces that documents are reference data, not directives. |
 | **Path Traversal / UNC Attacks** | User-controlled paths escaping project directory via `..`, Windows drive letters, or NTFS streams. | `paths.ts::safeJoin()` unconditionally rejects components with colons (`:`); `normalizePath()` canonicalizes separators and drive letters; `resolveIndexPath()` strictly anchors keys. |
 | **SQLite Lock Contention / DoS** | Concurrent hooks & background indexer stalling agent execution. | `db.ts` enforces `busy_timeout=15000ms`, `WAL` journal mode, and fast in-memory retry. Single write transactions prevent reader starvation. |
 | **Index Database Bloat / Amplification** | Huge files or minified JSON inflating DB to gigabytes. | Choke point `writeParseResult` strictly caps symbol body at `MAX_SYMBOL_BODY_CHARS`; over-cap bodies are elided (`''`) and sliced from disk on demand. Amplification guard ensures stored bytes $\le 4\times$ source size. |
