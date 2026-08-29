@@ -366,6 +366,47 @@ describe('every function that reaches third-party content also reaches the fence
     ).toEqual([])
   })
 
+  // Guards the guard, for the zero-match check specifically. That check selects the functions it
+  // examines by scan-call NAME, so its population has a second failure mode beyond a wrong oracle:
+  // it can silently empty. This is not hypothetical -- it happened here. The gate read
+  // `scanForInjectionPatterns(` only, and centralizing the fence into untrusted_fence.ts meant no
+  // cli.ts function calls that name any more, so the check applied to zero functions and stayed
+  // green while a deliberately re-broken fenceFileText shipped the exact defect it exists to catch.
+  // Nothing errored and the pass count did not move. Requiring every name to have a live call site
+  // pins the set the same way the sibling check below does, so a rename fails here by name instead
+  // of quietly shrinking the population to nothing.
+  it('actually examines the known conditional sites, so a renamed scan call cannot narrow it away', () => {
+    // Selected by exactly the same two gates the zero-match check uses, so this measures that
+    // check's real population rather than a restatement of the source tree.
+    const examined = new Set(
+      srcFiles().flatMap((file) => {
+        const src = fs.readFileSync(file, 'utf8')
+        if (!SCAN_CALLS.some((call) => src.includes(call))) return []
+        return parseTopLevelFunctions(src)
+          .filter((fn) => SCAN_CALLS.some((call) => fn.body.includes(call)))
+          .map((fn) => fn.name)
+      }),
+    )
+
+    expect(
+      examined.size,
+      'the zero-match bypass check examined no functions at all, so it can only ever pass -- ' +
+        'the scan call it selects on has been renamed, or src/ parsing returned nothing',
+    ).toBeGreaterThan(0)
+
+    // The allowlisted exceptions are the one set known to have the conditional shape on purpose,
+    // which makes them the sharpest available probe: if any of them stops being visible to the
+    // gates above, the gates narrowed, and every site that is NOT allowlisted narrowed out with
+    // them -- silently, since a smaller population produces fewer violations, never an error.
+    const invisible = [...CONDITIONAL_FENCE_EXCEPTIONS.keys()].filter((name) => !examined.has(name))
+    expect(
+      invisible,
+      `these CONDITIONAL_FENCE_EXCEPTIONS functions are no longer visible to the zero-match bypass ` +
+        `check's own selection, so that check has quietly narrowed and would pass on sites it used ` +
+        `to catch -- add the scan call they now use to SCAN_CALLS: ${invisible.join(', ')}`,
+    ).toEqual([])
+  })
+
   // Guards the guard: if source-tree parsing ever silently returned nothing (a moved src/
   // directory, a broken glob), the check above would pass vacuously.
   it('actually finds a call site in src/ for every named third-party content source', () => {
