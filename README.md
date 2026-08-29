@@ -15,7 +15,7 @@ permalink: /
 
 **Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**
 
-**Also defends against prompt injection. Every fetched page is wrapped in an untrusted-content fence before hitting the model, whether or not it matched an attack pattern, and the scan only decides what the label says. One config line to disable.**
+**Also defends against prompt injection. Every fetched page, tool result, and extracted document is wrapped in an untrusted-content fence before hitting the model, whether or not it matched an attack pattern, and the scan only decides what the label says. One config line to disable.**
 
 **Your AI re-reads the same file three times. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.**
 
