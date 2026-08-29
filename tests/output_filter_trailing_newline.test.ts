@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BUNDLE } from './helpers/bundle.js'
 import { dataDirForHome, _resetDataDirCacheForTesting } from '../src/constants.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { unfence } from './helpers/unfence.js'
 
 let home: string
 let envRoot: string
@@ -70,9 +71,13 @@ function blob(n: number): string {
   return lines.join('\n') + '\n'
 }
 
-/** Non-empty output lines, so a trailing blank from the print itself is not counted as content. */
+/**
+ * Non-empty output lines of the recalled body, so neither a trailing blank from the print itself
+ * nor the untrusted-content fence around it is counted as content. Cached tool output is fenced by
+ * provenance now, and this file is about the line arithmetic inside the fence, not the fence.
+ */
 function bodyLines(stdout: string): string[] {
-  return stdout.split(/\r?\n/).filter((l) => l !== '')
+  return unfence(stdout).split(/\r?\n/).filter((l) => l !== '')
 }
 
 describe('output filters on content that ends in a newline', () => {
@@ -121,7 +126,9 @@ describe('output filters on content that ends in a newline', () => {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('line 200')
     expect(r.stdout).not.toContain('...(elided)...')
-    expect(r.stdout.replace(/\r\n/g, '\n')).toBe(text)
+    // Verbatim inside the fence: --full is the lossless escape hatch, and the fence wraps it
+    // without touching a byte of it.
+    expect(unfence(r.stdout.replace(/\r\n/g, '\n'))).toBe(text)
   })
 
   it('content with no trailing newline is unchanged', () => {

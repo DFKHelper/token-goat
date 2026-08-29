@@ -23,7 +23,8 @@ import type { StdioServerTransport as StdioServerTransportClass } from './mcp_st
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat, savedTokensFromBytes, _useRichStats } from './stats.js'
-import { scanForInjectionPatterns, fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { fenceUntrusted, scanAndRecord, injectionFencingEnabled } from './untrusted_fence.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1175,7 +1176,7 @@ function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: s
 function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
-  fenceUntrusted = false,
+  fenceByProvenance = false,
   fenceTag: string = UNTRUSTED_WEB_TAG,
 ): string {
   // Fetched-page recall only. The injection scan is documented as unconditional for fetched
@@ -1186,25 +1187,16 @@ function _applyFiltersAndPrint(
   // is not. Recall of cached Bash and MCP output is scanned too, under a tag naming tool output rather
   // than a fetched page. Neither is a page token-goat fetched, but both carry text written by a
   // third party -- a dependency's build or test output, a remote MCP server's result -- and the
-  // recall channel put it in front of the model unmarked. The fence only appears on a positive
-  // match, so ordinary output is byte-identical to before.
+  // recall channel put it in front of the model unmarked. The fence is decided by provenance --
+  // `fenceByProvenance` -- and not by whether the scan matched: it used to appear only on a positive
+  // hit, which meant any payload the eight deliberately-narrow regexes miss was emitted bare. The
+  // scan now only decides whether the notice names pattern(s) and whether a stat is recorded.
   const emit = (text: string): string => {
-    if (!fenceUntrusted || text === '') {
+    if (!fenceByProvenance || text === '') {
       out(text)
       return text
     }
-    let matches: string[] = []
-    try {
-      if (loadConfig().injection.enabled) matches = scanForInjectionPatterns(text)
-    } catch {
-      matches = []
-    }
-    if (matches.length === 0) {
-      out(text)
-      return text
-    }
-    recordStat('injection_detected', 0, 0, undefined, matches.join(','))
-    const fenced = fenceUntrustedContent(text, matches, fenceTag)
+    const fenced = fenceUntrusted(text, fenceTag)
     out(fenced)
     return fenced
   }
@@ -1283,16 +1275,34 @@ function _applyFiltersAndPrint(
  * `_applyFiltersAndPrint`'s `emit()` closure either, for the same reason: some of these commands
  * have no head/tail-elision opts shape to route through, and some need to fence one field of a
  * `--json` payload rather than the whole printed string.
+ *
+ * Unconditional: the fence follows the provenance, not the scan result. Use this for a document's
+ * body text, where the wrapper is one fixed ~125 bytes against a payload of hundreds to thousands
+ * -- see {@link fenceFileFieldIfMatched} for the per-field `--json` case, where that same wrapper
+ * is paid once per field and the arithmetic is not the same.
  */
-function fenceFileTextIfMatched(text: string): string {
-  let matches: string[] = []
-  try {
-    if (loadConfig().injection.enabled) matches = scanForInjectionPatterns(text)
-  } catch {
-    matches = []
-  }
+function fenceFileText(text: string): string {
+  return fenceUntrusted(text, UNTRUSTED_FILE_TAG)
+}
+
+/**
+ * Per-field variant for the `--json` envelopes (a sheet name, a slide title, an outline heading, a
+ * `pdf-find` snippet). Still gated on a scan hit, unlike every other fence in this file.
+ *
+ * This is a deliberate, documented exception, not an oversight. Fencing each field unconditionally
+ * costs a fixed ~125-byte wrapper per field against values that are routinely 10-40 bytes, and
+ * these commands emit one per sheet/slide/heading/match -- an order-of-magnitude inflation of
+ * exactly the listings that exist to be cheap. Fencing the whole envelope once instead would be
+ * O(1) and provenance-correct, but `--json` output is parsed by callers, and a fence wrapped
+ * around the JSON is no longer JSON. Per-field fencing keeps the envelope parseable, which is why
+ * it was written this way; the cost is what makes it unsuitable for the unconditional form.
+ *
+ * Resolving this needs a wire-format decision (a single sibling `untrusted` field on the envelope
+ * instead of N wrappers), which is a breaking change for `--json` consumers and out of scope here.
+ */
+function fenceFileFieldIfMatched(text: string): string {
+  const matches = scanAndRecord(text)
   if (matches.length === 0) return text
-  recordStat('injection_detected', 0, 0, undefined, matches.join(','))
   return fenceUntrustedContent(text, matches, UNTRUSTED_FILE_TAG)
 }
 
@@ -1412,22 +1422,27 @@ async function cmdPdfLocate(
   const matches = await runPdfLocate(file, pattern, locateOpts)
 
   // Each snippet is text pulled straight out of the PDF -- fence it the same as pdf-extract's
-  // body text, per-snippet rather than around the whole printed string, so the --json shape
-  // above stays valid JSON (matching fenceGithubTextIfMatched's per-field approach in
+  // body text. The printed form takes one unconditional fence around the whole match list: a
+  // snippet defaults to 80 characters (--context), so a per-snippet wrapper would cost more than
+  // the content it wraps, once per match. The --json form keeps the per-field match-gated fence
+  // so the envelope stays valid JSON (matching fenceGithubTextIfMatched's per-field approach in
   // read_commands.ts's pr-slice diff/comments --json branches).
-  const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileTextIfMatched(m.snippet) }))
-  const pages = fencedMatches.map((m) => m.page)
+  const pages = matches.map((m) => m.page)
   let printed: string
   if (opts.json === true) {
+    const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet) }))
     printed = JSON.stringify({ file, pattern, matchCount: fencedMatches.length, pages, matches: fencedMatches }, null, 2)
     out(printed)
-  } else if (fencedMatches.length === 0) {
+  } else if (matches.length === 0) {
     // A clean "found nothing", not an error -- the caller asked where a term is and the answer is "nowhere".
+    // Nothing from the document is echoed here, so there is no third-party text to fence.
     printed = '(no matches)'
     out(printed)
   } else {
-    const lines = fencedMatches.map((m) => `p${m.page}: ${m.snippet}`)
-    printed = `${lines.join('\n')}\n\n${countNoun(fencedMatches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
+    const lines = matches.map((m) => `p${m.page}: ${m.snippet}`)
+    printed = fenceFileText(
+      `${lines.join('\n')}\n\n${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`,
+    )
     out(printed)
   }
   // Same registry/producer desync guarded against as cmdPdfExtract above -- see the comment there.
@@ -1449,12 +1464,13 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
     return
   }
   // A PDF bookmark title is authored by whoever produced the PDF, not the caller who named the
-  // local path -- fence it the same as pdf-extract's body text (see fenceFileTextIfMatched above).
-  const fencedEntries = entries.map((e) => ({ ...e, title: fenceFileTextIfMatched(e.title) }))
+  // local path -- fence it the same as pdf-extract's body text. The printed form is fenced once
+  // around the whole listing (unconditional, one wrapper); the `--json` form keeps the per-field
+  // match-gated fence so the envelope stays parseable -- see fenceFileFieldIfMatched above.
   const text =
     opts.json === true
-      ? JSON.stringify(fencedEntries, null, 2)
-      : fencedEntries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n')
+      ? JSON.stringify(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })), null, 2)
+      : fenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'))
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
@@ -1511,19 +1527,19 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
 /**
  * Fence text OCR recovered from an image, always.
  *
- * Unlike `fenceFileTextIfMatched`, this does not wait for a pattern to match: see
- * `fenceUntrustedOcrText` for why decoded pixels are fenced on provenance rather than on a scan hit.
- * The scan still runs, purely so a match is still counted where it was counted before.
+ * Like `fenceFileText`, this does not wait for a pattern to match: see `fenceUntrustedOcrText` for
+ * why decoded pixels are fenced on provenance rather than on a scan hit. The scan still runs,
+ * purely so a match is still counted where it was counted before. This was the only site in the
+ * codebase with that shape before the rest were brought into line.
+ *
+ * It keeps its own body rather than calling `fenceUntrusted` because OCR text gets a distinct
+ * notice (`fenceUntrustedOcrText`) naming the image it came out of, but it honours the same
+ * `injection.enabled` opt-out every other site now does -- before, this one site fenced even with
+ * the subsystem switched off, so the documented one-line opt-out did not actually cover it.
  */
 function fenceOcrText(text: string): string {
-  try {
-    if (loadConfig().injection.enabled) {
-      const matches = scanForInjectionPatterns(text)
-      if (matches.length > 0) recordStat('injection_detected', 0, 0, undefined, matches.join(','))
-    }
-  } catch {
-    // Unreadable config must not cost the fence below, which does not depend on it.
-  }
+  if (!injectionFencingEnabled()) return text
+  scanAndRecord(text)
   return fenceUntrustedOcrText(text)
 }
 
@@ -1628,24 +1644,24 @@ function recordXlsxStat(kind: string, file: string, emitted: string): void {
 async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
   const sheets = await xlsxListSheets(file)
   // A sheet name is authored by whoever built the spreadsheet -- fence it the same as the cell
-  // data xlsx-head/range/query return below.
-  const fencedSheets = sheets.map((s) => ({ ...s, name: fenceFileTextIfMatched(s.name) }))
+  // data xlsx-head/range/query return below. Printed form: one unconditional fence around the
+  // whole listing. `--json` form: per-field and match-gated, to keep the envelope parseable.
   // Three sibling commands (xlsx-head, xlsx-range, xlsx-query) take a --sheet whose help text says "see xlsx-sheets", so this output exists to be fed straight back -- but the sheet name had to be copied out of a padded prose line that also carries the range and the dimensions. --json hands over the same {name, ref, rows, cols} the extractor already returns.
-  const text = opts.json === true ? JSON.stringify(fencedSheets.map((s) => ({ name: s.name, ref: s.ref, rows: s.rows, cols: s.cols })), null, 2) : fencedSheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n')
+  const text = opts.json === true ? JSON.stringify(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols })), null, 2) : fenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'))
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
 
 async function cmdXlsxHead(file: string, opts: { sheet: string; rows?: string }) {
   const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
-  const text = fenceFileTextIfMatched(await xlsxHeadSheet(file, opts.sheet, rows))
+  const text = fenceFileText(await xlsxHeadSheet(file, opts.sheet, rows))
   out(text)
   recordXlsxStat('xlsx_head', file, text)
 }
 
 async function cmdXlsxRange(file: string, opts: { sheet: string; range: string; formulas?: boolean }) {
   const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
-  const text = fenceFileTextIfMatched(formatXlsxRange(result))
+  const text = fenceFileText(formatXlsxRange(result))
   out(text)
   recordXlsxStat('xlsx_range', file, text)
 }
@@ -1663,7 +1679,7 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
     ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
-  const text = fenceFileTextIfMatched(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
+  const text = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
   out(text)
   recordXlsxStat('xlsx_query', file, text)
 }
@@ -1679,21 +1695,23 @@ function recordDocStat(kind: string, file: string, emitted: string): void {
 async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
   const slides = await pptxOutline(file)
   // A slide title is authored by whoever built the deck -- fence it the same as pptx-text/slide/
-  // notes below.
-  const fencedSlides = slides.map((s) => ({ ...s, title: fenceFileTextIfMatched(s.title) }))
+  // notes below. Printed form: one unconditional fence around the whole listing. `--json` form:
+  // per-field and match-gated, to keep the envelope parseable.
   const text =
     opts.json === true
-      ? JSON.stringify(fencedSlides, null, 2)
-      : fencedSlides
-          .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
-          .join('\n')
+      ? JSON.stringify(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })), null, 2)
+      : fenceFileText(
+          slides
+            .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
+            .join('\n'),
+        )
   out(text)
   recordDocStat('pptx_outline', file, text)
 }
 
 async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }) {
   const n = requireNonNegativeInt('--slide', opts.slide)
-  const text = fenceFileTextIfMatched(await pptxSlideText(file, n, opts.notes === true))
+  const text = fenceFileText(await pptxSlideText(file, n, opts.notes === true))
   out(text)
   recordDocStat('pptx_slide', file, text)
 }
@@ -1701,7 +1719,7 @@ async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean
 async function cmdPptxNotes(file: string, opts: { slide?: string }) {
   const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
   const text = await pptxNotesText(file, n)
-  const printed = text.length > 0 ? fenceFileTextIfMatched(text) : 'no speaker notes found'
+  const printed = text.length > 0 ? fenceFileText(text) : 'no speaker notes found'
   out(printed)
   recordDocStat('pptx_notes', file, printed)
 }
@@ -1712,7 +1730,7 @@ async function cmdPptxText(file: string, opts: { grep: string }) {
     out('no matches')
     return
   }
-  const text = fenceFileTextIfMatched(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
+  const text = fenceFileText(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
   out(text)
   recordDocStat('pptx_text', file, text)
 }
@@ -1728,12 +1746,12 @@ async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
     return
   }
   // A heading is authored by whoever wrote the document -- fence it the same as docx-text's body
-  // text.
-  const fencedHeadings = headings.map((h) => ({ ...h, text: fenceFileTextIfMatched(h.text) }))
+  // text. Printed form: one unconditional fence around the whole listing. `--json` form: per-field
+  // and match-gated, to keep the envelope parseable.
   const text =
     opts.json === true
-      ? JSON.stringify(fencedHeadings, null, 2)
-      : fencedHeadings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n')
+      ? JSON.stringify(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })), null, 2)
+      : fenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'))
   out(text)
   recordDocStat('docx_outline', file, text)
 }
@@ -3108,19 +3126,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   // gdrive.ts). Inlined rather than routed through `_applyFiltersAndPrint` because that helper's
   // default head/tail elision would silently truncate output this command has always emitted in
   // full; `emitted` is used unmodified below except when a match is found.
-  let toEmit = emitted
-  try {
-    if (loadConfig().injection.enabled) {
-      const matches = scanForInjectionPatterns(emitted)
-      if (matches.length > 0) {
-        recordStat('injection_detected', 0, 0, undefined, matches.join(','))
-        toEmit = fenceUntrustedContent(emitted, matches, UNTRUSTED_WEB_TAG)
-      }
-    }
-  } catch {
-    // Best-effort, mirroring _applyFiltersAndPrint's own scan try/catch: a scanning failure must
-    // never block emitting the doc.
-  }
+  const toEmit = fenceUntrusted(emitted, UNTRUSTED_WEB_TAG)
   out(toEmit)
   // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `gdrive-sections`/`gdrive_sections`
   // entry and nothing ever called recordStat for this command -- the dashboard bucket was

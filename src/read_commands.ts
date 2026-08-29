@@ -29,7 +29,8 @@ import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
-import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
@@ -519,20 +520,29 @@ function guardText(text: string, command: string): string {
 }
 
 /**
- * Scan `text` and, on a match, return it wrapped in an untrusted-content fence under
- * {@link UNTRUSTED_GITHUB_TAG}. Shared by every `pr-slice` emit site (text and JSON): a PR's
- * title, description, review comments, and diff are all authorable by anyone who opened the PR
- * or left the comment.
+ * Wrap `text` in an untrusted-content fence under {@link UNTRUSTED_GITHUB_TAG}. A PR's title,
+ * description, review comments, and diff are all authorable by anyone who opened the PR or left
+ * the comment, so the fence follows that provenance and not the scan result. The scan still runs,
+ * purely to name matched pattern(s) in the notice and record the stat.
+ *
+ * Used by every printed `pr-slice` emit site. The `--json` sites use
+ * {@link fenceGithubFieldIfMatched} instead -- see the note there.
  */
-function fenceGithubTextIfMatched(text: string): string {
-  let matches: string[] = []
-  try {
-    if (loadConfig().injection.enabled) matches = scanForInjectionPatterns(text)
-  } catch {
-    matches = []
-  }
+function fenceGithubText(text: string): string {
+  return fenceUntrusted(text, UNTRUSTED_GITHUB_TAG)
+}
+
+/**
+ * Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the
+ * envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer
+ * JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays
+ * a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb.
+ * Same deliberate exception as `fenceFileFieldIfMatched` in cli.ts, and it needs the same
+ * wire-format decision to resolve.
+ */
+function fenceGithubFieldIfMatched(text: string): string {
+  const matches = scanAndRecord(text)
   if (matches.length === 0) return text
-  recordStat('injection_detected', 0, 0, undefined, matches.join(','))
   return fenceUntrustedContent(text, matches, UNTRUSTED_GITHUB_TAG)
 }
 
@@ -3802,7 +3812,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         } else {
           // Changed-file paths are structured identifiers, not freeform prose, so they are not
           // fenced here the way diff/comments/description text is -- see this file's
-          // fenceGithubTextIfMatched doc comment.
+          // fenceGithubText doc comment.
           const text = formatFilesSlice(files)
           emitGuarded(text, 'pr-slice')
           recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} files`)
@@ -3820,11 +3830,11 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         // file's hunk -- see the `files` case above for the same recordStat rationale.
         const fullSourceBytes = Buffer.byteLength(diffText, 'utf8')
         if (opts.json === true) {
-          const jsonText = JSON.stringify({ path: parsed.path, diff: fenceGithubTextIfMatched(fileDiff) })
+          const jsonText = JSON.stringify({ path: parsed.path, diff: fenceGithubFieldIfMatched(fileDiff) })
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} diff:${parsed.path}`)
         } else {
-          emitGuarded(fenceGithubTextIfMatched(fileDiff), 'pr-slice')
+          emitGuarded(fenceGithubText(fileDiff), 'pr-slice')
           recordReadStat('pr_slice', fullSourceBytes, fileDiff, `${repo}#${opts.pr} diff:${parsed.path}`)
         }
         return 0
@@ -3834,14 +3844,14 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         // See the `files` case above for the same recordStat rationale.
         const fullSourceBytes = Buffer.byteLength(JSON.stringify(comments), 'utf8')
         if (opts.json === true) {
-          const fencedComments = comments.map((c) => ({ ...c, body: fenceGithubTextIfMatched(c.body) }))
+          const fencedComments = comments.map((c) => ({ ...c, body: fenceGithubFieldIfMatched(c.body) }))
           const capped = guardJsonRows(fencedComments)
           const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} comments`)
         } else {
           const text = formatCommentsSlice(comments)
-          emitGuarded(fenceGithubTextIfMatched(text), 'pr-slice')
+          emitGuarded(fenceGithubText(text), 'pr-slice')
           recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} comments`)
         }
         return 0
@@ -3853,15 +3863,15 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         if (opts.json === true) {
           const fencedDesc = {
             ...desc,
-            title: fenceGithubTextIfMatched(desc.title),
-            body: desc.body !== null ? fenceGithubTextIfMatched(desc.body) : null,
+            title: fenceGithubFieldIfMatched(desc.title),
+            body: desc.body !== null ? fenceGithubFieldIfMatched(desc.body) : null,
           }
           const jsonText = JSON.stringify(fencedDesc)
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} description`)
         } else {
           const text = formatDescriptionSlice(desc)
-          emitGuarded(fenceGithubTextIfMatched(text), 'pr-slice')
+          emitGuarded(fenceGithubText(text), 'pr-slice')
           recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} description`)
         }
         return 0

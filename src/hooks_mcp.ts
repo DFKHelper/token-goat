@@ -13,14 +13,15 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, emitRewrite } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, emitRewrite, emitRewriteIfChanged } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, mcpOutputBytes, storeMcpOutput } from './mcp_cache.js'
 import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 import { redactSecrets } from './secret_redact.js'
-import { scanForInjectionPatterns, fenceUntrustedContent, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
@@ -52,25 +53,21 @@ function postMcpHandler(event: HookEvent): HookOutput {
   const resultText = extractToolResultText(event.raw)
   if (!resultText) return passOutput()
   // An MCP result is a remote server's output: the least trusted text in the pipeline, and the one surface a page-only injection scan never covered. Scanned before every early return below, because each of those returns was a way for the same hostile text to reach the model unmarked: an in-band error response carries text just as a success does, a harness that omits the session id still shows the model the result, and the read-only dedup return fires on the SECOND of two identical calls -- whose result a hostile or time-varying server is free to make different from the first. Caching is what those guards exist to gate; the fence is not.
-  let injectionMatches: string[] = []
-  try {
-    if (loadConfig().injection.enabled) injectionMatches = scanForInjectionPatterns(resultText)
-  } catch {
-    injectionMatches = []
-  }
-  if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
+  const injectionMatches = scanAndRecord(resultText)
   // Redact secrets on this same live path, computed once here ahead of every early-return guard below -- an MCP result carrying a bare credential (an API key in an env-dump tool's output, a PAT sitting in a commit message) trips no injection pattern at all, so gating redaction on injectionMatches (as fenced() alone used to) would leave every non-fenced return -- no session id, an in-band MCP error, a dedup cache hit, and the terminal "compression did not fire or did not pay off" return below -- shipping it unredacted. Mirrors postWebSearchHandler's and postFetchHandler's fix for the same gap.
   const redactedResult = redactSecrets(resultText)
   const fenced = (): HookOutput =>
-    emitRewrite(
-      fenceUntrustedContent(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
+    emitRewriteIfChanged(
+      resultText,
+      fenceWithMatches(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
       'mcp',
     )
-  const passOrFence = (): HookOutput => {
-    if (injectionMatches.length > 0) return fenced()
-    if (redactedResult.count > 0) return emitRewrite(redactedResult.text, 'mcp')
-    return passOutput()
-  }
+  // Unconditional: an MCP result is a remote server's output by provenance, so it is fenced
+  // whether or not the eight deliberately-narrow patterns matched. It used to pass through
+  // unfenced on a clean scan, which meant any payload those patterns miss reached the model
+  // unmarked -- the fence's whole job is to survive a miss. The scan result now only decides
+  // whether the notice names pattern(s).
+  const passOrFence = (): HookOutput => fenced()
 
   if (!event.sessionId) return passOrFence()
   // An in-band MCP error is a valid response, not a cacheable one - never let a transient or now-resolved failure block every later identical retry.
@@ -104,10 +101,10 @@ function postMcpHandler(event: HookEvent): HookOutput {
         })
         if (worthwhile) {
           // MCP compression shipped for releases without recording anything, so the whole mechanism was invisible in `token-goat stats` even though the `mcp:` prefix was already registered in KIND_TO_SOURCE. Credited through emitRewrite's savings parameter rather than a hand-written recordStat beside the emit, because that parameter measures the emitted string itself -- notice, fence and redaction placeholders included -- which is the only figure that describes what the model was actually spared. A recordStat here would have to re-derive that per branch and would drift the moment either branch changed, which is exactly how the WebFetch over-report happened.
+          // Fenced on the same unconditional provenance rule as passOrFence above: a compressed
+          // result is still the remote server's text, and a clean scan is not evidence it is safe.
           return emitRewrite(
-            injectionMatches.length > 0
-              ? `${notice}${fenceUntrustedContent(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`
-              : `${notice}${redactedBody}`,
+            `${notice}${fenceWithMatches(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
             'mcp',
             { kind: 'mcp:compress', originalBytes },
           )

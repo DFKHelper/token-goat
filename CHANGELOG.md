@@ -2,6 +2,16 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.8.5] - 2026-08-29
+
+### Security
+
+- **Third-party text is now always marked as untrusted, instead of only when it matched an injection pattern.** A fetched page, a search result, an MCP server's reply, recalled command output, a PDF or Word or Excel or PowerPoint body, a pull-request diff, a Google Doc section, and a recall listing are all somebody else's writing. Until now each of those was wrapped in an untrusted-content fence only if the text matched one of eight deliberately narrow attack phrasings, which meant anyone wording the same instruction differently got an unmarked channel straight into the model, and a miss was silent. All of them are now fenced for where the text came from. The scan still runs and is still counted: it decides whether the notice names the patterns it found, not whether the fence appears. This is the rule already applied to image text in 2.8.4 and to file bytes spliced into a denial message, now applied everywhere. The decision lives in one new place, [src/untrusted_fence.ts](src/untrusted_fence.ts), rather than being restated at each site, because the eight sites that restated it all got it wrong the same way. `injection.enabled = false` still switches the whole thing off in one line, and now covers the image-text path too, which used to fence regardless of the setting. See also [src/cli.ts](src/cli.ts), [src/read_commands.ts](src/read_commands.ts), [src/cli_recall.ts](src/cli_recall.ts), [src/hooks_fetch.ts](src/hooks_fetch.ts), [src/hooks_mcp.ts](src/hooks_mcp.ts) and [src/hooks_websearch.ts](src/hooks_websearch.ts).
+
+  Two things to expect. Output that used to arrive bare now carries a two-line wrapper, measured at 124 to 125 bytes on real `docx-text`, `xlsx-head` and `bash-output` runs, rising to about 195 when the notice names a matched pattern, so short recalls are slightly larger; the wrapper is added once around a printed block rather than once per item, so a listing of forty snippets pays for it once. And `--json` output is the one exception: a fence wrapped around JSON is no longer JSON, so those envelopes still fence individual fields only on a pattern match. The printed form of the same command is always fenced. No reindex is needed.
+
+- **The structural check that was supposed to catch this could not see it.** The existing guard tested that a function which reads third-party content can *reach* a fence call, which stayed true the whole time the fence sat behind an `if (matches.length === 0) return text`. It now checks the thing that matters: that no fence can be skipped by a zero-match early return, with a named exception list for the `--json` field cases and a check that the exception list has no stale entries. Mutating a fixed site back to the conditional shape leaves the old check green and turns the new one red, naming the function. Thirteen document-extraction entry points were added to the guard's list of sources at the same time. See [tests/guards/third_party_content_reaches_fence.test.ts](tests/guards/third_party_content_reaches_fence.test.ts).
+
 ## [2.8.4] - 2026-08-28
 
 ### Security
