@@ -15,6 +15,7 @@
  *      real hook registry and that session state persists correctly across two calls.
  */
 import { spawnSync } from 'node:child_process'
+import { unfence } from '../helpers/unfence.js'
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -219,8 +220,8 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     const out = { args: {}, output: `Docs mention token ${secret} in the log.` }
     await hooks['tool.execute.after']!({ tool: 'webfetch', sessionID, args: { url: 'https://example.com/page' } }, out)
 
-    // Exact full value: the whole tool result is replaced by the redacted text, not annotated alongside the raw secret.
-    expect(out.output).toBe('Docs mention token [REDACTED:github_token] in the log.')
+    // Exact full value: the whole tool result is replaced by the redacted, fenced text, not annotated alongside the raw secret. The fence is there because a fetched page is untrusted by provenance; the redaction is the subject here, so the body is compared unfenced.
+    expect(unfence(out.output)).toBe('Docs mention token [REDACTED:github_token] in the log.')
     expect(existsSync(markerPath)).toBe(false)
   })
 

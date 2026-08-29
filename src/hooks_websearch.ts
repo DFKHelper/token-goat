@@ -22,11 +22,11 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, emitRewrite } from './hooks_common.js'
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, emitRewriteIfChanged } from './hooks_common.js'
 import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
-import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js'
+import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
 import { redactSecrets } from './secret_redact.js'
 
 /** Collapse whitespace and case so "React hooks" and "  react   HOOKS  " dedup as the
@@ -83,24 +83,16 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     const resultText = extractToolResultText(event.raw)
     if (!resultText) return passOutput()
     // A WebSearch result is third-party web content, exactly as untrusted as a WebFetch result -- fenced with the same UNTRUSTED_WEB_TAG for consistency with hooks_fetch.ts's postFetchHandler. Scanned and the fence decision computed before every guard below that can return early with this text already extracted, per CLAUDE.arch.md's Security Boundaries: a guard that exists to save cache work (an in-band error, a missing session id, an unkeyable query) must never double as a way around the injection scan.
-    let injectionMatches: string[] = []
-    try {
-      if (loadConfig().injection.enabled) injectionMatches = scanForInjectionPatterns(resultText)
-    } catch {
-      injectionMatches = []
-    }
-    if (injectionMatches.length > 0) recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','))
+    const injectionMatches = scanAndRecord(resultText)
     // Redact secrets on the same live path the fence above protects, computed here at the same point ahead of every early-return guard below rather than folded into any one of them -- a large WebSearch result can carry a credential (an API key pasted into a forum answer, a leaked token in an indexed gist) that trips no injection pattern at all, so gating redaction on injectionMatches would leave it unredacted. redactSecrets() is pure/synchronous and its own doc comment says it does not swallow a regex-engine failure itself, so it relies on this handler's outer try/catch the same way hooks_mcp.ts's postMcpHandler calls it unwrapped too.
     const redacted = redactSecrets(resultText)
-    const passOrFence = (): HookOutput => {
-      if (injectionMatches.length > 0) {
-        return emitRewrite(fenceUntrustedContent(redacted.text, injectionMatches), 'websearch')
-      }
-      if (redacted.count > 0) {
-        return emitRewrite(redacted.text, 'websearch')
-      }
-      return passOutput()
-    }
+    // Unconditional: a WebSearch result is third-party web content by provenance, so it is fenced
+    // whether or not the eight deliberately-narrow patterns matched. It used to pass through
+    // unfenced on a clean scan, which meant any payload those patterns miss reached the model
+    // unmarked -- the fence's whole job is to survive a miss. The scan result now only decides
+    // whether the notice names pattern(s).
+    const passOrFence = (): HookOutput =>
+      emitRewriteIfChanged(resultText, fenceWithMatches(redacted.text, injectionMatches), 'websearch')
 
     if (!event.sessionId) return passOrFence()
     const signature = webSearchSignatureInput(getToolInput(event))

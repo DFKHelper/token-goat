@@ -231,6 +231,21 @@ export function emitRewrite(
   return { hookType: 'rewriteOutput', updatedOutput }
 }
 
+/**
+ * {@link emitRewrite}, except a rewrite that would emit exactly `original` passes through instead.
+ *
+ * The fence and the redaction are both unconditional now, so the third-party-content hooks build
+ * their emitted string first and only then know whether anything actually changed. Rewriting the
+ * harness's output with a byte-identical copy is not free: it makes a larger hook response, it
+ * stops `hookType` distinguishing "we changed this" from "we looked at this", and it would defeat
+ * the `injection.enabled` opt-out, whose whole point is that a user who switches the subsystem off
+ * gets the untouched output back.
+ */
+export function emitRewriteIfChanged(original: string, emitted: string, detail: string): HookOutput {
+  if (emitted === original) return passOutput()
+  return emitRewrite(emitted, detail)
+}
+
 /** Non-empty lines in `text`, used as a match-count proxy for tools whose output is a flat
  *  newline-separated list (one line per matched file/line/path). Shared by Grep and Glob's
  *  dedup-hint handlers via {@link makeDedupHintHandlers}. */

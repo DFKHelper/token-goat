@@ -66,6 +66,26 @@ const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
   // recall_index.ts -- previously cached bash/web/mcp output, read back out of the cross-cache index.
   'searchRecall',
   'listRecentRecall',
+  // pdf/docx/pptx/xlsx extractors -- a local path the caller named is not the same thing as
+  // content the caller wrote. An emailed invoice, a downloaded report, a contract someone else
+  // drafted are all third-party text that happens to live on this disk, and the threat model
+  // counts them as untrusted precisely BECAUSE the user only named the file rather than
+  // authoring it. This surface was missing from the population entirely, so every document
+  // command was outside the guard's view while it reported green. Named by the local alias each
+  // is imported under in cli.ts, since that is what appears at the call site.
+  'runPdfExtractText',
+  'runPdfLocate',
+  'runPdfOutline',
+  'docxText',
+  'docxOutline',
+  'pptxSlideText',
+  'pptxNotesText',
+  'pptxTextGrep',
+  'pptxOutline',
+  'xlsxListSheets',
+  'xlsxHeadSheet',
+  'xlsxRangeSheet',
+  'xlsxQuerySheet',
 ]
 // `getBashOutput`/`getWebOutput`/`getWebOutputRaw` (the existing, already-fenced bash/web/mcp
 // recall paths) are deliberately NOT in the population above: those functions are also called
@@ -76,11 +96,74 @@ const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
 // (verification requirement #4), which assert the actual fenced output, not just that some
 // function reaches the call.
 
+/**
+ * The bug shape this file previously could not see, expressed directly: a body that runs the scan
+ * and then returns the content unfenced when the scan found nothing.
+ *
+ * The reachability check below asks whether a fence call is *present* somewhere downstream. It
+ * cannot ask whether that call is on a branch an early return skips -- and every conditional site
+ * contained the call, on the branch that runs only when the scan hits, so the guard was green on
+ * all of them and could not have failed. That is not a missing test run; it is an oracle that
+ * measures the wrong thing. Worse, `callsFence` accepts `_applyFiltersAndPrint(..., true, ...)` as
+ * proof of fencing, and that helper's own emit closure was itself one of the conditional sites.
+ *
+ * So this predicate matches the shape rather than the reachability: a zero-length test on the scan
+ * result guarding a `return`. `scanForInjectionPatterns` is the only way to produce that result,
+ * so a body that never calls it is not in scope here.
+ */
+/**
+ * Every way a body can run the injection scan. `scanAndRecord` is the shared wrapper in
+ * src/untrusted_fence.ts; most callers use it rather than `scanForInjectionPatterns` directly.
+ * Naming only the raw scanner here would silently narrow the zero-match check below to the two
+ * modules that still call it -- which is how this guard measured the wrong thing the first time.
+ */
+const SCAN_CALLS: readonly string[] = ['scanForInjectionPatterns(', 'scanAndRecord(']
+
+const ZERO_MATCH_BYPASS_RE =/\b\w*[Mm]atches\s*\.\s*length\s*===\s*0\s*\)\s*(?:\{\s*)?return\b/
+
+/**
+ * Bodies allowed to keep the conditional shape, each with a stated reason. This is an allowlist of
+ * KNOWN EXCEPTIONS, not a list of things to check: an omission here fails the test rather than
+ * silently skipping a site, which is the opposite of the hand-maintained-population failure mode
+ * the header comment describes. Adding a name here is a deliberate act with a reason attached.
+ */
+const CONDITIONAL_FENCE_EXCEPTIONS: ReadonlyMap<string, string> = new Map([
+  [
+    'fenceFileFieldIfMatched',
+    'per-field fence for the --json envelopes: a fence around JSON is not JSON, and an ' +
+      'unconditional ~125-byte wrapper per sheet name/slide title/heading costs more than the ' +
+      'field. Resolving it needs a wire-format change (one sibling `untrusted` field).',
+  ],
+  [
+    'fenceGithubFieldIfMatched',
+    'same exception as fenceFileFieldIfMatched, for pr-slice --json.',
+  ],
+  [
+    'fenceSnippetIfMatched',
+    'same exception, for recall --json. The printed recall listing is fenced unconditionally as ' +
+      'one block by fenceRecallListing.',
+  ],
+])
+
+/**
+ * Every way a body can reach the fence boundary. `fenceUntrusted`/`fenceWithMatches` (the shared
+ * decision point in src/untrusted_fence.ts) and `fenceUntrustedOcrText` (OCR's own notice) all end
+ * at `fenceUntrustedContent`, but they live in a different module than their callers, so the
+ * per-file call graph below cannot walk into them -- they have to be named here as terminals or a
+ * correctly-fenced caller reads as a violation.
+ */
+const FENCE_TERMINALS: readonly string[] = [
+  'fenceUntrustedContent(',
+  'fenceUntrusted(',
+  'fenceWithMatches(',
+  'fenceUntrustedOcrText(',
+]
+
 /** True when `body` reaches the fence boundary itself. */
 function callsFence(body: string): boolean {
-  if (body.includes('fenceUntrustedContent(')) return true
+  if (FENCE_TERMINALS.some((terminal) => body.includes(terminal))) return true
   // cli.ts's shared boundary: `_applyFiltersAndPrint(text, opts, true, ...)` runs the scan and
-  // fence internally when its third argument (`fenceUntrusted`) is `true`.
+  // fence internally when its third argument (`fenceByProvenance`) is `true`.
   if (/_applyFiltersAndPrint\([^;]*?,\s*true\b/.test(body)) return true
   return false
 }
@@ -185,7 +268,24 @@ function srcFiles(): string[] {
  * population is what keeps this guard pointed at *consumers*, matching the real bug shape (three
  * command handlers, not the fetch modules they called).
  */
-const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set(['pr_slice.ts', 'gdrive.ts', 'recall_index.ts'])
+const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set([
+  'pr_slice.ts',
+  'gdrive.ts',
+  'recall_index.ts',
+  // Same reasoning for the document extractors: they return text to a caller and never print.
+  'pdf_extract.ts',
+  'docx_extract.ts',
+  'pptx_extract.ts',
+  'xlsx_extract.ts',
+  'ooxml_extract.ts',
+  // Extracts document text for the embedding index (parser.ts::indexFileEmbeddings) and returns
+  // it to that indexer; it never prints. Residual, named rather than left implicit: text indexed
+  // this way can later reach the model through `semantic`, whose output is not fenced today. That
+  // is a separate surface with a separate cost question -- `semantic` returns mostly the user's
+  // own source -- and fencing it is not in scope for this guard, which follows what a command
+  // PRINTS. Tracked so the next reader does not have to re-derive it from a green test.
+  'doc_embed_extract.ts',
+])
 
 interface Violation {
   readonly file: string
@@ -224,14 +324,63 @@ describe('every function that reaches third-party content also reaches the fence
     ).toEqual([])
   })
 
+  it('has no fence that a zero-match early return can skip', () => {
+    const offenders: string[] = []
+    for (const file of srcFiles()) {
+      const src = fs.readFileSync(file, 'utf8')
+      if (!SCAN_CALLS.some((call) => src.includes(call))) continue
+      for (const fn of parseTopLevelFunctions(src)) {
+        if (!SCAN_CALLS.some((call) => fn.body.includes(call))) continue
+        if (!ZERO_MATCH_BYPASS_RE.test(fn.body)) continue
+        if (CONDITIONAL_FENCE_EXCEPTIONS.has(fn.name)) continue
+        offenders.push(`${path.relative(SRC_DIR, file)}::${fn.name}`)
+      }
+    }
+    expect(
+      offenders,
+      'these functions scan for injection patterns and then return the content UNFENCED when the ' +
+        'scan found nothing, which gates a fence on a heuristic hit -- the shape CLAUDE.arch.md\'s ' +
+        'Security Boundaries prohibits, because a payload the eight deliberately-narrow patterns ' +
+        'miss then costs the whole protection rather than just the label. Fence on provenance and ' +
+        'let the scan decide only what the notice says. If a site genuinely needs the conditional ' +
+        'shape, add it to CONDITIONAL_FENCE_EXCEPTIONS with the reason: ' +
+        offenders.join(', '),
+    ).toEqual([])
+  })
+
+  // Guards the guard: an exception that no longer matches any real body is dead weight that makes
+  // the allowlist look more load-bearing than it is, and hides that a site was fixed or renamed.
+  it('has no stale entry in the conditional-fence exception list', () => {
+    const bodies = new Map<string, string>()
+    for (const file of srcFiles()) {
+      for (const fn of parseTopLevelFunctions(fs.readFileSync(file, 'utf8'))) bodies.set(fn.name, fn.body)
+    }
+    const stale = [...CONDITIONAL_FENCE_EXCEPTIONS.keys()].filter((name) => {
+      const body = bodies.get(name)
+      return body === undefined || !ZERO_MATCH_BYPASS_RE.test(body)
+    })
+    expect(
+      stale,
+      `these CONDITIONAL_FENCE_EXCEPTIONS entries no longer name a function with the conditional ` +
+        `shape -- remove them so the allowlist keeps meaning what it says: ${stale.join(', ')}`,
+    ).toEqual([])
+  })
+
   // Guards the guard: if source-tree parsing ever silently returned nothing (a moved src/
   // directory, a broken glob), the check above would pass vacuously.
-  it('actually finds source-defined third-party-content functions to check against', () => {
-    let found = 0
-    for (const file of srcFiles()) {
-      const fns = parseTopLevelFunctions(fs.readFileSync(file, 'utf8'))
-      found += fns.filter((fn) => THIRD_PARTY_SOURCE_CALLS.includes(fn.name)).length
-    }
-    expect(found).toBeGreaterThanOrEqual(THIRD_PARTY_SOURCE_CALLS.length)
+  it('actually finds a call site in src/ for every named third-party content source', () => {
+    // Counted by CALL SITE, not by definition: several entries are imported under a local alias
+    // (`headSheet as xlsxHeadSheet`), so no function in src/ is *defined* under that name, and a
+    // definition-counting check would have to be loosened to a floor -- which is exactly the
+    // aggregate-floor shape that hides the loss of an individual entry. Requiring every single
+    // name to appear at a call site pins the set instead: an entry that stops being called (a
+    // command deleted, an import renamed) fails here by name rather than shrinking a total.
+    const allSrc = srcFiles().map((f) => fs.readFileSync(f, 'utf8')).join('\n')
+    const missing = THIRD_PARTY_SOURCE_CALLS.filter((call) => !new RegExp(`\\b${call}\\s*\\(`).test(allSrc))
+    expect(
+      missing,
+      `these THIRD_PARTY_SOURCE_CALLS entries are never called anywhere in src/, so they guard ` +
+        `nothing -- either the name is stale (renamed/removed) or the import alias changed: ${missing.join(', ')}`,
+    ).toEqual([])
   })
 })

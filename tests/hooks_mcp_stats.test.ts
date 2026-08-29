@@ -97,7 +97,8 @@ describe('MCP savings stats (real runHook dispatch)', () => {
         tool_response: JSON.stringify(homogeneousRows(3)),
       }),
     )
-    expect(result.hookType).toBe('pass')
+    // Fenced (provenance) but not compressed, which is what this test is about.
+    expect(result.hookType).toBe('rewriteOutput')
     expect(statCalls('mcp:compress').length).toBe(0)
   })
 
@@ -116,7 +117,8 @@ describe('MCP savings stats (real runHook dispatch)', () => {
         tool_response: resultText,
       }),
     )
-    expect(post.hookType).toBe('pass')
+    // The post fences the result before storing it; the deny credit below is the subject here.
+    expect(post.hookType).toBe('rewriteOutput')
     vi.mocked(recordStat).mockClear()
 
     const pre = await runHook(

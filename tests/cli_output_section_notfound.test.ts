@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { run } from '../src/cli.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { storeWebOutput } from '../src/web_cache.js'
+import { unfence } from './helpers/unfence.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let stdout: string[]
@@ -69,7 +70,9 @@ describe('web-output --raw', () => {
     stdout.length = 0
     const defaultCode = await runCli(['web-output', id])
     expect(defaultCode).toBe(0)
-    expect(stdout.join('')).toBe('cleaned body\n')
+    // Fenced by provenance like every other recall of a fetched page; the point here is that the
+    // default path serves the cleaned body, not the stored raw markup.
+    expect(unfence(stdout.join(''))).toBe('cleaned body')
     expect(stdout.join('')).not.toContain('data-secret')
   })
 
@@ -79,6 +82,6 @@ describe('web-output --raw', () => {
     const code = await runCli(['web-output', id, '--raw'])
 
     expect(code).toBe(0)
-    expect(stdout.join('')).toBe('plain body\n')
+    expect(unfence(stdout.join(''))).toBe('plain body')
   })
 })

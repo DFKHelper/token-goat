@@ -15,6 +15,7 @@ import {
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
+import { unfence } from './helpers/unfence.js'
 
 // --- fixtures ----------------------------------------------------------------
 
@@ -735,6 +736,10 @@ describe('MCP compression packs wired into postMcpHandler (real runHook dispatch
         tool_response: rawText,
       }),
     )
-    expect(result.hookType).toBe('pass')
+    // Compression is off, so the result ships uncompressed -- but still fenced, because the fence
+    // follows provenance and never inherits a compression opt-out.
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType !== 'rewriteOutput') throw new Error('unreachable')
+    expect(unfence(result.updatedOutput)).toBe(rawText)
   })
 })
