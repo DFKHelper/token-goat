@@ -35,8 +35,22 @@ function startupModuleLoads(args: string[]): string[] {
     timeout: 60000,
   })
   expect(res.status, `bundle exited ${String(res.status)} running ${args.join(' ')}`).toBe(0)
+  const stderr = res.stderr ?? ''
+  // Positive control on the tracer itself. Both assertions below are "no offending package
+  // loaded", which an empty `loads` satisfies -- and `loads` is empty both when the invariant
+  // holds and when this function stopped seeing anything at all. The two are indistinguishable
+  // from the verdict, so the tracer has to be proven live separately: NODE_DEBUG=module is an
+  // undocumented Node internal whose format is free to change under a runtime upgrade, and
+  // `--version` correctly loads zero external packages, so that test would go quietly green
+  // forever against a format it no longer parses.
+  expect(
+    /^MODULE \d+: /m.test(stderr),
+    `NODE_DEBUG=module produced no module trace for \`${args.join(' ')}\`, so the load list below ` +
+      `is empty because tracing is broken rather than because nothing loaded -- both startup ` +
+      `assertions would pass vacuously. Check whether this Node version still emits MODULE lines.`,
+  ).toBe(true)
   const loads: string[] = []
-  for (const line of (res.stderr ?? '').split(/\r?\n/)) {
+  for (const line of stderr.split(/\r?\n/)) {
     if (!line.includes('load "')) continue
     const match = /node_modules[\\/]+((?:@[^\\/"]+[\\/]+)?[^\\/"]+)/.exec(line)
     if (match?.[1] !== undefined) loads.push(match[1].replace(/[\\/]+/g, '/'))
