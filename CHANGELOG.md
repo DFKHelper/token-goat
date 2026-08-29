@@ -2,6 +2,16 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **`scope` could report "no symbols enclosing line N" for a line that a symbol does enclose.** The command read a capped page of the file's symbols out of the index and only then filtered that page for the ones covering the requested line. Because the database applied the cap first, a file with more than 10,000 indexed symbols lost everything past the cap before the filter ran, and a line covered only by one of those printed the same "No symbols enclosing" wording as a line nothing covers, with no notice on either channel that the answer had been discarded. The enclosing test now runs inside the query, so the cap can no longer come between the question and the row that answers it. The check that separates a missing file from an indexed-but-uncovered line is unchanged, and the extra lookup it needs runs only when nothing was found. See [src/graph_commands.ts](src/graph_commands.ts) and [src/index_reader.ts](src/index_reader.ts). No reindex is needed.
+
+- **`scope --json` printed absolute paths where `scope` printed repo-relative ones.** The text output ran every path through the shared display-path helper and the JSON branch emitted the stored row as-is, so the same command answered the same question two different ways depending on the flag, and leaked the machine's directory layout in one of them. Both branches now render the path identically. The only assertion this payload had was that it was an array, which is why the split went unnoticed. See [src/graph_commands.ts](src/graph_commands.ts).
+
+- **`scope file:99999999999999999999` reported a line number nobody typed.** A run of digits too long for a double to hold exactly was accepted by the digits-only check and then silently rounded, so the failure message named line 100000000000000000000 for that input. Line numbers that cannot be represented exactly are now rejected up front, with the same wording the other two invalid-line cases already use, quoting what was actually typed. See [src/graph_commands.ts](src/graph_commands.ts).
+
 ## [2.8.5] - 2026-08-29
 
 ### Security

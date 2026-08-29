@@ -104,6 +104,11 @@ interface SymbolQueryOpts {
   kind?: string
   rootDir?: string
   fileBaseName?: string
+  /** Keep only symbols whose span covers this 1-based line. Pushed into SQL rather than filtered
+   * in the caller because `limit` is applied by the database: a caller that fetches a capped page
+   * and *then* filters for the enclosing rows silently loses any match that sorted past the cap,
+   * and reports the same "nothing encloses this line" it would for a line nothing covers. */
+  enclosingLine?: number
 }
 
 /** Shared WHERE-clause builder for {@link querySymbols} and {@link countSymbols} -- both filter the same `symbols` table by the same name/filePath/kind/rootDir combination, so the clause/params construction lives in one place instead of drifting between a "fetch rows" and a "count rows" copy. */
@@ -127,6 +132,10 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
     const { clause: suffixClause, params: suffixParams } = pathSuffixClause('file_path')
     where.push(suffixClause)
     params.push(...suffixParams(opts.fileBaseName))
+  }
+  if (opts.enclosingLine !== undefined) {
+    where.push('line_start <= ? AND ? <= line_end')
+    params.push(opts.enclosingLine, opts.enclosingLine)
   }
   applyRootDirScope(opts.rootDir, 'file_path', where, params)
 

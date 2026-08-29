@@ -1386,7 +1386,12 @@ export function runScope(opts: ScopeOptions): number {
     return 1
   }
   const line = Number.parseInt(lineStr, 10)
-  if (!Number.isFinite(line) || line < 1) {
+  // `Number.isSafeInteger`, not `isFinite`: `/^\d+$/` above admits a digit run longer than a double
+  // can hold exactly, and `parseInt` rounds it silently rather than failing. `1e21` is finite, so
+  // the old check passed it through, and the "No symbols enclosing line ${line}" message below then
+  // echoed the rounded value -- reporting a line number the caller never typed. Every other
+  // validation error on this path quotes the literal input; this one has to reject instead.
+  if (!Number.isSafeInteger(line) || line < 1) {
     emitErr(`Invalid line number: ${lineStr}`)
     return 1
   }
@@ -1400,10 +1405,12 @@ export function runScope(opts: ScopeOptions): number {
   }
 
   const filePath = resolveIndexPath(file)
-  const syms = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
-
-  const enclosing = syms
-    .filter((s) => s.lineStart <= line && line <= s.lineEnd)
+  // The enclosing predicate belongs in the query, not after it. Filtering a capped page in JS meant
+  // `limit` was applied first, so in a file with more indexed symbols than the cap every symbol
+  // past it was discarded before the filter ran, and a line wrapped only by one of those reported
+  // "No symbols enclosing" -- the same words as an honest miss, with nothing on either channel to
+  // say the answer had been truncated away.
+  const enclosing = querySymbols({ filePath, enclosingLine: line, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
     // Innermost first, which a later start alone does not establish. Symbols sharing a start line
     // are common -- a signature that declares an inline object type indexes the function and each
     // of its members at the signature's own line -- and on those the descending-start comparator
@@ -1419,29 +1426,42 @@ export function runScope(opts: ScopeOptions): number {
     // hosts, so leaving it off would trade one source of instability for another.
     .sort((a, b) => b.lineStart - a.lineStart || a.lineEnd - b.lineEnd || a.name.localeCompare(b.name, 'en'))
 
-  // "the file isn't there" and "nothing wraps that line" are different answers, and both printed
-  // the identical no-symbols line — so a typo'd path read as a real file with a bare line, which
-  // is the most misleading of the two. `outline` already separates them; match it.
-  if (syms.length === 0) {
-    if (!fs.existsSync(filePath)) {
-      emitErr(`Could not read: ${file}`)
+  // "the file isn't there", "the file is there but unindexed", and "nothing wraps that line" are
+  // three different answers, and the first two used to print the identical no-symbols line — so a
+  // typo'd path read as a real file with a bare line, the most misleading of the three. `outline`
+  // already separates them; match it. The one-row probe only runs once the enclosing query has
+  // come back empty, so the common case still costs a single query.
+  if (enclosing.length === 0) {
+    if (querySymbols({ filePath, limit: 1 }).length === 0) {
+      if (!fs.existsSync(filePath)) {
+        emitErr(`Could not read: ${file}`)
+        return 1
+      }
+      emitErr(
+        `No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`,
+      )
       return 1
     }
-    emitErr(`No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`)
-    return 1
-  }
-
-  if (enclosing.length === 0) {
     emitErr(`No symbols enclosing line ${line} in '${file}'`)
     return 1
   }
 
+  const scopeDisplayRoot = getDisplayRoot()
+
+  // Both branches render the same path the same way. The JSON branch used to emit the stored row
+  // verbatim, so one command answered the same question with a repo-relative path in text mode and
+  // this machine's absolute path in --json.
   if (opts.json === true) {
-    emit(JSON.stringify(enclosing, null, 2))
+    emit(
+      JSON.stringify(
+        enclosing.map((s) => ({ ...s, filePath: toDisplayPath(scopeDisplayRoot, s.filePath) })),
+        null,
+        2,
+      ),
+    )
     return 0
   }
 
-  const scopeDisplayRoot = getDisplayRoot()
   for (const s of enclosing) {
     emit(`${s.name}\t${s.kind}\t${toDisplayPath(scopeDisplayRoot, s.filePath)}:${s.lineStart}-${s.lineEnd}`)
   }
