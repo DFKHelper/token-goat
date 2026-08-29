@@ -50,6 +50,9 @@ const _require = createRequire(import.meta.url)
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
 
+/** Mirrors `worker.embed_threads`'s default in config.ts, for callers that mock a partial config. */
+export const DEFAULT_EMBED_THREADS = 2
+
 /**
  * The immutable commit this model is pinned to, so a cold cache fetches known-good weights instead
  * of trusting a branch that can move. Read from https://huggingface.co/api/models/Xenova/bge-small-en-v1.5
@@ -282,6 +285,12 @@ interface OrtSession {
   run(feeds: Record<string, unknown>): Promise<Record<string, OrtTensor>>
 }
 
+/** The subset of ONNX Runtime's session options this module sets. See {@link EmbeddingModel.load}. */
+interface OrtSessionOptions {
+  intraOpNumThreads: number
+  interOpNumThreads: number
+}
+
 /** Mean-pool a [1, seq, dim] hidden state over the sequence, then scale to unit length. */
 function poolAndNormalize(hidden: ArrayLike<number>, seq: number, dim: number): Float32Array {
   const pooled = new Float64Array(dim)
@@ -320,10 +329,24 @@ export class EmbeddingModel {
     const dir = await ensureModelFiles(modelName)
     const tokenizer = BertWordPiece.fromJson(fs.readFileSync(path.join(dir, 'tokenizer.json'), 'utf8'))
     const ort = _ort as {
-      InferenceSession: { create(p: string): Promise<OrtSession> }
+      InferenceSession: { create(p: string, opts?: OrtSessionOptions): Promise<OrtSession> }
       Tensor: new (type: string, data: BigInt64Array, dims: number[]) => unknown
     }
-    const session = await ort.InferenceSession.create(path.join(dir, 'onnx', 'model_quantized.onnx'))
+    // Never create this session bare. ONNX Runtime sizes its intra-op pool to the host when no
+    // count is given, and that pool is what every `run()` below fans out across: measured on a
+    // 26-logical-core machine, `create()` with no options took the process from 13 OS threads to
+    // 30, while the same model with an explicit count added none. Indexing is background work --
+    // a detached daemon draining a queue, or a bulk walk the user started and then went back to
+    // their editor -- so it takes a small, fixed share of the machine and finishes later, rather
+    // than most of the machine and finishes sooner. `interOpNumThreads` is 1 because this graph
+    // is run one sequence at a time (see `embed` below), so there are no parallel branches for a
+    // second scheduler to place. The `??` mirrors worker.ts's fallback: several tests mock
+    // loadConfig() with a partial worker section, and a bare read would hand ORT `undefined`.
+    const threads = loadConfig().worker.embed_threads ?? DEFAULT_EMBED_THREADS
+    const session = await ort.InferenceSession.create(path.join(dir, 'onnx', 'model_quantized.onnx'), {
+      intraOpNumThreads: threads,
+      interOpNumThreads: 1,
+    })
     return new EmbeddingModel(tokenizer, session, ort.Tensor)
   }
 

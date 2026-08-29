@@ -28,6 +28,7 @@ import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepExpiredKnownRootMarkers, sweepKnownRoots } from './index_prune.js'
+import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
 import { findProject } from './project.js'
@@ -1352,6 +1353,10 @@ export async function runWorkerLoop(
  * *current* owner's pid file on its own delayed exit.
  */
 export function runDetachedWorkerDaemon(): void {
+  // First thing the daemon does, before any drain: this process exists to do work nobody is
+  // waiting on, and it is spawned detached with stdio ignored, so it is invisible while it runs.
+  // Asking to be scheduled behind the user's own work is free when the machine is idle.
+  applyIndexingPriority()
   const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
   const safeInterval = resolvePollIntervalMs()
   process.on('SIGTERM', () => process.exit(0))

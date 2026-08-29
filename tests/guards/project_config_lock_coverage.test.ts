@@ -130,7 +130,13 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'skill_preservation.pre_skill_enabled',
   'skill_preservation.truncation_budget_tokens',
   'stats.record_zero_savings',
+  // Both fail the lock bar the same way `max_pool_workers` does: their worst case is a slower or
+  // a less considerate index, never a capability the repository would not otherwise have. The
+  // priority enum deliberately offers nothing above `normal`, so a checked-in file cannot use it
+  // to raise a background process over the user's own work.
+  'worker.embed_threads',
   'worker.max_pool_workers',
+  'worker.priority',
 ]
 
 function isLocked(section: string, key: string): boolean {
