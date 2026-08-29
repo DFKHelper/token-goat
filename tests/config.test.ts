@@ -1,5 +1,6 @@
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -294,6 +295,41 @@ describe('loadConfig', () => {
         process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = orig
       }
     }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_EMBED_THREADS to the documented max (1-16)', () => {
+    const orig = process.env['TOKEN_GOAT_EMBED_THREADS']
+    try {
+      process.env['TOKEN_GOAT_EMBED_THREADS'] = '999'
+      expect(loadConfig().worker.embed_threads).toBe(16)
+      process.env['TOKEN_GOAT_EMBED_THREADS'] = '0'
+      expect(loadConfig().worker.embed_threads).toBe(1)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_EMBED_THREADS']
+      } else {
+        process.env['TOKEN_GOAT_EMBED_THREADS'] = orig
+      }
+    }
+  })
+
+  // The bounds and lock guards check that these keys are classified and reachable; neither looks at
+  // the value. The value is the entire point: a default that drifts up to the core count restores
+  // the behaviour the key was added to stop, and nothing would fail, because indexing still works
+  // -- it just takes the machine again. Stated against os.cpus() rather than a bare number so this
+  // keeps meaning "a small share of the host" on whatever CI runs it.
+  it('defaults to a small fixed share of the host, not a host-sized thread pool', () => {
+    const threads = defaultConfig().worker.embed_threads
+    expect(threads).toBeGreaterThanOrEqual(1)
+    expect(
+      threads,
+      `embed_threads defaults to ${threads} on a ${os.cpus().length}-core host; ONNX Runtime already ` +
+        `defaults to a host-sized pool, so a default near the core count makes the setting pointless`,
+    ).toBeLessThanOrEqual(4)
+  })
+
+  it('defaults to a priority below normal, so indexing yields to the user', () => {
+    expect(defaultConfig().worker.priority).toBe('below_normal')
   })
 
   it('mtime cache: second call with unchanged file returns same object reference', () => {

@@ -168,6 +168,7 @@ import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnder
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
+import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -333,6 +334,10 @@ export async function cmdIndex(
   pathArg?: string,
   opts: { walk?: boolean; dbPath?: string; force?: boolean; forceWalk?: boolean } = {},
 ): Promise<void> {
+  // A bulk walk is long-running background work even though the user typed it: they start it and
+  // go back to their editor. The daemon lowers its own priority for the same reason; doing it here
+  // too is what makes "both indexing paths" true rather than only the invisible one.
+  applyIndexingPriority()
   const root = pathArg ?? process.cwd()
   const dbPath = opts.dbPath ?? globalDbPath()
   const force = opts.force === true

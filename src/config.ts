@@ -191,6 +191,20 @@ export interface WebFetchConfig {
 export interface WorkerConfig {
   blocked_roots: string[]
   max_pool_workers: number
+  // How many OS threads ONNX Runtime may use for one embedding inference. Left unset, ORT sizes
+  // its intra-op pool to the machine: measured on a 26-logical-core host, creating the session
+  // took the process from 13 threads to 30, and every embed call then fanned out across all of
+  // them. That is a background daemon taking most of a workstation for as long as an index run
+  // lasts. A session created with an explicit count added no threads at all in the same
+  // measurement, so this is the lever. Small on purpose: indexing is never the user's foreground
+  // task, and a slower index that leaves the machine usable beats a fast one that does not.
+  embed_threads: number
+  // Scheduling priority the indexing processes ask the OS for. `below_normal` costs nothing on an
+  // idle machine (the scheduler only demotes under contention) and is what keeps a long walk from
+  // competing with the desktop. `low` is more aggressive and can starve the daemon on a
+  // permanently busy host; `normal` restores the old behaviour. Nothing above normal is offered:
+  // a config file must not be able to raise a background process over the user's own work.
+  priority: string
 }
 
 export interface IndexingConfig {
@@ -479,6 +493,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   worker: {
     blocked_roots: [],
     max_pool_workers: 4,
+    embed_threads: 2,
+    priority: 'below_normal',
   },
   indexing: {
     large_file_symbol_only_kb: 500,
@@ -669,6 +685,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'webfetch.max_bytes': {min: 0, max: 100 * 1024 * 1024 * 1024},
   'webfetch.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
   'worker.max_pool_workers': {min: 1, max: 8},
+  'worker.embed_threads': {min: 1, max: 16},
   'indexing.large_file_symbol_only_kb': {min: 1, max: 1048576, clampTo: 'indexing.large_file_skip_kb'},
   'indexing.large_file_skip_kb': {min: 1, max: 1048576},
   'context.model_window_tokens': {min: 10_000, max: 10_000_000},
@@ -727,6 +744,10 @@ export function validateNumericField(fieldKey: string, value: number, cfg: Recor
 const ENUM_FIELD_VALUES: Record<string, string[]> = {
   'compression.profile': ['auto', 'aggressive', 'balanced', 'minimal'],
   'compact_assist.harness': ['auto', ...KNOWN_HARNESS_NAMES],
+  // Deliberately has no entry above `normal`. This table is what `config set` checks; a
+  // hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an
+  // unrecognized value back to the default rather than trusting whatever the file said.
+  'worker.priority': ['below_normal', 'low', 'normal'],
 }
 
 /**
@@ -1698,6 +1719,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
   wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, ...boundsOf('worker.max_pool_workers'))
   wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, ...boundsOf('worker.max_pool_workers'))
+  wk.embed_threads = validatedInt(wk_raw['embed_threads'], wk.embed_threads, ...boundsOf('worker.embed_threads'))
+  wk.embed_threads = envInt('TOKEN_GOAT_EMBED_THREADS', wk.embed_threads, ...boundsOf('worker.embed_threads'))
+  wk.priority = validatedStr(wk_raw['priority'], wk.priority)
+  wk.priority = envStr('TOKEN_GOAT_WORKER_PRIORITY', wk.priority)
 
   const ix_raw = section(raw, 'indexing')
   const ix = getDefaultConfig('indexing') as IndexingConfig
@@ -1850,6 +1875,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
   'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],
+  'worker.embed_threads': ['TOKEN_GOAT_EMBED_THREADS'],
+  'worker.priority': ['TOKEN_GOAT_WORKER_PRIORITY'],
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'indexing.cross_project_symbols': ['TOKEN_GOAT_CROSS_PROJECT_SYMBOLS'],
@@ -2007,6 +2034,8 @@ export function saveConfig(config: Config): void {
     worker: {
       blocked_roots: config.worker.blocked_roots,
       max_pool_workers: config.worker.max_pool_workers,
+      embed_threads: config.worker.embed_threads,
+      priority: config.worker.priority,
     },
     indexing: {
       large_file_symbol_only_kb: config.indexing.large_file_symbol_only_kb,
