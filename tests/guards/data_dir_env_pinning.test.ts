@@ -53,6 +53,27 @@ describe('data-dir environment pinning is platform-complete', () => {
     expect(files.length).toBeGreaterThan(50)
   })
 
+  // The check above pins discovery, not either scan below, and the gap between the two is wide:
+  // it passes on several hundred files while the scans read a couple of dozen. Both scans select
+  // by an assignment regex, and if either stopped matching -- the env key renamed, or tests moving
+  // to a helper that assigns it out of line -- that scan would read nothing, report no offenders,
+  // and leave this file-count check green the whole time. So pin what each scan actually reads.
+  it('both assignment regexes still select a live population, not just a live file list', () => {
+    const sources = files.map((file) => fs.readFileSync(file, "utf8"))
+    const pinsLocal = sources.filter((source) => ASSIGN_LOCALAPPDATA.test(source)).length
+    const pinsXdg = sources.filter((source) => ASSIGN_XDG.test(source)).length
+    expect(
+      pinsLocal,
+      `no test file assigns LOCALAPPDATA any more, so the first scan below examines nothing and its ` +
+        `clean result is vacuous. Check whether ASSIGN_LOCALAPPDATA still describes how tests pin it.`,
+    ).toBeGreaterThan(0)
+    expect(
+      pinsXdg,
+      `no test file assigns XDG_DATA_HOME any more, so the second scan below examines nothing and its ` +
+        `clean result is vacuous. Check whether ASSIGN_XDG still describes how tests pin it.`,
+    ).toBeGreaterThan(0)
+  })
+
   it('every file that pins LOCALAPPDATA also pins XDG_DATA_HOME', () => {
     const offenders: string[] = []
     for (const file of files) {

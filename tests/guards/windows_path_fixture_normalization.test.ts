@@ -97,6 +97,44 @@ describe('no hand-rolled Windows path normalization in test fixtures', () => {
     expect(() => readdirIfPresent(notADir)).toThrow(/ENOTDIR/)
   })
 
+  // Positive control on both gates below. Each is a "no offenders" assertion, which an empty
+  // population satisfies -- and the population of both is selected by one literal spelling of
+  // the conversion. If tests stop writing it that way, or the fixture tables are renamed, both
+  // gates match nothing and pass forever without anything going red.
+  //
+  // The conjunction is what gets pinned, not the bare token: a token count stays positive when
+  // the spelling survives in files the second half of the gate never reaches, so it would report
+  // a healthy population while the set that actually matters emptied out.
+  it('both gates still select a live population, so a changed spelling cannot narrow them away silently', () => {
+    // Excluding this file: it names the token in its own source, so counting itself would let a
+    // future edit satisfy the pin without a single real fixture matching.
+    const self = fileURLToPath(import.meta.url)
+    const files = walkTestFiles(TESTS_DIR)
+      .filter((file) => path.resolve(file) !== path.resolve(self))
+      .map((file) => fs.readFileSync(file, 'utf8'))
+
+    const flipsAndLowercases = files.filter(
+      (src) => src.includes(BACKSLASH_TO_SLASH_TOKEN) && src.toLowerCase().includes('tolowercase()'),
+    ).length
+    expect(
+      flipsAndLowercases,
+      `no test file matches both halves of the lowercase gate (${BACKSLASH_TO_SLASH_TOKEN} plus toLowerCase()), ` +
+        `so that check below examines nothing and passes vacuously. Either the conversion is now spelled ` +
+        `another way, or the walk stopped seeing test files.`,
+    ).toBeGreaterThan(0)
+
+    // The INSERT gate's own intersection is legitimately empty today -- no test both hand-flips
+    // backslashes and inserts path rows, which is the state that check exists to preserve. So its
+    // population cannot be pinned. Pin the half that can go stale instead: a table rename would
+    // leave the regex matching nothing, and that check could then never fire again.
+    const insertsPathRows = files.filter((src) => INSERT_PATH_TABLE_RE.test(src)).length
+    expect(
+      insertsPathRows,
+      `no test file inserts rows into files/symbols/refs any more, so the INSERT gate below can never ` +
+        `match regardless of what a fixture does. Check whether those tables were renamed.`,
+    ).toBeGreaterThan(0)
+  })
+
   it('every test file that flips backslashes to slashes for a path fixture and also lowercases it imports normalizePath from src/paths.ts instead of reimplementing it', () => {
     const offenders: string[] = []
     for (const file of walkTestFiles(TESTS_DIR)) {

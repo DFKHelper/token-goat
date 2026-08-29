@@ -89,6 +89,20 @@ describe('relay.ts hook module imports', () => {
     expect(missing, 'hooks_*.ts file(s) with a registerHook() call missing from relay.ts\'s import list').toEqual([])
   })
 
+  // The stale-import check below reads a different population from the two checks above: they
+  // search RELAY_SRC for a substring, it parses whole anchored lines. That gap can open silently.
+  // A style change adding trailing semicolons to relay.ts leaves the substring searches matching
+  // and stops the anchored parse matching anything, so the check would report no stale imports
+  // because it found no imports at all. The count above pins the hooks_*.ts side, not this one.
+  it('still parses relay.ts own import lines, so the stale-import check cannot pass by finding nothing', () => {
+    expect(
+      relayImportedHooksModules().length,
+      'no hooks_* side-effect import was parsed out of relay.ts, so the stale-import check below ' +
+        'examines an empty list and always passes. Check whether relay.ts still writes them as a ' +
+        'bare anchored import line.',
+    ).toBeGreaterThan(0)
+  })
+
   it('relay.ts does not import a hooks_*.ts module that no longer registers anything (stale import)', () => {
     const registeringStems = new Set(registering.map((f) => f.replace(/\.ts$/, '')))
     const stale = relayImportedHooksModules().filter((name) => !registeringStems.has(name))

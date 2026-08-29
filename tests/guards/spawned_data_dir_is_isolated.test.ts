@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Every `.ts` under `tests/`, so a new file is covered the moment it is added rather than when someone remembers to list it. */
 function testFiles(dir: string, out: string[] = []): string[] {
@@ -30,8 +31,15 @@ function testFiles(dir: string, out: string[] = []): string[] {
 describe('a spawned binary gets an isolated data dir on every platform', () => {
   it('pins XDG_DATA_HOME wherever it pins LOCALAPPDATA for a child process', () => {
     const offenders: string[] = []
-    // This file needs no self-exclusion: its own rule spells both variable names, so the XDG_DATA_HOME check below clears it the same way it clears a correctly-isolated test.
+    // Excluded explicitly rather than incidentally. This file spells LOCALAPPDATA: in its own
+    // rule, so it enters the scan, and it does NOT clear itself on the XDG_DATA_HOME check: the
+    // literal text there is `\bXDG_DATA_HOME:`, so the character before XDG is `b`, a word
+    // character, and that regex's own `\b` never matches its own source. Only the spawn check
+    // spares it today, which one stray `spawn(` anywhere in this file -- a comment would do --
+    // would undo, turning the guard into a false offender against itself.
+    const self = path.resolve(fileURLToPath(import.meta.url))
     for (const full of testFiles(path.join(process.cwd(), 'tests'))) {
+      if (path.resolve(full) === self) continue
       const text = fs.readFileSync(full, 'utf8')
       if (!/\bLOCALAPPDATA:/.test(text)) continue
       if (/\bXDG_DATA_HOME:/.test(text)) continue
@@ -43,6 +51,30 @@ describe('a spawned binary gets an isolated data dir on every platform', () => {
       offenders,
       'each of these hands a child process a Windows-only data dir override, so on Linux and macOS the child falls back to the Vitest worker\'s shared data dir and reads state another test wrote. Set XDG_DATA_HOME to the same directory as LOCALAPPDATA, or use tgEnv from tests/helpers/matrix_cases.ts.',
     ).toEqual([])
+  })
+
+  it('still finds test files that hand a child an env, so the scan above cannot narrow itself away', () => {
+    // The check above is a "no offenders" assertion, and an empty population satisfies it just as
+    // well as a compliant one. Its population is selected by two literal spellings -- the
+    // `LOCALAPPDATA:` object-literal key and a direct spawn call -- and both can stop matching
+    // without anything failing: tests migrating to tgEnv move the key into the helper, and a new
+    // spawn wrapper would hide the call. Either leaves the scan reading zero files forever.
+    //
+    // The conjunction is pinned rather than either half, because the `LOCALAPPDATA:` count stays
+    // healthy on files that never spawn anything, which is exactly the population that does not
+    // matter here.
+    const self = path.resolve(fileURLToPath(import.meta.url))
+    const covered = testFiles(path.join(process.cwd(), 'tests')).filter((full) => {
+      if (path.resolve(full) === self) return false
+      const text = fs.readFileSync(full, 'utf8')
+      return /\bLOCALAPPDATA:/.test(text) && /\bspawnSync\(|\bexecFileSync\(|\bexecSync\(|\bspawn\(/.test(text)
+    })
+    expect(
+      covered.length,
+      'no test file both pins LOCALAPPDATA for a child and starts one, so the scan above examines nothing ' +
+        'and reports a clean result it never earned. Either both spellings changed, or the walk stopped ' +
+        'seeing test files.',
+    ).toBeGreaterThan(0)
   })
 
   it('agrees with the platform branches it is derived from, so the rule is not just asserted here', () => {
