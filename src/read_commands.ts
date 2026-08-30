@@ -78,7 +78,7 @@ import { takeScreenshot } from './screenshot.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
-import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
+import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -6678,6 +6678,31 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     console.warn(
       `Matching on meaning is off (${extractErrorMessage(e)}); these results come from keyword search alone.`,
     )
+  }
+  // The dense half contributing nothing is the moment this search is most misleading, because the
+  // BM25 pass below still answers and the output looks like a complete result. It is also the only
+  // moment worth paying for the coverage query, so it is gated here rather than run every call:
+  // with hits, the reader has evidence embeddings are working; with none, they have no way to tell
+  // "nothing in your code is similar" from "almost none of your code was ever embedded". Warn only
+  // when the model itself is available, since the two branches above already explain that case.
+  if (rawHits.length === 0 && embeddingModelAvailable()) {
+    try {
+      // Config read and coverage query both inside the try: this whole block is a diagnostic aid,
+      // and a diagnostic that can throw is worse than no diagnostic -- it would turn a search that
+      // otherwise answered into a crash.
+      const enabled = loadConfig().indexing.embeddings_enabled
+      const { indexedFiles, embeddedFiles } = enabled
+        ? getEmbeddingCoverage(globalDbPath(), rootDir)
+        : { indexedFiles: 0, embeddedFiles: 0 }
+      if (indexedFiles > 0 && embeddedFiles < indexedFiles) {
+        console.warn(
+          `Matching on meaning found nothing, and only ${embeddedFiles} of ${indexedFiles} indexed file(s) in this ` +
+            `project have embeddings — these results come from keyword search alone. Run 'token-goat doctor' for why.`,
+        )
+      }
+    } catch {
+      // Coverage is a diagnostic aid, never a reason to fail a search that otherwise works.
+    }
   }
   const mergedHits = mergeNearbyHits(rawHits)
   // BM25 full-text search over symbol names/bodies/docstrings, over-fetched for the same reason as the dense side above: searchSymbolsFts caps at the DB level via its own SQL LIMIT, so a post-hoc filter (--grep/--exclude-tests) or a post-hoc fusion rank on an already-`n`-capped result would silently under-represent this list relative to the dense one -- always called now (previously gated behind the dense branch returning zero hits), reusing the same OVER_FETCH_FACTOR/MAX_OVER_FETCH ratio the dense branch already uses.
