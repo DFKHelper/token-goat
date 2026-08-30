@@ -493,7 +493,16 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   worker: {
     blocked_roots: [],
     max_pool_workers: 4,
-    embed_threads: 2,
+    // 4, not 2. Measured on a 26-core Windows host with a foreground CPU probe: at `priority`
+    // below_normal, 2, 4 and 6 threads are all indistinguishable from an idle machine, including
+    // when the indexer and the probe are pinned to the same 4 cores, and including 4 threads pinned
+    // to 2 cores, which is genuine oversubscription. The same probe reads -10% at 16 threads and
+    // -69% with a 292 ms stall at 4 threads on 2 cores once the priority is normal instead. So the
+    // priority below is what keeps the foreground responsive, not this number, and 4 buys a
+    // measured 1.77x on indexing for no foreground cost. It stays a cap rather than tracking the
+    // core count, because where the platform refuses the priority change (some hardened Linux
+    // setups, sandboxes) this is the only thing left holding indexing back.
+    embed_threads: 4,
     priority: 'below_normal',
   },
   indexing: {
