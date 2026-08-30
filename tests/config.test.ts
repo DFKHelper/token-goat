@@ -328,6 +328,11 @@ describe('loadConfig', () => {
     ).toBeLessThanOrEqual(4)
   })
 
+  // Not a restatement of the bounds guard. The measurement behind the thread default is that
+  // below_normal is what keeps the foreground responsive, not the thread count: the same foreground
+  // probe that cannot tell 2, 4 or 6 threads apart from an idle machine reads -69% throughput and a
+  // 292 ms stall at 4 threads on 2 cores the moment the priority is normal. Flipping this default
+  // breaks nothing, fails no test, and indexing still works -- it just takes the machine again.
   it('defaults to a priority below normal, so indexing yields to the user', () => {
     expect(defaultConfig().worker.priority).toBe('below_normal')
   })
