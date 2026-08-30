@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -316,6 +316,101 @@ describe('cli_doctor', () => {
       const result = checkSymbolCount(dbPath, brokenRoot)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('0 symbols extracted')
+    })
+  })
+
+  // Symbol coverage and embedding coverage fail independently, and only the first was ever
+  // reported. Every terminal skip in indexFileEmbeddings (a file over
+  // indexing.large_file_symbol_only_kb, a .profile-meta.xml, oversized Salesforce metadata, a
+  // document with no extractable text) stamps a real embed_sha so the worker stops re-reading
+  // the file -- correct individually, and it also means such a file is indistinguishable from an
+  // embedded one at the freshness gate and is never retried. Nothing summed those skips, so a
+  // real index was found with 356 of 11000 files embedded while every doctor check read ok, and
+  // `semantic` reported finding nothing using the same words it uses after searching everything.
+  describe('checkEmbeddingCoverage', () => {
+    // tests/setup/isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, so
+    // without this every case below would return early down the "disabled" branch and pass while
+    // asserting nothing about coverage -- the same shape of trap the check itself exists to catch.
+    // Turn it on for this block, and let the disabled case turn it back off explicitly so that it
+    // discriminates instead of agreeing with the ambient default.
+    let prevEmbedEnv: string | undefined
+    beforeEach(() => {
+      prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+      process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+      clearModuleCaches()
+    })
+    afterEach(() => {
+      if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+      else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
+      clearModuleCaches()
+    })
+
+    const insertFile = (db: ReturnType<typeof getDb>, p: string) =>
+      db
+        .prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)')
+        .run(p, 'sha', 1, 'typescript', 1)
+    const insertChunk = (db: ReturnType<typeof getDb>, p: string) =>
+      db
+        .prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
+        .run(p, 1, 2, 'body', 'symbol')
+
+    it('returns ok (no database yet) when global.db does not exist', () => {
+      const result = checkEmbeddingCoverage(path.join(tempDir, 'global.db'))
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no database yet')
+    })
+
+    it('returns ok when most indexed files have embeddings', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 10; i++) insertFile(db, `src/f${i}.ts`)
+      for (let i = 0; i < 8; i++) insertChunk(db, `src/f${i}.ts`)
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('8 of 10')
+    })
+
+    it('warns when almost none of the indexed files have embeddings', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 10; i++) insertFile(db, `src/f${i}.ts`)
+      insertChunk(db, 'src/f0.ts')
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('1 of 10')
+      expect(result.message).toContain('10%')
+      // Must name the setting that actually causes it, or the reader has a number and no action.
+      expect(result.message).toContain('indexing.large_file_symbol_only_kb')
+      // ...and must say the symbol side still works, so this does not read as a broken index.
+      expect(result.message).toContain('Exact symbol lookups are unaffected')
+    })
+
+    // The discriminating case. One heavily-chunked file produces many chunk ROWS while covering
+    // one file; counting rows instead of distinct paths would read 50 chunks against 10 files as
+    // healthy coverage and hide exactly the condition this check exists to find. Replacing
+    // COUNT(DISTINCT file_path) with COUNT(*) in getEmbeddingCoverage turns this test red and
+    // leaves the two tests above green.
+    it('counts distinct embedded files, not chunk rows', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 10; i++) insertFile(db, `src/f${i}.ts`)
+      for (let i = 0; i < 50; i++) insertChunk(db, 'src/f0.ts')
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('1 of 10')
+    })
+
+    // Off on purpose is not a health problem. Warning here would be a warning that can never
+    // clear while the setting stands, which is noise the reader learns to ignore.
+    it('returns ok without warning when embeddings are disabled by config', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 10; i++) insertFile(db, `src/f${i}.ts`)
+      process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'false'
+      clearModuleCaches()
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('disabled')
     })
   })
 

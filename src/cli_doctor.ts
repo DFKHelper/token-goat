@@ -11,7 +11,7 @@ import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
-import { emptyIndexMessage, getProjectIndexCounts } from './index_health.js'
+import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { loadConfig, readConfigSource } from './config.js'
 import type { Config } from './config.js'
@@ -324,6 +324,76 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
       name: 'Symbols',
       status: 'warn',
       message: `could not query symbol count: ${extractErrorMessage(err)}`,
+    }
+  }
+}
+
+/**
+ * Fraction of indexed files that must be reachable by vector search before embedding coverage is
+ * reported as healthy. Set low deliberately: some files never embed by design (over
+ * `indexing.large_file_symbol_only_kb`, .profile-meta.xml, oversized Salesforce metadata,
+ * documents with no extractable text), so a perfectly healthy index is not at 100% and a strict
+ * threshold would warn forever on a correct install. A quarter is far enough below any normal
+ * install to mean something is systematically excluding files rather than a few skips landing.
+ */
+const EMBED_COVERAGE_WARN_FRACTION = 0.25
+
+/**
+ * Check that `semantic` can actually see the corpus, not just that the corpus was parsed.
+ *
+ * The symbol side has had `checkSymbolCount` for exactly this reason; the embedding side had
+ * nothing, and the two fail independently. Every terminal skip in indexFileEmbeddings (parser.ts)
+ * stamps a real embed_sha so the worker stops re-reading the file -- correct individually, and it
+ * also means a skipped file is indistinguishable from an embedded one at the freshness gate and
+ * will never be retried. Nothing summed those skips, so an index where almost nothing embedded
+ * looked identical to a healthy one, and `semantic` answered from the remainder using the same
+ * "no matches" wording it uses after searching everything. That is the failure this reports.
+ *
+ * A low number here is not automatically a defect -- it is usually a threshold doing its job --
+ * so the message names `indexing.large_file_symbol_only_kb` and its current value rather than
+ * asserting a cause, because that setting is the dominant reason files land in the skip branches
+ * and is the one the reader can act on.
+ */
+export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): DoctorResult {
+  if (!fs.existsSync(dbPath)) {
+    return { name: 'Embedding coverage', status: 'ok', message: 'no database yet' }
+  }
+  const cfg = loadConfig()
+  if (!cfg.indexing.embeddings_enabled) {
+    // Off on purpose is not a health problem, and warning about it would be a warning that can
+    // never clear while the setting stands.
+    return { name: 'Embedding coverage', status: 'ok', message: 'disabled (indexing.embeddings_enabled = false)' }
+  }
+  try {
+    const { indexedFiles, embeddedFiles } = getEmbeddingCoverage(dbPath, rootDir)
+    if (indexedFiles === 0) {
+      // An empty index is already reported by the Symbols check; saying it twice adds nothing.
+      return { name: 'Embedding coverage', status: 'ok', message: 'no indexed files yet' }
+    }
+    const pct = Math.round((embeddedFiles / indexedFiles) * 100)
+    const sizeKb = cfg.indexing.large_file_symbol_only_kb
+    if (embeddedFiles / indexedFiles < EMBED_COVERAGE_WARN_FRACTION) {
+      return {
+        name: 'Embedding coverage',
+        status: 'warn',
+        message:
+          `only ${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings — 'semantic' searches ` +
+          `those files only, and reports finding nothing in the same words it uses after searching everything. ` +
+          `Files over indexing.large_file_symbol_only_kb (currently ${sizeKb} KB) are indexed for symbols only and ` +
+          `are the usual reason; raise it with 'token-goat config set indexing.large_file_symbol_only_kb <KB>' and ` +
+          `re-embed with 'token-goat index --force' to widen coverage. Exact symbol lookups are unaffected`,
+      }
+    }
+    return {
+      name: 'Embedding coverage',
+      status: 'ok',
+      message: `${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings`,
+    }
+  } catch (err) {
+    return {
+      name: 'Embedding coverage',
+      status: 'warn',
+      message: `could not query embedding coverage: ${extractErrorMessage(err)}`,
     }
   }
 }
@@ -926,6 +996,9 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))
   results.push(checkEmbeddings(loadConfig(rootDir)))
+  // Directly after the availability row: "available" and "3% of files covered" are both true at
+  // once, and reading either alone gives the wrong picture of what `semantic` can actually see.
+  results.push(checkEmbeddingCoverage(path.join(actualDataDir, 'global.db'), rootDir))
 
   for (const result of checkSecurityPosture(loadConfig(rootDir), actualDataDir)) results.push(result)
 

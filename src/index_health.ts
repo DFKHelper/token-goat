@@ -33,6 +33,42 @@ export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileC
 }
 
 /**
+ * How much of the indexed corpus actually has embeddings, scoped exactly like
+ * getProjectIndexCounts above.
+ *
+ * Symbol coverage and embedding coverage fail independently, and only the first was ever
+ * reported. A file can be fully parsed -- present in `files`, its symbols in `symbols` -- while
+ * contributing no chunks at all, because indexFileEmbeddings (parser.ts) has several deliberate
+ * terminal skips that stamp a real embed_sha without embedding anything: a file over
+ * `indexing.large_file_symbol_only_kb`, a .profile-meta.xml, oversized Salesforce metadata, a
+ * document with no extractable text. Each is correct on its own, and the stamp is what stops the
+ * worker re-reading the file every drain. The consequence nobody could see is in aggregate:
+ * `semantic` then searches only the files that survived those skips, and a search over 3% of a
+ * corpus returns "no matches" in exactly the words it uses for a corpus it searched entirely.
+ * Counting distinct chunk paths against indexed files is the one cheap query that tells those
+ * apart, so it lives here beside its symbol-side twin rather than being restated at each caller.
+ *
+ * Throws on a DB error, matching getProjectIndexCounts -- callers own their own fallback.
+ */
+export function getEmbeddingCoverage(dbPath: string, rootDir?: string): { indexedFiles: number; embeddedFiles: number } {
+  const db = getDb(dbPath)
+  const countScoped = (sql: string, column: string): number => {
+    if (rootDir === undefined) {
+      return (db.prepare(sql).get() as { c: number }).c
+    }
+    const scope = projectScopeClause(column)
+    return (db.prepare(`${sql} WHERE ${scope.clause}`).get(...scope.params(rootDir)) as { c: number }).c
+  }
+  return {
+    indexedFiles: countScoped('SELECT COUNT(*) as c FROM files', 'path'),
+    // DISTINCT file_path, not COUNT(*): the question is how many files are reachable by vector
+    // search at all, and one file contributes anywhere from 1 to 404 chunks (measured), so a raw
+    // chunk count would read as healthy coverage whenever a handful of large files chunked well.
+    embeddedFiles: countScoped('SELECT COUNT(DISTINCT file_path) as c FROM chunks', 'file_path'),
+  }
+}
+
+/**
  * True when `dbPath` (scoped to `rootDir` when given, matching checkSymbolCount's own scoping)
  * has zero indexed files and zero symbols -- the exact condition doctor's Symbols check warns
  * on. Only meant to be called AFTER a query already returned empty: it always pays a DB read, so
