@@ -44,6 +44,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -254,10 +255,20 @@ function reaches(fn: FnInfo, byName: Map<string, string>, predicate: (body: stri
 }
 
 function srcFiles(): string[] {
-  return fs
-    .readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
-    .filter((f) => f.endsWith('.ts'))
-    .map((f) => path.join(SRC_DIR, f))
+  // Pinned: this guard's whole job is to find every consumer of third-party content, so an empty
+  // or hollowed-out file list is the one failure it must never report as a clean sweep. The anchors
+  // are the modules that fetch or render that content today.
+  return [
+    ...pinnedPopulation({
+      what: 'src/**/*.ts files scanned for unfenced third-party content',
+      items: fs
+        .readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
+        .filter((f) => f.endsWith('.ts'))
+        .map((f) => path.join(SRC_DIR, f)),
+      floor: 150,
+      mustInclude: ['read_commands.ts', 'gdrive.ts', 'web_extract.ts'],
+    }),
+  ]
 }
 
 /**

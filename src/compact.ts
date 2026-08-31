@@ -325,6 +325,12 @@ export function inferSessionGoal(cache: SessionCacheObject, maxTokens: number = 
 /**
  * Return True when path should be excluded from the manifest as low-value noise.
  */
+/** Most-read files listed in the manifest before the rest are folded into an "and N more" line. */
+const READ_SECTION_MAX_ROWS = 15
+
+/** Distinct fetched URLs listed in the manifest before the rest are folded into an "and N more" line. */
+const WEB_SECTION_MAX_ROWS = 10
+
 export function isNoisePath(inputPath: string): boolean {
   if (!inputPath) {
     return false
@@ -600,14 +606,20 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
   if (editedFiles.length > 0) {
     lines.push('## Edited files')
     let sectionTokens = estimateTokens('## Edited files\n')
-    for (const entry of editedFiles) {
+    // Noise filtered ahead of the loop for the same reason as the files-read section below: it
+    // separates "excluded by design" from "dropped by the budget", which is what the count reports.
+    const eligibleEdited = editedFiles.filter((e) => !isNoisePath(normalizePathForwardSlash(e.path)))
+    let shownEdited = 0
+    for (const entry of eligibleEdited) {
       if (sectionTokens > budgetRemaining * 0.4) break
-      const cleanPath = normalizePathForwardSlash(entry.path)
-      if (!isNoisePath(cleanPath)) {
-        lines.push(`- ${cleanPath}`)
-        sectionTokens += estimateTokens(`- ${cleanPath}\n`)
-      }
+      lines.push(`- ${normalizePathForwardSlash(entry.path)}`)
+      sectionTokens += estimateTokens(`- ${normalizePathForwardSlash(entry.path)}\n`)
+      shownEdited += 1
     }
+    // This section has no row cap -- only the budget break -- and a break drops rows exactly as
+    // silently as a slice does. "Edited files" reading as complete when it is not is the worst of
+    // the three: it is the list a reader is most likely to treat as the record of what changed.
+    if (shownEdited < eligibleEdited.length) lines.push(`- ...and ${eligibleEdited.length - shownEdited} more`)
     lines.push('')
   }
 
@@ -615,15 +627,25 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     lines.push('## Files read')
     let sectionTokens = estimateTokens('## Files read\n')
     const sortedRead = [...readFiles].sort((a, b) => b.readCount - a.readCount)
-    for (const entry of sortedRead.slice(0, 15)) {
+    // Noise paths are filtered BEFORE the cap, not inside the loop. Filtering inside meant the
+    // slice spent its 15 places on entries that were then dropped, so a session whose most-read
+    // paths were all noise rendered "## Files read" with nothing under it -- a heading asserting
+    // that the list below is what was read.
+    const eligibleRead = sortedRead.filter((e) => !isNoisePath(normalizePathForwardSlash(e.path)))
+    let shownRead = 0
+    for (const entry of eligibleRead.slice(0, READ_SECTION_MAX_ROWS)) {
       if (sectionTokens > budgetRemaining * 0.3) break
       const cleanPath = normalizePathForwardSlash(entry.path)
-      if (!isNoisePath(cleanPath)) {
-        const truncatedTag = entry.wasTruncated ? ' (truncated)' : ''
-        lines.push(`- ${cleanPath}${truncatedTag}`)
-        sectionTokens += estimateTokens(`- ${cleanPath}${truncatedTag}\n`)
-      }
+      const truncatedTag = entry.wasTruncated ? ' (truncated)' : ''
+      lines.push(`- ${cleanPath}${truncatedTag}`)
+      sectionTokens += estimateTokens(`- ${cleanPath}${truncatedTag}\n`)
+      shownRead += 1
     }
+    // Counted from what was actually emitted, so it covers the row cap and the budget break
+    // alike -- the break drops rows just as silently as the slice does, and reporting only
+    // `eligible - cap` would understate it. Noise paths are excluded by design rather than
+    // omitted by a cap, so they are not in this count.
+    if (shownRead < eligibleRead.length) lines.push(`- ...and ${eligibleRead.length - shownRead} more`)
     lines.push('')
   }
 
@@ -652,11 +674,16 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     // webFetches keys are redactedUrl + redactedPrompt + digest composites (see webFetchKey in
     // session.ts) — surface the distinct URLs, dropping the prompt and digest fields.
     const urls = Array.from(new Set(webFetches.map(([key]) => key.split(WEB_FETCH_KEY_SEP)[0] ?? key)))
-    for (const url of urls.slice(0, 10)) {
+    let shownUrls = 0
+    for (const url of urls.slice(0, WEB_SECTION_MAX_ROWS)) {
       if (sectionTokens > budgetRemaining * 0.2) break
       lines.push(`- ${url}`)
       sectionTokens += estimateTokens(`- ${url}\n`)
+      shownUrls += 1
     }
+    // Same accounting as the files section above: emitted-vs-eligible, so the budget break is
+    // disclosed and not just the row cap.
+    if (shownUrls < urls.length) lines.push(`- ...and ${urls.length - shownUrls} more`)
     lines.push('')
   }
 

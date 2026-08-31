@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { pinnedPopulation } from './population.js'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { _registeredKinds, _registeredKindPrefixes } from '../../src/stats.js'
@@ -24,13 +25,28 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * `walk('src')` with its population pinned. The floor cannot live inside `walk` -- the recursion
+ * calls it once per subdirectory -- so it lives on the single entry point the scans below use. An
+ * empty walk here reports "every kind is registered" / "every kind has a producer" for the same
+ * reason a correct tree does.
+ */
+function scannedSrcFiles(): readonly string[] {
+  return pinnedPopulation({
+    what: 'src/**/*.ts files scanned for stat-kind call sites',
+    items: walk('src'),
+    floor: 150,
+    mustInclude: ['stats.ts', 'read_commands.ts'],
+  })
+}
+
 // Collects every kind name a src/ call site can statically be seen to produce. Deliberately wider than the forward guard's scan: this direction's false positive is a dead registration that stays hidden, so each real indirection this repo uses gets its own rule rather than being waved off. The `record[A-Za-z]*Stat(` shape covers recordStat plus the recordReadStat/recordXlsxStat/recordDocStat wrappers that pass a kind straight through; `kind:`/`statName:` covers emitRewrite's RewriteSavings object and hooks_common's dedup-hint factory; `kind =` covers read_commands' `redirectedFrom ? 'section_replacement' : 'section_read'` ternary; `run*Command(` covers the generic json/yaml outline and query runners that take their kind as a plain argument.
 function collectProducedKinds(): Set<string> {
   const produced = new Set<string>()
   const literals = (s: string): void => {
     for (const q of s.matchAll(/(['"])([A-Za-z_][A-Za-z0-9_:]*)\1/g)) produced.add(q[2])
   }
-  for (const file of walk('src')) {
+  for (const file of scannedSrcFiles()) {
     const text = readFileSync(file, 'utf-8')
     for (const m of text.matchAll(/record[A-Za-z]*Stat\(\s*(['"])([^'"\n]+)\1/g)) produced.add(m[2])
     for (const m of text.matchAll(/record[A-Za-z]*Stat\(\s*`([^`$\n]*)\$\{/g)) produced.add(m[1])

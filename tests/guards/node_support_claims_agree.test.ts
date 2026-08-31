@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const workflowDir = path.join(repoRoot, '.github', 'workflows')
@@ -19,7 +20,12 @@ const readme = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8')
 /** Every `node-version:` a workflow pins, as a number, so a string mismatch cannot hide a real one. */
 function workflowNodeVersions(): { where: string; version: number }[] {
   const found: { where: string; version: number }[] = []
-  for (const file of fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))) {
+  for (const file of pinnedPopulation({
+    what: '.github/workflows/*.yml files',
+    items: fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml')),
+    floor: 3,
+    mustInclude: ['ci.yml', 'publish.yml'],
+  })) {
     const lines = fs.readFileSync(path.join(workflowDir, file), 'utf8').split('\n')
     lines.forEach((text, index) => {
       const match = /node-version:\s*'?"?(\d+)/.exec(text)

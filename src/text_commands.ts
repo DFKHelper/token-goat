@@ -797,16 +797,41 @@ export function cmdLogfold(
   opts: { tail?: string | undefined; noNormalize?: boolean; foldRepeats?: boolean | undefined; json?: boolean | undefined },
 ): void {
   const text = readInput(src)
-  let lines = splitLines(text)
+  const rawLines = splitLines(text)
+  // A trailing newline leaves an empty element behind. Dropped once, here, so the tail window and
+  // the counts below agree: keeping it meant `--tail 3` spent one of its three places on a blank
+  // row and then reported "last 3" for two real lines. Same handling trimToBudget already applies.
+  const allLines = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines
+  let lines = allLines
   if (opts.tail !== undefined) {
     const n = requireNonNegativeStrictInt('--tail', opts.tail)
     lines = lines.slice(Math.max(0, lines.length - n))
   }
+  // Read off the input before the tail slice, so it cannot drift into restating what survived.
+  // `--tail 2` on a 14-line log dropped 12 lines and said so on neither channel, in either mode.
+  //
+  // Deliberately NOT named `totalCount`: in the shared --json envelope that name means "the
+  // pre-cap length of the array beside it", and the array here holds FOLDED ROWS while the tail
+  // cuts INPUT LINES. Fourteen identical-after-normalization lines fold to one row, so the two
+  // counts are in different units and reusing the envelope name would state a ratio that is not
+  // true of either. Folding discloses itself via each row's `(xN)`; these two fields cover only
+  // the lines the tail dropped, which nothing else reports.
+  //
+  // The trailing empty element a final newline leaves behind is dropped before counting, for the
+  // reason trimToBudget already spells out: counting it inflates the "of N lines" total by one
+  // and reports a total the reader can never reach.
+  const inputLines = allLines.length
+  const shownLines = lines.length
+  const truncated = shownLines < inputLines
 
   const folded = applyFiltersAndFold(lines, opts.noNormalize === true, opts.foldRepeats === true)
 
+  if (truncated) {
+    process.stderr.write(`Showing last ${shownLines} of ${inputLines} lines (raise --tail to see more).\n`)
+  }
+
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ lines: folded }, null, 2) + '\n')
+    process.stdout.write(JSON.stringify({ lines: folded, truncated, inputLines, shownLines }, null, 2) + '\n')
     return
   }
 

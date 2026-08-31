@@ -4543,7 +4543,13 @@ export function runFind(opts: FindOptions): number {
     // "add a field, don't rewrite an existing one" convention. Absent on an exact hit, so a
     // consumer can tell a real substring match from a typo-recovered one.
     const fuzzyPayload = fuzzyNames.length > 0 ? { fuzzy: true, matchedNames: fuzzyNames } : {}
-    emit(JSON.stringify({ files, truncated, ...fuzzyPayload }, null, 2))
+    // `totalCount` is the pre-cap file count, matching the `showing N of M` the text branch prints
+    // below. Without it this payload said only that something had been cut: the text reader was
+    // told to `rerun with --limit 150`, and the JSON reader -- the consumer least able to notice --
+    // got a bare `truncated: true` and no way to size the gap. Taken from `allFiles`, which is the
+    // deduplicated list before `.slice`, so it cannot drift into being a restatement of
+    // `files.length`.
+    emit(JSON.stringify({ files, truncated, totalCount: allFiles.length, ...fuzzyPayload }, null, 2))
     return 0
   }
 

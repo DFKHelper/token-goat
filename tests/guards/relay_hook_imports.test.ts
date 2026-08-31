@@ -26,6 +26,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -37,11 +38,21 @@ const RELAY_SRC = fs.readFileSync(path.join(SRC_DIR, 'relay.ts'), 'utf8')
  * by listing src/ directly rather than assuming this).
  */
 function hooksFiles(): string[] {
-  return fs
-    .readdirSync(SRC_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /^hooks_.*\.ts$/.test(entry.name))
-    .map((entry) => entry.name)
-    .sort()
+  // Pinned: the `hooks_` prefix is a naming convention, not a compiler-enforced one. Renaming the
+  // family (or moving it into a subdirectory) empties this list, and every "relay imports it"
+  // assertion below then passes while relay imports nothing.
+  return [
+    ...pinnedPopulation({
+      what: 'src/hooks_*.ts modules',
+      items: fs
+        .readdirSync(SRC_DIR, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && /^hooks_.*\.ts$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort(),
+      floor: 15,
+      mustInclude: ['hooks_read.ts', 'hooks_bash.ts', 'hooks_edit.ts'],
+    }),
+  ]
 }
 
 /**

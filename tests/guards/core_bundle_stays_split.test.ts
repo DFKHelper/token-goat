@@ -18,6 +18,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 // @ts-expect-error -- plain .mjs build helper with JSDoc types, outside tsconfig's include.
 import { sweepStaleChunks } from '../../scripts/sweep-chunks.mjs'
@@ -106,7 +107,15 @@ describe('core bundle stays split', () => {
     // chunks that had just been deleted; anything starting the CLI then died with
     // ERR_MODULE_NOT_FOUND. Both static and dynamic edges are checked here, since a dynamic one
     // fails just as hard, only later.
-    const files = [ENTRY, ...fs.readdirSync(DIST).filter((f) => f.startsWith(CORE_CHUNK_PREFIX)).map((f) => path.join(DIST, f))]
+    // Pinned: ENTRY is always in this list, so `files` is never empty and the resolvability sweep
+    // below would still look busy after the chunk glob stopped matching anything. The floor is on
+    // the chunks specifically, which is the part that can silently go to zero.
+    const chunks = pinnedPopulation({
+      what: `dist/${CORE_CHUNK_PREFIX}*.mjs core chunks`,
+      items: fs.readdirSync(DIST).filter((f) => f.startsWith(CORE_CHUNK_PREFIX)),
+      floor: 5,
+    })
+    const files = [ENTRY, ...chunks.map((f) => path.join(DIST, f))]
     const missing: string[] = []
     for (const file of files) {
       for (const m of fs.readFileSync(file, 'utf8').matchAll(/["(]\s*"?(\.\/token-goat-chunk-[^"')]+\.mjs)"/g)) {

@@ -12,6 +12,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 import { SHARD_COUNT } from '../helpers/matrix_cases.js'
 
@@ -72,7 +73,15 @@ describe('command-matrix shard set', () => {
 
   it('has no leftover unsharded command_matrix_e2e.test.ts alongside the shards', () => {
     // Both present would double-run every case and double the suite's slowest file.
-    const files = readdirSync(join(resolve('tests')))
+    // Pinned: this case is a pure negative assertion, which an empty directory listing satisfies
+    // for free -- exactly the shape where "no leftover file found" and "nothing was looked at" are
+    // the same green tick.
+    const files = pinnedPopulation({
+      what: 'tests/ directory entries',
+      items: readdirSync(join(resolve('tests'))),
+      floor: 300,
+      mustInclude: ['command_matrix_e2e.1.test.ts'],
+    })
     expect(files).not.toContain('command_matrix_e2e.test.ts')
   })
 })

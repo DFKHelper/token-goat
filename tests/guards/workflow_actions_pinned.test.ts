@@ -9,6 +9,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const workflowDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.github', 'workflows')
 
@@ -20,7 +21,12 @@ interface Reference {
 
 function collectUses(): Reference[] {
   const refs: Reference[] = []
-  for (const file of fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))) {
+  for (const file of pinnedPopulation({
+    what: '.github/workflows/*.yml files',
+    items: fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml')),
+    floor: 3,
+    mustInclude: ['ci.yml', 'publish.yml'],
+  })) {
     const lines = fs.readFileSync(path.join(workflowDir, file), 'utf8').split('\n')
     lines.forEach((text, index) => {
       const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(text)
@@ -49,7 +55,12 @@ describe('workflow action pinning', () => {
 
   it('keeps a version comment beside each pin, so the SHA can be read by a human', () => {
     const missing: string[] = []
-    for (const file of fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))) {
+    for (const file of pinnedPopulation({
+      what: '.github/workflows/*.yml files',
+      items: fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml')),
+      floor: 3,
+      mustInclude: ['ci.yml', 'publish.yml'],
+    })) {
       const lines = fs.readFileSync(path.join(workflowDir, file), 'utf8').split('\n')
       lines.forEach((text, index) => {
         if (!/uses:\s*\S+@[0-9a-f]{40}/.test(text)) return

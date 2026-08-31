@@ -1667,8 +1667,25 @@ export function runSimilar(opts: SimilarOptions): number {
   const query = words.slice(0, 8).join(' ')
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const hits = searchSymbolsFts(query, top + 1, undefined, rootDir)
-  const results = hits.filter((h) => !(h.filePath === anchor.filePath && h.name === anchor.name)).slice(0, top)
+  // Scanned uncapped, for the reason spelled out on runDead's own scan: a fetch of `top + 1` can
+  // tell that more matches exist but never how many, so the only number available to report would
+  // have been the scanned set restated as the whole one. FTS orders by bm25 rank, so slicing the
+  // uncapped result to `top` below returns the identical rows the capped fetch did -- this widens
+  // what is counted, not what is shown.
+  const hits = searchSymbolsFts(query, UNBOUNDED_REF_LIMIT, undefined, rootDir)
+  // The anchor is filtered out before the total is taken: it is not one of its own similar
+  // symbols, and counting it would report a total the reader can never reach with --top.
+  const matches = hits.filter((h) => !(h.filePath === anchor.filePath && h.name === anchor.name))
+  const results = matches.slice(0, top)
+
+  // `similar --json` is a deliberate bare array with no envelope to carry a truncation flag, so a
+  // --top-clipped page was indistinguishable from the complete match list in both output modes --
+  // and unlike coverage-gaps and impact, which report the clipped count for exactly this reason,
+  // this command disclosed nothing on either channel. Emitted before the --json branch so both
+  // modes get it.
+  if (matches.length > results.length) {
+    emitErr(`Showing top ${results.length} of ${matches.length} similar symbols (raise --top to see the rest).`)
+  }
 
   if (opts.json === true) {
     emit(JSON.stringify(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart })), null, 2))

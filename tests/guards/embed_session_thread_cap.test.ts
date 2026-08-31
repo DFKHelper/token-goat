@@ -22,6 +22,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src')
 
@@ -54,7 +55,15 @@ function walkSrc(dir: string): string[] {
  */
 function createCalls(): CreateCall[] {
   const found: CreateCall[] = []
-  for (const file of walkSrc(SRC_DIR)) {
+  // Pinned: this scan looks for thread-cap call sites, and finding none is indistinguishable from
+  // walking nothing. The anchor names the module that actually creates the embedding sessions.
+  const scanned = pinnedPopulation({
+    what: 'src/**/*.ts files scanned for embedding session creation',
+    items: walkSrc(SRC_DIR),
+    floor: 150,
+    mustInclude: ['embeddings.ts'],
+  })
+  for (const file of scanned) {
     const source = fs.readFileSync(file, 'utf8')
     let from = 0
     for (;;) {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -47,7 +48,14 @@ function collectTestFiles(dir: string): string[] {
 }
 
 describe('data-dir environment pinning is platform-complete', () => {
-  const files = collectTestFiles(TESTS_DIR)
+  // Pinned: a walk that returns nothing would report every test file as correctly pinning its
+  // data dir, which is exactly what it would report if every test file stopped pinning it.
+  const files = pinnedPopulation({
+    what: 'tests/**/*.ts files checked for data-dir env pinning',
+    items: collectTestFiles(TESTS_DIR),
+    floor: 300,
+    mustInclude: ['worker.test.ts'],
+  })
 
   it('found test files to scan (sanity check that discovery is not silently matching nothing)', () => {
     expect(files.length).toBeGreaterThan(50)

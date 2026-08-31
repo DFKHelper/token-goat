@@ -854,10 +854,10 @@ describe('logfold command', () => {
     // Pin the exact fold result -- length > 0 plus "some entry has count > 1" would still
     // pass if the fold logic grouped the wrong lines together or miscounted, as long as
     // some entry happened to end up with count > 1.
-    expect(parsed.lines).toEqual([
-      { text: 'hello', count: 2 },
-      { text: '', count: 1 },
-    ])
+    // The trailing newline no longer contributes a phantom `{ text: '', count: 1 }` row: it was
+    // an artifact of splitLines, and it made `--tail N` spend one of its N places on a blank line
+    // while the disclosure line counted real lines only.
+    expect(parsed.lines).toEqual([{ text: 'hello', count: 2 }])
   })
 
   it('reads from a file when a src path is given', async () => {
@@ -939,12 +939,11 @@ describe('logfold command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = await run(['logfold', '--fold-repeats', '--json'], { input })
     const lines = (JSON.parse(parsed.stdout) as { lines: Array<{ text: string; count: number }> }).lines
-    // Trailing newline in the input yields one more (empty) line from the raw split; it is its
-    // own distinct key and folds to a trailing count-1 entry alongside boom/noise.
+    // The trailing newline no longer yields an extra empty line from the raw split, so only the
+    // two real distinct keys appear.
     expect(lines).toEqual([
       { text: 'boom', count: 3 },
       { text: 'noise', count: 2 },
-      { text: '', count: 1 },
     ])
   })
 
@@ -954,7 +953,8 @@ describe('logfold command', () => {
     expect(r.status, r.stderr).toBe(0)
     const lines = (JSON.parse(r.stdout) as { lines: Array<{ text: string; count: number }> }).lines
     expect(lines.every((l) => l.count === 1)).toBe(true)
-    expect(lines.length).toBe(6)
+    // Five real lines; the trailing newline no longer contributes a sixth, empty one.
+    expect(lines.length).toBe(5)
   })
 })
 
