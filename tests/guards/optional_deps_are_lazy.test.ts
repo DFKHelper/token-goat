@@ -24,6 +24,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const distDir = path.join(repoRoot, 'dist')
@@ -35,7 +36,16 @@ const OPTIONAL = Object.keys(
 )
 
 function distFiles(): string[] {
-  return fs.readdirSync(distDir).filter((f) => f.endsWith('.mjs'))
+  // Pinned: if the bundle's output filenames or extension ever change, this walk returns nothing
+  // and every lazy-import assertion below passes without reading a single line of the build.
+  return [
+    ...pinnedPopulation({
+      what: 'dist/*.mjs bundle files',
+      items: fs.readdirSync(distDir).filter((f) => f.endsWith('.mjs')),
+      floor: 8,
+      mustInclude: ['token-goat.mjs'],
+    }),
+  ]
 }
 
 /** Bare-specifier top-level imports only. A relative import is another chunk of our own bundle. */

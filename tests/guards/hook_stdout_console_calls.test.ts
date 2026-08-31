@@ -48,18 +48,30 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 /** Every `hooks_*.ts` file directly under src/ with a top-level `registerHook(` call, same discovery as tests/guards/relay_hook_imports.test.ts. */
 function registeringHooksFiles(): string[] {
-  return fs
-    .readdirSync(SRC_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /^hooks_.*\.ts$/.test(entry.name))
-    .map((entry) => entry.name)
-    .filter((file) => /^registerHook\(/m.test(fs.readFileSync(path.join(SRC_DIR, file), 'utf8')))
-    .sort()
+  // Pinned, and this one has two independent ways to empty: the `hooks_` filename convention and
+  // the `registerHook(` call shape. A refactor to either -- a rename, or wrapping registration in a
+  // helper -- leaves this returning [] with no error, which is the exact shape of the guard-gate
+  // regression this repo has already shipped once.
+  return [
+    ...pinnedPopulation({
+      what: 'src/hooks_*.ts modules with a top-level registerHook( call',
+      items: fs
+        .readdirSync(SRC_DIR, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && /^hooks_.*\.ts$/.test(entry.name))
+        .map((entry) => entry.name)
+        .filter((file) => /^registerHook\(/m.test(fs.readFileSync(path.join(SRC_DIR, file), 'utf8')))
+        .sort(),
+      floor: 15,
+      mustInclude: ['hooks_read.ts', 'hooks_bash.ts', 'hooks_edit.ts'],
+    }),
+  ]
 }
 
 /** Files in scope for this guard: the hook-registering modules, relay.ts (the wire entry point), and hooks_cli.ts (shared payload normalization). */

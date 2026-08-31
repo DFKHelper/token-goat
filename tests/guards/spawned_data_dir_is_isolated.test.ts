@@ -14,6 +14,7 @@
  * the POSIX-only failure from Windows, which is exactly why it needs a structural guard.
  */
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +29,20 @@ function testFiles(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * `testFiles` with its population pinned. The recursion itself cannot carry the check -- every
+ * nested call would assert against a single subdirectory -- so the floor lives on the one
+ * non-recursive entry point both cases below go through.
+ */
+function scannedTestFiles(): readonly string[] {
+  return pinnedPopulation({
+    what: 'tests/**/*.ts files scanned for spawned-child data-dir isolation',
+    items: testFiles(path.join(process.cwd(), 'tests')),
+    floor: 300,
+    mustInclude: ['worker.test.ts'],
+  })
+}
+
 describe('a spawned binary gets an isolated data dir on every platform', () => {
   it('pins XDG_DATA_HOME wherever it pins LOCALAPPDATA for a child process', () => {
     const offenders: string[] = []
@@ -38,7 +53,7 @@ describe('a spawned binary gets an isolated data dir on every platform', () => {
     // spares it today, which one stray `spawn(` anywhere in this file -- a comment would do --
     // would undo, turning the guard into a false offender against itself.
     const self = path.resolve(fileURLToPath(import.meta.url))
-    for (const full of testFiles(path.join(process.cwd(), 'tests'))) {
+    for (const full of scannedTestFiles()) {
       if (path.resolve(full) === self) continue
       const text = fs.readFileSync(full, 'utf8')
       if (!/\bLOCALAPPDATA:/.test(text)) continue
@@ -64,7 +79,7 @@ describe('a spawned binary gets an isolated data dir on every platform', () => {
     // healthy on files that never spawn anything, which is exactly the population that does not
     // matter here.
     const self = path.resolve(fileURLToPath(import.meta.url))
-    const covered = testFiles(path.join(process.cwd(), 'tests')).filter((full) => {
+    const covered = scannedTestFiles().filter((full) => {
       if (path.resolve(full) === self) return false
       const text = fs.readFileSync(full, 'utf8')
       return /\bLOCALAPPDATA:/.test(text) && /\bspawnSync\(|\bexecFileSync\(|\bexecSync\(|\bspawn\(/.test(text)

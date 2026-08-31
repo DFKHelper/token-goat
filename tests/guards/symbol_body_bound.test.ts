@@ -24,15 +24,25 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 function srcFiles(): string[] {
-  return fs
-    .readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
-    .filter((f) => f.endsWith('.ts'))
-    .map((f) => path.join(SRC_DIR, f))
+  // Pinned: `recursive: true` is the whole walk here, and it returns [] rather than throwing when
+  // SRC_DIR moves. The anchors name the two files that actually hold the bodies being bounded.
+  return [
+    ...pinnedPopulation({
+      what: 'src/**/*.ts files',
+      items: fs
+        .readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
+        .filter((f) => f.endsWith('.ts'))
+        .map((f) => path.join(SRC_DIR, f)),
+      floor: 150,
+      mustInclude: ['read_commands.ts', 'parser.ts'],
+    }),
+  ]
 }
 
 function read(file: string): string {

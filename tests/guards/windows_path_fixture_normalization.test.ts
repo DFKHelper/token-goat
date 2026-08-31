@@ -31,6 +31,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..', '..')
@@ -64,6 +65,21 @@ function walkTestFiles(dir: string, out: string[] = []): string[] {
     }
   }
   return out
+}
+
+/**
+ * `walkTestFiles(TESTS_DIR)` with its population pinned, used by all three cases below. The floor
+ * cannot sit inside the recursion, and this walk deliberately treats a vanished directory as empty
+ * (see the note above it), so an empty result is the one outcome it can never distinguish on its
+ * own from a clean sweep.
+ */
+function scannedTestFiles(): readonly string[] {
+  return pinnedPopulation({
+    what: 'tests/**/*.ts files scanned for Windows path fixture normalization',
+    items: walkTestFiles(TESTS_DIR),
+    floor: 300,
+    mustInclude: ['worker.test.ts'],
+  })
 }
 
 // The literal regex-literal token a hand-rolled backslash-to-forward-slash conversion uses.
@@ -109,7 +125,7 @@ describe('no hand-rolled Windows path normalization in test fixtures', () => {
     // Excluding this file: it names the token in its own source, so counting itself would let a
     // future edit satisfy the pin without a single real fixture matching.
     const self = fileURLToPath(import.meta.url)
-    const files = walkTestFiles(TESTS_DIR)
+    const files = scannedTestFiles()
       .filter((file) => path.resolve(file) !== path.resolve(self))
       .map((file) => fs.readFileSync(file, 'utf8'))
 
@@ -137,7 +153,7 @@ describe('no hand-rolled Windows path normalization in test fixtures', () => {
 
   it('every test file that flips backslashes to slashes for a path fixture and also lowercases it imports normalizePath from src/paths.ts instead of reimplementing it', () => {
     const offenders: string[] = []
-    for (const file of walkTestFiles(TESTS_DIR)) {
+    for (const file of scannedTestFiles()) {
       const src = fs.readFileSync(file, 'utf8')
       if (!src.includes(BACKSLASH_TO_SLASH_TOKEN)) continue
       if (!src.toLowerCase().includes('tolowercase()')) continue
@@ -149,7 +165,7 @@ describe('no hand-rolled Windows path normalization in test fixtures', () => {
 
   it('every test file that hand-flips backslashes AND inserts fixture rows into a path-keyed table (files/symbols/refs) imports normalizePath from src/paths.ts instead of reimplementing it', () => {
     const offenders: string[] = []
-    for (const file of walkTestFiles(TESTS_DIR)) {
+    for (const file of scannedTestFiles()) {
       const src = fs.readFileSync(file, 'utf8')
       if (!src.includes(BACKSLASH_TO_SLASH_TOKEN)) continue
       if (!INSERT_PATH_TABLE_RE.test(src)) continue

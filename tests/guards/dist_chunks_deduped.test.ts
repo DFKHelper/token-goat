@@ -28,6 +28,7 @@ import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 import { CORE_BUNDLE, HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
 
@@ -81,7 +82,15 @@ function closure(entry: string, kind: 'static' | 'any'): Set<string> {
 }
 
 function chunkFiles(): string[] {
-  return fs.readdirSync(DIST).filter((f) => f.endsWith('.mjs') && !ENTRY_FILES.has(f))
+  // Pinned: the dedup check is a comparison across chunks, so an empty or single-element chunk list
+  // has nothing to compare and reports "no duplicates" for the same reason an unbuilt tree would.
+  return [
+    ...pinnedPopulation({
+      what: 'dist/ non-entry bundle chunks',
+      items: fs.readdirSync(DIST).filter((f) => f.endsWith('.mjs') && !ENTRY_FILES.has(f)),
+      floor: 5,
+    }),
+  ]
 }
 
 describe('dist chunks are shared, not duplicated', () => {

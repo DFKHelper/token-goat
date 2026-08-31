@@ -25,6 +25,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const distDir = path.join(repoRoot, 'dist')
@@ -47,10 +48,16 @@ const RESOLVED_AT_RUNTIME = ['jsonc-parser'] as const
 const ABSENT_FROM_THE_BUNDLE = ['better-sqlite3'] as const
 
 function distSources(): string[] {
-  return fs
-    .readdirSync(distDir)
-    .filter((f) => f.endsWith('.mjs'))
-    .map((f) => fs.readFileSync(path.join(distDir, f), 'utf8'))
+  // Pinned on the filenames rather than the contents this returns: the contents are what the guard
+  // searches, so anchoring on them would be circular. Counting the files that produced them is the
+  // independent check -- an empty dist yields an empty source list and a vacuous pass.
+  const files = pinnedPopulation({
+    what: 'dist/*.mjs bundle files',
+    items: fs.readdirSync(distDir).filter((f) => f.endsWith('.mjs')),
+    floor: 8,
+    mustInclude: ['token-goat.mjs'],
+  })
+  return files.map((f) => fs.readFileSync(path.join(distDir, f), 'utf8'))
 }
 
 /**

@@ -16,7 +16,7 @@ describe('overflow_guard', () => {
     })
 
     it('strips ANSI codes before counting', () => {
-      const textWithAnsi = 'a'.repeat(300) + '[31mred[0m'
+      const textWithAnsi = 'a'.repeat(300) + '\x1b[31mred\x1b[0m'
       const tokens = estimateTokens(textWithAnsi)
       expect(tokens).toBeGreaterThanOrEqual(100)
       expect(tokens).toBeLessThanOrEqual(105)

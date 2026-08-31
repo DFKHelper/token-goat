@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..', '..')
@@ -42,6 +43,10 @@ function allSrcText(): string {
     }
   }
   walk(SRC)
+  // Pinned: this returns concatenated text, and an empty walk yields an empty string in which no
+  // `_require('pkg')` is ever found -- reported as "no undeclared optional deps", the same verdict
+  // a genuinely clean tree produces. The count of files that fed it is the independent check.
+  pinnedPopulation({ what: 'src/**/*.ts files concatenated for dependency scanning', items: out, floor: 150 })
   return out.join('\n')
 }
 

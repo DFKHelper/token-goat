@@ -634,6 +634,66 @@ auto_trigger_multiplier = 2.0
       expect(manifest).toContain('delta.ts')
     })
 
+    // ---- manifest disclosure -------------------------------------------------------------
+    //
+    // Why nothing caught this: every manifest test above asserts the manifest CONTAINS an
+    // expected path. None asserted anything about what it left out, and the three sections
+    // ("Edited files", "Files read", "Web fetches") each dropped rows two ways -- a row cap and
+    // a mid-loop token-budget break -- while rendering the survivors as a plain bullet list. A
+    // short list was byte-identical to a complete one. The manifest is handed to the model
+    // immediately before compaction, so that list reads as the record of the session.
+
+    it('discloses the files it left out of the read section rather than rendering a short list as a complete one', () => {
+      const TOTAL = 20
+      for (let i = 0; i < TOTAL; i++) recordFileRead(`C:/proj/src/file${i}.ts`)
+      saveSessionState('read-cap-session')
+
+      const manifest = buildManifest('read-cap-session')
+      const shown = manifest.split('\n').filter((l) => /^- c:\/proj\/src\/file\d+\.ts/i.test(l)).length
+
+      // Calibration: the cap must actually engage, or the disclosure assertion below is
+      // asserting on an uncapped list and proves nothing.
+      expect(shown, `${TOTAL} files were read but ${shown} rendered; the cap is not engaging`).toBeLessThan(TOTAL)
+      expect(shown).toBeGreaterThan(0)
+      // CAPTURE: the real manifest for this session shows 14 rows, not the 15-row cap -- the
+      // token-budget break fires first. So the disclosed count must be 'eligible minus emitted'
+      // (6), which is what makes it right; a naive `total - cap` would report 5 and be wrong.
+      expect(manifest, 'the read section dropped rows and said nothing').toMatch(
+        new RegExp(`- \\.\\.\\.and ${TOTAL - shown} more`),
+      )
+    })
+
+    it('spends the read cap on files it will actually show, not on noise paths it then drops', () => {
+      // The cap used to be applied BEFORE the noise filter, so a session whose most-read paths
+      // were all noise rendered "## Files read" as a heading with nothing under it -- a heading
+      // that asserts the list below is what was read.
+      for (let i = 0; i < 18; i++) {
+        recordFileRead(`C:/proj/node_modules/pkg${i}/index.js`)
+        recordFileRead(`C:/proj/node_modules/pkg${i}/index.js`)
+      }
+      recordFileRead('C:/proj/src/real.ts')
+      saveSessionState('noise-first-session')
+
+      const manifest = buildManifest('noise-first-session')
+      // Must-not-drop anchor: the one real file has to survive. A collapse that hid everything
+      // would satisfy any "no noise in the output" assertion on its own.
+      expect(manifest, 'the only non-noise file read was dropped in favour of noise paths').toContain('real.ts')
+      expect(manifest, 'noise paths must not reach the manifest').not.toContain('node_modules')
+    })
+
+    it('says nothing about omissions when every file fits', () => {
+      // The negative half. A disclosure line emitted unconditionally would pass the case above
+      // on its own while lying on every ordinary session.
+      recordFileRead('C:/proj/src/only.ts')
+      recordFileEdit('C:/proj/src/edited.ts')
+      saveSessionState('fits-session')
+
+      const manifest = buildManifest('fits-session')
+      expect(manifest).toContain('only.ts')
+      expect(manifest).toContain('edited.ts')
+      expect(manifest, 'a complete manifest must not claim rows were omitted').not.toMatch(/and \d+ more/)
+    })
+
     it('buildManifest renders real file paths, not numeric array indices, from a session written by the real saveSessionState writer', () => {
       recordFileRead('C:/proj/src/alpha.ts')
       recordFileEdit('C:/proj/src/beta.ts')

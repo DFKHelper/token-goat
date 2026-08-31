@@ -11,11 +11,21 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { pinnedPopulation } from './population.js'
 
 const workflowDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.github', 'workflows')
 
 function workflowFiles(): string[] {
-  return fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
+  // Pinned: a rename of the workflow directory, or a move to a third extension, would empty this
+  // list and let every permissions assertion below pass against no workflows at all.
+  return [
+    ...pinnedPopulation({
+      what: '.github/workflows/*.yml files',
+      items: fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml')),
+      floor: 3,
+      mustInclude: ['ci.yml', 'publish.yml'],
+    }),
+  ]
 }
 
 function read(file: string): string {

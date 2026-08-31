@@ -20,6 +20,7 @@
  * by setting it and expecting an effect.
  */
 import { describe, it, expect } from 'vitest'
+import { pinnedPopulation } from './population.js'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -51,7 +52,14 @@ describe('env fingerprint list names only variables the program reads', () => {
   const { keys, block } = envKeysBlock(configSrc)
 
   // The array itself is removed from the corpus, so an entry cannot vouch for its own existence.
-  const corpus = allSrcFiles(SRC)
+  // Pinned: the fingerprint keys are looked for across the whole source tree, so an empty corpus
+  // reports every key as unread -- or, depending on the assertion direction, every key as fine.
+  const corpus = pinnedPopulation({
+    what: 'src/**/*.ts files searched for env fingerprint keys',
+    items: allSrcFiles(SRC),
+    floor: 150,
+    mustInclude: ['env.ts'],
+  })
     .map((f) => (f === CONFIG_SRC ? configSrc.replace(block, '') : fs.readFileSync(f, 'utf8')))
     .join('\n')
 

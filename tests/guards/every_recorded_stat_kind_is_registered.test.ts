@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { pinnedPopulation } from './population.js'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRegisteredKind, kindToSource } from '../../src/stats.js'
@@ -13,6 +14,21 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * `walk('src')` with its population pinned. The floor cannot live inside `walk` -- the recursion
+ * calls it once per subdirectory -- so it lives on the single entry point the scans below use. An
+ * empty walk here reports "every kind is registered" / "every kind has a producer" for the same
+ * reason a correct tree does.
+ */
+function scannedSrcFiles(): readonly string[] {
+  return pinnedPopulation({
+    what: 'src/**/*.ts files scanned for stat-kind call sites',
+    items: walk('src'),
+    floor: 150,
+    mustInclude: ['stats.ts', 'read_commands.ts'],
+  })
+}
+
 interface Site {
   kind: string
   file: string
@@ -21,7 +37,7 @@ interface Site {
 
 function collectKindSites(): Site[] {
   const sites: Site[] = []
-  for (const file of walk('src')) {
+  for (const file of scannedSrcFiles()) {
     const text = readFileSync(file, 'utf-8')
     // Scanned as one string rather than line by line. A call formatted across several lines -- `recordStat(` alone, then the kind on the next line -- is invisible to a per-line scan, and there is one such site in the tree today (hooks_compact.ts's compact_summary). Line numbers come from counting newlines before the match offset instead.
     const lineOf = (index: number): number => text.slice(0, index).split('\n').length
