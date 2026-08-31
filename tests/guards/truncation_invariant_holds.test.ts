@@ -116,6 +116,16 @@ type Disclosure =
   /** Field carrying the pre-cap total. Commands predate one naming convention; `brief` says `totalCallers`. */
   | { readonly kind: 'envelope'; readonly totalField: string }
   | { readonly kind: 'stderr' }
+  /**
+   * `stderr-more`: the cap goes into the SQL query itself, so the rows past it are never fetched
+   * and never counted -- an exact total would cost a second full query on every call. These fetch
+   * one row beyond the cap, which buys the honest half (THAT a remainder exists) for one row, and
+   * say so without naming a number they did not compute. Same kind `recall` uses in the session
+   * half of this guard. The assertion deliberately does not pin the wording, only that a
+   * remainder is signalled and the flag to raise is named -- pinning prose makes a rewrite fail a
+   * guard that has nothing to say about it.
+   */
+  | { readonly kind: 'stderr-more' }
 
 /** A command this guard drives, with the arguments that make it return more than LIMIT rows. */
 interface Case {
@@ -127,6 +137,7 @@ interface Case {
 
 const ENVELOPE: Disclosure = { kind: 'envelope', totalField: 'totalCount' }
 const STDERR: Disclosure = { kind: 'stderr' }
+const STDERR_MORE: Disclosure = { kind: 'stderr-more' }
 
 const CASES: readonly Case[] = [
   { command: 'symbol', args: ['symbol', 'dup'], flag: '--limit', disclosure: ENVELOPE },
@@ -139,9 +150,14 @@ const CASES: readonly Case[] = [
   { command: 'json-query', args: ['json-query', 'data.json', 'rows[*].name'], flag: '--head', disclosure: ENVELOPE },
   { command: 'yaml-query', args: ['yaml-query', 'data.json', 'rows[*].name'], flag: '--head', disclosure: ENVELOPE },
   { command: 'tokens', args: ['tokens', '*.ts'], flag: '--top', disclosure: ENVELOPE },
+  { command: 'types', args: ['types'], flag: '--limit', disclosure: ENVELOPE },
+  { command: 'semantic', args: ['semantic', 'dup'], flag: '--limit', disclosure: ENVELOPE },
   // Bare-array payloads: nowhere in-band to carry a flag without breaking every consumer.
   { command: 'similar', args: ['similar', 'target.ts::hotSymbol'], flag: '--top', disclosure: STDERR },
   { command: 'coverage-gaps', args: ['coverage-gaps'], flag: '--top', disclosure: STDERR },
+  // Cap lives in the SQL LIMIT, so there is no pre-cap total to name -- see `stderr-more`.
+  { command: 'context-for', args: ['context-for', 'dup'], flag: '--top', disclosure: STDERR_MORE },
+  { command: 'ask', args: ['ask', 'dup'], flag: '--top', disclosure: STDERR_MORE },
 ]
 
 /**
@@ -166,21 +182,17 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['bash-output', 'line trim on cached text, not a row list; disclosure driven by tests/cached_output_elision_discloses.test.ts, alongside retrieve'],
   ['web-output', 'line trim on cached text, not a row list; disclosure driven by tests/cached_output_elision_discloses.test.ts, alongside retrieve'],
   ['mcp-output', 'line trim on cached text, not a row list; disclosure driven by tests/cached_output_elision_discloses.test.ts, alongside retrieve'],
-  ['waste', '--top sizes an explicit ranking -- the field is literally `topCalls` -- and the report carries its own whole-set aggregate (totalTokens) computed before it, so a capped page is never mistakable for the whole. Contrast `tokens`, which paired a sliced list with a whole-set total and IS now covered above'],
-  ['semantic', 'ranks by embedding similarity; a fixture large enough to exceed the cap makes the case slow and the ordering unstable'],
-  ['bootstrap-audit', 'audits an installed agent configuration, not a project'],
-  ['impact', 'its cap does not engage on a fixture this size -- one result is returned uncapped, so there is nothing to assert about a cut'],
-  ['context-for', '--budget shapes a token budget rather than clipping a row list'],
-  ['arch', 'reports three independent sections; --top applies per section, so there is no single row list to check'],
-  ['types', 'takes a file path rather than a symbol name; covered by symbol/refs for the same envelope'],
-  ['refs --top', 'a second flag on a command already covered through --limit'],
+  ['waste', '--top sizes an explicit ranking -- the field is literally `topCalls` -- and the report carries its own whole-set aggregate computed before it. Verified rather than assumed: totalTokens is byte-identical at --top 2 and --top 500 on a real session, so a capped page cannot be mistaken for the whole spend. Contrast `tokens`, which paired a sliced list with a whole-set total and IS driven above'],
+  ['bootstrap-audit', 'reads an installed agent/skill tree under a home directory rather than an indexed project, and its payload carries four arrays, so it fits neither this fixture nor rowsOf(). Driven against a real seeded home in tests/arch_bootstrap_truncation_discloses.test.ts. The old reason (\'audits an installed agent configuration, not a project\') described why a fixture is awkward and was read as why no check was needed; --top 1 against 77 installed entries rendered one row and said nothing'],
+  ['impact', 'discloses correctly today -- a real run prints \'Showing top 2 of 955 impacted symbols\' plus a separate hop-depth notice -- but its bare-array payload needs a caller graph deeper than this fixture builds to exercise either. Covered by its own hop-depth tests. The previous reason (\'its cap does not engage on a fixture this size\') was a statement about the fixture written as though it were one about the command'],
+  ['arch', 'reports three lists (hubs, entry points, cycles) under one --top, so its payload has no single row array for this guard\'s rowsOf() to cap and count -- a shape mismatch, not an untestable command. Each list carries its own total, checked in tests/arch_bootstrap_truncation_discloses.test.ts. That test exists because THIS reason was once \'there is no single row list to check\', which is true of the harness and was silently read as true of the command: a real run showed hubs and entry points both cut from 270 and 511 down to 2 with nothing said on either channel'],
+  ['refs --top', '--top switches refs to a per-FILE histogram, a different payload from --limit\'s row list, and that payload already discloses: a real run reports totalFiles: 68 beside shown: 2. The row-list half is driven by the refs case above. The previous reason claimed the two flags share one envelope, which is not true of either the shape or the code path'],
   ['xlsx-query', 'needs a binary .xlsx fixture; the same query envelope is covered through csv-query and json-query'],
   ['sqlite-query', 'needs a binary .db fixture; the same query envelope is covered through csv-query and json-query'],
   ['xml-query', 'needs an XML fixture; the same query envelope is covered through csv-query and json-query'],
   ['pdf-extract', 'needs a binary PDF fixture; text extraction, not a row list'],
   ['docx-text', 'needs a binary .docx fixture; text extraction, not a row list'],
   ['logfold', 'its cap is on INPUT LINES while the payload is folded rows -- different units, so "the pre-cap count of the rows being capped" is not a quantity that exists here. It does disclose, in-band and on stderr; driven by its own case in tests/logfold_tail_discloses.test.ts'],
-  ['ask', '--top is a retrieval budget, not a display cap: it bounds what searchSymbolsFts fetches, and the answer is grounded in exactly the returned set. There is no withheld remainder to report, and inventing a total would name a number the command never computed'],
 ])
 
 beforeAll(() => {
@@ -194,7 +206,7 @@ beforeAll(() => {
   for (let i = 1; i <= FILES; i++) {
     writeFileSync(
       join(projectDir, `d${i}.ts`),
-      `import { hotSymbol, hotTwo } from './target.js'\nexport function dup(): number {\n  return hotSymbol() + hotTwo() + ${i}\n}\n`,
+      `import { hotSymbol, hotTwo } from './target.js'\nexport interface Rec${i} {\n  a: number\n}\nexport function dup(): number {\n  return hotSymbol() + hotTwo() + ${i}\n}\n`,
     )
   }
   const rows = Array.from({ length: 12 }, (_, i) => ({ id: i, name: `n${i}` }))
@@ -298,6 +310,23 @@ describe.each(CASES)('$command $flag', ({ command, args, flag, disclosure }) => 
       return
     }
 
+    if (disclosure.kind === 'stderr-more') {
+      // No exact total is claimed, so there is nothing to check for equality. What must be true
+      // is that a remainder was signalled at all, and that the reader is told which flag widens
+      // it -- the two things that separate a clipped page from a complete one.
+      expect(
+        /more/i.test(r.err),
+        `${command} ${flag} ${LIMIT} returned ${shown} of ${truth} rows and signalled no remainder on stderr. ` +
+          `Its cap is applied in SQL, so nothing in the payload can carry this either.
+stderr was: ${JSON.stringify(r.err.slice(0, 200))}`,
+      ).toBe(true)
+      expect(
+        r.err.includes(flag),
+        `${command} says more exists but does not name ${flag}, so the reader is told to look further without being told how.`,
+      ).toBe(true)
+      return
+    }
+
     // Bare array: the count has to arrive on stderr or not at all.
     const m = /Showing (?:top|last) (\d+) of (\d+)/.exec(r.err)
     expect(
@@ -323,6 +352,13 @@ stderr was: ${JSON.stringify(r.err.slice(0, 200))}`,
       const payload = safeParse(r.out)
       const envelope = (typeof payload === 'object' && payload !== null && !Array.isArray(payload) ? payload : {}) as Record<string, unknown>
       expect(envelope.truncated ?? false, `${command} reports a complete result as truncated`).toBe(false)
+      return
+    }
+    if (disclosure.kind === 'stderr-more') {
+      expect(
+        /more/i.test(r.err),
+        `${command} signalled a remainder on a complete result: ${JSON.stringify(r.err.slice(0, 200))}`,
+      ).toBe(false)
       return
     }
     expect(

@@ -6767,7 +6767,17 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   const suppressedTotal = opts.excludeTests === true
     ? fusedHits.filter((h) => (matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, h.filePath))) && isTestFile(h.filePath)).length
     : 0
+  // Measured before the slice. `guardJsonRows` below counts whatever array it is handed, so
+  // running it on the already-sliced list made `totalCount` report the number of survivors and
+  // `truncated` describe only the overflow guard: `--limit 2` on a 6-match query answered
+  // `totalCount: 2, truncated: false`, which is a wrong number rather than a missing one.
+  const eligibleCount = filteredHits.length
   const hits = filteredHits.slice(0, n)
+  // Both candidate lists are over-fetched to a bound (OVER_FETCH_FACTOR/MAX_OVER_FETCH). When a
+  // list came back AT its bound the fused set may itself be clipped, so `eligibleCount` is a
+  // floor rather than a total, and the wording below has to say so rather than name a number it
+  // cannot stand behind.
+  const candidatesClipped = rawHits.length >= overFetchForMerge || ftsRows.length >= overFetchFts
 
   // Which list(s) actually contributed a candidate decides the reported `source` -- 'hybrid' only when both lists had at least one raw hit (even if they didn't fuse into the same row), never 'embeddings' silently standing in for a result that is partly BM25.
   const hadDense = mergedHits.length > 0
@@ -6788,7 +6798,13 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       }))
       // Same {items, truncated, totalCount} envelope guardJsonRows returns for symbol/refs/skeleton/outline's --json mode (see the comment at the grep --json call site) -- a bare {source, items} payload would silently hand a JSON consumer fewer hits than actually matched with no way to tell "capped by the overflow guard" apart from "there just weren't more", and would let `--limit 500 --json` emit an unbounded payload.
       const capped = guardJsonRows(items)
-      const text = JSON.stringify({ source, ...capped }, null, 2)
+      // Two independent losses -- the --limit slice above and the overflow guard inside
+      // guardJsonRows -- so `truncated` is the OR of both, and `totalCount` is the count before
+      // either ran. `totalCountIsFloor` is set only when the candidate over-fetch was itself at
+      // its bound, so a consumer can tell an exact total from a lower bound instead of being
+      // handed a number that quietly means different things on different runs.
+      const limitTruncated = hits.length < eligibleCount
+      const text = JSON.stringify({ source, ...capped, truncated: capped.truncated || limitTruncated, totalCount: eligibleCount, ...(candidatesClipped ? { totalCountIsFloor: true } : {}) }, null, 2)
       recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
@@ -6801,6 +6817,12 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       return `# ${h.name} (${h.kind}) — ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine}\n${previewLines(h.previewText, 3)}`
     })
     const text = guardText(blocks.join('\n\n'), 'semantic')
+    // stderr rather than appended to `text`: this function returns its text to callers that route
+    // it to stdout (and to the MCP server in-process), so a notice folded into the payload would
+    // become part of the search result itself.
+    if (hits.length < eligibleCount) {
+      emitErr(`Showing ${hits.length} of ${candidatesClipped ? 'at least ' : ''}${countNoun(eligibleCount, 'match', 'matches')} (raise --limit to see the rest).`)
+    }
     recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
     return { text, code: 0 }
   }
