@@ -902,9 +902,14 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
 
-  const items = [...bashItems, ...webItems]
-    .sort((a, b) => b.storedAt - a.storedAt)
-    .slice(0, limit)
+  const allItems = [...bashItems, ...webItems].sort((a, b) => b.storedAt - a.storedAt)
+  const items = allItems.slice(0, limit)
+  // The --json payload is a bare array, so there is no in-band field to carry a truncation flag
+  // without breaking consumers; stderr is the only channel available. Emitted before the --json
+  // branch below so both output modes disclose, not just the human-readable one.
+  if (items.length < allItems.length) {
+    process.stderr.write(`Showing ${items.length} of ${allItems.length} entries (raise --limit to see the rest).\n`)
+  }
 
   if (opts.json === true) {
     process.stdout.write(JSON.stringify(items, null, 2) + '\n')

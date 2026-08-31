@@ -48,6 +48,7 @@ import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { commandsWithRowLimit } from '../registry.js'
+import { SESSION_TRUNCATION_COMMANDS } from './session_truncation_commands.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -137,6 +138,7 @@ const CASES: readonly Case[] = [
   { command: 'csv-query', args: ['csv-query', 'data.csv'], flag: '--head', disclosure: ENVELOPE },
   { command: 'json-query', args: ['json-query', 'data.json', 'rows[*].name'], flag: '--head', disclosure: ENVELOPE },
   { command: 'yaml-query', args: ['yaml-query', 'data.json', 'rows[*].name'], flag: '--head', disclosure: ENVELOPE },
+  { command: 'tokens', args: ['tokens', '*.ts'], flag: '--top', disclosure: ENVELOPE },
   // Bare-array payloads: nowhere in-band to carry a flag without breaking every consumer.
   { command: 'similar', args: ['similar', 'target.ts::hotSymbol'], flag: '--top', disclosure: STDERR },
   { command: 'coverage-gaps', args: ['coverage-gaps'], flag: '--top', disclosure: STDERR },
@@ -150,19 +152,21 @@ const CASES: readonly Case[] = [
  * Note what is *not* a reason: "this command's truncation looks fine". That is a claim the guard
  * exists to check, and accepting it as prose would reproduce the whitelist this file replaces.
  */
+/**
+ * Commands this guard does not drive, each with the reason it does not.
+ *
+ * A reason here has to be TRUE, not merely present. Thirteen entries once shared the reason
+ * "a fixture cannot create one" for their session-backed data; `storeWebOutput` seeds that cache
+ * in a single call, and six of those commands turned out to drop rows silently. An exemption
+ * with a false reason is worse than a missing test: a gap reads as a decision, and nobody looks
+ * again. Those six now live in truncation_invariant_holds_session.test.ts.
+ */
 const EXEMPT: ReadonlyMap<string, string> = new Map([
-  ['retrieve', 'reads a cached tool result; no filesystem fixture produces one'],
-  ['bash-output', 'replays a captured bash run from the session cache, which a fixture cannot create'],
-  ['web-output', 'replays a captured fetch from the session cache, which a fixture cannot create'],
-  ['mcp-output', 'replays a captured MCP result from the session cache, which a fixture cannot create'],
-  ['bash-history', 'reads the session transcript; no transcript exists in a fixture project'],
-  ['web-history', 'reads the session transcript; no transcript exists in a fixture project'],
-  ['mcp-history', 'reads the session transcript; no transcript exists in a fixture project'],
-  ['history', 'reads the session transcript; no transcript exists in a fixture project'],
-  ['recall', 'queries the cross-session recall index, which is populated by real sessions'],
-  ['waste', 'reports on a session transcript; none exists in a fixture project'],
-  ['tokens', 'reports on a session transcript; none exists in a fixture project'],
-  ['hot', 'ranks by edit frequency recorded across real sessions'],
+  ['retrieve', '--head/--tail trim LINES of cached text, not rows of a list, so "the pre-cap count of the rows being capped" is not a quantity that exists here -- the same unit mismatch that gives logfold its own test. Disclosure is line-shaped and driven by tests/cached_output_elision_discloses.test.ts. That test exists because the first version of THIS reason was false: it claimed the render path already disclosed, and a real run showed the one-sided --head/--tail branches emitting nothing at all'],
+  ['bash-output', 'line trim on cached text, not a row list; disclosure driven by tests/cached_output_elision_discloses.test.ts, alongside retrieve'],
+  ['web-output', 'line trim on cached text, not a row list; disclosure driven by tests/cached_output_elision_discloses.test.ts, alongside retrieve'],
+  ['mcp-output', 'line trim on cached text, not a row list; disclosure driven by tests/cached_output_elision_discloses.test.ts, alongside retrieve'],
+  ['waste', '--top sizes an explicit ranking -- the field is literally `topCalls` -- and the report carries its own whole-set aggregate (totalTokens) computed before it, so a capped page is never mistakable for the whole. Contrast `tokens`, which paired a sliced list with a whole-set total and IS now covered above'],
   ['semantic', 'ranks by embedding similarity; a fixture large enough to exceed the cap makes the case slow and the ordering unstable'],
   ['bootstrap-audit', 'audits an installed agent configuration, not a project'],
   ['impact', 'its cap does not engage on a fixture this size -- one result is returned uncapped, so there is nothing to assert about a cut'],
@@ -207,7 +211,9 @@ describe('the guard covers every row-limited command or names why not', () => {
   })
 
   it('every row-limited command is either driven by a case or exempt with a reason', () => {
-    const covered = new Set(CASES.map((c) => c.command))
+    // The session-cache half of this guard drives SESSION_TRUNCATION_COMMANDS; those are covered,
+    // not exempt, and the shared list is what keeps that claim from going stale.
+    const covered = new Set([...CASES.map((c) => c.command), ...SESSION_TRUNCATION_COMMANDS])
     const uncovered = commandsWithRowLimit()
       .map((c) => c.name)
       .filter((name) => !covered.has(name) && !EXEMPT.has(name))

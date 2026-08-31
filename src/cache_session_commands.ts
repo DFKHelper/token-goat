@@ -21,6 +21,27 @@ function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
+/**
+ * Cap a listing to `limit` rows and say so on stderr when rows were dropped.
+ *
+ * These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a
+ * `truncated` flag without breaking every pipeline that consumes the array. stderr is the only
+ * channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is
+ * real, and named rather than hidden. What is not acceptable is disclosure on neither channel,
+ * which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows
+ * that were byte-identical to a complete answer.
+ *
+ * Shared rather than written out three times because the three callers are the same listing with a
+ * different row shape, and a notice that exists in two of them is the failure this fixes.
+ */
+function capAndNote<T>(rows: readonly T[], limit: number): T[] {
+  const shown = rows.slice(0, limit)
+  if (shown.length < rows.length) {
+    emitErr(`Showing ${shown.length} of ${rows.length} entries (raise --limit to see the rest).`)
+  }
+  return shown
+}
+
 /** Parses a `--limit` option to a positive int, defaulting to `dflt` when unset. Shared by
  * cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way.
  *
@@ -97,7 +118,7 @@ function getNewestSessionFiles(): { id: string; sessionCount: number; filesArr: 
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
   const limit = parseLimitOpt('bash-history', opts.limit)
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
-  const items = blobs
+  const allItems = blobs
     .map(({ id, mtime, value }) => {
       if (typeof value !== 'object' || value === null) return null
       const v = value as Record<string, unknown>
@@ -111,7 +132,7 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => b.storedAt - a.storedAt)
-    .slice(0, limit)
+  const items = capAndNote(allItems, limit)
   if (opts.json === true) {
     process.stdout.write(JSON.stringify(items, null, 2) + '\n')
     return
@@ -138,7 +159,7 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
 export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   const limit = parseLimitOpt('web-history', opts.limit)
   const blobs = listBlobs(WEB_OUTPUT_SUBDIR)
-  const items = blobs
+  const allItems = blobs
     .map(({ id, mtime, value }) => {
       if (typeof value !== 'object' || value === null) return null
       const v = value as Record<string, unknown>
@@ -151,7 +172,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => b.storedAt - a.storedAt)
-    .slice(0, limit)
+  const items = capAndNote(allItems, limit)
   if (opts.json === true) {
     process.stdout.write(JSON.stringify(items, null, 2) + '\n')
     return
@@ -177,7 +198,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
 export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
   const limit = parseLimitOpt('mcp-history', opts.limit)
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
-  const items = blobs
+  const allItems = blobs
     .map(({ id, mtime, value }) => {
       if (typeof value !== 'object' || value === null) return null
       const v = value as Record<string, unknown>
@@ -192,7 +213,7 @@ export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => b.storedAt - a.storedAt)
-    .slice(0, limit)
+  const items = capAndNote(allItems, limit)
   if (opts.json === true) {
     process.stdout.write(JSON.stringify(items, null, 2) + '\n')
     return
