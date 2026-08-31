@@ -1524,10 +1524,18 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   }
 
   entries.sort((a, b) => b.readCount - a.readCount)
+  // Counted after the --project filter above and before the cap, so it states the number of rows
+  // this invocation could have returned. Counting before the filter would report a total for a
+  // different set than the one being paged -- the shape of an accounting defect this repo has
+  // shipped more than once.
+  const eligibleCount = entries.length
   entries = entries.slice(0, limit)
+  const truncated = entries.length < eligibleCount
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ entries }, null, 2) + '\n')
+    // Already an object payload, so the flag goes in-band where `hot --json | jq` can see it. The
+    // bare-array listings elsewhere cannot do this without breaking their consumers.
+    process.stdout.write(JSON.stringify({ entries, truncated, totalCount: eligibleCount }, null, 2) + '\n')
     return
   }
 
@@ -1548,6 +1556,9 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   const hotDisplayRoot = getDisplayRoot()
   for (const e of entries) {
     process.stdout.write(`${e.readCount}\t${toDisplayPath(hotDisplayRoot, e.path)}\n`)
+  }
+  if (truncated) {
+    process.stdout.write(`...and ${eligibleCount - entries.length} more (raise --limit to see them).\n`)
   }
 }
 

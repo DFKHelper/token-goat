@@ -1256,6 +1256,24 @@ function _applyFiltersAndPrint(
 
   const applyElision = (lines: string[], headN: number, tailN: number): string[] => lines.length > headN + tailN + 1 ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)] : lines
 
+  /**
+   * Say on stderr how much of the body an explicit --head/--tail dropped.
+   *
+   * The two-sided paths above leave a `...(elided)...` marker in the body, so a reader can see the
+   * middle went missing. The one-sided branches left nothing at all: `web-output <id> --head 3`
+   * against a 60-line body returned three lines inside a content fence that looked exactly like a
+   * complete short document. Asking for three lines tells the caller how many they get; it does not
+   * tell them whether the body held three or sixty thousand, which is the number that decides
+   * whether to look again.
+   *
+   * stderr rather than stdout because stdout here is fenced untrusted content -- a token-goat line
+   * inside the fence would read as part of the payload it is describing.
+   */
+  const noteLineCap = (which: 'first' | 'last', flag: 'head' | 'tail', shown: number, total: number): void => {
+    if (shown >= total) return
+    process.stderr.write(`Showing ${which} ${shown} of ${total} lines (raise --${flag}, or --full for the whole body).\n`)
+  }
+
   let result = lines
   if (opts.head === undefined && opts.tail === undefined) {
     // Covers both "no filters at all" and "--grep alone" -- the latter is the single most common recall pattern this CLI's own hint text pushes users toward (bash-output/web-output --grep with no --head/--tail), and left unbounded here it could return an arbitrarily large number of matching lines with no truncation at all.
@@ -1264,8 +1282,10 @@ function _applyFiltersAndPrint(
     result = applyElision(lines, headN, tailN)
   } else if (opts.head !== undefined) {
     result = lines.slice(0, headN)
+    noteLineCap('first', 'head', result.length, lines.length)
   } else if (opts.tail !== undefined) {
     result = lines.slice(Math.max(0, lines.length - tailN))
+    noteLineCap('last', 'tail', result.length, lines.length)
   }
 
   return emit(result.join('\n'))
@@ -3268,9 +3288,15 @@ function cmdTokens(
   const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
   let entries = [...result.entries]
   if (opts.asc === true) entries.reverse()
+  const eligibleCount = entries.length
   if (opts.top !== undefined) entries = entries.slice(0, requireNonNegativeInt('--top', opts.top))
+  const truncated = entries.length < eligibleCount
   if (opts.json === true) {
-    out(JSON.stringify({ entries, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
+    // `total_tokens`/`total_lines` have always described the whole matched set, not the rows in
+    // `entries`. That is fine on a complete result and actively misleading on a capped one: three
+    // entries printed beside a total spanning hundreds of files reads as three files that sum to
+    // it. The added fields say which of the two the reader is looking at.
+    out(JSON.stringify({ entries, truncated, totalCount: eligibleCount, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
     return
   }
   if (opts.tree === true) {
@@ -3306,6 +3332,9 @@ function cmdTokens(
   ]
   for (const e of entries) {
     lines.push(`${e.rel_path.padEnd(colW)}  ${String(e.tokens).padStart(8)}  ${String(e.lines).padStart(6)}`)
+  }
+  if (truncated) {
+    lines.push(`...and ${eligibleCount - entries.length} more (raise --top to see them).`)
   }
   out(lines.join('\n'))
 }

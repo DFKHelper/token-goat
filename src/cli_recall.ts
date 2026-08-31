@@ -8,7 +8,7 @@
  * recall_index.ts; this module is presentation only.
  */
 
-import { listRecentRecall, searchRecall, type RecallCacheType, type RecallHit } from './recall_index.js'
+import { listRecentRecall, searchRecall, RECALL_DEFAULT_LIMIT, type RecallCacheType, type RecallHit } from './recall_index.js'
 import { pad } from './util.js'
 import { fenceUntrustedContent, UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
@@ -94,7 +94,23 @@ export function runRecallCommand(query: string | undefined, opts: RecallCommandO
     ...(opts.type !== undefined ? { type: opts.type } : {}),
     ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
   }
-  const hits = browse ? listRecentRecall(scope) : searchRecall(query, scope)
+  // Fetch one more row than will be shown, so the listing can tell the reader a remainder exists.
+  // Unlike the cache listings, this cap lives in a SQL LIMIT: the rows past it are never fetched
+  // and never counted, so an exact total would cost a second COUNT on every invocation. The
+  // one-extra-row probe buys the honest part of that -- that there IS more -- for one row.
+  //
+  // The effective limit is resolved here rather than left to the query, because a caller who
+  // passes no --limit still gets capped at RECALL_DEFAULT_LIMIT, and that silent case is the one a
+  // reader is least likely to suspect.
+  const effectiveLimit = opts.limit ?? RECALL_DEFAULT_LIMIT
+  const fetched = browse
+    ? listRecentRecall({ ...scope, limit: effectiveLimit + 1 })
+    : searchRecall(query, { ...scope, limit: effectiveLimit + 1 })
+  const hits = fetched.slice(0, effectiveLimit)
+  // Before the --json branch below, so a scripted consumer and a human reader both get told.
+  if (fetched.length > hits.length) {
+    process.stderr.write(`Showing ${hits.length} entries; more are available (raise --limit to see them).\n`)
+  }
 
   if (opts.json === true) {
     // Fence only the `snippet` field's value, not the envelope: it stays the same string type at

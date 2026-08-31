@@ -36,6 +36,16 @@ export interface RecallHit {
 
 const VALID_TYPES: readonly RecallCacheType[] = ['bash', 'web', 'mcp']
 
+/**
+ * Rows returned when a caller passes no explicit limit.
+ *
+ * Exported because the command layer must compute the same effective limit to run its
+ * "are there more" probe. A second copy of this number in cli_recall.ts would disagree silently
+ * the moment either moved, and the symptom would be a listing that under- or over-reports a
+ * remainder rather than anything that fails loudly.
+ */
+export const RECALL_DEFAULT_LIMIT = 10
+
 export function isRecallCacheType(value: string): value is RecallCacheType {
   return (VALID_TYPES as readonly string[]).includes(value)
 }
@@ -233,7 +243,7 @@ export function likeSearchForTesting(query: string, type?: RecallCacheType, limi
  * rather than surfacing an error for a best-effort lookup.
  */
 export function listRecentRecall(opts: RecallSearchOptions = {}): RecallHit[] {
-  const limit = opts.limit ?? 10
+  const limit = opts.limit ?? RECALL_DEFAULT_LIMIT
   const columns = `SELECT entry_id AS id, cache_type AS cacheType, label, content, stored_at AS storedAt FROM cache_recall`
   try {
     const db = getDb(globalDbPath())
@@ -255,7 +265,7 @@ export function listRecentRecall(opts: RecallSearchOptions = {}): RecallHit[] {
  * nothing never silently receives everything.
  */
 export function searchRecall(query: string, opts: RecallSearchOptions = {}): RecallHit[] {
-  const limit = opts.limit ?? 10
+  const limit = opts.limit ?? RECALL_DEFAULT_LIMIT
   if (query.trim() === '') return []
   try {
     if (hasFtsTable()) {
