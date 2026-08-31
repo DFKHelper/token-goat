@@ -665,7 +665,10 @@ describe('runTypes integration', () => {
     const sym: SymbolEntry = { name: 'OutOfProjectTypesFixture', kind: 'interface', filePath: outOfProjectAbs, lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }
     vi.mocked(querySymbols).mockReturnValueOnce([sym])
     const captured = withoutOverflowGuard(() => captureStdout(() => {
-      const code = runTypes({ json: true })
+      // limit: the per-kind display cap is applied after sorting on the stored absolute path,
+      // and this fixture's out-of-project path sorts behind every real row in the index. Raised
+      // so the cap cannot decide a test about path rendering.
+      const code = runTypes({ json: true, limit: 100000 })
       expect(code).toBe(0)
     }))
     const parsed = envelopeItems<{ name: string; filePath: string }>(captured)
@@ -4949,7 +4952,7 @@ describe('runArch', () => {
         process.stdout.write = origWrite
       }
       expect(code).toBe(0)
-      expect(JSON.parse(captured)).toEqual({ hubs: [], entryPoints: [], cycles: [] })
+      expect(JSON.parse(captured)).toEqual({ hubs: [], hubsTotal: 0, hubsTruncated: false, entryPoints: [], entryPointsTotal: 0, entryPointsTruncated: false, cycles: [] })
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
@@ -5020,7 +5023,7 @@ describe('runArch', () => {
       } finally {
         process.stdout.write = origWrite
       }
-      expect(Object.keys(JSON.parse(capturedJson) as Record<string, unknown>)).toEqual(['hubs', 'entryPoints', 'cycles'])
+      expect(Object.keys(JSON.parse(capturedJson) as Record<string, unknown>)).toEqual(['hubs', 'hubsTotal', 'hubsTruncated', 'entryPoints', 'entryPointsTotal', 'entryPointsTruncated', 'cycles'])
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }

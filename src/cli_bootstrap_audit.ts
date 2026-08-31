@@ -41,6 +41,8 @@ export interface BootstrapAuditResult {
   total_estimated_tokens: number
   counts: { agents: number; skills: number; metadata_files: number }
   largest: MetadataEntry[]
+  largestTotal: number
+  largestTruncated: boolean
   diagnostics: Diagnostic[]
   budgets: {
     warn_tokens: number | null
@@ -214,9 +216,14 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
   const seenFiles = new Set<string>()
   const agents = await scanMetadataRoot(path.join(home, '.claude', 'agents'), 'agent', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
   const skills = await scanMetadataRoot(path.join(home, '.claude', 'skills'), 'skill', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
-  const largest = [...agents, ...skills]
+  const rankedEntries = [...agents, ...skills]
     .sort((a, b) => b.metadata_bytes - a.metadata_bytes || a.path.localeCompare(b.path))
-    .slice(0, top)
+  // Counted before --top slices. `metadata_bytes` below is already a whole-set aggregate, so the
+  // report never overstated the total SIZE -- but nothing said how many entries the list was
+  // drawn from, and `--top 1` against 77 installed agents and skills rendered one row that read
+  // as the whole inventory.
+  const largestTotal = rankedEntries.length
+  const largest = rankedEntries.slice(0, top)
   const metadataBytes = [...agents, ...skills].reduce((sum, entry) => sum + entry.metadata_bytes, 0)
   const totalTokens = context.total_tokens + Math.floor(metadataBytes / 4)
   const warnTokens = parseBudget('--warn-tokens', opts.warnTokens)
@@ -240,6 +247,8 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
     total_estimated_tokens: totalTokens,
     counts: { agents: agents.length, skills: skills.length, metadata_files: agents.length + skills.length },
     largest,
+    largestTotal,
+    largestTruncated: largest.length < largestTotal,
     diagnostics,
     budgets: { warn_tokens: warnTokens, fail_tokens: failTokens, warn_bytes: warnBytes, fail_bytes: failBytes, warnings, failures },
   }
@@ -258,6 +267,7 @@ export async function runBootstrapAudit(opts: BootstrapAuditOptions = {}): Promi
     process.stdout.write(`Entries: ${result.counts.metadata_files} (${result.counts.agents} agents, ${result.counts.skills} skills)\n\n`)
     process.stdout.write('Largest metadata entries:\n')
     for (const entry of result.largest) process.stdout.write(`  ${entry.metadata_bytes.toString().padStart(7)} bytes  ${entry.path}\n`)
+    if (result.largestTruncated) process.stdout.write(`  ...and ${result.largestTotal - result.largest.length} more (raise --top to see them).\n`)
     for (const diagnostic of result.diagnostics) process.stderr.write(`token-goat: bootstrap-audit: skipped ${diagnostic.path} (${diagnostic.reason})\n`)
     for (const warning of result.budgets.warnings) process.stderr.write(`token-goat: bootstrap-audit: warning: ${warning}\n`)
     for (const failure of result.budgets.failures) process.stderr.write(`token-goat: bootstrap-audit: failure: ${failure}\n`)

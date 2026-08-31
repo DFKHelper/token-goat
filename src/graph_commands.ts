@@ -1227,7 +1227,13 @@ export interface TypesOptions {
 }
 
 // Per-kind scan headroom used only when --exclude-tests is active, matching dead's own 5000-per-kind scan (runDead): filtered-out test declarations must not leave fewer than --limit real results ahead of the cutoff, which filtering after the SQL LIMIT would silently do.
-const TYPES_EXCLUDE_TESTS_SCAN_LIMIT = 5000
+// Every `types` scan over-fetches to this bound, not just the --exclude-tests one. `--limit` is a
+// per-kind DISPLAY cap now, applied in JS after --exclude-tests and --grep have run. Pushing it into
+// SQL (as this did) had two consequences: the rows past it were never fetched, so `totalCount` could
+// only ever report the count of what survived -- it reported 2 of 9 as `totalCount: 2, truncated:
+// false`, a wrong number rather than a missing one -- and --grep could only ever match inside the
+// capped window, so a declaration ranked below the cap was unfindable by name.
+const TYPES_SCAN_LIMIT = 5000
 
 export function runTypes(opts: TypesOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0` on every kind-scan, always
@@ -1247,38 +1253,31 @@ export function runTypes(opts: TypesOptions): number {
   // type/interface/enum/class symbols from an unrelated project on the same machine.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
+  // Every declaration that survives --exclude-tests, uncapped. `--limit` is applied further down,
+  // after --grep, so that both the reported total and the set --grep searches are the real ones.
   const results: SymbolEntry[] = []
   let suppressed = 0
-  const queryLimit = excludeTests ? TYPES_EXCLUDE_TESTS_SCAN_LIMIT : limit
 
   for (const k of TYPE_KINDS) {
-    const syms = querySymbols({ kind: k, ...fpOpt, limit: queryLimit, rootDir })
-    if (!excludeTests) {
-      results.push(...syms)
-      continue
-    }
-    const kept: SymbolEntry[] = []
+    const syms = querySymbols({ kind: k, ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
     for (const sym of syms) {
-      if (isTestFile(sym.filePath)) {
+      if (excludeTests && isTestFile(sym.filePath)) {
         suppressed += 1
         continue
       }
-      kept.push(sym)
+      results.push(sym)
     }
-    results.push(...kept.slice(0, limit))
   }
 
-  const classes = querySymbols({ kind: 'class', ...fpOpt, limit: queryLimit, rootDir })
-  const typeClasses: SymbolEntry[] = []
+  const classes = querySymbols({ kind: 'class', ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
   for (const cls of classes) {
     if (!looksLikeTypeClass(cls.body)) continue
     if (excludeTests && isTestFile(cls.filePath)) {
       suppressed += 1
       continue
     }
-    typeClasses.push(cls)
+    results.push(cls)
   }
-  results.push(...(excludeTests ? typeClasses.slice(0, limit) : typeClasses))
 
   results.sort(
     // Pin the locale: an unlocaled localeCompare() sorts differently across
@@ -1313,11 +1312,25 @@ export function runTypes(opts: TypesOptions): number {
     return 1
   }
 
-  // --grep narrows on NAME, applied to the whole result set before any output is built -- there
-  // is no further truncation step downstream for `types` to run ahead of.
+  // --grep narrows on NAME, applied to the whole uncapped result set. It has to run before the
+  // per-kind --limit below, not after: a cap ahead of the predicate can drop the very row the
+  // predicate was looking for, and then report honestly on a set the caller never wanted.
   const preFilterCount = results.length
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const filtered = matchesGrep !== undefined ? results.filter((r) => matchesGrep(r.name)) : results
+  const matched = matchesGrep !== undefined ? results.filter((r) => matchesGrep(r.name)) : results
+
+  // The per-kind display cap. `eligibleCount` is measured here, before it runs, so the count
+  // reported below is of what MATCHED rather than of what survived -- the distinction the old
+  // SQL-side limit made impossible, because the rows past it were never fetched to be counted.
+  const eligibleCount = matched.length
+  const perKindShown = new Map<string, number>()
+  const filtered = matched.filter((r) => {
+    const seen = perKindShown.get(r.kind) ?? 0
+    if (seen >= limit) return false
+    perKindShown.set(r.kind, seen + 1)
+    return true
+  })
+  const cappedOut = eligibleCount - filtered.length
 
   if (filtered.length === 0) {
     // The store is genuinely non-empty (preFilterCount > 0, already confirmed above) but --grep
@@ -1345,9 +1358,14 @@ export function runTypes(opts: TypesOptions): number {
     // nothing truncates it between here and guardJsonRows.
     const capped = guardJsonRows(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })))
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
-    // filtered set carries the count too rather than only the fully emptied one.
-    const hiddenByGrep = preFilterCount - filtered.length
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(excludeTests && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
+    // filtered set carries the count too rather than only the fully emptied one. Measured against
+    // `matched`, not `filtered`, so --limit's own drop is not double-counted as a --grep drop.
+    const hiddenByGrep = preFilterCount - eligibleCount
+    // Two independent ways to lose a row -- the per-kind --limit here, and the overflow guard
+    // inside guardJsonRows -- so `truncated` is the OR of both and `totalCount` is the count
+    // before either ran. Reporting only the guard's view is what made `--limit 1` on a 9-row file
+    // answer `totalCount: 2, truncated: false`.
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || cappedOut > 0, totalCount: eligibleCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(excludeTests && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
     return 0
   }
 
@@ -1358,6 +1376,10 @@ export function runTypes(opts: TypesOptions): number {
 
   for (const r of filtered) {
     emit(`${r.name}\t${r.kind}\t${toDisplayPath(rootDir, r.filePath)}:${r.lineStart}`)
+  }
+  // stderr, so a shell pipeline reading the rows is unaffected, and only when the cap bit.
+  if (cappedOut > 0) {
+    emitErr(`Showing ${filtered.length} of ${eligibleCount} type declarations (--limit is per kind; raise it to see the rest).`)
   }
   return 0
 }
@@ -1716,7 +1738,13 @@ export function runContextFor(opts: ContextForOptions): number {
   const budget = opts.budget
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const hits = searchSymbolsFts(opts.task, top, undefined, rootDir)
+  // One row beyond the cap, purely to learn whether a remainder exists. The cap goes into
+  // searchSymbolsFts' own SQL LIMIT, so rows past it are never fetched and an exact total would
+  // cost a second full query; this buys the honest part -- THAT there is more -- for one row.
+  // Same treatment `recall` gets, and for the same reason.
+  const fetched = searchSymbolsFts(opts.task, top + 1, undefined, rootDir)
+  const moreBeyondTop = fetched.length > top
+  const hits = fetched.slice(0, top)
 
   if (hits.length === 0) {
     emitErr(`No matches found for '${opts.task}'`)
@@ -1744,6 +1772,27 @@ export function runContextFor(opts: ContextForOptions): number {
     tokensSoFar += bodyTokens
     entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read "${h.filePath}::${h.name}@${h.lineStart}"` })
   }
+
+  // --budget drops entries silently by design (the `continue` above keeps scanning), so the
+  // count of what it dropped is the only thing that separates "these are the relevant symbols"
+  // from "these are the ones that happened to fit". A tight budget can drop ALL of them, which
+  // rendered as zero output and exit 0 -- byte-identical to a search that found nothing, and the
+  // reader concludes there is no relevant code rather than that they set the budget too low.
+  const skippedByBudget = hits.length - entries.length
+  const notices: string[] = []
+  if (skippedByBudget > 0) {
+    notices.push(
+      entries.length === 0
+        ? `All ${countNoun(skippedByBudget, 'matching symbol')} were larger than --budget ${String(opts.budget)} tokens, so none are shown. Raise --budget.`
+        : `Showing ${entries.length} of ${countNoun(hits.length, 'matching symbol')}; ${skippedByBudget} did not fit --budget ${String(opts.budget)} tokens.`,
+    )
+  }
+  // Reported separately from the budget drop because they are different losses: this one is rows
+  // never retrieved, that one is rows retrieved and rejected.
+  if (moreBeyondTop) notices.push(`More matches exist beyond --top ${top} (raise it to see them).`)
+  // stderr, so `context-for ... | sh` and `--json | jq` are both unaffected. The --json payload
+  // is a bare array by contract, so there is no envelope to carry this in band.
+  for (const n of notices) emitErr(n)
 
   if (opts.json === true) {
     emit(JSON.stringify(entries, null, 2))
@@ -1974,21 +2023,37 @@ export function runArch(opts: ArchOptions): number {
     graph.set(file, internal)
   }
 
-  const hubs = [...importedBy.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, top).map(([f, importers]) => ({ file: f, importedBy: importers.size }))
+  // Counted before --top slices, so both surfaces below can say how much was left out. The
+  // cycles section already did this (findCyclesCapped's `truncated`); hubs and entry points did
+  // not, so `--top 2` on a project with 47 hubs rendered 2 with nothing to distinguish that from
+  // a project that has exactly 2. The text header said "top 2", which names the cap without
+  // saying whether it bit -- and on a project with fewer hubs than the cap it actively implies
+  // more exist.
+  const allHubs = [...importedBy.entries()].sort((a, b) => b[1].size - a[1].size).map(([f, importers]) => ({ file: f, importedBy: importers.size }))
+  const hubsTotal = allHubs.length
+  const hubs = allHubs.slice(0, top)
 
-  const entryPoints = files.filter((f) => !importedBy.has(f) && (graph.get(f) ?? []).length > 0).slice(0, top).map((f) => ({ file: f }))
+  const allEntryPoints = files.filter((f) => !importedBy.has(f) && (graph.get(f) ?? []).length > 0).map((f) => ({ file: f }))
+  const entryPointsTotal = allEntryPoints.length
+  const entryPoints = allEntryPoints.slice(0, top)
 
   // findCycles stops enumerating at MAX_CYCLES, so at the bound `cycles.length` is exactly that number and the `cycles (N found)` line below reads identically to a project that genuinely has N -- a truncated report presented as a complete one. Carry the flag through to both surfaces, the same treatment call-chain's `(depth-limit)` sentinel and impact's depth-cap notice already give their own bounds.
   const { cycles, truncated: cyclesTruncated } = findCyclesCapped(graph)
 
   if (opts.json === true) {
-    emit(JSON.stringify({ hubs, entryPoints, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}) }, null, 2))
+    // Per-section totals rather than one flag: --top applies to each list independently, so a
+    // single `truncated` could not say WHICH list was cut, and a reader of a capped hubs list
+    // beside a complete entry-point list would have no way to tell them apart. Additive fields,
+    // so an existing consumer of {hubs, entryPoints, cycles} is unaffected.
+    emit(JSON.stringify({ hubs, hubsTotal, hubsTruncated: hubs.length < hubsTotal, entryPoints, entryPointsTotal, entryPointsTruncated: entryPoints.length < entryPointsTotal, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}) }, null, 2))
     return 0
   }
 
-  emit(`hubs (top ${top} most-imported):`)
+  // "top N of M" when the cap bit, plain "N" when it did not -- the old header named the cap
+  // unconditionally, which reads as "there are more" on a project that has fewer than N.
+  emit(hubs.length < hubsTotal ? `hubs (top ${hubs.length} of ${hubsTotal} most-imported):` : `hubs (${hubsTotal} most-imported):`)
   for (const h of hubs) emit(`  ${h.importedBy} importers\t${toDisplayPath(getDisplayRoot(opts.cwd), h.file)}`)
-  emit(`entry points (imported by nobody, top ${top}):`)
+  emit(entryPoints.length < entryPointsTotal ? `entry points (imported by nobody, top ${entryPoints.length} of ${entryPointsTotal}):` : `entry points (imported by nobody, ${entryPointsTotal} found):`)
   for (const e of entryPoints) emit(`  ${toDisplayPath(getDisplayRoot(opts.cwd), e.file)}`)
   emit(cyclesTruncated ? `cycles (first ${cycles.length}, truncated at the ${MAX_CYCLES}-cycle enumeration limit: more cycles exist):` : `cycles (${cycles.length} found):`)
   for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(getDisplayRoot(opts.cwd), f)).join(' -> ')}`)
@@ -2071,7 +2136,17 @@ export function runAsk(opts: AskOptions): number {
   }
   const top = opts.top ?? 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const hits = searchSymbolsFts(opts.question, top, undefined, rootDir)
+  // `--top` bounds the evidence the answer is built from, which makes a silent cap here worse
+  // than a silent cap on a list, not better: a synthesized answer grounded in 8 of 40 candidates
+  // reads exactly like one grounded in all of them, and nothing downstream reveals the
+  // difference. One extra row is enough to say a remainder exists (the `recall` pattern); an
+  // exact total would need a second query and is not worth one per ask.
+  const fetched = searchSymbolsFts(opts.question, top + 1, undefined, rootDir)
+  const moreBeyondTop = fetched.length > top
+  const hits = fetched.slice(0, top)
+  if (moreBeyondTop) {
+    emitErr(`Answer is grounded in the top ${countNoun(top, 'match', 'matches')}; more matched (raise --top to widen the evidence).`)
+  }
 
   const BACKEND_ENV = 'TOKEN_GOAT_ASK_BACKEND'
   const backendLabel = process.env[BACKEND_ENV] ?? ''
