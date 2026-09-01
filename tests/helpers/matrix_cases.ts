@@ -2278,6 +2278,64 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
     expect(r.stdout).toMatch(/hubs/)
   },
+  affected: () => {
+    // The shared fixture has real import edges (app.ts imports src/mod.js) but no test file that
+    // imports anything, so the default answer here is a correct empty one. Asserting only that
+    // would be worthless -- an empty result passes whether the walk works or never runs -- and
+    // adding an importing test file to a fixture other cases assert counts against would be the
+    // more expensive mistake. So the traversal is pinned through --filter on the real edge, and
+    // the default run is asserted for the honest empty answer it should give.
+    const hit = run(['affected', 'src/mod.ts', '--filter', 'app\\.ts$', '--json'])
+    expect(hit.status, hit.stderr).toBe(0)
+    expect(hit.stdout + hit.stderr).not.toMatch(/unknown command|is not a function/)
+    const hitParsed = JSON.parse(hit.stdout) as { unknownSeeds: string[]; testFiles: string[]; reachedCount: number }
+    expect(hitParsed.testFiles.map((f) => f.replace(/\\/g, '/')), 'the reverse walk must cross the app.ts -> src/mod.ts edge').toContain('app.ts')
+    // Calibration: the seed resolved, and the walk reached past the seed itself. Without these,
+    // the assertions here would still pass if seed matching broke and the walk started from
+    // nothing, or if it never left hop 0.
+    expect(hitParsed.unknownSeeds, 'a tracked seed must not be reported as unknown').toEqual([])
+    expect(hitParsed.reachedCount, 'the walk must reach beyond the seed itself').toBeGreaterThan(1)
+
+    const r = run(['affected', 'src/mod.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout, 'no fixture test file imports anything, so this must say so plainly').toContain('No test files import')
+
+    // A seed git does not track is named rather than dropped: the failure this command exists to
+    // prevent is a short, plausible, empty answer that a caller trusts to narrow a CI run.
+    const u = run(['affected', 'no-such-file-here.ts'])
+    expect(u.status, u.stderr).toBe(0)
+    expect(u.stderr, 'an untracked seed must be named on stderr').toContain('no-such-file-here.ts')
+
+    // An invalid --filter is refused rather than silently degraded to a substring match, because
+    // this flag decides which tests a CI run executes.
+    const bad = run(['affected', 'exclhelper.ts', '--filter', '('])
+    expect(bad.status, 'an invalid --filter regex must fail, not fall back to substring').toBe(1)
+  },
+  reconcile: () => {
+    // The fixture was indexed moments ago, so the sweep must come back clean over a real, nonzero
+    // population -- and say how big that population was, since "clean" over zero files checked is
+    // the shape of confident-wrong-answer this command is built to avoid.
+    const r = run(['reconcile', '--dry-run'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toMatch(/Index matches disk: \d+ files checked/)
+    expect(r.stdout, 'a clean sweep must not report deletions').not.toMatch(/gone from disk/)
+
+    const j = run(['reconcile', '--dry-run', '--json'])
+    expect(j.status, j.stderr).toBe(0)
+    const parsed = JSON.parse(j.stdout) as {
+      scanned: number; changed: string[]; added: string[]; removed: string[]
+      trackedUnavailable: boolean; enqueued: number
+    }
+    // Calibration first: a sweep that examined nothing would satisfy every emptiness assertion
+    // below, and is exactly how this command could look correct while doing no work at all.
+    expect(parsed.scanned, 'the sweep must have examined a real population').toBeGreaterThan(0)
+    expect(parsed.trackedUnavailable, 'git enumerated the fixture, so the no-files guard must not fire').toBe(false)
+    expect(parsed.changed).toEqual([])
+    expect(parsed.added).toEqual([])
+    expect(parsed.removed).toEqual([])
+    expect(parsed.enqueued, '--dry-run must not enqueue anything').toBe(0)
+  },
   blame: () => {
     // The fixture is not a git repo; blame must fail gracefully with exit 1 and a message, not crash.
     const r = run(['blame', 'caller.ts::refHelper'])

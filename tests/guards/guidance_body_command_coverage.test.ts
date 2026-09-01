@@ -169,6 +169,15 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'log', reason: NAV_REASON },
   { command: 'history', reason: NAV_REASON },
   { command: 'compact-doc', reason: NAV_REASON },
+
+  // `affected` answers a question about a change set rather than about a file's contents: it is
+  // reached for when narrowing a test run, never instead of reading something. Naming it in the
+  // gate would spend bytes on every session start to advertise a command no read can be routed to.
+  { command: 'affected', reason: ANALYSIS_REASON },
+  // `reconcile` reads nothing on the agent's behalf -- it repairs the index the gate's own
+  // commands query, and its ordinary trigger is the session-start hook rather than a decision made
+  // mid-task.
+  { command: 'reconcile', reason: LIFECYCLE_REASON },
 ]
 
 describe('guidance body command coverage', () => {
