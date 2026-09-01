@@ -292,6 +292,41 @@ export function queryRefCounts(
 }
 
 /**
+ * Every indexed file under `rootDir`, keyed by its folded path.
+ *
+ * The bulk counterpart to {@link getFileEntry}, for the one caller that needs the whole
+ * project's rows at once: `reconcile.ts` compares each tracked file on disk against its indexed
+ * fingerprint, and doing that through per-file `getFileEntry` calls would mean one prepared
+ * statement execution per file -- hundreds of round trips on the session-start hot path, to
+ * answer a question a single scoped scan answers. Keyed by folded path so the caller can look up
+ * a disk path without re-deriving the case-folding rule the query already applied.
+ */
+export function getProjectFileEntries(
+  rootDir: string,
+  dbPath: string = globalDbPath(),
+): Map<string, FileIndexEntry> {
+  const db = getDb(dbPath)
+  const { clause, params } = projectScopeClause('path')
+  const rows = db
+    .prepare(`SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${clause}`)
+    .all(...params(rootDir)) as FileRow[]
+
+  const out = new Map<string, FileIndexEntry>()
+  for (const row of rows) {
+    out.set(foldPath(row.path), {
+      filePath: row.path,
+      sha: row.sha ?? '',
+      mtime: row.mtime ?? 0,
+      language: row.language ?? 'unknown',
+      indexedAt: row.indexed_at ?? 0,
+      embedSha: row.embed_sha ?? '',
+      parserSha: row.parser_sha ?? '',
+    })
+  }
+  return out
+}
+
+/**
  * Fetch the index entry for one file by its stored path. Returns `null` when
  * the file is not in the index.
  */

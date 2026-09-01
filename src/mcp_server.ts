@@ -19,7 +19,8 @@ import * as path from 'path'
 import type { CallToolResult, McpServer } from './mcp_jsonrpc.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseline.js'
-import { VERSION, dataDir, globalDbPath } from './constants.js'
+import { ENV_KEYS, VERSION, dataDir, globalDbPath } from './constants.js'
+import { envStrList } from './env.js'
 import {
   runSymbol,
   runRead,
@@ -400,9 +401,60 @@ function withConfinedRead(pins: ReadonlyMap<string, string>, fn: () => CallToolR
  * every tool call, every test that spawns the bundle -- to serve the one command that is an MCP
  * server. Keep both loads inside this function; a static import here is not local to this file.
  */
+/**
+ * The set of tools to register, from `TOKEN_GOAT_MCP_TOOLS`, or null to register everything.
+ *
+ * Every tool's name, description, and full JSON input schema is sent to the model on every single
+ * request for the life of the session -- measured on this server's own `tools/list` output, the
+ * full surface is ~16 KB, roughly 4k tokens, and the schemas outweigh the descriptions. A harness
+ * using token-goat for two or three lookups pays for all eighteen. This is the lever for that, and
+ * it is a filter rather than a redesign because trimming descriptions is the wrong cut: they are
+ * what steers a model to the right tool, and a surface that is cheap and unusable costs more than
+ * one that is expensive and correct.
+ *
+ * Deny by omission: an unknown name can only fail to match a tool, never invent one, so a typo
+ * shrinks the surface rather than widening it. That failure is silent by nature -- a smaller tool
+ * list looks exactly like a correctly-filtered one -- so an unmatched name is reported on stderr
+ * (never stdout, which carries the JSON-RPC stream).
+ *
+ * An empty or whitespace-only value is treated as unset rather than as "register nothing": a
+ * server with zero tools is useless, so that value is far more likely an unset variable expanding
+ * to nothing than a deliberate request for a dead server.
+ */
+export function mcpToolAllowlist(): Set<string> | null {
+  const names = envStrList(ENV_KEYS.MCP_TOOLS, [], ',')
+  return names.length === 0 ? null : new Set(names)
+}
+
 export async function createMcpServer(): Promise<McpServer> {
   const [{ McpServer }, { z }] = await Promise.all([import('./mcp_jsonrpc.js'), import('zod')])
   const server = new McpServer({ name: 'token-goat', version: VERSION })
+
+  // Applied by wrapping `registerTool` rather than guarding each of the registration calls below.
+  // A per-call guard is a list that has to be extended by hand every time a tool is added, and the
+  // omission ships silently -- the new tool simply ignores the allowlist and nobody sees it. Here a
+  // tool cannot be registered without passing the filter, so a tool added later is covered by
+  // construction rather than by remembering.
+  const allowlist = mcpToolAllowlist()
+  if (allowlist !== null) {
+    const matched = new Set<string>()
+    const registerAll = server.registerTool.bind(server)
+    server.registerTool = ((name: string, definition: never, handler: never) => {
+      if (!allowlist.has(name)) return
+      matched.add(name)
+      registerAll(name, definition, handler)
+    }) as typeof server.registerTool
+    // Deferred one tick so it runs after every registration below, and reported at startup rather
+    // than at exit: a stdio server lives as long as its client, so a typo surfaced on shutdown is
+    // one the operator debugs for the whole session first. `unref` so this never holds the process
+    // open on its own.
+    setTimeout(() => {
+      const unmatched = [...allowlist].filter((n) => !matched.has(n))
+      if (unmatched.length > 0) {
+        process.stderr.write(`token-goat: ${ENV_KEYS.MCP_TOOLS} names no such tool: ${unmatched.join(', ')}\n`)
+      }
+    }, 0).unref()
+  }
 
   const makeProjectRootField = (verb: string) =>
     z

@@ -161,6 +161,8 @@ import {
   runBlame,
   runAsk,
 } from './graph_commands.js'
+import { DEFAULT_AFFECTED_DEPTH, runAffected } from './affected.js'
+import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
@@ -1928,6 +1930,31 @@ async function cmdScreenshot(
  * Maps the return code onto `process.exitCode`; an unexpected throw still maps
  * to a stderr line + exit 1, matching the `guard` contract.
  */
+/**
+ * Read a newline-separated path list from stdin, for `affected --stdin`.
+ *
+ * Synchronous by design: the callers are synchronous commands, and the input is a diff's worth of
+ * paths rather than a stream. A TTY is rejected rather than blocking forever on a terminal that
+ * will never send EOF -- a hang here looks identical to a slow command, and the user would sit
+ * through it before learning they had to pipe something in.
+ *
+ * Blank lines are dropped and each line is trimmed, so `git diff --name-only`'s trailing newline
+ * and any stray carriage return from a Windows pipe do not become an empty or `\r`-suffixed path
+ * that would then be reported as an untracked seed.
+ */
+function readStdinPaths(): string[] {
+  if (process.stdin.isTTY) {
+    throw new CliError('--stdin requires piped input, e.g. `git diff --name-only | token-goat affected --stdin`')
+  }
+  let raw: string
+  try {
+    raw = fs.readFileSync(0, 'utf8')
+  } catch (e) {
+    throw new CliError(`could not read the file list from stdin: ${extractErrorMessage(e)}`)
+  }
+  return raw.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+}
+
 function runExit(fn: () => number): void {
   try {
     process.exitCode = fn()
@@ -3782,6 +3809,22 @@ export function buildProgram(): Command {
     .action(guard(cmdStats))
 
   program
+    .command('reconcile')
+    .description('sweep this project for files that changed while token-goat was not watching, and queue them for reindexing')
+    .option('--dry-run', 'report the drift without queueing anything')
+    .option('--budget-ms <ms>', `wall-clock budget for the sweep (default ${DEFAULT_RECONCILE_BUDGET_MS})`)
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { dryRun?: boolean; budgetMs?: string; json?: boolean }) =>
+      runExit(() =>
+        runReconcile({
+          ...(opts.dryRun === true ? { dryRun: true } : {}),
+          ...(opts.budgetMs !== undefined ? { budgetMs: requireNonNegativeInt('--budget-ms', opts.budgetMs) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
     .command('doctor')
     .description('diagnose token-goat health')
     .option('--context', 'include context footprint analysis')
@@ -4202,6 +4245,26 @@ export function buildProgram(): Command {
       runExit(() =>
         runArch({
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('affected [files...]')
+    .description('test files that transitively import the given changed files (for narrowing a CI run)')
+    .option('--stdin', 'read the changed-file list from stdin, one path per line')
+    .option('--depth <n>', `max reverse-import hops (default ${DEFAULT_AFFECTED_DEPTH})`)
+    .option('--filter <regex>', 'regex deciding which reached files count as tests (default: the built-in test-file heuristic)')
+    .option('-q, --quiet', 'print bare paths only, for piping into a test runner')
+    .option('-j, --json', 'output as JSON')
+    .action((files: string[], opts: { stdin?: boolean; depth?: string; filter?: string; quiet?: boolean; json?: boolean }) =>
+      runExit(() =>
+        runAffected({
+          files: opts.stdin === true ? [...files, ...readStdinPaths()] : files,
+          ...(opts.depth !== undefined ? { depth: requireNonNegativeInt('--depth', opts.depth) } : {}),
+          ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
+          ...(opts.quiet === true ? { quiet: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),

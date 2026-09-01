@@ -19,7 +19,7 @@ import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinct
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
-import { getTrackedFiles } from './repomap.js'
+import { buildImportGraph } from './import_graph.js'
 import { estimateTokens } from './overflow_guard.js'
 import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
@@ -1963,64 +1963,16 @@ export function runArch(opts: ArchOptions): number {
   }
   const cwd = opts.cwd ?? process.cwd()
   const top = opts.top ?? 10
-  const files = getTrackedFiles(cwd)
+  // Graph construction (relative-specifier resolution, case-folded membership, forward and
+  // reverse edge maps) lives in import_graph.ts so `arch` and `affected` walk one identical
+  // graph in opposite directions rather than two resolvers that drift apart. It returns the
+  // tracked-file list it walked, so the empty-repo check below reuses that rather than paying
+  // for a second `getTrackedFiles` walk of the same tree.
+  const { files, graph, importedBy } = buildImportGraph(cwd)
   // With zero tracked files the three headers below still print, each with nothing under it -- byte-identical to a real repo that genuinely has no hubs, no entry points and no cycles, so an empty result reads as a clean architecture rather than as "there was nothing to analyse." Say which it is, reusing cli.ts's wording for this same condition. The --json branch is untouched: `{hubs: [], entryPoints: [], cycles: []}` is already unambiguous.
   if (files.length === 0 && opts.json !== true) {
     emit(`no tracked files found under '${toDisplayPath(getDisplayRoot(cwd), cwd)}' (is it a git repo?). Nothing to analyse.`)
     return 0
-  }
-  // Case-insensitive filesystems (Windows/macOS) treat Foo.ts and foo.ts as the
-  // same file; an import spec's casing need not match the tracked path's, so
-  // membership must be checked through foldPath() rather than raw string
-  // equality (matches the convention already applied to session.ts,
-  // session_store.ts, hooks_read.ts, walk_index.ts, compact.ts, worker.ts,
-  // text_commands.ts, read_commands.ts, snapshots.ts, project.ts,
-  // index_prune.ts, and memory_prune.ts).
-  const filesByFoldedPath = new Map<string, string>()
-  for (const f of files) filesByFoldedPath.set(foldPath(f), f)
-
-  const graph = new Map<string, string[]>()
-  const importedBy = new Map<string, Set<string>>()
-
-  const resolveRelImport = (fromFile: string, spec: string): string | null => {
-    if (!spec.startsWith('.')) return null
-    const dir = path.dirname(fromFile)
-    // Strip .js/.mjs/.cjs output extensions so we can also probe .ts/.tsx source variants
-    const strippedSpec = spec.replace(/\.(m?js|cjs)$/, '')
-    const base = path.resolve(dir, strippedSpec)
-    // `.cjs`/`.cts` are omitted from the stripped-spec's re-probe list below (runDeps'
-    // SOURCE_EXTENSIONS already treats both as real source extensions) -- without them a
-    // relative import resolving onto a .cjs/.cts source file never matched here, even though
-    // runDeps' resolver (immediately below in this file) resolves the same case correctly.
-    for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.cts', '.py']) {
-      const candidate = base + ext
-      const match = filesByFoldedPath.get(foldPath(candidate))
-      if (match !== undefined) return match
-    }
-    const idx = path.join(base, 'index')
-    for (const ext of ['.ts', '.js', '.tsx', '.jsx', '.mts', '.cts']) {
-      const candidate = idx + ext
-      const match = filesByFoldedPath.get(foldPath(candidate))
-      if (match !== undefined) return match
-    }
-    return null
-  }
-
-  for (const file of files) {
-    let text: string
-    try { text = fs.readFileSync(file, 'utf8') } catch { continue }
-    const ext = importsExtensionFor(file)
-    const rawImports = extractImports(text, ext)
-    const internal: string[] = []
-    for (const spec of rawImports) {
-      const resolved = resolveRelImport(file, spec)
-      if (resolved !== null) {
-        internal.push(resolved)
-        if (!importedBy.has(resolved)) importedBy.set(resolved, new Set())
-        importedBy.get(resolved)!.add(file)
-      }
-    }
-    graph.set(file, internal)
   }
 
   // Counted before --top slices, so both surfaces below can say how much was left out. The

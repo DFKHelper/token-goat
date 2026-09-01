@@ -87,6 +87,8 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
     'reads or extracts a single named item (one symbol, one file, one section), not a filterable listing':
       ['read', 'section', 'brief', 'skill-body', 'skill-compact', 'skill-section', 'blame',
         'changed', 'diff', 'log', 'find', 'grep', 'conflicts', 'compact-doc', 'compact-hint'],
+    'computes its whole population fresh from the filesystem on every run rather than reading a persistent store, has no filter argument at all, and renders the empty case with the size of the population it searched -- so filtered-to-empty is unreachable and empty-vs-never is already stated in the output':
+      ['affected', 'reconcile'],
     'not yet individually classified into THREE_STATE_VERIFIED -- listing-shaped over the index/embeddings but this cycle only closed the residual gaps named in the project memory (call-chain, coverage-gaps, note-list, stats/cost, types, plus hot/recent/scope/arch this cycle)':
       ['ignores', 'ask', 'context-for', 'similar', 'impact', 'deps', 'failures'],
   }

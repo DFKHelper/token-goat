@@ -58,6 +58,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'logfold', 'lockdeps', 'dep-docs', 'note', 'hot', 'recent', 'ignores', 'bash-history',
   'web-history', 'mcp-history', 'reclaim-index', 'clean-cache', 'prune-cache', 'cache-audit',
   'resume', 'compact-hint', 'session-summary', 'cost', 'baseline', 'config', 'project',
+  'affected', 'reconcile',
   'compact-doc', 'fetch-image', 'history', 'changed', 'diff', 'log', 'pdf-locate', 'pdf-outline', 'pdf-meta',
   'image-meta', 'image-text',
   'xlsx-sheets', 'pptx-outline', 'docx-outline', 'transcript-outline', 'csv-query',

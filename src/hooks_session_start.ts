@@ -28,6 +28,10 @@ import { countSymbols } from './index_reader.js'
 import { globalDbPath } from './constants.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { buildDeltaCapsule } from './evidence_cache.js'
+import { ENV_KEYS } from './constants.js'
+import { envBool, envInt } from './env.js'
+import { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject } from './reconcile.js'
+import { countNoun } from './util.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
 const GENERIC_REMINDER =
@@ -50,17 +54,66 @@ const INDEXED_REMINDER =
   'Read/Grep tool call; for JSON/YAML use `json-query file \'a.b.c\'` or `yaml-query` (nested keys are not symbols); ' +
   'shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are still just commands.'
 
-/** Build the reminder string for `cwd`: distinguishes an indexed project from the generic fallback. */
-function buildReminder(cwd: string | undefined): string {
-  if (cwd === undefined) return GENERIC_REMINDER
-  let symbolCount: number
+/**
+ * True when `cwd` resolves to a project with symbols in the index.
+ *
+ * Both the reminder text and the drift sweep branch on this, and it is computed once and passed
+ * to both rather than derived twice: two `countSymbols` calls would double a DB round trip on the
+ * session-start path, and a second call could disagree with the first if the worker committed a
+ * reindex between them.
+ */
+function isIndexedProject(cwd: string | undefined): boolean {
+  if (cwd === undefined) return false
   try {
-    symbolCount = countSymbols({ rootDir: cwd }, globalDbPath())
+    return countSymbols({ rootDir: cwd }, globalDbPath()) > 0
   } catch {
-    return GENERIC_REMINDER
+    return false
   }
-  if (symbolCount <= 0) return GENERIC_REMINDER
-  return INDEXED_REMINDER
+}
+
+/** Build the reminder string for `cwd`: distinguishes an indexed project from the generic fallback. */
+function buildReminder(indexed: boolean): string {
+  return indexed ? INDEXED_REMINDER : GENERIC_REMINDER
+}
+
+/**
+ * Sweep the project for index drift and enqueue whatever no longer matches disk.
+ *
+ * Returns a one-line note when drift was found, or null when the index is already correct --
+ * which is the overwhelmingly common case, and stays silent so the session-start context does not
+ * grow a line that says nothing. Only runs against an already-indexed project: on an unindexed one
+ * every tracked file is legitimately absent from the index, so the sweep would report the entire
+ * repository as drift and enqueue it, which is `token-goat index .`'s job and not a hook's.
+ *
+ * Never throws. Its caller is a session-start hook, and a sweep that failed is a missed repair,
+ * not a reason to degrade the reminder the hook exists to deliver.
+ */
+function reconcileNote(cwd: string, indexed: boolean): string | null {
+  if (!indexed) return null
+  if (!envBool(ENV_KEYS.RECONCILE, true)) return null
+  try {
+    const budgetMs = envInt(ENV_KEYS.RECONCILE_BUDGET_MS, DEFAULT_RECONCILE_BUDGET_MS, 0, 60_000)
+    const result = reconcileProject({ cwd, budgetMs })
+    if (isReconcileClean(result)) return null
+    // The breakdown is only worth its bytes when there is more than one kind of drift: with a
+    // single kind it restates the total it sits beside, and this line is paid for on every session
+    // start that finds anything.
+    const parts: string[] = []
+    if (result.changed.length > 0) parts.push(`${result.changed.length} changed`)
+    if (result.added.length > 0) parts.push(`${result.added.length} new`)
+    if (result.removed.length > 0) parts.push(`${result.removed.length} removed`)
+    const breakdown = parts.length > 1 ? ` (${parts.join(', ')})` : ''
+    // The truncation is disclosed rather than smoothed over: a budget-limited sweep found the drift
+    // it had time to find, and a caller reading "3 files drifted" as "3 files drifted in total"
+    // would be reading a floor as a total.
+    const truncated = result.budgetExhausted
+      ? ` (sweep stopped at its time budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more)`
+      : ''
+    const total = result.changed.length + result.added.length + result.removed.length
+    return `token-goat: reindexing ${countNoun(total, 'file')} that changed outside this session${breakdown}${truncated}. Symbol lookups may be briefly stale.`
+  } catch {
+    return null
+  }
 }
 
 /** session_start handler: inject the reminder as context, gated on hints.session_start_reminder. */
@@ -68,8 +121,13 @@ export function sessionStartHandler(event: HookEvent): HookOutput {
   try {
     if (!loadConfig().hints.session_start_reminder) return passOutput()
     const cwd = getCwd(event)
-    let context = buildReminder(cwd)
+    const indexed = isIndexedProject(cwd)
+    let context = buildReminder(indexed)
     if (cwd !== undefined) {
+      // Runs before the capsule so a drifted file is already queued while the rest of the hook
+      // finishes: the worker picks it up on its next 2 s drain rather than on the next command.
+      const drift = reconcileNote(cwd, indexed)
+      if (drift !== null) context += `\n\n${drift}`
       const capsule = buildDeltaCapsule(cwd)
       if (capsule !== null) context += `\n\n${capsule}`
     }
