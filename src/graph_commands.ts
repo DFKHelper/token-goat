@@ -20,6 +20,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
+import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
 import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
@@ -1951,6 +1952,10 @@ export interface ArchOptions {
   top?: number
   json?: boolean
   cwd?: string
+  /** Also group the graph into modules and report the couplings between them. Off by default, so
+   * the three existing sections and the existing JSON payload are unchanged for every caller that
+   * does not ask for it. */
+  modules?: boolean
 }
 
 export function runArch(opts: ArchOptions): number {
@@ -1968,7 +1973,7 @@ export function runArch(opts: ArchOptions): number {
   // graph in opposite directions rather than two resolvers that drift apart. It returns the
   // tracked-file list it walked, so the empty-repo check below reuses that rather than paying
   // for a second `getTrackedFiles` walk of the same tree.
-  const { files, graph, importedBy } = buildImportGraph(cwd)
+  const { files, graph, importedBy, resolve } = buildImportGraph(cwd)
   // With zero tracked files the three headers below still print, each with nothing under it -- byte-identical to a real repo that genuinely has no hubs, no entry points and no cycles, so an empty result reads as a clean architecture rather than as "there was nothing to analyse." Say which it is, reusing cli.ts's wording for this same condition. The --json branch is untouched: `{hubs: [], entryPoints: [], cycles: []}` is already unambiguous.
   if (files.length === 0 && opts.json !== true) {
     emit(`no tracked files found under '${toDisplayPath(getDisplayRoot(cwd), cwd)}' (is it a git repo?). Nothing to analyse.`)
@@ -1992,12 +1997,21 @@ export function runArch(opts: ArchOptions): number {
   // findCycles stops enumerating at MAX_CYCLES, so at the bound `cycles.length` is exactly that number and the `cycles (N found)` line below reads identically to a project that genuinely has N -- a truncated report presented as a complete one. Carry the flag through to both surfaces, the same treatment call-chain's `(depth-limit)` sentinel and impact's depth-cap notice already give their own bounds.
   const { cycles, truncated: cyclesTruncated } = findCyclesCapped(graph)
 
+  // Computed once, before the output branches, so the text and JSON surfaces render one identical
+  // partition rather than two runs of a greedy algorithm that need not agree.
+  const moduleResult = opts.modules === true ? detectModules({ files, graph, importedBy, resolve }, cwd, top) : null
+
   if (opts.json === true) {
     // Per-section totals rather than one flag: --top applies to each list independently, so a
     // single `truncated` could not say WHICH list was cut, and a reader of a capped hubs list
     // beside a complete entry-point list would have no way to tell them apart. Additive fields,
     // so an existing consumer of {hubs, entryPoints, cycles} is unaffected.
-    emit(JSON.stringify({ hubs, hubsTotal, hubsTruncated: hubs.length < hubsTotal, entryPoints, entryPointsTotal, entryPointsTruncated: entryPoints.length < entryPointsTotal, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}) }, null, 2))
+    // The module payload is present only when --modules asked for it, so an existing consumer of
+    // this object sees byte-identical output. `modules` carries full member lists where the text
+    // rendering carries only labels and sizes: a 90-file module is unreadable inline and exactly
+    // what a caller wants programmatically.
+    const modulePayload = moduleResult === null ? {} : { modules: moduleResult.modules, modulesTotal: moduleResult.modulesTotal, modulesTruncated: moduleResult.modules.length < moduleResult.modulesTotal, modularity: moduleResult.modularity, isolatedCount: moduleResult.isolatedCount, crossImports: moduleResult.crossImports, crossImportsTotal: moduleResult.crossImportsTotal, crossImportsTruncated: moduleResult.crossImports.length < moduleResult.crossImportsTotal, noImportEdges: moduleResult.noEdges }
+    emit(JSON.stringify({ hubs, hubsTotal, hubsTruncated: hubs.length < hubsTotal, entryPoints, entryPointsTotal, entryPointsTruncated: entryPoints.length < entryPointsTotal, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}), ...modulePayload }, null, 2))
     return 0
   }
 
@@ -2009,6 +2023,7 @@ export function runArch(opts: ArchOptions): number {
   for (const e of entryPoints) emit(`  ${toDisplayPath(getDisplayRoot(opts.cwd), e.file)}`)
   emit(cyclesTruncated ? `cycles (first ${cycles.length}, truncated at the ${MAX_CYCLES}-cycle enumeration limit: more cycles exist):` : `cycles (${cycles.length} found):`)
   for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(getDisplayRoot(opts.cwd), f)).join(' -> ')}`)
+  if (moduleResult !== null) for (const line of renderModules(moduleResult, top)) emit(line)
   return 0
 }
 

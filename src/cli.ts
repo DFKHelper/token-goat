@@ -4238,14 +4238,16 @@ export function buildProgram(): Command {
 
   program
     .command('arch')
-    .description('internal import graph analysis: hubs, entry points, cycles')
-    .option('--top <n>', 'limit hubs and entry points to top N (default 10)')
+    .description('internal import graph analysis: hubs, entry points, cycles, and with --modules the groups of files that mostly import each other')
+    .option('--top <n>', 'limit hubs, entry points, modules and cross-module pairs to top N (default 10)')
+    .option('--modules', 'also group files into modules by who imports whom, and report which modules reach into which (--json carries the full member list of each)')
     .option('-j, --json', 'output as JSON')
-    .action((opts: { top?: string; json?: boolean }) =>
+    .action((opts: { top?: string; json?: boolean; modules?: boolean }) =>
       runExit(() =>
         runArch({
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
+          ...(opts.modules === true ? { modules: true } : {}),
         }),
       ),
     )
