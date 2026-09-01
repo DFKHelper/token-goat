@@ -26,7 +26,9 @@ import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileE
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
-import { contextOutput, passOutput, denyOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { contextOutput, passOutput, denyOutput, emitRewrite, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { redactSecrets } from './secret_redact.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
@@ -1260,7 +1262,7 @@ function truncatedReadDenyMessage(rawPath: string): string {
  * next pre_tool_use for the same file returns an immediate deny with a
  * surgical-read hint instead of allowing another full (and expensive) read.
  */
-function postReadHandlerInner(event: HookEvent): HookOutput {
+function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   const normalized = normalizePath(filePath)
@@ -1334,7 +1336,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
         const lineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
         const minLines = loadConfig().post_read_code_compress.min_lines
-        if (lineCount >= minLines && meetsSavingsFloor(sz)) {
+        if (lineCount >= minLines && meetsSavingsFloor(sz) && !suppressStructuralHint) {
           // Advisory only -- the read is not blocked, so nothing was saved here either.
           recordStat('session_hint', 0, 0)
           return quietContextOutput(
@@ -1467,11 +1469,313 @@ function recordReadAsServedOutput(event: HookEvent): void {
   }
 }
 
-/** Public wrapper: same tracking as {@link preReadHandler} above. */
+/** One row of the Read tool's `cat -n` rendering: its line number, the raw line, and the row verbatim. */
+interface NumberedRow {
+  readonly no: number
+  readonly text: string
+  readonly raw: string
+}
+
+/** A Read result row: leading pad, the line number, a tab or arrow separator, then the file's line. */
+const READ_NUMBERED_ROW_RE = /^\s*(\d+)[\t→](.*)$/
+
+/** The numbered block inside a Read result, with whatever the harness wrapped around it kept intact. */
+interface ParsedReadResult {
+  readonly header: string[]
+  readonly rows: NumberedRow[]
+  readonly trailer: string[]
+}
+
+/**
+ * Split a Read result into the `cat -n` block it delivered and the harness text around it.
+ *
+ * The block must be strictly consecutive -- row n followed by row n+1 -- because that is the one
+ * property separating a real rendering from file content that merely looks numbered. A file whose
+ * own lines begin with digits and a tab would otherwise parse as rows, and lines would be withheld
+ * on a coincidence. A break in the sequence ends the block rather than voiding it, so a
+ * system-reminder or notice appended after the rows is preserved verbatim instead of costing the
+ * whole rewrite.
+ *
+ * Null when there is no numbered block at all: an image read, an error, a deny message.
+ */
+function parseNumberedReadResult(respText: string): ParsedReadResult | null {
+  const lines = respText.split('\n')
+  const header: string[] = []
+  const rows: NumberedRow[] = []
+  const trailer: string[] = []
+  let i = 0
+  for (; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    const m = READ_NUMBERED_ROW_RE.exec(line)
+    if (m === null || !Number.isSafeInteger(Number(m[1]))) {
+      header.push(line)
+      continue
+    }
+    rows.push({ no: Number(m[1]), text: m[2] ?? '', raw: line })
+    i++
+    break
+  }
+  for (; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    const m = READ_NUMBERED_ROW_RE.exec(line)
+    const prev = rows[rows.length - 1]
+    if (m === null || prev === undefined || Number(m[1]) !== prev.no + 1) break
+    rows.push({ no: prev.no + 1, text: m[2] ?? '', raw: line })
+  }
+  for (; i < lines.length; i++) trailer.push(lines[i] ?? '')
+  return rows.length > 0 ? { header, rows, trailer } : null
+}
+
+/** Maximum line-to-line comparisons one elision search may spend before giving up and passing. */
+const SERVED_RUN_COMPARISON_BUDGET = 400_000
+
+/** Anchors kept per distinct line of a served body. A line repeated more often than this in one
+ *  body contributes nothing further: the run that matters still starts at one of the first few. */
+const SERVED_RUN_ANCHORS_PER_LINE = 32
+
+/** An already-served body, indexed by line text so a run can be anchored without scanning it. */
+interface ServedBody {
+  readonly id: string
+  readonly lines: string[]
+  readonly positions: Map<string, number[]>
+}
+
+/** A stretch of the current read that appears, in the same order, inside one already-served body. */
+interface ServedRun {
+  readonly start: number
+  readonly len: number
+  readonly id: string
+}
+
+function indexServedBody(id: string, output: string): ServedBody {
+  const lines = output.split('\n')
+  const positions = new Map<string, number[]>()
+  for (let j = 0; j < lines.length; j++) {
+    const key = lines[j] ?? ''
+    let at = positions.get(key)
+    if (at === undefined) {
+      at = []
+      positions.set(key, at)
+    }
+    if (at.length < SERVED_RUN_ANCHORS_PER_LINE) at.push(j)
+  }
+  return { id, lines, positions }
+}
+
+/**
+ * The longest run of `rows[from..to)` that appears as a contiguous line run inside some served body.
+ *
+ * Anchored on exact line text and extended forward, which is what makes it safe on a file full of
+ * repeated lines: a lone `}` matching a `}` somewhere in a served body proves nothing on its own,
+ * and only becomes a run when the lines around it match too. This is the same whole-line
+ * containment rule `containsLineRun` applies for the deny path, generalised from "is the whole
+ * window there" to "which part of it is".
+ *
+ * `budget` bounds the work rather than the input: a pathological file (thousands of identical
+ * lines) would otherwise make this quadratic inside a hook that has to finish in milliseconds.
+ * Exhausting it returns the best run found so far, so the outcome degrades to a smaller saving
+ * rather than a wrong one.
+ */
+function longestServedRun(
+  rows: NumberedRow[],
+  from: number,
+  to: number,
+  bodies: readonly ServedBody[],
+  budget: { left: number },
+): ServedRun | null {
+  let best: ServedRun | null = null
+  for (const body of bodies) {
+    for (let i = from; i < to; i++) {
+      if (best !== null && to - i <= best.len) break
+      const anchors = body.positions.get(rows[i]?.text ?? '')
+      if (anchors === undefined) continue
+      for (const j of anchors) {
+        let k = 0
+        while (i + k < to && j + k < body.lines.length && rows[i + k]?.text === body.lines[j + k]) {
+          k++
+          if (--budget.left <= 0) return best !== null && best.len > 0 ? best : null
+        }
+        if (best === null || k > best.len) best = { start: i, len: k, id: body.id }
+      }
+    }
+  }
+  return best !== null && best.len > 0 ? best : null
+}
+
+/** Most runs one Read result may have withheld. Past this the result reads as a list of notices. */
+const MAX_SERVED_ELISIONS = 3
+
+/** The notice standing in for a withheld run, phrased so the line numbers it replaces stay visible. */
+function servedRunNotice(firstLine: number, lastLine: number, id: string): string {
+  return (
+    '[token-goat] lines ' + firstLine + '-' + lastLine +
+    ' were already served verbatim in this session; withheld here. ' +
+    'Recall them with `token-goat bash-output ' + id + '`.'
+  )
+}
+
+/**
+ * Bytes a run removes from the result, which is what a notice replacing it has to beat.
+ *
+ * Measured on the rendered rows rather than the file's lines, because those rows are what is
+ * actually leaving the output. The two differ by the line-number prefix on every row, and on a file
+ * of short lines that prefix is a large fraction of each one -- exactly the case where a cut is
+ * closest to not paying for itself.
+ */
+function renderedRunBytes(rows: NumberedRow[], start: number, len: number): number {
+  let bytes = 0
+  for (let i = start; i < start + len; i++) bytes += Buffer.byteLength(rows[i]?.raw ?? '', 'utf-8') + 1
+  return bytes
+}
+
+/**
+ * Replace stretches of a completed Read that the session has already been handed, keeping every
+ * line it has not.
+ *
+ * `alreadyServedOutputId` withholds a read whose window is entirely inside an earlier delivery.
+ * The partial case is the larger one and it cannot be denied: measured over a month of real
+ * sessions, 589 Read calls carried a mix of new and already-served lines against 400 fully-served
+ * ones, and denying any of the 589 would have deleted the new lines along with the old. Rewriting
+ * the result keeps the new lines and turns the rest into a pointer at the copy the model holds.
+ *
+ * Line numbers survive untouched -- an elided run becomes a notice naming the exact range it stood
+ * for, and every kept row is emitted verbatim, padding included, so the rewrite is purely
+ * subtractive. Nothing downstream has to re-derive a position from a shortened body, and no part of
+ * the saving comes from quietly reformatting rows that were not withheld.
+ *
+ * Skipped, each toward showing the model more rather than less:
+ *   - anything `redactSecrets` would touch. On a pass-through the harness's own text reaches the
+ *     model, so a file carrying a credential keeps behaving exactly as it does today instead of
+ *     coming back redacted because it happened to overlap an earlier read.
+ *   - a truncated read, which delivered less than its own window with no way from here to know
+ *     where it stopped.
+ *   - a rewrite that does not clear the shared net-savings floor.
+ */
+function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput | null {
+  if (!loadConfig().hints.elide_served_lines) return null
+  const filePath = getFilePath(event)
+  if (filePath === undefined) return null
+  const normalized = normalizePath(filePath)
+  if (isImagePath(normalized)) return null
+  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
+
+  const ids = getFileServedOutputs(normalized)
+  if (ids.length === 0) return null
+  const parsed = parseNumberedReadResult(respText)
+  if (parsed === null) return null
+
+  // Composing a rewrite makes this handler the author of what the model reads, and every sibling
+  // that composes redacts first. Here the honest move is to decline instead: redacting would hand
+  // back less of the user's own file than a plain Read does today.
+  if (redactSecrets(respText).count > 0) return null
+
+  const bodies: ServedBody[] = []
+  // Newest first: the most recent delivery is the one most likely still in context.
+  for (let i = ids.length - 1; i >= 0; i--) {
+    const id = ids[i]
+    if (id === undefined) continue
+    const prior = getBashOutput(id)
+    if (prior !== null) bodies.push(indexServedBody(id, prior.output))
+  }
+  if (bodies.length === 0) return null
+
+  const budget = { left: SERVED_RUN_COMPARISON_BUDGET }
+  // Row spans still eligible for a run. An elision splits its span in two, so a later pass can
+  // still reach lines on either side of it.
+  let spans: Array<[number, number]> = [[0, parsed.rows.length]]
+  const cuts: ServedRun[] = []
+  for (let pass = 0; pass < MAX_SERVED_ELISIONS; pass++) {
+    let bestRun: ServedRun | null = null
+    let bestSpan = -1
+    for (let s = 0; s < spans.length; s++) {
+      const span = spans[s]
+      if (span === undefined) continue
+      const run = longestServedRun(parsed.rows, span[0], span[1], bodies, budget)
+      if (run !== null && (bestRun === null || run.len > bestRun.len)) {
+        bestRun = run
+        bestSpan = s
+      }
+    }
+    if (bestRun === null || bestSpan < 0) break
+    // Every cut pays for itself. The net-savings gate below judges the rewrite as a whole, which a
+    // cut that loses bytes can hide inside as long as an earlier one won enough: this is what stops
+    // a five-line overlap of short lines from costing a ~130-byte notice to remove ~45 bytes.
+    const first = parsed.rows[bestRun.start]
+    const last = parsed.rows[bestRun.start + bestRun.len - 1]
+    if (first === undefined || last === undefined) break
+    const noticeBytes = Buffer.byteLength(servedRunNotice(first.no, last.no, bestRun.id), 'utf-8') + 1
+    if (renderedRunBytes(parsed.rows, bestRun.start, bestRun.len) <= noticeBytes) break
+    cuts.push(bestRun)
+    const chosen = spans[bestSpan]
+    if (chosen === undefined) break
+    const rebuilt: Array<[number, number]> = []
+    for (let s = 0; s < spans.length; s++) {
+      const span = spans[s]
+      if (span === undefined) continue
+      if (s !== bestSpan) {
+        rebuilt.push(span)
+        continue
+      }
+      if (bestRun.start > chosen[0]) rebuilt.push([chosen[0], bestRun.start])
+      if (bestRun.start + bestRun.len < chosen[1]) rebuilt.push([bestRun.start + bestRun.len, chosen[1]])
+    }
+    spans = rebuilt
+  }
+  if (cuts.length === 0) return null
+
+  cuts.sort((a, b) => a.start - b.start)
+  const out: string[] = [...parsed.header]
+  let at = 0
+  for (const cut of cuts) {
+    for (let i = at; i < cut.start; i++) out.push(parsed.rows[i]?.raw ?? '')
+    const first = parsed.rows[cut.start]
+    const last = parsed.rows[cut.start + cut.len - 1]
+    if (first === undefined || last === undefined) return null
+    out.push(servedRunNotice(first.no, last.no, cut.id))
+    at = cut.start + cut.len
+  }
+  for (let i = at; i < parsed.rows.length; i++) out.push(parsed.rows[i]?.raw ?? '')
+  out.push(...parsed.trailer)
+
+  const rewritten = out.join('\n')
+  const originalBytes = Buffer.byteLength(respText, 'utf-8')
+  if (
+    !isRewriteWorthwhile({
+      originalBytes,
+      rewrittenBytes: Buffer.byteLength(rewritten, 'utf-8'),
+      noticeBytes: 0,
+      minNetSavingsBytes: resolveMinNetSavingsBytes(),
+    })
+  ) {
+    return null
+  }
+  return emitRewrite(rewritten, 'read', { kind: 'read:served_elide', originalBytes })
+}
+
+/**
+ * Public wrapper: same tracking as {@link preReadHandler} above, plus the served-line elision.
+ *
+ * The order of these three lines is the whole correctness argument.
+ *
+ * The elision runs FIRST, before {@link recordReadAsServedOutput} puts this very read into the
+ * store it compares against -- otherwise every line matches itself and the entire result is
+ * withheld as "already served". It is the same self-contamination shape as a structural guard
+ * that scans its own source.
+ *
+ * It also runs before {@link postReadHandlerInner}, whose structural-navigation hint would
+ * otherwise be composed, booked as shown by {@link applyHintTracking}, and then thrown away in
+ * favour of the rewrite -- a hint charged to the efficacy ledger that no model ever saw. The
+ * flag is a required parameter rather than a defaulted one so no call site can silently take
+ * the un-suppressed path the shipping one does not.
+ *
+ * The rewrite wins over the hint where both apply, because it acts on the bytes instead of
+ * asking: a hint is followed a small fraction of the time, and a withheld run is withheld.
+ */
 export function postReadHandler(event: HookEvent): HookOutput {
-  const out = applyHintTracking(event, postReadHandlerInner(event), classifyReadHint)
+  const elided = elideAlreadyServedLines(event, extractReadOutput(event.raw))
+  const out = applyHintTracking(event, postReadHandlerInner(event, elided !== null), classifyReadHint)
   recordReadAsServedOutput(event)
-  return out
+  return elided ?? out
 }
 
 registerHook('post_tool_use', postReadHandler, { toolName: 'Read' })

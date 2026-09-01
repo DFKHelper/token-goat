@@ -238,6 +238,14 @@ const KIND_TO_SOURCE: Record<string, string> = {
 
   // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
   'grep:fold': SOURCE_CONTENT,
+
+  // Withholding of already-served stretches from a completed Read (hooks_read.ts
+  // elideAlreadyServedLines). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as
+  // grep:fold above: its siblings read_count_deny and read_served_deny are decisions about
+  // whether a read happens at all, whereas this is a rewrite of a result that did happen,
+  // with real bytes removed from it. Filing it under the advisory bucket would add non-hint
+  // savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
+  'read:served_elide': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,
   handoff_resolve: SOURCE_CONTENT,

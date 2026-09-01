@@ -144,6 +144,8 @@ export interface HintsConfig {
   write_rewrite_min_lines: number
   write_rewrite_unchanged_pct: number
   serve_diff_on_reread: boolean
+  /** Rewrite a completed Read to withhold stretches of it the session was already handed. */
+  elide_served_lines: boolean
   // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a
   // suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal
   // can lift it back above hint_stats.suppress_threshold_pct -- see that module's "Probe
@@ -452,6 +454,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // rewrite that happens to share some boilerplate.
     write_rewrite_unchanged_pct: 75,
     serve_diff_on_reread: true,
+    elide_served_lines: true,
     backoff_thresholds: [1, 3, 10, 30],
     git_hint_max_ms: 50,
     min_session_hint_savings_bytes: 512,
@@ -798,6 +801,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_INJECTION_ENABLED',
   'TOKEN_GOAT_MCP_CONFINE_READS',
   'TOKEN_GOAT_SERVE_DIFF_ON_REREAD',
+  'TOKEN_GOAT_ELIDE_SERVED_LINES',
   'TOKEN_GOAT_BASH_CACHE_MIN_BYTES',
   'TOKEN_GOAT_BASH_CACHE_MAX_FILES',
   'TOKEN_GOAT_BASH_CACHE_MAX_BYTES',
@@ -1630,6 +1634,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.write_rewrite_unchanged_pct = validatedInt(hi_raw['write_rewrite_unchanged_pct'], hi.write_rewrite_unchanged_pct, ...boundsOf('hints.write_rewrite_unchanged_pct'))
   hi.write_rewrite_unchanged_pct = envInt('TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT', hi.write_rewrite_unchanged_pct, ...boundsOf('hints.write_rewrite_unchanged_pct'))
   hi.serve_diff_on_reread = validatedBool(hi_raw['serve_diff_on_reread'], hi.serve_diff_on_reread)
+  hi.elide_served_lines = validatedBool(hi_raw['elide_served_lines'], hi.elide_served_lines)
   hi.backoff_thresholds = validatedIntList(hi_raw['backoff_thresholds'], hi.backoff_thresholds)
   hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
   hi.min_session_hint_savings_bytes = validatedInt(hi_raw['min_session_hint_savings_bytes'], hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
@@ -1664,6 +1669,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.log_large_file_hint_outcomes = validatedBool(hi_raw['log_large_file_hint_outcomes'], hi.log_large_file_hint_outcomes)
   hi.warn_unbalanced_shell_quoting = envBool('TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING', hi.warn_unbalanced_shell_quoting)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
+  hi.elide_served_lines = envBool('TOKEN_GOAT_ELIDE_SERVED_LINES', hi.elide_served_lines)
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.json_sidecar = envBool('TOKEN_GOAT_HINT_JSON_SIDECAR', hi.json_sidecar)
   hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, ...boundsOf('hints.large_read_redirect_bytes'))
@@ -1862,6 +1868,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
+  'hints.elide_served_lines': ['TOKEN_GOAT_ELIDE_SERVED_LINES'],
   'hints.log_large_file_hint_outcomes': ['TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES'],
   'hints.cross_session_read_dedup': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP'],
   'hints.cross_session_read_dedup_ttl_secs': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS'],
@@ -2009,6 +2016,7 @@ export function saveConfig(config: Config): void {
       write_rewrite_min_lines: config.hints.write_rewrite_min_lines,
       write_rewrite_unchanged_pct: config.hints.write_rewrite_unchanged_pct,
       serve_diff_on_reread: config.hints.serve_diff_on_reread,
+      elide_served_lines: config.hints.elide_served_lines,
       backoff_thresholds: config.hints.backoff_thresholds,
       git_hint_max_ms: config.hints.git_hint_max_ms,
       min_session_hint_savings_bytes: config.hints.min_session_hint_savings_bytes,
