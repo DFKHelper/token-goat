@@ -11,7 +11,7 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -1799,17 +1799,44 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
 const IDENTICAL_READ_MIN_BODY_BYTES = 512
 
 /**
- * True when `cmd` is a pure file read -- one whose output is a function of the file's content
- * alone: `cat FILE`, `head -N FILE`, `tail -N FILE`, `sed -n 'A,Bp' FILE`, and the piped and awk
- * spellings the same extractors already normalize into those forms.
+ * The file read by a pure file read, or null when `cmd` is not one.
+ *
+ * A pure file read is one whose output is a function of the file's content alone: `cat FILE`,
+ * `head -N FILE`, `tail -N FILE`, `sed -n 'A,Bp' FILE`, and the piped and awk spellings the same
+ * extractors already normalize into those forms.
  *
  * Deliberately narrow. A command whose output can differ for any reason other than file content --
  * a test run, a build, anything reading the network or the clock -- must never reach the collapse
- * below, because for those "the output is identical to last time" is the finding itself rather
- * than redundancy, and replacing it with a pointer would delete the answer.
+ * below, because for those "the output is the same as last time" is the finding itself rather than
+ * redundancy, and replacing it with a pointer would delete the answer.
+ *
+ * The path, rather than a bare boolean, is what lets a read be matched against earlier reads of the
+ * same file instead of only against an identical spelling of itself: `head -40 CHANGELOG.md` and
+ * `sed -n '1,30p' CHANGELOG.md` are different commands that hash differently and return different
+ * bytes, yet the second shows nothing the first did not.
  */
-function isPureFileRead(cmd: string): boolean {
-  return extractCatFile(cmd) !== null || extractHeadFile(cmd) !== null || extractTailFile(cmd) !== null || extractLineRangeRead(cmd) !== null
+function pureFileReadPath(cmd: string): string | null {
+  return extractCatFile(cmd)?.filePath ?? extractHeadFile(cmd)?.filePath ?? extractTailFile(cmd)?.filePath ?? extractLineRangeRead(cmd)?.filePath ?? null
+}
+
+/**
+ * True when every line of `needle` appears as a contiguous, line-aligned run inside `haystack`.
+ *
+ * Line-aligned deliberately. A plain substring test would report a match when the new output merely
+ * starts mid-line inside the old one, and the lines withheld on the strength of that would not be
+ * the lines the model was actually shown. Wrapping both sides in newlines forces the match to begin
+ * at a line start and end at a line end, so a hit means the exact lines were served verbatim.
+ *
+ * One trailing newline is stripped from each side first, since the same run of lines is spelled with
+ * and without it depending on the command, and comparing raw would call those two different.
+ * Nothing else is normalized: CR is left in place, so a body that changed only its line endings
+ * correctly fails to match rather than being treated as already served.
+ */
+function containsLineRun(haystack: string, needle: string): boolean {
+  const h = haystack.endsWith('\n') ? haystack.slice(0, -1) : haystack
+  const n = needle.endsWith('\n') ? needle.slice(0, -1) : needle
+  if (n.length === 0 || n.length > h.length) return false
+  return ('\n' + h + '\n').includes('\n' + n + '\n')
 }
 
 /**
@@ -1841,35 +1868,58 @@ async function maybeCollapseIdenticalRead(
   // A failed read's output is an error message, not file content. Never store one as the baseline a
   // later run would be collapsed against, and never collapse one away.
   if (exitCode !== null && exitCode !== 0) return null
-  if (!isPureFileRead(cmd)) return null
+  const filePath = pureFileReadPath(cmd)
+  if (filePath === null) return null
   const originalBytes = Buffer.byteLength(output, 'utf-8')
   if (originalBytes < Math.max(cacheMinBytes, IDENTICAL_READ_MIN_BODY_BYTES)) return null
 
   // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the
   // session, but this rewrite's whole claim is that the model already holds these bytes -- which is
-  // only true if the earlier run happened in THIS conversation. Keying on the session's own
-  // bashOutputs map (serialized per session id) rather than on commandHash alone is what makes the
-  // claim true: a first read in a fresh session finds nothing here and passes through whole, even
-  // when an identical body from yesterday is still sitting in the blob cache.
+  // only true if the earlier read happened in THIS conversation. Keying on the session's own
+  // per-file index (serialized per session id, and cleared on edit and on compaction) rather than
+  // on the blob cache alone is what makes the claim true: a first read in a fresh session finds
+  // nothing here and passes through whole, even when an identical body from yesterday is still
+  // sitting in the blob cache.
+  //
+  // Keyed by file rather than by command, because the measured waste is not one command repeated:
+  // it is several spellings of overlapping reads of one file, which hash differently and return
+  // different bytes. Newest first, since a later body is the more likely container and stopping at
+  // the first hit bounds how many blobs get read.
+  const fileKey = resolveIndexPath(filePath, cwd ?? process.cwd())
+  const priorIds = getFileServedOutputs(fileKey)
+  let containerId: string | null = null
+  let identical = false
+  for (let i = priorIds.length - 1; i >= 0; i--) {
+    const id = priorIds[i]
+    if (id === undefined) continue
+    const prior = getBashOutput(id)
+    if (prior === null || !containsLineRun(prior.output, output)) continue
+    containerId = id
+    identical = prior.output === output
+    break
+  }
+
   const sessionKey = shortFingerprint(stripOutputPipeline(cmd))
-  const id = getBashOutputId(sessionKey)
-  const prior = id === null ? null : getBashOutput(id)
-  if (id === null || prior === null || prior.output !== output) {
-    // First run this session, or the file changed since. Cache this body so a later identical run
-    // has something to compare against, and leave the output alone: nothing is redundant yet.
+  if (containerId === null) {
+    // Nothing served this session covers these lines: a first read, a file that changed, or a read
+    // reaching past everything shown so far. Cache the body so a later read of the same file has
+    // something to be matched against, and leave the output alone -- nothing is redundant yet.
     const storedId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
     recordBashOutput(sessionKey, storedId, originalBytes)
+    recordFileServedOutput(fileKey, storedId)
     return null
   }
 
-  const pointer = '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + id + '`.'
+  const pointer = identical
+    ? '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + containerId + '`.'
+    : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + filePath + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + '`.'
   if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(pointer, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
   // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the
   // earlier run as safe for the compaction manifest to drop, which is right when a newer *full*
   // copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would
   // strand this pointer and leave the transcript with neither the body nor a duplicate of it. The
   // earlier full copy is precisely what this rewrite is pointing at, so it must stay.
-  return emitRewrite(pointer, 'identical file re-read collapsed', { kind: 'bash_compress:identical-reread', originalBytes })
+  return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes })
 }
 
 async function maybeCompressCompoundOutput(

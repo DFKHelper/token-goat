@@ -11,6 +11,9 @@ import {
   exportSessionState,
   getBashOutputId,
   getFileLineRanges,
+  getFileServedOutputs,
+  markCompacted,
+  MAX_SERVED_OUTPUTS_PER_FILE,
   getOutstandingAgentSpawns,
   getSessionFileEntry,
   getSessionFiles,
@@ -25,6 +28,7 @@ import {
   recordBashOutput,
   recordFileEdit,
   recordFileLineRange,
+  recordFileServedOutput,
   recordFileRead,
   recordOutstandingAgentSpawn,
   recordSymbolRead,
@@ -178,6 +182,52 @@ describe('recordFileEdit preserves other tracked flags (#M20)', () => {
     // recordFileEdit used to rebuild the entry field-by-field, silently dropping wasTruncated
     // instead of preserving it like the sibling read/truncate functions do.
     expect(files[0]?.wasTruncated).toBe(true)
+  })
+})
+
+describe('served-output index invalidation', () => {
+  it('drops served outputs for a file when it is edited', () => {
+    // The index is what justifies withholding a later read's body on the grounds the model already
+    // holds those bytes. An edit changes the bytes, so every id recorded before it stops being
+    // evidence of anything -- and unlike a stale line range, acting on a stale id here deletes
+    // content from the transcript rather than just producing a wrong hint.
+    const p = normalizePath(makeTmpFile())
+    recordFileServedOutput(p, 'blob-1')
+    expect(getFileServedOutputs(p)).toEqual(['blob-1'])
+
+    recordFileEdit(p)
+    expect(getFileServedOutputs(p)).toEqual([])
+  })
+
+  it('drops served outputs for every file on compaction', () => {
+    // Same assumption at whole-body granularity as the line-range ledger markCompacted already
+    // clears: after a compaction the served text is no longer in context.
+    const a = normalizePath(makeTmpFile())
+    const b = normalizePath(makeTmpFile())
+    recordFileServedOutput(a, 'blob-a')
+    recordFileServedOutput(b, 'blob-b')
+    expect(getFileServedOutputs(a)).toEqual(['blob-a'])
+
+    markCompacted(Date.now() + 1000)
+    expect(getFileServedOutputs(a)).toEqual([])
+    expect(getFileServedOutputs(b)).toEqual([])
+  })
+
+  it('keeps newest ids and drops oldest past the per-file cap', () => {
+    const p = normalizePath(makeTmpFile())
+    for (let i = 0; i < MAX_SERVED_OUTPUTS_PER_FILE + 3; i++) recordFileServedOutput(p, 'blob-' + i)
+    const ids = getFileServedOutputs(p)
+    expect(ids).toHaveLength(MAX_SERVED_OUTPUTS_PER_FILE)
+    expect(ids[ids.length - 1]).toBe('blob-' + (MAX_SERVED_OUTPUTS_PER_FILE + 2))
+    expect(ids).not.toContain('blob-0')
+  })
+
+  it('re-recording an id moves it to newest rather than duplicating it', () => {
+    const p = normalizePath(makeTmpFile())
+    recordFileServedOutput(p, 'blob-1')
+    recordFileServedOutput(p, 'blob-2')
+    recordFileServedOutput(p, 'blob-1')
+    expect(getFileServedOutputs(p)).toEqual(['blob-2', 'blob-1'])
   })
 })
 

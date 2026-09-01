@@ -123,6 +123,9 @@ let _curlDownloadsAtLoad = new Map<string, string>()
 // path (as written on the sed command line) -> served inclusive line ranges this session, for overlap detection across repeated `sed -n 'N,Mp'` reads.
 let _fileLineRanges = new Map<string, Array<[number, number]>>()
 
+// path -> bash-output cache ids whose body this session was actually shown for that file, oldest first. Distinct from `_fileLineRanges`, which stores only line numbers: numbers cannot prove a later read's bytes were already served, because a change token-goat never observed (an external editor, a pull in another terminal) leaves the recorded range in place while the lines behind it move. These ids point at the served text itself, so containment can be decided on the bytes and a stale entry simply fails to match.
+let _fileServedOutputs = new Map<string, string[]>()
+
 // Unix-ms of the most recent context compaction (0 = never compacted this session). After Claude Code compacts, the model's context no longer holds any file content it read earlier, so every read whose `lastReadAt` predates this stamp must be treated as NOT read -- see `wasFileReadThisSession`. Stored as a monotonically increasing scalar rather than resetting each entry's `readCount` to 0 because session_store.ts's `mergeFileEntry` reconciles `readCount` as "freshest disk count + this process's own increments since load", so an in-memory reset to 0 contributes a 0 delta and the disk value is handed straight back -- the reset would be silently resurrected across concurrent hook processes. A max-merged scalar has no such resurrection path.
 let _compactedAt = 0
 
@@ -264,6 +267,8 @@ export function recordFileEdit(filePath: string): void {
   const normalized = normalizePath(filePath)
   const key = resolveFilesKey(normalized)
   _fileLineRanges.delete(foldPath(normalized))
+  // Same reason as the line ranges above: an edit changes the bytes, so a body served before it is no longer evidence of what the file now holds.
+  _fileServedOutputs.delete(foldPath(normalized))
   const prev = _files.get(key)
   if (prev === undefined) {
     _files.set(key, {
@@ -310,6 +315,8 @@ export function markCompacted(now: number = Date.now()): void {
   if (now <= _compactedAt) return
   _compactedAt = now
   _fileLineRanges = new Map()
+  // Same assumption at whole-body granularity: after compaction the served text is no longer in context, so it can no longer justify withholding a later read.
+  _fileServedOutputs = new Map()
 }
 
 /**
@@ -654,6 +661,29 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
 }
 
 /**
+ * Cap on retained served-output ids per file.
+ *
+ * Deliberately small: every id retained here is a blob the containment check may have to read from
+ * disk before it can decide, so this is a bound on that read fan-out and not just on memory. Newest
+ * ids are kept, since a later body is the more likely container of the next read of the same file.
+ */
+export const MAX_SERVED_OUTPUTS_PER_FILE = 8
+
+/** Record that the body cached under `outputId` was served to this session as a read of `filePath`. */
+export function recordFileServedOutput(filePath: string, outputId: string): void {
+  const key = foldPath(normalizePath(filePath))
+  const ids = (_fileServedOutputs.get(key) ?? []).filter((id) => id !== outputId)
+  ids.push(outputId)
+  if (ids.length > MAX_SERVED_OUTPUTS_PER_FILE) ids.splice(0, ids.length - MAX_SERVED_OUTPUTS_PER_FILE)
+  _fileServedOutputs.set(key, ids)
+}
+
+/** Cache ids whose body this session was shown as a read of `filePath`, newest last (empty if none). */
+export function getFileServedOutputs(filePath: string): readonly string[] {
+  return _fileServedOutputs.get(foldPath(normalizePath(filePath))) ?? []
+}
+
+/**
  * Mark `filePath` as having been truncated during a Read this session.
  *
  * Called by the post_tool_use Read hook when the tool response contains a
@@ -727,6 +757,8 @@ export interface SerializedSession {
   bashReruns?: string[]
   curlDownloads: Array<[string, string]>
   fileLineRanges?: Array<[string, Array<[number, number]>]>
+  /** path -> bash-output ids whose body this session was shown as a read of that file, oldest first. Optional: sessions written before this field existed simply have none. */
+  fileServedOutputs?: Array<[string, string[]]>
   cliReads?: string[]
   pendingLargeFileHints?: Array<[string, number]>
   grepQueries?: Array<[string, number]>
@@ -757,6 +789,7 @@ export function exportSessionState(): SerializedSession {
     bashReruns: Array.from(_bashReruns),
     curlDownloads: Array.from(_curlDownloads.entries()),
     fileLineRanges: Array.from(_fileLineRanges.entries()),
+    ...(_fileServedOutputs.size > 0 ? { fileServedOutputs: Array.from(_fileServedOutputs.entries()) } : {}),
     cliReads: Array.from(_cliReads),
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
     grepQueries: Array.from(_grepQueries.entries()),
@@ -790,6 +823,7 @@ export function importSessionState(s: SerializedSession): void {
   _curlDownloads = new Map(s.curlDownloads)
   _curlDownloadsAtLoad = new Map(_curlDownloads)
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
+  _fileServedOutputs = new Map(s.fileServedOutputs ?? [])
   _cliReads = new Set(s.cliReads ?? [])
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
@@ -813,6 +847,7 @@ registerReset(() => {
   _curlDownloads = new Map()
   _curlDownloadsAtLoad = new Map()
   _fileLineRanges = new Map()
+  _fileServedOutputs = new Map()
   _cliReads = new Set()
   _pendingLargeFileHints = new Map()
   _pendingLargeFileHintsAtLoad = new Map()
