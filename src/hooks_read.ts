@@ -20,9 +20,10 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, normalizePath } from './paths.js'
-import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
+import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput } from './session.js'
+import { storeBashOutputSync } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
@@ -1320,9 +1321,74 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
   return passOutput()
 }
 
+/**
+ * Record what a completed Read handed the model, as raw file lines, so the shell-side re-read
+ * collapse in hooks_bash.ts can recognise a later `sed -n 'A,Bp'` or `cat` of the same lines as
+ * bytes the model is already holding.
+ *
+ * That collapse decides containment on BYTES rather than on line numbers, deliberately: an edit
+ * token-goat never observed moves the lines while leaving a recorded range looking valid, so a
+ * number-keyed store would happily withhold text the model does not have. It therefore needs the
+ * served text itself -- and until now only Bash ever produced any. A file first delivered through
+ * the Read tool was invisible to it, which is why its contained-re-read branch booked nothing at
+ * all while a third of bounded shell reads asked for lines already delivered.
+ *
+ * Three constraints follow from "the model is already holding these bytes", and each is a skip:
+ *   - Store only the slice actually delivered. A Read carrying offset/limit handed over that window
+ *     and nothing else, so storing the whole file would let the collapse withhold lines that were
+ *     never shown.
+ *   - Skip a truncated Read entirely. It delivered less than its own window and there is no way
+ *     from here to know where it stopped.
+ *   - Store raw file lines, not the Read tool's rendered output. The rendered form carries
+ *     line-number prefixes, and the later shell read emits neither; whole-line containment is
+ *     compared against what `sed`/`cat` will actually print.
+ *
+ * Best-effort throughout: the Read has already completed and nothing here may change its result.
+ * Synchronous on purpose: a hook is its own short-lived process, so a write left pending on the
+ * microtask queue is a write that may never reach disk.
+ */
+function recordReadAsServedOutput(event: HookEvent): void {
+  try {
+    const cfg = loadConfig().bash_compress
+    // Nothing consumes the store when compression is off, so storing would be pure disk cost.
+    if (!cfg.enabled) return
+    const filePath = getFilePath(event)
+    if (filePath === undefined) return
+    const normalized = normalizePath(filePath)
+    if (isImagePath(normalized)) return
+    // Deliberately re-read from THIS response rather than asking the session whether the file has
+    // ever been truncated: that flag is sticky for the rest of the session, so one truncated Read
+    // would disqualify every later complete Read of the same file, which does deliver its window.
+    const respText = extractReadOutput(event.raw)
+    if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return
+    const size = statSize(normalized)
+    if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return
+
+    const text = decodeSource(fs.readFileSync(normalized))
+    const limit = readIntToolInput(event, 'limit')
+    let served = text
+    if (limit !== undefined && limit > 0) {
+      const offset = readIntToolInput(event, 'offset')
+      const start = offset !== undefined && offset >= 1 ? offset : 1
+      served = text.split('\n').slice(start - 1, start - 1 + limit).join('\n')
+    }
+
+    // A stored body can only ever contain a later read that is itself at or above the collapse's
+    // own floor, so anything smaller is dead weight in the cache.
+    if (Buffer.byteLength(served, 'utf-8') < Math.max(cfg.cache_min_bytes, IDENTICAL_READ_MIN_BODY_BYTES)) return
+
+    const id = storeBashOutputSync('Read ' + normalized, served, 0, getCwd(event) ?? process.cwd())
+    recordFileServedOutput(normalized, id)
+  } catch {
+    // best-effort; never affect the completed Read
+  }
+}
+
 /** Public wrapper: same tracking as {@link preReadHandler} above. */
 export function postReadHandler(event: HookEvent): HookOutput {
-  return applyHintTracking(event, postReadHandlerInner(event), classifyReadHint)
+  const out = applyHintTracking(event, postReadHandlerInner(event), classifyReadHint)
+  recordReadAsServedOutput(event)
+  return out
 }
 
 registerHook('post_tool_use', postReadHandler, { toolName: 'Read' })

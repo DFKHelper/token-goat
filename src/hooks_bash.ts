@@ -24,7 +24,7 @@ import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
 import { isUnderSystemTemp } from './project.js'
-import { runGit } from './util.js'
+import { runGit, IDENTICAL_READ_MIN_BODY_BYTES } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
@@ -1791,14 +1791,6 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
  * single (already-wrapped) command, the output is below the size floor, or the net-benefit gate
  * declines the rewrite.
  */
-/**
- * Body size below which collapsing an identical re-read cannot pay for itself: the replacement
- * pointer is itself ~150 bytes. The real floor is the shared `bash_compress.min_net_savings_bytes`
- * gate applied below; this is only the cheap pre-check that avoids a hash and a cache lookup for
- * output that could never qualify.
- */
-const IDENTICAL_READ_MIN_BODY_BYTES = 512
-
 /**
  * The file read by a pure file read, or null when `cmd` is not one.
  *
