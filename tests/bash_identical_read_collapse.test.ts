@@ -104,7 +104,7 @@ describe('postBashHandler: identical file-read collapse', () => {
   it('does not collapse a command that is not a pure file read', async () => {
     // Identical output from a test run is the finding, not redundancy: `npm test` printing the same
     // thing twice means the suite is still green, and replacing that with a pointer deletes the
-    // answer. Guarded by isPureFileRead.
+    // answer. Guarded by pureFileReadPath returning null.
     const cmd = 'npm test'
     await postBashHandler(postEvent(cmd, BODY))
     const second = await postBashHandler(postEvent(cmd, BODY))
@@ -116,6 +116,57 @@ describe('postBashHandler: identical file-read collapse', () => {
     await postBashHandler(postEvent(cmd, BODY, 1))
     const second = await postBashHandler(postEvent(cmd, BODY, 1))
     expect(second.hookType).not.toBe('rewriteOutput')
+  })
+
+  it('collapses a narrower read of a file already read wider, under a different command', async () => {
+    // The measured case, from a real transcript: `head -40 CHANGELOG.md` followed by
+    // `sed -n '1,30p' CHANGELOG.md`. Different commands, different hashes, different bytes -- so
+    // the identical-run check never fires -- yet every line the second returns was in the first.
+    const wide = await postBashHandler(postEvent('head -40 CHANGELOG.md', BODY))
+    expect(wide.hookType).not.toBe('rewriteOutput')
+
+    const narrowBody = BODY.split('\n').slice(0, 30).join('\n')
+    const narrow = await postBashHandler(postEvent("sed -n '1,30p' CHANGELOG.md", narrowBody))
+    expect(narrow.hookType).toBe('rewriteOutput')
+    if (narrow.hookType === 'rewriteOutput') {
+      expect(narrow.updatedOutput.length).toBeLessThan(narrowBody.length)
+      expect(narrow.updatedOutput).toContain('token-goat bash-output ')
+      // Distinct wording from the identical case: this body was not a repeat of the same command,
+      // it was part of a wider one, and the recall id points at that wider output.
+      expect(narrow.updatedOutput).toContain('wider read')
+    }
+  })
+
+  it('does not collapse a read that reaches past everything already served', async () => {
+    // The reverse order of the case above. The narrow read comes first, so the wider one carries
+    // lines never shown; withholding it would delete them. Containment is one-directional and this
+    // is the direction that must not fire.
+    const narrowBody = BODY.split('\n').slice(0, 30).join('\n')
+    await postBashHandler(postEvent("sed -n '1,30p' CHANGELOG.md", narrowBody))
+    const wide = await postBashHandler(postEvent('head -40 CHANGELOG.md', BODY))
+    expect(wide.hookType).not.toBe('rewriteOutput')
+  })
+
+  it('does not collapse against a body served for a different file', async () => {
+    // Two files can hold identical text -- a vendored copy, a generated duplicate, a lockfile. The
+    // index is per file, so a read of one must never be answered from the other, whose recall id
+    // would point at the wrong path.
+    await postBashHandler(postEvent('head -40 CHANGELOG.md', BODY))
+    const other = await postBashHandler(postEvent('head -40 README.md', BODY))
+    expect(other.hookType).not.toBe('rewriteOutput')
+  })
+
+  it('does not collapse on a substring that is not line-aligned', async () => {
+    // A plain substring test would match here and withhold lines the model was never shown as
+    // lines. The prior body's text contains every character of the new output, but the new
+    // output's first and last lines are fragments of the prior body's lines, not whole ones.
+    const priorBody = Array.from({ length: 40 }, (_, i) => `prefix-line ${i}: ${'y'.repeat(60)}-suffix`).join('\n')
+    await postBashHandler(postEvent('head -40 CHANGELOG.md', priorBody))
+    const fragment = priorBody.slice(priorBody.indexOf('line 0'), priorBody.indexOf('-suffix', priorBody.indexOf('line 20')))
+    expect(priorBody).toContain(fragment)
+    expect(Buffer.byteLength(fragment, 'utf-8')).toBeGreaterThan(512)
+    const partial = await postBashHandler(postEvent("sed -n '1,21p' CHANGELOG.md", fragment))
+    expect(partial.hookType).not.toBe('rewriteOutput')
   })
 
   it('does no cache work at all for a body below the size floor', async () => {

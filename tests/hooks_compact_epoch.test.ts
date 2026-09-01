@@ -237,6 +237,25 @@ describe('compaction epoch persistence and merge', () => {
     expect(paths).toContain('/b.txt')
   })
 
+  it('drops the served-output index of a side that predates the winning epoch', () => {
+    // Same reason as the line ranges above, and it matters more here: a stale range only produces a
+    // wrong hint, while a stale served-output id justifies *withholding* a read's body on the
+    // grounds the model already holds it. After a compaction it no longer does.
+    const stale: SerializedSession = { ...empty(), compactedAt: 1000, fileServedOutputs: [['/a.txt', ['id-a']]] }
+    const fresh: SerializedSession = { ...empty(), compactedAt: 9000, fileServedOutputs: [['/b.txt', ['id-b']]] }
+    const paths = (saveThenMerge('epoch-served-drop', stale, fresh).fileServedOutputs ?? []).map(([p]) => p)
+    expect(paths).toContain('/b.txt')
+    expect(paths).not.toContain('/a.txt')
+  })
+
+  it("keeps both sides' served-output indexes when they agree on the epoch", () => {
+    const a: SerializedSession = { ...empty(), compactedAt: 9000, fileServedOutputs: [['/a.txt', ['id-a']]] }
+    const b: SerializedSession = { ...empty(), compactedAt: 9000, fileServedOutputs: [['/b.txt', ['id-b']]] }
+    const paths = (saveThenMerge('epoch-served-keep', a, b).fileServedOutputs ?? []).map(([p]) => p)
+    expect(paths).toContain('/a.txt')
+    expect(paths).toContain('/b.txt')
+  })
+
   it('does not resurrect a stale readCount-based read across processes -- the epoch, not the counter, is what invalidates', () => {
     const entry = { path: '/x.ts', readCount: 3, lastReadAt: 1000, wasEdited: true, sizeBytes: 10 }
     const merged = saveThenMerge('epoch-vs-count', { ...empty(), files: [entry] }, { ...empty(), files: [entry], compactedAt: 5000 })

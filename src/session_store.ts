@@ -27,7 +27,7 @@ import * as path from 'node:path'
 
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -209,6 +209,20 @@ function asLineRanges(raw: unknown): Array<[string, Array<[number, number]>]> {
   return out
 }
 
+/** Coerce the served-output index: a list of [path, ids] pairs, dropping any non-string entry. Mirrors {@link asLineRanges}; a malformed pair is skipped rather than throwing, since this is untrusted on-disk JSON. */
+function asServedOutputs(raw: unknown): Array<[string, string[]]> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<[string, string[]]> = []
+  for (const pair of raw) {
+    if (!Array.isArray(pair) || pair.length !== 2) continue
+    const filePath = pair[0]
+    const ids = pair[1]
+    if (typeof filePath !== 'string' || !Array.isArray(ids)) continue
+    out.push([filePath, ids.filter((id): id is string => typeof id === 'string')])
+  }
+  return out
+}
+
 /** Coerce an untrusted parsed-JSON value into a valid (possibly empty)
  * {@link SerializedSession}, dropping anything malformed. Never throws.
  *
@@ -298,6 +312,7 @@ function coerce(raw: unknown): SerializedSession {
     bashOutputs: asStringPairs(o['bashOutputs']),
     curlDownloads: migrateKeys(asStringPairs(o['curlDownloads']), migrateCurlDownloadKey),
     fileLineRanges: asLineRanges(o['fileLineRanges']),
+    fileServedOutputs: asServedOutputs(o['fileServedOutputs']),
     cliReads,
     bashReruns,
     pendingLargeFileHints,
@@ -367,6 +382,19 @@ function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Ar
       seen.add(key)
     }
     byPath.set(filePath, prev)
+  }
+  return Array.from(byPath.entries())
+}
+
+/** Merge served-output indexes: union per path, newest-last, capped. Unlike {@link mergeLineRanges} the cap keeps the NEWEST ids rather than refusing new ones at the cap, because a later body is the more likely container of the next read and a stale id only costs a failed containment check. */
+function mergeServedOutputs(disk: Array<[string, string[]]>, mem: Array<[string, string[]]>): Array<[string, string[]]> {
+  const byPath = new Map<string, string[]>()
+  for (const [filePath, ids] of disk) byPath.set(filePath, [...ids])
+  for (const [filePath, ids] of mem) {
+    const prev = byPath.get(filePath) ?? []
+    const merged = [...prev.filter((id) => !ids.includes(id)), ...ids]
+    if (merged.length > MAX_SERVED_OUTPUTS_PER_FILE) merged.splice(0, merged.length - MAX_SERVED_OUTPUTS_PER_FILE)
+    byPath.set(filePath, merged)
   }
   return Array.from(byPath.entries())
 }
@@ -462,6 +490,9 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   // Sed line ranges carry no timestamp of their own, so they cannot be filtered per-range against the epoch the way FileEntry.lastReadAt can. Instead drop the ranges of any side that had not yet observed the winning epoch: they were recorded by a process whose view predates the compaction, so they may describe content the model no longer holds. Erring toward dropping only costs a full read that was already going to be correct; keeping them would keep serving "you already saw lines N-M" against invisible content.
   const diskRanges = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileLineRanges ?? []) : []
   const memRanges = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileLineRanges ?? []) : []
+  // Same epoch filter, same reason: a served body recorded before the winning compaction may no longer be in the model's context, so it must not justify withholding a later read of that file.
+  const diskServed = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileServedOutputs ?? []) : []
+  const memServed = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileServedOutputs ?? []) : []
   return {
     files: Array.from(byPath.values()),
     hintsShown: Array.from(new Set([...disk.hintsShown, ...mem.hintsShown])),
@@ -470,6 +501,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergeCurlDownloads(disk.curlDownloads, mem.curlDownloads),
     fileLineRanges: mergeLineRanges(diskRanges, memRanges),
+    fileServedOutputs: mergeServedOutputs(diskServed, memServed),
     ...(compactedAt > 0 ? { compactedAt } : {}),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
