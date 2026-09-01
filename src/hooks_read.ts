@@ -20,10 +20,10 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, normalizePath } from './paths.js'
-import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES } from './util.js'
+import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput } from './session.js'
-import { storeBashOutputSync } from './bash_output_cache.js'
+import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs } from './session.js'
+import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
@@ -1002,6 +1002,35 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
+    // Proof beats the count. Every branch below reasons about how many times this file has been
+    // read, and the recent-read protection window exists because that reasoning can be wrong -- it
+    // waves through the four most recently read files precisely so a legitimate re-read is never
+    // blocked on a guess. Measured over a month of real sessions, 830 Read calls returned a line
+    // range the session had already been given, and the largest reason nothing fired was that the
+    // file sat inside that window: exactly the case where the bytes are most certainly still in
+    // context. So when the bytes are *known* rather than guessed, the guess-protection does not
+    // apply, and the read is answered with a pointer at the copy already delivered.
+    //
+    // Still gated on hints.reread_deny: a user who turned denials off asked for hints, not blocks,
+    // and having proof does not change what they asked for.
+    if (config.hints.reread_deny) {
+      const alreadyServed = alreadyServedOutputId(event, normalized)
+      if (alreadyServed !== null) {
+        // Credit the bytes this read would actually have delivered, not the whole file: a Read
+        // carrying offset/limit was only ever going to hand over its window, and crediting the file
+        // would book bytes nothing was ever going to spend.
+        const blocked = counterfactualCredit(alreadyServed.bytes)
+        recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'Every line of ' + shown + ' this read would return was already served in this session, byte for byte. ' +
+          'Recall it with `token-goat bash-output ' + alreadyServed.id + '`, or pull just the part you need with ' +
+          '`token-goat read "' + shown + '::Symbol"`.' +
+          ' ' + editAnywayHint(normalized),
+        )
+      }
+    }
+
     // session_hint is recorded per-branch below, only where a deny actually returns or the
     // final quietContextOutput will actually be visible -- recording it unconditionally here
     // (as this used to) over-counted the ledger on every quiet-hours re-read that degraded to
@@ -1322,6 +1351,69 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
 }
 
 /**
+ * The exact text a Read of `normalized` delivers (or would deliver), read from disk.
+ *
+ * The Read tool's own `offset`/`limit` bound a line window, so an event carrying them was handed
+ * that window and nothing else. Returns raw file lines rather than the tool's numbered rendering,
+ * because every consumer compares against what a plain `sed`/`cat` prints. Null when the file
+ * cannot be read or is past the scan cap.
+ *
+ * Shared by the two ends that must agree byte-for-byte on "what this read is worth": the producer
+ * that stores a finished Read, and the pre-read check that asks whether the same bytes were already
+ * served. Two copies of this slicing would be a silent miss the moment they drifted.
+ */
+function readWindowFromDisk(event: HookEvent, normalized: string): string | null {
+  const size = statSize(normalized)
+  if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
+  const text = decodeSource(fs.readFileSync(normalized))
+  const limit = readIntToolInput(event, 'limit')
+  if (limit === undefined || limit <= 0) return text
+  const offset = readIntToolInput(event, 'offset')
+  const start = offset !== undefined && offset >= 1 ? offset : 1
+  return text.split('\n').slice(start - 1, start - 1 + limit).join('\n')
+}
+
+/**
+ * The id of an already-served body that provably contains every line this Read would deliver, or
+ * null when there is no such proof.
+ *
+ * The count-based re-read machinery below reasons about how many times a *file* was read. That is a
+ * heuristic, and the recent-read protection window exists precisely because it can be wrong. This
+ * is not a heuristic: the bytes this Read would hand over are compared, whole-line aligned, against
+ * bytes the session recorded as already delivered for this same file. A hit means the model is
+ * holding this exact text.
+ *
+ * Everything about the comparison fails toward allowing the read:
+ *   - the current text comes from disk, so a file that changed since the earlier delivery no longer
+ *     matches and the read proceeds. Line numbers are never consulted, for the reason stated on
+ *     `_fileServedOutputs` in session.ts: an edit token-goat did not observe moves them.
+ *   - stored bodies pass through secret redaction on the way in, so a body that carried a secret no
+ *     longer matches the raw file and the read proceeds rather than being answered from a redacted
+ *     copy.
+ *   - a body below the shared floor is not worth a pointer that is itself ~200 bytes.
+ */
+function alreadyServedOutputId(event: HookEvent, normalized: string): { id: string; bytes: number } | null {
+  try {
+    const ids = getFileServedOutputs(normalized)
+    if (ids.length === 0) return null
+    const wouldServe = readWindowFromDisk(event, normalized)
+    if (wouldServe === null) return null
+    const bytes = Buffer.byteLength(wouldServe, 'utf-8')
+    if (bytes < IDENTICAL_READ_MIN_BODY_BYTES) return null
+    // Newest first: the most recent delivery is the one most likely still in context.
+    for (let i = ids.length - 1; i >= 0; i--) {
+      const id = ids[i]
+      if (id === undefined) continue
+      const prior = getBashOutput(id)
+      if (prior !== null && containsLineRun(prior.output, wouldServe)) return { id, bytes }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Record what a completed Read handed the model, as raw file lines, so the shell-side re-read
  * collapse in hooks_bash.ts can recognise a later `sed -n 'A,Bp'` or `cat` of the same lines as
  * bytes the model is already holding.
@@ -1361,17 +1453,8 @@ function recordReadAsServedOutput(event: HookEvent): void {
     // would disqualify every later complete Read of the same file, which does deliver its window.
     const respText = extractReadOutput(event.raw)
     if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return
-    const size = statSize(normalized)
-    if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return
-
-    const text = decodeSource(fs.readFileSync(normalized))
-    const limit = readIntToolInput(event, 'limit')
-    let served = text
-    if (limit !== undefined && limit > 0) {
-      const offset = readIntToolInput(event, 'offset')
-      const start = offset !== undefined && offset >= 1 ? offset : 1
-      served = text.split('\n').slice(start - 1, start - 1 + limit).join('\n')
-    }
+    const served = readWindowFromDisk(event, normalized)
+    if (served === null) return
 
     // A stored body can only ever contain a later read that is itself at or above the collapse's
     // own floor, so anything smaller is dead weight in the cache.

@@ -150,6 +150,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   large_file_hint_followed: SOURCE_HINT,
   large_file_hint_ignored: SOURCE_HINT,
   read_count_deny: SOURCE_HINT,
+  read_served_deny: SOURCE_HINT,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
   symbol_read: SOURCE_READ,
