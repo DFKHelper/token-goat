@@ -82,6 +82,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.min_session_hint_savings_bytes',
   'hints.pre_skill_advisory',
   'hints.prompt_triggers',
+  'hints.elide_served_lines',
   'hints.protect_recent_reads',
   'hints.quiet_hours',
   'hints.reread_deny',

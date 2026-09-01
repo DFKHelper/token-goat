@@ -593,6 +593,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'agent_report_compact_declined',
       'browser_tab_dedup',
       'grep:fold',
+      'read:served_elide',
       'handoff_create',
       'handoff_resolve',
       'plan_echo_collapse',
