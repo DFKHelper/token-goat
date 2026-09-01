@@ -279,8 +279,13 @@ export function normalizeCommandForCacheKey(cmd: string): string {
 /**
  * Return the stable hash for a command: 16-hex-char SHA-256 prefix of the
  * normalized command with cwd scoping.
+ *
+ * The async {@link commandHash} below is the long-standing public name and stays; this is the
+ * same body, exposed synchronously for callers that must finish the write before their (very
+ * short-lived) hook process exits. Every fingerprint helper it reaches for is already a `*Sync`
+ * one, so nothing is lost by dropping the promise.
  */
-export async function commandHash(command: string, cwd: string | null = null): Promise<string> {
+export function commandHashSync(command: string, cwd: string | null = null): string {
   const normalized = normalizeCommandForCacheKey(command)
   let key = cwd ? `${normalizePath(cwd)}\x00${normalized}` : normalized
 
@@ -309,6 +314,11 @@ export async function commandHash(command: string, cwd: string | null = null): P
   }
 
   return shortFingerprint(key)
+}
+
+/** Promise-returning alias for {@link commandHashSync}, kept for existing callers. */
+export function commandHash(command: string, cwd: string | null = null): Promise<string> {
+  return Promise.resolve(commandHashSync(command, cwd))
 }
 
 /**
@@ -510,8 +520,8 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
  * The id is {@link commandHash} of the command, so re-running an identical
  * command overwrites the prior entry and keeps the same id.
  */
-export async function storeBashOutput(command: string, output: string, exitCode: number, cwd: string | null = null): Promise<string> {
-  const id = await commandHash(command, cwd)
+export function storeBashOutputSync(command: string, output: string, exitCode: number, cwd: string | null = null): string {
+  const id = commandHashSync(command, cwd)
   const fingerprints = computeBashFingerprints(command, cwd)
   // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
   // redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the
@@ -541,6 +551,11 @@ export async function storeBashOutput(command: string, output: string, exitCode:
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
   indexRecallEntry('bash', id, redactedCommand, `${redactedCommand}\n${redactedOutput}`, entry.storedAt)
   return id
+}
+
+/** Promise-returning alias for {@link storeBashOutputSync}, kept for existing callers. */
+export function storeBashOutput(command: string, output: string, exitCode: number, cwd: string | null = null): Promise<string> {
+  return Promise.resolve(storeBashOutputSync(command, output, exitCode, cwd))
 }
 
 /** Coerce an untrusted parsed-JSON value into a {@link BashOutputEntry}, or null
