@@ -384,6 +384,30 @@ export const PER_FILE_COUNTERFACTUAL_CEILING = 100_000
  */
 export const IDENTICAL_READ_MIN_BODY_BYTES = 512
 
+/**
+ * True when every line of `needle` appears as a contiguous, line-aligned run inside `haystack`.
+ *
+ * Line-aligned deliberately. A plain substring test would report a match when the new output merely
+ * starts mid-line inside the old one, and the lines withheld on the strength of that would not be
+ * the lines the model was actually shown. Wrapping both sides in newlines forces the match to begin
+ * at a line start and end at a line end, so a hit means the exact lines were served verbatim.
+ *
+ * One trailing newline is stripped from each side first, since the same run of lines is spelled with
+ * and without it depending on the command, and comparing raw would call those two different.
+ * Nothing else is normalized: CR is left in place, so a body that changed only its line endings
+ * correctly fails to match rather than being treated as already served.
+ *
+ * Lives here because both hook modules that withhold an already-served body need it -- the shell
+ * collapse and the read-side deny -- and neither may import the other: each registers its hooks at
+ * module scope.
+ */
+export function containsLineRun(haystack: string, needle: string): boolean {
+  const h = haystack.endsWith('\n') ? haystack.slice(0, -1) : haystack
+  const n = needle.endsWith('\n') ? needle.slice(0, -1) : needle
+  if (n.length === 0 || n.length > h.length) return false
+  return ('\n' + h + '\n').includes('\n' + n + '\n')
+}
+
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs the caller indefinitely), and how old an unreleased lock file must be before a crashed holder's lock is treated as abandoned and stolen.
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
