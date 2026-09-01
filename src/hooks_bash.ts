@@ -19,6 +19,7 @@ import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDi
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
+import { stripAnsiEscapes } from './render/ansi.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
@@ -1978,6 +1979,56 @@ async function maybeCompressCompoundOutput(
 }
 
 /**
+ * Last-resort, strictly lossless pass: drop terminal display escapes (SGR colour, cursor moves,
+ * OSC titles) from output that nothing else compressed. A model reads `\x1b[38;2;240;246;252m` as
+ * tokens and gets no information from it -- it is markup for a terminal, not content.
+ *
+ * Three things follow from "lossless" and separate this from every other rewrite on this path:
+ * nothing is withheld, so there is no recall pointer and no marker to price in (a marker would be
+ * pure cost -- there is nothing to recall); the saving is exactly the escape bytes removed; and it
+ * is deliberately NOT gated on exit code. The other paths skip a failing command so its
+ * diagnostics reach the model whole, but stripping display markup is what keeps a failing
+ * colourised build whole -- a red `FAIL` and a plain `FAIL` say the same thing to a reader that
+ * has no colours.
+ *
+ * Only single commands reach here in practice: a compound one is compressed by
+ * {@link maybeCompressCompoundOutput}, whose filter pipeline already strips escapes as its first
+ * stage. This closes the gap on the other side of that helper's `isCompressibleSingleCommand`
+ * early return, where the pre-hook wrapper only covers a whitelist of recognised command shapes
+ * and everything else -- including token-goat's own colourised output -- passed through untouched.
+ */
+function maybeStripAnsiOnly(output: string): HookOutput | null {
+  if (!output.includes('\x1b')) return null
+  // No explicit TOKEN_GOAT_BASH_COMPRESS check: config.ts folds that env var into
+  // `bash_compress.enabled`, so `!cfg.enabled` below already carries the kill switch. An extra
+  // check here read as a second guard while being unreachable -- mutation testing removed it and
+  // nothing went red, which is what an unreachable guard looks like.
+  let cfg: { enabled: boolean; disabled_filters: string[] }
+  try {
+    cfg = loadConfig().bash_compress
+  } catch {
+    return null
+  }
+  if (!cfg.enabled || cfg.disabled_filters.includes('ansi')) return null
+  const stripped = stripAnsiEscapes(output)
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  if (
+    !isRewriteWorthwhile({
+      originalBytes,
+      rewrittenBytes: Buffer.byteLength(stripped, 'utf-8'),
+      noticeBytes: 0,
+      minNetSavingsBytes: resolveMinNetSavingsBytes(),
+    })
+  ) {
+    return null
+  }
+  // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder
+  // in `stripped` was already in the original and was booked by whoever put it there, so counting
+  // here would credit this path with a redaction it did not perform.
+  return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes }, 'counted-elsewhere')
+}
+
+/**
  * Recover the original command from a `token-goat compress … -c <cmd>` wrapper
  * (the rewrite emitted by {@link maybeCompressRewrite}) so the post-hook keys its
  * output cache on the original command — identical to the hash the pre-hook
@@ -2943,7 +2994,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       // commands were already handled upstream and are skipped inside the helper.
       const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes)
       if (compound !== null) return compound
-      return passOutput()
+      // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
+      return maybeStripAnsiOnly(output) ?? passOutput()
     }
 
     if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return passOutput()
@@ -2965,6 +3017,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         return contextOutput(delta + ' — full output: bash-output ' + id)
       }
     }
+    // Deliberately after the delta hint, which keeps its existing priority: a hook returns one
+    // channel, and the delta is only reachable on a rerun whose output actually changed. Every
+    // other cached command -- including the colourised build runs `isBuildCommand` routes here --
+    // reaches this line, so this is where most escape bytes are removed.
+    const ansiOnly = maybeStripAnsiOnly(output)
+    if (ansiOnly !== null) return ansiOnly
   } catch {
     // Never block — hook failures must be silent.
   }
