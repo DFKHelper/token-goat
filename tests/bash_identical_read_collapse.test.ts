@@ -8,12 +8,13 @@
  *   1. In-process tests of `postBashHandler` for the decision itself: first run stores and passes,
  *      identical re-run collapses, changed content does not, a non-read command does not, a failed
  *      read does not, and a body under the floor does not.
- *   2. A built-bundle e2e that pipes two real `PostToolUse` payloads through
- *      `dist/token-goat.mjs hook post_tool_use` in two separate processes. This layer is the
+ *   2. Built-bundle e2e tests that pipe real `PostToolUse` payloads through
+ *      `dist/token-goat.mjs hook post_tool_use` in separate processes. This layer is the
  *      authoritative one and is not redundant with layer 1: in production every hook invocation is
  *      its own process, so the collapse only works if the prior body is recoverable from the
  *      on-disk cache rather than from module state. An in-process test shares `_byId` between the
- *      two calls and would stay green even if nothing were ever persisted.
+ *      two calls and would stay green even if nothing were ever persisted. Session scoping can
+ *      only be tested here too, for the reason spelled out on that test.
  *
  * Fixture provenance:
  *   - `BODY`, the stand-in read output, is HAND-DERIVED: generated line text sized past
@@ -52,12 +53,12 @@ const BODY = Array.from({ length: 40 }, (_, i) => `line ${i}: ${'x'.repeat(60)}`
 // contaminate one another.
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-function postEvent(command: string, output: string, exitCode = 0) {
+function postEvent(command: string, output: string, exitCode = 0, sessionId = 's') {
   return makeHookEvent({
     eventName: 'post_tool_use',
     toolName: 'Bash',
     toolInput: { command },
-    sessionId: 's',
+    sessionId,
     raw: {
       // `cwd` matters: the handler keys the cache on commandHash(cmd, getCwd(event)), so a test
       // that omits it stores under a different key than one that asserts with REPO, and any
@@ -135,19 +136,22 @@ describe('postBashHandler: identical file-read collapse', () => {
   })
 })
 
+function runHook(cmd: string, sessionId: string) {
+  const payload = JSON.stringify({
+    hook_event_name: 'PostToolUse',
+    session_id: sessionId,
+    cwd: REPO,
+    tool_name: 'Bash',
+    tool_input: { command: cmd },
+    tool_response: { stdout: BODY, exitCode: 0 },
+  })
+  return spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: payload, encoding: 'utf8' })
+}
+
 describe('built bundle: identical file-read collapse survives across processes', () => {
   it('collapses on the second of two separate hook processes', () => {
     const cmd = "sed -n '17,56p' README.md"
-    const payload = JSON.stringify({
-      hook_event_name: 'PostToolUse',
-      session_id: 'e2e-identical',
-      cwd: REPO,
-      tool_name: 'Bash',
-      tool_input: { command: cmd },
-      tool_response: { stdout: BODY, exitCode: 0 },
-    })
-
-    const run = () => spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: payload, encoding: 'utf8' })
+    const run = () => runHook(cmd, 'e2e-identical')
 
     const first = run()
     expect(first.status).toBe(0)
@@ -164,5 +168,32 @@ describe('built bundle: identical file-read collapse survives across processes',
     const replaced = parsed.hookSpecificOutput?.updatedToolOutput ?? ''
     expect(replaced.length).toBeLessThan(BODY.length)
     expect(replaced).toContain('token-goat bash-output ')
+  })
+
+  it('does not collapse against an identical run from a different session', () => {
+    // The pointer's claim is that the model already holds these bytes, which is only true when the
+    // earlier run happened in the same conversation. The blob cache behind storeBashOutput is on
+    // disk and outlives a session, so a lookup keyed on the command hash alone would replace a
+    // *first* read in a fresh session with a pointer at a body that session never saw -- the
+    // content would simply be gone. The lookup goes through the session's own bashOutputs map,
+    // which each hook process hydrates from its own session id, so a new session finds nothing.
+    //
+    // This has to live at the e2e layer: in-process, `postBashHandler` never hydrates session state
+    // (relay.ts does that once per hook process), so two in-process calls share one `_bashOutputs`
+    // map no matter what session id their events carry, and the distinction is invisible.
+    const cmd = "sed -n '21,60p' README.md"
+    expect(runHook(cmd, 'e2e-session-a').status).toBe(0)
+
+    // Same command, same bytes, same on-disk blob -- different conversation.
+    const other = runHook(cmd, 'e2e-session-b')
+    expect(other.status).toBe(0)
+    expect(JSON.parse(other.stdout)).toEqual({})
+
+    // Discrimination check: the assertion above only means something if a same-session repeat does
+    // collapse. Without it, a bug that disabled the collapse outright would leave this test green.
+    const repeat = runHook(cmd, 'e2e-session-b')
+    expect(repeat.status).toBe(0)
+    const parsed = JSON.parse(repeat.stdout) as { hookSpecificOutput?: { updatedToolOutput?: string } }
+    expect(parsed.hookSpecificOutput?.updatedToolOutput).toContain('token-goat bash-output ')
   })
 })

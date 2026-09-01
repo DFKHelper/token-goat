@@ -1845,13 +1845,20 @@ async function maybeCollapseIdenticalRead(
   const originalBytes = Buffer.byteLength(output, 'utf-8')
   if (originalBytes < Math.max(cacheMinBytes, IDENTICAL_READ_MIN_BODY_BYTES)) return null
 
-  const id = await commandHash(cmd, cwd)
-  const prior = getBashOutput(id)
-  if (prior === null || prior.output !== output) {
-    // First run under this key, or the file changed since it. Cache this body so a later identical
-    // run has something to compare against, and leave the output alone: nothing is redundant yet.
+  // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the
+  // session, but this rewrite's whole claim is that the model already holds these bytes -- which is
+  // only true if the earlier run happened in THIS conversation. Keying on the session's own
+  // bashOutputs map (serialized per session id) rather than on commandHash alone is what makes the
+  // claim true: a first read in a fresh session finds nothing here and passes through whole, even
+  // when an identical body from yesterday is still sitting in the blob cache.
+  const sessionKey = shortFingerprint(stripOutputPipeline(cmd))
+  const id = getBashOutputId(sessionKey)
+  const prior = id === null ? null : getBashOutput(id)
+  if (id === null || prior === null || prior.output !== output) {
+    // First run this session, or the file changed since. Cache this body so a later identical run
+    // has something to compare against, and leave the output alone: nothing is redundant yet.
     const storedId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
-    recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), storedId, originalBytes)
+    recordBashOutput(sessionKey, storedId, originalBytes)
     return null
   }
 
