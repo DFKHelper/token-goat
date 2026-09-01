@@ -1790,6 +1790,81 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
  * single (already-wrapped) command, the output is below the size floor, or the net-benefit gate
  * declines the rewrite.
  */
+/**
+ * Body size below which collapsing an identical re-read cannot pay for itself: the replacement
+ * pointer is itself ~150 bytes. The real floor is the shared `bash_compress.min_net_savings_bytes`
+ * gate applied below; this is only the cheap pre-check that avoids a hash and a cache lookup for
+ * output that could never qualify.
+ */
+const IDENTICAL_READ_MIN_BODY_BYTES = 512
+
+/**
+ * True when `cmd` is a pure file read -- one whose output is a function of the file's content
+ * alone: `cat FILE`, `head -N FILE`, `tail -N FILE`, `sed -n 'A,Bp' FILE`, and the piped and awk
+ * spellings the same extractors already normalize into those forms.
+ *
+ * Deliberately narrow. A command whose output can differ for any reason other than file content --
+ * a test run, a build, anything reading the network or the clock -- must never reach the collapse
+ * below, because for those "the output is identical to last time" is the finding itself rather
+ * than redundancy, and replacing it with a pointer would delete the answer.
+ */
+function isPureFileRead(cmd: string): boolean {
+  return extractCatFile(cmd) !== null || extractHeadFile(cmd) !== null || extractTailFile(cmd) !== null || extractLineRangeRead(cmd) !== null
+}
+
+/**
+ * Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy.
+ *
+ * Unlike every other rewrite in this handler, this one needs no judgement about which parts of the
+ * output matter, because nothing is being summarized: the bytes the model already holds and the
+ * bytes it would be handed again are the same bytes. Only a duplicate is dropped, and the original
+ * stays whole in the bash-output cache, so a caller that genuinely wants it back can ask.
+ *
+ * Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the
+ * `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are
+ * suppressed by the backoff ledger for that reason, while the two paths that act on the payload
+ * instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and
+ * 98.5%. Advice about a redundant read still costs the redundant read.
+ *
+ * Returns null -- leaving output untouched -- on a command's first run, when the file changed so
+ * the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is
+ * also where the body gets cached, so a later identical run has a baseline to compare against.
+ */
+async function maybeCollapseIdenticalRead(
+  cmd: string,
+  output: string,
+  exitCode: number | null,
+  cwd: string | null,
+  cacheMinBytes: number,
+): Promise<HookOutput | null> {
+  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  // A failed read's output is an error message, not file content. Never store one as the baseline a
+  // later run would be collapsed against, and never collapse one away.
+  if (exitCode !== null && exitCode !== 0) return null
+  if (!isPureFileRead(cmd)) return null
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  if (originalBytes < Math.max(cacheMinBytes, IDENTICAL_READ_MIN_BODY_BYTES)) return null
+
+  const id = await commandHash(cmd, cwd)
+  const prior = getBashOutput(id)
+  if (prior === null || prior.output !== output) {
+    // First run under this key, or the file changed since it. Cache this body so a later identical
+    // run has something to compare against, and leave the output alone: nothing is redundant yet.
+    const storedId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+    recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), storedId, originalBytes)
+    return null
+  }
+
+  const pointer = '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + id + '`.'
+  if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(pointer, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
+  // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the
+  // earlier run as safe for the compaction manifest to drop, which is right when a newer *full*
+  // copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would
+  // strand this pointer and leave the transcript with neither the body nor a duplicate of it. The
+  // earlier full copy is precisely what this rewrite is pointing at, so it must stay.
+  return emitRewrite(pointer, 'identical file re-read collapsed', { kind: 'bash_compress:identical-reread', originalBytes })
+}
+
 async function maybeCompressCompoundOutput(
   cmd: string,
   output: string,
@@ -2799,6 +2874,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
     if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) {
+      // A plain file read reaches here and, before this branch existed, left with nothing: no
+      // cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger
+      // suppresses. Re-reading the same unchanged file therefore cost its full body every time.
+      // Collapse the byte-identical repeat first, since it is strictly cheaper than compressing
+      // a body the model has already been given verbatim.
+      const identical = await maybeCollapseIdenticalRead(cmd, output, exitCode, cwd, cacheMinBytes)
+      if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
       // for compression) gets its already-captured output compressed here instead. Single
       // commands were already handled upstream and are skipped inside the helper.
