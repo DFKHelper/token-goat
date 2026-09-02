@@ -281,7 +281,8 @@ content
       const cmd =
         'python3 -c "import sys; print(\\"hello world\\")"'
       const result = preBashHandler(makeBashEvent(cmd))
-      expect(result.hookType).toBe('pass')
+      // Same shape as the `node -e` sibling below: python is a recognised command so it may compress, but the quotes here are balanced and must draw no quote hint. This used to assert 'pass', which only held because the quoted `;` in the -c script wrongly disqualified the command from compression.
+      expect(result.hookType).not.toBe('context')
     })
 
     it('handles node -e with nested quotes', () => {

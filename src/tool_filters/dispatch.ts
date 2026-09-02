@@ -6,7 +6,7 @@ import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { resolveIndexPath } from '../paths.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
-import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
+import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
 import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS } from './ci.js'
@@ -163,8 +163,9 @@ function hasRedirect(argv: string[]): boolean {
  */
 export function detectFromCommand(command: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   if (!command || command.length > 65536) return null
-  if (['&&', '||', '$(', '`'].some((op) => command.includes(op))) return null
-  if (command.includes('|') || command.includes(';')) return null
+  if (['$(', '`'].some((op) => command.includes(op))) return null
+  // Quote-aware: a `|`/`;`/`&&`/`||` inside a quoted argument (`grep -E 'foo|bar'`) is literal text, not a control operator, and must not disqualify an otherwise-single command.
+  if (hasUnquotedOperator(command, ['&&', '||', '|', ';'])) return null
   if (hasBareBackgroundOrNewline(command)) return null
   let argv: string[]
   try {
@@ -186,8 +187,9 @@ export function detectFromCommand(command: string, cwd?: string): { filter: Tool
 function detectSingleSegment(segment: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   const seg = segment.trim()
   if (!seg || seg.length > 65536) return null
-  if (['||', '$(', '`'].some((op) => seg.includes(op))) return null
-  if (seg.includes('|') || seg.includes(';')) return null
+  if (['$(', '`'].some((op) => seg.includes(op))) return null
+  // Quote-aware, same reason as detectFromCommand: `|`/`;`/`||` inside quotes is literal text.
+  if (hasUnquotedOperator(seg, ['||', '|', ';'])) return null
   // Same guard as detectFromCommand: a bare `&` backgrounds this segment (e.g. `cd /app && npm
   // run dev &`, a common "set up then start a dev server" compound), and wrapping it would
   // reproduce the exact hang detectFromCommand's own check exists to prevent -- spawnSync's
@@ -268,7 +270,9 @@ export function tryWrapCompoundSegments(
   wrapperArgs: (filterName: string, segment: string) => string | null,
   cwd?: string,
 ): string | null {
-  if (!command || command.includes('||') || command.includes('|') || command.includes(';')) return null
+  if (!command) return null
+  // Quote-aware: a quoted `|`/`;` is literal text, not a control operator. `splitTopLevelAnd` below is already quote-aware, so the `&&` presence check stays a plain substring test (a quoted-only `&&` simply yields one segment and bails on the <2 check).
+  if (hasUnquotedOperator(command, ['||', '|', ';'])) return null
   if (command.includes('$(') || command.includes('`')) return null
   if (!command.includes('&&')) return null
   const segments = splitTopLevelAnd(command)
