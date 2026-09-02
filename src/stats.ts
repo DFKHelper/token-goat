@@ -151,6 +151,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   large_file_hint_ignored: SOURCE_HINT,
   read_count_deny: SOURCE_HINT,
   read_served_deny: SOURCE_HINT,
+  // hooks_read.ts's subagent first-read markdown deny (hints.subagent_markdown_first_read_deny, off by default). Always recorded at 0 bytes / 0 tokens: no first-read deny of this shape exists in the transcript corpus, so its abandoned/substituted/shell-read/retried rates are unknown and can only be borrowed from the re-read heading-tree census. Booking withheld bytes against borrowed rates would claim a saving this path cannot back up. The kind exists to make the intervention countable in session-audit, not to claim a win.
+  subagent_markdown_first_read_deny: SOURCE_HINT,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
   symbol_read: SOURCE_READ,

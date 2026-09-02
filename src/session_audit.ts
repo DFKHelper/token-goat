@@ -376,6 +376,8 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
   { kind: 'generated_build_deny', re: /Generated\/build artifact — read the source file instead\./ },
   { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/ },
   { kind: 'notebook_sidecar_served', re: /Serving the output-stripped notebook in place of the full file/ },
+  // Must stay ABOVE markdown_heading_tree_deny: this deny's message embeds the same "Large markdown file (N headings)" guidance block, so the generic alternative would swallow it and the new intervention would be uncountable. DENY_TEMPLATES is scanned with `.find`, so the more specific wording has to come first.
+  { kind: 'subagent_markdown_first_read_deny', re: /Subagent first read of a large markdown file/ },
   { kind: 'markdown_heading_tree_deny', re: /Large markdown file \(\d+ headings\)/ },
   // The first alternative is a wording hooks_read.ts no longer emits (it claimed a compact-manifest
   // section that never existed, reworded in 3d044feb). It stays because this table classifies a

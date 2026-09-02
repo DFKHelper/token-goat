@@ -79,6 +79,24 @@ const LARGE_FILE_BYTES = FILE_TYPE_THRESHOLDS.generic
 const TASK_OUTPUT_DENY_BYTES = 20 * 1024
 
 /**
+ * Size gate for `hints.subagent_markdown_first_read_deny`: a subagent's first, un-ranged Read of a
+ * markdown file this large is denied in favour of its heading tree.
+ *
+ * 30KB, not the 10KB where the measured pool starts. Across 4,664 real session transcripts, a
+ * subagent's first un-ranged Read of a >=10KB markdown file was 1,645 events / 50.7MB -- 10.4% of
+ * all Reads but 38.5% of all Read result bytes, and only 12% of them were followed by an Edit of
+ * the same file within 10 calls, so this is overwhelmingly reading-to-understand. The >=30KB slice
+ * is 643 of those events / 31.3MB: roughly 62% of the bytes for 39% of the interruptions, which is
+ * the highest-value, lowest-regret cut of the pool. Widening to 10KB triples the number of denied
+ * reads for the remaining 38% of the bytes and is deliberately left for a later version, after
+ * this one has enough fires for session-audit to report real outcome rates.
+ */
+const SUBAGENT_MD_FIRST_READ_DENY_BYTES = 30 * 1024
+
+/** Markdown extensions the subagent first-read deny covers. Narrower than the heading-tree intercept's own regex, which also accepts `.rst`: the measured pool is markdown only, so reStructuredText is left to the existing advisory path. */
+const SUBAGENT_MD_FIRST_READ_DENY_EXT_RE = /\.(md|mdx|markdown)$/i
+
+/**
  * Multiplies `hints.large_read_redirect_bytes` down as context pressure rises, so a first read
  * that's fine when the session is cool gets redirected to a surgical read sooner once the window
  * is nearly full. Mirrors the pre-TS-port pressure-scaling design (commit 66a25e88): cool keeps the
@@ -859,6 +877,40 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             message += ' ' + editAnywayHint(normalized)
           }
           return denyOutput(message)
+        }
+        // Subagent first-read markdown deny, behind hints.subagent_markdown_first_read_deny
+        // (default false, so the path above is what ships until someone opts in). Reaching here
+        // means: a genuinely-first read of a markdown file with >=3 headings that is under the
+        // generic large-file deny threshold. Narrow it further to the measured pool -- a subagent
+        // lane, an un-ranged Read, a real markdown extension, and at least
+        // SUBAGENT_MD_FIRST_READ_DENY_BYTES -- and hard-deny it with the same heading tree the
+        // advisory branch below would have offered. A read that already carries offset/limit is
+        // surgical already and is left alone. Like the tooLargeForFirstRead branch above, this
+        // deliberately skips recordActualRead: the read never happened, so a retry with
+        // offset/limit must still count as a first read rather than tripping the re-read denies.
+        const unrangedRead =
+          readIntToolInput(event, 'offset') === undefined && readIntToolInput(event, 'limit') === undefined
+        if (
+          loadConfig().hints.subagent_markdown_first_read_deny &&
+          event.agentId !== undefined &&
+          unrangedRead &&
+          SUBAGENT_MD_FIRST_READ_DENY_EXT_RE.test(basename) &&
+          markdownSize !== null &&
+          markdownSize >= SUBAGENT_MD_FIRST_READ_DENY_BYTES
+        ) {
+          // 0 bytes and 0 tokens, deliberately, exactly as the heading-tree re-read deny above
+          // books itself. There is no first-read deny of this shape anywhere in the transcript
+          // corpus, so its outcome rates (abandoned / substituted / shell-read / retried) are
+          // unknown -- the only figures available are borrowed from the re-read heading-tree
+          // census, and crediting withheld bytes against borrowed rates would book a saving this
+          // path has never demonstrated. The stat exists to make the intervention countable in
+          // `session-audit` so its kill conditions can be checked, not to claim a win.
+          recordStat('subagent_markdown_first_read_deny', 0, 0)
+          return denyOutput(
+            'Subagent first read of a large markdown file (' +
+            Math.round(markdownSize / 1024) + 'KB). Read the section you need, not the whole file.\n\n' +
+            message + ' ' + editAnywayHint(normalized),
+          )
         }
         recordActualRead(event, normalized)
         return quietContextOutput(message)
