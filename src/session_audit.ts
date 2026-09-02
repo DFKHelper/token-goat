@@ -377,7 +377,14 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
   { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/ },
   { kind: 'notebook_sidecar_served', re: /Serving the output-stripped notebook in place of the full file/ },
   { kind: 'markdown_heading_tree_deny', re: /Large markdown file \(\d+ headings\)/ },
-  { kind: 'memory_md_reread_deny', re: /already read this session\. Memory files rarely change mid-session/ },
+  // The first alternative is a wording hooks_read.ts no longer emits (it claimed a compact-manifest
+  // section that never existed, reworded in 3d044feb). It stays because this table classifies a
+  // historical corpus, not just today's output: transcripts written before the rewording still
+  // carry the old text, and dropping the alternative silently shrank this kind from 51 events to
+  // 30 -- 41% of its history -- with a green suite. A superseded alternative is only removable
+  // once no transcript contains it, which source code cannot tell you. See the superseded-wording
+  // test in tests/deny_outcomes.test.ts.
+  { kind: 'memory_md_reread_deny', re: /MEMORY\.md was read this session\. Its content is in the compact manifest|already read this session\. Memory files rarely change mid-session/ },
   { kind: 'improve_state_reread_deny', re: /Orchestrator state already read this session/ },
   { kind: 'env_reread_deny', re: /Environment files rarely change mid-session/ },
   { kind: 'session_artifact_truncated_deny', re: /File was truncated on last read\. Use `token-goat bash-output/ },

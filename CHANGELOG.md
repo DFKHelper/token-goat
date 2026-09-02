@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [2.9.0] - 2026-09-01
 
+### Fixed
+
+- **`session-audit` can see its own history again after a deny message is reworded.** The table that classifies deny messages into kinds had an entry for the old `MEMORY.md` wording removed once the code stopped emitting it. That looked safe and was not: this table classifies a corpus of past sessions, and transcripts written before the rewording still contain the old text forever. Removing the entry made 21 real denies unclassifiable — `memory_md_reread_deny` fell from 51 events to 30, 41% of that kind's recorded history — with a passing test suite and no error anywhere, which would have quietly shrunk the denominator under any rate later derived for that kind. The entry is restored, and a test now fails if a superseded wording stops being recognized. No reindex is needed. See [src/session_audit.ts](src/session_audit.ts) and [tests/deny_outcomes.test.ts](tests/deny_outcomes.test.ts).
+
 ### Added
 
 - **Re-reading a memory file (`MEMORY.md`, or any `.md` file under a `memory/` directory) now checks whether it actually changed before denying the re-read.** This deny used to always answer with the same flat "already read this session" message, whether or not the file changed, even though the same unchanged/diff snapshot logic already used elsewhere in this file was sitting right there unused. Measured against this project's own session corpus, Edits made right after this specific deny error 8.9x more often than the corpus-wide baseline — the worst of any deny kind — which is the signature of a deny withholding information the agent then needed. Now, on a re-read, it checks the snapshot from the earlier read first: unchanged content gets a one-line "unchanged since last read" answer, a small change gets a fenced diff of just what changed, and a missing or unusable snapshot (including a truncated one) still falls back to the exact original deny message. No reindex is needed. See [src/hooks_read.ts](src/hooks_read.ts).
