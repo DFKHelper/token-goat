@@ -70,12 +70,24 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
 }
 
 /**
- * Format headings as a compact hint block for user display.
- * Handles duplicate headings by appending #2, #3 etc.
- * Caps output at MAX_OUTPUT_LINES.
+ * A heading-tree hint split by provenance: `guidance` is token-goat's own
+ * authored instruction text (safe to show unfenced), `sectionsList` is the
+ * file-derived heading text (untrusted — callers must fence it). Concatenating
+ * `guidance + '\n' + sectionsList` reproduces exactly what `formatHeadingTree`
+ * returns as a single string.
  */
-export function formatHeadingTree(headings: MarkdownHeading[], filePath: string): string {
-  if (headings.length === 0) return ''
+export interface HeadingTreeParts {
+  guidance: string
+  sectionsList: string
+}
+
+/**
+ * Format headings as a compact hint block for user display, split by
+ * provenance. Handles duplicate headings by appending #2, #3 etc. Caps
+ * output at MAX_OUTPUT_LINES.
+ */
+export function formatHeadingTreeParts(headings: MarkdownHeading[], filePath: string): HeadingTreeParts {
+  if (headings.length === 0) return { guidance: '', sectionsList: '' }
 
   const seenTexts = new Map<string, number>()
   const dedupedHeadings: Array<{ text: string; level: number }> = []
@@ -91,29 +103,47 @@ export function formatHeadingTree(headings: MarkdownHeading[], filePath: string)
     })
   }
 
-  const lines: string[] = []
-  lines.push(`Large markdown file (${headings.length} headings). Use token-goat section to read a specific section:`)
-  lines.push(`  token-goat section "${filePath}::Heading Name"`)
-  lines.push(`  Tip: an unambiguous heading prefix also resolves (e.g. "Lesson 16" instead of the full heading text) — shorter to type and avoids shell-quoting issues with punctuation in long headings.`)
-  lines.push(``)
-  lines.push(`Sections:`)
+  const guidanceLines: string[] = []
+  guidanceLines.push(`Large markdown file (${headings.length} headings). Use token-goat section to read a specific section:`)
+  guidanceLines.push(`  token-goat section "${filePath}::Heading Name"`)
+  guidanceLines.push(`  Tip: an unambiguous heading prefix also resolves (e.g. "Lesson 16" instead of the full heading text) — shorter to type and avoids shell-quoting issues with punctuation in long headings.`)
+  guidanceLines.push(``)
+  guidanceLines.push(`Sections:`)
 
+  const sectionLines: string[] = []
   let headingsAdded = 0
   for (const h of dedupedHeadings) {
-    // Check if adding this heading would exceed the limit Account for the 5 lines of header + this line
-    if (lines.length + 1 >= MAX_OUTPUT_LINES) {
+    // Check if adding this heading would exceed the limit. Account for the guidance
+    // lines plus this line, same budget the original single-block format used.
+    if (guidanceLines.length + sectionLines.length + 1 >= MAX_OUTPUT_LINES) {
       const remaining = dedupedHeadings.length - headingsAdded
-      lines.push(`  ... (${remaining} more headings)`)
+      sectionLines.push(`  ... (${remaining} more headings)`)
       break
     }
 
     const indent = h.level === 1 ? '' : h.level === 2 ? '  ' : '    '
     const marker = '#'.repeat(h.level)
-    lines.push(`  ${indent}${marker} ${h.text}`)
+    sectionLines.push(`  ${indent}${marker} ${h.text}`)
     headingsAdded++
   }
 
-  return lines.join('\n')
+  return { guidance: guidanceLines.join('\n'), sectionsList: sectionLines.join('\n') }
+}
+
+/**
+ * Format headings as a compact hint block for user display.
+ * Handles duplicate headings by appending #2, #3 etc.
+ * Caps output at MAX_OUTPUT_LINES.
+ *
+ * Returns token-goat's own instructions and the file-derived heading list
+ * concatenated into one string. Callers that must fence untrusted content
+ * separately from trusted instructions (see CLAUDE.arch.md::Security
+ * Boundaries) should use `formatHeadingTreeParts` instead.
+ */
+export function formatHeadingTree(headings: MarkdownHeading[], filePath: string): string {
+  const { guidance, sectionsList } = formatHeadingTreeParts(headings, filePath)
+  if (guidance === '' && sectionsList === '') return ''
+  return guidance + '\n' + sectionsList
 }
 
 /** Per-file well-known section shortcuts */
