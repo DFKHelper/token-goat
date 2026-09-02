@@ -17,7 +17,7 @@ import * as path from 'node:path'
 
 import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
-import { registerHook } from './hook_registry.js'
+import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, normalizePath } from './paths.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -826,7 +826,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             // heading-tree denies are measured to be frequently routed around by a
             // shell re-read anyway, so crediting withheld bytes would book a saving
             // this path cannot back up.
-            const snapDiff = loadSnapshotDiff(getSessionId(), normalized, basename)
+            const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
             if (snapDiff.kind === 'unchanged') {
               recordActualRead(event, normalized)
               recordStat('session_hint', 0, 0)
@@ -882,7 +882,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // byte credit) because these denies are measured to be frequently routed
     // around anyway, so crediting withheld bytes would book a saving this
     // path cannot back up.
-    const memSnapDiff = loadSnapshotDiff(getSessionId(), normalized, basename)
+    const memSnapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
     if (memSnapDiff.kind === 'unchanged') {
       recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
@@ -945,7 +945,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'File was truncated on last read. ' + sessionArtifactRecall(normalized),
         )
       }
-      const artifactSessionId = getSessionId()
+      const artifactSessionId = sessionStateKey(event)
       const snapDiff = loadSnapshotDiff(artifactSessionId, normalized, basename)
       if (snapDiff.kind === 'unchanged') {
         recordActualRead(event, normalized)
@@ -1006,7 +1006,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
-    const sessionId = getSessionId()
+    const sessionId = sessionStateKey(event)
     const snapDiff = loadSnapshotDiff(sessionId, normalized, basename)
 
     if (snapDiff.kind === 'unchanged') {
@@ -1366,7 +1366,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
       const sz = statSize(normalized)
       if (sz !== null && sz <= 256 * 1024) {
         const content = fs.readFileSync(normalized)
-        snapshotStore(getSessionId(), normalized, content)
+        snapshotStore(sessionStateKey(event), normalized, content)
       }
     } catch {
       // best-effort; never block the hook
