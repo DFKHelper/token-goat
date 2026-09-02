@@ -1580,6 +1580,164 @@ Examples here`
     }
   })
 
+  // Unchanged/diffable re-read of a large markdown file (the file is large enough, and has
+  // enough headings, to trip the heading-tree intercept above -- these three tests assert that
+  // when the intercept's alreadyRead branch has a usable snapshot, it serves the same short
+  // unchanged/diff response the isDocDiffable block further below would give a smaller file,
+  // instead of re-emitting the full heading tree. Content is CAPTURE-equivalent: it's the exact
+  // fixture bytes the test itself writes to disk and later reads back through postReadHandler's
+  // real snapshot path, not a string derived from the matcher under test.
+  it('an unchanged large markdown re-read gets the short "unchanged" deny, not the heading tree (regression: the heading-tree intercept used to return before isDocDiffable/loadSnapshotDiff ever ran, so a snapshot was never consulted for large markdown)', () => {
+    pinProtectRecentReadsToZero()
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here
+` + 'x'.repeat(10000)
+    const p = _makeTmpMdFile(mdContent)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      agentId: undefined,
+      raw: { tool_response: mdContent },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalizePath(p))
+
+    const before = summarize(30).by_kind['session_hint']?.events ?? 0
+    const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is unchanged since last read')
+      expect(result.message).toContain('token-goat section')
+      expect(result.message).not.toContain('Large markdown file')
+      expect(result.message).not.toContain('Content changed since last read')
+    }
+
+    // recordStat('session_hint', 0, 0) — same zero-credit convention as the sibling
+    // alreadyRead branch this one replaces: an event fires, but no bytes are credited.
+    const after = summarize(30).by_kind['session_hint']?.events ?? 0
+    const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    expect(after).toBe(before + 1)
+    expect(afterBytes).toBe(beforeBytes)
+  })
+
+  it('a changed large markdown re-read gets a fenced diff, not the heading tree, with the diff content inside the fence and token-goat guidance outside it', () => {
+    withMinTokensSaved(0, () => {
+      const headingBlock = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here
+`
+      const filler = 'x'.repeat(10000)
+      const content1 = headingBlock + filler
+      const content2 = headingBlock + '\n## New Section\n\nAdded content.\n' + filler
+      const p = _makeTmpMdFile(content1)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content1 },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+
+      fs.writeFileSync(p, content2)
+
+      const before = summarize(30).by_kind['session_hint']?.events ?? 0
+      const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        expect(result.message).toContain('New Section')
+        expect(result.message).toContain('token-goat section')
+        expect(result.message).not.toContain('Large markdown file')
+
+        // Fence placement: the diff (file-derived, untrusted) sits between the fence
+        // tags; token-goat's own "Content changed..." guidance sits outside/before it.
+        const openIdx = result.message.indexOf('<untrusted-file-content>')
+        const closeIdx = result.message.indexOf('</untrusted-file-content>')
+        const guidanceIdx = result.message.indexOf('Content changed since last read of')
+        const diffIdx = result.message.indexOf('New Section')
+        expect(openIdx).toBeGreaterThan(-1)
+        expect(closeIdx).toBeGreaterThan(openIdx)
+        expect(guidanceIdx).toBeGreaterThan(-1)
+        expect(guidanceIdx).toBeLessThan(openIdx)
+        expect(diffIdx).toBeGreaterThan(openIdx)
+        expect(diffIdx).toBeLessThan(closeIdx)
+      }
+
+      // Zero-credit convention: unlike the isDocDiffable block's diff_hint credit,
+      // this branch must record session_hint/0 so it stays measured but un-costed.
+      const after = summarize(30).by_kind['session_hint']?.events ?? 0
+      const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      expect(after).toBe(before + 1)
+      expect(afterBytes).toBe(beforeBytes)
+    })
+  })
+
+  it('a large markdown re-read with no snapshot still falls back to the full heading tree (loadSnapshotDiff returns kind "none" when nothing was ever saved by postReadHandler)', () => {
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here
+` + 'x'.repeat(10000)
+    const p = _makeTmpMdFile(mdContent)
+
+    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large markdown file')
+      expect(result.message).toContain('# Title')
+      expect(result.message).not.toContain('is unchanged since last read')
+      expect(result.message).not.toContain('Content changed since last read')
+    }
+  })
+
   it('hard-denies the FIRST read of a markdown file at/above the generic large-file deny threshold, even with >=3 headings (fail-on-buggy: the markdown branch previously let any first read through via contextOutput regardless of size, bypassing the 500KB deny every other file type gets)', () => {
     const mdContent = `# Title
 Some content here
