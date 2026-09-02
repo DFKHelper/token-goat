@@ -154,8 +154,8 @@ describe('read hook denial messages fence file-derived spans', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(fencedSpanOf(result.message)).toContain(HOSTILE)
-      // token-goat's own retry guidance stays outside the fence, where the model may act on it.
-      expect(result.message.slice(result.message.indexOf(CLOSE))).toContain('token-goat')
+      // This is a re-read (recordFileRead above), so the message carries no edit-anyway hint -- Read/Edit's precondition was already satisfied by the prior read, and the fenced span is still strictly bounded by the markers either way.
+      expect(result.message.slice(result.message.indexOf(CLOSE))).not.toContain(HOSTILE)
     }
   })
 })
