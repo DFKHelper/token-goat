@@ -585,6 +585,13 @@ function sumFileSizes(filePaths: Iterable<string>): number {
   return total
 }
 
+/** Counterfactual byte cost of the search `refs` replaces: one `path:line: label` hit line per reference, the shape `grep -n <symbol>` prints. This is deliberately NOT sumFileSizes over the files those references live in: nobody reads forty files end to end to find call sites, they run a search, so crediting `refs` with those files' whole contents overstated a multi-file result by orders of magnitude (a real ledger showed ~466KB claimed per `refs` event, because the 100KB-per-file ceiling in sumFileSizes bounds each file and never the sum). Deliberately a LOWER bound on what the equivalent search would emit, and only a lower bound: `ref.context` is the short enclosing-symbol label refs renders, where a grep hit line carries the whole matched source line, and a textual grep also returns comments, strings and unrelated same-named symbols that are not references at all. Neither of those is knowable without re-reading every hit file, so the ledger claims only what it can prove from rows already in hand. Requested `--context` lines are excluded for the same reason they cannot earn credit: they are extra output the caller asked for on top of what the plain search prints. */
+function refsSearchBaselineBytes(rows: Iterable<RefEntry>): number {
+  let total = 0
+  for (const ref of rows) total += Buffer.byteLength(`${refsDisplayPath(ref.filePath)}:${ref.line}: ${ref.context}\n`, 'utf8')
+  return total
+}
+
 /**
  * Records a surgical-read stat event: bytes saved is the full on-disk source size minus the
  * emitted slice, floored at 1 (mirrors image_shrink.ts's recordStat call and the retired
@@ -2337,7 +2344,7 @@ function renderRefsTargets(
   const jsonOut: Record<string, RefsJsonEntry> = {}
   let anyFound = false
   const lines: string[] = []
-  const refFilePaths: string[] = []
+  const refRows: RefEntry[] = []
   for (const { file, symbol, key } of targets) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to disambiguate a same-named symbol elsewhere in the index via applyTypedRefsTier below. It must never be passed to queryRefs/countRefs -- refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only.
@@ -2366,7 +2373,7 @@ function renderRefsTargets(
       results = results.slice(0, opts.limit ?? 100)
     }
     if (results.length > 0) anyFound = true
-    refFilePaths.push(...results.map((r) => r.filePath))
+    refRows.push(...results)
     if (opts.json === true) {
       // Same omit-when-zero `hiddenByGrep` the single-spec JSON path emits, per target here: a
       // symbol whose entry is `items: []` because --grep matched none of its references must not
@@ -2421,7 +2428,7 @@ function renderRefsTargets(
       if (notice !== null) lines.push(`  token-goat: ${notice}`)
     }
   }
-  const fullSourceBytes = sumFileSizes(refFilePaths)
+  const fullSourceBytes = refsSearchBaselineBytes(refRows)
   if (opts.json === true) {
     const text = JSON.stringify(jsonOut, null, 2)
     emit(text)
@@ -2585,7 +2592,7 @@ function runRefsSingle(opts: RefsOptions): number {
     return 1
   }
 
-  const fullSourceBytes = sumFileSizes(results.map((r) => r.filePath))
+  const fullSourceBytes = refsSearchBaselineBytes(results)
 
   if (opts.json === true) {
     let payload: RefsJsonEntry
