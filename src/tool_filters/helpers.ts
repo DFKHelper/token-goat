@@ -119,6 +119,23 @@ export function hasBareBackgroundOrNewline(cmd: string): boolean {
   return /(?<!&)&(?!&)/.test(masked)
 }
 
+/**
+ * True when any of `ops` appears in `cmd` OUTSIDE a quoted span. The compound-command gates
+ * used plain `cmd.includes('|')`, which cannot tell a shell pipeline from a quoted regex
+ * alternation: `grep -E 'foo|bar' src/` is a single command, but the naive check disqualified
+ * it from compression entirely. Reuses `maskQuotedSpans` -- the same masking
+ * `hasBareBackgroundOrNewline` already applies one line above those gates -- rather than
+ * adding a second masking implementation that could drift from it.
+ *
+ * Deliberately NOT for `$(` or a backtick: double quotes do not suppress command
+ * substitution, so masking double-quoted spans would wave through `echo "$(rm -rf /)"`. Those
+ * two operators keep their unmasked substring check.
+ */
+export function hasUnquotedOperator(cmd: string, ops: readonly string[]): boolean {
+  const masked = maskQuotedSpans(cmd)
+  return ops.some((op) => masked.includes(op))
+}
+
 const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
 const DIGITS_RE = /\d+/g
 // C0/C1 control chars except tab (09), newline (0A), carriage return (0D).

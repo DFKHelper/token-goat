@@ -10,6 +10,7 @@ import {
   tryWrapCompoundSegments,
 } from '../src/tool_filters/dispatch.js'
 import { GenericFilter } from '../src/tool_filters/generic.js'
+import { grepFilter } from '../src/tool_filters/shell_file.js'
 import {
   byteLength,
   capBytes,
@@ -413,6 +414,52 @@ describe('dispatch: detection + compound handling', () => {
     expect(det?.filter.name).toBe('echo-test')
     // Legitimate && is still rejected, unaffected by the new check.
     expect(detectFromCommand('mytool a && mytool b')).toBeNull()
+  })
+
+  // Regression: the compound gates used naive `command.includes('|')`/`includes(';')`, which
+  // cannot tell a shell pipeline from a quoted regex alternation. `grep -E 'foo|bar' src/` is a
+  // single command, but it was disqualified from compression entirely (measured on a real
+  // corpus: 346 of 1,553 pipe-rejected results had no shell pipe at all). The masking machinery
+  // already existed and was applied one line below, to `hasBareBackgroundOrNewline`.
+  //
+  // Fixture provenance: HAND-DERIVED -- these are ordinary POSIX shell command strings whose
+  // quoting semantics come from the POSIX shell grammar (quoted `|`/`;` are literal characters,
+  // https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_02_02),
+  // not read off token-goat's own matchers.
+  it('detectFromCommand treats a quoted |, ; or && as literal text, not a control operator', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(detectFromCommand("mytool -E 'foo|bar' src/")?.filter.name).toBe('echo-test')
+    expect(detectFromCommand('mytool -E "foo|bar" src/')?.filter.name).toBe('echo-test')
+    expect(detectFromCommand("mytool -m 'a; b'")?.filter.name).toBe('echo-test')
+    expect(detectFromCommand("mytool -m 'a && b'")?.filter.name).toBe('echo-test')
+    expect(detectFromCommand("mytool -m 'a || b'")?.filter.name).toBe('echo-test')
+  })
+
+  // The other half, and it is not optional: a test that only proves the gate got looser cannot
+  // tell this fix from a regression. Every one of these is a genuinely compound command.
+  it('detectFromCommand still rejects a genuinely piped or chained command', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(detectFromCommand("mytool -E 'foo|bar' src/ | head -5")).toBeNull()
+    expect(detectFromCommand("mytool -m 'a; b' ; mytool c")).toBeNull()
+    expect(detectFromCommand("mytool -m 'a && b' && mytool c")).toBeNull()
+    expect(detectFromCommand("mytool -m 'a || b' || mytool c")).toBeNull()
+    // An unbalanced quote must not become a way to smuggle a pipeline past the gate.
+    expect(detectFromCommand("mytool -E 'foo | head -5")).toBeNull()
+  })
+
+  it('the real grep filter claims a quoted-alternation grep as a single command', () => {
+    TOOL_FILTERS.push(grepFilter)
+    const det = detectFromCommand("grep -rn -E 'TODO|FIXME' src/")
+    expect(det?.filter.name).toBe('grep')
+    expect(det?.argv).toEqual(['grep', '-rn', '-E', 'TODO|FIXME', 'src/'])
+    expect(detectFromCommand("grep -rn -E 'TODO|FIXME' src/ | wc -l")).toBeNull()
+  })
+
+  it('tryWrapCompoundSegments leaves a quoted pipe alone but still rejects a real one', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const wrapped = tryWrapCompoundSegments("mytool -E 'foo|bar' && echo done", (name, seg) => `wrap[${name}](${seg})`)
+    expect(wrapped).toBe("wrap[echo-test](mytool -E 'foo|bar') && echo done")
+    expect(tryWrapCompoundSegments('mytool a | head && echo done', (name, seg) => `wrap[${name}](${seg})`)).toBeNull()
   })
 
   it('tryWrapCompoundSegments wraps each recognised && segment', () => {
