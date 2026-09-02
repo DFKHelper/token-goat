@@ -187,9 +187,16 @@ export function buildTopSymbolsSql(): string {
                SELECT rowid AS rid, file_path, name, kind, LENGTH(COALESCE(body, '')) AS body_len
                FROM symbols
                WHERE kind IN ('class', 'function', 'interface') AND ${clause}
+                 AND LENGTH(name) >= 4
+                                                   AND file_path NOT LIKE '%/tests/%' ESCAPE '\\'
+                                                   AND file_path NOT LIKE '%/test/%' ESCAPE '\\'
+                                                   AND file_path NOT LIKE '%/__tests__/%' ESCAPE '\\'
+                                                   AND file_path NOT LIKE '%/spec/%' ESCAPE '\\'
+                 AND file_path NOT LIKE '%.test.%'
+                 AND file_path NOT LIKE '%.spec.%'
              ) t
              LEFT JOIN (
-               SELECT name, COUNT(*) AS ref_count
+               SELECT name, COUNT(DISTINCT file_path) AS ref_count
                FROM refs
                WHERE ${refScope.clause}
                GROUP BY name
