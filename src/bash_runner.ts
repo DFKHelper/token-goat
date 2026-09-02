@@ -16,6 +16,7 @@ import {
   capTokens,
   combineStreams,
   compressOutput,
+  dispatchArgv,
   filterByName,
   resolveMinNetSavingsBytes,
   selectFilter,
@@ -54,20 +55,34 @@ export interface RunOptions {
   writeStderr?: (s: string) => void
 }
 
-/** Look up the filter by name first, falling back to argv-based dispatch. */
-function resolveFilter(command: string, filterName: string | undefined, cwd: string | undefined): ToolFilter | null {
+/**
+ * Look up the filter by name first, falling back to argv-based dispatch, and return the argv
+ * that filter was chosen from alongside it. Selection and argv derivation share one
+ * `shlexSplit` + `dispatchArgv` here on purpose: they used to be computed independently (here
+ * and again in `wrapAndCompress`), so on a `cd DIR && grep ...` command the filter was picked
+ * from the peeled tokens while `compressOutput` still received an argv starting with `cd` --
+ * every argv-reading filter then read the wrong flags/pattern/subcommand.
+ */
+function resolveFilter(
+  command: string,
+  filterName: string | undefined,
+  cwd: string | undefined,
+): { filter: ToolFilter | null; argv: string[] } {
+  let split: string[] | null
+  try {
+    split = shlexSplit(command)
+  } catch {
+    split = null
+  }
+  // Same fallback wrapAndCompress used when the command is unsplittable: hand the filter the raw command as a single token.
+  const argv = split === null ? [command] : dispatchArgv(split, cwd).argv
   if (filterName) {
     const named = filterByName(filterName)
-    if (named !== null) return named
+    if (named !== null) return { filter: named, argv }
     // Unknown name — fall through to auto-detect rather than failing.
   }
-  let argv: string[]
-  try {
-    argv = shlexSplit(command)
-  } catch {
-    return null
-  }
-  return selectFilter(argv, cwd)
+  if (split === null) return { filter: null, argv }
+  return { filter: selectFilter(split, cwd), argv }
 }
 
 // Shared spawnSync options for the two run paths: same shell resolution (wrappedShell), timeout, cwd, env. Each caller adds its own stdio (and maxBuffer for the capture path).
@@ -118,7 +133,7 @@ function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
  */
 export function run(command: string, opts: RunOptions = {}): number {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_SECONDS
-  const filter = resolveFilter(command, opts.filterName, opts.cwd)
+  const { filter, argv } = resolveFilter(command, opts.filterName, opts.cwd)
   if (filter === null) {
     // No tool filter matches this command. Ordinarily that means streaming it
     // through raw is cheapest (one subprocess fork, no capture). But when the
@@ -127,11 +142,11 @@ export function run(command: string, opts: RunOptions = {}): number {
     // output to cap. Route through the capture-and-compress path with an
     // identity filter instead, so the cap still applies.
     if ((opts.maxTokens ?? 0) > 0) {
-      return wrapAndCompress(command, new IdentityFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
+      return wrapAndCompress(command, argv, new IdentityFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
     }
     return passthrough(command, timeout, opts.cwd, opts.env)
   }
-  return wrapAndCompress(command, filter, timeout, resolveProfile(opts.compressionProfile), opts)
+  return wrapAndCompress(command, argv, filter, timeout, resolveProfile(opts.compressionProfile), opts)
 }
 
 /**
@@ -168,9 +183,10 @@ function decode(buf: Buffer | string | null | undefined): string {
   return typeof buf === 'string' ? buf : buf.toString('utf8')
 }
 
-/** Run *command* with output capture, apply *filter*, print the compressed view. */
+/** Run *command* with output capture, apply *filter*, print the compressed view. `argv` is the dispatch argv the filter was selected from (see {@link resolveFilter}), NOT re-derived here. */
 function wrapAndCompress(
   command: string,
+  argv: string[],
   filter: ToolFilter,
   timeout: number,
   profile: string,
@@ -201,13 +217,6 @@ function wrapAndCompress(
     exitCode = signalExitCode(result.signal)
   } else {
     exitCode = 0
-  }
-
-  let argv: string[]
-  try {
-    argv = shlexSplit(command)
-  } catch {
-    argv = [command]
   }
 
   const limits = resolveCompressLimits()
