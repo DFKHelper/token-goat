@@ -27,7 +27,7 @@ import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
 import { tokenGoatHome } from '../src/disk_cache.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
 import { compactPathFor, writeCompact } from '../src/doc_compact.js'
-import { load as snapshotLoad } from '../src/snapshots.js'
+import { load as snapshotLoad, SNAPSHOT_TRUNCATE_BYTES } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { summarize, SOURCE_HINT } from '../src/stats.js'
@@ -1635,6 +1635,85 @@ Examples here
     const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
     expect(after).toBe(before + 1)
     expect(afterBytes).toBe(beforeBytes)
+  })
+
+  // Regression for a truncated-snapshot false positive: loadSnapshotDiff used to strip the
+  // truncation marker and then compare/diff the surviving SNAPSHOT_TRUNCATE_BYTES prefix
+  // against the full current file. That prefix can never equal the full file, so 'unchanged'
+  // was unreachable above the truncate threshold, and the missing tail was always reported as
+  // a fabricated addition. Below ~54,000 bytes (in the build this was captured against) that
+  // fabricated diff stayed under buildLineDiffDetailed's 50-changed-line cap and was served to
+  // the model as a real change to a file nobody touched. CAPTURE: a real run of the built
+  // binary against an unmodified 52,351-byte fixture (no headings, so it reaches this
+  // isDocDiffable branch rather than the >=3-heading heading-tree intercept) produced exactly
+  // this false "Content changed since last read" deny with a fabricated ```diff``` block; files
+  // at 47,791-50,470 bytes (below SNAPSHOT_TRUNCATE_BYTES) correctly reported unchanged. The
+  // fixture sizes below are HAND-DERIVED from SNAPSHOT_TRUNCATE_BYTES rather than the captured
+  // byte counts, so the test tracks the constant if it ever changes.
+  describe('truncated-snapshot re-read (regression: a snapshot truncated at SNAPSHOT_TRUNCATE_BYTES used to fabricate a diff for an unmodified file)', () => {
+    // One line is a fixed 40 bytes ('line 00000 ' + 28 'y's + '\n'), matching the shape of the
+    // captured false-positive fixture, so byte counts translate predictably into line counts.
+    function _makeLinesFile(totalBytes: number): string {
+      const lineWidth = 40
+      const lineCount = Math.ceil(totalBytes / lineWidth)
+      let content = ''
+      for (let i = 0; i < lineCount; i++) {
+        content += 'line ' + String(i).padStart(5, '0') + ' ' + 'y'.repeat(28) + '\n'
+      }
+      return content
+    }
+
+    it('an unmodified file just above SNAPSHOT_TRUNCATE_BYTES (still under the 50-changed-line diff cap) is reported unchanged, not falsely "changed" (regression)', () => {
+      pinProtectRecentReadsToZero()
+      // ~1,200 bytes above the truncate threshold: enough tail to exist, small enough
+      // (~30 lines at 40 bytes/line) that the fabricated diff would slip under the 50-line
+      // cap and get served, mirroring the captured 52,351-byte false positive.
+      const content = _makeLinesFile(SNAPSHOT_TRUNCATE_BYTES + 1200)
+      const p = _makeTmpMdFile(content)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+      // The file is never touched between the two reads.
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).not.toContain('Content changed since last read')
+        expect(result.message).not.toContain('```diff')
+      }
+    })
+
+    it('an unmodified file below SNAPSHOT_TRUNCATE_BYTES still reports unchanged (sanity: the fix must not disable the ordinary unchanged path)', () => {
+      pinProtectRecentReadsToZero()
+      const content = _makeLinesFile(SNAPSHOT_TRUNCATE_BYTES - 5000)
+      const p = _makeTmpMdFile(content)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('is unchanged since last read')
+        expect(result.message).not.toContain('Content changed since last read')
+      }
+    })
   })
 
   it('a changed large markdown re-read gets a fenced diff, not the heading tree, with the diff content inside the fence and token-goat guidance outside it', () => {

@@ -439,7 +439,9 @@ function loadSnapshotDiff(sessionId: string, normalized: string, basename: strin
     const TRUNC_MARKER = '\n<snapshot truncated at '
     const oldRaw = oldSnap.toString('utf8')
     const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
-    const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
+    // A truncated snapshot only ever holds the first SNAPSHOT_TRUNCATE_BYTES of the original file, never the whole thing. Equality against currentContent can never hold (the stored prefix is always shorter), and a diff built against it always reports the missing tail as a fabricated addition -- even when nothing changed. There is no truthful answer to give from a partial baseline, so bail to 'none' exactly as for a missing snapshot, letting the caller fall through to its own re-read handling instead of asserting something about content it never actually compared.
+    if (truncIdx >= 0) return { kind: 'none' }
+    const oldContent = oldRaw
     if (oldContent === currentContent) return { kind: 'unchanged', currentContent }
     const { text: diff, truncated } = buildLineDiffDetailed(oldContent, currentContent, basename)
     if (diff === '') return { kind: 'none' }
