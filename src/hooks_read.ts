@@ -804,6 +804,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           // same as every other re-read-deny branch in this file.
           if (alreadyRead) {
             recordActualRead(event, normalized)
+            recordStat('session_hint', 0, 0)
           }
           message += ' ' + editAnywayHint(normalized)
           return denyOutput(message)
