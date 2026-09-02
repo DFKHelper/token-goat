@@ -134,6 +134,59 @@ describe('DENY_TEMPLATES classification', () => {
   })
 })
 
+/**
+ * Superseded deny wordings that DENY_TEMPLATES must keep matching.
+ *
+ * DENY_TEMPLATES is not just a matcher for the denies token-goat emits today. session-audit
+ * classifies a HISTORICAL corpus, and a transcript written before a message was reworded carries
+ * the old text forever. So an alternative is "dead" only when no transcript still contains it,
+ * which is a fact about recorded history, not about the current source.
+ *
+ * CAPTURE: the text below is the literal message src/hooks_read.ts emitted before commit
+ * 3d044feb reworded it (that commit dropped the matching alternative as unreachable). Measured
+ * against the local corpus at the time, the drop took memory_md_reread_deny from 51 events to 30
+ * -- 41% of the kind's history became unclassifiable, with a green suite and no visible error.
+ * Any per-kind rate re-derived afterwards would have used the shrunken denominator.
+ */
+const SUPERSEDED_DENY_FIXTURES: Array<{ kind: string; text: string }> = [
+  {
+    kind: 'memory_md_reread_deny',
+    text: "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.",
+  },
+]
+
+describe('DENY_TEMPLATES keeps classifying superseded wordings', () => {
+  let supersededDir = ''
+
+  beforeAll(() => {
+    supersededDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-superseded-'))
+    SUPERSEDED_DENY_FIXTURES.forEach((fx, i) => {
+      const projectDir = path.join(supersededDir, `s${i}`)
+      fs.mkdirSync(projectDir)
+      const lines = [use('d', 'Read', { file_path: `x/old-${i}.md` }), result('d', fx.text)]
+      fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
+    })
+  })
+
+  afterAll(() => {
+    fs.rmSync(supersededDir, { recursive: true, force: true })
+  })
+
+  it('classifies a deny message that the current code no longer emits', async () => {
+    const s = await auditSessionCorpus({ dir: supersededDir })
+    const byKind = new Map(s.denyOutcomes.map((r) => [r.kind, r]))
+    for (const fx of SUPERSEDED_DENY_FIXTURES) {
+      const row = byKind.get(fx.kind)
+      expect(
+        row,
+        `superseded wording for ${fx.kind} no longer classifies -- removing a DENY_TEMPLATES ` +
+          'alternative makes the census blind to every transcript that still contains it',
+      ).toBeDefined()
+      expect(row!.count).toBe(1)
+    }
+  })
+})
+
 /** DENY text shared by every partition-proof scenario below: FORMAT-DERIVED, same as the large_file_deny fixture above. Kept identical across scenarios so all five land in one aggregated kind row (count 5), letting that row's outcome rates double as the partition proof. */
 const LARGE_DENY_TEXT = 'big.ts is very large (523KB). Use token-goat read/section/symbol to re-read surgically. Use Read with offset/limit to sample specific sections. To edit it anyway, use `token-goat replace "big.ts" --old-b64 <base64> --new-b64 <base64>`.'
 
