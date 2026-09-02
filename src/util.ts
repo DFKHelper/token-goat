@@ -371,6 +371,26 @@ function pruneOldBackups(p: string): void {
 export const PER_FILE_COUNTERFACTUAL_CEILING = 100_000
 
 /**
+ * Bytes a surgical-read CLI command may honestly claim it saved against reading `file` whole.
+ *
+ * The naive form these commands shipped with -- `fullSourceBytes - emittedBytes` -- prices the
+ * counterfactual as "the model would have loaded every byte of the source into context", which is
+ * false for exactly the inputs this family handles: a `pdf-meta` of a 40 MB scan credited all
+ * 40 MB against a dozen lines of metadata, and no Read of that file could ever have cost that,
+ * because the harness truncates and (per {@link PER_FILE_COUNTERFACTUAL_CEILING}) token-goat
+ * itself intercepts rather than serving a file that large whole. Capping the counterfactual --
+ * not the emitted side -- is the same correction already applied on the hook path by
+ * `counterfactualCredit` in hooks_read.ts and by the deny credit in hooks_mcp.ts.
+ *
+ * Floor of 1 rather than 0, matching what these call sites already did: a command that emitted
+ * more than its capped counterfactual still records an event, so the kind's row count stays a
+ * true usage count. Only the credited magnitude changes.
+ */
+export function cappedSourceBytesSaved(fullSourceBytes: number, emittedBytes: number): number {
+  return Math.max(1, Math.min(fullSourceBytes, PER_FILE_COUNTERFACTUAL_CEILING) - emittedBytes)
+}
+
+/**
  * Body size below which collapsing an identical re-read cannot pay for itself: the replacement
  * pointer is itself ~150 bytes. The real floor is the shared `bash_compress.min_net_savings_bytes`
  * gate applied at the collapse site; this is only the cheap pre-check that avoids a hash and a

@@ -389,7 +389,8 @@ CREATE TABLE IF NOT EXISTS stats (
   bytes_saved INTEGER NOT NULL DEFAULT 0,
   detail TEXT,
   harness TEXT,
-  traceparent TEXT
+  traceparent TEXT,
+  tg_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
@@ -435,6 +436,18 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
+  // Which token-goat wrote this row. Left nullable with no default rather than backfilled with
+  // the running version: rows written before this column existed came from an unknown release,
+  // and stamping today's version onto them would manufacture a provenance that was never
+  // measured -- the same reasoning as hint_emissions.bytes_emitted's deliberate NULL in db.ts.
+  // Without it, a change to how a kind computes bytes_saved (such as the counterfactual cap in
+  // util.ts's cappedSourceBytesSaved) silently mixes old and new accounting in one column, and
+  // no query can separate them after the fact.
+  try {
+    db.exec('ALTER TABLE stats ADD COLUMN tg_version TEXT')
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
 }
 
 /**
@@ -474,6 +487,23 @@ function statsHasTraceparentColumn(db: SqliteDatabase): boolean {
     present = false
   }
   _traceparentColumnByDb.set(db as unknown as object, present)
+  return present
+}
+
+/** Same capability probe as {@link statsHasHarnessColumn}, for the `tg_version` provenance stamp. */
+const _versionColumnByDb = new WeakMap<object, boolean>()
+function statsHasVersionColumn(db: SqliteDatabase): boolean {
+  const cached = _versionColumnByDb.get(db as unknown as object)
+  if (cached !== undefined) return cached
+  let present: boolean
+  try {
+    present = (db.prepare('PRAGMA table_info(stats)').all() as { name?: string }[]).some(
+      (c) => c.name === 'tg_version',
+    )
+  } catch {
+    present = false
+  }
+  _versionColumnByDb.set(db as unknown as object, present)
   return present
 }
 
@@ -520,22 +550,27 @@ export function recordStat(
     const db = _testDb ?? getGlobalDb()
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
-    const hasHarness = statsHasHarnessColumn(db)
-    const hasTraceparent = statsHasTraceparentColumn(db)
-
-    if (hasHarness && hasTraceparent) {
-      db.prepare(
-        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness, traceparent) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName(), tp)
-    } else if (hasHarness) {
-      db.prepare(
-        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName())
-    } else {
-      db.prepare(
-        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, ?, ?, ?)',
-      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null)
+    // Built from whichever optional columns this database actually has rather than one branch per
+    // combination: with harness, traceparent and tg_version all optional that would be eight
+    // arms, and the arm for any un-exercised combination is exactly where a silently-dropped
+    // column hides. Column names here are literals, never caller input.
+    const cols = ['ts', 'kind', 'bytes_saved', 'tokens_saved', 'detail']
+    const vals: unknown[] = [ts, kind, bytesSaved, tokensSaved, detail ?? null]
+    if (statsHasHarnessColumn(db)) {
+      cols.push('harness')
+      vals.push(getHarnessName())
     }
+    if (statsHasTraceparentColumn(db)) {
+      cols.push('traceparent')
+      vals.push(tp)
+    }
+    if (statsHasVersionColumn(db)) {
+      cols.push('tg_version')
+      vals.push(VERSION)
+    }
+    db.prepare(
+      `INSERT INTO stats (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    ).run(...vals)
   } catch {
     // Best-effort — never block the hook path.
   }
