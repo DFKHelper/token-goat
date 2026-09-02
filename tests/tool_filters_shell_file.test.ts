@@ -159,6 +159,23 @@ describe('GrepFilter over-long line clipping', () => {
     expect(out).toBe(GREP_LONG_CAPTURE.trimEnd())
   })
 
+  // The two refusals above are decided in grepLiteralPattern, which returns null and short-circuits
+  // before clipLongMatchLine ever runs. This one is decided a layer lower: argv carries a perfectly
+  // good literal pattern, so clipping is attempted, and only the per-line indexOf miss stops it.
+  // That is the shape of every context line grep prints under -A/-B/-C (separated by '-', not ':',
+  // and by definition not containing the match), so it is the common case, not a corner. Without
+  // the miss guard the line is head-clipped blind at offset 0 and whatever mattered on it is gone.
+  // HAND-DERIVED: the pattern is chosen to be a valid literal (no metachars, over the 3-char floor)
+  // that is absent from the CAPTURE fixture's line; the fixture itself is the real grep 3.0 output
+  // cited above.
+  it('leaves a long line whole when a valid literal pattern is simply absent from it', () => {
+    const absentButValid = 'pattern_not_present_on_this_line'
+    expect(GREP_LONG_CAPTURE).not.toContain(absentButValid)
+    const out = compress(f, GREP_LONG_CAPTURE, ['grep', '-rn', absentButValid, 'src/tool_filters/'])
+    expect(out).toBe(GREP_LONG_CAPTURE.trimEnd())
+    expect(out).not.toContain('chars elided')
+  })
+
   it('leaves a line just under the cap untouched', () => {
     // HAND-DERIVED: 999 chars is one below GREP_MAX_LINE_CHARS, computed from the cap rather than from the clipper.
     const line = `src/a.ts:1:${'x'.repeat(999 - 'src/a.ts:1:'.length - 'NEEDLE'.length)}NEEDLE`
