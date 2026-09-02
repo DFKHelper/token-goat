@@ -331,8 +331,9 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
 
 /**
  * Approximate the bytes a `map` call saves versus reading its surfaced files individually, for the
- * `map_lookup` stat. "Full source" is the on-disk size of every file the map surfaces (recentFiles
- * + topSymbols' files), deduplicated, minus the map text actually emitted.
+ * `map_lookup` stat. The baseline is a plain listing of the deduplicated paths the map surfaces
+ * (recentFiles + topSymbols' files), minus the map text actually emitted — NOT those files'
+ * on-disk contents, which this used to claim and which no caller would ever have read instead.
  *
  * The dedup is why both path lists must be canonicalized through {@link normalizePath} first:
  * recentFiles are RELATIVE to `map.rootDir` (see {@link buildProjectMap}) while topSymbols'
