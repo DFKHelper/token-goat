@@ -52,7 +52,7 @@ const DENY_FIXTURES: Array<{ kind: string; text: string; expectedWithheldBytes: 
   // FORMAT-DERIVED: hooks_read.ts markdown heading-tree branch + hints/markdown_hints.ts formatHeadingTree's opening line
   { kind: 'markdown_heading_tree_deny', text: 'Large markdown file (5 headings). Use token-goat section to read a specific section:\n  token-goat section "README.md::Heading Name"\n  Tip: an unambiguous heading prefix also resolves.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, Item 8 (MEMORY.md re-read) branch, isMainMemory case
-  { kind: 'memory_md_reread_deny', text: "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.", expectedWithheldBytes: null },
+  { kind: 'memory_md_reread_deny', text: 'MEMORY.md was already read this session. Memory files rarely change mid-session. Use `token-goat section "memory/MEMORY.md::SectionHeading"` to extract one section.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, Item 5 (.improve-state-*.json re-read) branch + sessionArtifactRecall()
   { kind: 'improve_state_reread_deny', text: 'Orchestrator state already read this session. Use `token-goat bash-output --file ".improve-state-x.json" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, .env re-read branch

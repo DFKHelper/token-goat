@@ -2568,8 +2568,9 @@ Some content that makes the file large enough`
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('MEMORY.md was read this session')
-      expect(result.message).toContain('compact manifest')
+      expect(result.message).toContain('MEMORY.md was already read this session')
+      expect(result.message).toContain('token-goat section')
+      expect(result.message).not.toContain('compact manifest')
     }
   })
 
@@ -2644,7 +2645,7 @@ Some content that makes the file large enough`
     if (result.hookType === 'deny') {
       expect(result.message).toContain('is unchanged since last read')
       expect(result.message).toContain('token-goat section')
-      expect(result.message).not.toContain('MEMORY.md was read this session')
+      expect(result.message).not.toContain('MEMORY.md was already read this session')
       expect(result.message).not.toContain('Content changed since last read')
     }
 
@@ -2688,7 +2689,7 @@ Some content that makes the file large enough`
         expect(result.message).toContain('```diff')
         expect(result.message).toContain('New Fact')
         expect(result.message).toContain('token-goat section')
-        expect(result.message).not.toContain('MEMORY.md was read this session')
+        expect(result.message).not.toContain('MEMORY.md was already read this session')
 
         // Fence placement: the diff (file-derived, untrusted) sits between the fence
         // tags; token-goat's own "Content changed..." guidance sits outside/before it.
@@ -2726,7 +2727,8 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toBe(
-        "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.",
+        'MEMORY.md was already read this session. Memory files rarely change mid-session. ' +
+        'Use `token-goat section "' + normalizePath(p) + '::SectionHeading"` to extract one section.',
       )
     }
   })

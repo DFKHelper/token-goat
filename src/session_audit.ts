@@ -377,7 +377,7 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
   { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/ },
   { kind: 'notebook_sidecar_served', re: /Serving the output-stripped notebook in place of the full file/ },
   { kind: 'markdown_heading_tree_deny', re: /Large markdown file \(\d+ headings\)/ },
-  { kind: 'memory_md_reread_deny', re: /MEMORY\.md was read this session\. Its content is in the compact manifest|already read this session\. Memory files rarely change mid-session/ },
+  { kind: 'memory_md_reread_deny', re: /already read this session\. Memory files rarely change mid-session/ },
   { kind: 'improve_state_reread_deny', re: /Orchestrator state already read this session/ },
   { kind: 'env_reread_deny', re: /Environment files rarely change mid-session/ },
   { kind: 'session_artifact_truncated_deny', re: /File was truncated on last read\. Use `token-goat bash-output/ },
