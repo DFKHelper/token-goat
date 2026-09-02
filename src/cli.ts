@@ -3414,6 +3414,15 @@ function cmdFailures(
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
 /** Generate a compact grouped help text for the top-level command. */
+/**
+ * Commander's own `helpInformation` for the top-level program, captured before
+ * `buildProgram` shadows it with the compact grouped index. `help --full` calls
+ * this to emit the long per-command listing the compact index replaces; without
+ * it the long form is unreachable, since the override is an own property that
+ * hides the prototype method for every later caller.
+ */
+let originalHelpInformation: (() => string) | null = null
+
 function generateCompactHelp(): string {
   const lines = [
     'Usage: token-goat [options] [command]',
@@ -5104,9 +5113,7 @@ export function buildProgram(): Command {
       guard((cmd?: string, opts?: unknown) => {
         const options = opts as Record<string, boolean | undefined> | undefined
         if (options?.['full'] && !cmd) {
-          // Show full default help by printing the currently stored help text
-          // Commander's formatHelp() would include the full list; we use the original approach
-          out('Use \'token-goat <command> --help\' to see help for a specific command.')
+          out(originalHelpInformation ? originalHelpInformation() : generateCompactHelp())
           return
         }
         if (cmd) {
@@ -5120,7 +5127,13 @@ export function buildProgram(): Command {
 
   // Replace default help with compact grouped summary
   program.helpOption('-h, --help', 'display help for command')
-  // Override helpInformation (which formatHelp calls) to use compact grouped output
+  // Override helpInformation (which formatHelp calls) to use compact grouped output.
+  // Capture the prototype implementation first: the assignment below is an own
+  // property that shadows it permanently, so `help --full` has no other way back
+  // to the long listing.
+  originalHelpInformation = (
+    program as unknown as { helpInformation(): string }
+  ).helpInformation.bind(program)
   ;(program as unknown as { helpInformation(): string }).helpInformation = () => generateCompactHelp()
 
   return program
