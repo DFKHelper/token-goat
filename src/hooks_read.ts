@@ -911,7 +911,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const isMainMemory = basename.toLowerCase() === 'memory.md'
     return denyOutput(
       isMainMemory
-        ? "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'."
+        ? 'MEMORY.md was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + shown + '::SectionHeading"` to extract one section.'
         : shown + ' was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + shown + '::SectionHeading"` to extract one section.',
     )
   }
