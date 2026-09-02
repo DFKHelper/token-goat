@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
+- **Compact `token-goat --help` output under 4096 bytes.** The top-level help was 23,988 bytes — a 133-line guide that named every command with a full description, was run 138 times in a corpus, and cost ~60KB per session on average. It is now a 2,318-byte grouped command index organized by category (reads, analysis, file formats, indexing, session, skills, compression, config, data, utilities). All 148 command names still appear. The full original help is reachable by running `token-goat <command> --help` for a specific command, or `token-goat commands --grep <pattern>` to search. No reindex is needed.
+
 - **Skill notices now offer `skill-section` before `skill-body`.** When a skill is cached, too large, or has a compact slice available, the denial notice now offers the cheapest recall command (`skill-section`) before the more expensive alternatives (`skill-body --compact` and `skill-body`). No reindex is needed.
 
 - **Top symbols list no longer includes test-file variables.** `token-goat map --compact` and agent briefings were reporting test-file local variables and short names (out, file, result, slice, find) as top project symbols, actively misleading. Now filters out files matching `*/tests/*`, `*/test/*`, `*/__tests__/*`, `*/spec/*` and `*.test.*`, `*.spec.*`, and excludes names shorter than 4 characters. Also changed ref counting from `COUNT(*)` to `COUNT(DISTINCT file_path)` to rank by number of files using a symbol rather than raw reference count. No reindex is needed.

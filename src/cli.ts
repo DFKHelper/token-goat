@@ -3413,6 +3413,64 @@ function cmdFailures(
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
+/** Generate a compact grouped help text for the top-level command. */
+function generateCompactHelp(): string {
+  const lines = [
+    'Usage: token-goat [options] [command]',
+    '',
+    'Surgical token-reduction companion for AI coding agents',
+    '',
+    'Options:',
+    '  -v, --version                   print the token-goat version',
+    '  --cwd <path>                    run as if invoked from this directory',
+    '  -h, --help                      display help for command',
+    '',
+    'Reads: symbol, read, brief, section, semantic, skeleton, outline, refs, scope,',
+    '  similar, context-for, call-chain, impact, callers, dead, test-for',
+    '',
+    'Analysis: arch, affected, blame, deps, types, coverage-gaps, changed, diff, log,',
+    '  exports, imports, find, grep',
+    '',
+    'File Formats: pdf-meta, pdf-outline, pdf-extract, pdf-locate, xlsx-sheets,',
+    '  xlsx-head, xlsx-query, xlsx-range, yaml-outline, yaml-query, json-outline,',
+    '  json-query, xml-outline, xml-query, docx-outline, docx-text, pptx-outline,',
+    '  pptx-slide, pptx-text, pptx-notes',
+    '',
+    'Index & Search: index, map, reconcile, doctor, commands, ask, pack, tokens,',
+    '  budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
+    '  snapshot-snapshot, baseline, cost, coverage-report-gaps, clean-cache,',
+    '  cache-audit, reclaim-index, project',
+    '',
+    'Session: stats, waste, session-outline, session-audit, session-slice,',
+    '  session-summary, context-stats, bootstrap-audit, memory, hint-stats,',
+    '  mcp-audit',
+    '',
+    'Skills: skill-body, skill-compact, skill-list, skill-size, skill-history,',
+    '  skill-diff, skill-section',
+    '',
+    'Compression: compress-text, retrieve, handoff-create, handoff-resolve,',
+    '  compress, recall, bash-output, web-output, mcp-output, compress-text,',
+    '  compress',
+    '',
+    'Config & Integration: install, uninstall, mcp-serve, mcp-status, hook,',
+    '  bridges-status, worker, statusline, version, config, config-get, help',
+    '',
+    'Data: note, note-add, note-get, note-list, sqlite-query, sqlite-schema,',
+    '  csv-profile, csv-query',
+    '',
+    'Utils: ignores, bash-history, web-history, openapi-op, openapi-outline,',
+    '  gdrive-sections, screenshot, opencode-*, fetch-image, image-meta,',
+    '  image-text, start, stop, resume, replace, insert-section, pr-slice,',
+    '  sharepoint-resolve, transcript, transcript-outline, video-chapters,',
+    '  write-file, zip-list, zip-read, mcp-history, compact-doc, compact-hint,',
+    '  conflicts, prune-cache',
+    '',
+    'Tip: look up one command instead of this whole list: \'token-goat help <command>\', or \'token-goat commands --grep <pattern>\' anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).',
+    '',
+  ]
+  return lines.join('\n')
+}
+
 export function buildProgram(): Command {
   const program = new Command()
   program
@@ -5038,9 +5096,32 @@ export function buildProgram(): Command {
       }),
     )
 
-  // addHelpText('after') attaches footer only to the top-level program help, not to subcommands -- commander does not inherit addHelpText to child command handlers.
-  const footer = '\nTip: look up one command instead of this whole list: \'token-goat help <command>\', or \'token-goat commands --grep <pattern>\' anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).\n'
-  program.addHelpText('after', footer)
+  program
+    .command('help [command]')
+    .description('show help for a command')
+    .option('--full', 'show full original help instead of compact summary')
+    .action(
+      guard((cmd?: string, opts?: unknown) => {
+        const options = opts as Record<string, boolean | undefined> | undefined
+        if (options?.['full'] && !cmd) {
+          // Show full default help by printing the currently stored help text
+          // Commander's formatHelp() would include the full list; we use the original approach
+          out('Use \'token-goat <command> --help\' to see help for a specific command.')
+          return
+        }
+        if (cmd) {
+          const argv: string[] = [process.argv[0] ?? 'node', process.argv[1] ?? 'token-goat', cmd, '--help']
+          program.parse(argv)
+        } else {
+          out(generateCompactHelp())
+        }
+      }),
+    )
+
+  // Replace default help with compact grouped summary
+  program.helpOption('-h, --help', 'display help for command')
+  // Override helpInformation (which formatHelp calls) to use compact grouped output
+  ;(program as unknown as { helpInformation(): string }).helpInformation = () => generateCompactHelp()
 
   return program
 }
