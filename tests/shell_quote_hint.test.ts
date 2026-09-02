@@ -281,8 +281,10 @@ content
       const cmd =
         'python3 -c "import sys; print(\\"hello world\\")"'
       const result = preBashHandler(makeBashEvent(cmd))
-      // Same shape as the `node -e` sibling below: python is a recognised command so it may compress, but the quotes here are balanced and must draw no quote hint. This used to assert 'pass', which only held because the quoted `;` in the -c script wrongly disqualified the command from compression.
+      // Same shape as the `node -e` sibling below: python is a recognised command so it compresses, but the quotes here are balanced and must draw no quote hint. This used to assert 'pass', which only held because the quoted `;` in the -c script wrongly disqualified the command from compression.
+      // `not.toBe('context')` alone states the subject but still passes on a deny, so the exact outcome is pinned too: a regression that started denying this command would otherwise slip through a test whose whole point is that nothing is wrong with it.
       expect(result.hookType).not.toBe('context')
+      expect(result.hookType).toBe('rewriteInput')
     })
 
     it('handles node -e with nested quotes', () => {
