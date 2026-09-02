@@ -108,6 +108,102 @@ describe('GrepFilter compression', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Over-long line clipping on the grep/rg pass-through branch. Under
+// _GREP_COMPRESS_THRESHOLD the filter returned the raw output verbatim with no
+// per-line cap of any kind, and apply()'s line/byte caps only look at
+// whole-output size -- so a twelve-line result carrying one 5,000-char hit
+// inside a minified bundle shipped that line whole.
+// ---------------------------------------------------------------------------
+
+// CAPTURE: `grep -rn "written against invented output shipped broken" src/tool_filters/` run with GNU grep 3.0 in this repo on 2026-09-01. One 1,254-char line; the matched text starts at offset 1,206, i.e. past any 1,000-char head window.
+const GREP_LONG_CAPTURE = fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'tool_output', 'grep-3.0-long-line.txt'),
+  'utf-8',
+)
+// CAPTURE: `grep -rn "resolveMinNetSavingsBytes" src/tool_filters/` run with GNU grep 3.0 in this repo on 2026-09-01. Four lines, longest 132 chars.
+const GREP_SHORT_CAPTURE = fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'tool_output', 'grep-3.0-short-lines.txt'),
+  'utf-8',
+)
+const LATE_PATTERN = 'written against invented output shipped broken'
+const EARLY_PATTERN = 'Legacy-only by decision'
+
+describe('GrepFilter over-long line clipping', () => {
+  const f = new GrepFilter()
+
+  it('keeps a late match visible by centring the retained window on it', () => {
+    const out = compress(f, GREP_LONG_CAPTURE, ['grep', '-rn', LATE_PATTERN, 'src/tool_filters/'])
+    // Must-not-drop: the matched text itself. A clip that shortens the line but loses the match has spent the bytes and destroyed the answer.
+    expect(out).toContain(LATE_PATTERN)
+    // Must-not-drop: the path:lineno: field, without which the hit cannot be located.
+    expect(out).toContain('src/tool_filters/linters.ts:1443:')
+    expect(out).toContain('chars elided')
+    expect(out.length).toBeLessThan(GREP_LONG_CAPTURE.trimEnd().length)
+  })
+
+  it('head-clips when the match already falls inside the retained window', () => {
+    const raw = GREP_LONG_CAPTURE.trimEnd()
+    const out = compress(f, GREP_LONG_CAPTURE, ['grep', '-rn', EARLY_PATTERN, 'src/tool_filters/'])
+    expect(out).toContain(EARLY_PATTERN)
+    expect(out).toBe(`${raw.slice(0, 1000)}  … [${raw.length - 1000} chars elided]`)
+  })
+
+  it('leaves the line whole when the match cannot be located (case-folded search)', () => {
+    // -i means the literal pattern need not appear verbatim on the line, so there is no position to centre on.
+    const out = compress(f, GREP_LONG_CAPTURE, ['grep', '-rni', LATE_PATTERN.toUpperCase(), 'src/tool_filters/'])
+    expect(out).toBe(GREP_LONG_CAPTURE.trimEnd())
+  })
+
+  it('leaves the line whole for a regex pattern it cannot cheaply re-evaluate', () => {
+    const out = compress(f, GREP_LONG_CAPTURE, ['grep', '-rn', 'invented.*broken', 'src/tool_filters/'])
+    expect(out).toBe(GREP_LONG_CAPTURE.trimEnd())
+  })
+
+  it('leaves a line just under the cap untouched', () => {
+    // HAND-DERIVED: 999 chars is one below GREP_MAX_LINE_CHARS, computed from the cap rather than from the clipper.
+    const line = `src/a.ts:1:${'x'.repeat(999 - 'src/a.ts:1:'.length - 'NEEDLE'.length)}NEEDLE`
+    const raw = `${line}\n${line}`
+    const out = compress(f, raw, ['grep', '-rn', 'NEEDLE', '.'])
+    expect(line.length).toBe(999)
+    expect(out).toBe(raw)
+  })
+
+  it('keeps the bare lineno: field grep emits for a single explicit file', () => {
+    // CAPTURE: `grep -n "written against invented output shipped broken" src/tool_filters/linters.ts` run with GNU grep 3.0 in this repo on 2026-09-01. Given one explicit file, grep omits the filename and prefixes the line number alone.
+    const raw = fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'tool_output', 'grep-3.0-long-line-nofile.txt'),
+      'utf-8',
+    )
+    const out = compress(f, raw, ['grep', '-n', LATE_PATTERN, 'src/tool_filters/linters.ts'])
+    expect(out).toContain(LATE_PATTERN)
+    // Must-not-drop: the line number, the only locator this output form carries.
+    expect(out.startsWith('1443:')).toBe(true)
+    expect(out.length).toBeLessThan(raw.trimEnd().length)
+  })
+
+  it('passes a short-lined result through byte-identically', () => {
+    const out = compress(f, GREP_SHORT_CAPTURE, ['grep', '-rn', 'resolveMinNetSavingsBytes', 'src/tool_filters/'])
+    expect(out).toBe(GREP_SHORT_CAPTURE.trimEnd())
+  })
+})
+
+describe('RgFilter over-long line clipping', () => {
+  const f = new RgFilter()
+
+  it('applies the same centred clip to context-flag output', () => {
+    const out = compress(f, GREP_LONG_CAPTURE, ['rg', '-C', '2', LATE_PATTERN, 'src/tool_filters/'])
+    expect(out).toContain(LATE_PATTERN)
+    expect(out).toContain('chars elided')
+    expect(out.length).toBeLessThan(GREP_LONG_CAPTURE.trimEnd().length)
+  })
+
+  it('leaves short context output byte-identical', () => {
+    const out = compress(f, GREP_SHORT_CAPTURE, ['rg', '-C', '2', 'resolveMinNetSavingsBytes', 'src/tool_filters/'])
+    expect(out).toBe(GREP_SHORT_CAPTURE.trimEnd())
+  })
+})
+
+// ---------------------------------------------------------------------------
 // RgFilter
 // ---------------------------------------------------------------------------
 
