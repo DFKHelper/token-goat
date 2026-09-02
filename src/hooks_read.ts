@@ -870,6 +870,40 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
   )
   if (isMemoryMd && wasFileReadThisSession(normalized)) {
+    // Prefer the same unchanged/diff snapshot machinery the isDocDiffable block
+    // further below uses, rather than the bare denial that says nothing about
+    // whether the file actually changed. Reuses that block's exact message
+    // shapes (see the analogous markdown heading-tree branch above) so the
+    // session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes
+    // them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible
+    // shape. recordStat stays session_hint/0 on every branch here (never a
+    // byte credit) because these denies are measured to be frequently routed
+    // around anyway, so crediting withheld bytes would book a saving this
+    // path cannot back up.
+    const memSnapDiff = loadSnapshotDiff(getSessionId(), normalized, basename)
+    if (memSnapDiff.kind === 'unchanged') {
+      recordActualRead(event, normalized)
+      recordStat('session_hint', 0, 0)
+      return denyOutput(
+        (basename + ' is unchanged since last read. ' +
+        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent))).trimEnd(),
+      )
+    }
+    if (
+      memSnapDiff.kind === 'diff' &&
+      savedTokensFromBytes(memSnapDiff.savedBytes) >= loadConfig().hints.diff_hint_min_tokens_saved
+    ) {
+      recordActualRead(event, normalized)
+      recordStat('session_hint', 0, 0)
+      return denyOutput(
+        ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+        fenceUntrustedFileContent('```diff\n' + memSnapDiff.diff + '\n```') + '\n\n' +
+        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent))).trimEnd(),
+      )
+    }
+    // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use
+    // (kind 'none'), or a diff that doesn't clear the savings floor -- fall
+    // back to the existing hard deny below, unchanged.
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     const isMainMemory = basename.toLowerCase() === 'memory.md'

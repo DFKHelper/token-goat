@@ -2532,6 +2532,148 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('pass')
   })
 
+  // Item 8 follow-on: memory-file re-read now consults the doc-diff snapshot before
+  // falling back to the bare denial, same shape as the markdown heading-tree branch
+  // above (sibling commit). Content is CAPTURE-equivalent: exact fixture bytes the test
+  // itself writes to disk and reads back through postReadHandler's real snapshot path.
+  it('an unchanged memory/MEMORY.md re-read gets the short "unchanged" deny, not the old bare denial', () => {
+    pinProtectRecentReadsToZero()
+    const dir = path.join(os.tmpdir(), `tg-mem5-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'MEMORY.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const content = '# Memory\n\nSome memory content here.\n'
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      agentId: undefined,
+      raw: { tool_response: content },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalizePath(p))
+
+    const before = summarize(30).by_kind['session_hint']?.events ?? 0
+    const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is unchanged since last read')
+      expect(result.message).toContain('token-goat section')
+      expect(result.message).not.toContain('MEMORY.md was read this session')
+      expect(result.message).not.toContain('Content changed since last read')
+    }
+
+    const after = summarize(30).by_kind['session_hint']?.events ?? 0
+    const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+    expect(after).toBe(before + 1)
+    expect(afterBytes).toBe(beforeBytes)
+  })
+
+  it('a changed memory/MEMORY.md re-read gets a fenced diff, not the old bare denial, with the diff inside the fence and token-goat guidance outside it', () => {
+    withMinTokensSaved(0, () => {
+      const dir = path.join(os.tmpdir(), `tg-mem6-${process.pid}`)
+      fs.mkdirSync(dir, { recursive: true })
+      const p = path.join(dir, 'memory', 'MEMORY.md')
+      fs.mkdirSync(path.dirname(p), { recursive: true })
+      const content1 = '# Memory\n\nOriginal memory content here.\n'
+      const content2 = '# Memory\n\nOriginal memory content here.\n\n## New Fact\n\nAdded a new fact.\n'
+      fs.writeFileSync(p, content1)
+      tmpFiles.push(p)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content1 },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+
+      fs.writeFileSync(p, content2)
+
+      const before = summarize(30).by_kind['session_hint']?.events ?? 0
+      const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        expect(result.message).toContain('New Fact')
+        expect(result.message).toContain('token-goat section')
+        expect(result.message).not.toContain('MEMORY.md was read this session')
+
+        // Fence placement: the diff (file-derived, untrusted) sits between the fence
+        // tags; token-goat's own "Content changed..." guidance sits outside/before it.
+        const openIdx = result.message.indexOf('<untrusted-file-content>')
+        const closeIdx = result.message.indexOf('</untrusted-file-content>')
+        const guidanceIdx = result.message.indexOf('Content changed since last read of')
+        const diffIdx = result.message.indexOf('New Fact')
+        expect(openIdx).toBeGreaterThan(-1)
+        expect(closeIdx).toBeGreaterThan(openIdx)
+        expect(guidanceIdx).toBeGreaterThan(-1)
+        expect(guidanceIdx).toBeLessThan(openIdx)
+        expect(diffIdx).toBeGreaterThan(openIdx)
+        expect(diffIdx).toBeLessThan(closeIdx)
+      }
+
+      const after = summarize(30).by_kind['session_hint']?.events ?? 0
+      const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      expect(after).toBe(before + 1)
+      expect(afterBytes).toBe(beforeBytes)
+    })
+  })
+
+  it('a memory/MEMORY.md re-read with no snapshot still gets the exact original bare deny text (loadSnapshotDiff returns kind "none" when nothing was ever saved by postReadHandler)', () => {
+    const dir = path.join(os.tmpdir(), `tg-mem7-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'MEMORY.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, '# Memory\ncontent')
+    tmpFiles.push(p)
+
+    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toBe(
+        "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.",
+      )
+    }
+  })
+
+  it('a generic memory-file re-read with no snapshot still gets the exact original bare deny text', () => {
+    const dir = path.join(os.tmpdir(), `tg-mem8-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'project_findings.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, '# Findings\ncontent')
+    tmpFiles.push(p)
+
+    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
+    recordFileRead(normalizePath(p))
+
+    const shownPath = normalizePath(p)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toBe(
+        shownPath + ' was already read this session. Memory files rarely change mid-session. ' +
+        'Use `token-goat section "' + shownPath + '::SectionHeading"` to extract one section.',
+      )
+    }
+  })
+
   // Doc-file auto-diff on re-read
   it('injects diff in deny when .md file content changed since last read', () => {
     withMinTokensSaved(0, () => {
