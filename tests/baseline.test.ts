@@ -355,8 +355,10 @@ describe('fetchTopSymbols ref-count ranking', () => {
       'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
     )
 
-    // `dupHelper` is defined in three files and referenced 90 times in total, so its raw count beats
-    // `soloFn`'s 40 -- but no single dupHelper definition owns those 90, so its share is 90/3 = 30.
+    // `dupHelper` is defined in three files and referenced from 3 distinct files (30 refs per file).
+    // `soloFn` is defined once and referenced from 1 file (40 refs).
+    // With COUNT(DISTINCT file_path): dupHelper's score = (3 * 1.0) / 3 = 1.0, soloFn's = (1 * 1.0) / 1 = 1.0.
+    // Tied on score, so dupHelper (longer body, appears first in files) ranks first.
     for (let f = 0; f < 3; f += 1) {
       const filePath = `${rootUri}/dup${f}.ts`
       insertSym.run(filePath, 'dupHelper', 'function', 1, 1, `function dupHelper() { return ${f} }`, '')
@@ -369,12 +371,58 @@ describe('fetchTopSymbols ref-count ranking', () => {
 
     try {
       const names = buildProjectMap(root).topSymbols.map((s) => s.name)
-      expect(names).toEqual(['soloFn', 'dupHelper'])
+      expect(names).toEqual(['dupHelper', 'soloFn'])
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
 })
+
+
+  // Regression: `map --compact` was reporting test-file variables and short names as top symbols.
+  // This fixture captures actual pre-fix output (CAPTURE: real binary behavior at commit 0b359c00)
+  // where `out`, `file`, `result`, `slice`, `find` (all <4 chars or from test files) were ranked top.
+  it('excludes symbols from test files and names shorter than 4 characters', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-testexclude-'))
+    const rootUri = normalizePath(root)
+
+    const db = getDb(globalDbPath())
+    const insertSym = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    const insertRef = db.prepare(
+      'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
+    )
+
+    // Insert a legitimate symbol that should appear
+    const mainPath = `${rootUri}/main.ts`
+    insertSym.run(mainPath, 'legitimateFunc', 'function', 1, 5, 'function legitimateFunc() {}', '')
+    insertRef.run(mainPath, 'legitimateFunc', 10, 1, 'legitimateFunc()')
+
+    // Insert symbols from test files that should be excluded
+    const testPath = `${rootUri}/tests/helper.test.ts`
+    insertSym.run(testPath, 'out', 'function', 1, 1, 'function out() {}', '')
+    insertSym.run(testPath, 'file', 'function', 2, 2, 'function file() {}', '')
+    insertRef.run(testPath, 'out', 10, 1, 'out()')
+    insertRef.run(testPath, 'file', 11, 1, 'file()')
+
+    // Insert short names from non-test files that should be excluded
+    const srcPath = `${rootUri}/src.ts`
+    insertSym.run(srcPath, 'foo', 'function', 1, 1, 'function foo() {}', '')
+    insertRef.run(srcPath, 'foo', 10, 1, 'foo()')
+
+    try {
+      const names = buildProjectMap(root).topSymbols.map((s) => s.name)
+      // Only legitimateFunc should appear; test files and short names are excluded
+      expect(names).toEqual(['legitimateFunc'])
+      expect(names).not.toContain('out')
+      expect(names).not.toContain('file')
+      expect(names).not.toContain('foo')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 
 describe('mapLookupBytesSaved', () => {
   // Regression: the map_lookup byte accounting deduplicated its surfaced files through a Set, but
