@@ -34,7 +34,7 @@ import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
   extractMarkdownHeadings,
-  formatHeadingTree,
+  formatHeadingTreeParts,
   getWellKnownSections,
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
@@ -763,7 +763,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
         const alreadyRead = wasFileReadThisSession(normalized)
-        const hintText = formatHeadingTree(headings, normalized)
+        const { guidance, sectionsList } = formatHeadingTreeParts(headings, normalized)
         // Filter the hardcoded per-basename shortcut list down to headings that actually
         // exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started'
         // gets a hint recommending a `section` command that will just 404.
@@ -779,8 +779,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
-        // hintText (the heading tree) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing.
-        let message = fenceUntrustedFileContent(hintText + changelogExtra) + wellKnownText
+        // guidance is token-goat's own authored instruction text (the "use token-goat
+        // section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same
+        // as wellKnownText below. sectionsList (the actual heading text) and changelogExtra
+        // (version headings) are verbatim bytes from the file, so they are fenced as
+        // untrusted data before being spliced into a message the harness attributes to
+        // token-goat. wellKnownText is not fenced either: it is built from token-goat's own
+        // hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing
+        // it would spend markers on nothing.
+        let message = guidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
         // A re-read is always hard-denied. A first read is also hard-denied when the file
         // is at or above the generic large-file deny threshold: this branch returns before
         // the size-based deny further below ever runs, so it must enforce that gate itself.
