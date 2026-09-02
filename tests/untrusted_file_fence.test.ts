@@ -154,8 +154,13 @@ describe('read hook denial messages fence file-derived spans', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(fencedSpanOf(result.message)).toContain(HOSTILE)
-      // This is a re-read (recordFileRead above), so the message carries no edit-anyway hint -- Read/Edit's precondition was already satisfied by the prior read, and the fenced span is still strictly bounded by the markers either way.
-      expect(result.message.slice(result.message.indexOf(CLOSE))).not.toContain(HOSTILE)
+      // token-goat's own recall guidance must sit outside the untrusted-file-content fence,
+      // where the model may safely act on it. Extract both unfenced parts (before and after)
+      // and verify guidance appears in at least one of them.
+      const openIdx = result.message.indexOf(OPEN)
+      const closeIdx = result.message.indexOf(CLOSE)
+      const unfencedPart = result.message.slice(0, openIdx) + result.message.slice(closeIdx + CLOSE.length)
+      expect(unfencedPart).toContain('token-goat')
     }
   })
 })
