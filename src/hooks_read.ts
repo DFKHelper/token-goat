@@ -810,6 +810,44 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           // still get. A deny that IS because of a real prior read (alreadyRead) still records,
           // same as every other re-read-deny branch in this file.
           if (alreadyRead) {
+            // A genuine re-read of a large markdown file: prefer the same
+            // unchanged/diff snapshot machinery the isDocDiffable block further
+            // below uses, rather than re-emitting the (roughly 1.1KB median)
+            // heading tree that says nothing new. This branch is otherwise
+            // unreachable for markdown files large enough to trip the heading-tree
+            // intercept, since that intercept returns before isDocDiffable runs.
+            // Reuses that block's exact message shapes so the session-audit census
+            // (DENY_TEMPLATES in session_audit.ts) recognizes them as
+            // doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape.
+            // recordStat stays session_hint/0 on every branch here (never diff_hint
+            // with a byte credit, unlike the isDocDiffable block) because these
+            // heading-tree denies are measured to be frequently routed around by a
+            // shell re-read anyway, so crediting withheld bytes would book a saving
+            // this path cannot back up.
+            const snapDiff = loadSnapshotDiff(getSessionId(), normalized, basename)
+            if (snapDiff.kind === 'unchanged') {
+              recordActualRead(event, normalized)
+              recordStat('session_hint', 0, 0)
+              return denyOutput(
+                (basename + ' is unchanged since last read. ' +
+                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+              )
+            }
+            if (
+              snapDiff.kind === 'diff' &&
+              savedTokensFromBytes(snapDiff.savedBytes) >= loadConfig().hints.diff_hint_min_tokens_saved
+            ) {
+              recordActualRead(event, normalized)
+              recordStat('session_hint', 0, 0)
+              return denyOutput(
+                ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+                fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
+                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+              )
+            }
+            // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to
+            // use (kind 'none'), or a diff that doesn't clear the savings floor --
+            // fall back to the heading tree below, unchanged.
             recordActualRead(event, normalized)
             recordStat('session_hint', 0, 0)
           } else {
