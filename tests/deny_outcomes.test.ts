@@ -417,6 +417,18 @@ describe('Edit-error canary and corpus-wide baseline (TASK C)', () => {
     expect(s.editErrorBaseline.rate).toBeCloseTo(0.5, 10)
   })
 
+  it('records editWithin10Count: the denominator for errors-per-Edit on denied paths', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
+    expect(row).toBeDefined()
+    // FORMAT-DERIVED: 'edit-error' project writes 1 Edit on the denied path, which errored.
+    // 'baseline-edits' has no deny, so those Edits do not add to editWithin10Count.
+    expect(row!.editWithin10Count).toBe(1)
+    expect(row!.editErrorWithin10Count).toBe(1)
+    // Ratio should be computable and correct: 1/1 = 1.0 (100% error rate on denied Edits).
+    // Compare against editErrorBaseline: corpus-wide 2/4 = 0.5 (50% error rate on all Edits).
+  })
+
   it('surfaces the baseline and per-kind shell-read/edit-error fields in both the text report and --json', async () => {
     const s = await auditSessionCorpus({ dir: censusDir })
     const text = formatSessionAudit(s)
@@ -426,7 +438,7 @@ describe('Edit-error canary and corpus-wide baseline (TASK C)', () => {
     expect(text).toContain('edit-error<=10')
     const res = await runBatched(['session-audit', '--dir', censusDir, '--json'])
     expect(res.status).toBe(0)
-    const parsed = JSON.parse(res.stdout) as { editErrorBaseline: unknown; denyOutcomes: Array<{ shellReadRate: unknown; shellReadAmbiguousCount: unknown; editErrorWithin10Count: unknown }> }
+    const parsed = JSON.parse(res.stdout) as { editErrorBaseline: unknown; denyOutcomes: Array<{ shellReadRate: unknown; shellReadAmbiguousCount: unknown; editWithin10Count: unknown; editErrorWithin10Count: unknown }> }
     expect(parsed.editErrorBaseline).toEqual(s.editErrorBaseline)
     expect(parsed.denyOutcomes).toEqual(s.denyOutcomes)
   })
