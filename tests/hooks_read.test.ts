@@ -2517,7 +2517,10 @@ Some content that makes the file large enough`
     }
     postReadHandler(postEvent)
 
-    const snap = snapshotLoad(getSessionId(), normalizePath(p))
+    // Snapshots are keyed by sessionStateKey(event) (sessionId, salted with agentId when
+    // present -- see hook_registry.ts), not the unsalted getSessionId(): postEvent.agentId is
+    // undefined, so the key is its plain sessionId 'test'.
+    const snap = snapshotLoad('test', normalizePath(p))
     expect(snap).not.toBeNull()
     expect(snap?.toString('utf8')).toBe(content)
   })
@@ -3414,5 +3417,174 @@ describe('preReadHandler package.json manifest hint (regression: repeated identi
     expect(secondText).not.toContain('package manifest')
     // Falls through to the existing generic "already read this manifest" hint.
     expect(secondText).toContain('already read')
+  })
+})
+
+// Regression: snapshot store/load call sites in this file used to pass the plain, unsalted
+// getSessionId() while the read-dedup state that gates the deny path is keyed with
+// sessionStateKey(event) (see hook_registry.ts), which salts with agentId when present. A
+// subagent sharing the parent's sessionId therefore overwrote the parent's snapshot with its
+// own read, so the parent's next re-read computed its diff (or "unchanged" verdict) against
+// content it never saw. Fixed by routing every snapshotStore/loadSnapshotDiff call site through
+// sessionStateKey(event), the same helper session-state persistence already uses, instead of
+// getSessionId(). HAND-DERIVED fixture content (authored by this test, not the matcher under
+// test); the on-disk 95%-agent-salted count and the captured "unchanged" block message cited in
+// the fix's tracking issue are CAPTURE from a real built-binary run, not reproduced verbatim here.
+describe('snapshot store keyed by sessionStateKey, not the unsalted getSessionId (regression)', () => {
+  function snapSaltTmpFile(content: string): string {
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-snap-salt-${process.pid}-${Math.random().toString(36).slice(2)}.txt`,
+    )
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+    return p
+  }
+
+  // hints.diff_hint_min_tokens_saved defaults to 1000 (see defaultConfig above); zeroing it
+  // lets a small fixture's tiny real diff still clear the savings floor, matching this file's
+  // withMinTokensSaved helper further up (redefined locally: that one is scoped to the
+  // 'preReadHandler' describe block above, not visible here).
+  function withZeroSavingsFloor<T>(fn: () => T): T {
+    const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 0
+    cfg.hints.diff_hint_min_tokens_saved = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+    try {
+      return fn()
+    } finally {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    }
+  }
+
+  it('a subagent read sharing the parent session id does not overwrite the parent snapshot: the parent re-read gets the real diff, not a false "unchanged"', () => {
+    withZeroSavingsFloor(() => {
+      const sharedSessionId = 'shared-session-1'
+      const v1 = 'ORIGINAL LINE ONE\nORIGINAL LINE TWO\n' + 'padding text here '.repeat(40) + '\n'
+      const p = snapSaltTmpFile(v1)
+
+      // 1. Parent reads V1; postReadHandler snapshots it.
+      postReadHandler({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: sharedSessionId,
+        agentId: undefined,
+        raw: { tool_response: v1 },
+      })
+      recordFileRead(normalizePath(p))
+
+      // 2. File changes substantially on disk (both lines rewritten, a third added).
+      const v2 =
+        'REWRITTEN LINE ONE\nREWRITTEN LINE TWO\nADDED THIRD LINE\n' + 'padding text here '.repeat(40) + '\n'
+      fs.writeFileSync(p, v2)
+
+      // 3. A subagent payload sharing the parent's sessionId (Claude Code's real wire shape)
+      // reads the file at V2; its own postReadHandler snapshot write must not clobber the
+      // parent's.
+      postReadHandler({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: sharedSessionId,
+        agentId: 'subagent-alpha',
+        raw: { tool_response: v2 },
+      })
+
+      // 4. Parent re-reads. Its own per-agent state correctly says "already read" (recordFileRead
+      // above), so the deny path fires -- the snapshot consulted for the diff must be the
+      // parent's own V1 snapshot, not the subagent's V2 one it just wrote.
+      const result = preReadHandler({
+        eventName: 'pre_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: sharedSessionId,
+        agentId: undefined,
+        raw: {},
+      })
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).not.toContain('unchanged since last read')
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        // Content unique to V2 that the parent never saw before this re-read.
+        expect(result.message).toContain('ADDED THIRD LINE')
+      }
+    })
+  })
+
+  it('converse: within a single agent, an unchanged re-read still reports "unchanged" (the fix must not disable snapshots altogether)', () => {
+    withZeroSavingsFloor(() => {
+      const sessionId = 'solo-session-unchanged'
+      const content = 'STABLE LINE\n' + 'padding text here '.repeat(40) + '\n'
+      const p = snapSaltTmpFile(content)
+
+      postReadHandler({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId,
+        agentId: undefined,
+        raw: { tool_response: content },
+      })
+      recordFileRead(normalizePath(p))
+      // File is never touched between the two reads.
+
+      const result = preReadHandler({
+        eventName: 'pre_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId,
+        agentId: undefined,
+        raw: {},
+      })
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+        expect(result.message).not.toContain('Content changed since last read')
+      }
+    })
+  })
+
+  it('converse: within a single agent, a changed re-read still returns a correct diff', () => {
+    withZeroSavingsFloor(() => {
+      const sessionId = 'solo-session-diff'
+      const v1 = 'FIRST VERSION LINE\n' + 'padding text here '.repeat(40) + '\n'
+      const p = snapSaltTmpFile(v1)
+
+      postReadHandler({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId,
+        agentId: undefined,
+        raw: { tool_response: v1 },
+      })
+      recordFileRead(normalizePath(p))
+
+      const v2 = 'SECOND VERSION LINE\n' + 'padding text here '.repeat(40) + '\n'
+      fs.writeFileSync(p, v2)
+
+      const result = preReadHandler({
+        eventName: 'pre_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId,
+        agentId: undefined,
+        raw: {},
+      })
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        expect(result.message).toContain('SECOND VERSION LINE')
+      }
+    })
   })
 })

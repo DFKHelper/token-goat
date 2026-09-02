@@ -56,6 +56,27 @@ export interface HookEvent {
   readonly raw: Record<string, unknown>
 }
 
+/**
+ * The key used to persist and look up per-(sub)agent state -- both the session-state
+ * blob ({@link file://./session_store.ts}) and the read snapshots keyed on it
+ * ({@link file://./snapshots.ts}). All subagents spawned by one parent share the
+ * parent's `session_id` on the wire, so keying on `sessionId` alone conflates every
+ * subagent's reads (and their content snapshots) with its siblings' and the parent's --
+ * a subagent's genuinely-first read of a file gets denied as "already read" because a
+ * *different* subagent read it earlier, or a subagent overwrites the parent's snapshot
+ * of a file with content the parent never saw, so the parent's next re-read gets a
+ * diff (or "unchanged" verdict) computed against the wrong baseline. Salting the key
+ * with `agentId` (present only inside a subagent call) gives each (sub)agent its own
+ * independent ledger and snapshot store, leaving the main thread (no agentId) keyed on
+ * `sessionId` alone, unchanged from before this existed. Every caller that persists or
+ * loads per-agent state -- session state in relay.ts, and every `snapshots.ts`
+ * store/load call site in hooks_read.ts -- must derive its key through this one
+ * function rather than hand-rolling the same concatenation, so the two stay in sync.
+ */
+export function sessionStateKey(event: HookEvent): string {
+  return event.agentId !== undefined ? `${event.sessionId}:agent:${event.agentId}` : event.sessionId
+}
+
 /** A handler reacts to one hook event and returns a {@link HookOutput}. */
 export type HookHandler = (event: HookEvent) => HookOutput | Promise<HookOutput>
 
