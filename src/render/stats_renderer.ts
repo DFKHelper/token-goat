@@ -549,6 +549,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'session_hint_suppressed',
       'read_count_deny',
       'read_served_deny',
+      'subagent_markdown_first_read_deny',
       'grep_dedup_hint',
       'glob_dedup_hint',
       'diff_hint',
