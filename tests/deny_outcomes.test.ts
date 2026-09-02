@@ -21,6 +21,12 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
   JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
+// FORMAT-DERIVED: `is_error` is a real, optional boolean field on an Anthropic Messages API
+// `tool_result` content block (https://docs.claude.com/en/api/messages -- content block types),
+// the same schema this file's `use`/`result` helpers already hand-construct above. Never copied
+// from a real session transcript; the census only ever reads this boolean, never any error text.
+const errorResult = (id: string, content: string): string =>
+  JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 const COMPACT = '{"type":"system","subtype":"compact_boundary"}'
 
 /**
@@ -179,6 +185,15 @@ beforeAll(() => {
     result('a3', 'ok'),
   ])
 
+  // shell_read: a Bash command reads the denied file by basename via a shell reader binary
+  // (sed/grep/cat/...) within the window -- what would otherwise silently fall into 'abandoned'.
+  writeScenario('shell_read', [
+    use('d6', 'Read', { file_path: 'src/wanted.ts' }),
+    result('d6', LARGE_DENY_TEXT),
+    use('sr1', 'Bash', { command: "sed -n '1,40p' src/wanted.ts" }),
+    result('sr1', 'file contents'),
+  ])
+
   function writeScenario(name: string, lines: string[]): void {
     const projectDir = path.join(partitionDir, name)
     fs.mkdirSync(projectDir)
@@ -191,22 +206,30 @@ afterAll(() => {
 })
 
 describe('outcome partition', () => {
-  it('lands every deny in exactly one of the five buckets, including compaction and session-ended', async () => {
+  // TASK B added a sixth bucket, 'shell_read', subdividing what used to fall into 'abandoned'
+  // (see the DenyOutcome doc comment in src/session_audit.ts for the classification order and
+  // why 'shell_read' is a genuine partition member and not an overlapping metric). This scenario
+  // set grew from five fixtures to six for that reason, so the expected per-bucket rate moved
+  // from 1/5 (0.2) to 1/6 -- the invariant under test (every bucket present, rates sum to
+  // exactly 1) is unchanged and still asserted; only the fixture count and the resulting
+  // fraction changed, because a sixth real fixture was added, not because a number was tuned.
+  it('lands every deny in exactly one of the six buckets, including compaction and session-ended', async () => {
     const s = await auditSessionCorpus({ dir: partitionDir })
     const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
     expect(row).toBeDefined()
-    expect(row!.count).toBe(5)
-    // One deny per bucket: each rate is exactly 1/5, and they sum to exactly 1 -- a true
+    expect(row!.count).toBe(6)
+    // One deny per bucket: each rate is exactly 1/6, and they sum to exactly 1 -- a true
     // partition, not an overlapping classification where two rates could both be nonzero
     // for the same deny or the rates could sum to more/less than the whole population.
-    expect(row!.compactedRate).toBeCloseTo(0.2, 10)
-    expect(row!.retriedRate).toBeCloseTo(0.2, 10)
-    expect(row!.substitutedRate).toBeCloseTo(0.2, 10)
-    expect(row!.unresolvedRate).toBeCloseTo(0.2, 10)
-    expect(row!.abandonedRate).toBeCloseTo(0.2, 10)
-    const sum = row!.compactedRate + row!.retriedRate + row!.substitutedRate + row!.unresolvedRate + row!.abandonedRate
+    expect(row!.compactedRate).toBeCloseTo(1 / 6, 10)
+    expect(row!.retriedRate).toBeCloseTo(1 / 6, 10)
+    expect(row!.substitutedRate).toBeCloseTo(1 / 6, 10)
+    expect(row!.shellReadRate).toBeCloseTo(1 / 6, 10)
+    expect(row!.unresolvedRate).toBeCloseTo(1 / 6, 10)
+    expect(row!.abandonedRate).toBeCloseTo(1 / 6, 10)
+    const sum = row!.compactedRate + row!.retriedRate + row!.substitutedRate + row!.shellReadRate + row!.unresolvedRate + row!.abandonedRate
     expect(sum).toBeCloseTo(1, 10)
-    // The same fixtures double as the withheldBytes/median check: all five denies print the
+    // The same fixtures double as the withheldBytes/median check: all six denies print the
     // identical "(523KB)" figure, so the kind-wide median must reproduce it exactly.
     expect(row!.medianWithheldBytes).toBe(523 * 1024)
     expect(row!.withheldBytesUnknownFraction).toBe(0)
@@ -252,5 +275,159 @@ describe('retriedWithin10 vs the 3-call outcome window', () => {
     expect(row!.abandonedRate).toBe(1)
     expect(row!.retriedRate).toBe(0)
     expect(row!.retriedWithin10Rate).toBe(1)
+  })
+})
+
+/**
+ * Coverage for TASK A (unanchored SURGICAL_COMMAND_RE), TASK B (the shell-read outcome class and
+ * its basename-boundary guard), and TASK C (the Edit-error canary + corpus-wide baseline). All
+ * scenario text below is FORMAT-DERIVED/HAND-DERIVED in the same style as the fixtures above:
+ * `use`/`result`/`errorResult` hand-construct the JSONL envelope; only `LARGE_DENY_TEXT` (the deny
+ * message itself) is FORMAT-DERIVED from hooks_read.ts, cited above. No real transcript content.
+ */
+function writeProject(dir: string, name: string, lines: string[]): void {
+  const projectDir = path.join(dir, name)
+  fs.mkdirSync(projectDir)
+  fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
+}
+
+let censusDir = ''
+
+beforeAll(() => {
+  censusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-census-'))
+
+  // TASK A: SURGICAL_COMMAND_RE must recognize token-goat after a shell separator (cd x &&),
+  // not just at the start of the command.
+  writeProject(censusDir, 'cd-prefixed', [
+    use('d1', 'Read', { file_path: 'src/big.ts' }),
+    result('d1', LARGE_DENY_TEXT),
+    use('s1', 'Bash', { command: 'cd somewhere && token-goat section "src/big.ts::Heading"' }),
+    result('s1', 'ok'),
+  ])
+
+  // TASK A: node <path>/token-goat.mjs <subcommand> must also be recognized as substituted, and
+  // -- because it is checked before the shell-read class -- never fall into 'shell_read' just
+  // because node is also a shell-reader binary.
+  writeProject(censusDir, 'node-invoked', [
+    use('d2', 'Read', { file_path: 'src/other.ts' }),
+    result('d2', LARGE_DENY_TEXT),
+    use('s2', 'Bash', { command: 'node dist/token-goat.mjs read src/other.ts::Foo' }),
+    result('s2', 'ok'),
+  ])
+
+  // TASK B: sed reading the denied file by basename, boundary-adjacent (quoted on one side,
+  // path-separator on the other) -- a confident shell_read match.
+  writeProject(censusDir, 'sed-read', [
+    use('d3', 'Read', { file_path: 'src/wanted.ts' }),
+    result('d3', LARGE_DENY_TEXT),
+    use('s3', 'Bash', { command: "sed -n '1,20p' src/wanted.ts" }),
+    result('s3', 'file contents'),
+  ])
+
+  // TASK B: grep reading the denied file by basename -- same class, different reader binary.
+  writeProject(censusDir, 'grep-read', [
+    use('d4', 'Read', { file_path: 'src/target.ts' }),
+    result('d4', LARGE_DENY_TEXT),
+    use('s4', 'Bash', { command: 'grep -n pattern src/target.ts' }),
+    result('s4', 'match line'),
+  ])
+
+  // TASK B guard: a short basename ("index.ts") appears only as an incidental substring of a
+  // different file's name ("myindex.tsx"), not adjacent to any path separator/quote/word
+  // boundary. Must NOT be credited as shell_read (a bare substring test would over-credit it);
+  // must be counted in the dedicated ambiguous field instead of silently dropped either way.
+  writeProject(censusDir, 'ambiguous-basename', [
+    use('d5', 'Read', { file_path: 'src/index.ts' }),
+    result('d5', LARGE_DENY_TEXT),
+    use('s5', 'Bash', { command: 'grep -n pattern myindex.tsx' }),
+    result('s5', 'match line'),
+  ])
+
+  // TASK C: an Edit on the exact denied path whose tool_result carries is_error: true, within
+  // the 10-call window -- the Edit-error canary. Also contributes one Edit + one error to the
+  // corpus-wide baseline denominator.
+  writeProject(censusDir, 'edit-error', [
+    use('d6', 'Read', { file_path: 'src/errfile.ts' }),
+    result('d6', LARGE_DENY_TEXT),
+    use('e6', 'Edit', { file_path: 'src/errfile.ts', old_string: 'x', new_string: 'y' }),
+    errorResult('e6', 'edit blocked: file has not been read in this session'),
+  ])
+
+  // TASK C: Edit calls with no preceding deny at all, to prove the baseline is corpus-wide and
+  // not scoped to denied paths -- two successful Edits, one erroring.
+  writeProject(censusDir, 'baseline-edits', [
+    use('b1', 'Edit', { file_path: 'x/a.ts', old_string: 'x', new_string: 'y' }),
+    errorResult('b1', 'edit blocked: file has not been read in this session'),
+    use('b2', 'Edit', { file_path: 'x/b.ts', old_string: 'x', new_string: 'y' }),
+    result('b2', 'ok'),
+    use('b3', 'Edit', { file_path: 'x/c.ts', old_string: 'x', new_string: 'y' }),
+    result('b3', 'ok'),
+  ])
+})
+
+afterAll(() => {
+  fs.rmSync(censusDir, { recursive: true, force: true })
+})
+
+describe('unanchored SURGICAL_COMMAND_RE (TASK A)', () => {
+  it('classifies a shell-separator-prefixed and a node-invoked token-goat command as substituted, not shell_read', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
+    expect(row).toBeDefined()
+    // substituted: cd-prefixed + node-invoked. shell_read: sed-read + grep-read.
+    // unresolved: ambiguous-basename + edit-error (each ends with exactly 1 tool call).
+    expect(row!.count).toBe(6)
+    expect(row!.substitutedRate).toBeCloseTo(2 / 6, 10)
+    expect(row!.shellReadRate).toBeCloseTo(2 / 6, 10)
+    expect(row!.unresolvedRate).toBeCloseTo(2 / 6, 10)
+  })
+})
+
+describe('shell-read outcome class and its basename-boundary guard (TASK B)', () => {
+  it('counts sed/grep reads of the denied basename as shell_read', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
+    expect(row).toBeDefined()
+    expect(row!.shellReadRate * row!.count).toBe(2)
+  })
+
+  it('does not credit a short-basename incidental substring as shell_read, and reports it as ambiguous instead', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
+    expect(row).toBeDefined()
+    // Exactly one ambiguous case (myindex.tsx vs index.ts) -- the sed/grep/edit-error scenarios
+    // above all use full-word, boundary-adjacent basenames and must not add to this count.
+    expect(row!.shellReadAmbiguousCount).toBe(1)
+  })
+})
+
+describe('Edit-error canary and corpus-wide baseline (TASK C)', () => {
+  it('records an Edit-on-denied-path error within the 10-call window, per kind', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const row = s.denyOutcomes.find((r) => r.kind === 'large_file_deny')
+    expect(row).toBeDefined()
+    expect(row!.editErrorWithin10Count).toBe(1)
+  })
+
+  it('reports a corpus-wide Edit-error baseline independent of any deny, so the per-kind count has a denominator', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    // 4 Edit tool_uses total across the corpus (1 in edit-error, 3 in baseline-edits), 2 errors.
+    expect(s.editErrorBaseline.totalEdits).toBe(4)
+    expect(s.editErrorBaseline.totalErrors).toBe(2)
+    expect(s.editErrorBaseline.rate).toBeCloseTo(0.5, 10)
+  })
+
+  it('surfaces the baseline and per-kind shell-read/edit-error fields in both the text report and --json', async () => {
+    const s = await auditSessionCorpus({ dir: censusDir })
+    const text = formatSessionAudit(s)
+    expect(text).toContain('Edit-error baseline')
+    expect(text).toContain('shell-read')
+    expect(text).toContain('shell-read-ambiguous')
+    expect(text).toContain('edit-error<=10')
+    const res = await runBatched(['session-audit', '--dir', censusDir, '--json'])
+    expect(res.status).toBe(0)
+    const parsed = JSON.parse(res.stdout) as { editErrorBaseline: unknown; denyOutcomes: Array<{ shellReadRate: unknown; shellReadAmbiguousCount: unknown; editErrorWithin10Count: unknown }> }
+    expect(parsed.editErrorBaseline).toEqual(s.editErrorBaseline)
+    expect(parsed.denyOutcomes).toEqual(s.denyOutcomes)
   })
 })

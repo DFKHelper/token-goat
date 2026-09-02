@@ -149,15 +149,17 @@ export interface SessionAuditSummary {
   laneAgentTypes: LaneTypeRollup[]
   readInterception: ReadInterceptionRollup
   bashInterception: BashInterceptionRollup
-  /** Per-kind census of what actually happened after a token-goat Read deny: substituted (surgical command), retried (plain re-read), abandoned, compacted (a later re-read is correct by design), or unresolved (transcript ended too soon to tell). */
+  /** Per-kind census of what actually happened after a token-goat Read deny: substituted (surgical command), shell_read (a shell reader binary on the same basename), retried (plain re-read), abandoned, compacted (a later re-read is correct by design), or unresolved (transcript ended too soon to tell). */
   denyOutcomes: DenyOutcomeKindRollup[]
+  /** Corpus-wide Edit tool_result error rate, independent of any deny -- the denominator for each kind's editErrorWithin10Count. */
+  editErrorBaseline: EditErrorBaseline
   lineTypes: Record<string, { lines: number; bytes: number }>
   /** Mid-trim marker census: `--- N lines omitted ---` fires inside tool results. */
   omissionMarkers: { fires: number; linesOmitted: number }
 }
 
-/** One deny's measured real-world outcome, tested in this fixed order so the five buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried', and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
-export type DenyOutcome = 'compacted' | 'retried' | 'substituted' | 'unresolved' | 'abandoned'
+/** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
+export type DenyOutcome = 'compacted' | 'retried' | 'substituted' | 'shell_read' | 'unresolved' | 'abandoned'
 
 /** One deny event's raw measurement, before per-kind aggregation. Raw tokens only -- no byte-to-token or cache-read multiplier applied; see DENY_TEMPLATES' doc comment for why. */
 interface DenyRawRow {
@@ -170,6 +172,10 @@ interface DenyRawRow {
   outcome: DenyOutcome
   /** Same test as the 'retried' outcome, but over a 10-call window instead of 3 -- exists to make the 3-call window's truncation error visible. */
   retriedWithin10: boolean
+  /** A shell command in the 3-call outcome window contained the denied file's basename next to a reader binary, but not adjacent to a path separator/quote/word boundary -- too loose to credit as 'shell_read', too suggestive to silently drop. Diagnostic only; never affects `outcome`. */
+  shellReadAmbiguous: boolean
+  /** An Edit tool_use targeting the exact denied path, somewhere in the 10-call window after the deny, whose tool_result carried `is_error: true` -- the closest available signal that the deny caused real information loss rather than a harmless skip. */
+  editErrorWithin10: boolean
 }
 
 /** Per-kind rollup of DenyRawRow for the corpus report. Rates are fractions of `count`. */
@@ -179,6 +185,8 @@ export interface DenyOutcomeKindRollup {
   compactedRate: number
   retriedRate: number
   substitutedRate: number
+  /** Fraction of this kind's denies whose 3-call outcome window contained a shell command reading the denied file by basename (sed/grep/cat/head/tail/awk/rg/less/nl/python/node). Subdivides what would otherwise be counted as 'abandoned'. */
+  shellReadRate: number
   unresolvedRate: number
   abandonedRate: number
   retriedWithin10Rate: number
@@ -188,6 +196,17 @@ export interface DenyOutcomeKindRollup {
   medianR: number
   medianNextCallInputTotal: number
   medianNextCallCacheRead: number
+  /** Count of denies (of `count`) whose window had a basename-adjacent-but-not-boundary-safe shell match: neither credited as shell_read nor silently dropped. */
+  shellReadAmbiguousCount: number
+  /** Count of denies (of `count`) where an Edit on the exact denied path errored within 10 calls. Compare against `editErrorBaseline` on the summary -- a rate with no corpus-wide denominator is not interpretable. */
+  editErrorWithin10Count: number
+}
+
+/** Corpus-wide Edit error rate (all Edit tool_results, regardless of deny involvement), so a per-kind editErrorWithin10Count has a denominator to compare against. */
+export interface EditErrorBaseline {
+  totalEdits: number
+  totalErrors: number
+  rate: number
 }
 
 /** Per-corpus rollup of subagent lane files (transcripts under a `subagents/` directory). firstCallPrefixTokens is input + cache_creation + cache_read on the lane's FIRST API response: the spawn prefix (system prompt, tool and MCP manifests, inherited instruction files, and the task brief) before the subagent has done any work. prefixBilledEquivTokens models that prefix's billed carriage with the same residency model as the attachment census: written once at 1.25x, then re-read at 0.1x on each subsequent call in the lane. NOT billed units. */
@@ -390,8 +409,33 @@ function parseWithheldBytes(kind: string, text: string): number | null {
   return Math.round(n * mult)
 }
 
-/** A Bash command invoking one of token-goat's own surgical-read commands, per TASK 2's definition. */
-const SURGICAL_COMMAND_RE = /^(?:token-goat|tg)\s+(read|section|symbol|skeleton|outline|bash-output|config-get|skill-section|skill-body)\b/
+/** A Bash command invoking one of token-goat's own surgical-read commands, per TASK 2's definition. Matches at the start of the command OR after a shell separator (`;`, `&`, `|`, `(`, or whitespace) so `cd x && token-goat section ...`, an env-prefixed invocation, and `node dist/token-goat.mjs read ...` are all recognized -- not just a bare leading `token-goat`/`tg`. */
+const SURGICAL_COMMAND_RE = /(?:^|[\s;&|(])(?:token-goat|tg|node\s+\S*token-goat\.mjs)\s+(read|section|symbol|skeleton|outline|bash-output|config-get|skill-section|skill-body)\b/
+
+/** Reader binaries counted as a manual "shell read" substitute for a denied token-goat Read: the agent routed around the deny with a plain shell command instead of a surgical one. `node`/`python` are included because they read files directly (`node -e`, a one-off script) as often as they invoke tooling -- a `node .../token-goat.mjs` invocation is caught by SURGICAL_COMMAND_RE first, so it never reaches this check (see the outcome classification order). */
+const SHELL_READER_TOKEN_RE = /\b(?:sed|grep|cat|head|tail|awk|rg|less|nl|python3?|node)\b/
+
+/** Escapes a string for literal use inside a RegExp source. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Whether a Bash command reads the denied file by basename via a shell reader binary.
+ * 'none': no reader binary present, or the basename never appears in the command at all.
+ * 'ambiguous': a reader binary is present and the basename appears as a raw substring, but not
+ *   adjacent to a path separator, quote, or word boundary -- e.g. `index.ts` inside `myindex.tsx`.
+ *   A bare substring test on a short basename would over-credit this; report it separately
+ *   instead of silently guessing either way.
+ * 'match': the basename appears adjacent to a boundary that makes it a real argument.
+ */
+function shellReadMatch(command: string, basename: string): 'none' | 'ambiguous' | 'match' {
+  if (basename === '' || !SHELL_READER_TOKEN_RE.test(command)) return 'none'
+  if (!command.includes(basename)) return 'none'
+  const escaped = escapeRegExp(basename)
+  const strict = new RegExp(`(?:^|["'\`/\\\\\\s])${escaped}(?:$|["'\`/\\\\\\s,;:)])`)
+  return strict.test(command) ? 'match' : 'ambiguous'
+}
 
 /** In-band markers token-goat's bash filters and recall/delta hints leave inside a Bash tool_result. A filter that matched but fell under the 100-byte net-savings floor prints the original unchanged with no marker, so this UNDER-counts fires and cannot see that case. */
 const BASH_FILTER_MARKER_RE = /\[token-goat[:\]]/
@@ -510,6 +554,10 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   const readCallById = new Map<string, { wasSeenBefore: boolean; hasRange: boolean; afterCompaction: boolean }>()
   // tool_use id -> normalized file_path, so a deny-outcome row opened at tool_result time (which only carries the tool_use_id) can recover the path it denied.
   const readPathById = new Map<string, string>()
+  // Edit tool_use id -> normalized file_path, so the Edit-error canary can tell whether an Edit targeted the exact denied path.
+  const editPathById = new Map<string, string>()
+  // Edit tool_use id -> true once its tool_result carries is_error: true. Populated at tool_result time; read back once at end-of-file finalization, by which point every Edit in this file has resolved.
+  const editErrorById = new Map<string, boolean>()
   // Normalized path -> compact-boundary count at its last Read tool_use, so a repeat can tell whether a compaction intervened (the boundary count is file-wide, not per lane; reads are overwhelmingly main-chain).
   const readPathEpoch = new Map<string, number>()
   let compactEpoch = 0
@@ -525,7 +573,15 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
     compactEpochAtOpen: number
     /** compactEpoch snapshotted at the 3rd tool call after this deny, or at end-of-file if fewer than 3 tool calls ever arrived. Compared against compactEpochAtOpen to decide the 'compacted' outcome. */
     compactEpochAtWindow: number | null
-    toolCalls: Array<{ isReadSamePath: boolean; isSurgicalSamePath: boolean }>
+    toolCalls: Array<{
+      isReadSamePath: boolean
+      isSurgicalSamePath: boolean
+      isShellReadSamePath: boolean
+      /** A shell reader binary and the basename were both present, but not boundary-adjacent -- see shellReadMatch's 'ambiguous' case. */
+      isShellReadAmbiguous: boolean
+      /** The tool_use id of this call, IF it was an Edit on the exact denied path -- looked up in editErrorById at finalization, once every Edit in the file has resolved. undefined for every other call. */
+      editCallId: string | undefined
+    }>
   }
   const openDenies: OpenDenyState[] = []
   let sawTokenGoatHook = false
@@ -624,6 +680,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
               toolRollup(toolMap, name).calls += 1
               const input = (block['input'] !== null && typeof block['input'] === 'object' ? block['input'] : {}) as Record<string, unknown>
               let readNorm: string | undefined
+              let editNorm: string | undefined
               if (name === 'Bash' && typeof input['command'] === 'string') {
                 bashHeadById.set(block['id'], commandHead(input['command']))
               } else if (name === 'Read' && typeof input['file_path'] === 'string') {
@@ -632,19 +689,35 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 readCallById.set(block['id'], { wasSeenBefore: priorEpoch !== undefined, hasRange: input['offset'] !== undefined || input['limit'] !== undefined, afterCompaction: priorEpoch !== undefined && compactEpoch > priorEpoch })
                 readPathById.set(block['id'], readNorm)
                 readPathEpoch.set(readNorm, compactEpoch)
+              } else if (name === 'Edit' && typeof input['file_path'] === 'string') {
+                editNorm = normalizeReadPath(input['file_path'])
+                editPathById.set(block['id'], editNorm)
+                s.editErrorBaseline.totalEdits += 1
               }
               // Deny-outcome census: this tool_use is "one tool call" (TASK 2's definition) for every
               // open deny still watching its 3-/10-call window. A Bash command matching
-              // SURGICAL_COMMAND_RE against the denied path's basename is 'substituted'; a Read of the
-              // exact same normalized path is 'retried'. Both checks run regardless of which open
-              // deny they belong to -- a call can resolve several open denies from earlier in the file.
+              // SURGICAL_COMMAND_RE against the denied path's basename is 'substituted'; a Bash command
+              // reading the denied path via a shell reader binary (sed/grep/cat/...) is 'shell_read';
+              // a Read of the exact same normalized path is 'retried'; an Edit of the exact same
+              // normalized path records its tool_use id so the finalization pass can look up whether
+              // it errored, once every Edit in this file has resolved. All checks run regardless of
+              // which open deny they belong to -- a call can resolve several open denies from earlier
+              // in the file.
               if (openDenies.length > 0) {
                 const bashCommand = name === 'Bash' && typeof input['command'] === 'string' ? input['command'] : undefined
                 for (const o of openDenies) {
                   if (o.toolCalls.length >= 10) continue
                   const isReadSamePath = readNorm !== undefined && o.path !== '' && readNorm === o.path
-                  const isSurgicalSamePath = bashCommand !== undefined && o.basename !== '' && SURGICAL_COMMAND_RE.test(bashCommand.trim()) && bashCommand.includes(o.basename)
-                  o.toolCalls.push({ isReadSamePath, isSurgicalSamePath })
+                  const isSurgicalSamePath = bashCommand !== undefined && o.basename !== '' && SURGICAL_COMMAND_RE.test(bashCommand) && bashCommand.includes(o.basename)
+                  const shellRead = bashCommand !== undefined && o.basename !== '' ? shellReadMatch(bashCommand, o.basename) : 'none'
+                  const isEditSamePath = editNorm !== undefined && o.path !== '' && editNorm === o.path
+                  o.toolCalls.push({
+                    isReadSamePath,
+                    isSurgicalSamePath,
+                    isShellReadSamePath: shellRead === 'match',
+                    isShellReadAmbiguous: shellRead === 'ambiguous',
+                    editCallId: isEditSamePath ? block['id'] : undefined,
+                  })
                   if (o.toolCalls.length === 3) o.compactEpochAtWindow = compactEpoch
                 }
               }
@@ -675,6 +748,10 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           if (!toolNameById.has(id)) roll.calls += 1
           roll.resultBytes += bytes
           roll.resultEstTokens += estimateTokensFromLength(bytes)
+          if (name === 'Edit' && block['is_error'] === true) {
+            s.editErrorBaseline.totalErrors += 1
+            editErrorById.set(id, true)
+          }
           if (name === 'Read') {
             s.readInterception.readResults += 1
             // Deny-outcome census: orthogonal to the divert/full-serve split above -- a deny
@@ -831,8 +908,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   flushLane(0)
   flushLane(1)
   // Finalize every deny opened in this file: R and nextCall need the file's final perCall count
-  // (which is why this waits for end of stream instead of resolving eagerly), and the outcome
-  // is computed in the fixed order TASK 2 specifies so the five buckets partition every deny.
+  // (which is why this waits for end of stream instead of resolving eagerly), editErrorById needs
+  // every Edit tool_result in the file to have resolved, and the outcome is computed in the fixed
+  // order this module documents (DenyOutcome) so the six buckets partition every deny.
   for (const o of openDenies) {
     if (o.compactEpochAtWindow === null) o.compactEpochAtWindow = compactEpoch
     const windowCalls = o.toolCalls.slice(0, 3)
@@ -843,12 +921,16 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       outcome = 'retried'
     } else if (windowCalls.some((c) => c.isSurgicalSamePath)) {
       outcome = 'substituted'
+    } else if (windowCalls.some((c) => c.isShellReadSamePath)) {
+      outcome = 'shell_read'
     } else if (o.toolCalls.length < 3) {
       outcome = 'unresolved'
     } else {
       outcome = 'abandoned'
     }
     const retriedWithin10 = o.toolCalls.some((c) => c.isReadSamePath)
+    const shellReadAmbiguous = windowCalls.some((c) => c.isShellReadAmbiguous)
+    const editErrorWithin10 = o.toolCalls.some((c) => c.editCallId !== undefined && editErrorById.get(c.editCallId) === true)
     const R = perCall.length - o.callIndexAtDeny
     const nextCall = perCall[o.callIndexAtDeny]
     denyRows.push({
@@ -859,6 +941,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       nextCallCacheRead: nextCall?.cacheRead ?? 0,
       outcome,
       retriedWithin10,
+      shellReadAmbiguous,
+      editErrorWithin10,
     })
   }
   if (sawTokenGoatHook) {
@@ -943,6 +1027,7 @@ function aggregateDenyOutcomes(rows: DenyRawRow[]): DenyOutcomeKindRollup[] {
       compactedRate: rateOf('compacted'),
       retriedRate: rateOf('retried'),
       substitutedRate: rateOf('substituted'),
+      shellReadRate: rateOf('shell_read'),
       unresolvedRate: rateOf('unresolved'),
       abandonedRate: rateOf('abandoned'),
       retriedWithin10Rate: kindRows.filter((r) => r.retriedWithin10).length / count,
@@ -951,6 +1036,8 @@ function aggregateDenyOutcomes(rows: DenyRawRow[]): DenyOutcomeKindRollup[] {
       medianR: median(kindRows.map((r) => r.R)),
       medianNextCallInputTotal: median(kindRows.map((r) => r.nextCallInputTotal)),
       medianNextCallCacheRead: median(kindRows.map((r) => r.nextCallCacheRead)),
+      shellReadAmbiguousCount: kindRows.filter((r) => r.shellReadAmbiguous).length,
+      editErrorWithin10Count: kindRows.filter((r) => r.editErrorWithin10).length,
     })
   }
   return result.sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind))
@@ -1004,6 +1091,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     readInterception: { readResults: 0, divertedByMarker: 0, divertedBytes: 0, fullServesOver10k: 0, fullServeBytesOver10k: 0, fullServesFirstRead: 0, fullServesRepeat: 0, repeatBytes: 0, repeatWithRange: 0, repeatFullNoRange: 0, repeatInHookedSessions: 0, repeatFullNoRangeInHookedSessions: 0, repeatFullNoRangeHookedAfterCompaction: 0, fullServesPathUnknown: 0 },
     bashInterception: { bashResults: 0, markedByFilter: 0, markedBytes: 0, smallUntouched: 0, smallUntouchedBytes: 0, untouched: 0, untouchedBytes: 0, untouchedEstTokens: 0, untouchedRereadTokens: 0, untouchedBilledEquivTokens: 0, untouchedHeads: [] },
     denyOutcomes: [],
+    editErrorBaseline: { totalEdits: 0, totalErrors: 0, rate: 0 },
     lineTypes: {},
     omissionMarkers: { fires: 0, linesOmitted: 0 },
   }
@@ -1053,6 +1141,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   summary.attachmentKinds = [...attachmentMap.values()].sort((a, b) => b.billedEquivTokens - a.billedEquivTokens || b.injections - a.injections || a.kind.localeCompare(b.kind))
   summary.hookOutputs = [...hookMap.values()].sort((a, b) => b.contextBytes - a.contextBytes || b.fires - a.fires || a.origin.localeCompare(b.origin) || a.event.localeCompare(b.event))
   summary.denyOutcomes = aggregateDenyOutcomes(denyRows)
+  summary.editErrorBaseline.rate = summary.editErrorBaseline.totalEdits === 0 ? 0 : summary.editErrorBaseline.totalErrors / summary.editErrorBaseline.totalEdits
   summary.runtimeMs = Date.now() - started
   return summary
 }
@@ -1145,8 +1234,10 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push(`Repeats: with offset/limit ${fmt(ri.repeatWithRange)} (deliberate paging), whole-file ${fmt(ri.repeatFullNoRange)} (divert-miss candidates), in sessions with a token-goat hook fire ${fmt(ri.repeatInHookedSessions)} (whole-file among them: ${fmt(ri.repeatFullNoRangeInHookedSessions)}, of which post-compaction and so correct by design: ${fmt(ri.repeatFullNoRangeHookedAfterCompaction)})`)
   lines.push('')
   lines.push('## Deny outcomes (what actually happened after a token-goat Read deny; raw tokens, not billed units)')
+  const eb = s.editErrorBaseline
+  lines.push(`Edit-error baseline (all Edit tool_results, corpus-wide, independent of any deny): ${fmt(eb.totalErrors)}/${fmt(eb.totalEdits)} (${(eb.rate * 100).toFixed(1)}%) -- compare each row's edit-error<=10 count against this rate, not against zero.`)
   for (const d of s.denyOutcomes) {
-    lines.push(`${d.kind.padEnd(34)} n ${fmt(d.count).padStart(6)}  compacted ${pct(d.compactedRate * d.count, d.count)}  retried ${pct(d.retriedRate * d.count, d.count)}  substituted ${pct(d.substitutedRate * d.count, d.count)}  unresolved ${pct(d.unresolvedRate * d.count, d.count)}  abandoned ${pct(d.abandonedRate * d.count, d.count)}  retried<=10 ${pct(d.retriedWithin10Rate * d.count, d.count)}  median-withheld ${d.medianWithheldBytes === null ? 'n/a' : fmt(d.medianWithheldBytes) + 'B'} (unknown ${pct(d.withheldBytesUnknownFraction * d.count, d.count)})  median-R ${fmt(d.medianR)}`)
+    lines.push(`${d.kind.padEnd(34)} n ${fmt(d.count).padStart(6)}  compacted ${pct(d.compactedRate * d.count, d.count)}  retried ${pct(d.retriedRate * d.count, d.count)}  substituted ${pct(d.substitutedRate * d.count, d.count)}  shell-read ${pct(d.shellReadRate * d.count, d.count)}  unresolved ${pct(d.unresolvedRate * d.count, d.count)}  abandoned ${pct(d.abandonedRate * d.count, d.count)}  retried<=10 ${pct(d.retriedWithin10Rate * d.count, d.count)}  median-withheld ${d.medianWithheldBytes === null ? 'n/a' : fmt(d.medianWithheldBytes) + 'B'} (unknown ${pct(d.withheldBytesUnknownFraction * d.count, d.count)})  median-R ${fmt(d.medianR)}  shell-read-ambiguous ${fmt(d.shellReadAmbiguousCount)}  edit-error<=10 ${fmt(d.editErrorWithin10Count)}`)
   }
   if (s.denyOutcomes.length === 0) lines.push('(no denies matched a known template)')
   lines.push('')
