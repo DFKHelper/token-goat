@@ -151,7 +151,7 @@ export interface SessionAuditSummary {
   bashInterception: BashInterceptionRollup
   /** Per-kind census of what actually happened after a token-goat Read deny: substituted (surgical command), shell_read (a shell reader binary on the same basename), retried (plain re-read), abandoned, compacted (a later re-read is correct by design), or unresolved (transcript ended too soon to tell). */
   denyOutcomes: DenyOutcomeKindRollup[]
-  /** Corpus-wide Edit tool_result error rate, independent of any deny -- the denominator for each kind's editErrorWithin10Count. */
+  /** Corpus-wide Edit tool_result error rate, independent of any deny. Each kind's editErrorWithin10Count / editWithin10Count ratio (errors per Edit on denied paths) should be compared against this baseline. */
   editErrorBaseline: EditErrorBaseline
   lineTypes: Record<string, { lines: number; bytes: number }>
   /** Mid-trim marker census: `--- N lines omitted ---` fires inside tool results. */
@@ -174,6 +174,8 @@ interface DenyRawRow {
   retriedWithin10: boolean
   /** A shell command in the 3-call outcome window contained the denied file's basename next to a reader binary, but not adjacent to a path separator/quote/word boundary -- too loose to credit as 'shell_read', too suggestive to silently drop. Diagnostic only; never affects `outcome`. */
   shellReadAmbiguous: boolean
+  /** An Edit tool_use targeting the exact denied path occurred somewhere in the 10-call window after the deny, whether or not it errored. */
+  editWithin10: boolean
   /** An Edit tool_use targeting the exact denied path, somewhere in the 10-call window after the deny, whose tool_result carried `is_error: true` -- the closest available signal that the deny caused real information loss rather than a harmless skip. */
   editErrorWithin10: boolean
 }
@@ -198,7 +200,9 @@ export interface DenyOutcomeKindRollup {
   medianNextCallCacheRead: number
   /** Count of denies (of `count`) whose window had a basename-adjacent-but-not-boundary-safe shell match: neither credited as shell_read nor silently dropped. */
   shellReadAmbiguousCount: number
-  /** Count of denies (of `count`) where an Edit on the exact denied path errored within 10 calls. Compare against `editErrorBaseline` on the summary -- a rate with no corpus-wide denominator is not interpretable. */
+  /** Count of denies (of `count`) where an Edit on the exact denied path occurred within 10 calls, whether or not it errored. The denominator for editErrorWithin10Count, so the ratio editErrorWithin10Count / editWithin10Count is errors-per-Edit on denied paths, directly comparable to editErrorBaseline.rate. */
+  editWithin10Count: number
+  /** Count of denies (of `count`) where an Edit on the exact denied path errored within 10 calls. Divide by editWithin10Count to get errors-per-Edit on denied paths; compare that ratio against editErrorBaseline.rate. */
   editErrorWithin10Count: number
 }
 
@@ -930,6 +934,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
     }
     const retriedWithin10 = o.toolCalls.some((c) => c.isReadSamePath)
     const shellReadAmbiguous = windowCalls.some((c) => c.isShellReadAmbiguous)
+    const editWithin10 = o.toolCalls.some((c) => c.editCallId !== undefined)
     const editErrorWithin10 = o.toolCalls.some((c) => c.editCallId !== undefined && editErrorById.get(c.editCallId) === true)
     const R = perCall.length - o.callIndexAtDeny
     const nextCall = perCall[o.callIndexAtDeny]
@@ -942,6 +947,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       outcome,
       retriedWithin10,
       shellReadAmbiguous,
+      editWithin10,
       editErrorWithin10,
     })
   }
@@ -1037,6 +1043,7 @@ function aggregateDenyOutcomes(rows: DenyRawRow[]): DenyOutcomeKindRollup[] {
       medianNextCallInputTotal: median(kindRows.map((r) => r.nextCallInputTotal)),
       medianNextCallCacheRead: median(kindRows.map((r) => r.nextCallCacheRead)),
       shellReadAmbiguousCount: kindRows.filter((r) => r.shellReadAmbiguous).length,
+      editWithin10Count: kindRows.filter((r) => r.editWithin10).length,
       editErrorWithin10Count: kindRows.filter((r) => r.editErrorWithin10).length,
     })
   }
@@ -1235,9 +1242,10 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push('')
   lines.push('## Deny outcomes (what actually happened after a token-goat Read deny; raw tokens, not billed units)')
   const eb = s.editErrorBaseline
-  lines.push(`Edit-error baseline (all Edit tool_results, corpus-wide, independent of any deny): ${fmt(eb.totalErrors)}/${fmt(eb.totalEdits)} (${(eb.rate * 100).toFixed(1)}%) -- compare each row's edit-error<=10 count against this rate, not against zero.`)
+  lines.push(`Edit-error baseline (all Edit tool_results, corpus-wide, independent of any deny): ${fmt(eb.totalErrors)}/${fmt(eb.totalEdits)} (${(eb.rate * 100).toFixed(1)}%) -- compare each row's edit-error<=10 ratio against this rate.`)
   for (const d of s.denyOutcomes) {
-    lines.push(`${d.kind.padEnd(34)} n ${fmt(d.count).padStart(6)}  compacted ${pct(d.compactedRate * d.count, d.count)}  retried ${pct(d.retriedRate * d.count, d.count)}  substituted ${pct(d.substitutedRate * d.count, d.count)}  shell-read ${pct(d.shellReadRate * d.count, d.count)}  unresolved ${pct(d.unresolvedRate * d.count, d.count)}  abandoned ${pct(d.abandonedRate * d.count, d.count)}  retried<=10 ${pct(d.retriedWithin10Rate * d.count, d.count)}  median-withheld ${d.medianWithheldBytes === null ? 'n/a' : fmt(d.medianWithheldBytes) + 'B'} (unknown ${pct(d.withheldBytesUnknownFraction * d.count, d.count)})  median-R ${fmt(d.medianR)}  shell-read-ambiguous ${fmt(d.shellReadAmbiguousCount)}  edit-error<=10 ${fmt(d.editErrorWithin10Count)}`)
+    const editErrorRatio = d.editWithin10Count > 0 ? `${fmt(d.editErrorWithin10Count)}/${fmt(d.editWithin10Count)}` : 'n/a'
+    lines.push(`${d.kind.padEnd(34)} n ${fmt(d.count).padStart(6)}  compacted ${pct(d.compactedRate * d.count, d.count)}  retried ${pct(d.retriedRate * d.count, d.count)}  substituted ${pct(d.substitutedRate * d.count, d.count)}  shell-read ${pct(d.shellReadRate * d.count, d.count)}  unresolved ${pct(d.unresolvedRate * d.count, d.count)}  abandoned ${pct(d.abandonedRate * d.count, d.count)}  retried<=10 ${pct(d.retriedWithin10Rate * d.count, d.count)}  median-withheld ${d.medianWithheldBytes === null ? 'n/a' : fmt(d.medianWithheldBytes) + 'B'} (unknown ${pct(d.withheldBytesUnknownFraction * d.count, d.count)})  median-R ${fmt(d.medianR)}  shell-read-ambiguous ${fmt(d.shellReadAmbiguousCount)}  edit-error<=10 ${editErrorRatio}`)
   }
   if (s.denyOutcomes.length === 0) lines.push('(no denies matched a known template)')
   lines.push('')
