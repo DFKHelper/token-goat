@@ -166,7 +166,7 @@ import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
@@ -1104,7 +1104,7 @@ async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { pr
   // size is the "full source" side of the bytes-saved calculation, mirroring recordReadStat's
   // convention in read_commands.ts.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('session_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1135,7 +1135,7 @@ async function cmdSessionSlice(
   out(text)
   // Same registry/producer desync as cmdSessionOutline above -- see the comment there.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('session_slice', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1429,7 +1429,7 @@ async function cmdPdfExtract(
   // memory). "Full source" is the on-disk PDF size; "emitted" is the text actually printed
   // after --pages/--head/--tail/--grep filtering, mirroring recordReadStat's convention.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_extract', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1476,7 +1476,7 @@ async function cmdPdfLocate(
   // "Full source" is the on-disk PDF size; "emitted" is the page list + snippets actually printed,
   // which is what a locate-then-extract caller pays instead of pulling whole pages.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_locate', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1501,7 +1501,7 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('pdf_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1520,7 +1520,7 @@ async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('pdf_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1547,7 +1547,7 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   out(text)
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('image_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1597,7 +1597,7 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   out(text)
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('image_text', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1627,7 +1627,7 @@ function cmdVideoChapters(file: string) {
   // never called recordStat, so its dashboard bucket in `token-goat stats --full` stayed
   // permanently zero regardless of real usage (see project_runchanged_missing_stat memory).
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('video_chapters', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1664,7 +1664,7 @@ function cmdSharepointResolve(url: string) {
 // memory). "Full source" is the on-disk workbook size, mirroring recordReadStat's convention.
 function recordXlsxStat(kind: string, file: string, emitted: string): void {
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emitted, 'utf8'))
   recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1715,7 +1715,7 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
 // families -- see that function's comment.
 function recordDocStat(kind: string, file: string, emitted: string): void {
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emitted, 'utf8'))
   recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -3185,7 +3185,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   // permanently zero regardless of real usage, the same class of gap already fixed for
   // map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see
   // project_runchanged_missing_stat memory).
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(toEmit, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(toEmit, 'utf8'))
   recordStat('gdrive_sections', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 

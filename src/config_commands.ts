@@ -23,7 +23,7 @@ import { findOrphanedChunkPaths, findSystemTempFiles, pruneBlockedRoot, pruneOrp
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
 import { normalizePath } from './paths.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
@@ -651,7 +651,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
 
 // Records a surgical-read stat event for compact-doc, mirroring recordReadStat's convention in read_commands.ts (bytes saved = full on-disk source size minus the emitted text, floored at 1, tokens approximated as bytesSaved/4) -- compact-doc had no live registry entry or recordStat call at all until now, so its usage never showed up in `token-goat stats --full`.
 function recordCompactDocStat(fullSourceBytes: number, emittedText: string, detail: string): void {
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emittedText, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emittedText, 'utf8'))
   recordStat('compact_doc', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, detail)
 }
 
