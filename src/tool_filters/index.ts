@@ -127,6 +127,7 @@ export {
 export {
   TOOL_FILTERS,
   selectFilter,
+  dispatchArgv,
   detectFromCommand,
   tryWrapCompoundSegments,
   compressOutput,

@@ -124,6 +124,56 @@ describe('bash_runner.run (in-process)', () => {
     expect(out).not.toContain('unfiltered-unique-line-299')
   })
 
+  // Regression: `run` derived the argv handed to compressOutput from the UN-peeled command
+  // while selectFilter chose the filter from the `cd DIR &&`-peeled one. On a cd-prefixed grep
+  // the filter therefore received argv[0] === 'cd', and grepLiteralPattern read the directory
+  // token as the search pattern -- so a long matching line shipped whole instead of clipped.
+  // Fixture provenance: CAPTURE -- the assertions run real GNU grep through the real shell and
+  // read its real `file:line:text` output; the haystack line is HAND-DERIVED (a padded string
+  // built here, independent of any token-goat code).
+  describe('cd-prefixed commands get the same treatment as the bare equivalent', () => {
+    const NEEDLE = 'ZZNEEDLEZZ'
+    let haystackDir: string
+    let rawLineLength = 0
+
+    beforeAll(() => {
+      haystackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-grep-'))
+      const long = `${'a'.repeat(1200)}${NEEDLE}${'b'.repeat(400)}`
+      fs.writeFileSync(path.join(haystackDir, 'hay.txt'), `${long}\n`)
+      rawLineLength = long.length
+    })
+
+    afterAll(() => {
+      try {
+        fs.rmSync(haystackDir, { recursive: true, force: true })
+      } catch {
+        // ignore — temp dir, reclaimed by the OS
+      }
+    })
+
+    /** Run a grep command through `run()` and return everything it wrote to stdout. */
+    function grepOut(command: string): string {
+      let out = ''
+      run(command, { writeStdout: (x) => (out += x) })
+      return out
+    }
+
+    it('clips a long matching line for a bare grep (control)', () => {
+      const out = grepOut(`grep -rn ${NEEDLE} ${q(haystackDir)}`)
+      expect(out).toContain(NEEDLE)
+      expect(out).toContain('chars elided')
+      expect(out.length).toBeLessThan(rawLineLength)
+    })
+
+    it('clips a long matching line for a cd-prefixed grep too', () => {
+      const out = grepOut(`cd ${q(haystackDir)} && grep -rn ${NEEDLE} .`)
+      // The match must survive the clip -- a clip that drops the answer is worse than no clip.
+      expect(out).toContain(NEEDLE)
+      expect(out).toContain('chars elided')
+      expect(out.length).toBeLessThan(rawLineLength)
+    })
+  })
+
   it('runRaw streams raw output and returns the exit code', () => {
     expect(runRaw('exit 4')).toBe(4)
   })

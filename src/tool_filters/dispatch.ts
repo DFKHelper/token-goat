@@ -87,6 +87,19 @@ function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[
 }
 
 /**
+ * The argv (and cwd) a command is actually dispatched on: `cd DIR &&` peeled off when
+ * {@link peelLeadingCd} applies, otherwise the input unchanged. Single source of truth so a
+ * caller that needs the same tokens the filter was CHOSEN from -- notably `bash_runner`, which
+ * hands argv to `compressOutput` for flag/pattern extraction -- cannot drift from
+ * `selectFilter`. Deriving argv independently left `cd` and a directory at argv[0..1], so every
+ * argv-reading filter (grep's pattern, cargo/dotnet/gh's subcommand, make's target, ...) read
+ * the wrong tokens on a cd-prefixed command.
+ */
+export function dispatchArgv(argv: string[], cwd?: string): { argv: string[]; cwd: string | undefined } {
+  return peelLeadingCd(argv, cwd) ?? { argv, cwd }
+}
+
+/**
  * Return the first registered filter whose `matches(argv)` is true, or null
  * when none applies (callers should NOT wrap such commands — the subprocess
  * overhead would be pure cost). argv is prefix-stripped first so
@@ -103,9 +116,7 @@ function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[
  */
 export function selectFilter(argv: string[], cwd?: string): ToolFilter | null {
   if (argv.length === 0) return null
-  const peeled = peelLeadingCd(argv, cwd)
-  const effectiveArgv = peeled !== null ? peeled.argv : argv
-  const effectiveCwd = peeled !== null ? peeled.cwd : cwd
+  const { argv: effectiveArgv, cwd: effectiveCwd } = dispatchArgv(argv, cwd)
   let resolved = stripPrefixes(effectiveArgv)
   if (resolved.length === 0) {
     // Prefix-stripping consumed the whole argv (bare `env`, `env -0`); fall back to the first token so a dedicated env filter can still opt in.
