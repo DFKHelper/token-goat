@@ -406,4 +406,68 @@ describe('hints.pre_skill_advisory wiring', () => {
     const out = await preSkillHandler(skillPreEvent('big-skill-flag-false', 'sess-flag-false-cold'));
     expect(out.hookType).toBe('pass');
   });
+
+  it('cached-skill notice offers skill-section before skill-body', async () => {
+    const skillName = 'cached-skill-section-test';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    const body = 'Cached skill body.';
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const sessionId = 'sess-cached-skill-test';
+
+    // First load to cache the skill via the hook
+    const post = await runHook(skillPostEvent(skillName, body, sessionId));
+    expect(post.hookType).toBe('pass');
+
+    // Second load should trigger the cached-skill notice
+    const pre = await runHook(skillPreEvent(skillName, sessionId));
+    expect(pre.hookType).toBe('deny');
+    if (pre.hookType === 'deny' && pre.message) {
+      expect(pre.message).toContain('skill-section');
+      expect(pre.message).toContain('skill-body');
+      expect(pre.message.indexOf('skill-section') < pre.message.lastIndexOf('skill-body')).toBe(true);
+    }
+  });
+
+  it('inlined-compact notice offers skill-section before skill-body', async () => {
+    const skillName = 'inlined-compact-skill-section-test';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'Compact summary.';
+    const detail = 'x'.repeat(7000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const sessionId = 'sess-inlined-compact-test';
+    const out = await preSkillHandler(skillPreEvent(skillName, sessionId));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny' && out.message) {
+      expect(out.message).toContain('inlined below');
+      expect(out.message).toContain('skill-section');
+      expect(out.message).toContain('skill-body');
+      expect(out.message.indexOf('skill-section') < out.message.lastIndexOf('skill-body')).toBe(true);
+    }
+  });
+
+  it('oversized-skill notice offers skill-section before skill-body', async () => {
+    const skillName = 'oversized-skill-section-test';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    // Create a skill that is oversized but the compact won't inline (compact > COMPACT_INLINE_MAX_BYTES)
+    const compact = 'x'.repeat(25000);
+    const detail = 'y'.repeat(7000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const sessionId = 'sess-oversized-test';
+    const out = await preSkillHandler(skillPreEvent(skillName, sessionId));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny' && out.message) {
+      expect(out.message).toContain('has a compact slice available');
+      expect(out.message).toContain('skill-section');
+      expect(out.message).toContain('skill-body');
+      expect(out.message.indexOf('skill-section') < out.message.lastIndexOf('skill-body')).toBe(true);
+    }
+  });
 });

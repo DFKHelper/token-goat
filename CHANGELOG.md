@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
+- **Skill notices now offer `skill-section` before `skill-body`.** When a skill is cached, too large, or has a compact slice available, the denial notice now offers the cheapest recall command (`skill-section`) before the more expensive alternatives (`skill-body --compact` and `skill-body`). No reindex is needed.
+
 - **Top symbols list no longer includes test-file variables.** `token-goat map --compact` and agent briefings were reporting test-file local variables and short names (out, file, result, slice, find) as top project symbols, actively misleading. Now filters out files matching `*/tests/*`, `*/test/*`, `*/__tests__/*`, `*/spec/*` and `*.test.*`, `*.spec.*`, and excludes names shorter than 4 characters. Also changed ref counting from `COUNT(*)` to `COUNT(DISTINCT file_path)` to rank by number of files using a symbol rather than raw reference count. No reindex is needed.
 
 - **Reading the same unchanged file twice through the shell no longer costs twice.** Reading a file with `cat`, `head`, `tail`, or `sed -n '1,40p'` went through the shell rather than the read tool, and the shell path had no memory: nothing was cached, nothing was compared against a previous run, and the same file read five times sent its full contents five times. In one recent session the same 40-line slice of a changelog was read six times, at roughly 6,500 tokens each.
