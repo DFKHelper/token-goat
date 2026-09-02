@@ -805,8 +805,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           if (alreadyRead) {
             recordActualRead(event, normalized)
             recordStat('session_hint', 0, 0)
+          } else {
+            // Only a genuinely-first read leaves Read/Edit's precondition unsatisfied -- a prior
+            // real read (alreadyRead) already satisfied it, so the "edit anyway" escape hatch would
+            // steer toward token-goat replace/write-file when a plain Edit works fine.
+            message += ' ' + editAnywayHint(normalized)
           }
-          message += ' ' + editAnywayHint(normalized)
           return denyOutput(message)
         }
         recordActualRead(event, normalized)
@@ -1025,11 +1029,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const blocked = counterfactualCredit(alreadyServed.bytes)
         recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
         recordStat('session_hint', 0, 0)
+        // No editAnywayHint here: this file was already read successfully this session (that's the whole premise of "already served"), so Read/Edit's precondition is already satisfied -- a plain Edit works fine without token-goat replace/write-file.
         return denyOutput(
           'Every line of ' + shown + ' this read would return was already served in this session, byte for byte. ' +
           'Recall it with `token-goat bash-output ' + alreadyServed.id + '`, or pull just the part you need with ' +
-          '`token-goat read "' + shown + '::Symbol"`.' +
-          ' ' + editAnywayHint(normalized),
+          '`token-goat read "' + shown + '::Symbol"`.',
         )
       }
     }
@@ -1059,9 +1063,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
       if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
+        // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
-          'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.' +
-          ' ' + editAnywayHint(normalized),
+          'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.',
         )
       }
 
@@ -1075,9 +1079,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
+        // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
-          'Read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.' +
-          ' ' + editAnywayHint(normalized),
+          'Read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.',
         )
       }
     }
@@ -1087,9 +1091,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
+      // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
       return denyOutput(
-        shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
-        ' ' + editAnywayHint(normalized),
+        shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
       )
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently
@@ -1248,11 +1252,11 @@ function editAnywayHint(rawPath: string): string {
   )
 }
 
+// No editAnywayHint here: both call sites only fire inside a wasFileReadThisSession-gated block, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
 function truncatedReadDenyMessage(rawPath: string): string {
   const normalized = displaySafePath(rawPath)
   return (
-    'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-    ' ' + editAnywayHint(normalized)
+    'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.'
   )
 }
 

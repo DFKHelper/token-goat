@@ -257,7 +257,7 @@ describe('preReadHandler', () => {
     })
   })
 
-  it('denies re-read of a large file (>50KB) that was already read this session', () => {
+  it('denies re-read of a large file (>50KB) that was already read this session, without the edit-anyway hint (the prior read already satisfied Read/Edit\'s precondition, so a plain Edit works fine)', () => {
     pinProtectRecentReadsToZero()
     const p = makeTmpFile('x'.repeat(60 * 1024))
     recordFileRead(normalizePath(p))
@@ -267,8 +267,8 @@ describe('preReadHandler', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('already read this session')
       expect(result.message).toContain('token-goat read/section/symbol')
-      expect(result.message).toContain('To edit it anyway')
-      expect(result.message).toContain('token-goat replace')
+      expect(result.message).not.toContain('To edit it anyway')
+      expect(result.message).not.toContain('token-goat replace')
     }
   })
 
@@ -1550,7 +1550,7 @@ Examples here`
     }
   })
 
-  it('hard-denies a re-read of a large markdown file with >=3 headings', () => {
+  it('hard-denies a re-read of a large markdown file with >=3 headings, without the edit-anyway hint (a prior real read already satisfied Read/Edit\'s precondition, so a plain Edit works fine)', () => {
     const mdContent = `# Title
 Some content here
 
@@ -1575,7 +1575,8 @@ Examples here`
       expect(result.message).toContain('# Title')
       expect(result.message).toContain('## Installation')
       expect(result.message).toContain('token-goat section')
-      expect(result.message).toContain('token-goat replace')
+      expect(result.message).not.toContain('token-goat replace')
+      expect(result.message).not.toContain('To edit it anyway')
     }
   })
 
@@ -2008,7 +2009,7 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('context')
   })
 
-  it('hard-denies 3rd read of a small .ts source file with count-based message', () => {
+  it('hard-denies 3rd read of a small .ts source file with count-based message, without the edit-anyway hint (2 prior reads already satisfied Read/Edit\'s precondition, so a plain Edit works fine)', () => {
     pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
     fs.writeFileSync(p, 'export function foo() {}')
@@ -2023,8 +2024,8 @@ Some content that makes the file large enough`
       expect(result.message).toContain('times already')
       expect(result.message).toContain('token-goat skeleton')
       expect(result.message).toContain('token-goat outline')
-      expect(result.message).toContain('To edit it anyway')
-      expect(result.message).toContain('token-goat replace')
+      expect(result.message).not.toContain('To edit it anyway')
+      expect(result.message).not.toContain('token-goat replace')
     }
   })
 
@@ -2245,7 +2246,7 @@ Some content that makes the file large enough`
     }
   })
 
-  it('denies 2nd read of a .rst file with no snapshot (falls through to the markdown re-read denial)', () => {
+  it('denies 2nd read of a .rst file with no snapshot (falls through to the markdown re-read denial), without the edit-anyway hint (the prior read already satisfied Read/Edit\'s precondition, so a plain Edit works fine)', () => {
     pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`)
     fs.writeFileSync(p, 'Title\n=====\n\nSmall.\n')
@@ -2255,8 +2256,8 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Markdown file already read this session')
-      expect(result.message).toContain('To edit it anyway')
-      expect(result.message).toContain('token-goat replace')
+      expect(result.message).not.toContain('To edit it anyway')
+      expect(result.message).not.toContain('token-goat replace')
     }
   })
 
