@@ -335,7 +335,7 @@ The background indexer is not started by `install`. Run `token-goat worker start
 
 token-goat covers the **narrow-read** half of cheap context: pulling one symbol, one section, one cached command output instead of a whole file. It does not cover the **deterministic-transform** half — searching wide, rewriting code structurally, converting data, running language tooling. Those belong in utilities, not in model output: an operation with a defined algorithm is reproducible, cheaper, and checkable against a spec rather than re-read for plausibility. Install these alongside token-goat so an agent has a real tool for each job instead of burning tokens simulating one.
 
-**Priority tier** — the three that close actual gaps in a token-goat-only setup:
+**Priority tier**, the three that close actual gaps in a token-goat-only setup:
 
 | Tool | Why it matters next to token-goat |
 |---|---|
@@ -343,7 +343,7 @@ token-goat covers the **narrow-read** half of cheap context: pulling one symbol,
 | `uv` | One Rust binary replacing pip, pyenv, virtualenv, and pipx. Every Python env probe and validation cycle gets an order-of-magnitude faster, so verification stops being the slow step agents skip. |
 | `ruff` | Python lint + format in one binary. Agent environment probes commonly emit `ruff check` as the Python verify command; without it installed that path silently degrades to no check at all. |
 
-**Base stack** — assumed by the read/search guidance token-goat writes into your agent config:
+**Base stack**, what a read or a search falls back to once the gate has ruled token-goat out. The guidance token-goat writes names no binary on purpose, because an instruction-file loader will harvest backticked names into a tool allowlist and then warn that every one of them is unknown. So this list is a recommendation, not something the installed block depends on:
 
 `rg` (search) · `fd` (file discovery) · `bat` (paged/piped reads) · `eza` (listings) · `delta` (diff rendering) · `jq` / `yq` (JSON / YAML) · `sd` (find-replace) · `mlr` (CSV/TSV/JSON records) · `sqlite3` (structured queries) · `gh` (PRs, issues, CI) · `hyperfine` (benchmarks) · `fzf`, `lazygit` (interactive)
 
@@ -1363,16 +1363,6 @@ Bug reports go to the same place. The most useful ones include:
 - What you expected and what actually happened
 
 For private questions, commercial licensing, or anything you'd rather not post publicly, contact me at token-goat@dfkhelper.com.
-
-## Available for work
-
-Senior or staff engineering. Developer tools, AI infrastructure, or context management.
-
-I've spent months inside Claude Code's hook system, session management, and compaction pipeline. Not reading the docs. Instrumenting them to see what was actually happening. The work is in this repo.
-
-I build systems that run without babysitting, measure their own impact, and fail quietly. If you're building tooling for developers who work with AI, reach out.
-
-[token-goat@dfkhelper.com](mailto:token-goat@dfkhelper.com)
 
 ## Disclaimer
 
