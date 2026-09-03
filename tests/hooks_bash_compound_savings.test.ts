@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 
 vi.mock('../src/stats.js', async (importOriginal) => {
@@ -10,6 +10,12 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 import { postBashHandler } from '../src/hooks_bash.js'
 import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+
+// The delivery cap these expectations assume is Claude Code's. Left to the ambient environment,
+// detectHarness() answers 'claudecode' when the suite runs inside a Claude Code session and
+// something else in CI, so the two would exercise different branches. Pin it.
+const CLAUDE_CODE_BASH_OUTPUT_CAP = 20_000
+let savedHarnessOverride: string | undefined
 
 function makePostBashEvent(command: string, output: string): HookEvent {
   return makeHookEvent({
@@ -33,6 +39,12 @@ function genericSavings(): Array<[number, number]> {
 describe('compound-output compression savings accounting', () => {
   beforeEach(() => {
     ;(recordStat as unknown as { mockClear: () => void }).mockClear()
+    savedHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+  })
+  afterEach(() => {
+    if (savedHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
   })
 
   // The rewrite this path ships is the filter body PLUS the filter's own trailing marker PLUS a
@@ -46,7 +58,12 @@ describe('compound-output compression savings accounting', () => {
     if (result.hookType !== 'rewriteOutput') return
     const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const original = Buffer.byteLength(dup, 'utf-8')
-    const expectedBytes = original - emitted
+    // The harness truncates a Bash result at CLAUDE_CODE_BASH_OUTPUT_CAP bytes and hands the model
+    // the truncated body plus a pointer to the persisted file, so the bytes this rewrite actually
+    // spared are measured from the delivered slice. Against the full original this expectation used
+    // to credit ~171 KB for an output the model would never have been shown more than 20 KB of.
+    expect(original).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP)
+    const expectedBytes = CLAUDE_CODE_BASH_OUTPUT_CAP - emitted
     // The token half of this pair used to restate the producer's own formula, floor(bytes / 3) + 1,
     // which is how this path came to be the only saving in the database credited on a different scale
     // from its siblings: the expectation was written from the code and so agreed with it whatever it
@@ -62,9 +79,13 @@ describe('compound-output compression savings accounting', () => {
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
     const original = Buffer.byteLength(dup, 'utf-8')
+    expect(original).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP)
+    const emitted = Buffer.byteLength(result.updatedOutput, 'utf-8')
     const [saved] = genericSavings()[0]!
-    expect(saved).toBeGreaterThan(original * 0.9)
-    expect(saved).toBeLessThan(original)
+    // Still the bulk of what the model would actually have received -- the under-crediting
+    // direction fails here just as it did before, only now against the delivered slice.
+    expect(saved).toBeGreaterThan(CLAUDE_CODE_BASH_OUTPUT_CAP * 0.9)
+    expect(saved).toBe(CLAUDE_CODE_BASH_OUTPUT_CAP - emitted)
   })
 
   /** Forty distinct filler lines plus `repeats` copies of one line: the generic filter collapses the run, so the reduction scales one line at a time and can be parked on either side of the 100-byte net-benefit floor. */

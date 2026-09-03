@@ -18,6 +18,7 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
+import { deliveredOutputBytes } from './delivery_cap.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { canRunWrappedShell } from './shell.js'
@@ -1893,7 +1894,11 @@ async function maybeCollapseIdenticalRead(
   // copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would
   // strand this pointer and leave the transcript with neither the body nor a duplicate of it. The
   // earlier full copy is precisely what this rewrite is pointing at, so it must stay.
-  return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes })
+  // Priced against the delivered size, not the original: the harness truncates a Bash result before
+  // the model sees it, so collapsing an oversized body spares at most the delivered slice. See
+  // deliveredOutputBytes in src/delivery_cap.ts. The worthwhile gate above deliberately stays on the
+  // uncapped bytes -- this is an accounting correction, not a change to which rewrites ship.
+  return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
 async function maybeCompressCompoundOutput(
@@ -1948,7 +1953,9 @@ async function maybeCompressCompoundOutput(
   }
   await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
   // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing.
-  return emitRewrite(body, 'bash', { kind: 'bash_compress:generic', originalBytes: compressed.originalBytes })
+  // originalBytes is capped at the harness delivery cap (src/delivery_cap.ts): the model never
+  // receives more than that inline, so a larger counterfactual would book output it could not see.
+  return emitRewrite(body, 'bash', { kind: 'bash_compress:generic', originalBytes: deliveredOutputBytes(compressed.originalBytes) })
 }
 
 /**
@@ -1998,7 +2005,8 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder
   // in `stripped` was already in the original and was booked by whoever put it there, so counting
   // here would credit this path with a redaction it did not perform.
-  return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes }, 'counted-elsewhere')
+  // Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
+  return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
 }
 
 /**
