@@ -130,6 +130,33 @@ export function visionTokensSaved(fromWidth: number, fromHeight: number, toWidth
   return Math.max(0, visionTokens(fromWidth, fromHeight, tier) - visionTokens(toWidth, toHeight, tier))
 }
 
+/**
+ * The most visual tokens any single image can cost at this tier.
+ *
+ * The honest ceiling for a caller that emits text in place of an image but never learns the
+ * image's pixel dimensions. Crediting a byte count there would invent a number: the alternative
+ * the caller preempted was one image, and one image cannot bill more than this.
+ */
+export function visionTierMaxTokens(tier: VisionTier): number {
+  return VISION_TIER_LIMITS[tier].maxTokens
+}
+
+/**
+ * Visual tokens saved by emitting `emittedBytes` of text where the model would otherwise have been
+ * shown a `width` x `height` image.
+ *
+ * The single definition of the image-for-text trade. The two sides are deliberately priced by
+ * different rules because they are different units: the image side in visual tokens (28x28-pixel
+ * patches, the unit the API actually bills), the text side by the repo-wide bytes/4 text
+ * approximation. Pricing the image side in bytes -- an image is not text, and its byte size has no
+ * relationship to what it costs -- is the accounting error this helper exists to stop repeating.
+ * Pass `null` dimensions when they are genuinely unavailable and the tier ceiling is used instead.
+ */
+export function visionTokensSavedByText(width: number | null, height: number | null, emittedBytes: number, tier: VisionTier): number {
+  const imageSide = width === null || height === null ? visionTierMaxTokens(tier) : visionTokens(width, height, tier)
+  return Math.max(0, imageSide - savedTokensFromBytes(emittedBytes))
+}
+
 /** Below this byte count an image is left untouched (encode CPU > savings). */
 const DEFAULT_SIZE_THRESHOLD_BYTES = 512 * 1024
 
@@ -543,7 +570,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
       // bytes/4 text approximation for the string it emits instead -- rather than by one rule applied
       // to both. Pairs with the image_shrink row above, which covers original -> shrunk, so the two
       // rows still sum to the true original -> text saving with nothing counted twice.
-      const tokensSaved = Math.max(0, visionTokens(result.width, result.height, tier) - savedTokensFromBytes(emittedBytes))
+      const tokensSaved = visionTokensSavedByText(result.width, result.height, emittedBytes, tier)
       recordStat('image_ocr', saved, tokensSaved, undefined, basename)
       return contextOutput(emitted)
     }
