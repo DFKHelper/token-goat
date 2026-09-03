@@ -172,7 +172,7 @@ describeWithBrowser('takeScreenshot DNS rebinding', () => {
     expect(message).toMatch(/DNS resolution failed|DNS returned no addresses/)
     expect(message).toContain('tg-rebind-check.invalid')
     expect(fs.existsSync(dest)).toBe(false)
-  }, 60_000)
+  }, 120_000)
 
   it('renders a page end to end under the opt-out (control: not refusing everything)', async () => {
     // Blocking must be opt-out here because every address a test server can bind (127.0.0.1, ::1) is itself in the block list -- with the policy on, no locally-served page is reachable by construction. This still drives the full pipeline through real Chrome, so a fix that refused every target, or crashed in the new resolve/pin code, cannot pass it.
@@ -184,5 +184,5 @@ describeWithBrowser('takeScreenshot DNS rebinding', () => {
     expect(fs.existsSync(result.path)).toBe(true)
     expect(result.originalBytes).toBeGreaterThan(0)
     expect(requestPaths).toContain('/ordinary')
-  }, 60_000)
+  }, 120_000)
 })

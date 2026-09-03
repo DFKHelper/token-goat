@@ -1109,7 +1109,9 @@ describe('preBashHandler — cat source file recall', () => {
   it('passes through node -e without readFileSync', () => {
     const event = makeBashEvent(`node -e "require('./scripts/lib/organic-pin-miner-action'); console.log('ok')"`)
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
+    expect(result.hookType).not.toBe('deny')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('denies node -e with require of a project JSON file', () => {
@@ -1499,7 +1501,9 @@ describe('preBashHandler — python read-modify-write exemption', () => {
   it('passes through python open with write mode w', () => {
     const event = makeBashEvent("python3 -c \"with open('src/app/route.ts','r') as f: c=f.read(); open('src/app/route.ts','w').write(c.replace('old','new'))\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
+    expect(result.hookType).not.toBe('deny')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('wraps python open with write mode w+ in compress (PythonFilter; not denied)', () => {
@@ -1519,7 +1523,9 @@ describe('preBashHandler — python read-modify-write exemption', () => {
   it('passes through python snippet with .write() call after reading', () => {
     const event = makeBashEvent("python3 -c \"c=open('src/index.ts').read(); open('src/index.ts','w').write(c)\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
+    expect(result.hookType).not.toBe('deny')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   // Every write fixture above spells the mode as the second positional argument, directly after a
@@ -1637,7 +1643,9 @@ describe('preBashHandler — orchestrator state file exemption', () => {
   it('passes through python open() reading an improve-state JSON', () => {
     const event = makeBashEvent('python3 -c "import json; d = json.load(open(\'.improve-state-bugfixing.json\')); print(d)"')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
+    expect(result.hookType).not.toBe('deny')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('denies python open() of a .output file that really is a JSONL transcript, and points at bash-output --transcript', () => {
@@ -1685,7 +1693,9 @@ describe('preBashHandler — orchestrator state file exemption', () => {
   it('passes through node readFileSync reading an improve-state JSON', () => {
     const event = makeBashEvent('node -e "const fs = require(\'fs\'); const d = JSON.parse(fs.readFileSync(\'.improve-state-foo.json\', \'utf8\')); console.log(d)"')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // Subject is the exemption: this must NOT be denied. It is wrapped for output compression (same as the documented sibling case), which used to read as 'pass' only because the quoted `;` in the -c script wrongly disqualified the command from compression.
+    expect(result.hookType).not.toBe('deny')
+    expect(result.hookType).toBe('rewriteInput')
   })
 })
 
@@ -4464,7 +4474,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat src/auth_loop46.ts 2>&1'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toBe('`cat` loads the entire file into context. Use `token-goat read "src/auth_loop46.ts::SymbolName"` to read one function or class.')
+      expect(result.message).toBe('[tg] `cat` loads the entire file into context. Use `token-goat read "src/auth_loop46.ts::SymbolName"` to read one function or class.')
     }
   })
 

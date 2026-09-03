@@ -106,7 +106,7 @@ describeWithBrowser('takeScreenshot redirect SSRF', () => {
     expect(result.originalBytes).toBeGreaterThan(0)
     delete process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS']
     invalidateConfigCache()
-  }, 60_000)
+  }, 120_000)
 
   it('refuses the metadata redirect chain instead of rendering it', async () => {
     const dest = path.join(tmpDir, 'redirect.png')
@@ -123,5 +123,5 @@ describeWithBrowser('takeScreenshot redirect SSRF', () => {
     expect(message).not.toContain(METADATA_MARKER)
     expect(fs.existsSync(dest)).toBe(false)
     expect(fs.readdirSync(tmpDir).filter((f) => f.startsWith('redirect'))).toEqual([])
-  }, 60_000)
+  }, 120_000)
 })

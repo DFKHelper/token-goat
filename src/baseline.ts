@@ -187,9 +187,16 @@ export function buildTopSymbolsSql(): string {
                SELECT rowid AS rid, file_path, name, kind, LENGTH(COALESCE(body, '')) AS body_len
                FROM symbols
                WHERE kind IN ('class', 'function', 'interface') AND ${clause}
+                 AND LENGTH(name) >= 4
+                                                   AND file_path NOT LIKE '%/tests/%' ESCAPE '\\'
+                                                   AND file_path NOT LIKE '%/test/%' ESCAPE '\\'
+                                                   AND file_path NOT LIKE '%/__tests__/%' ESCAPE '\\'
+                                                   AND file_path NOT LIKE '%/spec/%' ESCAPE '\\'
+                 AND file_path NOT LIKE '%.test.%'
+                 AND file_path NOT LIKE '%.spec.%'
              ) t
              LEFT JOIN (
-               SELECT name, COUNT(*) AS ref_count
+               SELECT name, COUNT(DISTINCT file_path) AS ref_count
                FROM refs
                WHERE ${refScope.clause}
                GROUP BY name
@@ -324,8 +331,9 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
 
 /**
  * Approximate the bytes a `map` call saves versus reading its surfaced files individually, for the
- * `map_lookup` stat. "Full source" is the on-disk size of every file the map surfaces (recentFiles
- * + topSymbols' files), deduplicated, minus the map text actually emitted.
+ * `map_lookup` stat. The baseline is a plain listing of the deduplicated paths the map surfaces
+ * (recentFiles + topSymbols' files), minus the map text actually emitted — NOT those files'
+ * on-disk contents, which this used to claim and which no caller would ever have read instead.
  *
  * The dedup is why both path lists must be canonicalized through {@link normalizePath} first:
  * recentFiles are RELATIVE to `map.rootDir` (see {@link buildProjectMap}) while topSymbols'

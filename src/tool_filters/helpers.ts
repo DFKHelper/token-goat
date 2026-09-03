@@ -119,6 +119,23 @@ export function hasBareBackgroundOrNewline(cmd: string): boolean {
   return /(?<!&)&(?!&)/.test(masked)
 }
 
+/**
+ * True when any of `ops` appears in `cmd` OUTSIDE a quoted span. The compound-command gates
+ * used plain `cmd.includes('|')`, which cannot tell a shell pipeline from a quoted regex
+ * alternation: `grep -E 'foo|bar' src/` is a single command, but the naive check disqualified
+ * it from compression entirely. Reuses `maskQuotedSpans` -- the same masking
+ * `hasBareBackgroundOrNewline` already applies one line above those gates -- rather than
+ * adding a second masking implementation that could drift from it.
+ *
+ * Deliberately NOT for `$(` or a backtick: double quotes do not suppress command
+ * substitution, so masking double-quoted spans would wave through `echo "$(rm -rf /)"`. Those
+ * two operators keep their unmasked substring check.
+ */
+export function hasUnquotedOperator(cmd: string, ops: readonly string[]): boolean {
+  const masked = maskQuotedSpans(cmd)
+  return ops.some((op) => masked.includes(op))
+}
+
 const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
 const DIGITS_RE = /\d+/g
 // C0/C1 control chars except tab (09), newline (0A), carriage return (0D).
@@ -882,6 +899,144 @@ export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS
     if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
     return `${line.slice(0, cut)}  … [${line.length - cut} chars elided]`
   })
+}
+
+// Per-line char cap for grep/rg output that passes through uncompressed. 1000, not FALLBACK_MAX_LINE_CHARS' 400: measured over 4,664 real transcripts (32,720 unmarked grep/rg-headed Bash results, 42.8 MB), 2.89 MB sits beyond 1000 chars across 1,872 results (5.7%), versus 6.9 MB beyond 400. The 400 tier starts clipping ordinary long source lines, whereas past 1000 chars is effectively minified-bundle / base64 territory, where the characters flanking the match carry nothing a reader can use.
+export const GREP_MAX_LINE_CHARS = 1000
+
+/** Max chars of the leading `path:lineno:` field kept verbatim when a line is clipped around a late match, so a clip never costs the reader the filename. */
+const _GREP_PREFIX_BUDGET = 160
+
+// grep's leading `path:lineno:` field (or `path-lineno-` for a context line), tolerating a Windows drive-letter colon. The second alternative is the bare `lineno:` form grep emits when it was given a single explicit file, which would otherwise lose its line number to the elided head.
+const _GREP_LINE_PREFIX_RE = /^(?:(?:[A-Za-z]:)?[^:\n]{0,200}?[:-]\d+[:-]|\d+[:-])/
+
+// Flags after which the pattern can no longer be located by a plain substring scan: multiple/file-sourced patterns (-e/-f), case folding (-i/-y/-S), inverted matching (-v), NUL-delimited records (-z), and rg's multiline mode (-U).
+const _GREP_BAIL_SHORT = new Set(['e', 'f', 'i', 'v', 'y', 'z', 'S', 'U'])
+const _GREP_BAIL_LONG = new Set([
+  '--regexp', '--file', '--ignore-case', '--invert-match', '--null-data', '--smart-case', '--multiline',
+])
+// Short flags that consume the following token as their value, so it is not the pattern.
+const _GREP_VALUE_SHORT = new Set(['A', 'B', 'C', 'm', 'd', 'D'])
+// rg-only value-taking short flags. Kept off the shared set because `-r` is plain recursion for grep but `--replace` for rg.
+const _GREP_RG_VALUE_SHORT = new Set(['g', 't', 'T', 'M', 'j', 'r'])
+const _GREP_VALUE_LONG = new Set([
+  '--max-count', '--context', '--after-context', '--before-context', '--include', '--exclude',
+  '--exclude-dir', '--glob', '--iglob', '--type', '--type-not', '--binary-files', '--devices',
+  '--directories', '--color', '--colour', '--replace', '--max-columns', '--threads', '--sort',
+  '--sortr', '--pre', '--engine',
+])
+const _GREP_REGEX_META_RE = /[\\^$.|?*+()[\]{}]/
+
+/** Recover the literal search string from a grep/rg/git-grep argv, or null when it cannot be recovered as a plain substring (regex metacharacters without -F, a case-folding or inverting flag, `-e`/`-f`, or a pattern under 3 chars). Callers must treat null as "do not touch the line". */
+export function grepLiteralPattern(argv: string[]): string | null {
+  if (!argv.length) return null
+  const stem = pathStem(argv[0] ?? '').toLowerCase()
+  let rest = argv.slice(1)
+  let isRg = stem === 'rg'
+  if (stem === 'git') {
+    const gi = rest.indexOf('grep')
+    if (gi < 0) return null
+    rest = rest.slice(gi + 1)
+    isRg = false
+  }
+  let fixed = false
+  let endOfFlags = false
+  let pattern: string | null = null
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i]!
+    if (!endOfFlags && tok === '--') {
+      endOfFlags = true
+      continue
+    }
+    if (!endOfFlags && tok.startsWith('--')) {
+      const eq = tok.indexOf('=')
+      const name = eq >= 0 ? tok.slice(0, eq) : tok
+      if (_GREP_BAIL_LONG.has(name)) return null
+      if (name === '--fixed-strings') fixed = true
+      else if (eq < 0 && _GREP_VALUE_LONG.has(name)) i++
+      continue
+    }
+    if (!endOfFlags && tok.length > 1 && tok.startsWith('-')) {
+      const letters = tok.slice(1)
+      for (let k = 0; k < letters.length; k++) {
+        const ch = letters[k]!
+        if (_GREP_BAIL_SHORT.has(ch)) return null
+        if (ch === 'F') fixed = true
+        if (_GREP_VALUE_SHORT.has(ch) || (isRg && _GREP_RG_VALUE_SHORT.has(ch))) {
+          // A trailing value flag (`-C 3`) eats the next token; an attached value (`-C3`) eats the rest of the cluster.
+          if (k === letters.length - 1) i++
+          break
+        }
+      }
+      continue
+    }
+    pattern = tok
+    break
+  }
+  if (pattern === null || pattern.length < 3 || pattern.includes('\n')) return null
+  if (!fixed && _GREP_REGEX_META_RE.test(pattern)) return null
+  return pattern
+}
+
+// Back off one UTF-16 code unit when `idx` would split a surrogate pair, so a cut never leaves a lone surrogate that serialises as U+FFFD.
+function _safeCut(line: string, idx: number): number {
+  if (idx <= 0 || idx >= line.length) return idx
+  const high = line.charCodeAt(idx - 1)
+  const low = line.charCodeAt(idx)
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff ? idx - 1 : idx
+}
+
+/** Clip one over-long grep result line to a window centred on `pattern`, keeping the `path:lineno:` prefix and marking every elided run with its char count. Returns the line untouched when the match cannot be located, when the window would be too small to be useful, or when the markers would cost more than they remove. */
+export function clipLongMatchLine(line: string, pattern: string, maxChars = GREP_MAX_LINE_CHARS): string {
+  if (line.length <= maxChars) return line
+  const pm = _GREP_LINE_PREFIX_RE.exec(line)
+  const prefixEnd = pm && pm[0].length <= _GREP_PREFIX_BUDGET ? pm[0].length : 0
+  let idx = line.indexOf(pattern, prefixEnd)
+  if (idx < 0) idx = line.indexOf(pattern)
+  // Match not locatable on this line: leave it whole rather than trim blind. A clip that drops the answer spends the bytes and destroys the result.
+  if (idx < 0) return line
+  const matchEnd = idx + pattern.length
+  let clipped: string
+  if (matchEnd <= maxChars) {
+    const cut = _safeCut(line, maxChars)
+    clipped = `${line.slice(0, cut)}  … [${line.length - cut} chars elided]`
+  } else {
+    const budget = maxChars - prefixEnd
+    if (budget < pattern.length + 40) return line
+    let start = Math.max(prefixEnd, idx - Math.floor((budget - pattern.length) / 2))
+    let stop = start + budget
+    if (stop > line.length) {
+      stop = line.length
+      start = Math.max(prefixEnd, stop - budget)
+    }
+    start = _safeCut(line, start)
+    stop = _safeCut(line, stop)
+    // Safety net: any window that does not fully contain the match is not shippable.
+    if (start > idx || stop < matchEnd) return line
+    const before = start - prefixEnd
+    const after = line.length - stop
+    clipped =
+      line.slice(0, prefixEnd) +
+      (before > 0 ? `… [${before} chars elided] …` : '') +
+      line.slice(start, stop) +
+      (after > 0 ? `  … [${after} chars elided]` : '')
+  }
+  // Book only what is actually emitted: a clip whose markers cost more than the chars they replace ships the original untouched.
+  return clipped.length < line.length ? clipped : line
+}
+
+/** Apply {@link clipLongMatchLine} to every line of grep/rg output, using the literal pattern recovered from `argv`. Returns `text` by identity when nothing was clipped. */
+export function clipGrepLines(text: string, argv: string[], maxChars = GREP_MAX_LINE_CHARS): string {
+  if (text.length <= maxChars) return text
+  const pattern = grepLiteralPattern(argv)
+  if (pattern === null) return text
+  let changed = false
+  const out = text.split('\n').map((line) => {
+    const clipped = clipLongMatchLine(line, pattern, maxChars)
+    if (clipped !== line) changed = true
+    return clipped
+  })
+  return changed ? out.join('\n') : text
 }
 
 /** Head/tail-truncated dump used when a filter cannot run (over budget / raised). */

@@ -37,7 +37,7 @@ Restart your AI sessions. Run `token-goat stats` a couple of minutes after your 
 
 > **Built and continually improved, free, by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, [drop me a line](mailto:token-goat@dfkhelper.com).**
 
-[Install](#install) · [CLI](#cli) · [What gets installed?](#what-gets-installed) · [Stats](#stats-display) · [Security & uninstall](#security-privacy-and-uninstall)
+[Install](docs/install.md) · [CLI](docs/cli.md) · [What gets installed?](docs/install.md#what-gets-installed) · [Stats](#stats-display) · [Security & uninstall](docs/security.md)
 
 ---
 
@@ -69,6 +69,11 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 |--------------------|------------------|
 | 3.3 MB screenshot lands in model context | 84 KB compressed copy, 97.4% smaller |
 | Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
+| Read tool asks for lines the session was already given | Answered with a pointer at the copy already delivered instead of the file, when the text this read would return matches the text already served for it whole line for whole line. Proof rather than a read count, so it also covers a file inside the recent-read protection window; a changed file, a wider range, and `reread_deny = false` all pass through |
+| Same unchanged file read again through the shell (`cat`, `head`, `tail`, `sed -n '1,40p'`) | Byte-identical repeat replaced with a one-line pointer instead of the whole body — 4,031 bytes to 189 on this project. Only fires when the two runs match exactly, so a changed file is untouched; full text stays available via `token-goat bash-output <id>` |
+| Part of a file re-read under a different command (`head -40 F` then `sed -n '1,30p' F`) | Repeat replaced with a pointer when every line coming back was already served for that same file this session. Matched on the text, on whole-line boundaries, so a read that adds any new lines is left whole; the record is dropped when the file is edited or the conversation is compacted. A file read with the Read tool counts as served too, limited to the lines that read actually handed over, and a read that came back truncated counts for nothing |
+| Read tool asks for a range that overlaps one already delivered | Only the overlapping stretch is withheld, replaced by one line naming the line numbers and the recall command; the new lines come through with their own numbers and spacing, byte for byte. A stretch is kept whenever dropping it would save less than the line replacing it costs, and a result carrying anything the redactor would strip, a truncated result, or a file changed on disk all pass through whole. Set `elide_served_lines = false` to disable |
+| Shell command run with colour on (`git`, `npm`, `npx`, `token-goat`) | Terminal escape sequences removed, leaving byte-for-byte the same output with colour off: 13.2% smaller on a real `git diff` here, and about a quarter of the bytes on the calls it fires for. Nothing is summarized or withheld, so there is no recall pointer; it runs on failed commands too, and only when the escapes are worth a rewrite |
 | Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change. Docs and source/style/data files (`.md`/`.ts`/`.css`/`.json`/…) by default; set `serve_diff_on_reread = false` to disable source diffs |
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
 | Same files re-read from scratch after `/compact` | Recovery hint at SessionStart lists cached snapshot + bash + WebFetch IDs |
@@ -77,7 +82,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Model reads a skill SKILL.md file directly mid-session (burning the full 10k–65k tokens again) | Pre-Read hook intercepts `*/.claude/skills/<name>/SKILL.md` paths; if the skill is already cached this session it emits a `token-goat skill-body <name>` hint instead |
 | Same large skill invoked twice in a session | PreToolUse hook blocks the reload; serves cached compact (~400 tokens) via `additionalContext` instead of the full 40–65k body. Allows the reload if compaction fired since the last load |
 | Skill invoked with `first_load_compact=true` and `<!-- COMPACT_END -->` present | First load also blocked; only the curated compact section is served. Full body available via `token-goat skill-body <name>` on demand |
-| Same docs URL fetched twice in a session | Re-fetch blocked at warm+ context pressure; cached body available via `token-goat web-output <id>` |
+| Same docs URL fetched twice in a session with the same question | Re-fetch blocked at any context pressure; cached body available via `token-goat web-output <id>`. Keyed on the URL and the prompt together, since a WebFetch answer is specific to the question asked, so the same page fetched with a different question is left alone |
 | `cat src/auth.py` or `Get-Content module.py` run via Bash | Pre-Bash hook detects whole-file reads of indexed source files and suggests `token-goat read "file::Symbol"`, `skeleton`, or `section` — covers `cat`, `bat`, `type`, PowerShell `Get-Content`/`gc` |
 | `rg pattern src/` or `grep -rn` run via Bash (first time) | Pre-Bash hook suggests `token-goat symbol <name>` and `token-goat semantic "<query>"` as indexed alternatives to a full directory walk |
 | `rg "^def" src/file.py` or `grep "class " module.ts` — structural search on a single source file | Pre-Bash hook redirects to `token-goat skeleton "file"` or `outline "file"` — all symbols with line numbers, no full-file read |
@@ -94,7 +99,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Same `pytest` / `cargo` / `git log` re-run mid-session | Small prior outputs (≤8 KB) served inline on first repeat; larger outputs get a hint pointing at `token-goat bash-output <id>` |
 | Same `Grep` pattern re-run with hundreds of matches | Pre-Grep dedup hint quotes the prior match count |
 | `Grep` in `content` mode repeats the same file path on every match line | Post-Grep hook folds matches under one path header per file (lossless, path/line survive verbatim) |
-| Same docs URL fetched twice | Re-fetch denied at warm+ context pressure (redirects to `token-goat web-output <id>`); advisory hint at cool |
+| Same docs URL fetched twice with the same prompt | Re-fetch denied (redirects to `token-goat web-output <id>`) once the cached body clears `web_dedup_min_bytes`, at every context pressure. A repeat with a different prompt passes through: the cached answer was written for the earlier question |
 | `token-goat section pyproject.toml::tool.ruff` | One TOML table extracted instead of the whole config; same for `.yaml`/`.yml`/`.json`/`.ini`/`.cfg`/`.env`/`Dockerfile` |
 | Typoed `token-goat symbol getUserr` | `symbol` matches on exact name; a miss returns `No matches for 'getUserr'` (no fuzzy/auto-redirect) — use `token-goat find getUserr` for a typo-tolerant name lookup, or `token-goat semantic "<what it does>"` when you don't know the name at all |
 | `grep`/`rg` returns 50+ match lines | File-level summary: top 20 files by match count; full result cached, ~80% smaller |
@@ -108,6 +113,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | CSV/JSON/JSONL/log file re-read when only structure changed | Pre-Read hint for structured files (CSV headers, JSON keys, log format), ~70% smaller than full read |
 | Index-only files (lockfiles, source maps, bundles) read on every session | Pre-Read suppression for read-only files (package-lock.json, *.map, dist/), skipped unless explicitly edited |
 | Large markdown file read in full (README.md, CHANGELOG.md, CLAUDE.md ≥8 KB) | Heading tree intercepted instead — H1–H3 with `#2`/`#3` disambiguation; `token-goat section` shortcuts listed for well-known files; post-edit injects a re-read suggestion rather than the full file |
+| Subagent reads a ≥30 KB markdown file whole, on its first look at it | Off by default. Set `subagent_markdown_first_read_deny = true` under `[hints]` to block that read and answer with the heading tree instead. Only fires in a subagent, only on a first, un-ranged read of a `.md`/`.mdx`/`.markdown` file with at least three headings; a read that already asks for a line range, and every main-session read, pass through untouched |
 | PDF opened via Read | Full read denied; PDF shows page count and outline (`token-goat pdf-extract` pulls the actual text, optionally paged/sliced, when the outline isn't enough) |
 | Excel/PowerPoint/Word file (.xlsx/.pptx/.docx) opened via Read | Full read denied; redirects to the matching narrow-slice command family (`xlsx-sheets`/`xlsx-head`/`xlsx-range`/`xlsx-query`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `docx-outline`/`docx-text`) instead of extracting the whole document as text |
 | Other Office binary (.odt, .ods, .ott, .odp) opened via Read | Full read denied; redirects to `pandoc` for text extraction (no dedicated reader for these formats yet) |
@@ -286,9 +292,7 @@ For recurring scheduler loops, the 25th, 100th, and 250th observed delivery in a
 
 ## Install
 
-> **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will run the commands, check codecs, and confirm everything is working.
-
-**Requirements:** Node.js 22.16 or later (all platforms)
+**Requirements:** Node.js 22.16 or later, on any platform.
 
 ```
 npm install -g token-goat
@@ -296,539 +300,15 @@ token-goat install
 token-goat doctor          # confirms hooks and sharp are working; look for "sharp: ok"
 ```
 
-Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
+Three commands. Hooks register and start working immediately: no terminal popups, no tray icon, no service to babysit. That wires up Claude Code; other agent CLIs are added with a flag (`--codex`, `--copilot`, and siblings).
 
-### Agents choose the commands
-
-People install token-goat. Agents use it. You do not need to memorize its commands or tell the agent which file type it has.
-
-Installation adds a short routing guide to the agent's instructions. When the agent tries to read a supported binary document, a hook identifies the extension and returns the right next step. The agent starts with an inventory, then reads only the relevant part.
-
-| Task | Agent flow |
-| --- | --- |
-| Review a PDF | `pdf-meta` and `pdf-outline`, then `pdf-locate` to find the pages that mention a term and `pdf-extract --pages` only those |
-| Review a Word document | `docx-outline`, then `docx-text` |
-| Review a slide deck | `pptx-outline`, then `pptx-slide` or `pptx-notes` |
-| Review a workbook | `xlsx-sheets`, then `xlsx-head`, `xlsx-range`, or `xlsx-query` |
-
-Give the agent the file and the task: “Review `manual.pdf` for warranty exceptions.” It selects the bounded reader. If no routing rule fits, it can run `token-goat commands` instead of guessing.
-
-The commands stay separate so every retrieval is visible, repeatable, and easy to narrow. The agent chooses the sequence; the developer can still inspect or run any step directly.
-
-For bounded archive/document comparisons after setup, see the [CLI comparison workflow](#archivedocument-comparison-workflow).
-
-**Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
-
-Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a delimited routing block written to `~/.claude/CLAUDE.md` plus a registered skill gate the agent's reads — before any file read it must ask whether a `token-goat read` / `symbol` / `section` returns just what it needs, and the block explicitly subordinates the harness's own Read/Grep tool-preference rules to the *fallback* choice once token-goat is ruled out. Install writes no permission entry: whether `token-goat` commands need a per-call approval prompt is left to your own `settings.json`, unchanged.
-
-**Keep that block where install put it.** It's plain markdown in a file you own, so moving it into a tidier reference file is tempting — but `install` and `uninstall` resolve one hardcoded path (`~/.claude/CLAUDE.md`). A relocated copy is never refreshed, so it freezes at whatever version was current when it moved, and the next `install` sees CLAUDE.md missing its block and appends a fresh one — leaving the guidance duplicated across two files with only one of them live. `token-goat doctor` warns when it finds a block outside CLAUDE.md, naming the file; `install` warns at write time and `uninstall` reports what it couldn't remove. None of them edit a file token-goat doesn't own, so cleanup stays your call. A pointer that merely *mentions* the markers in prose is fine — detection requires both markers on their own lines.
-
-The background indexer is not started by `install`. Run `token-goat worker start` on any platform to launch it as a detached process; `token-goat worker status` / `token-goat worker stop` manage it from there.
-
-### Companion CLI tools (recommended — install these too)
-
-token-goat covers the **narrow-read** half of cheap context: pulling one symbol, one section, one cached command output instead of a whole file. It does not cover the **deterministic-transform** half — searching wide, rewriting code structurally, converting data, running language tooling. Those belong in utilities, not in model output: an operation with a defined algorithm is reproducible, cheaper, and checkable against a spec rather than re-read for plausibility. Install these alongside token-goat so an agent has a real tool for each job instead of burning tokens simulating one.
-
-**Priority tier** — the three that close actual gaps in a token-goat-only setup:
-
-| Tool | Why it matters next to token-goat |
-|---|---|
-| `ast-grep` | The symbol-aware **write** half. token-goat reads by symbol; ast-grep matches the AST and rewrites it (`--rewrite`, YAML rule files). Repo-wide renames, call-shape changes, and codemods become a reviewable diff instead of a model regenerating files. Unlike `rg`/`sd` it ignores comments and strings. |
-| `uv` | One Rust binary replacing pip, pyenv, virtualenv, and pipx. Every Python env probe and validation cycle gets an order-of-magnitude faster, so verification stops being the slow step agents skip. |
-| `ruff` | Python lint + format in one binary. Agent environment probes commonly emit `ruff check` as the Python verify command; without it installed that path silently degrades to no check at all. |
-
-**Base stack** — assumed by the read/search guidance token-goat writes into your agent config:
-
-`rg` (search) · `fd` (file discovery) · `bat` (paged/piped reads) · `eza` (listings) · `delta` (diff rendering) · `jq` / `yq` (JSON / YAML) · `sd` (find-replace) · `mlr` (CSV/TSV/JSON records) · `sqlite3` (structured queries) · `gh` (PRs, issues, CI) · `hyperfine` (benchmarks) · `fzf`, `lazygit` (interactive)
-
-Optional but useful: `difft` (difftastic — syntax-aware diff, so reformats and moved blocks stop generating review noise), `just` (task runner, keeps verify commands discoverable), `typos` (deterministic spellcheck).
-
-For archive/document work specifically, token-goat's bounded SQLite, XLSX, and PDF readers are documented in the [CLI comparison workflow](#archivedocument-comparison-workflow); keep rendering and schema-specific lineage interpretation in dedicated document tooling.
-
-```bash
-# macOS / Linux (Homebrew)
-brew install ast-grep uv ruff ripgrep fd bat eza git-delta jq yq sd miller sqlite gh hyperfine fzf lazygit
-
-# Debian / Ubuntu — note the binary renames: rg=ripgrep, fd=fdfind, bat=batcat
-sudo apt install -y ripgrep fd-find bat jq sqlite3 fzf pipx
-pipx install uv && pipx ensurepath     # pipx puts uv in ~/.local/bin
-export PATH="$HOME/.local/bin:$PATH"   # this shell; ensurepath covers later ones
-uv tool install ruff
-npm install -g @ast-grep/cli
-```
-
-```powershell
-# Windows (winget)
-winget install BurntSushi.ripgrep.MSVC sharkdp.fd sharkdp.bat eza-community.eza `
-               dandavison.delta jqlang.jq MikeFarah.yq chmln.sd Miller.Miller `
-               SQLite.SQLite GitHub.cli sharkdp.hyperfine junegunn.fzf JesseDuffield.lazygit
-winget install astral-sh.uv        # then: uv tool install ruff
-npm install -g @ast-grep/cli       # provides `ast-grep` (the old `sg` alias is deprecated)
-```
-
-If `winget` is unavailable (common when a session runs under a service account rather than an interactive login), `uv` also installs via `python -m pip install uv`, and `ast-grep` only needs npm. Verify the whole set in one pass:
-
-```bash
-for t in token-goat ast-grep uv ruff rg fd bat eza delta jq yq sd mlr sqlite3 gh hyperfine; do
-  command -v "$t" >/dev/null 2>&1 && echo "$t ok" || echo "$t MISSING"
-done
-```
-
-### Codex CLI users
-
-```
-token-goat install --codex
-```
-
-The `--codex` flag patches both Claude Code and Codex CLI in one pass.
-
-### Gemini CLI users
-
-```
-token-goat install --gemini
-```
-
-This writes hook entries into `~/.gemini/settings.json` using Gemini CLI's `BeforeTool` / `AfterTool` / `PreCompress` event names. Token-goat translates between Gemini's snake_case tool names (`run_shell_command`, `read_file`, `grep_search`, etc.) and its internal format automatically. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. To remove: `token-goat uninstall --gemini`.
-
-### Qwen Code users
-
-```
-token-goat install --qwen
-```
-
-This writes hook entries into `~/.qwen/settings.json`. Unlike Gemini CLI (its own ancestor, with a custom `BeforeTool`/`AfterTool`/`PreCompress` event/matcher scheme), Qwen Code's hooks system diverged and now mirrors Claude Code's own natively — `PreToolUse`/`PostToolUse`/`PreCompact`/`UserPromptSubmit`/`SubagentStop` event names and snake_case stdin JSON — so token-goat wires all five events with no event-shape translation. Tool names still need translating: Qwen Code's payloads carry its own runtime tool ids (`read_file`, `run_shell_command`, `grep_search`, ...), which token-goat maps to its internal tool vocabulary from Qwen Code's own tool-name source. token-goat uses a catch-all matcher per event rather than an incomplete per-tool list. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. This bridge was built from QwenLM/qwen-code's published docs, not tested against a live Qwen Code install — if hooks aren't firing, `token-goat doctor` and the settings.json contents are the first things to check. To remove: `token-goat uninstall --qwen`.
-
-### Kimi Code users
-
-```
-token-goat install --kimi
-```
-
-This writes `[[hooks]]` entries into `~/.kimi-code/config.toml` (or `$KIMI_CODE_HOME/config.toml`), covering Kimi Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, and `SessionStart` events. Kimi Code sends a Claude-Code-shaped snake_case payload on stdin, but it reads a different response: only a top-level `message` and `hookSpecificOutput.permissionDecision` / `permissionDecisionReason`. So the install also writes a small shim at `~/.kimi-code/hooks/token-goat-shim.js` that translates token-goat's answer into that contract, turns a hint into `message`, and writes nothing at all for a no-op. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. `Notification` and `Stop` are not wired, because token-goat has no handler for them. Input and output rewriting are not wired either: Kimi Code offers no channel to replace a tool's input or its result. This bridge was built from MoonshotAI/kimi-code's own source and docs, not tested against a live Kimi Code install, so if hooks are not firing, `token-goat doctor` and the `config.toml` contents are the first things to check. To remove: `token-goat uninstall --kimi`.
-
-### opencode users
-
-```
-token-goat install --opencode
-```
-
-The `--opencode` flag patches Claude Code and drops a TypeScript bridge plugin into opencode's plugins directory — one command, no separate base install. Image shrinking, post-edit indexing, compact assist, and rewritten tool results (prompt-injection fencing, secret redaction, and output compression replace the raw result, the same protection Claude Code sessions get) work. So do repeat-search denial for `websearch`, repeat-load denial for `skill`, and the subagent prompt briefing for `task` — all three tool ids and their argument keys were verified against opencode's own source at the installed release's tag. Session hints don't — opencode's plugin API has no way to inject context before a tool read.
-
-### openclaw users
-
-```
-token-goat install --openclaw
-```
-
-The `--openclaw` flag patches Claude Code and registers a TypeScript bridge plugin with OpenClaw's gateway: it drops `~/.openclaw/plugins/token-goat.ts` and adds it to `~/.openclaw/openclaw.json`'s `plugins.load.paths` / `plugins.entries` (existing config is merged, never overwritten). OpenClaw's plugin SDK does support `before_tool_call`/`after_tool_call` hooks with the block/rewrite shape token-goat needs; unlike the other bridges, no argument-key remapping is needed at all, since OpenClaw's tool-call params are already snake_case (`file_path`, `command`, etc.) — the same keys token-goat's own `tool_input` uses.
-
-What works: **bash output compression**, **re-read denial** and **surgical-read redirects for oversized first reads**, **image shrinking** (`before_tool_call` returns rewritten `params` whose `path` points at a materialized shrunk copy, the same mechanism the pi bridge uses), and **post-edit indexing** (all via `before_tool_call`/`after_tool_call`; OpenClaw's read/edit/write tools send the file path under `path`, which the plugin now forwards to token-goat as `file_path` too — earlier versions of this bridge assumed the keys already matched, so these read/edit hooks silently never engaged). What doesn't: **session hints** — OpenClaw's tool-call hooks have no context-injection channel, only param rewriting — and the **compaction manifest** — OpenClaw's `before_compaction`/`after_compaction` are observation-only, with no return-value mechanism to inject a manifest into the next turn the way pi's compaction hooks do.
-
-This bridge has not been validated against a live OpenClaw instance — it's built from OpenClaw's documented plugin SDK and hook event types, not tested against a real running gateway. If tool calls aren't being intercepted, the built-in tool name list in `openclaw.ts`'s `TOOL_TO_TG` map is the first thing to check. To remove: `token-goat uninstall --openclaw`.
-
-### pi users
-
-```
-token-goat install --pi
-```
-
-The `--pi` flag patches Claude Code and drops a TypeScript extension into pi's global extensions directory (`~/.pi/agent/extensions/token-goat.ts`). pi auto-discovers it on the next launch (approve the project-trust prompt the first time). The extension is a normal pi extension — a default-exported factory that subscribes to `session_start`, `tool_call`, `tool_result`, `session_before_compact`, and `session_compact` — and bridges those events into token-goat's `token-goat hook <event>` subprocess protocol.
-
-What works: **bash output compression** (the bash command is rewritten in `tool_call`; pi's `powershell` tool, whose input schema is identical to its bash tool's, is bridged the same way), **re-read denial** and **surgical-read redirects for oversized first reads** (both return `{ block, reason }` from `tool_call` — a confirmed re-read, or a first read at/above the pressure-scaled `large_read_redirect_bytes` gate, pointing at `token-goat skeleton`/`section`/`symbol` instead), **image shrinking** (`tool_call` rewrites the read path in place to a materialized shrunk copy), **post-edit indexing**, **output caching** and **rewritten tool output** (all three from `tool_result`: a compressed or redacted result is returned to pi as replacement content, with any image blocks in the result left in place), and the **compaction manifest** (captured at `session_before_compact`, re-injected after `session_compact` since pi's compaction replaces rather than appends). Skill-overhead preservation does not apply — pi has no Skill tool; skills are template expansions. To remove: `token-goat uninstall --pi`.
-
-**Project-local install (single project only).** pi also loads extensions from a project's `.pi/extensions/` directory (after the project is trusted). To install for one project without touching the global directory, drop the extension there:
-
-```bash
-npx token-goat install --pi --local
-```
-
-This writes `.pi/extensions/token-goat.ts` in the current project only. Remove it by deleting that file.
-
-### Copilot CLI users
-
-```
-token-goat install --copilot
-```
-
-The `--copilot` flag patches Claude Code and registers a Copilot CLI hook config: `~/.copilot/hooks/token-goat.json` (a `{ version, hooks }` file registering `sessionStart`, `preToolUse`, `postToolUse`, `preCompact`, `agentStop`, `subagentStop`, and `userPromptSubmitted`, per Copilot's own [hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)) plus the shim script it points at, `~/.copilot/hooks/token-goat-shim.js`. Unlike Codex, Copilot's event names and response schema (`permissionDecision`/`modifiedArgs` for `preToolUse`, `modifiedResult`/`additionalContext` for `postToolUse`, `decision`/`reason` for `agentStop`/`subagentStop`) genuinely differ from Claude Code's, so the shim translates rather than passes through.
-
-What works: **the command-routing reminder** (`sessionStart` returns `additionalContext`, so Copilot is told token-goat exists before it picks its first read tool — this is the one channel that lands ahead of that decision), **bash output compression and re-read denial** (`preToolUse` returns `modifiedArgs` or `permissionDecision: "deny"`), **background-shell output compression** (`postToolUse` returns `modifiedResult`), **image shrinking** (`preToolUse` on a `view` call returns `modifiedArgs` carrying the full original arguments with `path` swapped to a materialized shrunk copy — Copilot replaces the tool call's arguments wholesale with `modifiedArgs`, so the rewrite must carry them all), **post-edit indexing** (a `postToolUse` side effect; it needs no response channel), and **stop-hallucination logging** (`agentStop`/`subagentStop` map a token-goat `deny` onto `decision: "block"`, everything else onto `decision: "allow"`). `preCompact` and `userPromptSubmitted` are notification-only on real Copilot CLI, per its docs: Copilot never reads a response body for either, so token-goat's compaction manifest and prompt-context hints have no surfacing channel there. The shim still calls through for both so token-goat's internal side effects keep running, but nothing gets injected back into the agent. Copilot's built-in tool names are remapped onto token-goat's internal names where a clear match exists (`view`→Read, `edit`→Edit, `create`→Write, `bash`/`powershell`→Bash, `read_bash`/`read_powershell`→BashOutput, `web_fetch`→WebFetch, `grep`→Grep, `glob`→Glob). MCP-server tool calls, which Copilot names `<server>-<tool>` rather than `mcp__<server>__<tool>`, are translated too, but only when the name matches Copilot's own cached tool list exactly — never guessed from the name's shape, because a server name can itself contain a hyphen and a wrong guess would make the read-only MCP dedup path deny an ordinary built-in call. With no cache to match against, nothing is translated. `memory`, `ask_user`, `write_bash`/`write_powershell` (which send keystrokes to a running shell, not commands), and `stop_bash`/`list_bash` pass through unmapped and simply no-op. `task`, Copilot's subagent tool, is not remapped either, but it is handled under its own name: a `task` spawn gets the same prompt briefing, duplicate-spawn advisory, and recall pointer on a long report that a Claude Code `Agent` spawn gets. The once-per-session unrestricted-spawn advisory is the one exception: it is suppressed under Copilot, because it rides the `postToolUse` `additionalContext` channel Copilot discards, and its `subagent_type` advice describes Claude Code's Task schema, which Copilot's `task` tool does not use.
-
-**Why the background-shell compression matters most on Copilot.** Copilot runs shell commands in the background: a build or a test suite is started once, and the model then checks on it repeatedly while it runs. Each check hands back everything the command has printed since it started, from the first line. So the second check re-sends the whole first check, the third re-sends the first two, and a check ten minutes into a slow build re-sends the same output for the tenth time. The model has already read all of it and pays again for every word, every time. Token-goat sends the first check through untouched, then returns only the new part on each later check, with one line saying that is what it is; a check that found nothing new comes back as a single short line instead of the whole output again. Measured through the installed hook: a second check of 5,200 characters came back as about 1,250, and a third check that added nothing came back as 60 — roughly a quarter of the cost for the second look and about one percent for the third, improving the longer the command runs. Nothing is lost, because what is cut is what was already sent. It only shortens a check when the new output genuinely continues the last one seen; anything else passes straight through, so the worst case is a saving that does not happen rather than a wrong answer.
-
-No ambient environment variable documents "this process is running under Copilot CLI" the way Codex/opencode set one, so the shim sets `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before calling `token-goat hook` (same workaround `--pi` uses). Install also writes a token-goat routing block into `~/.copilot/copilot-instructions.md` (the same delimited-block gate written to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`), merged idempotently so any hand-written content outside the markers is preserved byte-for-byte. If you set `COPILOT_HOME`, install follows it — hooks go to `$COPILOT_HOME/hooks/` and the routing block to `$COPILOT_HOME/copilot-instructions.md`, matching where Copilot CLI actually reads them. To install for one project instead of user scope: `token-goat install --copilot --local` (writes `.github/hooks/token-goat.json` and `.github/copilot-instructions.md` in the current project). To remove: `token-goat uninstall --copilot`.
-
-**If Copilot CLI starts denying every tool call with `Denied by preToolUse hook ... (hook errored)`:** this is Copilot's own fail-closed behavior for a `preToolUse` hook that crashes, exits non-zero, or returns unparseable output -- it isn't limited to token-goat's own tool calls, since a fail-closed `preToolUse` hook blocks the whole session. Copilot caches hook configs at session start, so **renaming or reinstalling the hook mid-session has no effect** -- the only recovery is: run `token-goat install --copilot` (or `token-goat doctor`, which now checks the installed hook end-to-end and calls out a stale node-binary path from an nvm/fnm/volta upgrade specifically), then **fully restart Copilot CLI**.
-
-### Grok CLI (xAI Grok Build) users
-
-Grok Build already reads Claude Code's `~/.claude/settings.json` as a "Harness Compatibility" source out of the box (confirmed against grok 0.2.93 and its own [hooks doc](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)), so `token-goat install` alone already gets most of the integration working — image shrinking, session hints, post-edit indexing, and bash output compression all fire. The one gap: Grok's own `PreToolUse` hook contract documents only `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`, never token-goat's harness-independent `{"decision":"block","reason":"..."}` shape (unlike Gemini CLI, whose docs explicitly confirm `"block"` as an accepted alias for `"deny"`), so re-read denial and oversized-first-read redirects don't reliably block on the Claude Code compat path alone.
-
-```
-token-goat install --grok
-```
-
-The `--grok` flag patches Claude Code and additionally writes a standalone hook config at `~/.grok/hooks/token-goat.json` (global scope only — Grok's own project-scoped `<project>/.grok/hooks/*.json` requires a separate manual `/hooks-trust` grant this bridge can't perform for you) plus the shim it points at, `~/.grok/hooks/token-goat-shim.js`. The shim's only job is translating that one response shape: a token-goat `{"decision":"block",...}` deny becomes Grok's documented `{"decision":"deny",...}` (with exit code 2, matching Grok's own "explicit deny" convention), and every other event's response is forwarded through unmodified — Grok already sends the raw camelCase wire payload (`toolName`/`toolInput`/`sessionId`) token-goat's built-in `grok` harness detection (`GROK_SESSION_ID`, set on every hook subprocess Grok spawns) already normalizes correctly. That normalization maps every tool id registered in the grok 0.2.93 binary itself — both shell-tool spellings (`run_terminal_command` and `run_terminal_cmd`), `web_fetch`, `web_search`, `glob`, and the `hashline_*`/`*_concise` read/edit/grep variants — onto token-goat's internal tool names, so hooks fire regardless of which id a given Grok build sends.
-
-To remove: `token-goat uninstall --grok`.
-
-### Cline, Windsurf, Cursor, and other AI tool CLIs
-
-No separate install step needed. Token-goat compresses the terminal output of these tools automatically as soon as they appear on your PATH. Run `token-goat doctor` to confirm they are detected — the "Third-party AI tools" section will show `detected — bash output compression active`.
-
-Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor`), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary — this passive output filter is separate from the `--copilot` hook bridge above; it works with no install step and covers Copilot CLI's own terminal chrome, not the hook-driven read/index integrations), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
-
-### Updating
-
-There is no auto-update mechanism — token-goat never schedules or runs anything on its own. Updating is always a manual `npm install -g token-goat@latest`.
-
-| When | Command |
-|------|---------|
-| Update now | `npm install -g token-goat@latest` |
-| Reinstall from scratch (broken install, sharp failure) | `npm install -g token-goat@latest` |
-
-### Upgrading from the Python version
-
-The old Python package (`pip install token-goat`) wrote hook entries into `settings.json` with commands containing `token_goat` (underscore), invoking Python directly: something like `pythonw.exe -m token_goat.cli hook pre_tool_use`. The npm package invokes a generated shim instead (`"<node>" "~/.claude/hooks/token-goat-shim.js" pre_tool_use "<entry>"`).
-
-Both `install` and `uninstall` recognize the older command spellings — `token_goat`, `tokenwise`, `tg-hook`, `token-goat-hook`, and the pre-shim `token-goat hook` — so you do not need to hand-edit `settings.json`. Installing replaces a stale entry in place rather than leaving a dead one beside the new one, and uninstalling removes it.
-
-To upgrade cleanly:
-
-1. Remove the Python package: `pip uninstall token-goat`
-2. Install and register the npm package: `npm install -g token-goat && token-goat install`
-3. Verify: re-run `token-goat install`, which should now report hooks already up to date, or use the `jq` check under [Verify](#verify).
-
-**AI agents handling an upgrade:** complete all three steps in sequence. After step 3, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
+Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
 
 ## CLI
 
-Every command accepts a global `--cwd <path>`, which runs it as if invoked from that directory. It exists so a caller can name a project root without making that root its own working directory — a launcher should never resolve a binary name against a directory the workspace controls. It is applied before anything resolves the project root or loads config, so `--cwd` selects which `.token-goat.toml` applies.
+You rarely type these yourself. Installation writes a routing guide into the agent's instructions, and the agent picks the command that answers its question: a surgical read (`read`, `symbol`, `section`, `skeleton`), a search (`semantic`, `refs`), orientation in an unfamiliar repo (`map`, `arch`, `affected`), recall of output it already has (`bash-output`, `web-output`, `mcp-output`), or a bounded reader for a PDF, Word file, slide deck, workbook, SQLite database or image.
 
-### Archive/document comparison workflow
-
-These are agent-selected primitives, not a manual checklist. Give the agent the file and the question. The installed routing guide and read hook select the matching format flow; the commands below show the steps it can take without loading whole files:
-
-```bash
-token-goat sqlite-schema catalog.db
-token-goat sqlite-query catalog.db "SELECT file_path, name FROM files WHERE name LIKE '%owner%' LIMIT 20" --json
-token-goat xlsx-sheets link-map.xlsx
-token-goat xlsx-query link-map.xlsx --sheet Links --columns publication,source,target --head 50
-token-goat pdf-meta manual.pdf
-token-goat pdf-outline manual.pdf
-token-goat pdf-locate manual.pdf "torque spec" --ignore-case
-token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
-```
-
-`token-goat` intentionally does not render PDF pages or infer XML publication lineage: those operations produce binary/visual output or require schema-specific interpretation. Keep those steps in the document/PDF tooling, then pass only the bounded paths, rows, and page text needed for comparison.
-
-| Command | What it does |
-|---------|-------------|
-| `token-goat symbol [name]` | Jump to a symbol definition. `-p, --project [path]` scopes the search to one project root instead of the default global (cross-project) index — pass no value to use the current directory's project root, or a path to scope to a different one. `--json`'s `filePath` renders root-relative when a project root resolves, absolute when none does — matching human output and the outline/skeleton/refs `--json` convention. `--grep <pattern>` searches project-wide by NAME PATTERN instead of an exact name (regex, falling back to a literal substring match when the pattern is not valid regex) — the positional name is omitted in that mode, and the two are mutually exclusive since regex-filtering an already-exact name can only match everything or nothing. This is the only project-wide symbol-name pattern search: `skeleton`/`outline`/`exports --grep` are per-file, `types --grep` covers only type-like kinds, and `dead --grep` only zero-reference symbols. The filter is applied before the `--limit` slice, so `--limit N --grep P` returns up to N *matching* rows; when it matches nothing among symbols that are in scope, the output names the active filter instead of reading as an empty project. `--exclude-tests` hides symbols DEFINED in a test file (opt-in — omitted, output is unchanged), the same definition-site sense `dead --exclude-tests` uses rather than the call-site sense of `refs`/`callers`. The high-value case is a common helper name that is mostly defined in tests: against this repo's own index `symbol run` returns 18 rows of which 14 are test-file definitions, and `symbol capture` returns 9 of 9. Composable with `--grep` (a symbol must satisfy both) and applied before the `--limit` slice, so the flag selects from the whole match set rather than an already-capped page — without that ordering a `--limit N` window filled by test-file rows would report nothing for a symbol that is plainly indexed in src. When it hides every match there was, the output names how many were hidden and exits 0, instead of the exit-1 `No matches` a genuinely unindexed name returns. `--stats` adds a per-result reference count and doc-coverage flag, computed live from the index — the same flag `read`/`skeleton`/`outline` already carry, useful here for picking which of several same-named candidates is the real one. Note its known limitation: the count is keyed by symbol NAME project-wide, not by definition site, so under `--grep` several same-named symbols in different files all show the identical count. |
-| `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups (`read "file.py::Class.method"`) and line ranges: `read "file.py@10-40"` for lines 10 to 40 inclusive, or `read "file.py@42"` for one line. Line ranges read straight from disk, so they work on any file, including paths outside an indexed project. A trailing `@LINE` on the symbol itself (`read "file.py::run@42"`, or combined with a qualifier as `read "file.py::Class.method@42"`) anchors an ambiguous spec to the one candidate starting on that exact line — for a top-level definition with no enclosing `Class.method` qualifier, this is the only way to pick it out when its bare name also matches something else in the same file; every ambiguity error's retry suggestions already use this form where a plain qualifier wouldn't be unique. Pass a comma-separated spec (`file::a,b`) to merge several symbols' bodies from one file into a single call, each headed by its symbol name. Segments may also carry their own file (`a.ts::x,b.ts::y`) to merge symbols across several files in one call; a bare segment inherits the file to its left (`a.ts::x,b.ts::y,z` reads `z` from `b.ts`), and once more than one file is involved each block is headed by the full `file::symbol` so two files contributing the same symbol name stay distinct. `--force-refresh` reparses the file from disk and updates the index before querying — for files touched by git operations, external tools, or direct filesystem writes that bypass the normal post-edit indexing hook. `--stats` adds a per-symbol reference count and doc-coverage flag, computed live from the index. |
-| `token-goat replace <file>` | Replace one string in a file using `--old-from`/`--new-from` or `--old-b64`/`--new-b64`; `--all` replaces every match. If the exact match fails but a unique match exists once CRLF/LF differences are ignored, it heals automatically, writing the replacement back in the file's line-ending convention at that location. `--normalize-newlines` converts the old/new text's CRLF/LF to match the target file's dominant line ending before matching, for forcing normalization proactively. |
-| `token-goat insert-section <file> --after <heading>` | Insert content immediately after a matched section (`--content-from <source>` or `--content-b64 <payload>`), resolved the same way `section` resolves headings (exact, normalized, or an unambiguous prefix) — avoids the stale byte-exact anchor `replace` would otherwise need for an append-to-a-running-log edit. |
-| `token-goat note-add <file> [--symbol NAME]` | Attach a free-text architecture/rationale note (Markdown, `--content-from <source>` or `--content-b64 <payload>`) to a file, or to one specific indexed symbol within it. Captures a fingerprint of what the note describes (the symbol's current body, or a digest of the file's current top-level symbol manifest) so staleness can be detected later — re-running `note-add` for the same file/symbol overwrites rather than duplicates. |
-| `token-goat note-get <file> [--symbol NAME]` | Read back the note attached to a file or one indexed symbol within it. Flags whether the note has gone stale (the underlying code changed since it was written) via a `stale` field under `--json`. |
-| `token-goat note-list [--stale-only]` | List every recorded architecture note. `--stale-only` shows just the notes whose fingerprint no longer matches the current index — i.e. the file/symbol they describe changed since the note was written. Staleness is purely advisory: nothing here auto-rewrites or deletes a note. |
-| `token-goat write-file <dest>` | Write exact bytes to a file, sidestepping shell-escaping trouble with backticks, quotes, `$vars`, and CRLF. `--from <source>` copies bytes from a source file; `--b64 <payload>` decodes a base64 payload; with neither, reads from stdin. |
-| `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. A miss that is an unambiguous prefix of exactly one heading, or a distinctive suffix/word-subset of exactly one heading (e.g. `Setup` → "Installation and Setup", `Config Options` → "Configuration Options"), auto-redirects with a `(redirected from: …)` marker (and a `redirectedFrom` field under `--json`); a query matching 2+ headings is never guessed and reports a miss instead. A genuine miss lists only headings similar to the query as "Did you mean" suggestions, not every heading in the file. Disambiguate duplicates with `"doc.md::Heading#2"`. Comma-separated `"doc.md::A,B"` fetches several sections from one file in a single call, mirroring `read`'s `file::a,b` multi-symbol grammar. Cross-file `"a.md::Heading1,b.md::Heading2"` fetches sections from several files in one call, mirroring `read`'s `a.ts::x,b.ts::y` cross-file grammar — a bare heading after a `file::Heading` segment inherits the previous file, and each section is keyed by its full `file::Heading` pair so two files sharing a heading name cannot overwrite each other. `token-goat section doc.md --list` lists every heading in the file instead of reading one; `--grep <pattern>` narrows that list to headings matching a regex (falls back to a literal substring match if the pattern doesn't compile), same convention as `outline`/`types`/`exports`'s own `--grep`. |
-| `token-goat skill-section "<name>::<heading>"` | Extract a named section from an installed skill without reading the full skill file. |
-| `token-goat skeleton "file"` | Show all signatures in a file without bodies — typically 70–90% fewer tokens than a full read. `--force-refresh` reparses from disk first, bypassing a stale index. `--stats` adds a per-symbol reference count and doc-coverage flag, computed live from the index. `--grep <pattern>` narrows to symbols whose name matches a regex (a literal substring when the pattern is not valid regex), which is how you skim one area of a large file without dumping its whole symbol list; `--min-lines <n>` drops symbols shorter than N lines. Both compose, and if a filter removes everything the output says so and names the filter, rather than looking like a file with no symbols. Accepts a comma-separated file list (`"a,b,c"`) to cover several files in one call, one clearly-headed block per file; extra space-separated file arguments are reported in a note naming that comma form instead of being silently dropped. With `--json`, a comma-separated list returns one merged document (rows carry their own `filePath`), not one document per file. |
-| `token-goat outline "file"` | List top-level symbols with line ranges and docstring hints — one-glance file map. Doc hints are clipped to about a sentence with a visible ellipsis; the full doc comment is one `read "file::symbol"` away (`--json` carries it whole). `--force-refresh` reparses from disk first, bypassing a stale index. `--stats` adds a per-symbol reference count and doc-coverage flag, computed live from the index. `--grep <pattern>` narrows to symbols whose name matches a regex (a literal substring when the pattern is not valid regex), which is how you skim one area of a large file without dumping its whole symbol list; `--min-lines <n>` drops symbols shorter than N lines. Both compose, and if a filter removes everything the output says so and names the filter, rather than looking like a file with no symbols. Accepts a comma-separated file list (`"a,b,c"`) to cover several files in one call, one clearly-headed block per file; extra space-separated file arguments are reported in a note naming that comma form instead of being silently dropped. With `--json`, a comma-separated list returns one merged document (rows carry their own `filePath`), not one document per file. |
-| `token-goat yaml-outline <file>` | Structural summary of a YAML document (array shape / object key types) instead of a raw Read. Multi-document streams (`---`-separated) outline as an array of documents. |
-| `token-goat yaml-query <file> <path>` | Extract one value or a projected/filtered subset from a YAML document by dot-path instead of a raw Read (same grammar as `json-query`: `[n]` index, `[*]` wildcard, `[field=value]` filter — e.g. `items[status=active].name`). `--head <n>` caps a projected/filtered result. |
-| `token-goat xml-outline <file>` | Structural summary of an XML document (element tag hierarchy, attribute keys, child counts) instead of a raw Read. |
-| `token-goat xml-query <file> <path>` | Extract one value, element text/XML, or a projected/filtered subset from an XML document by XPath-like dot-path instead of a raw Read (same grammar as `json-query`/`yaml-query`: element tags, `@attr`, `[n]` index, `[*]` wildcard, `[attr=value]` filter, `--head <n>`). |
-| `token-goat json-outline <file>` | Structural summary of a JSON document (array shape / object key types) instead of a raw Read. |
-| `token-goat json-query <file> <path>` | Extract one value or a projected/filtered subset from a JSON document by dot-path instead of a raw Read: dot-separated keys with optional bracket segments — `[n]` index, `[*]` wildcard (projects every element/value), `[field=value]` filter. Examples: `data.items[3].name`, `items[*].id`, `items[status=active]`. |
-| `token-goat brief "file::symbol"` | Bundle a symbol's body, resolved callers (grouped by enclosing function), and its containing doc section into one round-trip instead of three separate `read`/`callers`/`section` calls. `--limit <n>` caps the callers shown per symbol (default 20; the true caller count is reported even when truncated). Comma-separated `"file::a,b"` fetches several symbols' bundles from one file in a single call, mirroring `read`'s `file::a,b` multi-symbol grammar. Cross-file `"a.ts::x,b.ts::y"` bundles symbols from several files in one call, mirroring `read`'s cross-file grammar — a bare segment inherits the file to its left, and once more than one file is involved each bundle is keyed by the full `file::symbol` so two files contributing the same symbol name stay distinct. Also accepts `read`'s `symbol@LINE` anchor to pick out an otherwise-ambiguous candidate. `-C, --context <n>` adds N lines of real call-site source around each entry of the caller block. `--json`'s `symbol.filePath` and `callers[].file` render root-relative when a project root resolves, absolute when none does — matching the plain-text block above. `--exclude-tests` hides callers whose call site is in a test file, matching `refs`/`callers`; the caller count and the elided tail both count the filtered set, so they never disagree with the rows shown, and when the filter empties the block it says so instead of reporting a bare zero that would read as "nothing calls this". `--json` adds `hiddenByExcludeTests` only when the filter actually hid something. `--grep <pattern>` narrows the caller block to callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex), the same filter `refs --grep`/`call-chain --grep` apply to their own results — useful for a high-fanout symbol whose default 20-caller window is otherwise mostly noise; composes with `--exclude-tests`, and reports `hiddenByGrep` under `--json` only when it hid something. |
-| `token-goat scope "file:line"` | Show symbols in scope at a given line — avoids reading the whole file to understand locals. |
-| `token-goat exports "file"` | List public (exported) symbols with types, docstring hints, and line ranges (`(lineStart-lineEnd)` in text mode, `lineStart`/`lineEnd` fields under `--json`). Names caught only by the source-text scan (no corresponding index row — e.g. certain re-export forms) report no location: omitted from text mode, `null` under `--json`. Accepts a comma-separated file list (`"a,b,c"`) to cover several files in one call, one clearly-headed block per file; extra space-separated file arguments are reported in a note naming that comma form instead of being silently dropped. `--grep <pattern>` only shows exported symbols whose NAME matches this regex (literal substring if it is not valid regex), applied before output is built; when it matches nothing among real exports, the output names the active filter instead of reading like the file has no exports at all. |
-| `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. Pass a comma-separated spec (`a,b,c` or `file::a,b`) to merge several symbols' references into one call, each group headed by its symbol name. Segments may also carry their own file (`a.ts::x,b.ts::y`) to merge references across several files in one call, mirroring `read`'s cross-file grammar — a bare segment inherits the file to its left, and once more than one file is involved each block is headed by the full `file::symbol` so two files contributing the same symbol name stay distinct. `--top <n>` groups references by file (count only) and shows just the top N by reference count with an elision note, instead of a per-line dump — for high-fanout symbols referenced in hundreds of places. `-C, --context <n>` shows N lines of real call-site source either side of each hit, rendered exactly like `grep -C`; omit it (or pass 0) and output is unchanged. Under `--json` each item gains a `contextLines` array alongside the existing `context` field (which names the enclosing symbol, not source text). `--exclude-tests` hides references whose call site is a test file (opt-in — omitted, output is unchanged); the summary line reports the filtered count plus how many were hidden. `--grep <pattern>` only shows references whose call-site FILE PATH matches this regex (literal substring if it is not valid regex) — rows render as `file:line: symbol`, so this is the field each row is keyed on. The pattern is tested against the path exactly as the row renders it, so an anchored `--grep "^src/"` matches what you see, identically in the single, multi-symbol and cross-file forms. Every form renders a call-site path the same way -- root-relative when a project root resolves, absolute when none does, never cwd-dependent -- and `--json` carries that same spelling in `filePath` (and in `--top`'s `fileCounts[].file`), so a payload is reproducible rather than tied to one machine's drive-letter casing. The high-value case is narrowing a wide-fanout symbol to drop test/vendored hits. Applied before `--top`'s grouping and before any `--limit` slice, so it selects from the whole reference set, not an already-capped page; when it matches nothing among references that do exist, the output names the active filter instead of reading like the symbol is unreferenced. A bare name that isn't indexed at all reports `Symbol not found: <name>` (with a `Did you mean:` suggestion when a near-name candidate is indexed) instead of the misleading "no references found", which is reserved for a real, indexed symbol that genuinely has zero references. |
-| `token-goat callers <symbol>` | Show which functions call a given symbol, grouped by caller with file, caller name, and every invoking line. Complements `refs`, which shows raw reference sites without grouping by enclosing function. Accepts `file::symbol` to disambiguate WHICH same-named definition is meant when several files define a symbol with that name — the file only narrows which definition, callers can still be found in any file. `-C, --context <n>` shows N lines of real call-site source either side of each hit, rendered exactly like `grep -C`; omit it (or pass 0) and output is unchanged. Under `--json` each item gains a `contextLines` array alongside the existing `context` field (which names the enclosing symbol, not source text). `--exclude-tests` hides callers whose call site is a test file (opt-in — omitted, output is unchanged); prints a note naming how many were hidden. `--grep <pattern>` only shows callers whose enclosing symbol NAME matches this regex (literal substring if it is not valid regex) — rows render as `symbol<TAB>file:line`, so this is the field each row is keyed on. Applied before the `--limit` slice, so it selects from the whole caller set, not an already-capped page; when it matches nothing among callers that do exist, the output names the active filter instead of reading like the symbol has no callers. A bare name that isn't indexed at all reports `Symbol not found: <name>` (with a `Did you mean:` suggestion when a near-name candidate is indexed) instead of the misleading "no references found", which is reserved for a real, indexed symbol that genuinely has zero callers. `--json` emits each item's path under both `file` and `filePath` with the identical value; `file` is kept for this release only and will be removed in a future one, so `filePath` is the spelling to migrate to (matching `symbol`/`types --json`). `--json` emits the shared `{items, truncated, totalCount}` envelope — the same shape `symbol`/`refs`/`skeleton`/`outline --json` return, present whether or not truncation occurred, so a script never has to branch on shape. |
-| `token-goat call-chain <symbol>` | Trace every caller layer from a symbol back to the entry points — one step deeper than `callers`. Use when you need to know what reaches a function across the whole call graph, not only who invokes it directly. Pairs with `impact` for the downstream direction. Accepts `file::symbol` to disambiguate WHICH same-named definition the chain starts from — the file only narrows which definition, callers can still be found in any file. `--exclude-tests` prunes callers whose call site is a test file BEFORE they're admitted to the traversal, so nothing walks through a test node either (opt-in — omitted, output is unchanged); when every caller was a test, the "no callers" line names how many were hidden instead of reading as genuinely unreferenced. `Symbol not found: <symbol>` for an unindexed name (bare or `file::symbol`) now carries a `Did you mean:` suggestion when a near-name candidate is indexed. `--grep <pattern>` keeps only completed chains containing a symbol name matching this regex (literal substring if it is not valid regex) — the BFS still walks the full graph, this only narrows which finished chains are reported, so a chain passing through a matching symbol on its way to an unrelated root still surfaces; when it matches none of the chains that do exist, the output names how many were filtered out rather than reading as genuinely caller-less. A chain the walk abandoned because it ran out of `--depth` ends in a `(depth-limit)` marker, so a truncated chain is never mistaken for one that reached a real entry point. |
-| `token-goat impact <symbol>` | Walk the call-reference graph forward (breadth-first) and list every function that depends on a symbol, with hop depth; module-scope callers are surfaced as `(module scope) <file>` entries. Run before a refactor to size up the blast radius without starting a build. Accepts `file::symbol` to disambiguate WHICH same-named definition the walk starts from — the file only narrows which definition, callers can still be found in any file. `--exclude-tests` prunes callers (including module-scope entries) whose call site is a test file BEFORE they're enqueued for further traversal, so nothing walks through a test node either (opt-in — omitted, output is unchanged); when every caller was a test, the "no callers found" error names how many were hidden instead of reading as genuinely unreferenced. A bare name that isn't indexed at all reports `Symbol not found: <name>` (with a `Did you mean:` suggestion when a near-name candidate is indexed) instead of the misleading "no callers found", which is reserved for a real, indexed symbol that genuinely has zero impact. `--grep <pattern>` only shows impacted entries whose symbol name (or `(module scope) <file>` key) matches this regex (literal substring if it is not valid regex), the same filter `call-chain --grep`/`dead --grep` apply to their own results — applied BEFORE the `--top` slice, so it selects from the whole impacted set rather than an already-capped page; when it matches none of the impacted entries that do exist, the output names how many were filtered out instead of reading as genuinely impact-free. |
-| `token-goat context-for <task>` | Takes a natural-language task description, runs semantic search across the indexed codebase, and emits a prioritized list of `token-goat read` commands trimmed to a token budget. Fetches only the relevant slices instead of loading entire files. `--budget N` sets the token ceiling; `--top N` limits the file count; `--json` for structured output. Every emitted command carries the `file::symbol@LINE` anchor, so a suggestion still runs when the same symbol name has more than one definition in its file; `--json` entries carry the matching `line` field. |
-| `token-goat ask "<question>"` *(experimental)* | Retrieves relevant slices via full-text (BM25) search over the symbol index — not semantic/embedding search — and lists them as pointer-citations plus `token-goat read` commands. Set `TOKEN_GOAT_ASK_BACKEND=claude` or `TOKEN_GOAT_ASK_BACKEND=codex` to synthesize a short answer via that CLI (whatever model it defaults to; token-goat does not force Haiku or any particular tier); with the env var unset, or the named CLI missing from PATH, `ask` degrades to printing the retrieved pointers with no network call. `--top N` caps the number of FTS hits (default 8); `--json` for structured output. Answers are not cached — each call re-retrieves and re-synthesizes from scratch. Every emitted command carries the `file::symbol@LINE` anchor, so a suggestion still runs when the same symbol name has more than one definition in its file; `--json` entries carry the matching `line` field. |
-| `token-goat changed [<ref>]` | List files (or `--symbol` for symbols) changed since a git ref, without reading the full diff. `<ref>` and `--since <ref>` are equivalent (default `HEAD~5`); `--since` wins if both are given. `--json` for structured output. `--grep <pattern>` only lists changed files whose path matches this regex (literal substring if it is not valid regex) — applied to the file list even in `--symbol` mode, before any downstream slicing; when it matches none of the files that did change, the output names the active filter instead of reading like nothing changed. `--exclude-tests` hides changed files that live in a test file (opt-in — omitted, output is unchanged), completing the flag family already on `refs`/`callers`/`dead`/`call-chain`/`impact`/`semantic`/`symbol`. `--grep` can only ever *select* a path, so there was no reliable way to ask for the non-test half of a diff: the negative-lookahead regex that expresses "not a test" silently degrades to a literal substring match whenever the regex-compile fallback fires. Test files are a large share of a typical diff — measured against this repo, 35–54% of changed files across the last 5, 10 and 20 commits. Like `--grep` it filters the file path, so it applies in `--symbol` mode too, and it prunes before the per-file index lookup rather than after, so a test file is never queried at all. Composable with `--grep` (a file must satisfy both; when both are active and `--grep` is what emptied the list, the `--grep` notice takes priority, and when `--grep` left only test files so that `--exclude-tests` emptied it, the message names both filters rather than claiming no non-test file changed). When it hides every changed file there was, the output names how many were hidden and exits 0, rather than a bare "No files changed." that would read as a clean diff. Every zero-row path emits the shared `{items, truncated, totalCount}` envelope under `--json`. |
-| `token-goat diff "file::symbol" [range]` | Show only the git diff hunk(s) that fall within one symbol's line range, e.g. `token-goat diff "file.ts::myFn" HEAD~3..HEAD`, instead of the whole file's diff. Also accepts `read`'s `symbol@LINE` anchor to pick out an otherwise-ambiguous candidate. |
-| `token-goat blame "file::symbol"` | Git blame narrowed to a specific symbol's lines — no whole-file blame needed. Also accepts `read`'s `symbol@LINE` anchor to pick out an otherwise-ambiguous candidate. |
-| `token-goat log "file::symbol" [ref]` | Git commit history scoped to one symbol's line range via git's own `-L` line-range history, instead of a raw `git log -- file` dump of every commit that touched the whole file. `--max-count <n>` caps commits shown (default 20); `--json` for structured output. Also accepts `read`'s `symbol@LINE` anchor to pick out an otherwise-ambiguous candidate. |
-| `token-goat types ["file"]` | List type definitions (TypedDict, Protocol, dataclass, Pydantic models) in a file or across the project. `--grep <pattern>` only shows type declarations whose NAME matches this regex (literal substring if it is not valid regex), applied before output is built; when it matches nothing among declarations that do exist, the output names the active filter instead of reading like there are none. `--exclude-tests` hides type declarations DEFINED in a test file (opt-in — omitted, output is unchanged), the same definition-site sense `dead --exclude-tests` uses. Applied before the per-kind `--limit` slice, so the flag selects from the whole matching set rather than an already-capped page; when it hides every declaration there was, the output names how many were hidden and exits 0, instead of the exit-1 `No type declarations found` a genuinely empty scope returns. `--json`'s `filePath` renders root-relative when a project root resolves, absolute when none does, matching plain-text output. `--json` emits the shared `{items, truncated, totalCount}` envelope — the same shape `symbol`/`refs`/`skeleton`/`outline --json` return, present whether or not truncation occurred, so a script never has to branch on shape. |
-| `token-goat openapi-outline <spec>` | Per-operation listing (method, path, operationId, summary, tags) of an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) instead of a raw Read. |
-| `token-goat openapi-op <spec> <operation>` | Full detail (parameters, request body schema, response schemas, description) for exactly one OpenAPI operation instead of a raw Read. `operation` may be an operationId (exact match) or a `"METHOD path"` spec, e.g. `"GET /users/{id}"`. |
-| `token-goat sqlite-schema <db>` | Tables/views, columns, indexes, foreign keys, and row counts of a SQLite database instead of a raw Read. |
-| `token-goat sqlite-query <db> "<SELECT ...>"` | Run a read-only `SELECT` against a SQLite database instead of a raw Read or shelling out to `sqlite3` — rejects any non-`SELECT` statement. |
-| `token-goat imports "file"` | Show the import graph for a file one level deep. Accepts a comma-separated file list (`"a,b,c"`) to cover several files in one call, one clearly-headed block per file; extra space-separated file arguments are reported in a note naming that comma form instead of being silently dropped. `--grep <pattern>` only shows imports whose MODULE SPECIFIER matches this regex (literal substring if it is not valid regex), applied before `--json`'s truncation; when it matches nothing among real imports, the output names the active filter instead of reading like the file has no imports at all. |
-| `token-goat dep-docs <package>` | Extract one installed npm package's README, `package.json` metadata, and (if resolvable) a compact `.d.ts` signature outline, instead of grepping `node_modules`. |
-| `token-goat find "<query>"` | Find the FILES defining a symbol whose name matches a pattern: a case-insensitive substring scan over indexed symbol names, emitting the distinct file paths. When no name contains the pattern, falls back to an edit-distance match so a mistyped name still lands (`getUserr` → `getUser`) — the same ranking `Did you mean:` uses. The fallback runs only when the substring pass found nothing, so an exact match is never reordered or displaced, and a query near nothing still reports a clean miss instead of unrelated names. A recovered match names what it actually matched on stderr rather than silently answering for a name you didn't type; `--json` marks it with `fuzzy: true` and `matchedNames`, both absent on an exact hit. `--limit <n>` caps the file count. Matches on NAMES only — for meaning-based search over file content use `token-goat semantic`. |
-| `token-goat similar "file::symbol"` | Find the top-k symbols most similar to a given symbol, via full-text search over symbol names and bodies. Also accepts `read`'s `symbol@LINE` anchor to pick out an otherwise-ambiguous candidate. |
-| `token-goat test-for "file"` | Find test file(s) for an implementation file and list their test functions. `--json`'s `testFile` renders root-relative when a project root resolves, absolute when none does, matching plain-text output. `--json` emits the shared `{items, truncated, totalCount}` envelope — the same shape `symbol`/`refs`/`skeleton`/`outline --json` return, present whether or not truncation occurred, so a script never has to branch on shape. |
-| `token-goat dead` | Surface functions, methods, and classes with no recorded callers in the project index. Private names and common entry points (`main`, `app`, etc.) are excluded by default. `--include-private` lifts the underscore filter; `--kind` narrows to specific symbol types, comma-separated for a union (`--kind function,method`) — an unrecognized kind errors instead of silently reading as a clean codebase; `--top N` caps output; `--json` for structured output. `--exclude-tests` hides dead symbols DEFINED in a test file (opt-in — omitted, output is unchanged); prints a note naming how many were hidden. `--grep <pattern>` only shows dead symbols whose NAME matches this regex (literal substring if it is not valid regex), applied before `--top`'s slice; when it matches nothing among dead symbols that do exist, the output names the active filter instead of reading like a genuinely clean codebase. Results are a heuristic lead — dynamic dispatch and external callers are invisible to static indexing. `--json` emits both `file` and `filePath` with the identical value, root-relative when a project root resolves, absolute when none does, matching plain-text output; `file` is retained for this release only and will be removed in a future release, `filePath` is the spelling to migrate to (matching `symbol`/`types --json`). `--json` emits the shared `{items, truncated, totalCount}` envelope — the same shape `symbol`/`refs`/`skeleton`/`outline --json` return, present whether or not truncation occurred, so a script never has to branch on shape. |
-| `token-goat coverage-gaps` | Find callables in non-test source files that never appear in a test file's reference records. Useful for spotting untested surface area before a refactor or release. `--top N` caps output; `--json` for structured output. |
-| `token-goat recent [N]` | Show the N most recently edited/accessed files with their symbols. |
-| `token-goat grep "<pattern>" [paths...]` | Built-in fallback regex search over files (no `rg` shell-out, no caching) — session-aware dedup for raw `rg`/`grep` Bash calls is a separate hook, not this command. Accepts zero or more paths: omit to walk cwd, or pass several to search them together with hits merged in argument order under one `--max-lines` cap. `-C, --context <n>` shows `n` lines before and after each match. `--symbol` annotates each hit with its enclosing indexed symbol — ` [name (kind)]` appended in text mode, a `symbol: {name, kind, lineStart, lineEnd} | null` field per item under `--json` — `null`/no tag when the hit falls outside any indexed symbol (e.g. module-level code). |
-| `token-goat semantic "<query>"` | Find code by meaning, not by filename: embedding-vector similarity search over indexed file chunks and full-text search (BM25) over symbol names/bodies both run on every query and are fused by Reciprocal Rank Fusion (`score = sum of 1/(60 + rank)` per list), so an exact keyword match can outrank a weak vector hit instead of being shadowed by the vector branch. Covers extracted text from PDF/DOCX/PPTX/XLSX files alongside source code, so a query can surface a spec PDF, design doc, deck, or spreadsheet, not just code. Results are re-ranked with a path-priority multiplier so live source wins ties/near-ties against stale or archival prose (`archive/`, `archived/`, `old/`, `deprecated/`, `plans/`, `drafts/`, `CHANGELOG*`, `*.bak`, `*.orig`) and, more mildly, general docs (`docs/**`, `*.md`) — a nudge, not a hard filter, so a genuinely much better archival match still surfaces. Configure with `token-goat config set semantic.archive_weight <0-1>` / `token-goat config set semantic.docs_weight <0-1>` (both default `<1`; set to `1` to disable that penalty entirely, e.g. for a project with a genuinely live `plans/` directory). `--limit <n>` caps result count; `--json` for structured output: `{source, items, truncated, totalCount}`, where `source` is `"hybrid"` when both the embedding and BM25 branches contributed at least one raw hit, `"embeddings"` when only the embedding branch did (e.g. no vector index exists yet: optional embedding deps unavailable, or `indexing.embeddings_enabled` is off), or `"fts"` when only BM25 did, and every item carries the same keys (`filePath`, `name`, `kind`, `startLine`, `endLine`, `distance`, `preview`), with `null` for whichever of `name`/`kind`/`distance` don't apply to that item's source, and `filePath` rendered root-relative when a project root resolves, absolute when none does, matching plain-text output. On an embeddings hit, `name`/`kind` are resolved to the innermost indexed symbol whose line range contains the hit's start line (`null`/`null` when the hit falls outside any symbol, e.g. a top-of-file imports chunk); text output appends the same as a `— inside <name> (<kind>)` suffix. `--grep <pattern>` only shows hits whose FILE PATH matches this regex (literal substring if it is not valid regex), tested against the path exactly as rendered (so an anchored `--grep "^src/"` matches what you see, not the stored absolute path) — the high-value case is dropping test/vendored noise from a project-wide semantic hit list. Applied before the `--limit` slice in both the embeddings and full-text-fallback branches, so it selects from the whole hit set, not an already-capped page; when it matches nothing among hits that do exist, the output names the active filter (and `--json` sets `grepFilteredToEmpty: true`) instead of reading like the search found nothing. `--exclude-tests` hides hits whose file is a test file (opt-in — omitted, output is unchanged), covering the case `--grep` structurally cannot: `--grep` can only ever *select* a path, and the negative-lookahead pattern that would express "not a test" silently degrades to a literal substring match whenever the regex-compile fallback fires. Applied before the `--limit` slice in both branches and composable with `--grep` (a hit must satisfy both); when it hides every hit there was, the output names how many were hidden (and `--json` sets `excludeTestsFilteredToEmpty: true`) and exits 0, instead of the exit-1 "no matches" a genuinely empty search returns. With both filters set and both emptying the view, the `--grep` notice takes priority. |
-| `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a fixed 2000-token budget. `--json` emits the project map as JSON instead of text. |
-| `token-goat deps "file"` | One-level import listing for a single file: resolves relative imports to project files (`internal`, root-relative paths) and groups everything else as `external`. `--json` for structured output. `--grep <pattern>` only shows dependencies whose MODULE SPECIFIER (the resolved internal path or the external package name) matches this regex (literal substring if it is not valid regex), applied before output is built; when it matches nothing among real dependencies, the output names the active filter instead of reading like the file has no imports at all. Complemented by `token-goat arch` for the project-wide graph. |
-| `token-goat arch` | Project-wide import graph summary: hub modules (most imported), entry points (nothing imports them), and circular chains. Complements `token-goat deps <file>` for per-file depth. |
-| `token-goat index [path]` | Parse all git-tracked files and (re)build the symbol index from scratch. Runs automatically on install and incrementally via the background worker after edits — use this to force a full rebuild (e.g. after a config change that narrows what gets indexed). Each file records which version of token-goat's extraction logic produced its symbols, so an upgrade that changes what gets extracted reparses every already-indexed file once, on the next run, instead of leaving unchanged files on their old symbols until something edits them. That first run after such an upgrade takes noticeably longer than usual; later runs skip unchanged files as before. `--walk` indexes a bounded directory walk instead when `path` isn't a git repo. `--force-walk` does the same non-git walk and raises its 20,000-file refusal to 500,000 for a folder you know is genuinely that large (slow, and produces a large index — check `token-goat doctor` afterwards); it never lifts the separate refusal to walk a filesystem root or your home directory. On a real terminal (not a pipe/CI), prints a live progress line to stderr (files done/total, current phase, elapsed time) so a large repo doesn't look hung; stdout is unaffected either way. |
-| `token-goat ignores` | List active skip patterns for the current project — built-in skip dirs and suffixes, blocked roots, and which command each one applies to. It also reports `.tokengoatignore`, which applies to `token-goat pack` only: it excludes nothing from the symbol index. To keep a path out of the index, use `token-goat project exclude <path>`. |
-| `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
-| `token-goat stats` | See locally estimated savings: total events / bytes saved / tokens saved. Add `--full` for the per-source, per-command, and per-day breakdown, or `--methodology` to explain estimates and their limits. These values are not GitHub Copilot usage or billing data. |
-| `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
-| `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` prunes dead-link and duplicate entries from `MEMORY.md` and writes the file (destructive — inspect the report first). |
-| `token-goat bootstrap-audit [--project <path>] [--json]` | Audit Claude Code startup-context contributors without outputting prompt bodies: global/project `CLAUDE.md` totals plus agent/skill frontmatter metadata, largest entries, diagnostics, and CI warning/failure budgets (`--warn-tokens`, `--fail-tokens`, `--warn-bytes`, `--fail-bytes`). |
-| `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
-| `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json] [--copilot]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, Bash commands run repeatedly without hitting token-goat's own bash-output cache, and the assistant's own text-output cost (generated tokens plus a cache-unaware re-send upper bound). See [Session waste ledger](#session-waste-ledger) below. |
-| `token-goat mcp-audit [--project <path>] [--json]` | MCP server schema cost report: scans .mcp.json for installed MCP servers, estimates per-server token costs from cached tool calls, correlates schema complexity against real call frequency. Outputs as markdown table or JSON. |
-| `token-goat recall ["<query>"] [--type bash\|web\|mcp] [--limit <n>] [--json]` | Full-text search across every cached bash-output, web-output, and mcp-output entry at once — one command instead of remembering which cache type holds a prior result. Ranked by relevance (BM25 via SQLite FTS5). With **no query**, lists every cached entry newest-first instead of searching, so you can browse when the ids have scrolled out of context and you have no term to search for. `--type` narrows to one cache type; `--limit` caps results (default 10). Each hit shows its cache type, id, the exact recall command (`bash-output <id>` / `web-output <id>` / `mcp-output <id>`), and a content snippet. See [Cross-cache recall](#cross-cache-recall) below. |
-| `token-goat hint-stats [--json] [--reset] [--mark-effective <cat>] [--mark-ineffective <cat>]` | Per-category efficacy report for token-goat's discretionary hint hooks: how often each hint category was emitted, how often the agent actually followed its specific suggestion within the next few tool calls, whether the category is currently auto-suppressed, and the bytes each category spent (injected into context) plus an all-time saved/spent/net summary line. `--reset` clears all tracked data; `--mark-effective`/`--mark-ineffective <category>` record a manual vote as a supplement to the automatic signal. See [Hint efficacy tracking](#hint-efficacy-tracking) below. |
-| `token-goat history` | Show current session access history: bash commands and URLs fetched. |
-| `token-goat session-outline` | Turn-by-turn structure (role, preview, tool calls, approx size) of a Claude Code session JSONL transcript, instead of a raw Read; defaults to the current project's most recent session. |
-| `token-goat session-slice <turns>` | Full content of one turn range from a Claude Code session JSONL transcript (see `session-outline` for turn numbers), instead of a raw Read. |
-| `token-goat session-audit [--dir <path>] [--json]` | Corpus-wide token attribution across every local Claude Code session transcript, including nested subagent transcripts (default corpus: `~/.claude/projects`): measured billed usage from each API response's own usage record, estimated content size by source and by tool, a per-attachment-kind census ranked by modeled billed cost (cache write plus compaction-capped cache re-reads over the model-visible fields only), a hook-output census split by origin, a subagent-lane rollup (spawn-prefix size and its modeled billed carriage, plus a per-agent-type breakdown from each lane's meta file), a Read-interception census (diverted reads versus full serves, with each large full serve split into first read versus repeat and repeats classified as deliberate paging or divert-miss candidates), a Bash filter fire-rate census (results carrying a token-goat marker versus the untouched remainder, bucketed by bare command head: the binary name only), and billed cost by session position. Output is aggregate counts only, never transcript content or command lines. |
-| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head(30)+tail(80) view by default; pass `--full` for the entire stored entry with no elision, `--head N`/`--tail N` for a specific slice, or narrow with `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
-| `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
-| `token-goat compress --cmd '<command>'` | Preview what the Bash compression hook would do to any command — runs it, applies the matching filter, and prints the compressed view. |
-| `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID — same head+tail default and `--full`/`--head`/`--tail`/`--grep`/`--max-matches` slicers as `bash-output`. `--raw` returns the body as actually fetched, before `webfetch.compress_bodies`'s HTML-cleaning pass, for recovering a selector/script tag/embedded JSON that the default cleaned text drops; falls back to the (already-raw) cleaned body when no separate raw copy was stored. |
-| `token-goat web-history` | List cached WebFetch responses (newest first) with their IDs, byte sizes, status codes, and URL previews. |
-| `token-goat mcp-output <id>` | Retrieve a cached MCP tool result by ID (the id an MCP `post_tool_use` hook cached, or a `[token-goat: compressed, full via mcp-output <id>]` label points here). Same slicers as `bash-output`; `--full` returns the stored entry verbatim, which is what an elision marker's `mcp-output <id> --full` pointer relies on. |
-| `token-goat mcp-history` | List cached MCP tool result entries (newest first) with their IDs and byte sizes — same role as `bash-history`/`web-history` for the `mcp-output` cache. |
-| `token-goat skill-body <name>` | Retrieve a cached Skill body by name without re-invoking the skill (which would replay side effects). Prints the full body; `-c`/`--compact` prints the compact slice instead. No head/tail/grep slicers. |
-| `token-goat skill-history` | List cached Skill bodies (newest first) with their IDs, byte sizes, truncation status, and skill names. |
-| `token-goat skill-compact [name]` | Cache the compact slice for a skill so later `skill-body --compact` calls are instant, and print a confirmation. Resolves an installed skill by name (falling back to `~/.claude/skills/<name>/SKILL.md` when it was never loaded this session), or pass `--path <file>` to compact a skill straight from a file without name resolution. |
-| `token-goat skill-compact --all` | Batch-regenerate stale or missing compacts for every skill cached in the current session. Skips skills whose compact is already fresh (source SHA matches). The summary also counts skills that have no `COMPACT_END` marker (with a pointer to `token-goat skill-size` for per-skill recommendations) and skills whose source file no longer resolves, so the pass reports every skill it visited. Run after updating any skill file on disk. |
-| `token-goat skill-list [--session-id <id>]` | List all skills cached in the current (or specified) session with body token count, compact availability, compact_stale status, hit count, and age. |
-| `token-goat skill-list --json` | Machine-readable version; each skill row includes `compact_stale` (true/false/null) — true means the compact's embedded source SHA no longer matches the body's current SHA and a `skill-compact <name>` regeneration is recommended. |
-| `token-goat skill-size` | Show per-session token overhead for all cached skills, with restructure recommendations. |
-| `token-goat skill-diff "<name>"` | Unified diff between the two most recent cached versions of a skill — tracks skill updates across sessions. |
-| `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session. Add `--trigger auto` to preview the pressure-aware budget the live PreCompact hook would use. |
-| `token-goat resume <session_id>` | Emit a single post-compact recovery packet — top skills, last two Bash outputs, top edited-file diffs, and `git diff --stat`, capped at ~2000 tokens. Replaces 5-10 round-trips. |
-| `token-goat config list / get / set / validate` | Inspect or edit `config.toml` from the CLI. `validate` reports unknown keys with did-you-mean suggestions, plus any project-file or environment value that validation rejected or clamped. A project-root `.token-goat.toml` layers on top of the global config, overriding hint thresholds, indexing settings, etc. for that project only. It may not set the security sections `injection`, `webfetch`, `gdrive`, or `mcp`, nor `indexing.cross_project_symbols`: that file arrives with the repository, so a cloned project could otherwise switch off prompt-injection fencing or empty the fetch allow list for anyone who opened it. Those settings come from the global config or the environment only, and a project file that tries to set one is ignored with a message naming what was dropped. `config get`/`list`/`set` report which layer a value actually resolved from — the project file, an environment variable, or the global config — and where that layer's value was clamped or rejected they say so, naming what was asked for and what is in effect instead. |
-| `token-goat config-get <file> <key>` | Look up one key from a config-shaped file (TOML/INI `key = value`, or YAML) without reading the whole thing. On a `.md` file, a leading `---`-fenced YAML frontmatter block (Jekyll/Hugo/SKILL.md style) is checked first and takes precedence over the TOML/INI fallback; a `.md` file with no frontmatter, or an unclosed fence, falls through to the normal lookup unchanged. |
-| `token-goat pdf-extract <file>` | Extract plain text from a PDF instead of a raw Read. `--pages <spec>` narrows to a page range (e.g. `1-5` or `3`); `--head`/`--tail`/`--grep`/`--max-matches`/`--section` slice the extracted text the same way `bash-output`/`web-output` do. `--layout` heuristically reconstructs column-aware reading order from text-item coordinates instead of raw content-stream order (imperfect on rotated/overlapping text). |
-| `token-goat pdf-locate <file> <pattern>` | Find which pages of a PDF match a regex, with a snippet per match, so you can `pdf-extract --pages` only those pages instead of pulling the whole document. `-i`/`--ignore-case` for case-insensitive matching; `--max-matches <n>` caps how many page matches to collect (default 50); `--context <n>` sets the snippet length around each match (default 80); `--pages <spec>` narrows the scan to a page range; `-j`/`--json` emits `{ file, pattern, matchCount, pages, matches }`. |
-| `token-goat pdf-outline <file>` | List a PDF's bookmark/outline tree with page numbers instead of a raw Read. |
-| `token-goat pdf-meta <file> [--json]` | Page count, title/author, and whether a PDF has an extractable text layer (so you know before extracting whether it's scanned/image-only). `--json` emits `{ pageCount, title, author, hasTextLayer }` — `hasTextLayer` as a real boolean rather than a prose sentence, and an absent title/author as `null` rather than the literal `(none)`. |
-| `token-goat image-meta <file> [--json]` | Dimensions, format, byte size, and what a `shrinkImage` pass would cost — a cheap "should I even look at this" probe that reads `sharp` metadata only and never runs OCR. Requires `sharp`; degrades with a clear message when it's missing. |
-| `token-goat image-text <file> [--json]` | OCR text for an image instead of a raw Read. Reports confidence and character count either way; below the usefulness threshold it says so plainly instead of printing low-confidence noise as content. Requires `tesseract.js`; degrades with a clear message when it's missing. |
-| `token-goat csv-query <file>` | Project columns and/or filter rows from a CSV instead of a raw Read. `--columns <cols>` selects a comma-separated subset; `--where <spec>` is repeatable and ANDed, supporting `col=value`, `col!=value`, `col>value`, `col<value`, and `col~=regex`; `--head <n>` caps rows; `--json` emits rows as a JSON array of objects instead of a formatted table; `--delimiter <char>` and `--no-header` handle non-comma or headerless files. |
-| `token-goat csv-profile <file>` | Per-column type inference (number/date/string), null/distinct counts, and min/max or top values for low-cardinality columns, instead of a raw Read. Same `--delimiter`/`--no-header` flags as `csv-query`. |
-| `token-goat sharepoint-resolve <shareUrl>` | Best-effort resolve a SharePoint/OneDrive sharing URL to a local synced file path, purely from the local filesystem and `OneDrive`/`OneDriveCommercial` env vars -- no network call, no Graph API, no credentials. Prints the resolved path (feed it to `xlsx-sheets`/`pptx-outline`/etc.) or an honest "could not resolve" with the paths it tried. |
-| `token-goat video-chapters <file>` | Lists a video's embedded chapter markers (timestamps + titles) and subtitle/caption streams via `ffprobe`, instead of downloading/transcoding the file to inspect it. Requires ffmpeg on PATH; degrades with a clear message when it's missing. |
-| `token-goat xlsx-sheets <file> [--json]` | List sheet names, used range, and dimensions in an Excel workbook instead of a raw Read. `--json` emits `{ name, ref, rows, cols }[]`, so a sheet name can be fed straight into the `--sheet` of `xlsx-head`/`xlsx-range`/`xlsx-query` instead of being parsed back out of the text line. |
-| `token-goat xlsx-head <file> --sheet <name>` | Preview the header + first N rows of one sheet (`--rows`, default 20) instead of a raw Read. |
-| `token-goat xlsx-range <file> --sheet <name> --range <a1>` | Extract one cell range (e.g. `A1:D50`) from a sheet; `--formulas` shows formulas instead of computed values. |
-| `token-goat xlsx-query <file> --sheet <name>` | Project columns / filter rows from one sheet instead of a raw Read (same `--columns`/`--where`/`--head` shape as `csv-query`, via the sheet's CSV projection). |
-| `token-goat pptx-outline <file>` | Per-slide title, body size, and speaker-notes flag instead of a raw Read. |
-| `token-goat pptx-slide <file> --slide <n>` | Full text of one slide; `--notes` appends that slide's speaker notes. |
-| `token-goat pptx-notes <file>` | Speaker notes for one slide (`--slide <n>`) or all slides, instead of a raw Read. |
-| `token-goat pptx-text <file> --grep <pattern>` | Find slides whose text matches a pattern instead of a raw Read. |
-| `token-goat docx-outline <file>` | Heading tree of a Word document instead of a raw Read. |
-| `token-goat docx-text <file>` | Full body text of a Word document instead of a raw Read; `--head`/`--tail`/`--grep`/`--section`/`--max-matches` slice it the same way `pdf-extract` does. |
-| `token-goat transcript-outline <file>` | Speaker list, duration, and time-bucketed markers for a WebVTT/SRT transcript instead of a raw Read. |
-| `token-goat transcript <file>` | Slice a WebVTT/SRT transcript by `--speaker <name>`, `--from`/`--to <hh:mm:ss>`, and/or `--grep <pattern>` instead of a raw Read. |
-| `token-goat screenshot <url> <destPath>` | Capture a local headless-browser screenshot, shrunk the same way local image reads are (image-shrink pipeline). `--executable-path` overrides the Chrome/Chromium binary; `--width`/`--height` set the viewport (default 1280x800); `--full-page` captures the full scrollable page. Only `http:`/`https:` targets are allowed, and loopback/link-local/private/cloud-metadata addresses are refused by default (`screenshot.block_private_targets`, env `TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS`) — see [Security, privacy, and uninstall](#security-privacy-and-uninstall) for what that check does and does not cover. |
-| `token-goat clean-cache` | Prune on-disk caches to their configured floor without waiting for the worker. |
-| `token-goat reclaim-index` | Shrink an oversized symbol index (`VACUUM` + WAL checkpoint). `--rebuild` also drops every derived row — files/symbols/refs/chunks — so the next `token-goat index` re-derives them under current parser rules, which is what actually reclaims space held by rows a since-fixed extractor wrote too large. Refuses to run while the worker daemon is writing to the index unless `--force`. `token-goat doctor` points here when `global.db` grows past 1 GB, and separately when it finds a stored symbol body above the parser's own size cap — a leftover from a since-fixed extractor bug, which only `--rebuild` can clear (a plain `VACUUM` reclaims freed pages but never deletes row content). |
-| `token-goat prune-cache` | Manually trigger LRU eviction across all cache directories (images, bash, web, skills). |
-| `token-goat session-summary` | Compact one-liner about current session state — designed for orchestrators and multi-agent loops. |
-| `token-goat cache-audit` | Audit your Claude Code config for patterns that bust the prompt cache. |
-| `token-goat pack <patterns>` | Collect files matching glob patterns into a single LLM-ready output — Markdown (default), XML, or plain text — with a manifest table of per-file line and token counts. `--line-numbers` prefixes each line; `--instruction-file` appends a task prompt; `--output` writes to a file; `--no-ignore` bypasses `.tokengoatignore`. `--strip-comments` removes language-appropriate comments before packing (shebangs preserved; `#` inside string literals is a known limitation). `--scan-secrets` checks for credentials and exits 2 with per-file warnings if any are found. `--budget N` exits 3 when the estimated token count exceeds N — lets a shell script treat an oversized context as a hard error. Reads file paths from stdin when no patterns are given. |
-| `token-goat budget <patterns>` | Estimate the token cost of a file set without reading them into context. Prints results sorted by cost descending; `--context <N>` shows each file as a share of an N-thousand-token window. `--json` for machine-readable output. Run before `pack` to decide what to include. |
-| `token-goat tokens [patterns]` | Per-file token footprint table, sorted largest-first. `--tree` groups by directory with subtotals and percentage of total. `--top N` limits to the N biggest files. `--asc` reverses order. `--json` for structured output. Omit patterns to scan the whole project. Useful for deciding what to exclude before running `pack`. |
-| `token-goat todo` | Scan indexed project files for `TODO`, `FIXME`, `HACK`, `XXX`, and `NOTE` comment markers. Groups by file by default; `--group kind` to group by marker type; `--kinds` to filter to a subset; `--json` for machine output. Markers in string literals are excluded. |
-| `token-goat failures [src]` | Extract failing test blocks from test runner output (pytest, Jest, Go, Cargo). Passes and preamble are dropped; each failure comes back as a labeled block. Reads stdin by default; pass a file path for saved output. `--json` for structured output. |
-| `token-goat trace [src]` | Condense a stack trace/traceback/panic to project-owned frames. Auto-detects and parses Python tracebacks, Node.js/V8 stack traces, Rust panics (including `RUST_BACKTRACE=1` backtraces), and JVM (Java/Kotlin/Scala) and .NET exceptions -- even mixed together in one input (e.g. a CI log with both a Python and a Node error). Strips library, stdlib/runtime-internal (`node:...`), and dependency (site-packages, rustc-internal, Cargo registry) frames; chained exceptions (Python's chained tracebacks, JVM's `Caused by:`) preserve cause notes as separate blocks; bare exceptions without a message are handled. `--keep N` (default 5) caps the frame count. `--bodies` resolves each surviving frame to its enclosing symbol and prints the actual code body (same lookup `scope`/`read`/`symbol` use), so a traceback is directly readable without a separate lookup per frame; recursive frames show the body once with `(same as above)` on repeats. `--json` for structured output. |
-| `token-goat conflicts [path]` | Unresolved git merge-conflict markers (`<<<<<<<` / `\|\|\|\|\|\|\|` / `=======` / `>>>>>>>`, two-way or diff3 three-way) instead of a raw Read or grep. `path` may be a file, a directory (scanned recursively), or omitted entirely (scans the whole project); only files with at least one conflict region or malformed-marker warning are reported. `--summary` narrows each region to its line range and side labels, omitting the full ours/base/theirs content. `--json` for structured output. |
-| `token-goat coverage-report-gaps <file>` | Extract uncovered lines/branches/functions from an LCOV or Istanbul coverage report instead of scanning the raw file. Auto-detects format; collapses consecutive uncovered lines into ranges; drops fully-covered files. `--file <path>` filters to one file; `--json` for structured output. |
-| `token-goat zip-list <archive>` | Entry paths and sizes inside a zip-format archive (`.zip`/`.jar`/`.whl`/`.vsix`/`.nupkg` are all zip containers under the hood) instead of a raw Read or an `unzip -l` shell-out. Reads the central directory only — no member is decompressed just to list it. `--json` for structured output. |
-| `token-goat zip-read <archive> <entry>` | Extract and print exactly one entry's text content from a zip-format archive by its in-archive path, instead of extracting the whole archive to disk. A binary member prints a `[binary content elided by token-goat]` marker instead of raw bytes. |
-| `token-goat pr-slice <pr>` | Surgical GitHub PR reads via `gh` — one file's diff, a single review-comment thread, the description, or CI check statuses, instead of pulling the whole PR payload into context. |
-| `token-goat bridges-status` | Parity matrix of which hooks/commands are wired for each supported harness (Claude Code, Codex, opencode, openclaw, Grok, etc.), side by side. A `verified` column says how each row was established — `dogfooded` (driven against the real harness binary), `sourced` (read out of the harness's own source or declarations), or `documented` (from its docs only) — so a claim built from reading alone is never presented as one that was tested. |
-| `token-goat commands` | Machine-readable manifest of every registered command, its description, options, and arguments (including subcommands like `worker start`). `--json` emits it as structured JSON for external tooling (shell completion, doc generators, scripts) instead of the default text listing. `--grep PATTERN` narrows the manifest to commands whose name, description, or aliases match; a parent command that matches keeps all its subcommands, a parent that only has a matching child keeps just that child; no matches prints `no matches` and exits 0. |
-| `token-goat mcp-serve` | Run token-goat as an MCP stdio server exposing all 18 tools: read/symbol/section/outline/skeleton/semantic/index_status/refs/brief/map/changed/grep/imports/exports/compress_text/retrieve_text/handoff_create/handoff_resolve. |
-| `token-goat version` | Print the token-goat version. |
-| `token-goat statusline` | Claude Code statusline command surfacing session stats (bytes saved, hint efficacy, cache hit rate) inline in the terminal. |
-| `token-goat lockdeps [path]` | Summarize lock file dependencies as a compact table. Reads poetry.lock, uv.lock, requirements.txt, Pipfile.lock, package-lock.json, Cargo.lock, and yarn.lock. Direct dependencies only — optional and transitive entries excluded. `--json` for structured output. |
-| `token-goat logfold [src]` | Collapse consecutive duplicate log lines. Runs of identical or structurally equivalent lines fold to `[Nx] line`. Normalizes timestamps, UUIDs, IPs, hex IDs, and bare integers (counters, PIDs, ports, byte counts) before comparing so the same event with different values folds correctly. `--tail N` keeps last N lines; `--no-normalize` disables normalization; `--fold-repeats` also folds non-consecutive duplicates anywhere in the input, attributing the total count to the first occurrence (capped at 20,000 distinct keys, past which it falls back to consecutive-only); `--json` for structured output. |
-| `token-goat hot [--limit N]` | Cross-session file frequency table: read and edit counts tallied from all stored sessions, ranked by total activity. Shows which files dominate your token spend across your entire history. `--project <dir>` filters to one project; `--json` for structured output. |
-| `token-goat note set/get/unset/list/clear` | Persistent per-project notes stored as key-value pairs. Token-goat injects them at session start and after compaction so they survive conversation rollover. Use to pin decisions, constraints, or reminders that would otherwise vanish after compaction. `note list --json` for machine-readable output; `note clear` removes everything at once. |
-| `token-goat project list` | Show all project roots indexed by token-goat with their file counts. Roots on the blocklist appear tagged `[excluded]`. `--json` for structured output. |
-| `token-goat project exclude <path>` | Add a project root to the blocklist so the worker never indexes it. Writes the resolved absolute path to `[worker] blocked_roots` in `config.toml`; idempotent. It also removes anything already indexed under that path and says how many files went, so excluding a directory means its contents stop being readable through `symbol` rather than merely stopping future indexing. Remove the entry from the config to re-enable indexing, then run `token-goat index` to bring the contents back. |
-| `token-goat project prune [--dry-run]` | Remove blocked/excluded roots that no longer exist on disk. `--dry-run` previews removals without touching the config file. Useful after deleting or moving projects. |
-| `token-goat install` | Wire up hooks (and, with the harness flags below, other AI tool integrations). No `--dry-run` or `--verify` flag — run `token-goat doctor` after install to audit the result. |
-| `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. A **Tool names** check reports any tool name a harness sent that reached no handler wanting it, and calls out the ones that differ from a handled name only by capitalisation or punctuation — the signature of a bridge that forgot to rename something, which is otherwise invisible. A **Security** section reports the posture in one place: whether offline mode is on, whether injection scanning is on, whether the Google Drive integration is enabled, whether fetching runs against an allow list or a deny list, whether MCP reads are confined to the project root, and whether the data directory is readable by other local users. It only warns when a protection that ships on has been switched off, so a default install stays quiet. It read-only audits `~/.copilot/mcp-config.json` for globally configured Chrome DevTools or Playwright `npx` launchers, recommending project scope or removal when inactive; it never prints server configuration or secrets. On Windows, it also reports duplicate Chrome DevTools/Playwright MCP launchers and orphaned Node processes without terminating anything. Pass `--context` to show the **Context footprint** section: a fill bar with severity (ok / warn / high / URGENT), per-component breakdown (skills catalog, loaded skill bodies, CLAUDE.md+MEMORY.md, conversation estimate), session-to-session growth trend with sessions-to-URGENT projection, and tiered compaction recommendations (Tier 0–4) naming the exact commands to run. Auto-shown when fill > 40 % or any loaded skill > 2 K tokens lacks a compact. `--json` emits the check results (one entry per check, with `ok`/`warn`/`fail` status) as JSON instead of text. |
-| `token-goat baseline` | Emit a project map: file count, per-language file counts, the top indexed symbols (by name/kind/location), and the most recently modified files. `--subagent` emits a terser variant (fewer symbols, fewer recent files) for context handed to a freshly spawned subagent; `--json` for the machine-readable form. |
-| `token-goat compact-doc <path>` | Build an extractive compact sidecar for a large reference doc (`.md`/`.markdown`). The compact is stored in the token-goat data dir as a SHA-keyed sidecar; `pre_read` serves it in place of the full file when it exists and is fresh, saving 80–95% of context tokens. Use `--force` to rebuild, `--sentences N` to control lines per section (default 2), `--show` to print the result. The sidecar is automatically marked stale when you edit the source file. Config: `[hints] stable_doc_compacts = true` (default on). |
-
-Missed lookups recover surgically: `read` and `section` print a "Did you mean…?" list on a miss, and `section` auto-redirects on an unambiguous heading-prefix match — a typo costs at most one extra glance, not a re-read.
-
-### Skill efficiency — the `<!-- COMPACT_END -->` marker
-
-When Claude Code invokes a skill, it re-injects the full skill body on every subsequent turn. A large skill file (e.g. a 10k-token `/improve` or `/ralph`) can cost 40–65k tokens per session across 6 active skills. The `<!-- COMPACT_END -->` marker solves this: place it in any skill file to split it into a compact form (above the marker, ~400 tokens) and a reference section (below). Token-goat detects the marker the first time the skill fires, caches only the compact slice, and injects that from then on — labeled `--- compact form (N tokens) ---` so the model knows to request the full body only when it needs the detail.
-
-To add the marker to a skill, open the file and insert `<!-- COMPACT_END -->` on its own line where the "quick reference ends and the detail begins" — typically after the quick-start table and before step-by-step instructions. The full reference section is still reachable via `token-goat skill-section "<name>::<heading>"` or `token-goat skill-body <name>` when needed.
-
-**Re-load and direct-read protection.** Even without the marker, token-goat protects against the two other ways large skills burn context in a long session:
-
-- If the model tries to `Read` a skill file directly (`~/.claude/skills/improve/SKILL.md`), the pre-read hook intercepts it and emits a `token-goat skill-body improve` hint instead — the full 10k–65k tokens never enter context.
-- If the same skill is invoked a second time in the session (e.g. `/improve` called again after a `/compact`), re-load detection fires: instead of re-caching the full body, token-goat emits the cached token count and `skill-body`/`skill-section` recall hints. The model can retrieve any section it actually needs rather than absorbing the whole skill again.
-
-To check overhead for your current skills: `token-goat skill-size`. To inspect compact freshness, run `token-goat skill-list` — the `compact_stale` column shows `[stale]` when a skill's compact was generated from an older version of the file. Run `token-goat skill-compact --all` to refresh every stale compact in the current session in one pass.
-
-`token-goat install` now pre-generates compacts for all installed skills as its final step, so compacts are ready from the first session. If you install new skills after the initial install, run `token-goat skill-compact --all` manually — or check `token-goat doctor --context` which reports how many skills were added since the last pre-gen pass and shows the exact command to run.
-
-### Memory analysis and cleanup
-
-`token-goat memory` audits the `CLAUDE.md` files Claude Code loads for a project for wasted tokens: exact-duplicate lines within one file, duplicate headings, content that overlaps verbatim across files, and near-duplicate sibling auto-memory files (`~/.claude/projects/<slug>/memory/*.md`). Default mode is `--analyze` (read-only):
-
-```
-$ token-goat memory
-
-# token-goat memory
-Project: C:\Projects\example
-
-## CLAUDE.md files (1)
-
-  C:\Projects\example\CLAUDE.md  (842 tok)
-    exact-duplicate lines: 1
-      line 40 duplicates line 12: "Always run the full test suite before committing."
-    duplicate headings: none
-    cross-file overlaps: none
-
-## Duplicate-content clusters (sibling auto-memory files)
-  none
-```
-
-`--fix` builds on `--analyze`. The only change it can apply automatically is removing exact-duplicate lines (keeping the first occurrence) — a pure structural dedup with no judgment call. Duplicate headings and cross-file overlaps are printed as advisory findings only; they often mean content should move into a path-scoped `.claude/rules/` file or a subdirectory `CLAUDE.md`, but token-goat never picks where for you, so no diff is proposed for those.
-
-Every proposed exact-duplicate-line fix is shown as a diff before anything is written, gated by the same confirm-before-write flow: pass `--yes` to apply non-interactively (scripts, CI), or run it from a terminal without `--yes` to be prompted per file. Running `--fix` without `--yes` from a non-interactive shell (no TTY) prints the diffs as a dry run and writes nothing.
-
-### Session waste ledger
-
-`token-goat waste` parses the current project's Claude Code session transcript — the JSONL file Claude Code writes under `~/.claude/projects/<slug>/*.jsonl` — and attributes token cost to every tool call in it, then flags a few concrete waste signals: files that were `Read` once and never referenced again, and Bash commands run repeatedly without ever hitting token-goat's own bash-output cache. By default it auto-discovers the most-recently-modified transcript for the current project; pass `--transcript <path>` to point at a specific one instead (useful when several sessions are open, or for CI/testing):
-
-```
-$ token-goat waste
-
-# token-goat waste
-Transcript: C:\Users\you\.claude\projects\C--Projects-example\a1b2c3d4-....jsonl
-Total tokens: 18420
-
-## Tokens by tool
-  Read: 9120 tok
-  Bash: 6210 tok
-  Grep: 2140 tok
-  Edit: 950 tok
-
-## Top expensive tool calls
-  [3400 tok] Read: src/big_module.ts
-  [1800 tok] Bash: npm test
-
-## Read once, never touched again
-  src/unrelated_helper.ts: 640 tok, never referenced again
-
-## Repeated Bash commands not hitting the token-goat cache
-  "git status": ran 4 times, 210 tok each, 840 tok total, uncompressed
-
-## Assistant output (re-send CEILING, not real spend)
-  42 turns, 21300 tok generated
-  Re-send upper bound: 187400 tok if every turn were resent at full price on every later request
-  Real cost is substantially lower: prompt caching bills resent conversation history at cache-read rates, not full input price.
-```
-
-`--top <n>` controls how many entries appear under "Top expensive tool calls" (default 10). `--json` prints the same report as machine-readable JSON instead.
-
-`--copilot` reads a GitHub Copilot CLI session instead, from `<copilot-home>/session-state/<id>/events.jsonl`. It is a different report rather than the same one with different inputs, because Copilot writes down its own token accounting at shutdown and token-goat reports those numbers rather than estimating them:
-
-```
-$ token-goat waste --copilot
-
-## Per-request fixed overhead (Copilot's own token counts)
-  System prompt:     8,981 tok
-  Tool definitions:  11,548 tok
-  Conversation:      722 tok
-
-## Tool definitions by MCP server (estimated)
-  github-mcp-server: 6 tools, 6 KB, ~2,135 tok
-  ~2,135 tok estimated across 1 server, re-sent every request.
-  Copilot counted 11,548 tok of tool definitions in total, so this is roughly 18.5% of it.
-```
-
-The fixed overhead is the largest number in a Copilot session and no hook can reach it: Copilot assembles the system prompt and the tool definitions natively, with nothing between assembly and send. Only configuration moves it. The per-server breakdown exists to make that configuration decision possible, since one aggregate says the tool definitions are expensive without saying which tools. It is read from Copilot's own MCP tool cache, counts only the fields a model is actually sent, and is labeled an estimate throughout: it comes from byte length rather than Copilot's tokeniser, and it deliberately does not add up to Copilot's total, because Copilot's own built-in tools are not cached there.
-
-The "Assistant output" section is separate from the tool-call ledger above it: `generatedTokens` is what was actually paid, once, to produce the assistant's own text turns. `resendCeilingTokens` is a cache-unaware upper bound on how much re-sending those turns as conversation history on every later request could cost — not real spend, since Claude Code's prompt caching bills a repeated conversation prefix at cache-read rates, a fraction of full input price. Treat it as a ceiling on how bad unbounded verbosity could get, not as a dollar figure.
-
-### Cross-cache recall
-
-`token-goat recall "<query>"` searches every cached bash-output, web-output, and mcp-output entry at once, so you don't need to remember which cache type holds the result you want — a single full-text query ranks hits across all three:
-
-```
-$ token-goat recall "eslint warnings"
-
-[bash] a1b2c3d4e5f6a7b8  (token-goat bash-output a1b2c3d4e5f6a7b8)
-  npx eslint src tests
-  npx eslint src tests\n[token-goat: delta] 2 of 5 prior issues resolved; remaining: 3
-
-[mcp ] mcp_9f8e7d6c5b4a3210  (token-goat mcp-output mcp_9f8e7d6c5b4a3210)
-  mcp:mcp__plugin_github_github__get_check_runs {"owner":"..."}
-  ... eslint warnings found in 2 files during CI ...
-```
-
-Results are ranked by relevance (BM25 via SQLite FTS5, falling back to a plain substring scan if FTS5 is unavailable), newest indexed entries win ties. `--type bash|web|mcp` narrows to one cache type; `--limit <n>` caps the result count (default 10); `--json` emits `{ id, cacheType, label, snippet, storedAt }[]` instead. The index is built incrementally as entries are cached — there is no separate rebuild step.
-
-Run `token-goat recall` with **no query** to browse instead of search: every cached entry across all three types, newest first, in the same format and honoring the same `--type`/`--limit`/`--json` flags. This is the case where the index matters most — the ids have scrolled out of context and you have no term to search for, so the alternative is running `bash-history`, `web-history`, and `mcp-history` in turn.
-
-### Hint efficacy tracking
-
-Every hint hook (the re-read/dedup/surgical-read nudges in the Bash, Read, and Edit hooks) is
-worth its keep only if it's actually followed. `token-goat hint-stats` reports, per hint
-category: how many times it fired, how many times a later Bash command in the same session
-actually invoked the specific `token-goat` command (or referenced the specific cached-output id)
-the hint pointed at, the resulting efficacy percentage, whether the category is currently
-auto-suppressed, and the `spent` column (bytes of hint text actually injected into context for
-that category — the real cost of emitting it, not just how often it fired):
-
-```
-$ token-goat hint-stats
-category              emitted  acted-on  efficacy  suppressed  manual+  manual-  spent
-bash_redirect          42       9         21.4%     no          0        0        3150
-bash_recall            18       15        83.3%     no          0        0        1080
-read_reread_dedup      11       2         18.2%     no          0        0        660
-read_structural_nav    7        1         14.3%     yes         0        1        420
-edit_reread_suggest    3        0         0%        no          0        0        180
-
-TOTAL   saved=48200   spent=5490   net=42710
-```
-
-`spent` (and the `TOTAL` line's `spent`/`net`) render `n/a` instead of a fake `0` whenever a
-category — or, for the total, the whole store — has no tracked spend figure at all: either
-nothing has fired yet, or every emission predates this feature and was recorded before spend
-tracking existed. A partially-tracked category shows the real sum plus how many legacy rows it
-excludes, e.g. `120 (2 legacy)`, rather than silently blending unknown-cost rows into the total
-as if they cost nothing.
-
-A category is auto-suppressed for its harness once it has at least `hint_stats.min_sample_size`
-emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshold_pct` (default
-15%) — the sample-size floor exists so a category is never suppressed off a single unlucky
-emission. Once suppressed, that hook stops emitting that category until `token-goat hint-stats
---reset` clears the tracked data. Configure both knobs with `token-goat config set hint_stats.min_sample_size <n>` / `token-goat config set hint_stats.suppress_threshold_pct <pct>`.
-
-"Acted on" is a real, session-scoped signal (the exact file path or cached-output id the hint's
-own text pointed at is checked against the next few tool calls in that session) — not a guess —
-but it is a proxy for correlation, not proof of causation: a match means the agent ran the
-suggested command shortly after the hint, not that the hint necessarily caused it. A hint whose
-text has no extractable path/id (a small minority of branches) is counted as emitted with no
-automatic "acted on" credit. `--mark-effective <category>` / `--mark-ineffective <category>`
-record a separate manual vote as a human override/supplement for exactly that gap — manual votes
-are shown alongside the automatic percentage but never blended into it. `--json` emits
-`{ category, emitted, actedOn, efficacyPct, suppressed, manualEffective, manualIneffective }[]`.
-Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is not the same as
-"which LLM model" — no bridge in this codebase exposes an LLM model identifier to hooks, so
-harness is the closest real signal available.
+Every command, with its flags, its output, and the comparison workflows that chain them: **[CLI reference](docs/cli.md)**.
 
 ## MCP server
 
@@ -926,110 +406,11 @@ never drift on where `mcp.json` lives or what key name it looks for.
 
 ## What gets installed?
 
-`token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Integrations for other harnesses are additive on the way out as well as in, so a plain uninstall does not touch one you installed with `--codex`, `--copilot`, or a sibling flag: rather than undo something you did not ask about, it names each one still present and the flag that removes it. Run `token-goat doctor` at any time to see which of these are currently present.
+`token-goat install` writes hook entries and a delimited guidance block into your agent's config directory, plus an index, cache and models under a data directory. Nothing else, anywhere. Every entry is reversed by `token-goat uninstall`, integrations added with `--codex`, `--copilot` or a sibling flag are named rather than silently removed, and `token-goat doctor` lists what is present right now.
 
-**Claude Code integration** (`~/.claude/`)
+**What the index actually holds, in plain terms.** The point of a surgical read is returning a function body without the file around it, which means the database stores those bodies. `symbols.body` holds the source text of every indexed symbol, `symbols.docstring` its doc comment, `refs.context` the line around each reference, and `chunks.text` the passages that semantic search embeds. There is also a full-text index over the bodies and docstrings. So the database is not a list of names and line numbers: it is a substantial copy of your source, sitting in a plain unencrypted SQLite file outside the repository.
 
-| Path | What |
-|------|------|
-| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch, Skill), and `PreCompact`. Hook entries only: install writes nothing under `permissions`, so it never grants the agent unprompted execution of anything. Existing hooks are preserved; a timestamped `.bak` is written before any change.<br><br>The `PreToolUse` and `PostToolUse` matchers are narrowed to exactly the tools token-goat handles (plus `^mcp__`), generated from the live hook registry rather than a fixed list, so they can't fall out of date as handlers change. Claude Code starts a new process per matcher hit and most of that cost is process startup, so a catch-all matcher would make every unrelated tool call — `TodoWrite`, `TaskUpdate`, and friends — pay for a hook that has nothing to do. |
-| `~/.claude/hooks/token-goat-shim.js` | The hook script those `settings.json` commands invoke (`"<node>" "<shim>" <event> "<entry>"`). It imports the hook library in-process instead of spawning a second process, and naming the node binary directly skips the npm bin wrapper — on Windows a `cmd.exe` layer every hook would otherwise pay for. Measured 480 ms → 324 ms per hook call. Regenerated on every `install` run. Always written here even for a `--project` install, since the command bakes in machine-specific absolute paths; a project-scope `settings.json` just points at this one. |
-| `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
-| `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
-
-**Background worker.** token-goat does not register any persistent OS-level autostart entry — no Windows registry `Run` key, no systemd user unit, no XDG `.desktop` entry, and no macOS launchd `.plist`. The worker that drains the reindex queue is started manually as a detached child process: `token-goat worker start` launches `node <npm-prefix>/lib/node_modules/token-goat/dist/token-goat.mjs --worker-daemon` and returns immediately, and the child keeps running independent of the parent shell. `token-goat worker status` reports whether it's running; `token-goat worker stop` kills it. If it crashes or is killed while the machine stays up, the next edit hook detects it's gone and respawns it automatically (checked on every edit, rate-limited to roughly once every 5 minutes). It does not survive a reboot or logout, though — re-run `token-goat worker start` after either.
-
-There is no auto-update mechanism. Updating token-goat is always a manual `npm install -g token-goat@latest`.
-
-**Data directory** (created on first run)
-
-| Platform | Path |
-|---------|------|
-| Windows | `%LOCALAPPDATA%\dfk-helper\token-goat\` |
-| Linux / WSL | `~/.local/share/token-goat/` |
-| macOS | `~/Library/Application Support/dfk-helper/token-goat/` |
-
-Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, cached skill bodies (5 MB cap, LRU-evicted), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
-
-**What the index actually holds, in plain terms.** The point of a surgical read is returning a function body without the file around it, which means the database stores those bodies. `symbols.body` holds the source text of every indexed symbol, `symbols.docstring` its doc comment, `refs.context` the line around each reference, and `chunks.text` the passages that semantic search embeds. There is also a full-text index over the bodies and docstrings. So the database is not a list of names and line numbers: it is a substantial copy of your source, sitting in a plain unencrypted SQLite file outside the repository, at the path in the table above.
-
-Three things follow, and they are worth knowing before you decide. It never leaves the machine: token-goat sends no telemetry of any kind, and the only outbound requests it makes at all are the ones listed in the security section, none of which carry index content. It is not protected by your repository's access controls any more, so anything on the machine that can read your home directory can read it, and on Linux and macOS that directory sits under a home that backup and sync tools routinely copy. And it outlives an uninstall unless you say otherwise: `token-goat uninstall --purge` deletes both roots and tells you how much it reclaimed.
-
-**With `--codex`** (Codex CLI integration)
-
-| Path | What |
-|------|------|
-| `~/.codex/config.toml` | Hooks block with Codex-specific matchers (`view_image|Bash`, `apply_patch`, `web_search`) plus `PreCompact`/`UserPromptSubmit`/`SubagentStop` global hooks. Existing hooks preserved. |
-| `~/.codex/AGENTS.md` | A delimited block (`<!-- token-goat-codex-begin -->` … `<!-- token-goat-codex-end -->`) with the same routing guidance, adapted for Codex tool names. |
-| `~/.codex/hooks/token-goat-shim.js` | The hook script `config.toml`'s hook commands invoke (`node "<path>" <event>`). Strips internal `_tg_*` keys and injects `hookSpecificOutput.hookEventName` to satisfy Codex's strict schemas. Regenerated on every `install --codex` run. |
-
-**With `--gemini`** (Gemini CLI integration)
-
-| Path | What |
-|------|------|
-| `~/.gemini/settings.json` | Hook entries under Gemini's `BeforeTool`, `AfterTool`, and `PreCompress` events, using Gemini's own snake_case tool-name matchers (`run_shell_command`, `read_file`, `grep_search`, etc.). Existing hooks preserved; a timestamped `.bak` is written before any change. |
-
-**With `--qwen`** (Qwen Code integration)
-
-| Path | What |
-|------|------|
-| `~/.qwen/settings.json` | Hook entries under Qwen Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, and `SubagentStop` events (Claude-Code-native names and payload shape, not Gemini's), using a catch-all matcher per event. Existing hooks preserved; a timestamped `.bak` is written before any change. |
-
-**With `--kimi`** (Kimi Code integration)
-
-| Path | What |
-|------|------|
-| `~/.kimi-code/config.toml` | `[[hooks]]` entries for Kimi Code's `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, and `SessionStart` events. Each entry carries only `event` and `command`, the keys Kimi Code's strict schema accepts. Existing hooks and other config keys preserved; a timestamped `.bak` is written before any change. |
-| `~/.kimi-code/hooks/token-goat-shim.js` | The hook script those commands invoke. Rewrites a token-goat block into `hookSpecificOutput.permissionDecision` and a hint into a top-level `message`, and writes empty stdout for a no-op. Regenerated on every `install --kimi` run. |
-| `~/.kimi-code/AGENTS.md` | A delimited block (`<!-- token-goat-kimi-begin -->` ... `<!-- token-goat-kimi-end -->`) with the routing guidance, adapted for Kimi Code tool names. |
-| `~/.kimi-code/skills/token-goat/SKILL.md` | The same guidance as a Kimi Code skill. |
-
-**With `--opencode`** (opencode plugin)
-
-| Path | What |
-|------|------|
-| `~/.config/opencode/plugins/token-goat.ts` (Linux/macOS) or `%APPDATA%\opencode\plugins\token-goat.ts` (Windows) | TypeScript bridge plugin. Fires on `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`. Covers image shrinking, post-edit indexing, and compact assist. |
-
-**With `--pi`** (pi extension)
-
-| Path | What |
-|------|------|
-| `~/.pi/agent/extensions/token-goat.ts` | TypeScript extension (default-exported `ExtensionAPI` factory). Subscribes to `session_start`, `tool_call`, `tool_result`, `session_before_compact`, and `session_compact`. Covers bash compression, re-read denial, pressure-scaled surgical-read redirects for oversized first reads, image shrinking, post-edit indexing, output caching, and the compaction manifest. A project-local install writes `<project>/.pi/extensions/token-goat.ts` instead. |
-
-**With `--copilot`** (Copilot CLI hook bridge)
-
-| Path | What |
-|------|------|
-| `~/.copilot/hooks/token-goat.json` | Hook config (`{ version, hooks }`) registering `preToolUse`, `postToolUse`, `preCompact`, `agentStop`, and `subagentStop`, each pointing at the shim script below. Existing files elsewhere in the hooks directory are untouched. |
-| `~/.copilot/hooks/token-goat-shim.js` | The shim `token-goat.json`'s hook commands invoke (`node "<path>"`). Translates Copilot's event names and response schema (`permissionDecision`/`modifiedArgs`, `additionalContext`) to/from token-goat's internal hook protocol. Regenerated on every `install --copilot` run. A project-local install (`--copilot --local`) writes `<project>/.github/hooks/token-goat.json` and `<project>/.github/hooks/token-goat-shim.js` instead. |
-| `~/.copilot/copilot-instructions.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) with the same routing gate written to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, naming Copilot CLI's own `view`/`grep`/`glob` tools in the conflict-resolution clause. Merged idempotently — everything outside the markers is preserved byte-for-byte. A project-local install (`--copilot --local`) writes `<project>/.github/copilot-instructions.md` instead. |
-
-**With `--grok`** (Grok CLI / xAI Grok Build hook bridge)
-
-| Path | What |
-|------|------|
-| `~/.grok/hooks/token-goat.json` | Hook config (`{ hooks }`) registering `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, and `SubagentStop` with an empty (match-everything) matcher, each pointing at the shim script below. Existing files elsewhere in the hooks directory are untouched; global scope only (Grok's project-scoped `.grok/hooks/` requires a separate manual `/hooks-trust` grant). |
-| `~/.grok/hooks/token-goat-shim.js` | The shim `token-goat.json`'s hook commands invoke. Translates `PreToolUse`'s deny shape only (`{"decision":"block",...}` → Grok's documented `{"decision":"deny",...}`, plus exit code 2); every other event's response is forwarded unmodified. Regenerated on every `install --grok` run. |
-
-**With `--vscode`** (VS Code MCP configuration; user scope by default, `-p`/`--project` for the workspace)
-
-| Path | What |
-|------|------|
-| `%APPDATA%\Code\User\mcp.json` (Windows) / `~/Library/Application Support/Code/User/mcp.json` (macOS) / `~/.config/Code/User/mcp.json` (Linux) — or `<project>/.vscode/mcp.json` with `-p`/`--project` | Merges the `token-goat` stdio entry under VS Code's `servers` root key, preserving unrelated servers and settings. Refuses to write if the other scope already has a token-goat-managed entry, to avoid a duplicate registration. |
-| `<project>/.github/copilot-instructions.md` | Adds a delimited VS Code routing block that documents supported MCP selection and explicitly says MCP does not intercept built-in file reads. |
-
-**With `--hermes`** (Hermes Agent integration)
-
-| Path | What |
-|------|------|
-| `~/.claude/settings.json` | No new entries beyond the base Claude Code install. Hermes delegates tasks to Claude Code via `claude -p '<task>'`, which loads hooks from this file normally. `token-goat install --hermes` verifies the hooks are present and reports the result. To remove the Hermes detection: `token-goat uninstall --hermes` (removes no files — Hermes shares the Claude Code hook entries). |
-
-**With `--openclaw`** (OpenClaw plugin)
-
-| Path | What |
-|------|------|
-| `~/.openclaw/plugins/token-goat.ts` | TypeScript bridge plugin (`definePluginEntry` registration). Subscribes to `session_start`, `session_end`, `before_tool_call`, `after_tool_call`, and `before_compaction`. Covers bash compression, re-read denial, pressure-scaled surgical-read redirects for oversized first reads, image shrinking, and post-edit indexing. Not validated against a live OpenClaw instance — see README's "openclaw users" section. |
-| `~/.openclaw/openclaw.json` | Adds the plugin path to `plugins.load.paths` and an entry to `plugins.entries.token-goat`. Existing config preserved; a timestamped `.bak` is written before any change. |
+The file-by-file table for each harness, and the path that file sits at: **[What gets installed](docs/install.md#what-gets-installed)**.
 
 ## Zero maintenance
 
@@ -1248,92 +629,18 @@ node -e "for(let r=0;r<256;r+=32)process.stdout.write('\x1b[48;2;0;'+r+';0m  ');
 
 ## Security, privacy, and uninstall
 
-**No telemetry. No analytics. No background reporting or silent outbound connections.**
+**No telemetry. No analytics. No background reporting or silent outbound connections.** Outbound network is reserved to calls your agent initiates: Google Drive, only if you already authorized Drive in Claude Code, and image fetches from URLs the agent asked for. Pages that come back from the web are fenced against prompt injection and scanned for secrets before the model sees them.
 
-Outbound network is reserved to these explicit cases:
+Dependencies carry one high advisory, reachable only from a package's own install script. The full accounting, including the override that clears it, is under [Dependency advisories](SECURITY.md#dependency-advisories).
 
-- Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
-- Image fetches from URLs: either explicit via `token-goat fetch-image <url>`, or when the AI agent issues a WebFetch call that returns image content — the hook intercepts and shrinks the image. The URL always originates from the agent's work, not from token-goat itself.
-- `token-goat screenshot <url>` navigates a headless browser to the URL you give it, subject to the target restrictions described below.
-- The first `token-goat semantic` run on a machine downloads the embedding model from `huggingface.co`, pinned to an immutable commit rather than a mutable branch and checked against a recorded SHA-256 and byte length before it is used, and only once `onnxruntime-node` has been installed (see below — it is not part of a default install). Subsequent runs use the local cache, re-verify it, and make no network call. Skip the download entirely by setting `indexing.embeddings_enabled = false` (it is on by default), in which case `semantic` falls back to full-text search.
-- The first optical-character read of an image downloads the English language data (about 4 MB) from `cdn.jsdelivr.net`, at a fixed version path. Subsequent reads use the local cache. This happens for an explicit `token-goat image-text`, and also for the automatic text extraction the image-shrink hook performs when the agent reads a screenshot; turn the automatic one off with `image_shrink.ocr_enabled = false`.
-
-**One switch for all of it.** Set `network.offline = true` (env `TOKEN_GOAT_OFFLINE`) and every one of the paths above refuses instead of connecting, saying so rather than failing quietly. Anything already cached keeps working: a machine that has the embedding model still runs `semantic`, and one that has the language data still reads text out of images. This is one of the settings a per-project config file may not touch, so cloning a repository cannot switch it back off.
-
-**A repository cannot reconfigure the security controls.** A project-root `.token-goat.toml` layers on top of your global config, which is what it is for: hint thresholds, indexing settings, compression tuning. But that file arrives with the repository, so whoever wrote the repository wrote it. Five whole sections are therefore off limits to it, plus one individual key, and come from your global config or the environment only: `injection` (prompt-injection fencing), `webfetch` (the fetch allow and deny lists), `gdrive` (the Google Drive integration), `mcp` (root confinement and the allowed-roots list), `network` (offline mode), and the single key `indexing.cross_project_symbols`. A project file that sets one of them is ignored, and token-goat prints a line naming what it dropped. Everything else stays project-overridable.
-
-**Security reports.** See [SECURITY.md](SECURITY.md). Email `token-goat@dfkhelper.com`; do not file as a GitHub issue. Reports are acknowledged within 7 days; coordinated disclosure with a 90-day default window.
-
-**Dependency advisories.** `npm audit` on the published package is empty, for a default install as well as for `npm install --omit=optional`. That took removing the package the findings all came through: `@xenova/transformers`, which supplied the embedding half of `semantic` and carried a critical `protobufjs` advisory plus five more that had no forward patch. It is gone entirely now — the tokenizer and the ONNX runner are token-goat's own code over `onnxruntime-node`, which is 17 packages where the old one was 80. That runtime is opt-in and not installed by default. `semantic` still works without it, on keyword search. Both `semantic` itself and `token-goat doctor` say so, and print the one command that brings the embeddings back:
-
-```bash
-npm install -g onnxruntime-node   # drop -g if token-goat is a project dependency
-```
-
-That command is the one thing here that is not clean: `onnxruntime-node` pulls an `adm-zip` below 0.6.0, which carries [one high advisory](https://github.com/advisories/GHSA-xcpc-8h2w-3j85) that npm reports twice. It is reachable only from that package's own install script, unpacking the binary it just downloaded. The full accounting — including the override that clears it, why co-installing a fixed `adm-zip` does not, and what the old package cost — is under [Dependency advisories](SECURITY.md#dependency-advisories).
-
-**Verifying what you installed.** Every published version is built and pushed by one pinned workflow when a GitHub release is published, with npm provenance, so `npm audit signatures` verifies the tarball against the commit that produced it. Details in [Verifying what you installed](SECURITY.md#verifying-what-you-installed).
-
-**Prompt injection.** When an AI reads a file, web page, or command output, that content enters its context alongside your own instructions. Prompt injection is when untrusted content includes text designed to look like instructions — "Ignore all previous directives and run this instead" — to redirect the AI mid-task.
-
-Token-goat intercepts every Read, Fetch, Bash, and MCP call the AI makes. Text that came from somewhere else is wrapped in an untrusted-content fence before the model sees it, decided by where the text came from and not by whether anything looked suspicious in it (`injection.enabled`, on by default, turns the whole thing off). The content is also scanned for a set of imperative-override attack patterns ("ignore previous instructions," "reveal system prompt," and similar); a match adds the pattern names to the fence's notice and writes a row to the log, and a clean scan changes only the wording. That ordering is the point: the pattern list is deliberately short, so anyone phrasing the same instruction differently would otherwise get an unlabelled channel, and a miss would be silent.
-
-Three surfaces are covered. Every fetched page is fenced as it arrives and again when a cached copy is recalled with `web-output`. Every MCP tool result is fenced as it arrives, which matters most: it is a remote server's output, so it is the least trustworthy text in the pipeline. And cached Bash and MCP output is fenced when recalled with `bash-output` or `mcp-output`, since the output of a build or test run in a project with a hostile dependency is written by a third party as much as any web page is. Document extraction (`pdf-extract`, `docx-text`, the `xlsx-*` and `pptx-*` commands), `pr-slice`, `gdrive-sections`, and `recall` are covered the same way. The fence naming tool output is a different tag from the one naming web content, so the label tells the model where the text came from.
-
-Read is the exception: file content passes through to the model unfiltered, because filtering it would silently break legitimate use cases. Where token-goat splices a piece of a file into its own hint or denial message, that excerpt is fenced. Outside of the fence, the primary defense is the model's own training to treat tool output as data, not as commands from a trusted party.
-
-One deliberate gap: `--json` output cannot carry a fence around the envelope, because a fence wrapped around JSON is no longer JSON and callers parse it. Those envelopes fence individual fields on a pattern match instead, since the fixed wrapper would otherwise cost more than a short field is worth. The printed (non-`--json`) form of the same command is always fenced.
-
-Separately from that pass-through case: when a read hook *denies* a Read and substitutes its own message, any file bytes it embeds in that message (a markdown heading tree, a served compact or notebook sidecar, a re-read diff, a CSV header row, an HTML title) are wrapped in an `<untrusted-file-content>` fence first, so a hostile repo cannot get its own text presented to the model as token-goat speaking. That fencing is unconditional, not gated on the pattern scan — as all of it now is.
-
-A third case needs no fence, because the danger is the line break rather than the wording. When token-goat prints its own summary of a file it prints one entry per line and takes the names and values straight out of that file: the column profile behind `csv-profile`, the key listing behind `json-outline` and `yaml-outline`, the entry listing behind `zip-list`, and any hook hint naming the file it is about. Every one of those values may legally contain a newline. A quoted CSV field spans lines by design, a JSON key is an arbitrary string, a zip entry name is whatever whoever built the archive wrote in the header, and a file name may contain a newline on Linux and macOS. So a single cell, key, entry or file name could end token-goat's line and start one of its own that reads exactly like another entry token-goat had written, with nothing but the line break to tell them apart. Control characters, Unicode line separators and format characters in those values are escaped into their visible form, so one entry stays one line and hostile content is shown rather than obeyed. The same rule covers a carriage return that would overwrite the line on screen, an ANSI escape that would recolour it, and a bidi override that would make the rest of it render backwards. Ordinary names and values pass through untouched. This matters most for an archive, since a `.whl`, `.vsix` or `.nupkg` comes from a package registry rather than from you.
-
-The MCP tools (`symbol` when given a `file` filter, `read`, `section`, `skeleton`, `outline`, `refs`, `brief`, `grep`, `imports`, `exports`) are confined to the project root, resolving symlinks before the check. Set `mcp.confine_reads_to_project_root = false` (env `TOKEN_GOAT_MCP_CONFINE_READS`) in your global config if you genuinely need cross-root reads from an MCP client; a per-project file cannot set it. The CLI is deliberately unconfined and unchanged. This is defense in depth for one sink, not a sandbox: an agent that can call these tools can usually call its own read tool too.
-
-Note what that flag does and does not cover. It stops a caller traversing *out of* the root it is given; it does not constrain *which* root the caller supplies. Every MCP tool takes an optional `projectRoot`, and it exists for a reason — the server's cwd is often not the workspace root for MCP clients — but tool arguments are model-generated, so that choice is untrusted input like any other. If your deployment treats MCP as the only path to the filesystem, set `mcp.allowed_roots` (env `TOKEN_GOAT_MCP_ALLOWED_ROOTS`, delimiter-separated like `PATH`) to the roots that may legitimately be named; a resolved root outside every entry is then refused. It is empty by default, which keeps the multi-root behavior above unchanged.
-
-**Restricting what token-goat may fetch.** `webfetch.allow` and `webfetch.deny` (env `TOKEN_GOAT_WEBFETCH_ALLOW` / `TOKEN_GOAT_WEBFETCH_DENY`, comma-separated) are wildcard URL patterns that decide which addresses may be reached. Deny is checked first and wins; a non-empty allow list refuses anything it does not name. Patterns are matched against the address as it will actually be sent, not only as you typed it, so a trailing dot on the host, `..` path segments, a default port written out, and percent-encoded path characters cannot be used to step around a rule. Writing a default port in a pattern (`https://example.com:443/*`) and omitting it are equivalent. Both are empty by default, which permits everything, exactly as before. They apply to the WebFetch call your AI makes, to the fetches token-goat performs itself (`fetch-image`, `gdrive-sections`), and to the headless browser behind `screenshot` (whose page sub-resources are checked too), including every redirect hop, so an allowed site cannot redirect the request on to a denied one.
-
-**Where cached content lives, and who can read it.** Cached command output, fetched pages, MCP results, session state and the source index all sit under one data directory (`~/.local/share/token-goat` on Linux, `~/Library/Application Support/token-goat` on macOS, `%LOCALAPPDATA%\dfk-helper\token-goat` on Windows). On POSIX that directory is created owner-only (mode 0700), and an existing one is tightened on the next run, so other local users on a shared build host cannot read it. Windows uses inherited ACLs instead. Individual JSON blobs are additionally written 0600.
-
-**Confining `symbol` to one project.** `token-goat symbol` is the one read command that answers from the machine-wide index (`global.db`) rather than the current project, so by default `symbol <name>` and `symbol --grep .` return matching symbols, bodies included, from every project ever indexed on the host. That is deliberate and useful on a personal machine: it is how you find a helper you wrote in another repo. On a shared build host, or under an agent you have confined to one directory, it is a read channel that the directory sandbox does not close, because the answer comes out of the index instead of the filesystem. Set `indexing.cross_project_symbols = false` (env `TOKEN_GOAT_CROSS_PROJECT_SYMBOLS`) and `symbol` only answers from the project it is run in. `--project` and `--file` pointing outside that project are refused rather than honored, so the setting cannot be stepped around from inside the confined process. Every other read command (`read`, `refs`, `callers`, `types`, `dead`, `find`, `semantic`) is already project-scoped and is unaffected.
-
-**Turning off the Google Drive integration.** `token-goat gdrive-sections` is the only feature that talks to Google. Set `gdrive.enabled = false` (env `TOKEN_GOAT_GDRIVE_ENABLED`) and the command refuses before it opens a connection, and the routing guidance token-goat writes into CLAUDE.md, AGENTS.md, `copilot-instructions.md` and the installed skill stops naming it, so an agent is never told the command exists. Nothing else in token-goat contacts Google Drive, and it holds no Drive credentials: `gdrive-sections` fetches the public export URL of a document id you pass it by hand.
-
-**Secret redaction in cached content.** Token-goat caches command output, fetched pages, and MCP results so it can serve them back later instead of re-running the work. Anything it writes to those caches is passed through a redactor first, so a credential that appeared in output does not sit on disk in plain text and does not get replayed into a later session. This is unconditional — there is no flag to turn it on, and it applies to cached Bash and Task output (including the command string itself, which is where an inline `--token=...` would otherwise land), fetched web content, MCP tool results and their labels, `compress-text`/`handoff` payloads, and the raw JSON disk cache. Recognized shapes: Anthropic, OpenAI, AWS, GitHub, Slack, Stripe, npm, and Google keys; JWTs; `Authorization: Bearer`/`Basic` headers; PEM private-key blocks; presigned-url signatures (AWS `X-Amz-Signature`, Google Cloud Storage `X-Goog-Signature`, Azure SAS `sig`); and generic `password=`/`secret=`/`api_key=` assignments in `.env`, connection-string, and query-string shape. A match is replaced by a `[REDACTED:<kind>]` marker naming which pattern fired.
-
-Session state gets the same treatment. The per-session file records which urls were fetched and which `curl -o` downloads landed where, and a url carries credentials as readily as output does. The fetched-url list is redacted, so the compaction manifest can still name what was fetched without naming the key; the download list is keyed by a digest of the url instead, because its only consumer is an exact-match check and a redaction there would make two urls differing only in their key look identical. The fetched-url entry also redacts the prompt that was sent with the page, and carries a digest of the pair so redaction cannot merge two entries that differ only inside the redacted span. An entry written by an older version is rewritten into this shape the first time the file is read, so upgrading clears the credentials an old file was holding rather than keeping them for the life of the session.
-
-Two honest limits. It is a pattern matcher, not a classifier: a credential in a format it does not recognize — an internal token shape, a bare high-entropy string with no `key=` prefix — is cached as-is. And it protects what token-goat *stores*, not what your agent reads in real time; a secret printed to the terminal was already in the model's context before any caching happened. Treat it as damage control on the cache layer, not a reason to relax about printing secrets.
-
-**`screenshot` target restriction.** `token-goat screenshot` and the MCP-adjacent screenshot path only navigate to `http:`/`https:` URLs; loopback, link-local, private, unspecified, and cloud-metadata addresses (including IPv4-mapped IPv6 and NAT64-encoded forms) are refused by default. Every redirect hop and sub-resource the page pulls in is re-validated against the same policy, and the hostname is resolved and the validated address pinned into the browser's own resolver, so DNS rebinding — a name that resolves differently between the check and the browser's own lookup — cannot slip a private address through. This is controlled by `screenshot.block_private_targets` (env `TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS`), on by default. One limit remains: cross-host sub-resources (images, scripts, frames from a different host than the page itself) are resolved and checked but not pinned, so a record that changes between the check and the browser's own lookup could still be followed for those.
-
-In practice: if you're reading files from untrusted sources or fetching unknown URLs during a session, pay attention to any actions the AI takes immediately after. Unusual follow-on behavior — opening files it wasn't asked about, writing to unexpected locations — is a sign that something in the read content may have tried to redirect it.
-
-**Windows Defender (optional, Windows only).** Real-time scanning slows indexing. To exclude the data folder, open PowerShell as administrator:
-
-```powershell
-Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
-```
-
-`0x800106ba` means the prompt is not elevated; reopen as administrator. On enterprise-managed Windows (domain-joined / Intune), Defender exclusions may be locked by Group Policy. The command will fail; that is expected and harmless.
-
-**Uninstall.**
-
-```
-token-goat uninstall
-```
-
-Reverses everything in [What gets installed?](#what-gets-installed): the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, `--copilot`, `--grok`, or `--vscode` to also strip those integrations. It does not stop a running worker; use `token-goat worker stop` for that. Nothing else on the system depends on it.
-
-By default the data directories stay: the index took real time to build and a reinstall wants it back. Add `--purge` to delete them as well, which is what offboarding a machine needs:
+To remove everything, index and caches included:
 
 ```
 token-goat worker stop
 token-goat uninstall --purge
 ```
 
-That removes both roots (the data directory holding the index, caches, models and logs, and the home directory holding session state and the OCR cache), naming each one and how much it reclaimed. It refuses while the worker is running, because the worker would rewrite files under a directory being deleted.
+The complete outbound list, the trust boundaries, what is stored locally, and what each storage root holds: **[Security, privacy, and uninstall](docs/security.md)**.
 
 ## About
 
@@ -1355,16 +662,6 @@ Bug reports go to the same place. The most useful ones include:
 - What you expected and what actually happened
 
 For private questions, commercial licensing, or anything you'd rather not post publicly, contact me at token-goat@dfkhelper.com.
-
-## Available for work
-
-Senior or staff engineering. Developer tools, AI infrastructure, or context management.
-
-I've spent months inside Claude Code's hook system, session management, and compaction pipeline. Not reading the docs. Instrumenting them to see what was actually happening. The work is in this repo.
-
-I build systems that run without babysitting, measure their own impact, and fail quietly. If you're building tooling for developers who work with AI, reach out.
-
-[token-goat@dfkhelper.com](mailto:token-goat@dfkhelper.com)
 
 ## Disclaimer
 

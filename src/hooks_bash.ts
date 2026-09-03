@@ -11,19 +11,21 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
+import { deliveredOutputBytes } from './delivery_cap.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
+import { stripAnsiEscapes } from './render/ansi.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
 import { isUnderSystemTemp } from './project.js'
-import { runGit } from './util.js'
+import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
@@ -1790,6 +1792,115 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
  * single (already-wrapped) command, the output is below the size floor, or the net-benefit gate
  * declines the rewrite.
  */
+/**
+ * The file read by a pure file read, or null when `cmd` is not one.
+ *
+ * A pure file read is one whose output is a function of the file's content alone: `cat FILE`,
+ * `head -N FILE`, `tail -N FILE`, `sed -n 'A,Bp' FILE`, and the piped and awk spellings the same
+ * extractors already normalize into those forms.
+ *
+ * Deliberately narrow. A command whose output can differ for any reason other than file content --
+ * a test run, a build, anything reading the network or the clock -- must never reach the collapse
+ * below, because for those "the output is the same as last time" is the finding itself rather than
+ * redundancy, and replacing it with a pointer would delete the answer.
+ *
+ * The path, rather than a bare boolean, is what lets a read be matched against earlier reads of the
+ * same file instead of only against an identical spelling of itself: `head -40 CHANGELOG.md` and
+ * `sed -n '1,30p' CHANGELOG.md` are different commands that hash differently and return different
+ * bytes, yet the second shows nothing the first did not.
+ */
+function pureFileReadPath(cmd: string): string | null {
+  return extractCatFile(cmd)?.filePath ?? extractHeadFile(cmd)?.filePath ?? extractTailFile(cmd)?.filePath ?? extractLineRangeRead(cmd)?.filePath ?? null
+}
+
+
+/**
+ * Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy.
+ *
+ * Unlike every other rewrite in this handler, this one needs no judgement about which parts of the
+ * output matter, because nothing is being summarized: the bytes the model already holds and the
+ * bytes it would be handed again are the same bytes. Only a duplicate is dropped, and the original
+ * stays whole in the bash-output cache, so a caller that genuinely wants it back can ask.
+ *
+ * Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the
+ * `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are
+ * suppressed by the backoff ledger for that reason, while the two paths that act on the payload
+ * instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and
+ * 98.5%. Advice about a redundant read still costs the redundant read.
+ *
+ * Returns null -- leaving output untouched -- on a command's first run, when the file changed so
+ * the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is
+ * also where the body gets cached, so a later identical run has a baseline to compare against.
+ */
+async function maybeCollapseIdenticalRead(
+  cmd: string,
+  output: string,
+  exitCode: number | null,
+  cwd: string | null,
+  cacheMinBytes: number,
+): Promise<HookOutput | null> {
+  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  // A failed read's output is an error message, not file content. Never store one as the baseline a
+  // later run would be collapsed against, and never collapse one away.
+  if (exitCode !== null && exitCode !== 0) return null
+  const filePath = pureFileReadPath(cmd)
+  if (filePath === null) return null
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  if (originalBytes < Math.max(cacheMinBytes, IDENTICAL_READ_MIN_BODY_BYTES)) return null
+
+  // Session-scoped, deliberately. The blob cache behind storeBashOutput is on disk and outlives the
+  // session, but this rewrite's whole claim is that the model already holds these bytes -- which is
+  // only true if the earlier read happened in THIS conversation. Keying on the session's own
+  // per-file index (serialized per session id, and cleared on edit and on compaction) rather than
+  // on the blob cache alone is what makes the claim true: a first read in a fresh session finds
+  // nothing here and passes through whole, even when an identical body from yesterday is still
+  // sitting in the blob cache.
+  //
+  // Keyed by file rather than by command, because the measured waste is not one command repeated:
+  // it is several spellings of overlapping reads of one file, which hash differently and return
+  // different bytes. Newest first, since a later body is the more likely container and stopping at
+  // the first hit bounds how many blobs get read.
+  const fileKey = resolveIndexPath(filePath, cwd ?? process.cwd())
+  const priorIds = getFileServedOutputs(fileKey)
+  let containerId: string | null = null
+  let identical = false
+  for (let i = priorIds.length - 1; i >= 0; i--) {
+    const id = priorIds[i]
+    if (id === undefined) continue
+    const prior = getBashOutput(id)
+    if (prior === null || !containsLineRun(prior.output, output)) continue
+    containerId = id
+    identical = prior.output === output
+    break
+  }
+
+  const sessionKey = shortFingerprint(stripOutputPipeline(cmd))
+  if (containerId === null) {
+    // Nothing served this session covers these lines: a first read, a file that changed, or a read
+    // reaching past everything shown so far. Cache the body so a later read of the same file has
+    // something to be matched against, and leave the output alone -- nothing is redundant yet.
+    const storedId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+    recordBashOutput(sessionKey, storedId, originalBytes)
+    recordFileServedOutput(fileKey, storedId)
+    return null
+  }
+
+  const pointer = identical
+    ? '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + containerId + '`.'
+    : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + filePath + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + '`.'
+  if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(pointer, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
+  // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the
+  // earlier run as safe for the compaction manifest to drop, which is right when a newer *full*
+  // copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would
+  // strand this pointer and leave the transcript with neither the body nor a duplicate of it. The
+  // earlier full copy is precisely what this rewrite is pointing at, so it must stay.
+  // Priced against the delivered size, not the original: the harness truncates a Bash result before
+  // the model sees it, so collapsing an oversized body spares at most the delivered slice. See
+  // deliveredOutputBytes in src/delivery_cap.ts. The worthwhile gate above deliberately stays on the
+  // uncapped bytes -- this is an accounting correction, not a change to which rewrites ship.
+  return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes: deliveredOutputBytes(originalBytes) })
+}
+
 async function maybeCompressCompoundOutput(
   cmd: string,
   output: string,
@@ -1842,7 +1953,60 @@ async function maybeCompressCompoundOutput(
   }
   await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
   // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing.
-  return emitRewrite(body, 'bash', { kind: 'bash_compress:generic', originalBytes: compressed.originalBytes })
+  // originalBytes is capped at the harness delivery cap (src/delivery_cap.ts): the model never
+  // receives more than that inline, so a larger counterfactual would book output it could not see.
+  return emitRewrite(body, 'bash', { kind: 'bash_compress:generic', originalBytes: deliveredOutputBytes(compressed.originalBytes) })
+}
+
+/**
+ * Last-resort, strictly lossless pass: drop terminal display escapes (SGR colour, cursor moves,
+ * OSC titles) from output that nothing else compressed. A model reads `\x1b[38;2;240;246;252m` as
+ * tokens and gets no information from it -- it is markup for a terminal, not content.
+ *
+ * Three things follow from "lossless" and separate this from every other rewrite on this path:
+ * nothing is withheld, so there is no recall pointer and no marker to price in (a marker would be
+ * pure cost -- there is nothing to recall); the saving is exactly the escape bytes removed; and it
+ * is deliberately NOT gated on exit code. The other paths skip a failing command so its
+ * diagnostics reach the model whole, but stripping display markup is what keeps a failing
+ * colourised build whole -- a red `FAIL` and a plain `FAIL` say the same thing to a reader that
+ * has no colours.
+ *
+ * Only single commands reach here in practice: a compound one is compressed by
+ * {@link maybeCompressCompoundOutput}, whose filter pipeline already strips escapes as its first
+ * stage. This closes the gap on the other side of that helper's `isCompressibleSingleCommand`
+ * early return, where the pre-hook wrapper only covers a whitelist of recognised command shapes
+ * and everything else -- including token-goat's own colourised output -- passed through untouched.
+ */
+function maybeStripAnsiOnly(output: string): HookOutput | null {
+  if (!output.includes('\x1b')) return null
+  // No explicit TOKEN_GOAT_BASH_COMPRESS check: config.ts folds that env var into
+  // `bash_compress.enabled`, so `!cfg.enabled` below already carries the kill switch. An extra
+  // check here read as a second guard while being unreachable -- mutation testing removed it and
+  // nothing went red, which is what an unreachable guard looks like.
+  let cfg: { enabled: boolean; disabled_filters: string[] }
+  try {
+    cfg = loadConfig().bash_compress
+  } catch {
+    return null
+  }
+  if (!cfg.enabled || cfg.disabled_filters.includes('ansi')) return null
+  const stripped = stripAnsiEscapes(output)
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  if (
+    !isRewriteWorthwhile({
+      originalBytes,
+      rewrittenBytes: Buffer.byteLength(stripped, 'utf-8'),
+      noticeBytes: 0,
+      minNetSavingsBytes: resolveMinNetSavingsBytes(),
+    })
+  ) {
+    return null
+  }
+  // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder
+  // in `stripped` was already in the original and was booked by whoever put it there, so counting
+  // here would credit this path with a redaction it did not perform.
+  // Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
+  return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
 }
 
 /**
@@ -2799,12 +2963,20 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
     if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) {
+      // A plain file read reaches here and, before this branch existed, left with nothing: no
+      // cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger
+      // suppresses. Re-reading the same unchanged file therefore cost its full body every time.
+      // Collapse the byte-identical repeat first, since it is strictly cheaper than compressing
+      // a body the model has already been given verbatim.
+      const identical = await maybeCollapseIdenticalRead(cmd, output, exitCode, cwd, cacheMinBytes)
+      if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
       // for compression) gets its already-captured output compressed here instead. Single
       // commands were already handled upstream and are skipped inside the helper.
       const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes)
       if (compound !== null) return compound
-      return passOutput()
+      // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
+      return maybeStripAnsiOnly(output) ?? passOutput()
     }
 
     if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return passOutput()
@@ -2826,6 +2998,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         return contextOutput(delta + ' — full output: bash-output ' + id)
       }
     }
+    // Deliberately after the delta hint, which keeps its existing priority: a hook returns one
+    // channel, and the delta is only reachable on a rerun whose output actually changed. Every
+    // other cached command -- including the colourised build runs `isBuildCommand` routes here --
+    // reaches this line, so this is where most escape bytes are removed.
+    const ansiOnly = maybeStripAnsiOnly(output)
+    if (ansiOnly !== null) return ansiOnly
   } catch {
     // Never block — hook failures must be silent.
   }

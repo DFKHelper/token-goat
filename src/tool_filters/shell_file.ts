@@ -12,6 +12,7 @@ import {
   pathStem,
   positionalArgs,
   compressTestOutput,
+  clipGrepLines,
 } from './helpers.js'
 import { stripAnsiCodes } from '../bash_compress.js'
 
@@ -42,11 +43,12 @@ export class GrepFilter extends ToolFilter {
     return false
   }
 
-  override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const text = this.combineOutput(stdout, stderr)
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
-    if (nonEmpty.length <= _GREP_COMPRESS_THRESHOLD) return text
+    // Under the summarise threshold the raw output ships verbatim, which used to include a 5,000-char hit inside a minified bundle at full length: neither this filter nor apply()'s line/byte caps ever looks at an individual line. Clip those to a window centred on the match instead. The >30-line branch below needs nothing, since it already discards line content entirely.
+    if (nonEmpty.length <= _GREP_COMPRESS_THRESHOLD) return clipGrepLines(text, argv)
 
     const fileCounts = new Map<string, number>()
     let unattributed = 0
@@ -187,7 +189,12 @@ export class RgFilter extends ToolFilter {
     )
   }
 
-  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
+  // Same per-line clip GrepFilter applies: every branch below can return match lines verbatim, so the cap is applied once here rather than at each of the five return sites.
+  override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
+    return clipGrepLines(this._compressBody(stdout, stderr, exitCode, argv), argv)
+  }
+
+  private _compressBody(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const text = this.combineOutput(stdout, stderr)
     if (RgFilter._isFilesOnly(argv) || RgFilter._isCountOnly(argv)) return text
     const lines = text.split('\n')

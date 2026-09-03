@@ -161,13 +161,16 @@ import {
   runBlame,
   runAsk,
 } from './graph_commands.js'
+import { DEFAULT_AFFECTED_DEPTH, runAffected } from './affected.js'
+import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
+import { visionTokensSavedByText } from './image_shrink.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
@@ -1102,7 +1105,7 @@ async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { pr
   // size is the "full source" side of the bytes-saved calculation, mirroring recordReadStat's
   // convention in read_commands.ts.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('session_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1133,7 +1136,7 @@ async function cmdSessionSlice(
   out(text)
   // Same registry/producer desync as cmdSessionOutline above -- see the comment there.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('session_slice', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1427,7 +1430,7 @@ async function cmdPdfExtract(
   // memory). "Full source" is the on-disk PDF size; "emitted" is the text actually printed
   // after --pages/--head/--tail/--grep filtering, mirroring recordReadStat's convention.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_extract', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1474,7 +1477,7 @@ async function cmdPdfLocate(
   // "Full source" is the on-disk PDF size; "emitted" is the page list + snippets actually printed,
   // which is what a locate-then-extract caller pays instead of pulling whole pages.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_locate', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1499,7 +1502,7 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('pdf_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1518,7 +1521,7 @@ async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('pdf_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1545,8 +1548,13 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   out(text)
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('image_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
+  // The byte figure is the real wire saving. The TOKEN figure is not bytes/4: an image is billed
+  // as 28x28-pixel patches, so running an image byte count through the text divisor priced it in
+  // the wrong unit entirely -- one real row credited 1,856,507 tokens for an image that could not
+  // have cost more than a few thousand. This command reads the real dimensions, so it prices the
+  // image it replaced exactly.
+  recordStat('image_meta', bytesSaved, visionTokensSavedByText(meta.width, meta.height, Buffer.byteLength(text, 'utf8'), loadConfig().image_shrink.vision_tier))
 }
 
 /**
@@ -1595,8 +1603,12 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   out(text)
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
-  recordStat('image_text', bytesSaved, savedTokensFromBytes(bytesSaved))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
+  // Same wrong-unit correction as image-meta above. Unlike image-meta this command never learns
+  // the pixel dimensions -- OCR needs no decoder that reports them, and sharp may not be installed
+  // -- so null dimensions ask for the tier ceiling. That is the honest bound: the alternative this
+  // replaced was one image, and one image cannot bill more than a full-size one.
+  recordStat('image_text', bytesSaved, visionTokensSavedByText(null, null, Buffer.byteLength(text, 'utf8'), loadConfig().image_shrink.vision_tier))
 }
 
 function cmdVideoChapters(file: string) {
@@ -1625,7 +1637,7 @@ function cmdVideoChapters(file: string) {
   // never called recordStat, so its dashboard bucket in `token-goat stats --full` stayed
   // permanently zero regardless of real usage (see project_runchanged_missing_stat memory).
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('video_chapters', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1662,7 +1674,7 @@ function cmdSharepointResolve(url: string) {
 // memory). "Full source" is the on-disk workbook size, mirroring recordReadStat's convention.
 function recordXlsxStat(kind: string, file: string, emitted: string): void {
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emitted, 'utf8'))
   recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1713,7 +1725,7 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
 // families -- see that function's comment.
 function recordDocStat(kind: string, file: string, emitted: string): void {
   const fullSourceBytes = fileSizeOrZero(file)
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(emitted, 'utf8'))
   recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -1928,6 +1940,31 @@ async function cmdScreenshot(
  * Maps the return code onto `process.exitCode`; an unexpected throw still maps
  * to a stderr line + exit 1, matching the `guard` contract.
  */
+/**
+ * Read a newline-separated path list from stdin, for `affected --stdin`.
+ *
+ * Synchronous by design: the callers are synchronous commands, and the input is a diff's worth of
+ * paths rather than a stream. A TTY is rejected rather than blocking forever on a terminal that
+ * will never send EOF -- a hang here looks identical to a slow command, and the user would sit
+ * through it before learning they had to pipe something in.
+ *
+ * Blank lines are dropped and each line is trimmed, so `git diff --name-only`'s trailing newline
+ * and any stray carriage return from a Windows pipe do not become an empty or `\r`-suffixed path
+ * that would then be reported as an untracked seed.
+ */
+function readStdinPaths(): string[] {
+  if (process.stdin.isTTY) {
+    throw new CliError('--stdin requires piped input, e.g. `git diff --name-only | token-goat affected --stdin`')
+  }
+  let raw: string
+  try {
+    raw = fs.readFileSync(0, 'utf8')
+  } catch (e) {
+    throw new CliError(`could not read the file list from stdin: ${extractErrorMessage(e)}`)
+  }
+  return raw.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+}
+
 function runExit(fn: () => number): void {
   try {
     process.exitCode = fn()
@@ -3158,7 +3195,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   // permanently zero regardless of real usage, the same class of gap already fixed for
   // map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see
   // project_runchanged_missing_stat memory).
-  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(toEmit, 'utf8'))
+  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(toEmit, 'utf8'))
   recordStat('gdrive_sections', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
@@ -3386,6 +3423,73 @@ function cmdFailures(
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
+/** Generate a compact grouped help text for the top-level command. */
+/**
+ * Commander's own `helpInformation` for the top-level program, captured before
+ * `buildProgram` shadows it with the compact grouped index. `help --full` calls
+ * this to emit the long per-command listing the compact index replaces; without
+ * it the long form is unreachable, since the override is an own property that
+ * hides the prototype method for every later caller.
+ */
+let originalHelpInformation: (() => string) | null = null
+
+function generateCompactHelp(): string {
+  const lines = [
+    'Usage: token-goat [options] [command]',
+    '',
+    'Surgical token-reduction companion for AI coding agents',
+    '',
+    'Options:',
+    '  -v, --version                   print the token-goat version',
+    '  --cwd <path>                    run as if invoked from this directory',
+    '  -h, --help                      display help for command',
+    '',
+    'Reads: symbol, read, brief, section, semantic, skeleton, outline, refs, scope,',
+    '  similar, context-for, call-chain, impact, callers, dead, test-for',
+    '',
+    'Analysis: arch, affected, blame, deps, types, coverage-gaps, changed, diff, log,',
+    '  exports, imports, find, grep',
+    '',
+    'File Formats: pdf-meta, pdf-outline, pdf-extract, pdf-locate, xlsx-sheets,',
+    '  xlsx-head, xlsx-query, xlsx-range, yaml-outline, yaml-query, json-outline,',
+    '  json-query, xml-outline, xml-query, docx-outline, docx-text, pptx-outline,',
+    '  pptx-slide, pptx-text, pptx-notes',
+    '',
+    'Index & Search: index, map, reconcile, doctor, commands, ask, pack, tokens,',
+    '  budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
+    '  snapshot-snapshot, baseline, cost, coverage-report-gaps, clean-cache,',
+    '  cache-audit, reclaim-index, project',
+    '',
+    'Session: stats, waste, session-outline, session-audit, session-slice,',
+    '  session-summary, context-stats, bootstrap-audit, memory, hint-stats,',
+    '  mcp-audit',
+    '',
+    'Skills: skill-body, skill-compact, skill-list, skill-size, skill-history,',
+    '  skill-diff, skill-section',
+    '',
+    'Compression: compress-text, retrieve, handoff-create, handoff-resolve,',
+    '  compress, recall, bash-output, web-output, mcp-output, compress-text,',
+    '  compress',
+    '',
+    'Config & Integration: install, uninstall, mcp-serve, mcp-status, hook,',
+    '  bridges-status, worker, statusline, version, config, config-get, help',
+    '',
+    'Data: note, note-add, note-get, note-list, sqlite-query, sqlite-schema,',
+    '  csv-profile, csv-query',
+    '',
+    'Utils: ignores, bash-history, web-history, openapi-op, openapi-outline,',
+    '  gdrive-sections, screenshot, opencode-*, fetch-image, image-meta,',
+    '  image-text, start, stop, resume, replace, insert-section, pr-slice,',
+    '  sharepoint-resolve, transcript, transcript-outline, video-chapters,',
+    '  write-file, zip-list, zip-read, mcp-history, compact-doc, compact-hint,',
+    '  conflicts, prune-cache',
+    '',
+    'Tip: look up one command instead of this whole list: \'token-goat help <command>\', or \'token-goat commands --grep <pattern>\' anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).',
+    '',
+  ]
+  return lines.join('\n')
+}
+
 export function buildProgram(): Command {
   const program = new Command()
   program
@@ -3780,6 +3884,22 @@ export function buildProgram(): Command {
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))
+
+  program
+    .command('reconcile')
+    .description('sweep this project for files that changed while token-goat was not watching, and queue them for reindexing')
+    .option('--dry-run', 'report the drift without queueing anything')
+    .option('--budget-ms <ms>', `wall-clock budget for the sweep (default ${DEFAULT_RECONCILE_BUDGET_MS})`)
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { dryRun?: boolean; budgetMs?: string; json?: boolean }) =>
+      runExit(() =>
+        runReconcile({
+          ...(opts.dryRun === true ? { dryRun: true } : {}),
+          ...(opts.budgetMs !== undefined ? { budgetMs: requireNonNegativeInt('--budget-ms', opts.budgetMs) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
 
   program
     .command('doctor')
@@ -4195,13 +4315,35 @@ export function buildProgram(): Command {
 
   program
     .command('arch')
-    .description('internal import graph analysis: hubs, entry points, cycles')
-    .option('--top <n>', 'limit hubs and entry points to top N (default 10)')
+    .description('internal import graph analysis: hubs, entry points, cycles, and with --modules the groups of files that mostly import each other')
+    .option('--top <n>', 'limit hubs, entry points, modules and cross-module pairs to top N (default 10)')
+    .option('--modules', 'also group files into modules by who imports whom, and report which modules reach into which (--json carries the full member list of each)')
     .option('-j, --json', 'output as JSON')
-    .action((opts: { top?: string; json?: boolean }) =>
+    .action((opts: { top?: string; json?: boolean; modules?: boolean }) =>
       runExit(() =>
         runArch({
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.modules === true ? { modules: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('affected [files...]')
+    .description('test files that transitively import the given changed files (for narrowing a CI run)')
+    .option('--stdin', 'read the changed-file list from stdin, one path per line')
+    .option('--depth <n>', `max reverse-import hops (default ${DEFAULT_AFFECTED_DEPTH})`)
+    .option('--filter <regex>', 'regex deciding which reached files count as tests (default: the built-in test-file heuristic)')
+    .option('-q, --quiet', 'print bare paths only, for piping into a test runner')
+    .option('-j, --json', 'output as JSON')
+    .action((files: string[], opts: { stdin?: boolean; depth?: string; filter?: string; quiet?: boolean; json?: boolean }) =>
+      runExit(() =>
+        runAffected({
+          files: opts.stdin === true ? [...files, ...readStdinPaths()] : files,
+          ...(opts.depth !== undefined ? { depth: requireNonNegativeInt('--depth', opts.depth) } : {}),
+          ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
+          ...(opts.quiet === true ? { quiet: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -4973,9 +5115,36 @@ export function buildProgram(): Command {
       }),
     )
 
-  // addHelpText('after') attaches footer only to the top-level program help, not to subcommands -- commander does not inherit addHelpText to child command handlers.
-  const footer = '\nTip: look up one command instead of this whole list: \'token-goat help <command>\', or \'token-goat commands --grep <pattern>\' anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).\n'
-  program.addHelpText('after', footer)
+  program
+    .command('help [command]')
+    .description('show help for a command')
+    .option('--full', 'show full original help instead of compact summary')
+    .action(
+      guard((cmd?: string, opts?: unknown) => {
+        const options = opts as Record<string, boolean | undefined> | undefined
+        if (options?.['full'] && !cmd) {
+          out(originalHelpInformation ? originalHelpInformation() : generateCompactHelp())
+          return
+        }
+        if (cmd) {
+          const argv: string[] = [process.argv[0] ?? 'node', process.argv[1] ?? 'token-goat', cmd, '--help']
+          program.parse(argv)
+        } else {
+          out(generateCompactHelp())
+        }
+      }),
+    )
+
+  // Replace default help with compact grouped summary
+  program.helpOption('-h, --help', 'display help for command')
+  // Override helpInformation (which formatHelp calls) to use compact grouped output.
+  // Capture the prototype implementation first: the assignment below is an own
+  // property that shadows it permanently, so `help --full` has no other way back
+  // to the long listing.
+  originalHelpInformation = (
+    program as unknown as { helpInformation(): string }
+  ).helpInformation.bind(program)
+  ;(program as unknown as { helpInformation(): string }).helpInformation = () => generateCompactHelp()
 
   return program
 }

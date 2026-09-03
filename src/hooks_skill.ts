@@ -83,9 +83,10 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       const denyCredit = cachedBytes !== null ? Math.min(cachedBytes, PER_FILE_COUNTERFACTUAL_CEILING) : 0;
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit));
       return denyOutput(
-        'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-body ' +
-          skillName + ' --compact` to recall the compact slice (or `token-goat skill-body ' + skillName +
-          '` for the full body) instead of re-loading it.',
+        'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-section ' +
+          skillName + ' \'<heading>\'` to recall a section, `token-goat skill-body ' +
+          skillName + ' --compact` to recall the compact slice, or `token-goat skill-body ' + skillName +
+          '` for the full body instead of re-loading it.',
       );
     }
 
@@ -105,15 +106,16 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             recordStat('skill_compact_inlined', savedBytes, savedTokensFromBytes(savedBytes));
             return denyOutput(
               'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
-                ' bytes) is inlined below instead of the full body. Run `token-goat skill-body ' + skillName +
-                '` if you need the full body.\n\n' + compact,
+                ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + skillName +
+                ' \'<heading>\'`, or `token-goat skill-body ' + skillName + '` if you need the full body.\n\n' + compact,
             );
           }
           recordStat('skill_oversized_first_load');
           return denyOutput(
             'Skill `' + skillName + '` is large (' + bodyBytes +
-              ' bytes) and has a compact slice available. Use `token-goat skill-body ' + skillName +
-              ' --compact` to load the compact slice instead of the full body.',
+              ' bytes) and has a compact slice available. Use `token-goat skill-section ' + skillName +
+              ' \'<heading>\'` to load a specific section, `token-goat skill-body ' + skillName +
+              ' --compact` to load the compact slice, or `token-goat skill-body ' + skillName + '` for the full body.',
           );
         }
       } catch {

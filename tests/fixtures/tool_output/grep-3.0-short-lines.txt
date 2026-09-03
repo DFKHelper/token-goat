@@ -1,0 +1,4 @@
+src/tool_filters/base.ts:33: * {@link resolveMinNetSavingsBytes} must still return a sane value when
+src/tool_filters/base.ts:53:export function resolveMinNetSavingsBytes(): number {
+src/tool_filters/base.ts:69:  /** Configured floor (see {@link resolveMinNetSavingsBytes}). */
+src/tool_filters/index.ts:4:export { CompressedOutput, ToolFilter, isRewriteWorthwhile, resolveMinNetSavingsBytes } from './base.js'

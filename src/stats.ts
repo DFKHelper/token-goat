@@ -150,6 +150,9 @@ const KIND_TO_SOURCE: Record<string, string> = {
   large_file_hint_followed: SOURCE_HINT,
   large_file_hint_ignored: SOURCE_HINT,
   read_count_deny: SOURCE_HINT,
+  read_served_deny: SOURCE_HINT,
+  // hooks_read.ts's subagent first-read markdown deny (hints.subagent_markdown_first_read_deny, off by default). Always recorded at 0 bytes / 0 tokens: no first-read deny of this shape exists in the transcript corpus, so its abandoned/substituted/shell-read/retried rates are unknown and can only be borrowed from the re-read heading-tree census. Booking withheld bytes against borrowed rates would claim a saving this path cannot back up. The kind exists to make the intervention countable in session-audit, not to claim a win.
+  subagent_markdown_first_read_deny: SOURCE_HINT,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
   symbol_read: SOURCE_READ,
@@ -237,6 +240,14 @@ const KIND_TO_SOURCE: Record<string, string> = {
 
   // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
   'grep:fold': SOURCE_CONTENT,
+
+  // Withholding of already-served stretches from a completed Read (hooks_read.ts
+  // elideAlreadyServedLines). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as
+  // grep:fold above: its siblings read_count_deny and read_served_deny are decisions about
+  // whether a read happens at all, whereas this is a rewrite of a result that did happen,
+  // with real bytes removed from it. Filing it under the advisory bucket would add non-hint
+  // savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
+  'read:served_elide': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,
   handoff_resolve: SOURCE_CONTENT,
@@ -380,7 +391,8 @@ CREATE TABLE IF NOT EXISTS stats (
   bytes_saved INTEGER NOT NULL DEFAULT 0,
   detail TEXT,
   harness TEXT,
-  traceparent TEXT
+  traceparent TEXT,
+  tg_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
@@ -426,6 +438,18 @@ function migrateGlobalSchema(db: SqliteDatabase): void {
   } catch (err) {
     if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
   }
+  // Which token-goat wrote this row. Left nullable with no default rather than backfilled with
+  // the running version: rows written before this column existed came from an unknown release,
+  // and stamping today's version onto them would manufacture a provenance that was never
+  // measured -- the same reasoning as hint_emissions.bytes_emitted's deliberate NULL in db.ts.
+  // Without it, a change to how a kind computes bytes_saved (such as the counterfactual cap in
+  // util.ts's cappedSourceBytesSaved) silently mixes old and new accounting in one column, and
+  // no query can separate them after the fact.
+  try {
+    db.exec('ALTER TABLE stats ADD COLUMN tg_version TEXT')
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
 }
 
 /**
@@ -465,6 +489,23 @@ function statsHasTraceparentColumn(db: SqliteDatabase): boolean {
     present = false
   }
   _traceparentColumnByDb.set(db as unknown as object, present)
+  return present
+}
+
+/** Same capability probe as {@link statsHasHarnessColumn}, for the `tg_version` provenance stamp. */
+const _versionColumnByDb = new WeakMap<object, boolean>()
+function statsHasVersionColumn(db: SqliteDatabase): boolean {
+  const cached = _versionColumnByDb.get(db as unknown as object)
+  if (cached !== undefined) return cached
+  let present: boolean
+  try {
+    present = (db.prepare('PRAGMA table_info(stats)').all() as { name?: string }[]).some(
+      (c) => c.name === 'tg_version',
+    )
+  } catch {
+    present = false
+  }
+  _versionColumnByDb.set(db as unknown as object, present)
   return present
 }
 
@@ -511,22 +552,27 @@ export function recordStat(
     const db = _testDb ?? getGlobalDb()
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
-    const hasHarness = statsHasHarnessColumn(db)
-    const hasTraceparent = statsHasTraceparentColumn(db)
-
-    if (hasHarness && hasTraceparent) {
-      db.prepare(
-        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness, traceparent) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName(), tp)
-    } else if (hasHarness) {
-      db.prepare(
-        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, harness) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null, getHarnessName())
-    } else {
-      db.prepare(
-        'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, ?, ?, ?)',
-      ).run(ts, kind, bytesSaved, tokensSaved, detail ?? null)
+    // Built from whichever optional columns this database actually has rather than one branch per
+    // combination: with harness, traceparent and tg_version all optional that would be eight
+    // arms, and the arm for any un-exercised combination is exactly where a silently-dropped
+    // column hides. Column names here are literals, never caller input.
+    const cols = ['ts', 'kind', 'bytes_saved', 'tokens_saved', 'detail']
+    const vals: unknown[] = [ts, kind, bytesSaved, tokensSaved, detail ?? null]
+    if (statsHasHarnessColumn(db)) {
+      cols.push('harness')
+      vals.push(getHarnessName())
     }
+    if (statsHasTraceparentColumn(db)) {
+      cols.push('traceparent')
+      vals.push(tp)
+    }
+    if (statsHasVersionColumn(db)) {
+      cols.push('tg_version')
+      vals.push(VERSION)
+    }
+    db.prepare(
+      `INSERT INTO stats (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    ).run(...vals)
   } catch {
     // Best-effort — never block the hook path.
   }

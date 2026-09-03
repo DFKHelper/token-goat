@@ -6,7 +6,7 @@ import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { resolveIndexPath } from '../paths.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
-import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
+import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
 import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS } from './ci.js'
@@ -87,6 +87,19 @@ function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[
 }
 
 /**
+ * The argv (and cwd) a command is actually dispatched on: `cd DIR &&` peeled off when
+ * {@link peelLeadingCd} applies, otherwise the input unchanged. Single source of truth so a
+ * caller that needs the same tokens the filter was CHOSEN from -- notably `bash_runner`, which
+ * hands argv to `compressOutput` for flag/pattern extraction -- cannot drift from
+ * `selectFilter`. Deriving argv independently left `cd` and a directory at argv[0..1], so every
+ * argv-reading filter (grep's pattern, cargo/dotnet/gh's subcommand, make's target, ...) read
+ * the wrong tokens on a cd-prefixed command.
+ */
+export function dispatchArgv(argv: string[], cwd?: string): { argv: string[]; cwd: string | undefined } {
+  return peelLeadingCd(argv, cwd) ?? { argv, cwd }
+}
+
+/**
  * Return the first registered filter whose `matches(argv)` is true, or null
  * when none applies (callers should NOT wrap such commands — the subprocess
  * overhead would be pure cost). argv is prefix-stripped first so
@@ -103,9 +116,7 @@ function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[
  */
 export function selectFilter(argv: string[], cwd?: string): ToolFilter | null {
   if (argv.length === 0) return null
-  const peeled = peelLeadingCd(argv, cwd)
-  const effectiveArgv = peeled !== null ? peeled.argv : argv
-  const effectiveCwd = peeled !== null ? peeled.cwd : cwd
+  const { argv: effectiveArgv, cwd: effectiveCwd } = dispatchArgv(argv, cwd)
   let resolved = stripPrefixes(effectiveArgv)
   if (resolved.length === 0) {
     // Prefix-stripping consumed the whole argv (bare `env`, `env -0`); fall back to the first token so a dedicated env filter can still opt in.
@@ -152,8 +163,9 @@ function hasRedirect(argv: string[]): boolean {
  */
 export function detectFromCommand(command: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   if (!command || command.length > 65536) return null
-  if (['&&', '||', '$(', '`'].some((op) => command.includes(op))) return null
-  if (command.includes('|') || command.includes(';')) return null
+  if (['$(', '`'].some((op) => command.includes(op))) return null
+  // Quote-aware: a `|`/`;`/`&&`/`||` inside a quoted argument (`grep -E 'foo|bar'`) is literal text, not a control operator, and must not disqualify an otherwise-single command.
+  if (hasUnquotedOperator(command, ['&&', '||', '|', ';'])) return null
   if (hasBareBackgroundOrNewline(command)) return null
   let argv: string[]
   try {
@@ -175,8 +187,9 @@ export function detectFromCommand(command: string, cwd?: string): { filter: Tool
 function detectSingleSegment(segment: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   const seg = segment.trim()
   if (!seg || seg.length > 65536) return null
-  if (['||', '$(', '`'].some((op) => seg.includes(op))) return null
-  if (seg.includes('|') || seg.includes(';')) return null
+  if (['$(', '`'].some((op) => seg.includes(op))) return null
+  // Quote-aware, same reason as detectFromCommand: `|`/`;`/`||` inside quotes is literal text.
+  if (hasUnquotedOperator(seg, ['||', '|', ';'])) return null
   // Same guard as detectFromCommand: a bare `&` backgrounds this segment (e.g. `cd /app && npm
   // run dev &`, a common "set up then start a dev server" compound), and wrapping it would
   // reproduce the exact hang detectFromCommand's own check exists to prevent -- spawnSync's
@@ -257,7 +270,9 @@ export function tryWrapCompoundSegments(
   wrapperArgs: (filterName: string, segment: string) => string | null,
   cwd?: string,
 ): string | null {
-  if (!command || command.includes('||') || command.includes('|') || command.includes(';')) return null
+  if (!command) return null
+  // Quote-aware: a quoted `|`/`;` is literal text, not a control operator. `splitTopLevelAnd` below is already quote-aware, so the `&&` presence check stays a plain substring test (a quoted-only `&&` simply yields one segment and bails on the <2 check).
+  if (hasUnquotedOperator(command, ['||', '|', ';'])) return null
   if (command.includes('$(') || command.includes('`')) return null
   if (!command.includes('&&')) return null
   const segments = splitTopLevelAnd(command)

@@ -23,7 +23,7 @@ import { pathToFileURL } from 'node:url'
 import { transformSync } from 'esbuild'
 import sharp from 'sharp'
 
-import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
@@ -174,6 +174,20 @@ describe('codex/claude code shims: in-process hook call replaces the second node
 })
 
 describe('opencode plugin: in-process hook call replaces the second node spawn', () => {
+  // Pin the harness these tests claim to exercise. detectHarness() reads ambient env, and a suite
+  // run from inside a Claude Code session inherits CLAUDE_CODE_SESSION_ID, so without this the
+  // in-process plugin was detected as claudecode and got claudecode wire shapes -- an env leak the
+  // assertions below could not feel until serializeOutput started varying by harness. Real opencode
+  // sets OPENCODE_SESSION_ID, so the override restores the detection this bridge really sees.
+  const _priorHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  beforeEach(() => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'opencode'
+  })
+  afterEach(() => {
+    if (_priorHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = _priorHarness
+  })
+
   it('serves a real hook decision via the in-process hook lib without ever spawning the poisoned fallback entry', async () => {
     const cwd = mkIsolated()
     const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)

@@ -370,6 +370,64 @@ function pruneOldBackups(p: string): void {
 // Per-file ceiling on a single file's contribution to a bytes-saved stat's counterfactual "what reading it whole would have cost" side, deliberately NOT read from config: it's derived from two independent, unrelated sources landing within 8% of each other -- token-goat's own FILE_TYPE_THRESHOLDS.generic (src/hints/file_type_handler.ts) is 100_000, the size above which token-goat itself intercepts an unrecognized file rather than letting it be read whole, so "the agent would have read the whole file" is contradicted by token-goat's own behavior past that point; and Claude Code's Read tool truncates at 2000 lines by default, which at this repo's measured ~54 bytes/line (read_commands.ts: 271,673 bytes / ~5000 lines) puts Read's real ceiling at ~108,000 bytes -- and it stays a hardcoded constant rather than a config knob because coupling the ledger's unit to a user-configurable threshold would let a config change silently rewrite historical stat comparability. Lives in util.ts rather than beside its original caller (sumFileSizes) because the re-read hook credits the same counterfactual per file and must not import read_commands.ts to say so: that module's eval cost is a large share of hook startup.
 export const PER_FILE_COUNTERFACTUAL_CEILING = 100_000
 
+/**
+ * Bytes a surgical-read CLI command may honestly claim it saved against reading `file` whole.
+ *
+ * The naive form these commands shipped with -- `fullSourceBytes - emittedBytes` -- prices the
+ * counterfactual as "the model would have loaded every byte of the source into context", which is
+ * false for exactly the inputs this family handles: a `pdf-meta` of a 40 MB scan credited all
+ * 40 MB against a dozen lines of metadata, and no Read of that file could ever have cost that,
+ * because the harness truncates and (per {@link PER_FILE_COUNTERFACTUAL_CEILING}) token-goat
+ * itself intercepts rather than serving a file that large whole. Capping the counterfactual --
+ * not the emitted side -- is the same correction already applied on the hook path by
+ * `counterfactualCredit` in hooks_read.ts and by the deny credit in hooks_mcp.ts.
+ *
+ * Floor of 1 rather than 0, matching what these call sites already did: a command that emitted
+ * more than its capped counterfactual still records an event, so the kind's row count stays a
+ * true usage count. Only the credited magnitude changes.
+ */
+export function cappedSourceBytesSaved(fullSourceBytes: number, emittedBytes: number): number {
+  return Math.max(1, Math.min(fullSourceBytes, PER_FILE_COUNTERFACTUAL_CEILING) - emittedBytes)
+}
+
+/**
+ * Body size below which collapsing an identical re-read cannot pay for itself: the replacement
+ * pointer is itself ~150 bytes. The real floor is the shared `bash_compress.min_net_savings_bytes`
+ * gate applied at the collapse site; this is only the cheap pre-check that avoids a hash and a
+ * cache lookup for output that could never qualify.
+ *
+ * Lives here rather than beside the collapse in hooks_bash.ts because both ends of that feature
+ * need it and neither hook module may import the other: each registers its hooks at module scope,
+ * so importing across them would arm one surface's handlers from the other's process. The producer
+ * side (hooks_read.ts) skips storing a slice smaller than this floor, since a stored body can only
+ * ever match a later read that is itself at least this large.
+ */
+export const IDENTICAL_READ_MIN_BODY_BYTES = 512
+
+/**
+ * True when every line of `needle` appears as a contiguous, line-aligned run inside `haystack`.
+ *
+ * Line-aligned deliberately. A plain substring test would report a match when the new output merely
+ * starts mid-line inside the old one, and the lines withheld on the strength of that would not be
+ * the lines the model was actually shown. Wrapping both sides in newlines forces the match to begin
+ * at a line start and end at a line end, so a hit means the exact lines were served verbatim.
+ *
+ * One trailing newline is stripped from each side first, since the same run of lines is spelled with
+ * and without it depending on the command, and comparing raw would call those two different.
+ * Nothing else is normalized: CR is left in place, so a body that changed only its line endings
+ * correctly fails to match rather than being treated as already served.
+ *
+ * Lives here because both hook modules that withhold an already-served body need it -- the shell
+ * collapse and the read-side deny -- and neither may import the other: each registers its hooks at
+ * module scope.
+ */
+export function containsLineRun(haystack: string, needle: string): boolean {
+  const h = haystack.endsWith('\n') ? haystack.slice(0, -1) : haystack
+  const n = needle.endsWith('\n') ? needle.slice(0, -1) : needle
+  if (n.length === 0 || n.length > h.length) return false
+  return ('\n' + h + '\n').includes('\n' + n + '\n')
+}
+
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs the caller indefinitely), and how old an unreleased lock file must be before a crashed holder's lock is treated as abandoned and stolen.
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000

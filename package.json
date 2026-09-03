@@ -1,6 +1,6 @@
 {
   "name": "token-goat",
-  "version": "2.8.6",
+  "version": "2.9.1",
   "description": "Surgical token-reduction companion for Claude Code and other AI coding agents",
   "type": "module",
   "main": "./dist/token-goat.mjs",
@@ -55,6 +55,9 @@
     "dist/",
     "README.md",
     "SECURITY.md",
+    "docs/cli.md",
+    "docs/install.md",
+    "docs/security.md",
     "LICENSE",
     "scripts/install-git-hooks.mjs"
   ],
@@ -112,7 +115,7 @@
     "protobufjs": "^8.7.2",
     "deepmerge-ts": "^8.0.1",
     "uuid": "^14.0.1",
-    "sharp": "^0.35.3",
+    "sharp": "$sharp",
     "unzipper": "^0.12.5",
     "adm-zip": "^0.6.0"
   }
