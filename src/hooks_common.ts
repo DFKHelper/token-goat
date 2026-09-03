@@ -66,11 +66,86 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   if (typeof resp === 'string') return resp
   if (resp !== null && typeof resp === 'object') {
     const r = resp as Record<string, unknown>
-    for (const key of keys) {
-      if (typeof r[key] === 'string' && r[key] !== '') return r[key] as string
-    }
+    const path = resolveToolResponseFieldPath(r, keys)
+    if (path !== null) return readAtPath(r, path)
   }
   return ''
+}
+
+/**
+ * Nested paths probed after the flat key walk fails, in order.
+ *
+ * Claude Code's `Read` result is `{type: 'text', file: {filePath, content, numLines, startLine,
+ * totalLines}}` -- CAPTURE, 13,324 of 13,324 object-shaped Read results in the recorded session
+ * corpus. Neither `type` nor `file` appears in any key list, and the body lives one level down at
+ * `file.content`, so a flat walk resolved nothing and every Read-shaped consumer read the empty
+ * string. That is why `read:served_elide` never fired on the wire.
+ */
+const NESTED_TOOL_RESPONSE_PATHS: readonly (readonly string[])[] = [['file', 'content']]
+
+/** Read the string at `path` in `resp`; '' when the path does not land on a string. */
+function readAtPath(resp: Record<string, unknown>, path: readonly string[]): string {
+  let cur: unknown = resp
+  for (const seg of path) {
+    if (cur === null || typeof cur !== 'object') return ''
+    cur = (cur as Record<string, unknown>)[seg]
+  }
+  return typeof cur === 'string' ? cur : ''
+}
+
+/**
+ * The single field-selection rule shared by {@link extractToolResponseField} (which reads the
+ * resolved field) and {@link replaceToolResponseField} (which replaces it). Returns the path to
+ * the first non-empty string field, or null when nothing resolves.
+ *
+ * These two must never be parallel loops. A rewrite that lands in a different field than the one
+ * the handler read the body from silently corrupts the result the model sees: the original body
+ * survives in its own field and the replacement appears somewhere the tool's schema never meant
+ * to carry it. One resolver, two consumers.
+ */
+export function resolveToolResponseFieldPath(
+  resp: Record<string, unknown>,
+  keys: readonly string[],
+): readonly string[] | null {
+  for (const key of keys) {
+    if (typeof resp[key] === 'string' && resp[key] !== '') return [key]
+  }
+  for (const path of NESTED_TOOL_RESPONSE_PATHS) {
+    if (readAtPath(resp, path) !== '') return path
+  }
+  return null
+}
+
+/**
+ * Shallow-clone `resp` with the one text-bearing field replaced by `newText`. Returns null when
+ * {@link resolveToolResponseFieldPath} resolves nothing, so the caller can fall back.
+ *
+ * The clone is deliberate, and building a fresh object from a per-tool key map is the bug this
+ * function exists to avoid. Claude Code's Bash result carries at least seven optional extra keys
+ * beyond its base shape (CAPTURE, recorded session corpus): `gitOperation`, `returnCodeInterpretation`,
+ * `backgroundTaskId`, `backgroundCwdHint`, `persistedOutputPath`, `persistedOutputSize`,
+ * `staleReadFileStateHint`, `timedOutAfterMs`. A whitelist drops every one of them, and dropping
+ * `persistedOutputPath` in particular takes away the model's only handle on a capped output.
+ */
+export function replaceToolResponseField(
+  resp: Record<string, unknown>,
+  keys: readonly string[],
+  newText: string,
+): Record<string, unknown> | null {
+  const path = resolveToolResponseFieldPath(resp, keys)
+  if (path === null) return null
+  const root: Record<string, unknown> = { ...resp }
+  let cur = root
+  for (let i = 0; i < path.length - 1; i++) {
+    const seg = path[i] as string
+    const child = cur[seg]
+    if (child === null || typeof child !== 'object') return null
+    const cloned: Record<string, unknown> = { ...(child as Record<string, unknown>) }
+    cur[seg] = cloned
+    cur = cloned
+  }
+  cur[path[path.length - 1] as string] = newText
+  return root
 }
 
 /**

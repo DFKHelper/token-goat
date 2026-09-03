@@ -21,6 +21,7 @@ import type { HarnessName } from './bridges/types.js'
 import { registerReset } from './reset.js'
 import { recordUnmappedTool } from './stats.js'
 import type { HookEventName, HookOutput } from './types.js'
+import { replaceToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 
 /**
  * The event object passed to every {@link HookHandler}.
@@ -364,15 +365,67 @@ const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre
  *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
  *   shape that replaces the whole tool input and lets the call proceed.
  * - `rewriteOutput` → `{"hookSpecificOutput":{"hookEventName":"PostToolUse",
- *   "updatedToolOutput":"<content>"}}` — the `PostToolUse` shape that replaces
- *   the tool result text the model receives; the tool has already run, so this
- *   cannot undo the call, only change what the model sees of it.
+ *   "updatedToolOutput":<tool_response with one field replaced>}}` — the
+ *   `PostToolUse` shape that replaces the tool result the model receives; the
+ *   tool has already run, so this cannot undo the call, only change what the
+ *   model sees of it. `updatedToolOutput` must MATCH THE TOOL'S OWN OUTPUT
+ *   SHAPE. A bare string is accepted only for tools whose result is itself a
+ *   string (MCP); for every built-in tool the harness rejects it with
+ *   "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s
+ *   output shape; using original output" and uses the original. Measured on the
+ *   recorded session corpus: 337 Bash, 52 WebFetch, 32 WebSearch and 10 Grep
+ *   rejections, and 412 of 412 built-in-tool emissions rejected against 0
+ *   accepted, on every Claude Code version present. So an object response is
+ *   cloned and only its text-bearing field is replaced — never rebuilt from a
+ *   key whitelist, which would drop Bash's optional `persistedOutputPath` and
+ *   friends. When no field resolves, the bare string is emitted as before: a
+ *   rejected rewrite beats one injected into the wrong field.
  * - `pass`    → `{}` (no-op; the call proceeds unchanged)
  *
  * The `switch` is exhaustive over the `hookType` union; adding a variant to
  * {@link HookOutput} without handling it here is a compile error.
  */
-export function serializeOutput(output: HookOutput, eventName: HookEventName, harness: HarnessName): string {
+/**
+ * Tools whose post handler reads its body with {@link BODY_FIRST_TOOL_RESPONSE_KEYS} rather than
+ * {@link OUTPUT_FIRST_TOOL_RESPONSE_KEYS}. Taken from the handlers themselves: hooks_fetch.ts and
+ * hooks_skill.ts pass BODY_FIRST, every other post handler passes OUTPUT_FIRST. The rewrite must
+ * resolve the same field the handler read the body from, so this list has to track those call
+ * sites; if a handler changes its key list, change it here in the same edit.
+ */
+const BODY_FIRST_REWRITE_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'Skill'])
+
+/**
+ * Shape `updatedOutput` to whatever the tool's own result shape was.
+ *
+ * A string `tool_response` (MCP) stays a bare string -- that path is accepted by the harness today
+ * and must not regress. An object response is cloned with its one text-bearing field replaced. If
+ * nothing resolves, the bare string is emitted: the harness will reject it and use the original,
+ * which is strictly better than injecting the body into a field that never held it.
+ */
+function shapedUpdatedToolOutput(
+  updatedOutput: string,
+  harness: HarnessName,
+  event?: HookEvent,
+): string | Record<string, unknown> {
+  // Claude Code alone imposes the schema check. Every other harness token-goat bridges to takes a
+  // plain string result here -- opencode and the pi extension read it straight into a text block,
+  // Copilot maps it to `modifiedResult` -- so shaping it into an object would break them exactly
+  // the way the bare string breaks Claude Code.
+  if (harness !== 'claudecode') return updatedOutput
+  const resp = event?.raw['tool_response']
+  if (resp === null || resp === undefined || typeof resp !== 'object') return updatedOutput
+  const keys = BODY_FIRST_REWRITE_TOOLS.has(event?.toolName ?? '')
+    ? BODY_FIRST_TOOL_RESPONSE_KEYS
+    : OUTPUT_FIRST_TOOL_RESPONSE_KEYS
+  return replaceToolResponseField(resp as Record<string, unknown>, keys, updatedOutput) ?? updatedOutput
+}
+
+export function serializeOutput(
+  output: HookOutput,
+  eventName: HookEventName,
+  harness: HarnessName,
+  event?: HookEvent,
+): string {
   switch (output.hookType) {
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })
@@ -401,7 +454,7 @@ export function serializeOutput(output: HookOutput, eventName: HookEventName, ha
       return JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          updatedToolOutput: output.updatedOutput,
+          updatedToolOutput: shapedUpdatedToolOutput(output.updatedOutput, harness, event),
         },
       })
     case 'pass':

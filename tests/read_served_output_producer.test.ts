@@ -46,6 +46,7 @@ import { postBashHandler } from '../src/hooks_bash.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { decodeSource, IDENTICAL_READ_MIN_BODY_BYTES } from '../src/util.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 import { BUNDLE } from './helpers/bundle.js'
 
 // A real, already-present repo file. It must NOT be under a temp directory: the shell read
@@ -196,12 +197,15 @@ describe('built bundle: a Read in one process feeds the collapse in another', ()
     const second = runBashHook('e2e-read-producer', "sed -n '1,40p' README.md", body)
     expect(second.status).toBe(0)
     const parsed = JSON.parse(second.stdout) as {
-      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: string }
+      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: unknown }
     }
     // The cross-process assertion. If the served body lived only in module state, this second
     // process would see no container and emit `{}`.
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
-    const replaced = parsed.hookSpecificOutput?.updatedToolOutput ?? ''
+    expect(rewrittenKeys(parsed.hookSpecificOutput?.updatedToolOutput)).toEqual(
+      expect.arrayContaining(['stdout', 'exitCode']),
+    )
+    const replaced = rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)
     expect(replaced.length).toBeLessThan(body.length)
     expect(replaced).toContain('token-goat bash-output ')
   })
@@ -223,7 +227,7 @@ describe('built bundle: a Read in one process feeds the collapse in another', ()
     expect(runReadHook('e2e-read-sess-a', { file_path: TARGET }, slice(1, 5)).status).toBe(0)
     const same = runBashHook('e2e-read-sess-a', "sed -n '1,40p' README.md", body)
     expect(same.status).toBe(0)
-    const parsed = JSON.parse(same.stdout) as { hookSpecificOutput?: { updatedToolOutput?: string } }
-    expect(parsed.hookSpecificOutput?.updatedToolOutput).toContain('token-goat bash-output ')
+    const parsed = JSON.parse(same.stdout) as { hookSpecificOutput?: { updatedToolOutput?: unknown } }
+    expect(rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)).toContain('token-goat bash-output ')
   })
 })
