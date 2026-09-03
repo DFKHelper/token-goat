@@ -2,7 +2,7 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [2.9.0] - 2026-09-01
+## [2.9.1] - 2026-09-02
 
 ### Fixed
 
