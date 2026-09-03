@@ -18,6 +18,11 @@ exclude:
   - docs/loop-43-billed-survey.md
   - docs/loop-invariants.md
   - docs/loop-ledger.md
+  # Internal working documents at the repo root. Nothing published links to either,
+  # so excluding them costs no inbound link. AGENTS.md and CLAUDE.arch.md stay put:
+  # the README and both changelogs link to them by name.
+  - MIGRATION_PLAN.md
+  - council-transcript-2026-08-20-tokengoat-proposals.md
   - tests/
   - scripts/
 
