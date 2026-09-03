@@ -220,6 +220,33 @@ describe('override disclosure', () => {
     expect(Object.keys(pkg.overrides ?? {})).toContain(name)
   })
 
+  // An override whose key is also a direct dependency has to use npm's reference form, `$name`.
+  // Repeating the range literally reads as a conflict even when the two ranges are identical:
+  // Dependabot reported `dependency_file_not_resolvable` on `sharp` and abandoned the entire
+  // grouped update, so every other package in that batch stopped getting version bumps as well,
+  // and the failure was a resolution error rather than anything a test here noticed. `$name` means
+  // "the version this manifest already asks for", which keeps the pin working -- without it
+  // `@xenova/transformers` asks for sharp@^0.32.0 and npm nests a second, older copy -- while
+  // leaving the direct dependency as the one place a version is written down.
+  it('refers to the direct dependency instead of repeating its range', () => {
+    const direct: Record<string, string> = {
+      ...(pkg.dependencies ?? {}),
+      ...(pkg.devDependencies ?? {}),
+      ...(pkg.optionalDependencies ?? {}),
+    }
+    const alsoDirect = Object.keys(pkg.overrides ?? {}).filter((name) => name in direct)
+    expect(
+      alsoDirect,
+      'no override names a direct dependency, so the loop below would pass without checking anything',
+    ).not.toHaveLength(0)
+    for (const name of alsoDirect) {
+      expect(
+        pkg.overrides?.[name],
+        `overrides.${name} repeats the range declared for ${name} as a direct dependency (${direct[name]}); write "$${name}" instead, so npm and Dependabot can both still resolve the file`,
+      ).toBe(`$${name}`)
+    }
+  })
+
   it('says overrides do not reach an installed copy, rather than leaving the gap implied', () => {
     expect(security).toContain('npm applies `overrides` only in the root project')
   })
