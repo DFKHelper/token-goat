@@ -11,6 +11,13 @@ author:
 
 exclude:
   - docs/plans/
+  # Working notes nothing published links to. The rest of docs/ keeps generating:
+  # CHANGELOG.md and CHANGELOG-ARCHIVE.md link into it, and excluding a page the
+  # changelog points at turns that link into a 404 on the site.
+  - docs/known-issues.md
+  - docs/loop-43-billed-survey.md
+  - docs/loop-invariants.md
+  - docs/loop-ledger.md
   - tests/
   - scripts/
 

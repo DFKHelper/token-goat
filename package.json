@@ -55,6 +55,9 @@
     "dist/",
     "README.md",
     "SECURITY.md",
+    "docs/cli.md",
+    "docs/install.md",
+    "docs/security.md",
     "LICENSE",
     "scripts/install-git-hooks.mjs"
   ],

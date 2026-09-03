@@ -80,14 +80,26 @@ describe('ignores reports the scope of .tokengoatignore', () => {
   })
 })
 
-describe('the README no longer promises indexing honours the file', () => {
-  const readme = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8')
+// The correction lives wherever `.tokengoatignore` is described, which is the command
+// reference -- that moved from README.md into docs/cli.md when the README was split. Both
+// files are read, so the guarantee holds whichever one carries the prose, and the combined
+// text is asserted non-empty first: a mistyped path would otherwise read as a clean pass on
+// the negative check, with only the positive one noticing.
+describe('the docs no longer promise indexing honours the file', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const docs = ['README.md', path.join('docs', 'cli.md')]
+    .map((rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8'))
+    .join('\n')
+
+  it('reads the docs at all, so an empty read cannot pass the negative check', () => {
+    expect(docs.length).toBeGreaterThan(10_000)
+  })
 
   it('does not say a rebuild follows a .tokengoatignore change', () => {
-    expect(readme).not.toContain('after a `.tokengoatignore` change')
+    expect(docs).not.toContain('after a `.tokengoatignore` change')
   })
 
   it('says plainly that the file does not reach the index', () => {
-    expect(readme).toContain('it excludes nothing from the symbol index')
+    expect(docs).toContain('it excludes nothing from the symbol index')
   })
 })
