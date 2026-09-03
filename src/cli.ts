@@ -170,6 +170,7 @@ import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, 
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
+import { visionTokensSavedByText } from './image_shrink.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
@@ -1548,7 +1549,12 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('image_meta', bytesSaved, savedTokensFromBytes(bytesSaved))
+  // The byte figure is the real wire saving. The TOKEN figure is not bytes/4: an image is billed
+  // as 28x28-pixel patches, so running an image byte count through the text divisor priced it in
+  // the wrong unit entirely -- one real row credited 1,856,507 tokens for an image that could not
+  // have cost more than a few thousand. This command reads the real dimensions, so it prices the
+  // image it replaced exactly.
+  recordStat('image_meta', bytesSaved, visionTokensSavedByText(meta.width, meta.height, Buffer.byteLength(text, 'utf8'), loadConfig().image_shrink.vision_tier))
 }
 
 /**
@@ -1598,7 +1604,11 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('image_text', bytesSaved, savedTokensFromBytes(bytesSaved))
+  // Same wrong-unit correction as image-meta above. Unlike image-meta this command never learns
+  // the pixel dimensions -- OCR needs no decoder that reports them, and sharp may not be installed
+  // -- so null dimensions ask for the tier ceiling. That is the honest bound: the alternative this
+  // replaced was one image, and one image cannot bill more than a full-size one.
+  recordStat('image_text', bytesSaved, visionTokensSavedByText(null, null, Buffer.byteLength(text, 'utf8'), loadConfig().image_shrink.vision_tier))
 }
 
 function cmdVideoChapters(file: string) {
