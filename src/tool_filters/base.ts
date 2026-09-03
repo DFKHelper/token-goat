@@ -97,6 +97,17 @@ export function isRewriteWorthwhile({
  * `originalBytes` is `stdout + stderr` size post-decode / pre-filter, so
  * `percentSaved` reflects the true reduction the model sees.
  */
+/**
+ * Token savings for a byte delta: the single definition of the `n // 3 + 1` rule that
+ * {@link CompressedOutput.tokensSaved} used to inline. Exported so a caller that must recompute
+ * the figure against a different byte delta -- notably a delta capped at the harness delivery
+ * cap, see `deliveredOutputBytes` in src/delivery_cap.ts -- prices it by the same rule rather
+ * than deriving a second one that can drift.
+ */
+export function compressedTokensSaved(bytesSaved: number): number {
+  return bytesSaved <= 0 ? 0 : Math.max(1, Math.floor(bytesSaved / 3) + 1)
+}
+
 export class CompressedOutput {
   constructor(
     readonly text: string,
@@ -114,8 +125,7 @@ export class CompressedOutput {
 
   /** Estimated token savings (`n // 3 + 1`, matching `estimateTokens`). */
   get tokensSaved(): number {
-    const n = this.bytesSaved
-    return n <= 0 ? 0 : Math.max(1, Math.floor(n / 3) + 1)
+    return compressedTokensSaved(this.bytesSaved)
   }
 
   /** Reduction as a percentage of the original size (0 when no input). */

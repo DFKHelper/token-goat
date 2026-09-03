@@ -8,11 +8,13 @@ import { spawnSync } from 'node:child_process'
 import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
+import { deliveredOutputBytes } from './delivery_cap.js'
 import { wrappedShell } from './shell.js'
 import { recordStat } from './stats.js'
 import {
   type CompressedOutput,
   ToolFilter,
+  compressedTokensSaved,
   capTokens,
   combineStreams,
   compressOutput,
@@ -246,8 +248,23 @@ function wrapAndCompress(
   return exitCode
 }
 
-/** Best-effort: record the savings stat. recordStat already swallows DB errors. */
+/**
+ * Best-effort: record the savings stat. recordStat already swallows DB errors.
+ *
+ * Measured against the DELIVERED size, not the original. The harness caps how much of a Bash
+ * result reaches the model (see {@link deliveredOutputBytes}), so compressing a 30 MB output to
+ * 8 KB spares it at most `cap - 8 KB`, never 30 MB. Booking `result.bytesSaved` credited output
+ * the model was never going to be shown.
+ *
+ * The APPLY decision above deliberately still runs on the uncapped bytes. The two answer different
+ * questions: the gate asks whether a compressed body beats the harness's arbitrary head-truncation
+ * of the same output (it does -- the model sees a coherent summary instead of the first 20 KB),
+ * while this figure asks how many tokens were actually spared. Capping the gate would suppress the
+ * rewrites with the most to offer, which is a behaviour change this accounting fix must not make.
+ */
 function recordSavings(result: CompressedOutput): void {
-  if (result.bytesSaved < MIN_RECORD_STAT_BYTES) return
-  recordStat(`bash_compress:${result.filterName}`, result.bytesSaved, result.tokensSaved)
+  const delivered = deliveredOutputBytes(result.originalBytes)
+  const bytesSaved = Math.max(0, delivered - result.compressedBytes)
+  if (bytesSaved < MIN_RECORD_STAT_BYTES) return
+  recordStat(`bash_compress:${result.filterName}`, bytesSaved, compressedTokensSaved(bytesSaved))
 }
