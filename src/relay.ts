@@ -193,7 +193,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     } catch {
       // fail-soft: a save failure must not block the tool call
     }
-    return serializeOutput(output, event.eventName, harness)
+    return serializeOutput(output, event.eventName, harness, event)
   } catch {
     // Pass-through on every failure path — a hook must never block the caller's tool call.
     return '{}'

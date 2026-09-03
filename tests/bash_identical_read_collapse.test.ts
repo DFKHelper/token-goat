@@ -40,6 +40,7 @@ import { commandHash, getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 
 // Comfortably past IDENTICAL_READ_MIN_BODY_BYTES (512) so the floor is never what a test is
 // accidentally measuring.
@@ -210,13 +211,17 @@ describe('built bundle: identical file-read collapse survives across processes',
     const second = run()
     expect(second.status).toBe(0)
     const parsed = JSON.parse(second.stdout) as {
-      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: string }
+      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: unknown }
     }
     // The cross-process assertion. If the prior body were held only in module state, this second
     // process would see no baseline and emit `{}`.
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
     expect(parsed.hookSpecificOutput?.updatedToolOutput).toBeDefined()
-    const replaced = parsed.hookSpecificOutput?.updatedToolOutput ?? ''
+    // The envelope is Bash's own result shape with stdout replaced; exitCode must survive it.
+    expect(rewrittenKeys(parsed.hookSpecificOutput?.updatedToolOutput)).toEqual(
+      expect.arrayContaining(['stdout', 'exitCode']),
+    )
+    const replaced = rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)
     expect(replaced.length).toBeLessThan(BODY.length)
     expect(replaced).toContain('token-goat bash-output ')
   })
@@ -244,7 +249,7 @@ describe('built bundle: identical file-read collapse survives across processes',
     // collapse. Without it, a bug that disabled the collapse outright would leave this test green.
     const repeat = runHook(cmd, 'e2e-session-b')
     expect(repeat.status).toBe(0)
-    const parsed = JSON.parse(repeat.stdout) as { hookSpecificOutput?: { updatedToolOutput?: string } }
-    expect(parsed.hookSpecificOutput?.updatedToolOutput).toContain('token-goat bash-output ')
+    const parsed = JSON.parse(repeat.stdout) as { hookSpecificOutput?: { updatedToolOutput?: unknown } }
+    expect(rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)).toContain('token-goat bash-output ')
   })
 })

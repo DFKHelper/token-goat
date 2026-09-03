@@ -51,6 +51,7 @@ import { invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -201,11 +202,14 @@ describe('built bundle: ANSI stripping runs on the real shipping path', () => {
     })
     expect(run.status).toBe(0)
     const parsed = JSON.parse(run.stdout) as {
-      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: string }
+      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: unknown }
     }
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
     const updated = parsed.hookSpecificOutput?.updatedToolOutput
-    expect(typeof updated).toBe('string')
-    expectContentSurvived(updated as string)
+    // An object matching Bash's own result shape, not a bare string: Claude Code discards a string
+    // here and shows the model the original, which is how this rewrite shipped dead.
+    expect(typeof updated).toBe('object')
+    expect(rewrittenKeys(updated)).toEqual(expect.arrayContaining(['stdout', 'exitCode']))
+    expectContentSurvived(rewrittenBody(updated))
   })
 })

@@ -37,6 +37,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 
 const BUNDLE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'token-goat.mjs')
 
@@ -354,12 +355,14 @@ describe('built bundle: the elision survives the hook process boundary', () => {
     expect(res.status).toBe(0)
 
     const parsed = JSON.parse(res.stdout) as {
-      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: string }
+      hookSpecificOutput?: { hookEventName?: string; updatedToolOutput?: unknown }
     }
     // The cross-process assertion: if the served body lived only in module state, this separate
     // process would find an empty store and emit `{}`.
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
-    const replaced = parsed.hookSpecificOutput?.updatedToolOutput ?? ''
+    // Read's result shape, with only the body field replaced -- a bare string here is discarded.
+    expect(rewrittenKeys(parsed.hookSpecificOutput?.updatedToolOutput)).toContain('content')
+    const replaced = rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)
     expect(replaced).toContain(NOTICE)
     expect(replaced).toContain(bodyLine(40, 'e2e'))
     expect(replaced).not.toContain(bodyLine(1, 'e2e'))
@@ -373,7 +376,7 @@ describe('built bundle: the elision survives the hook process boundary', () => {
     expect(runHook('pre_tool_use', sid, whole, 'ok').status).toBe(0)
     const res = runHook('post_tool_use', sid, whole, renderedE2E(1, LINE_COUNT))
     expect(res.status).toBe(0)
-    const parsed = JSON.parse(res.stdout) as { hookSpecificOutput?: { updatedToolOutput?: string } }
+    const parsed = JSON.parse(res.stdout) as { hookSpecificOutput?: { updatedToolOutput?: unknown } }
     expect(parsed.hookSpecificOutput?.updatedToolOutput).toBeUndefined()
   })
 })

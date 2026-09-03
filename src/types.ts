@@ -20,9 +20,17 @@
  *   replaces the entire `tool_input`, so it must carry every original field.
  * - `rewriteOutput` — the tool already ran; replace the result text the model
  *   sees with `updatedOutput` (a `PostToolUse` rewrite, wire field
- *   `updatedToolOutput`). Confirmed against https://code.claude.com/docs/en/hooks
- *   (verified 2026-07-12): MCP-tool support has existed since before v2.1.121;
- *   support for built-in tools (Bash, Read, Edit, ...) was added in v2.1.121.
+ *   `updatedToolOutput`). Per https://code.claude.com/docs/en/hooks: MCP-tool
+ *   support has existed since before v2.1.121; support for built-in tools
+ *   (Bash, Read, Edit, ...) was added in v2.1.121. What the docs do not say,
+ *   and what made this field silently dead for built-in tools, is that the
+ *   VALUE must match the tool's own output schema: `updatedOutput` is a string,
+ *   but only a tool whose result is itself a string (MCP) accepts one. For an
+ *   object-shaped result the harness rejects the rewrite outright and keeps the
+ *   original. Measured on the recorded session corpus: 412 of 412 built-in-tool
+ *   emissions rejected, 0 accepted, on every version present; 13 MCP rewrites
+ *   accepted. `serializeOutput` (hook_registry.ts) therefore clones the original
+ *   `tool_response` and replaces only its text-bearing field.
  *   token-goat emits this for MCP tools (`hooks_mcp.ts`'s `postMcpHandler`,
  *   unconditional aside from the `TOKEN_GOAT_MCP_COMPRESS=0` opt-out) and for
  *   WebFetch (`hooks_fetch.ts`'s `postFetchHandler`, the injection-scan fence).
