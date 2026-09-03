@@ -173,7 +173,7 @@ describe('hooks_common', () => {
     })
 
     it('denyOutput', () => {
-      expect(denyOutput('blocked')).toEqual({ hookType: 'deny', message: 'blocked' })
+      expect(denyOutput('blocked')).toEqual({ hookType: 'deny', message: '[tg] blocked' })
     })
 
     it('contextOutput', () => {

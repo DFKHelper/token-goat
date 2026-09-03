@@ -2730,7 +2730,7 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toBe(
-        'MEMORY.md was already read this session. Memory files rarely change mid-session. ' +
+        '[tg] MEMORY.md was already read this session. Memory files rarely change mid-session. ' +
         'Use `token-goat section "' + normalizePath(p) + '::SectionHeading"` to extract one section.',
       )
     }
@@ -2752,7 +2752,7 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toBe(
-        shownPath + ' was already read this session. Memory files rarely change mid-session. ' +
+        '[tg] ' + shownPath + ' was already read this session. Memory files rarely change mid-session. ' +
         'Use `token-goat section "' + shownPath + '::SectionHeading"` to extract one section.',
       )
     }

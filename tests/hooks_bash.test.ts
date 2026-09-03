@@ -4474,7 +4474,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat src/auth_loop46.ts 2>&1'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toBe('`cat` loads the entire file into context. Use `token-goat read "src/auth_loop46.ts::SymbolName"` to read one function or class.')
+      expect(result.message).toBe('[tg] `cat` loads the entire file into context. Use `token-goat read "src/auth_loop46.ts::SymbolName"` to read one function or class.')
     }
   })
 

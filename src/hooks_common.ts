@@ -229,7 +229,8 @@ export function passOutput(): HookOutput {
 
 /** Build a `deny` output — block the tool call and surface `message`. */
 export function denyOutput(message: string): HookOutput {
-  return { hookType: 'deny', message }
+  const prefixed = message.startsWith('[tg]') ? message : `[tg] ${message}`
+  return { hookType: 'deny', message: prefixed }
 }
 
 /** Build a `context` output — let the call proceed but inject `context`. */
