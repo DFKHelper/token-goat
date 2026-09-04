@@ -548,6 +548,35 @@ function runShim(eventName: string, stdin: string, cwd: string, env?: NodeJS.Pro
  * resolves to `jsonStdout` instead of the real installed binary (mirrors
  * tests/bridges/shims.test.ts's withFakeTokenGoat).
  */
+/**
+ * Like `withFakeTokenGoat`, but the fake records that it ran instead of answering with content.
+ *
+ * The shim translates whatever token-goat returns into a Copilot hook response and writes `{}` for
+ * anything it does not recognise, so a fake that only echoes JSON is invisible from stdout: an
+ * assertion on the envelope passes whether the inner command ran or not. Whether the spawn happened
+ * at all is the one difference that shows, so the fake touches a file and the test reads that.
+ */
+function withRecordingTokenGoat(cwd: string): { env: NodeJS.ProcessEnv; spawned: () => boolean } {
+  const marker = path.join(cwd, 'token-goat-was-spawned')
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(cwd, 'token-goat.cmd'), `@echo off
+echo x > "${marker}"
+echo {}
+`, 'utf8')
+  } else {
+    const scriptPath = path.join(cwd, 'token-goat')
+    fs.writeFileSync(scriptPath, `#!/bin/sh
+echo x > '${marker}'
+echo '{}'
+`, 'utf8')
+    fs.chmodSync(scriptPath, 0o755)
+  }
+  return {
+    env: { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') },
+    spawned: () => fs.existsSync(marker),
+  }
+}
+
 function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
   if (process.platform === 'win32') {
     fs.writeFileSync(path.join(cwd, 'token-goat.cmd'), `@echo off\r\necho ${jsonStdout}\r\n`, 'utf8')
@@ -670,6 +699,49 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const stdout = runShim('sessionEnd', '{}', cwd)
     expect(stdout.trim()).toBe('{}')
+  })
+
+  // The event map is a plain object literal and its value is concatenated into a shell command
+  // string further down the shim, so every name Object.prototype supplies has to be rejected the
+  // same way an unknown name is. Fixtures are HAND-DERIVED: the list is Object.prototype's own
+  // enumerable-by-lookup members, taken from the language, not from the map or the check.
+  it.each([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+    'isPrototypeOf',
+    'propertyIsEnumerable',
+    'toLocaleString',
+  ])('no-ops on the inherited property name %s rather than resolving it to an event', (name) => {
+    const cwd = mkIsolated()
+    const { env, spawned } = withRecordingTokenGoat(cwd)
+    expect(runShim(name, '{}', cwd, env).trim()).toBe('{}')
+    expect(
+      spawned(),
+      `The shim resolved ${name} to a value and built "token-goat hook <value>" from it, then ran ` +
+        'that string through a shell. The stdout envelope is identical either way -- the spawn is ' +
+        'the only observable difference -- so this assertion, not the envelope, is what proves the ' +
+        'name was rejected.',
+    ).toBe(false)
+  })
+
+  // Calibration for the eight cases above. A "did not spawn" assertion is worth nothing until the
+  // same harness is shown to report a spawn when one really happens, and to report none for a name
+  // that is merely unknown: without both poles this file would stay green against a shim that never
+  // spawned at all. Measured 2026-09-04 against this shim: preToolUse spawns, nosuchevent does not,
+  // and with the own-property check reverted all eight inherited names spawn.
+  it('the spawn recorder above distinguishes a real event from an unknown one', () => {
+    const real = mkIsolated()
+    const realFake = withRecordingTokenGoat(real)
+    runShim('preToolUse', '{}', real, realFake.env)
+    expect(realFake.spawned(), 'preToolUse did not reach the spawn fallback, so the eight assertions above cannot fail').toBe(true)
+
+    const unknown = mkIsolated()
+    const unknownFake = withRecordingTokenGoat(unknown)
+    runShim('nosuchevent', '{}', unknown, unknownFake.env)
+    expect(unknownFake.spawned()).toBe(false)
   })
 
   it('fails open ({}) on malformed JSON on stdin', () => {

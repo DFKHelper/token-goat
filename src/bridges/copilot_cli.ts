@@ -291,7 +291,18 @@ async function tryInProcess(entryPath, tgEvent, canonical) {
 async function main() {
   const copilotEvent = process.argv[2] || ''
 
-  const tgEvent = COPILOT_TO_TG_EVENT[copilotEvent]
+  // hasOwnProperty, not a bare lookup: the map is a plain object literal, so eight keys it never
+  // declares ('constructor', 'toString', '__proto__' and the rest of Object.prototype) come back
+  // truthy and sail past the check below. tgEvent is then a Function, and 'token-goat hook ' +
+  // tgEvent is concatenated into a shell command string by the fallback at the bottom of this
+  // shim. No member of Object.prototype stringifies with a shell metacharacter, so this was a
+  // failed spawn rather than a second command -- but argv reaching a shell string through a gate
+  // that reads like it stops it is the shape worth closing, not the payload that happened to be
+  // harmless. The four shims built on shim_common.ts validate against a closed Set, which has no
+  // equivalent hole.
+  const tgEvent = Object.prototype.hasOwnProperty.call(COPILOT_TO_TG_EVENT, copilotEvent)
+    ? COPILOT_TO_TG_EVENT[copilotEvent]
+    : undefined
   if (!tgEvent) {
     process.stdout.write('{}')
     return
