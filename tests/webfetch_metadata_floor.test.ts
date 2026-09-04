@@ -42,6 +42,15 @@ const BLOCKED: ReadonlyArray<readonly [string, string]> = [
   ['IPv4-compatible IPv6', 'http://[::169.254.169.254]/latest/meta-data/'],
   ['the NAT64 well-known prefix, which a gateway translates back out', 'http://[64:ff9b::a9fe:a9fe]/x'],
   ['GCE bare short name, which answers the same as the fully qualified one', 'http://metadata/computeMetadata/v1/'],
+  // Found by a second adversarial review. The first fix decoded three named encodings; these are the
+  // three it did not name. Each is a real, standardised way to write an IPv4 address inside an IPv6
+  // one, so each reached the metadata service through a check written to stop exactly that.
+  ['the RFC 2765 translated form', 'http://[::ffff:0:a9fe:a9fe]/latest/meta-data/'],
+  ['the RFC 8215 local-use NAT64 prefix', 'http://[64:ff9b:1::a9fe:a9fe]/x'],
+  ['6to4, which carries the address in a different position entirely', 'http://[2002:a9fe:a9fe::]/x'],
+  // EC2 resolves both of these to 169.254.169.254 inside a VPC.
+  ['the EC2 instance-data short name', 'http://instance-data/latest/meta-data/'],
+  ['the EC2 instance-data fully qualified name', 'http://instance-data.ec2.internal/latest/meta-data/'],
 ]
 
 const REACHABLE: ReadonlyArray<readonly [string, string]> = [
@@ -51,6 +60,11 @@ const REACHABLE: ReadonlyArray<readonly [string, string]> = [
   ['a private LAN address, which is operator policy rather than a metadata endpoint', 'http://192.168.1.10/'],
   ['a host merely containing the digits', 'https://169.254.169.254.example.com/'],
   ['a path mentioning metadata', 'https://example.com/metadata.google.internal'],
+  // The widened decode reads the last two groups of any IPv6 address, so an ordinary address has to
+  // stay reachable or the widening has quietly become a block on IPv6.
+  ['an ordinary IPv6 address', 'http://[2001:db8::1]/x'],
+  ['an ordinary IPv6 address whose last groups are not link-local', 'http://[2001:db8::c0a8:1]/x'],
+  ['a host merely starting with the instance-data name', 'https://instance-data.example.com/'],
 ]
 
 describe('the cloud metadata floor on WebFetch', () => {

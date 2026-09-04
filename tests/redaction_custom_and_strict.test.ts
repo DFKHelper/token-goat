@@ -133,10 +133,35 @@ describe('a custom redaction pattern that is wrong in a way nothing would otherw
     expect(out.count, 'a refused pattern must not inflate the redaction count').toBe(0)
   })
 
-  it('rejects a group that repeats inside a repeat, which can take exponential time', () => {
-    const { patterns, problems } = compileCustomPatterns(['(a+)+$'])
-    expect(patterns, 'a catastrophic-backtracking pattern was compiled').toEqual([])
-    expect(problems[0]?.reason).toContain('exponential')
+  /**
+   * Every group shape whose running time doubles as the input grows.
+   *
+   * HAND-DERIVED, and each one measured rather than assumed: `(?:a+)+$` took 13 ms against 18
+   * characters and 121 ms against 24, which is four times the work for every two characters added.
+   *
+   * The first version of this check caught only the first entry. `(?:a+)+$` and `(?<x>a+)+$` walked
+   * past it because it used a lookahead to skip `(?`-style constructs, which made every
+   * non-capturing and named group invisible; `(\d{2,})+$` because its inner repetition is written
+   * with braces; and `(a|a)+$` because it has no nested quantifier at all, only two branches that
+   * match the same text. The last of those is caught by measurement rather than by shape, which is
+   * the point of having both -- see the reason-split assertion below.
+   */
+  it.each(['(a+)+$', '(?:a+)+$', '(?<x>a+)+$', '(\\d{2,})+$', '(a|a)+$'])(
+    'rejects %s, whose running time doubles as the text grows',
+    (source) => {
+      const { patterns, problems } = compileCustomPatterns([source])
+      expect(patterns, 'a catastrophic-backtracking pattern was compiled').toEqual([])
+      expect(problems.map((p) => p.pattern)).toEqual([source])
+    },
+  )
+
+  // The two checks cover different ground and the split is worth pinning: the shape check reads the
+  // pattern, and can only refuse shapes somebody thought of; the probe runs the pattern and refuses
+  // whatever is actually slow. If the probe ever stopped running, `(a|a)+$` would be accepted and
+  // nothing else here would notice.
+  it('refuses an ambiguous alternation by measuring it, not by recognising its shape', () => {
+    const { problems } = compileCustomPatterns(['(a|a)+$'])
+    expect(problems[0]?.reason, 'the static shape check claimed this one').toContain('running time')
   })
 
   it('still accepts the ordinary patterns an operator actually writes', () => {
@@ -147,6 +172,25 @@ describe('a custom redaction pattern that is wrong in a way nothing would otherw
 
     const out = redactSecrets('employee EMP-12345678 filed it', withRedaction({ custom_patterns: good }))
     expect(out.text).toBe('employee [REDACTED:custom] filed it')
+  })
+
+  // The refusals above are one over-broad regex away from taking every ordinary alternation and
+  // every non-capturing group with them. Neither of these is ambiguous: the two branches of
+  // `(x|y)+` cannot match the same character, so there is nothing for an engine to backtrack over.
+  // The variable that carries these splits on line breaks, so blank entries are the normal shape of
+  // a list written with a trailing newline or a gap between groups. Counting them against the cap
+  // would drop real patterns off the end and report nothing about it.
+  it('does not spend a pattern slot on a blank entry', () => {
+    const blanks = Array.from({ length: 70 }, () => '')
+    const { patterns, problems } = compileCustomPatterns([...blanks, 'EMP-[0-9]{4,8}', 'SOL-[A-Z]{3}'])
+    expect(problems, `blank entries produced a problem: ${JSON.stringify(problems)}`).toEqual([])
+    expect(patterns, 'a real pattern was pushed off the end by blank entries').toHaveLength(2)
+  })
+
+  it('accepts an unambiguous alternation and a plain non-capturing group', () => {
+    const { patterns, problems } = compileCustomPatterns(['(?:abc)+', '(x|y)+'])
+    expect(problems, `a safe pattern was refused: ${JSON.stringify(problems)}`).toEqual([])
+    expect(patterns).toHaveLength(2)
   })
 })
 

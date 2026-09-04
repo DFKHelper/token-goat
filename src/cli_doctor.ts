@@ -14,7 +14,7 @@ import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
-import { CONFIG_KEY_ENV_OVERRIDES, loadConfig, readConfigSource } from './config.js'
+import { CONFIG_KEY_ENV_OVERRIDES, loadConfig, PROJECT_LOCKED_KEYS, PROJECT_LOCKED_SECTIONS, readConfigSource } from './config.js'
 import { envBool } from './env.js'
 import type { Config } from './config.js'
 import { runContextStats } from './cli_context_stats.js'
@@ -774,46 +774,87 @@ export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
  * whole section.
  */
 /**
- * Security settings a project config may not touch, paired with the value that is the safe one.
+ * The safe direction for each project-locked setting that is a boolean.
  *
- * `PROJECT_LOCKED_SECTIONS` stops a checked-in `.token-goat.toml` from loosening these. It does not
- * stop an environment variable, and the environment is reachable from a cloned repository in more
- * ways than it looks: `.envrc` for direnv, `terminal.integrated.env.*` in a committed
- * `.vscode/settings.json`, `containerEnv` in a devcontainer. The lock and the override sit at
- * different layers, so the lock never sees it.
+ * Every key here must also appear in {@link CONFIG_KEY_ENV_OVERRIDES}; every project-locked key that
+ * has an env override and is *not* here is treated as a value replacement instead (see below). The
+ * guard test asserts that split covers the locked set exactly, because the first version of this
+ * check listed six keys by hand and missed nine, and a hand-kept list of what to check is the same
+ * drift this file already avoided for env var *names*.
+ */
+const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
+  'gdrive.enabled': false,
+  'injection.enabled': true,
+  'redaction.strict': true,
+  'mcp.confine_reads_to_project_root': true,
+  'screenshot.block_private_targets': true,
+  'network.offline': true,
+  'indexing.cross_project_symbols': false,
+  'webfetch.compress_bodies': true,
+}
+
+/**
+ * Every project-locked config key that an environment variable can still override.
+ *
+ * `PROJECT_LOCKED_SECTIONS` and `PROJECT_LOCKED_KEYS` stop a checked-in `.token-goat.toml` from
+ * loosening these. They do not stop an environment variable, and the environment is reachable from a
+ * cloned repository in more ways than it looks: `.envrc` for direnv, `terminal.integrated.env.*` in a
+ * committed `.vscode/settings.json`, `containerEnv` in a devcontainer. The lock and the override sit
+ * at different layers, so the lock never sees it.
  *
  * Refusing the override was considered and rejected. An operator exporting a variable in their own
  * shell is doing something legitimate, and blocking it would break that case to defend against one
  * they can already see. What they cannot see is a variable arriving from a file they did not write,
  * so this reports rather than prevents.
  *
- * The env var names are not repeated here: they are read from {@link CONFIG_KEY_ENV_OVERRIDES}, the
- * same map `config set` uses, so renaming a variable cannot leave this check silently pointing at a
- * name nothing sets. Only a weakening is reported -- an environment that turns a protection *on* is
- * not something to warn about.
+ * Derived rather than listed, so a new locked section, a new locked key, or a new env override is
+ * covered the day it lands instead of the day someone remembers this function exists.
  */
-const LOCKED_SECURITY_SETTINGS: ReadonlyArray<{ key: string; safe: boolean }> = [
-  { key: 'gdrive.enabled', safe: false },
-  { key: 'injection.enabled', safe: true },
-  { key: 'redaction.strict', safe: true },
-  { key: 'mcp.confine_reads_to_project_root', safe: true },
-  { key: 'screenshot.block_private_targets', safe: true },
-  { key: 'network.offline', safe: true },
-]
+export function lockedEnvOverridableKeys(): string[] {
+  const out: string[] = []
+  for (const key of Object.keys(CONFIG_KEY_ENV_OVERRIDES)) {
+    const section = key.split('.')[0] ?? ''
+    const locked = PROJECT_LOCKED_SECTIONS.includes(section) || PROJECT_LOCKED_KEYS.includes(key)
+    if (locked && (CONFIG_KEY_ENV_OVERRIDES[key] ?? []).length > 0) out.push(key)
+  }
+  return out.sort()
+}
+
+/** One locked setting the environment is currently deciding, and how it is deciding it. */
+export interface EnvOverriddenSetting {
+  readonly setting: string
+  readonly envVar: string
+  /** `weakened` = a boolean flipped to its unsafe value. `replaced` = a non-boolean value supplied. */
+  readonly kind: 'weakened' | 'replaced'
+}
 
 /**
- * Locked security settings the environment is currently holding open, as `setting (VAR)` strings.
+ * Locked settings the environment is holding open or replacing.
  *
- * Parsing goes through `envBool` rather than a string comparison so the answer here is the same one
+ * Booleans are read through `envBool` rather than compared as strings, so the answer here is the one
  * `_buildConfig` reached: `0`, `no` and `off` are all ways to switch a protection off, and a check
  * that only looked for the literal `false` would miss three of the four spellings. Passing the safe
- * value as the default means an unset, blank or unrecognised variable reports nothing.
+ * value as the default means an unset, blank or unrecognised variable reports nothing, and a variable
+ * that makes a setting *safer* reports nothing either.
+ *
+ * A non-boolean locked setting is reported whenever its variable is set at all. There is no safe
+ * direction to compare against: `TOKEN_GOAT_WEBFETCH_ALLOW` and `TOKEN_GOAT_MCP_ALLOWED_ROOTS`
+ * replace their list rather than adding to it, so the environment supplying one means the config
+ * file is no longer deciding it, and only the operator can say whether the replacement is weaker.
+ * Saying nothing here is what made the first version print a clean line while the fetch allow list
+ * and the MCP root confinement were both being set from outside the config.
  */
-export function envWeakenedSecuritySettings(): string[] {
-  const out: string[] = []
-  for (const { key, safe } of LOCKED_SECURITY_SETTINGS) {
-    for (const envVar of CONFIG_KEY_ENV_OVERRIDES[key] ?? []) {
-      if (envBool(envVar, safe) !== safe) out.push(`${key} (${envVar})`)
+export function envOverriddenSecuritySettings(): EnvOverriddenSetting[] {
+  const out: EnvOverriddenSetting[] = []
+  for (const setting of lockedEnvOverridableKeys()) {
+    const safe = LOCKED_BOOLEAN_SAFE_VALUE[setting]
+    for (const envVar of CONFIG_KEY_ENV_OVERRIDES[setting] ?? []) {
+      if (safe === undefined) {
+        const raw = process.env[envVar]
+        if (raw !== undefined && raw.trim() !== '') out.push({ setting, envVar, kind: 'replaced' })
+      } else if (envBool(envVar, safe) !== safe) {
+        out.push({ setting, envVar, kind: 'weakened' })
+      }
     }
   }
   return out
@@ -887,21 +928,30 @@ export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorRe
       : { name: 'Security mcp roots', status: 'warn', message: 'confinement is off (mcp.confine_reads_to_project_root): a read can leave the project' },
   )
 
-  const weakened = envWeakenedSecuritySettings()
+  const overridden = envOverriddenSecuritySettings()
+  const weakened = overridden.filter((o) => o.kind === 'weakened')
+  const replaced = overridden.filter((o) => o.kind === 'replaced')
+  const describe = (o: EnvOverriddenSetting): string => `${o.setting} (${o.envVar})`
+  const parts: string[] = []
+  if (weakened.length > 0) parts.push(`held open: ${weakened.map(describe).join(', ')}`)
+  if (replaced.length > 0) parts.push(`set from the environment: ${replaced.map(describe).join(', ')}`)
   results.push(
-    weakened.length === 0
+    overridden.length === 0
       ? {
           name: 'Security config overrides',
           status: 'ok',
-          message: 'no environment variable is holding a locked security setting open',
+          // Naming the count keeps this from reading as a guarantee about settings it never looked
+          // at, which is what the first version of this line did while nine locked keys went
+          // unchecked behind it.
+          message: `no environment variable is overriding any of the ${lockedEnvOverridableKeys().length} project-locked settings`,
         }
       : {
           name: 'Security config overrides',
           status: 'warn',
           message:
-            `the environment, not the config file, is deciding ` +
-            `${weakened.length === 1 ? 'this setting' : 'these settings'}: ${weakened.join(', ')}. ` +
-            'A project config cannot change them; an environment variable can, and one can be set by a file in a cloned repository.',
+            `the environment, not the config file, is deciding ${overridden.length === 1 ? 'a' : 'these'} ` +
+            `project-locked setting${overridden.length === 1 ? '' : 's'}. ${parts.join('; ')}. ` +
+            'A project config cannot change these; an environment variable can, and one can be set by a file in a cloned repository.',
         },
   )
 

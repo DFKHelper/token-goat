@@ -52,16 +52,33 @@ function looksLikeSuggestion(slice: string): boolean {
 }
 
 /**
- * Characters that end a command and start another one, or that reverse how text reads.
+ * What is allowed to appear outside the quotes of a suggestion we emitted.
  *
- * `;`, `|` and `&` are the separators an escaped path needs in order to become a second command.
- * The control and bidi characters are here for a different reason: this text is read by a model,
- * not only by a shell, so a right-to-left override or a stray escape sequence can make the
- * suggestion display as something other than what it says.
+ * This started as a list of the separators that turn one command into two, `;`, `|` and `&`, and an
+ * adversarial review walked through it with `>`: a path named `a" > ~/.bashrc "b.ts` contains none
+ * of the three, keeps the quote count odd, and truncates a file. Redirection is not the last member
+ * of that list either, since `<`, `2>`, `(`, `)` and `#` all do something, so the list is inverted
+ * rather than extended.
+ *
+ * Our own templates only ever put command words, flags and separators between quoted arguments, and
+ * every one of those is spelled with the characters below. Anything else outside a quote did not
+ * come from us. An allowlist closes the class; a denylist closes whichever member of it was most
+ * recently noticed.
  */
-const COMMAND_SEPARATOR = /[;|&]/
-// eslint-disable-next-line no-control-regex
-const CONTROL_OR_BIDI = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069]/
+const SAFE_OUTSIDE_QUOTES = /^[A-Za-z0-9 \t_./=:,@+-]*$/
+
+/**
+ * Characters that reverse how text reads, or that are invisible in one channel and present in
+ * another.
+ *
+ * These are here for a different reason from the allowlist above: this text is read by a model, not
+ * only by a shell, so a right-to-left override can make the suggestion display as something other
+ * than what it says, and a zero-width or tag character can carry text that a diff and a terminal
+ * both render as nothing while the model reads it literally. The Unicode Tag block is the one worth
+ * naming out loud: it exists in order to be invisible, and no real path uses it.
+ */
+// eslint-disable-next-line no-control-regex, no-misleading-character-class
+const CONTROL_OR_BIDI = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069\u061C\u200B-\u200D\u2028\u2029\uFE00-\uFE0F]|[\u{E0000}-\u{E007F}]/u
 
 /**
  * A suggestion is unsafe when the double quoting that was supposed to contain the path did not
@@ -104,8 +121,11 @@ function suggestionIsUnsafe(slice: string): boolean {
   const regions = slice.split('"')
   // An even number of regions means an odd number of quotes: the emitter's quote never closed.
   if (regions.length % 2 === 0) return true
+  // Region 0 is the command we wrote before the first quote, and odd regions are inside quotes,
+  // where a path legitimately contains almost anything. Region 2 onward is ground a path can only
+  // reach by escaping, so that is what has to look like something we would have written.
   for (let i = 2; i < regions.length; i += 2) {
-    if (COMMAND_SEPARATOR.test(regions[i] ?? '')) return true
+    if (!SAFE_OUTSIDE_QUOTES.test(regions[i] ?? '')) return true
   }
   return false
 }

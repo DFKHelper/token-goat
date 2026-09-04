@@ -142,19 +142,75 @@ export interface CustomPatternProblem {
 let customCache: { key: string; patterns: RegExp[]; problems: CustomPatternProblem[] } | null = null
 
 /**
- * A quantified group that already contains a quantifier: `(a+)+`, `(\w*)*`, `(\d+\s?)+`.
+ * A quantified group whose body can match the same text more than one way.
  *
  * This is the shape behind almost every catastrophic-backtracking regex, because it lets the engine
  * split the same input between the inner and outer repetition in exponentially many ways. Six
- * characters are enough -- `(a+)+` against twenty-odd characters does not finish -- which is why
+ * characters are enough: `(a+)+` against twenty-odd characters does not finish, which is why
  * {@link MAX_CUSTOM_PATTERN_LENGTH} bounds nothing that matters here and this check exists instead.
  *
- * It is a heuristic and it is stated as one. It catches the common shape, not every super-linear
- * pattern, and it will occasionally refuse a pattern that would have been fine. Refusing loudly is
- * the right side to err on: the alternative is a hook that stops responding with no error and no
- * obvious cause, because a JavaScript regex cannot be interrupted once it starts.
+ * The first version of this was `/\((?![?*+])[^()*+]*[*+][^()]*\)\s*[*+{]/`, and an adversarial
+ * review took it apart. The `(?![?*+])` lookahead was there to skip `(?`-style constructs, and the
+ * cost was that every non-capturing and named group became invisible: `(?:a+)+` and `(?<x>a+)+` both
+ * compiled clean. `(a|a)+` was missed for a different reason, having no nested quantifier at all,
+ * and `(\d{2,})+` for a third, its inner repetition being a brace form. Measured, `(?:a+)+$` ran
+ * 13 ms at 18 characters and 121 ms at 24: four times the work for every two characters added, in a
+ * replace that cannot be interrupted, over every cached tool output on its way to the model.
+ *
+ * So the group prefix is now consumed rather than used to bail out, and an inner `{n,}` counts as a
+ * repetition. `(a|a)+` is deliberately not handled here: the dangerous thing about it is that its
+ * branches can match the same text, and telling `(a|a)+` from `(x|y)+` by shape alone would refuse
+ * every ordinary alternation to catch one bad one. It is caught by measurement instead. This check
+ * is a heuristic and is stated as one -- a static shape check cannot enumerate every super-linear
+ * pattern -- and {@link growsExponentially} is the empirical backstop underneath it.
  */
-const NESTED_QUANTIFIER = /\((?![?*+])[^()*+]*[*+][^()]*\)\s*[*+{]/
+const GROUP_PREFIX = String.raw`\((?:\?(?::|<?[=!]|<\w+>|[a-z]*(?:-[a-z]*)?:))?`
+const NESTED_QUANTIFIER = new RegExp(
+  // a quantified group whose body itself repeats: (a+)+, (?:a*)*, (?<x>\d{2,})+
+  GROUP_PREFIX + String.raw`[^()*+]*(?:[*+]|\{\d+,\d*\})[^()]*\)\s*(?:[*+]|\{\d+,\d*\})`,
+)
+
+/**
+ * Whether a compiled pattern's running time doubles as its input grows.
+ *
+ * The static check above is a list of shapes somebody thought of. This one asks the engine. The
+ * pattern is run against short repeated inputs that fail to match at the end -- the condition that
+ * forces a backtracking engine to try every split -- and the time at 20 characters is compared with
+ * the time at 14. A linear or polynomial pattern grows by a small factor over six extra characters;
+ * an exponential one grows by roughly sixty-four.
+ *
+ * The probe is safe to run in-process precisely because the inputs are short: `(a+)+` at 20
+ * characters takes about a millisecond, which is the whole point of measuring there rather than at
+ * the length real text would supply. `PROBE_BUDGET_MS` is a second floor -- a pattern that is
+ * already slow at 20 characters is refused on that alone, without waiting for a ratio.
+ */
+const PROBE_ALPHABETS = ['a', '0', 'a0'] as const
+const PROBE_SHORT = 14
+const PROBE_LONG = 20
+const PROBE_GROWTH_FACTOR = 12
+const PROBE_BUDGET_MS = 25
+
+function timeMatch(re: RegExp, input: string): number {
+  // A fresh regex per call: a `g`-flagged pattern carries lastIndex between calls, which would make
+  // the second measurement start mid-string and read as faster.
+  const probe = new RegExp(re.source, re.flags.replace('g', ''))
+  const started = performance.now()
+  probe.test(input)
+  return performance.now() - started
+}
+
+function growsExponentially(re: RegExp): boolean {
+  for (const alphabet of PROBE_ALPHABETS) {
+    const fill = (n: number): string => alphabet.repeat(Math.ceil(n / alphabet.length)).slice(0, n) + '!'
+    const short = timeMatch(re, fill(PROBE_SHORT))
+    const long = timeMatch(re, fill(PROBE_LONG))
+    if (long > PROBE_BUDGET_MS) return true
+    // Sub-millisecond timings are noise on every platform this runs on, so a ratio between two of
+    // them means nothing. Only a long run that is also disproportionate counts.
+    if (long > 1 && long > short * PROBE_GROWTH_FACTOR) return true
+  }
+  return false
+}
 
 /**
  * The compiled form of every usable custom pattern, plus what was wrong with the rest.
@@ -185,9 +241,12 @@ export function compileCustomPatterns(sources: readonly string[]): {
 
   const patterns: RegExp[] = []
   const problems: CustomPatternProblem[] = []
-  for (const raw of sources.slice(0, MAX_CUSTOM_PATTERNS)) {
-    const source = raw.trim()
-    if (source.length === 0) continue
+  // Blank entries are dropped before the cap rather than after it. The environment variable that
+  // carries these is split on line breaks, so a list written with a blank line between groups, or
+  // with a trailing newline, arrives with empty entries in it -- and counting those against the cap
+  // would silently discard real patterns at the end of the list while reporting nothing.
+  const written = sources.map((raw) => raw.trim()).filter((source) => source.length > 0)
+  for (const source of written.slice(0, MAX_CUSTOM_PATTERNS)) {
     if (source.length > MAX_CUSTOM_PATTERN_LENGTH) {
       problems.push({ pattern: source.slice(0, 60), reason: `longer than ${MAX_CUSTOM_PATTERN_LENGTH} characters` })
       continue
@@ -213,11 +272,18 @@ export function compileCustomPatterns(sources: readonly string[]): {
       })
       continue
     }
+    if (growsExponentially(compiled)) {
+      problems.push({
+        pattern: source,
+        reason: 'its running time doubles as the text grows, which can stall the process on a short input',
+      })
+      continue
+    }
     patterns.push(compiled)
   }
-  if (sources.length > MAX_CUSTOM_PATTERNS) {
+  if (written.length > MAX_CUSTOM_PATTERNS) {
     problems.push({
-      pattern: `(${sources.length} entries)`,
+      pattern: `(${written.length} entries)`,
       reason: `only the first ${MAX_CUSTOM_PATTERNS} custom patterns are used`,
     })
   }
