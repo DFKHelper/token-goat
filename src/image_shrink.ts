@@ -7,11 +7,11 @@
  * smaller) typically cuts the byte count — and the token cost — by more than
  * half with no perceptible quality loss at reading distance.
  *
- * The Python implementation uses Pillow; here we use `sharp`. `sharp` ships a
- * native binary, so it is imported lazily: if it is unavailable at runtime
- * (missing/incompatible native build), {@link shrinkImage} degrades to a
- * no-op (returns null) and {@link preReadImageHandler} passes through rather
- * than crashing the hook.
+ * The image shrink subsystem uses an internal pure TypeScript/JavaScript image
+ * engine (`src/image_engine.ts`) running inside V8's memory-safe sandbox with zero
+ * native C compilation and zero libvips dependencies. If an image is unreadable or
+ * corrupt, {@link shrinkImage} degrades to a no-op (returns null) and
+ * {@link preReadImageHandler} passes through rather than crashing the hook.
  */
 
 import { createHash } from 'node:crypto'
@@ -43,7 +43,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
 import { formatOcrSummary, isTextHeavy, ocrImage } from './image_ocr.js'
 
-/** Recognised image extensions (lowercase, leading dot). Matches the Python set, plus AVIF/HEIC/HEIF which sharp can decode and the Python port predates. */
+/** Recognised image extensions (lowercase, leading dot). */
 const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.png',
   '.jpg',
@@ -403,7 +403,7 @@ function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, qua
 
 /**
  * Look for an already-cached re-encode of this exact (path, size, mtime, quality). Checked BEFORE
- * running the shrink so a repeat Read of an unchanged image can skip the sharp re-encode entirely
+ * running the shrink so a repeat Read of an unchanged image can skip the re-encode entirely
  * instead of always re-running it.
  *
  * A directory scan rather than two `existsSync` probes, because the entry's name now carries the
@@ -586,12 +586,12 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
  * the byte threshold on disk while still decoding to well beyond Claude
  * Vision's optimal edge, and Claude Code's own internal re-encode for vision
  * then inflates it far past its on-disk size. When the byte size alone
- * doesn't already qualify the file, a cheap header-only `sharp().metadata()`
+ * doesn't already qualify the file, a cheap header-only `probeImageMeta`
  * probe checks the decoded dimensions before falling through to a pass.
  * On a successful shrink it returns a `context` output carrying the shrunk
  * image as a base64 data URL plus a one-line savings summary, so the model
  * sees the cheaper image instead of the original. Any failure (non-image,
- * small file/dimensions, unreadable, sharp unavailable, no net saving) is a
+ * small file/dimensions, unreadable, no net saving) is a
  * pass — the hook never blocks a Read.
  */
 export async function preReadImageHandler(event: HookEvent): Promise<HookOutput> {
@@ -606,10 +606,10 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   const stat = statInfo(filePath)
   if (stat === null) return passOutput()
 
-  // Checked before any read/decode of the original: a cache hit skips the sharp re-encode (and,
+  // Checked before any read/decode of the original: a cache hit skips the re-encode (and,
   // for small-but-oversized-dimension files, the metadata probe below) entirely. A corrupt or
   // truncated cache entry (unexpected external interference; atomicWriteBytes itself never
-  // leaves a partial file) is detected by re-probing it with sharp -- an undecodable cached file
+  // leaves a partial file) is detected by re-probing it -- an undecodable cached file
   // is deleted and treated as a miss, never served.
   // The quality the shrink would be produced at right now, read once and then threaded through
   // the lookup, the encode and the write alike. Reading it here rather than letting each of those
