@@ -22,6 +22,7 @@ import * as zlib from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 
 import { decodeBmp, decodeGif, decodePng, probeBufferMeta } from '../src/image_engine.js'
+import { shrinkImage } from '../src/image_shrink.js'
 
 // --- PNG construction -------------------------------------------------------------------------
 
@@ -126,6 +127,28 @@ function bmp(width: number, height: number, bpp: number): Buffer {
   return buf
 }
 
+/**
+ * The same GIF with a comment extension (0x21 0xFE, sub-blocks, 0x00 terminator) spliced in ahead
+ * of the trailer.
+ *
+ * Padding is what makes a shrink of a synthetic GIF observable at all. `shrinkImage` returns null
+ * when its output is not smaller than its input, and a hand-built GIF is a few hundred bytes, so
+ * every synthetic case would return null for that reason and no assertion on the return value
+ * could tell a refusal from a successful shrink that was not worth keeping. A comment the
+ * re-encode drops gives the shrink something real to remove.
+ */
+function gifPaddedTo(width: number, height: number, frames: number, commentBytes: number): Buffer {
+  const base = gif(width, height, frames)
+  const body = base.subarray(0, base.length - 1)
+  const blocks: Buffer[] = [Buffer.from([0x21, 0xfe])]
+  for (let written = 0; written < commentBytes; written += 255) {
+    const n = Math.min(255, commentBytes - written)
+    blocks.push(Buffer.from([n]), Buffer.alloc(n, 0x20))
+  }
+  blocks.push(Buffer.from([0x00]))
+  return Buffer.concat([body, ...blocks, Buffer.from([0x3b])])
+}
+
 describe('decoders refuse to allocate on a header they cannot vouch for', () => {
   it('rejects a GIF whose frame count would allocate gigabytes from a few kilobytes', () => {
     const bomb = gif(1600, 1600, 500)
@@ -140,6 +163,15 @@ describe('decoders refuse to allocate on a header they cannot vouch for', () => 
         'and all of them are retained, so this allocates about 5.1 GB from an 11.5 KB file, and it ' +
         'clears image_shrink.max_image_pixels because that gate only ever multiplies width by height.',
     ).toThrow(/decode ceiling/)
+  })
+
+  it('decodes only the frames a caller asked for, and prices the ceiling on those', () => {
+    // The still-image branch of shrinkImage wants frame 0. Taking it from a full decode pays a
+    // canvas for every frame it then discards, and the same 500-frame file the test above rejects
+    // is a file it would have had to reject rather than read one frame of.
+    const still = decodeGif(gif(1600, 1600, 500), { maxFrames: 1 })
+    expect(still.frames).toHaveLength(1)
+    expect(still.width).toBe(1600)
   })
 
   it('still decodes an animation small enough to be honest', () => {
@@ -243,5 +275,44 @@ describe('decoders refuse input they would otherwise decode into the wrong pictu
       expect(out.width).toBe(1)
       expect(out.data).toHaveLength(4)
     }
+  })
+})
+
+describe('the shrink path bounds what it writes, not only what it reads', () => {
+  // The decode ceiling covers the frames coming in. shrinkImage's GIF output buffer is a second
+  // allocation of the same shape at five bytes per pixel per frame rather than four, so between
+  // 21 and 26 frames of this canvas the input passes and the output does not: peak memory was the
+  // sum of two budgets with one of them unchecked. Both cases below decode without complaint --
+  // what they discriminate is whether anything then looks at the size of the buffer being written.
+
+  const CANVAS = 1600
+  const PAD = 1024 * 1024
+
+  it('refuses an animation whose output buffer would clear the ceiling its input did not', async () => {
+    // 21 x 1600 x 1600: 215MB at 4 bytes per pixel, which is under the ceiling, and 269MB at the 5
+    // the writer wants, which is over it.
+    const out = await shrinkImage(gifPaddedTo(CANVAS, CANVAS, 21, PAD), {
+      maxDimension: CANVAS,
+      sizeThresholdBytes: 0,
+    })
+    expect(
+      out,
+      'shrinkImage allocated its GIF output buffer without checking it. The padding means a ' +
+        'successful shrink is genuinely smaller than the input and so returns a result rather than ' +
+        'null, which is what separates this from a shrink that simply was not worth keeping.',
+    ).toBeNull()
+  })
+
+  it('still shrinks an animation both budgets have room for', async () => {
+    // The other side. Without this, a bound that refused every animation would pass the test above
+    // and remove the feature, and nothing in that test could tell.
+    const out = await shrinkImage(gifPaddedTo(320, 240, 3, PAD), {
+      maxDimension: 160,
+      sizeThresholdBytes: 0,
+    })
+    expect(out, 'an animation well inside both budgets was refused, so the bound is not the reason').not.toBeNull()
+    expect(out?.format).toBe('gif')
+    expect(out?.width).toBe(160)
+    expect(out!.shrunkBytes).toBeLessThan(out!.originalBytes)
   })
 })

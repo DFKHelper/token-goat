@@ -39,8 +39,18 @@ const MAX_DECODED_BYTES = 256 * 1024 * 1024
  * Takes the dimensions rather than the product so the multiplication happens here, where it is
  * checked, instead of at each call site where an overflow to `Infinity` or a negative from a signed
  * header field would be passed in already collapsed to something that compares as safe.
+ *
+ * Exported because the decoders are not the only place a frame count sizes a buffer: the animated
+ * branch of {@link shrinkImage} allocates its GIF output the same way, and one ceiling covering
+ * both is the only way peak memory is actually the number this file advertises.
  */
-function assertDecodableSize(what: string, width: number, height: number, bytesPerPixel: number, frames = 1): void {
+export function assertDecodableSize(
+  what: string,
+  width: number,
+  height: number,
+  bytesPerPixel: number,
+  frames = 1,
+): void {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || frames <= 0) {
     throw new Error(`Invalid ${what} dimensions: ${width}x${height} (${frames} frame(s))`)
   }
@@ -578,22 +588,34 @@ export function decodeBmp(buf: Buffer): DecodedImage {
   return { width, height, data: outRgba }
 }
 
-export function decodeGif(buf: Buffer): DecodedAnimatedGif {
+/**
+ * Decode a GIF's frames.
+ *
+ * `maxFrames` stops after that many. A caller that wants a still out of an animation should pass 1
+ * rather than take `frames[0]` from a full decode, which pays for every frame to use one.
+ */
+export function decodeGif(buf: Buffer, opts?: { maxFrames?: number }): DecodedAnimatedGif {
   const reader = new omggif.GifReader(buf)
   const width = reader.width
   const height = reader.height
-  const numFrames = reader.numFrames()
+  const wanted = Math.min(reader.numFrames(), opts?.maxFrames ?? Number.POSITIVE_INFINITY)
 
   // Every frame is a full canvas and every one is kept, so the cost is the canvas times the frame
   // count, not the canvas. Frames are cheap to declare -- an empty 1x1 sub-frame is about 23 bytes
   // -- so the ratio between the file and what it costs to decode is effectively unbounded. This is
   // the one check that has to happen before the loop rather than inside it: catching it on frame
   // 400 means 399 canvases have already been allocated.
-  assertDecodableSize("GIF", width, height, 4, numFrames)
+  //
+  // The ceiling doubles as a time budget, which is why raising it would not simply buy more
+  // capability. Measured end to end through the pre-read hook, a 1600x1600 frame costs about 87 ms
+  // to decode, resize and quantize; 256 MB of canvas is 26 such frames, or roughly 2.3 seconds,
+  // which is already as long as a hook standing between an agent and its Read ought to take. A
+  // larger ceiling would mostly convert an out-of-memory into a wait.
+  assertDecodableSize("GIF", width, height, 4, wanted)
 
   const frames: AnimatedGifFrame[] = []
 
-  for (let i = 0; i < numFrames; i++) {
+  for (let i = 0; i < wanted; i++) {
     const frameInfo = reader.frameInfo(i)
     const frameRgba = Buffer.alloc(width * height * 4)
     reader.decodeAndBlitFrameRGBA(i, frameRgba)
