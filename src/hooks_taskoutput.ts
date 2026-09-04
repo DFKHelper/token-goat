@@ -43,6 +43,8 @@ import { loadConfig } from './config.js'
 import { dedupeConsecutive } from './tool_filters/helpers.js'
 import { redactSecrets } from './secret_redact.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { fenceUntrusted } from './untrusted_fence.js'
 
 /**
  * Deterministic, session-scoped recall id for a TaskOutput poll snapshot --
@@ -179,17 +181,25 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     if (Buffer.byteLength(delta, 'utf-8') < minBytes) return passOutput()
     const collapsedDelta = collapseRepeatedLines(delta)
     const deltaNotice = `[token-goat: task_id ${taskId} delta since last poll]\n`
+    // Same boundary, same reason as hooks_bashoutput's delta: the collapsed delta is the task's own
+    // output and the notice above it is ours. A subagent that read a hostile page can put a line in
+    // the marker's shape into its own stdout, and the model has nothing to tell the two voices
+    // apart with. The notice stays outside the opening tag; the fence covers the task's bytes only.
+    const fenced = fenceUntrusted(collapsedDelta, UNTRUSTED_TOOL_TAG)
+    const body = `${deltaNotice}${fenced}`
+    // Priced on the emitted string, so the fence's own bytes are charged to the rewrite that spends
+    // them rather than treated as free.
     if (
       !isRewriteWorthwhile({
         originalBytes: Buffer.byteLength(output, 'utf-8'),
-        rewrittenBytes: Buffer.byteLength(collapsedDelta, 'utf-8'),
-        noticeBytes: Buffer.byteLength(deltaNotice, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(body, 'utf-8'),
+        noticeBytes: 0,
         minNetSavingsBytes: resolveMinNetSavingsBytes(),
       })
     ) {
       return passOutput()
     }
-    return emitRewrite(`${deltaNotice}${collapsedDelta}`, 'taskoutput', { kind: 'taskoutput:delta', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
+    return emitRewrite(body, 'taskoutput', { kind: 'taskoutput:delta', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
   } catch {
     return passOutput()
   }
