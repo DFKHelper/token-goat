@@ -1,0 +1,203 @@
+{
+  "src/cli_bootstrap_audit.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/conflict_query.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 3
+    }
+  },
+  "src/doc_compact.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 7
+    }
+  },
+  "src/failures.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 6
+    }
+  },
+  "src/gdrive.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/graph_commands.ts": {
+    "regexp/no-misleading-capturing-group": {
+      "count": 1
+    },
+    "regexp/no-super-linear-backtracking": {
+      "count": 2
+    }
+  },
+  "src/hints/file_type_handler.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/hints/markdown_hints.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 5
+    }
+  },
+  "src/hooks_agent_spawn.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 2
+    }
+  },
+  "src/hooks_bash.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 20
+    }
+  },
+  "src/languages/apex.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 4
+    }
+  },
+  "src/languages/csharp.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 8
+    }
+  },
+  "src/languages/dart.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 4
+    }
+  },
+  "src/languages/powershell_idx.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/languages/salesforce_frontend.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/languages/salesforce_metadata.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 3
+    }
+  },
+  "src/languages/scala.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/languages/sfc_idx.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/languages/swift.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 8
+    }
+  },
+  "src/markdown_lines.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 2
+    }
+  },
+  "src/parser.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 7
+    }
+  },
+  "src/read_commands.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 11
+    }
+  },
+  "src/resident_context.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 6
+    }
+  },
+  "src/secret_redact.ts": {
+    "regexp/no-potentially-useless-backreference": {
+      "count": 2
+    }
+  },
+  "src/section_reader.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 9
+    }
+  },
+  "src/text_commands.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 12
+    }
+  },
+  "src/tool_filters/build.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 2
+    }
+  },
+  "src/tool_filters/ci.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 2
+    }
+  },
+  "src/tool_filters/cloud.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 4
+    }
+  },
+  "src/tool_filters/containers.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 2
+    }
+  },
+  "src/tool_filters/git.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 5
+    }
+  },
+  "src/tool_filters/languages.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 20
+    }
+  },
+  "src/tool_filters/linters.ts": {
+    "regexp/no-misleading-capturing-group": {
+      "count": 2
+    },
+    "regexp/no-super-linear-backtracking": {
+      "count": 20
+    }
+  },
+  "src/tool_filters/misc.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 3
+    }
+  },
+  "src/tool_filters/package_managers.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 8
+    }
+  },
+  "src/tool_filters/pytest.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 3
+    }
+  },
+  "src/tool_filters/shell_file.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 1
+    }
+  },
+  "src/transcript_extract.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 3
+    }
+  },
+  "src/xml_query.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 6
+    }
+  }
+}

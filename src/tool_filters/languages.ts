@@ -1054,7 +1054,7 @@ export const erlangFilter = makeLanguageFilter({
 
 const CRYSTAL_COMPILING_RE =
   /^\s*(?:Compiling\s+\S+|Linking\s+crystal\s+spec|crystal\s+spec\s+\S+\.cr\b)/i
-const CRYSTAL_SPEC_PASS_RE = /^\s*(?:\.\s*)+$|^\s*✓\s+.+\(\d+/i
+const CRYSTAL_SPEC_PASS_RE = /^\s*(?:\.\s*)+$|^\s*✓\s+\S.*\(\d+/i
 const CRYSTAL_DOT_PROGRESS_RE = /^\s*[.]+\s*$/
 const CRYSTAL_SUMMARY_RE =
   /^\s*(?:Finished\s+in\s+[\d.]+\s+(?:second|millisecond)|\d+\s+example[s]?[,\s]|Pending:\s+\d+|\d+\s+failure[s]?|(?:All\s+)?\d+\s+spec[s]?\s+(?:passed|failed))/i
@@ -1108,7 +1108,7 @@ export const crystalFilter = makeLanguageFilter({
 const HASKELL_RESOLVING_RE =
   /^\s*(?:Resolving\s+dependencies|Downloading\s+\S+\s+from\s+Hackage|Downloading\s+\S+\s+\.\.\.|Fetching\s+package|Configuring\s+\S+\.\.\.|Preprocessing\s+\S+\s+for|Starting\s+to\s+install)/i
 const HASKELL_COMPILING_RE =
-  /^\s*(?:\[\s*\d+\s+of\s+\d+\]\s+Compiling\s+\S+|Compiling\s+\S+(?:\s+\(\s*\S+,\s*\S+\))?\.\.\.?)/
+  /^\s*(?:\[\s*\d+\s+of\s+\d+\]\s+Compiling\s+\S+|Compiling\s+\S+(?:\s+\(\s*[^,\s]+,\s*\S+\))?\.\.\.?)/
 const HASKELL_LINKING_RE =
   /^\s*(?:Linking\s+\S+|Building\s+all\s+executables|Building\s+library\s+for\s+|Building\s+executable|Installed\s+\S+(?:\s+\d+\.\d+)?)/i
 const HASKELL_INSTALLING_RE =
@@ -1174,7 +1174,7 @@ const ELM_DEPS_PROGRESS_RE =
 const ELM_COMPILING_RE = /^\s*(?:Compiling\s+\S+\.elm|Starting\s+compilation)/i
 const ELM_SUCCESS_RE =
   /^\s*(?:Success!|Successfully\s+generated|Compilation\s+complete|Done!\s+Compiled\s+\d+)/i
-const ELM_ERROR_HEADER_RE = /^\s*--\s+[A-Z][A-Z0-9 _]+[A-Z0-9]\s*(?:-+|in\s+\S+)?\s*$/
+const ELM_ERROR_HEADER_RE = /^\s*--\s+[A-Z][A-Z0-9 _]+[A-Z0-9]\s*(?:(?:-+|in\s+\S+)\s*)?$/
 const ELM_ERROR_SUMMARY_RE =
   /^\s*(?:Detected\s+\d+\s+error|I\s+ran\s+into\s+\d+\s+problem|\d+\s+error[s]?\s+found)/i
 
@@ -1215,25 +1215,25 @@ export const elmFilter = makeLanguageFilter({
 
 const JULIA_PKG_RESOLVING_RE =
   // eslint-disable-next-line no-control-regex
-  /^\s*(?:\x1b\[[0-9;]*m)?\s*(?:Resolving|Updating|Fetching|Precompiling|Downgrading|Upgrading|Cloning|Archiving)\s+/i
+  /^\s*(?:\x1b\[[0-9;]*m\s*)?(?:Resolving|Updating|Fetching|Precompiling|Downgrading|Upgrading|Cloning|Archiving)\s+/i
 const JULIA_PKG_DEP_LINE_RE =
   // eslint-disable-next-line no-control-regex
-  /^\s*(?:\x1b\[[0-9;]*m)?\s*\[[0-9a-f]{8}\]\s+(?:[+\-↑↓~→⇒✓]|\w)/
+  /^\s*(?:\x1b\[[0-9;]*m\s*)?\[[0-9a-f]{8}\]\s+(?:[+\-↑↓~→⇒✓]|\w)/
 // eslint-disable-next-line no-control-regex
-const JULIA_PKG_INSTALLED_RE = /^\s*(?:\x1b\[[0-9;]*m)?\s*Installed\s+\S+\s+/i
+const JULIA_PKG_INSTALLED_RE = /^\s*(?:\x1b\[[0-9;]*m\s*)?Installed\s+\S+\s+/i
 const JULIA_PKG_BUILDING_RE =
   // eslint-disable-next-line no-control-regex
-  /^\s*(?:\x1b\[[0-9;]*m)?\s*Building\s+\S+\s*(?:→|->|─+)?\s*/i
+  /^\s*(?:\x1b\[[0-9;]*m\s*)?Building\s+\S+\s*(?:→|->|─+)?\s*/i
 // eslint-disable-next-line no-control-regex
-const JULIA_PKG_STATUS_RE = /^\s*(?:\x1b\[[0-9;]*m)?\s*Status\s+`/i
+const JULIA_PKG_STATUS_RE = /^\s*(?:\x1b\[[0-9;]*m\s*)?Status\s+`/i
 const JULIA_TEST_SUMMARY_RE =
   /^\s*(?:Test\s+Summary:|Tests\s+run:|\d+\s+test[s]?\s+(?:passed|failed)|ALL_TESTS_PASS|Testing\s+\S+\s+done|No\s+tests\s+failed)/i
 const JULIA_TEST_PASS_RE = /^\s*(?:✓|PASS:|Test\s+Passed)\s+/i
 // eslint-disable-next-line no-control-regex
-const JULIA_TESTING_HEADER_RE = /^\s*(?:\x1b\[[0-9;]*m)?\s*Testing\s+\S+/i
+const JULIA_TESTING_HEADER_RE = /^\s*(?:\x1b\[[0-9;]*m\s*)?Testing\s+\S+/i
 const JULIA_PRECOMPILE_RE =
   // eslint-disable-next-line no-control-regex
-  /^\s*(?:\x1b\[[0-9;]*m)?\s*\d+\s+(?:package[s]?\s+being\s+precompiled|dependency\s+precompil)/i
+  /^\s*(?:\x1b\[[0-9;]*m\s*)?\d+\s+(?:package[s]?\s+being\s+precompiled|dependency\s+precompil)/i
 
 export const juliaFilter = makeLanguageFilter({
   name: 'julia',

@@ -11,14 +11,14 @@ import { ERROR_SIGNAL_RE, pathStem, pathName, positionalArgs } from './helpers.j
 // ---------------------------------------------------------------------------
 // Shared regex constants — GhCopilot / Copilot (standalone)
 // ---------------------------------------------------------------------------
-const _GH_COPILOT_SPINNER_RE = /^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*\.{0,3}\s*$/i
+const _GH_COPILOT_SPINNER_RE = /^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*(?:\.{1,3}\s*)?$/i
 const _GH_COPILOT_BANNER_RE = /^\s*(?:Welcome to GitHub Copilot|Using GitHub Copilot|Authenticated as|GitHub Copilot\s+v\d+)/i
 const _GH_COPILOT_DISCLAIMER_RE = /^\s*(?:Disclaimer:|This response was|GitHub Copilot|The commands?\s+(?:above|below)|Please review|Always review|Remember to|Note:|Tip:)/i
 
 // ---------------------------------------------------------------------------
 // Aider
 // ---------------------------------------------------------------------------
-const _AIDER_APPLYING_RE = /^\s*(?:Applying\s+edits?(?:\s+to\s+\S+)?|Applied\s+edit\s+to\s+\S+)\s*(?:\.{1,3})?\s*$/i
+const _AIDER_APPLYING_RE = /^\s*(?:Applying\s+edits?(?:\s+to\s+\S+)?|Applied\s+edit\s+to\s+\S+)\s*(?:\.{1,3}\s*)?$/i
 const _AIDER_TOKENS_RE = /^\s*Tokens:\s+\d[\d,]*\s+sent,\s+\d[\d,]*\s+received/i
 const _AIDER_COST_RE = /^\s*Cost:\s+\$[\d.]+\s+message,\s+\$[\d.]+\s+session/i
 const _AIDER_REPOMAP_RE = /^\s*(?:Repo-map:|Added\s+\S+\s+to\s+the\s+chat|Removed\s+\S+\s+from\s+the\s+chat|Loading\s+repo\s+map|Updating\s+repo\s+map|Scanning\s+repo\s+contents|Using\s+\d+\s+tokens\s+of\s+repo\s+map)/i
@@ -39,36 +39,36 @@ const _GEMINI_BANNER_RE = /^\s*Gemini\s+CLI\s+v\d+/i
 const _GEMINI_TOKEN_METER_RE = /^\s*(?:Token\s+usage|Context|Tokens):\s+[\d,]+\s*\/\s*[\d,]+/i
 const _GEMINI_TOOL_SPINNER_RE = /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✓✗►✦]\s+(?:Call(?:ing|ed)|Execut(?:ing|ed)|Running)\s+\S+/
 const _GEMINI_FOOTER_RE = /^\s*(?:Type\s+\/help|Press\s+Ctrl|Use\s+Ctrl|Tip:|Note:)/i
-const _GEMINI_THINKING_RE = /^\s*(?:Thinking|Generating|Processing)\s*\.{0,3}\s*$/i
+const _GEMINI_THINKING_RE = /^\s*(?:Thinking|Generating|Processing)\s*(?:\.{1,3}\s*)?$/i
 
 // ---------------------------------------------------------------------------
 // Claude CLI
 // ---------------------------------------------------------------------------
 const _CLAUDE_CLI_MODEL_HDR_RE = /^\s*[◆◇►✦]\s+claude-/i
-const _CLAUDE_CLI_STATS_RE = /^\s*[↑↓⇑⇓]\s*\d[\d,]*\s*[↑↓⇑⇓]?\s*\d[\d,]*\s*tokens/i
+const _CLAUDE_CLI_STATS_RE = /^\s*[↑↓⇑⇓]\s*\d[\d,]*(?:(?:\s*[↑↓⇑⇓]\s*|\s+)\d[\d,]*)?\s*tokens/i
 const _CLAUDE_CLI_CONTEXT_RE = /^\s*(?:Context(?:\s+window)?|Token\s+limit):\s+[\d,]+\s*\/\s*[\d,]+/i
 const _CLAUDE_CLI_FOOTER_RE = /^\s*(?:Press\s+Ctrl|Enter\s+\/|Type\s+\/|Use\s+Ctrl|Tip:|Note:)/i
-const _CLAUDE_CLI_SPINNER_RE = /^\s*[◎⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+(?:Thinking|Generating|Processing|Running)\s*\.{0,3}\s*$/
+const _CLAUDE_CLI_SPINNER_RE = /^\s*[◎⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+(?:Thinking|Generating|Processing|Running)\s*(?:\.{1,3}\s*)?$/
 const _CLAUDE_CLI_TOOL_LOG_RE = /^\s*(?:>\s+Using\s+tool:|✓\s+Tool\s+result:|◎\s+Tool:)/i
 const _CLAUDE_CLI_SKIP_SUBCMDS = new Set(['install', 'update', 'doctor', 'config', 'login', 'logout'])
 
 // ---------------------------------------------------------------------------
 // Cursor
 // ---------------------------------------------------------------------------
-const _CURSOR_STARTUP_RE = /^\s*(?:Extension\s+host\s+(?:started|starting)|Extension\s+'cursor[^']*'\s+activated|Starting\s+debug\s+adapter|Opening\s+folder\s*\.*\s*$|Restoring\s+(?:windows?|session)|Reusing\s+existing\s+extension\s+host|Connection\s+(?:established|to\s+remote)|Tunnel\s+(?:connected|connecting|status))/i
+const _CURSOR_STARTUP_RE = /^\s*(?:Extension\s+host\s+(?:started|starting)|Extension\s+'cursor[^']*'\s+activated|Starting\s+debug\s+adapter|Opening\s+folder\s*(?:\.+\s*)?$|Restoring\s+(?:windows?|session)|Reusing\s+existing\s+extension\s+host|Connection\s+(?:established|to\s+remote)|Tunnel\s+(?:connected|connecting|status))/i
 const _CURSOR_TELEMETRY_RE = /^\s*(?:Telemetry\s+is\s+(?:disabled|enabled)|Crash\s+reporter|Sending\s+telemetry|Analytics:)/i
 const _CURSOR_BANNER_RE = /^\s*Cursor\s+v?\d+\.\d+/i
 
 // ---------------------------------------------------------------------------
 // Windsurf
 // ---------------------------------------------------------------------------
-const _WINDSURF_STARTUP_RE = /^\s*(?:Extension\s+host\s+(?:started|starting)|Extension\s+'\S+'\s+activated|Starting\s+debug\s+adapter|Opening\s+folder\s*\.*\s*$|Restoring\s+(?:windows?|session)|Reusing\s+existing\s+extension\s+host)/i
+const _WINDSURF_STARTUP_RE = /^\s*(?:Extension\s+host\s+(?:started|starting)|Extension\s+'\S+'\s+activated|Starting\s+debug\s+adapter|Opening\s+folder\s*(?:\.+\s*)?$|Restoring\s+(?:windows?|session)|Reusing\s+existing\s+extension\s+host)/i
 const _WINDSURF_CODEIUM_NOISE_RE = /^\s*(?:Codeium\s*(?::\s*)?(?:Activating|Activated|index(?:ing)?:?\s*loading|index\s+(?:loaded|ready)|Extension\s+loaded)|Connecting\s+to\s+Codeium\s+server|Authentication\s+status\s*:|Model\s+status\s*:|Codeium\s+(?:ready|connected|disconnected))/i
 const _WINDSURF_BANNER_RE = /^\s*Windsurf\s+v?\d+\.\d+/i
 const _WINDSURF_TELEMETRY_RE = /^\s*(?:Telemetry\s+is\s+(?:disabled|enabled)|Crash\s+reporter)/i
 const _WINDSURF_CASCADE_STATUS_RE = /^\s*(?:Cascade\s*(?::\s*)?(?:connected|disconnected|ready|connecting|starting|model\s+loaded|indexing\s+workspace|context\s+limit|[a-z]+\.{3})|Cascade\s+v?\d+|AI\s+assistant\s+(?:ready|loaded|connecting))/i
 const _WINDSURF_CASCADE_TOOL_RE = /^\s*Cascade\s+(?:is\s+)?(?:reading|writing|running|executed|modified|created|deleted)\s+/i
-const _WINDSURF_CASCADE_SPINNER_RE = /^\s*(?:Thinking|Generating|Cascade\s+is\s+thinking|Processing\s+request)\s*\.{0,3}\s*$/i
+const _WINDSURF_CASCADE_SPINNER_RE = /^\s*(?:Thinking|Generating|Cascade\s+is\s+thinking|Processing\s+request)\s*(?:\.{1,3}\s*)?$/i
 const _WINDSURF_CONTEXT_RE = /^\s*(?:Context(?:\s+window)?|Token\s+(?:usage|count))\s*:\s*[\d,]+\s*\/\s*[\d,]+/i
 const _WINDSURF_WORKSPACE_RE = /^\s*(?:Loading\s+workspace|Indexing\s+workspace|Workspace\s+(?:indexed|ready|loading)|Scanning\s+files|File\s+watcher)/i
 
@@ -101,10 +101,10 @@ const _CLINE_BANNER_RE = /^\s*(?:Cline|claude-dev)\s+v\d+\.\d+/i
 const _CLINE_TOKENS_RE = /^\s*Tokens\s*:\s*[\d,]+\s*\(/i
 const _CLINE_COST_RE = /^\s*API\s+Cost\s*:\s*\$[\d.]+/i
 const _CLINE_CONTEXT_RE = /^\s*Context\s+Window\s*:\s*[\d,]+\s*\/\s*[\d,]+\s+tokens/i
-const _CLINE_SPINNER_RE = /^\s*(?:Thinking|Processing|Streaming\s+response)\s*\.{0,3}\s*$/i
-const _CLINE_STARTUP_RE = /^\s*(?:Loading\s+workspace|Initializing\s+Cline|Starting\s+Cline)\s*\.{0,3}\s*$/i
+const _CLINE_SPINNER_RE = /^\s*(?:Thinking|Processing|Streaming\s+response)\s*(?:\.{1,3}\s*)?$/i
+const _CLINE_STARTUP_RE = /^\s*(?:Loading\s+workspace|Initializing\s+Cline|Starting\s+Cline)\s*(?:\.{1,3}\s*)?$/i
 const _CLINE_MCP_STATUS_RE = /^\s*MCP\s+Server\s+['"]?\w/i
-const _CLINE_FILE_READ_RE = /^\s*Reading\s+file\s*:\s*\S+\s*\.{0,3}\s*$/i
+const _CLINE_FILE_READ_RE = /^\s*Reading\s+file\s*:\s*\S+\s*(?:\.{1,3}\s*)?$/i
 const _CLINE_WANTS_EXECUTE_RE = /^\s*Cline\s+wants\s+to\s+(?:execute|run|write|read|create|delete|use)\s*:/i
 
 // ---------------------------------------------------------------------------

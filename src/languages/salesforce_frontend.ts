@@ -206,8 +206,8 @@ export function extractSalesforceMarkup(content: string, filePath: string): Sale
   attributeRefs(refs, markupNoComments, filePath, 'extensions', true)
 
   const actionRe = isAura
-    ? /\{!\s*c\.([A-Za-z_$][\w$]*)[^}]*\}/gi
-    : /\baction\s*=\s*["']\{!\s*(?:c\.)?([A-Za-z_$][\w$]*)[^}]*\}["']/gi
+    ? /\{!\s*c\.([A-Za-z_$][\w$]*)(?:[^}\w$][^}]*)?\}/gi
+    : /\baction\s*=\s*["']\{!\s*(?:c\.)?([A-Za-z_$][\w$]*)(?:[^}\w$][^}]*)?\}["']/gi
   for (const match of markupNoComments.matchAll(actionRe)) {
     const line = matchLine(markupNoComments, match.index ?? 0)
     refs.push(ref(filePath, match[1] ?? '', line, 0, lineContext(content, line)))
