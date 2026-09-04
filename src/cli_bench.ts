@@ -120,10 +120,34 @@ const CONTROL_FILTERS: Readonly<Record<Exclude<ControlKind, 'none'>, ToolFilter>
   destroy: new ControlFilter('control:destroy', () => ''),
 }
 
+/**
+ * Ceiling on a single corpus file. A case is captured command output, so a legitimate one runs to
+ * kilobytes; the whole shipped corpus is smaller than this cap. It exists because `--corpus` points
+ * the loader at a directory the operator names, and every file matching the layout is read whole
+ * into memory before anything validates it. Without a ceiling, one oversized or wrong-directory
+ * file is an out-of-memory kill rather than an error message, and a crash reports nothing about
+ * which file caused it.
+ */
+const MAX_BENCH_FILE_BYTES = 5 * 1024 * 1024
+
+/** Read a corpus file, refusing one too large to be a plausible case rather than loading it. */
+function readCaseFile(id: string, filePath: string, what: string): string {
+  const bytes = fs.statSync(filePath).size
+  if (bytes > MAX_BENCH_FILE_BYTES) {
+    throw new Error(
+      `bench case ${id}: ${what} is ${bytes} bytes, over the ${MAX_BENCH_FILE_BYTES}-byte limit for a corpus file (${filePath})`,
+    )
+  }
+  return fs.readFileSync(filePath, 'utf8')
+}
+
 function parseCase(id: string, metaPath: string, outputPath: string): BenchCase {
+  // Read outside the try: the size refusal below must reach the operator as itself, not be caught
+  // here and reported as malformed JSON.
+  const metaText = readCaseFile(id, metaPath, 'metadata')
   let raw: unknown
   try {
-    raw = JSON.parse(fs.readFileSync(metaPath, 'utf8'))
+    raw = JSON.parse(metaText)
   } catch (e) {
     throw new Error(`bench case ${id}: ${metaPath} is not valid JSON (${e instanceof Error ? e.message : String(e)})`, { cause: e })
   }
@@ -146,7 +170,7 @@ function parseCase(id: string, metaPath: string, outputPath: string): BenchCase 
     command: str('command'),
     exitCode: typeof exitCode === 'number' ? exitCode : 0,
     mustKeep: mustKeep as string[],
-    output: fs.readFileSync(outputPath, 'utf8'),
+    output: readCaseFile(id, outputPath, 'output'),
   }
 }
 

@@ -83,6 +83,26 @@ describe('bench corpus loading', () => {
   it('refuses an empty corpus rather than reporting a vacuous 0%', () => {
     expect(() => loadCorpus(corpus({}))).toThrow(/empty/)
   })
+
+  // `--corpus` reads every file matching the layout in a directory the operator names, whole, into
+  // memory, before anything validates it. The refusal is checked against a real oversized file on
+  // disk rather than a stubbed stat: a mocked size would pass whether or not the code ever asks the
+  // filesystem, which is exactly the thing under test.
+  it('refuses an output file too large to be a captured case, instead of loading it whole', () => {
+    const dir = corpus({ a: { meta: { provenance: 'HAND-DERIVED', command: 'git log', mustKeep: [] }, output: 'x\n' } })
+    fs.writeFileSync(path.join(dir, 'a.txt'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61))
+    expect(() => loadCorpus(dir)).toThrow(/output is \d+ bytes, over the \d+-byte limit/)
+  })
+
+  // The metadata file needs its own case: it is read inside a try that reports a parse failure, so
+  // a size refusal raised in the wrong place would surface as "not valid JSON" and send whoever hit
+  // it looking for a syntax error in a file that is merely too big.
+  it('refuses an oversized metadata file as oversized, not as malformed JSON', () => {
+    const dir = corpus({ a: { meta: { provenance: 'HAND-DERIVED', command: 'git log', mustKeep: [] }, output: 'x\n' } })
+    fs.writeFileSync(path.join(dir, 'a.json'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61))
+    expect(() => loadCorpus(dir)).toThrow(/metadata is \d+ bytes, over the \d+-byte limit/)
+    expect(() => loadCorpus(dir)).not.toThrow(/valid JSON/)
+  })
 })
 
 describe('bench measures the shipping path', () => {
