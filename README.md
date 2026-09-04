@@ -642,6 +642,10 @@ token-goat capabilities --json   # the same, for asserting on in your own pipeli
 
 Every entry names the setting that controls it and the code that enforces it, so a reviewer can open the check instead of believing the description. Setting `network.offline = true` turns off every outbound path at once, and a test in the suite fails the build if a module that can open a network connection does not consult it.
 
+Credentials are removed before anything is written to disk or handed back to the model. Nineteen built-in patterns cover the shapes with a recognisable format; `redaction.custom_patterns` takes your own expressions for an in-house token prefix or an account number, and `redaction.strict` additionally redacts long random-looking strings that match nothing known. A pattern that would not work is refused and named by `token-goat doctor` rather than quietly matching nothing.
+
+A checked-in `.token-goat.toml` cannot weaken any of this. An environment variable still can, and a repository has ways to set one, so `token-goat doctor` prints a `Security config overrides` line naming every locked setting the environment is currently deciding and the variable to unset.
+
 To remove everything, index and caches included:
 
 ```
