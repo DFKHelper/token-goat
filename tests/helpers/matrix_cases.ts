@@ -1388,6 +1388,37 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // path this process takes and isn't guaranteed to be the plain "## By Source" markdown form.
     expect(rFull.stdout.length).toBeGreaterThan(r.stdout.length)
   },
+  capabilities: () => {
+    const r = run(['capabilities'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Can send data off this machine:')
+
+    const json = run(['capabilities', '--json'])
+    expect(json.status, json.stderr).toBe(0)
+    const parsed = JSON.parse(json.stdout) as {
+      version: string
+      capabilities: Array<{ id: string; kind: string; enabled: boolean; controlledBy: string; enforcedAt: string }>
+    }
+    // Exact id set, not a count: this is what a reviewer's pipeline asserts on, so a capability
+    // that silently disappears from the report has to fail here rather than shrink a number.
+    expect(parsed.capabilities.map((c) => c.id).sort()).toEqual([
+      'at_rest.command_output_cache',
+      'at_rest.symbol_index',
+      'network.embedding_model_download',
+      'network.google_drive',
+      'network.http_fetch',
+      'network.ocr_data_download',
+      'network.screenshot',
+    ])
+    for (const c of parsed.capabilities) {
+      expect(['egress', 'at-rest']).toContain(c.kind)
+      expect(typeof c.enabled).toBe('boolean')
+      // `enforcedAt` is the whole point: a reviewer opens it. An empty string would render a
+      // confident-looking report that points nowhere.
+      expect(c.enforcedAt.length).toBeGreaterThan(0)
+      expect(c.controlledBy.length).toBeGreaterThan(0)
+    }
+  },
   doctor: () => {
     const r = run(['doctor'])
     // doctor is informational; it may exit non-zero when something is unhealthy, but it must run and print diagnostics, not be unreachable.

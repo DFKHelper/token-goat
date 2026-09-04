@@ -174,6 +174,7 @@ import { visionTokensSavedByText } from './image_shrink.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
+import { collectCapabilities, renderCapabilities } from './capabilities.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
 import {
   collectFiles,
@@ -3472,7 +3473,8 @@ function generateCompactHelp(): string {
     '  compress',
     '',
     'Config & Integration: install, uninstall, mcp-serve, mcp-status, hook,',
-    '  bridges-status, worker, statusline, version, config, config-get, help',
+    '  bridges-status, worker, statusline, version, config, config-get,',
+    '  capabilities, help',
     '',
     'Data: note, note-add, note-get, note-list, sqlite-query, sqlite-schema,',
     '  csv-profile, csv-query',
@@ -3901,6 +3903,18 @@ export function buildProgram(): Command {
       ),
     )
 
+  program
+    .command('capabilities')
+    .description('report every capability that can send data off this machine, and its current state')
+    .option('-j, --json', 'emit as JSON, for asserting on in a pipeline')
+    .action(
+      guard((opts: { json?: boolean }) => {
+        const caps = collectCapabilities()
+        // JSON is the point of this command: a reviewer asserts on it in their own CI, so the
+        // answer comes from the binary they installed rather than from documentation.
+        console.log(opts.json ? JSON.stringify({ version: VERSION, capabilities: caps }, null, 2) : renderCapabilities(caps))
+      }),
+    )
   program
     .command('doctor')
     .description('diagnose token-goat health')

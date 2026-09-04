@@ -633,6 +633,15 @@ node -e "for(let r=0;r<256;r+=32)process.stdout.write('\x1b[48;2;0;'+r+';0m  ');
 
 Dependencies carry one high advisory, reachable only from a package's own install script. The full accounting, including the override that clears it, is under [Dependency advisories](SECURITY.md#dependency-advisories).
 
+Rather than take that on trust, ask the copy you installed:
+
+```
+token-goat capabilities          # what this build can do, and whether it is on
+token-goat capabilities --json   # the same, for asserting on in your own pipeline
+```
+
+Every entry names the setting that controls it and the code that enforces it, so a reviewer can open the check instead of believing the description. Setting `network.offline = true` turns off every outbound path at once, and a test in the suite fails the build if a module that can open a network connection does not consult it.
+
 To remove everything, index and caches included:
 
 ```

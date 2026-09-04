@@ -277,7 +277,7 @@ function materializeShrunkImage(context: string | undefined): string | undefined
   try {
     pruneMaterializedShrinks();
     const buf = Buffer.from(match[2], "base64");
-    const name = \`token-goat-shrink-\${process.pid}-\${Date.now()}-\${Math.random().toString(36).slice(2)}.\${match[1]}\`;
+    const name = \`token-goat-shrink-\${process.pid}-\${Date.now()}-\${globalThis.crypto.randomUUID()}.\${match[1]}\`;
     const file = path.join(os.tmpdir(), name);
     fs.writeFileSync(file, buf);
     return file;

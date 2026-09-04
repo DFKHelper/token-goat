@@ -74,7 +74,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
     'emits a single scalar/report payload (status, counts, one number), not a listing that can be filtered to empty':
       ['doctor', 'tokens', 'budget', 'bridges-status', 'commands', 'project', 'version', 'config',
         'config-get', 'statusline', 'hint-stats', 'mcp-audit', 'mcp-status', 'waste', 'session-audit', 'bootstrap-audit',
-        'context-stats', 'baseline', 'cache-audit', 'memory'],
+        'context-stats', 'baseline', 'cache-audit', 'memory', 'capabilities'],
     'write/mutation command, not a listing': ['note-add', 'note-get', 'insert-section', 'replace',
       'install', 'uninstall', 'worker', 'worker start', 'worker status', 'worker stop', 'hook',
       'index', 'write-file', 'sharepoint-resolve', 'retrieve', 'handoff-create',
