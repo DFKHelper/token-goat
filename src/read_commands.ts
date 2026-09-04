@@ -4144,7 +4144,8 @@ export interface ImageMeta {
   height: number
   format: string | null
   bytes: number
-  sharpAvailable: boolean
+  /** Whether token-goat's image engine could read this file's header at all. Named for the fact, not for a library: nothing here is optional any more. */
+  decodable: boolean
   wouldShrink: boolean
   shrunkBytes: number | null
 }
@@ -4163,15 +4164,15 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
   try {
     probe = await probeImageMeta(data)
   } catch (e) {
-    // sharp is installed and rejected the bytes: this is a corrupt/unreadable image, not a missing
-    // dependency. Surface it as a real error rather than the "install sharp" notice at exit 0.
+    // The engine read the header and rejected the bytes: a corrupt or truncated image, which is a
+    // real error rather than the "cannot read this format" notice at exit 0.
     if (e instanceof ImageDecodeError) {
       throw new Error(`${file} is not a readable image: ${e.message}`, { cause: e })
     }
     throw e
   }
   if (probe === null) {
-    return { width: 0, height: 0, format: null, bytes, sharpAvailable: false, wouldShrink: false, shrunkBytes: null }
+    return { width: 0, height: 0, format: null, bytes, decodable: false, wouldShrink: false, shrunkBytes: null }
   }
   const shrink = await shrinkImage(data, { sizeThresholdBytes: 0 })
   return {
@@ -4179,7 +4180,7 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
     height: probe.height,
     format: probe.format,
     bytes,
-    sharpAvailable: true,
+    decodable: true,
     wouldShrink: shrink !== null,
     shrunkBytes: shrink !== null ? shrink.shrunkBytes : null,
   }

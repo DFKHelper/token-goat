@@ -150,7 +150,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Manifest git-history section loses signal on clean main | Inline git diffs + skip git log when on clean main branch; session-awareness improves manifest hygiene |
 | Skill body lost after compaction but recovery too verbose | Recovery hint deduped skills by content_sha (same skill loaded twice = one entry); inline skill checklist |
 | Recovery hints omit critical paths when space is tight | Skip bash snippet when recall available |
-| AVIF format not supported despite better compression | AVIF image-shrink via sharp (when libvips is built with libaom); WebP fallback; codec auto-detection in docker |
+| AVIF format not supported despite better compression | Still open. The image engine is pure TypeScript and decodes PNG, JPEG, GIF, and BMP; AVIF would need a decoder written, and an AVIF file is passed through untouched today |
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
 | Hook crash leaves agent waiting for response | Every way the shim can fail prints `{}` and exits 0, leaving the tool call to proceed untouched: an event name it does not know, stdin it cannot read or parse, an in-process load that throws, a token-goat child that exits non-zero or prints nothing, and a catch around the whole run |
 | Concurrent edits lose update counts mid-session | Session CAS + mtime-based retry prevent lost edits in manifest |
@@ -188,13 +188,13 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 
 | Source | Improvement | Measured impact | Where |
 |--------|-------------|-----------------|-------|
-| Image shrink | WebP encoder beats JPEG on screenshot-shaped images | ~39% smaller than the same image at JPEG quality 85 | `src/image_shrink.ts` (codec selection) |
+| Image shrink | Every still is encoded both ways and the smaller file wins, rather than one codec being assumed | 2560x1440 screenshot-shaped PNG: 2,782,963 -> 259,475 bytes (91% smaller) | `src/image_shrink.ts` (codec selection) |
 | Repomap output | `--compact` trims the top-symbols list to 10 (vs 30) and drops the recent-files section and per-symbol locations | Denser overview for the same byte budget | `src/baseline.ts` (`buildProjectMap`, `token-goat map --compact`) |
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
 | Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `src/hooks_cli.ts` |
 | Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `src/parser.ts` (TypeScript adapter) |
 | Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `src/parser.ts` (Markdown adapter) |
-| Image cache | Repeat Read of an unchanged image serves the stored re-encode, keyed on path + size + mtime, instead of running `sharp` again | Skips the re-encode entirely on a hit; the same bytes reach the model, so the reported saving is identical either way | `src/image_shrink.ts` (`findCachedShrink`) |
+| Image cache | Repeat Read of an unchanged image serves the stored re-encode, keyed on path + size + mtime, instead of re-encoding it again | Skips the re-encode entirely on a hit; the same bytes reach the model, so the reported saving is identical either way | `src/image_shrink.ts` (`findCachedShrink`) |
 | Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `src/config.ts` defaults |
 | Miss suggestions | `read` / `section` print "Did you mean…?" on a miss; `section` also auto-redirects on an unambiguous heading-prefix match | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `src/read_commands.ts` |
 
@@ -208,14 +208,17 @@ Concrete before/after for the four interception points. Token counts use the ~4-
 $ ls -lh screenshot.png
 -rw-r--r-- 1 user user 1.2M screenshot.png
 
-# Without token-goat: Claude reads the 1.2 MB PNG.
-# With token-goat: hook re-encodes as WebP and substitutes the cached copy.
+# Without token-goat: Claude reads the whole PNG.
+# With token-goat: the pre-read hook substitutes a downscaled re-encode.
 
-$ token-goat image-shrink screenshot.png
-out: ~74 KB WebP   (94% smaller)
+$ token-goat image-meta screenshot.png
+Dimensions: 2560x1440
+Format: png
+Size: 2782963 bytes
+Shrink: would save 2523488 bytes (2782963 -> 259475)
 ```
 
-The same image at JPEG quality 85 lands around 120 KB. WebP wins by another ~39% on screenshot-shaped content (large flat regions, sharp text edges).
+`image-meta` reports what the hook would do without doing it. The 91% here is one measurement on one screenshot-shaped image; run it on your own to get yours.
 
 ### 2. Surgical read — one function, not the whole file
 
@@ -297,7 +300,7 @@ For recurring scheduler loops, the 25th, 100th, and 250th observed delivery in a
 ```
 npm install -g token-goat
 token-goat install
-token-goat doctor          # confirms hooks and sharp are working; look for "sharp: ok"
+token-goat doctor          # confirms hooks are wired; reports any failure it finds
 ```
 
 Three commands. Hooks register and start working immediately: no terminal popups, no tray icon, no service to babysit. That wires up Claude Code; other agent CLIs are added with a flag (`--codex`, `--copilot`, and siblings).
@@ -456,52 +459,15 @@ A working install returns `["PreToolUse", "PostToolUse", "PreCompact"]`. Any mis
 
 Vision models bill by pixel dimensions, not file size. Anthropic charges one token per 28×28-pixel patch of a Claude image (`⌈width/28⌉ × ⌈height/28⌉` visual tokens, per the [Claude vision docs](https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size)), OpenAI's GPT-5.6 models tile in 32×32-pixel patches with a 1.2x multiplier on top, and Gemini charges a flat 258 tokens under 384×384 pixels and roughly 258 tokens per 768×768 tile above that. A heavily compressed screenshot can still decode to a large pixel count, so a small file on disk is no guarantee of a cheap read.
 
-Token-goat shrinks an image before it reaches the model whenever either of two independent checks trips: the file is at or above 512 KB, or its longest edge exceeds 1568 pixels (`src/image_shrink.ts`). The byte check is a cheap pre-filter that skips decoding most images outright. The dimension check exists because the byte check alone misses a case: a flat-color screenshot can compress to a few hundred kilobytes on disk and still decode to a resolution well past 1568 pixels on its long edge, and vision models bill on that decoded resolution, not the compressed file. Either trigger routes the image through the same pipeline: downscale to a 1568px long edge and re-encode as WebP. The pipeline uses [`sharp`](https://sharp.pixelplumbing.com/), a Node.js image processing library that ships prebuilt native binaries for Windows, macOS, Linux, and Alpine.
+Token-goat shrinks an image before it reaches the model whenever either of two independent checks trips: the file is at or above 512 KB, or its longest edge exceeds 1568 pixels (`src/image_shrink.ts`). The byte check is a cheap pre-filter that skips decoding most images outright. The dimension check exists because the byte check alone misses a case: a flat-color screenshot can compress to a few hundred kilobytes on disk and still decode to a resolution well past 1568 pixels on its long edge, and vision models bill on that decoded resolution, not the compressed file. Either trigger routes the image through the same pipeline: downscale to a 1568px long edge and re-encode. A still is encoded as both JPEG and PNG and the smaller one is kept; an animated GIF stays a GIF, resized frame by frame. If the result is not smaller than the file it came from, token-goat passes the original through unchanged rather than substituting a worse copy.
 
 How much this saves depends on the model, because Claude downscales an oversized image itself before billing and caps the cost rather than charging for every pixel it was sent. By the [published per-tier table](https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size), a 3840x2160 screenshot bills at 4784 visual tokens on Claude 4.7 and later, and 1560 on earlier models. Resizing it to a 1568px long edge first costs 1792 tokens: a 63% cut against the newer models, and nothing against the older ones, whose own cap is already tighter than what this pipeline produces. Other vendors cap differently, so treat 63% as the measured Claude figure rather than a universal rate.
 
 Two cases are not about cost at all. Screenshots returned to the computer-use and browser-use toolsets are rejected outright when they exceed the model's limits, rather than downscaled, so resizing before the call is what lets it succeed. A request carrying more than 20 images also applies a stricter per-image dimension limit to every image in it, which a 1568px long edge already satisfies.
 
-On most platforms, `npm install -g token-goat` installs sharp without additional steps. npm pulls a prebuilt binary keyed to your Node.js major version and OS — no C++ compiler, libvips, or system codec libraries required.
+The pipeline is written in TypeScript and decodes PNG, JPEG, GIF, and BMP itself, so there is nothing to install and nothing to build: no native binary, no C++ compiler, no libvips, no system codec libraries, and no platform where it is unavailable. `token-goat doctor` has no image line to check because there is no image dependency that can fail.
 
-Quick check (any platform):
-
-```
-token-goat doctor
-```
-
-If the `sharp` line shows `OK`, you're done.
-
-### Image support — troubleshooting
-
-If `token-goat doctor` reports `sharp: FAIL`, the most common cause is a cached binary built against a different Node.js version. A fresh install usually fixes it:
-
-```bash
-npm install -g token-goat@latest
-token-goat doctor
-```
-
-On Alpine Linux, some ARM boards, and air-gapped environments, npm can't fetch a prebuilt binary and falls back to compiling from source. That requires `libvips` and C++ build tools:
-
-```bash
-# Debian / Ubuntu / WSL
-sudo apt-get install -y libvips-dev build-essential
-
-# Alpine
-apk add --no-cache vips-dev build-base python3
-
-# Fedora / RHEL
-sudo dnf install -y vips-devel gcc-c++ make
-```
-
-After installing the system packages:
-
-```bash
-npm install -g token-goat@latest
-token-goat doctor
-```
-
-For platform-specific build details, see the [sharp installation docs](https://sharp.pixelplumbing.com/install).
+The one thing the decoders will do is decline. A file whose header asks for more than 256 MB of pixel buffer, or that is in a variant token-goat cannot read exactly, is refused rather than guessed at, and the untouched original goes to the model. An untouched original is the right picture, so the only cost of a refusal is that the read is not shrunk.
 
 ## Stats display
 

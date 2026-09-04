@@ -47,7 +47,7 @@ describe('image-meta pure JS engine without sharp', () => {
     expect(meta.width).toBe(10)
     expect(meta.height).toBe(20)
     expect(meta.format).toBe('png')
-    expect(meta.sharpAvailable).toBe(true)
+    expect(meta.decodable).toBe(true)
   })
 
   it('the image-meta CLI command prints valid dimensions without sharp', async () => {

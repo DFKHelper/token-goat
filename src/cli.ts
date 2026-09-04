@@ -1529,10 +1529,13 @@ async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
 
 async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
   const meta = await runImageMeta(file)
-  if (!meta.sharpAvailable) {
-    const msg = 'image-meta unavailable (install sharp to use this feature)'
+  if (!meta.decodable) {
+    // Not a dependency notice. The image pipeline has no optional decoder to install since the move
+    // to the pure-TypeScript engine, so the only thing this can mean is that the bytes are not a
+    // format token-goat reads -- "install sharp" sent people to fix something that was not broken.
+    const msg = 'image-meta unavailable (not a format token-goat can read)'
     const text = opts.json === true
-      ? JSON.stringify({ bytes: meta.bytes, sharpAvailable: false, error: msg }, null, 2)
+      ? JSON.stringify({ bytes: meta.bytes, decodable: false, error: msg }, null, 2)
       : `Size: ${meta.bytes} bytes\n${msg}`
     out(text)
     return
