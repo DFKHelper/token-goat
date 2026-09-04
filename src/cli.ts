@@ -209,6 +209,7 @@ import { auditSessionCorpus, formatSessionAudit } from './session_audit.js'
 import { runMcpAuditCommand } from './cli_mcp_audit.js'
 import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
+import { runBenchCommand } from './cli_bench.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
 import { isHintCategory } from './hint_stats.js'
 import { runStatuslineCommand } from './cli_statusline.js'
@@ -3470,7 +3471,7 @@ function generateCompactHelp(): string {
     '',
     'Compression: compress-text, retrieve, handoff-create, handoff-resolve,',
     '  compress, recall, bash-output, web-output, mcp-output, compress-text,',
-    '  compress',
+    '  compress, bench',
     '',
     'Config & Integration: install, uninstall, mcp-serve, mcp-status, hook,',
     '  bridges-status, worker, statusline, version, config, config-get,',
@@ -3790,6 +3791,24 @@ export function buildProgram(): Command {
     .command('mcp-serve')
     .description('run token-goat as an MCP stdio server exposing surgical reads and local compression/handoff tools')
     .action(guard(cmdMcpServe))
+
+  program
+    .command('bench')
+    .description('replay a corpus of captured command output through the compressors; prints the byte savings ratio and a fidelity check, and exits 1 when a must-keep line was dropped')
+    .option('--corpus <dir>', 'corpus directory (default: tests/fixtures/bench, relative to the working directory)')
+    .option('--tsv <path>', 'append one result row, keyed by the current commit, creating the file and its header if absent')
+    .option('--validate', 'score the corpus with control filters instead: proves the ratio has a floor and the fidelity guard can actually fail')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { corpus?: string; tsv?: string; validate?: boolean; json?: boolean }) =>
+      runExitText(() =>
+        runBenchCommand({
+          corpus: opts.corpus ?? path.join('tests', 'fixtures', 'bench'),
+          ...(opts.tsv !== undefined ? { tsv: opts.tsv } : {}),
+          ...(opts.validate === true ? { validate: true } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
 
   program
     .command('compress-text [text]')

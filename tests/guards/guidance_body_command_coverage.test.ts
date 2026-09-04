@@ -179,6 +179,9 @@ const OMISSIONS: readonly Omission[] = [
   // commands query, and its ordinary trigger is the session-start hook rather than a decision made
   // mid-task.
   { command: 'reconcile', reason: LIFECYCLE_REASON },
+  // `bench` scores the shell-output compressors against a fixed fixture corpus. It answers "did
+  // this change help?" for someone editing token-goat, and no agent read can be routed to it.
+  { command: 'bench', reason: "measures token-goat's own compression against a fixture corpus -- a development instrument, never an alternative to reading a file" },
 ]
 
 describe('guidance body command coverage', () => {

@@ -68,7 +68,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
         'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'openapi-op', 'openapi-outline',
         'sqlite-query', 'sqlite-schema', 'coverage-report-gaps', 'transcript',
         'transcript-outline', 'video-chapters', 'logfold', 'trace', 'todo', 'lockdeps',
-        'gdrive-sections', 'dep-docs', 'compress', 'compress-text', 'pack'],
+        'gdrive-sections', 'dep-docs', 'compress', 'compress-text', 'pack', 'bench'],
     'parent command with no output of its own -- every leaf is a subcommand classified separately':
       ['note'],
     'emits a single scalar/report payload (status, counts, one number), not a listing that can be filtered to empty':

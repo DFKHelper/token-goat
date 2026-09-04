@@ -3,10 +3,11 @@
 // `TOOL_FILTERS` is the ordered registry every per-tool filter joins as the batched port proceeds (test-runners, package-managers, linters, ...). Order matters: more specific filters must precede the generic package-manager handlers they overlap with — each batch documents its placement.
 
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
+import { resolveMinNetSavingsBytes } from './base.js'
 import { resolveIndexPath } from '../paths.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
-import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
+import { REDIRECT_TOKEN_RE, combineStreams, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
 import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS } from './ci.js'
@@ -325,6 +326,49 @@ export function compressOutput(
   const applyOpts: ApplyOptions = { maxLines: effectiveMaxLines, skipProgress }
   if (opts.maxBytes !== undefined) applyOpts.maxBytes = opts.maxBytes
   return filter.apply(stdout, stderr, exitCode, argv, applyOpts)
+}
+
+/**
+ * What a caller actually delivers after {@link compressOutput}, split into the
+ * pieces so each caller can assemble its own body.
+ */
+export interface DeliveredCompression {
+  /** True when the rewrite cleared the net-benefit floor and the compressed body ships. */
+  readonly applied: boolean
+  /** The body without the marker: the compressed text, or the original streams when the floor was not cleared. */
+  readonly text: string
+  /** The trailing compression marker, or `''` when nothing was applied. */
+  readonly marker: string
+  /** The underlying measurement, for stats and reporting. */
+  readonly compressed: CompressedOutput
+}
+
+/**
+ * The single definition of "what does the model actually receive for this command".
+ *
+ * A rewrite whose savings do not clear the marker's own byte cost plus the configured
+ * floor destabilises the bytes for too small a gain, so below the floor the ORIGINAL
+ * streams ship untouched with no marker -- exactly as though no filter had matched.
+ *
+ * Callers assemble `text + marker` themselves rather than receiving a finished body,
+ * because the runner caps tokens BETWEEN the two so the savings marker survives
+ * truncation. Anything measuring delivery (see `token-goat bench`) must go through
+ * here rather than re-deriving the gate, or the measurement can disagree with what ships.
+ */
+export function deliverCompressed(
+  filter: ToolFilter,
+  stdout: string,
+  stderr: string,
+  exitCode: number,
+  argv: string[],
+  opts: CompressOptions = {},
+): DeliveredCompression {
+  const compressed = compressOutput(filter, stdout, stderr, exitCode, argv, opts)
+  const minNet = resolveMinNetSavingsBytes()
+  const applied = compressed.worthApplying(minNet)
+  const text = applied ? compressed.text : combineStreams(stdout, stderr)
+  const marker = applied ? compressed.withMarker(minNet).slice(compressed.text.length) : ''
+  return { applied, text, marker, compressed }
 }
 
 /**
