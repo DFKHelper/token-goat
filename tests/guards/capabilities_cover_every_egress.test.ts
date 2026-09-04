@@ -57,9 +57,17 @@ const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 
  * and both static and dynamic import syntax are matched.
  */
 const NET_MODULE = String.raw`(?:node:)?(?:https?|http2|net|tls|dns|dgram)`
+const NET_PACKAGE = String.raw`(?:undici|axios|node-fetch|ws|got|superagent)`
+// Any of the three ways a module specifier can be quoted. The first version of this accepted only
+// the single-quoted form, which is the style this repo happens to use -- so it would have gone on
+// reporting a clean inventory the first time anyone ran a formatter with different settings, or
+// pasted in a file from somewhere else.
+const Q = String.raw`['"\`]`
 const NETWORK_IMPORT = new RegExp(
-  String.raw`from\s+'${NET_MODULE}'|require\(\s*'${NET_MODULE}'\s*\)|import\(\s*'${NET_MODULE}'\s*\)` +
-    String.raw`|from\s+'(?:undici|axios|node-fetch|ws|got|superagent)'`,
+  String.raw`from\s+${Q}${NET_MODULE}${Q}` +
+    String.raw`|require\(\s*${Q}${NET_MODULE}${Q}\s*\)` +
+    String.raw`|import\(\s*${Q}${NET_MODULE}${Q}\s*\)` +
+    String.raw`|from\s+${Q}${NET_PACKAGE}${Q}`,
 )
 
 /**
@@ -72,6 +80,9 @@ const NETWORK_IMPORT = new RegExp(
  * failure someone has to look at; under-matching is a network path nobody sees.
  */
 const GLOBAL_FETCH = /(?<!\w)fetch\s*\(/
+// Two more ways to open a connection from the same runtime, neither of which goes through
+// `fetch`. Node has shipped a global `WebSocket` since 22, and `EventSource` since 22.3.
+const GLOBAL_STREAM = /(?<![\w.])new\s+(?:WebSocket|EventSource)\s*\(/
 const OFFLINE_GATE = /loadConfig\(\)\.network\.offline/
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -88,9 +99,11 @@ function code(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
-    .replace(/`(?:[^`\\]|\\[\s\S])*`/g, '``')
+    .replace(/`(?:[^`\\]|\\[\s\S])*`/g, (m) => (NETWORK_IMPORT.test(`from ${m}`) ? m : '``'))
     .replace(/'(?:[^'\\\n]|\\.)*'/g, (m) => (NETWORK_IMPORT.test(`from ${m}`) ? m : "''"))
-    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    // The same exemption a single-quoted specifier gets. Blanking a double-quoted one would make
+    // `import https from "node:https"` invisible to the detector that reads this output.
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, (m) => (NETWORK_IMPORT.test(`from ${m}`) ? m : '""'))
 }
 
 describe('the capability inventory', () => {
@@ -105,6 +118,11 @@ describe('the capability inventory', () => {
    *
    * HAND-DERIVED from Node's own module names and each client's documented import path. Every entry
    * was added because an adversarial review showed the previous regexes did not match it.
+   *
+   * Every case in the first version of this list was single-quoted, which is the style this repo
+   * writes. A fixture that only exercises the house style cannot fail on a detector that only
+   * accepts the house style: the two agree by construction. The double-quoted and backtick-quoted
+   * cases below exist to break that agreement.
    */
   it.each([
     ["a dynamic import, the idiom this repo uses most", "await import('node:https')"],
@@ -115,8 +133,34 @@ describe('the capability inventory', () => {
     ['undici', "import { request } from 'undici'"],
     ['axios', "import axios from 'axios'"],
     ['ws', "import WebSocket from 'ws'"],
+    ['a double-quoted specifier', 'import https from "node:https"'],
+    ['a double-quoted require', 'const net = require("net")'],
+    ['a double-quoted dynamic import', 'await import("node:dns")'],
+    ['a backtick-quoted dynamic import', "await import(`node:http2`)"],
+    ['a double-quoted third-party client', 'import axios from "axios"'],
   ])('detects %s', (_label, line) => {
     expect(NETWORK_IMPORT.test(line), `NETWORK_IMPORT does not match: ${line}`).toBe(true)
+  })
+
+  it.each([
+    ['an ordinary local module', "import { loadConfig } from './config.js'"],
+    ['a double-quoted local module', 'import { loadConfig } from "./config.js"'],
+    ['a module whose name merely contains one', "import { x } from 'node:https-helper-thing'"],
+  ])('does not match %s', (_label, line) => {
+    expect(NETWORK_IMPORT.test(line), `NETWORK_IMPORT matched something harmless: ${line}`).toBe(false)
+  })
+
+  // Node ships both of these as globals now, and neither goes through `fetch`. HAND-DERIVED from
+  // the WHATWG constructor signatures.
+  it.each([
+    ['a WebSocket', "const s = new WebSocket('wss://example.com')"],
+    ['an EventSource', "const s = new EventSource('https://example.com/stream')"],
+  ])('detects %s', (_label, line) => {
+    expect(GLOBAL_STREAM.test(line), `GLOBAL_STREAM does not match: ${line}`).toBe(true)
+  })
+
+  it('does not treat a method named the same way as a global constructor', () => {
+    expect(GLOBAL_STREAM.test('const s = new pool.WebSocket(url)')).toBe(false)
   })
 
   it.each([
@@ -145,7 +189,7 @@ describe('the capability inventory', () => {
     const found = new Set<string>()
     for (const file of modules) {
       const c = code(fs.readFileSync(file, 'utf8'))
-      if (NETWORK_IMPORT.test(c) || GLOBAL_FETCH.test(c) || OFFLINE_GATE.test(c)) found.add(path.relative(srcDir, file).split(path.sep).join('/'))
+      if (NETWORK_IMPORT.test(c) || GLOBAL_FETCH.test(c) || GLOBAL_STREAM.test(c) || OFFLINE_GATE.test(c)) found.add(path.relative(srcDir, file).split(path.sep).join('/'))
     }
 
     // A detector that matches nothing would make every assertion below pass. This repo has shipped

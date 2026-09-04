@@ -270,6 +270,10 @@ const METADATA_HOSTNAMES: ReadonlySet<string> = new Set([
   'metadata',
   // Alibaba Cloud's equivalent of 169.254.169.254.
   '100.100.100.200',
+  // EC2 resolves both of these to 169.254.169.254 inside a VPC, and neither is a dotted quad, so
+  // the link-local test below never sees them.
+  'instance-data',
+  'instance-data.ec2.internal',
 ])
 const METADATA_IPV6: ReadonlySet<string> = new Set(['fd00:ec2::254', '[fd00:ec2::254]'])
 
@@ -291,7 +295,9 @@ const METADATA_IPV6: ReadonlySet<string> = new Set(['fd00:ec2::254', '[fd00:ec2:
  * `[::ffff:a9fe:a9fe]`, which matches no dotted-quad pattern and no name. So the address is parsed
  * and any embedded IPv4 is decoded before it is classified, through {@link parseIpv6Groups} -- the
  * same parser `screenshot.ts` uses, imported rather than reimplemented, because a second
- * hand-rolled copy of this classification is exactly how the gap arose.
+ * hand-rolled copy of this classification is exactly how the gap arose. A second review then found
+ * the decode was written as a list of three named encodings and there are more than three, so it
+ * reads the positions an IPv4 address can occupy instead ({@link embeddedIpv4Candidates}).
  *
  * What this cannot do, stated because the limit matters more than the check: the test is on the
  * address as written. A *name* that resolves into 169.254.0.0/16 is not caught, and neither is a
@@ -316,8 +322,7 @@ export function metadataEndpointRefusal(url: string): string | null {
   if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) {
     return `URL is a link-local address (${host}), where cloud metadata services answer`
   }
-  const embedded = embeddedIpv4InIpv6(host)
-  if (embedded !== null && embedded[0] === 169 && embedded[1] === 254) {
+  if (embeddedIpv4Candidates(host).some(([a, b]) => a === 169 && b === 254)) {
     return `URL is a link-local address written as IPv6 (${host}), where cloud metadata services answer`
   }
   return null
@@ -331,15 +336,38 @@ export function metadataEndpointRefusal(url: string): string | null {
  * whose low 32 bits a NAT64 gateway translates straight back out. Each spells the same destination
  * differently, so each has to be decoded before the address is judged rather than after.
  */
-function embeddedIpv4InIpv6(host: string): [number, number, number, number] | null {
+/**
+ * Every IPv4 address an IPv6 address could be carrying, as four-byte tuples.
+ *
+ * The first version of this named three encodings -- IPv4-mapped, IPv4-compatible and the
+ * well-known NAT64 prefix -- and a review pointed out that naming encodings is the same mistake in a
+ * smaller box. `::ffff:0:a9fe:a9fe` is the translated form from RFC 2765, `64:ff9b:1::` is the
+ * local-use NAT64 prefix from RFC 8215, and `2002::` is 6to4, which puts the IPv4 address somewhere
+ * else entirely. Each would have needed its own clause, and the next one would have needed the one
+ * after that.
+ *
+ * So this reads positions rather than prefixes. The last two groups are where all the
+ * prefix-and-suffix encodings put the address, whatever the prefix is, and 6to4 puts it in the two
+ * groups after the first. Both are returned and the caller checks both.
+ *
+ * The cost of reading a position rather than matching a prefix is that an ordinary IPv6 address
+ * whose last four bytes happen to spell 169.254.x.x is refused too. That address is
+ * `something::a9fe:xxxx`, it is not a shape anything allocates, and refusing it costs a fetch that
+ * was never going to happen. The alternative cost -- one more encoding nobody enumerated reaching
+ * the credential endpoint -- is the one this exists to prevent.
+ */
+function embeddedIpv4Candidates(host: string): [number, number, number, number][] {
   const groups = parseIpv6Groups(host.replace(/^\[/, '').replace(/\]$/, ''))
-  if (groups === null) return null
+  if (groups === null) return []
 
-  const mapped = groups.slice(0, 5).every((g) => g === 0) && (groups[5] === 0xffff || groups[5] === 0)
-  const nat64 = groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)
-  if (!mapped && !nat64) return null
-
-  const hi = groups[6] ?? 0
-  const lo = groups[7] ?? 0
-  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]
+  const split = (hi: number, lo: number): [number, number, number, number] => [
+    hi >> 8,
+    hi & 0xff,
+    lo >> 8,
+    lo & 0xff,
+  ]
+  const out: [number, number, number, number][] = [split(groups[6] ?? 0, groups[7] ?? 0)]
+  // 6to4: the IPv4 address sits in the two groups directly after the 2002 prefix.
+  if (groups[0] === 0x2002) out.push(split(groups[1] ?? 0, groups[2] ?? 0))
+  return out
 }
