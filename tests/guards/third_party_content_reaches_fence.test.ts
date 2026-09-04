@@ -237,6 +237,33 @@ function calleeNames(body: string): string[] {
 
 /** True when `fn`'s body, or any locally-defined function reachable from it by same-file calls,
  * satisfies `predicate`. */
+/**
+ * A function body with comments and string/template literals removed, so that *naming* one of
+ * these functions is not mistaken for *calling* it.
+ *
+ * This is not cosmetic, and it is wrong in both directions without it. A doc comment or a
+ * `'file.ts::fetchDoc (...)'` pointer string makes the source scan report a function that reads
+ * nothing -- noisy but visible. The dangerous direction is the other one: `callsFence` matches on
+ * a bare substring, so a comment that merely mentions `fenceUntrustedContent` marks its function
+ * as fenced, and the guard then reports green about a function that never fences anything. A call
+ * can never live inside a literal or a comment, so removing them cannot hide a real one.
+ */
+const codeCache = new Map<string, string>()
+function codeOnly(body: string): string {
+  const hit = codeCache.get(body)
+  if (hit !== undefined) return hit
+  // Order matters: comments first, then literals, matching the helper in
+  // capabilities_cover_every_egress.test.ts so both guards strip the same way.
+  const stripped = body
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/^\s*\/\/.*$/gm, ' ')
+    .replace(/`(?:[^`\\]|\\[\s\S])*`/g, '``')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+  codeCache.set(body, stripped)
+  return stripped
+}
+
 function reaches(fn: FnInfo, byName: Map<string, string>, predicate: (body: string) => boolean): boolean {
   const visited = new Set<string>()
   const stack: string[] = [fn.name]
@@ -244,8 +271,9 @@ function reaches(fn: FnInfo, byName: Map<string, string>, predicate: (body: stri
     const name = stack.pop()!
     if (visited.has(name)) continue
     visited.add(name)
-    const body = byName.get(name)
-    if (body === undefined) continue
+    const raw = byName.get(name)
+    if (raw === undefined) continue
+    const body = codeOnly(raw)
     if (predicate(body)) return true
     for (const callee of calleeNames(body)) {
       if (!visited.has(callee) && byName.has(callee)) stack.push(callee)
@@ -333,6 +361,33 @@ describe('every function that reaches third-party content also reaches the fence
         'attacker-authored text they read reaches the model unfenced: ' +
         violations.map((v) => `${v.file}::${v.fn}`).join(', '),
     ).toEqual([])
+  })
+
+  /**
+   * A comment is not a call, in either direction.
+   *
+   * PROVENANCE
+   *
+   * HAND-DERIVED, and both cases are real defects this guard had. `callsFence` matches a bare
+   * substring, so a doc comment reading `fenceUntrustedContent(text)` used to vouch for a function
+   * that never called it -- the guard reported green about exactly the code it exists to catch.
+   * The source scan had the mirror-image bug: `capabilities.ts` names `fetchDoc` inside a string
+   * that points a reviewer at the file, and was reported as reading a Google Doc.
+   */
+  it('does not let a mention of a fence, or of a source, stand in for calling one', () => {
+    const commentVouching = '{\n  // Callers must run fenceUntrustedContent(text) on this.\n  const t = fetchDoc(id)\n}'
+    expect(callsFence(codeOnly(commentVouching)), 'a comment naming the fence marked the body as fenced').toBe(false)
+
+    const pointerString = "{\n  const at = 'src/gdrive.ts::fetchDoc (gate lives in webfetch.ts)'\n  return at\n}"
+    expect(
+      /\bfetchDoc\s*\(/.test(codeOnly(pointerString)),
+      'a documentation string naming fetchDoc was read as a call to it',
+    ).toBe(false)
+
+    // The stripping must not be so eager that it hides the real thing it is looking for.
+    const realCall = '{\n  const t = fetchDoc(id)\n  return fenceUntrustedContent(t)\n}'
+    expect(/\bfetchDoc\s*\(/.test(codeOnly(realCall)), 'stripping removed a real call').toBe(true)
+    expect(callsFence(codeOnly(realCall)), 'stripping removed a real fence').toBe(true)
   })
 
   it('has no fence that a zero-match early return can skip', () => {
