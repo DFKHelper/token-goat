@@ -42,6 +42,8 @@
  * 0.5 ms and 1.9 ms. Keep quantifiers inside a lookbehind bounded.
  */
 
+import { loadConfig, type Config } from './config.js'
+
 const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // Anthropic keys share OpenAI's "sk-" prefix but are more specific ("sk-ant-"), so they're matched first — the generic OpenAI pattern's negative lookahead below is defense in depth, not the sole guard.
   ['anthropic_api_key', /sk-ant-[A-Za-z0-9_-]{20,}/g],
@@ -119,7 +121,132 @@ export function countRedactionPlaceholders(text: string): number {
   return text.match(/\[REDACTED:[a-z0-9_]+\]/g)?.length ?? 0
 }
 
-export function redactSecrets(text: string): RedactResult {
+/**
+ * The most patterns a `redaction.custom_patterns` list may contain, and the longest any one of
+ * them may be.
+ *
+ * These are not security limits -- the patterns come from the machine's own config file, so
+ * somebody able to set them can already do worse. They bound the cost of a mistake: this runs over
+ * every command output, and one accidentally pasted 50 KB regex, or a list grown to thousands of
+ * entries by a generator, turns a redaction pass into a visible stall with no obvious cause.
+ */
+const MAX_CUSTOM_PATTERNS = 64
+const MAX_CUSTOM_PATTERN_LENGTH = 512
+
+export interface CustomPatternProblem {
+  readonly pattern: string
+  readonly reason: string
+}
+
+/** Compiled custom patterns plus whatever was rejected, memoised on the exact source list. */
+let customCache: { key: string; patterns: RegExp[]; problems: CustomPatternProblem[] } | null = null
+
+/**
+ * Compile `redaction.custom_patterns`, reporting what failed rather than throwing.
+ *
+ * A bad regex in a config file must not take down every command that produces output, and it must
+ * not vanish silently either -- a redaction rule the operator believes is running, but is not, is
+ * worse than no rule at all, because it is invisible. So an entry that does not compile is skipped
+ * and returned in `problems`, which `token-goat doctor` surfaces.
+ */
+export function compileCustomPatterns(sources: readonly string[]): {
+  patterns: RegExp[]
+  problems: CustomPatternProblem[]
+} {
+  const key = JSON.stringify(sources)
+  if (customCache !== null && customCache.key === key) {
+    return { patterns: customCache.patterns, problems: customCache.problems }
+  }
+
+  const patterns: RegExp[] = []
+  const problems: CustomPatternProblem[] = []
+  for (const raw of sources.slice(0, MAX_CUSTOM_PATTERNS)) {
+    const source = raw.trim()
+    if (source.length === 0) continue
+    if (source.length > MAX_CUSTOM_PATTERN_LENGTH) {
+      problems.push({ pattern: source.slice(0, 60), reason: `longer than ${MAX_CUSTOM_PATTERN_LENGTH} characters` })
+      continue
+    }
+    try {
+      patterns.push(new RegExp(source, 'g'))
+    } catch (e) {
+      problems.push({ pattern: source, reason: e instanceof Error ? e.message : 'is not a valid regular expression' })
+    }
+  }
+  if (sources.length > MAX_CUSTOM_PATTERNS) {
+    problems.push({
+      pattern: `(${sources.length} entries)`,
+      reason: `only the first ${MAX_CUSTOM_PATTERNS} custom patterns are used`,
+    })
+  }
+
+  customCache = { key, patterns, problems }
+  return { patterns, problems }
+}
+
+/**
+ * A run long enough, and varied enough, to be worth testing for randomness.
+ *
+ * Deliberately not anchored to any credential format: strict mode exists for the credentials whose
+ * format we do not know.
+ *
+ * `=` is accepted only as trailing padding, never inside the run. Allowing it in the body let a
+ * match run backwards through `TOKEN=` and redact the label along with the value, which loses the
+ * one piece of context an operator reading the output actually needs.
+ */
+const STRICT_CANDIDATE = /[A-Za-z0-9+/_-]{24,}={0,2}/g
+
+/** Shannon entropy in bits per character. */
+function entropyBitsPerChar(s: string): number {
+  const counts = new Map<string, number>()
+  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1)
+  let bits = 0
+  for (const n of counts.values()) {
+    const p = n / s.length
+    bits -= p * Math.log2(p)
+  }
+  return bits
+}
+
+/** How many of {lowercase, uppercase, digit, symbol} a string draws on. */
+function characterClasses(s: string): number {
+  let n = 0
+  if (/[a-z]/.test(s)) n++
+  if (/[A-Z]/.test(s)) n++
+  if (/[0-9]/.test(s)) n++
+  if (/[+/=_-]/.test(s)) n++
+  return n
+}
+
+/**
+ * Whether a candidate run looks like credential material rather than ordinary output.
+ *
+ * Three conditions, and the character-class count is the one doing most of the work. Entropy alone
+ * is a poor discriminator at this length: a 24-character string of distinct characters tops out
+ * near log2(24), so a long camelCase identifier scores close to a real token. Requiring three of
+ * the four classes separates them, and it spares the two things people most resent losing -- a git
+ * SHA and a hex digest are lowercase-plus-digits, two classes, so neither is touched. A base64
+ * credential is almost always three or four.
+ *
+ * This is a heuristic and is documented as one. It runs only when `redaction.strict` is on.
+ */
+function looksLikeCredential(s: string): boolean {
+  return characterClasses(s) >= 3 && entropyBitsPerChar(s) >= 3.5
+}
+
+/**
+ * Redact every secret this build knows how to recognise.
+ *
+ * Three passes, in order, and the order matters. The built-in patterns run first so a credential
+ * with a known shape is always labelled with that shape rather than the generic `custom` or
+ * `high_entropy`. Custom patterns run second, so an organisation's own rule can still catch what
+ * the built-ins missed. Strict mode runs last and only over what the first two left behind, which
+ * is what keeps it from relabelling a token the built-ins already handled correctly.
+ *
+ * `config` is a parameter rather than a module-level read so a test can drive a specific policy
+ * without writing a config file; every production caller takes the default.
+ */
+export function redactSecrets(text: string, config: Config = loadConfig()): RedactResult {
   let count = 0
   let out = text
   for (const [kind, pattern] of SECRET_PATTERNS) {
@@ -128,5 +255,21 @@ export function redactSecrets(text: string): RedactResult {
       return `[REDACTED:${kind}]`
     })
   }
+
+  for (const pattern of compileCustomPatterns(config.redaction.custom_patterns).patterns) {
+    out = out.replace(pattern, () => {
+      count++
+      return '[REDACTED:custom]'
+    })
+  }
+
+  if (config.redaction.strict) {
+    out = out.replace(STRICT_CANDIDATE, (candidate) => {
+      if (!looksLikeCredential(candidate)) return candidate
+      count++
+      return '[REDACTED:high_entropy]'
+    })
+  }
+
   return { text: out, count }
 }

@@ -203,3 +203,55 @@ export function urlPolicyDenialReason(url: string, policy: UrlPolicy): string | 
   }
   return null
 }
+
+/**
+ * Cloud instance-metadata endpoints, which no agent has a legitimate reason to fetch.
+ *
+ * These addresses answer only from inside a cloud instance, and what they answer with is the
+ * instance's own role credentials. That makes them the classic SSRF target: an attacker who can
+ * influence one fetched URL turns it into the machine's cloud identity.
+ *
+ * token-goat's own fetching already refuses them -- `performHttpFetch` blocks link-local and
+ * private ranges, re-checks every redirect hop, and pins DNS. This list exists for the other
+ * surface: the harness's own `WebFetch` tool runs outside our process, and all we can do is refuse
+ * to let the call start.
+ */
+const METADATA_HOSTNAMES: ReadonlySet<string> = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  // Alibaba Cloud's equivalent of 169.254.169.254.
+  '100.100.100.200',
+])
+
+/** AWS's IPv6 instance metadata address, in the spellings a URL can carry it in. */
+const METADATA_IPV6: ReadonlySet<string> = new Set(['fd00:ec2::254', '[fd00:ec2::254]'])
+
+/**
+ * Why `url` must not be fetched at all, or `null` when nothing here objects.
+ *
+ * Unconditional on purpose. This deliberately is not a default value for `webfetch.deny`: a
+ * default is something an operator can remove without noticing they removed it, and a config file
+ * that has drifted, been copied from an older install, or been written by a generator would then
+ * silently reopen the hole. Ordinary hosts stay governed by `webfetch.allow` / `webfetch.deny`,
+ * which is where operator policy belongs. Note that `localhost` is deliberately absent: fetching a
+ * local development server is normal work, and refusing it would cost real users something real to
+ * defend against nothing.
+ */
+export function metadataEndpointRefusal(url: string): string | null {
+  let host: string
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '')
+  } catch {
+    return null
+  }
+
+  if (METADATA_HOSTNAMES.has(host) || METADATA_IPV6.has(host)) {
+    return `URL is a cloud instance-metadata endpoint (${host})`
+  }
+  // The whole 169.254.0.0/16 link-local block, not just 169.254.169.254: AWS ECS serves task
+  // credentials from 169.254.170.2, and pinning the one famous address misses its neighbours.
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) {
+    return `URL is a link-local address (${host}), where cloud metadata services answer`
+  }
+  return null
+}
