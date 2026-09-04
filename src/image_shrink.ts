@@ -23,6 +23,7 @@ import omggif from 'omggif'
 import { loadConfig, type VisionTier } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import {
+  assertDecodableSize,
   probeBufferMeta,
   decodePng,
   encodePng,
@@ -292,6 +293,12 @@ export async function shrinkImage(
     // Animated GIF handling
     if (isAnimated && inputMeta.format === 'gif') {
       const decodedGif = decodeGif(input)
+      // The decode ceiling bounds the frames going in; it does not bound what comes out. This
+      // buffer is a second allocation of the same shape -- five bytes per pixel per frame -- and at
+      // a 1568x1568 output it passes the ceiling at 25 frames, so peak memory was the sum of two
+      // budgets with only one of them checked. Sized and checked here rather than left to the
+      // input bound, which is the wrong number for it.
+      assertDecodableSize('GIF output', targetW, targetH, 5, decodedGif.frames.length)
       const outBuf = Buffer.alloc(targetW * targetH * 5 * decodedGif.frames.length + 4096)
       const gifWriter = new omggif.GifWriter(outBuf, targetW, targetH, { loop: 0 })
 
@@ -327,8 +334,10 @@ export async function shrinkImage(
     } else if (inputMeta.format === 'bmp') {
       srcRgba = decodeBmp(input).data
     } else if (inputMeta.format === 'gif') {
-      const gifFrames = decodeGif(input).frames
-      const firstFrame = gifFrames[0]
+      // This branch is the still-image path, so it wants frame 0 and nothing else. Decoding the
+      // whole animation to index into it costs a full canvas per frame for frames that are then
+      // dropped, and a file can declare far more of them than it contains pixels.
+      const firstFrame = decodeGif(input, { maxFrames: 1 }).frames[0]
       if (!firstFrame) return null
       srcRgba = firstFrame.data
     } else {
