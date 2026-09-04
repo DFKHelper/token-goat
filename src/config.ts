@@ -251,6 +251,18 @@ export interface GdriveConfig {
   enabled: boolean
 }
 
+/**
+ * Config for redaction: what counts as a secret before anything is written to disk or handed back
+ * to the model. The built-in patterns (see `src/secret_redact.ts`) cover the credential shapes with
+ * a recognisable prefix. These two settings exist for the credentials that do not have one.
+ */
+export interface RedactionConfig {
+  /** Extra regular expressions redacted alongside the built-in patterns, as `[REDACTED:custom]`. For an in-house credential or identifier format no public tool knows the shape of -- an employee number, an internal account id, a bespoke token prefix. JavaScript regular-expression syntax, matched case-sensitively and globally. An entry that does not compile is reported by `token-goat doctor` and skipped, rather than silently ignored or fatal. */
+  custom_patterns: string[]
+  /** When true, also redact long unbroken high-entropy strings that match no known pattern -- the shape of a credential nobody wrote a rule for. Off by default because it is a heuristic and will sometimes redact a hash, a git SHA, or a base64 blob that was not a secret. On, it trades some readability for the assumption that an unrecognised random-looking string is a credential until proven otherwise. */
+  strict: boolean
+}
+
 /** Config for offline mode: the single switch that guarantees token-goat opens no outbound connection of its own. */
 export interface NetworkConfig {
   /** When true every network path token-goat can initiate refuses instead of connecting: its own HTTP fetches (`fetch-image`, `gdrive-sections`, image URLs a read hook shrinks), the embedding-model download, the OCR language-data download, and `screenshot`. Nothing is silently degraded -- each path says it is offline. For an air-gapped install, or an evaluation that needs one lever rather than an audit of five. */
@@ -324,6 +336,7 @@ export interface Config {
   context: ContextConfig
   injection: InjectionConfig
   gdrive: GdriveConfig
+  redaction: RedactionConfig
   network: NetworkConfig
   mcp: McpConfig
   hint_stats: HintStatsConfig
@@ -531,6 +544,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   gdrive: {
     enabled: true,
   },
+  redaction: {
+    custom_patterns: [],
+    strict: false,
+  },
   network: {
     offline: false,
   },
@@ -576,6 +593,7 @@ export function defaultConfig(): Config {
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
     gdrive: getDefaultConfig('gdrive') as GdriveConfig,
+    redaction: getDefaultConfig('redaction') as RedactionConfig,
     network: getDefaultConfig('network') as NetworkConfig,
     mcp: getDefaultConfig('mcp') as McpConfig,
     hint_stats: getDefaultConfig('hint_stats') as HintStatsConfig,
@@ -936,6 +954,7 @@ export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
   'injection',
   'webfetch',
   'gdrive',
+  'redaction',
   'mcp',
   'network',
   'screenshot',
@@ -1779,6 +1798,13 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   gd.enabled = validatedBool(gd_raw['enabled'], gd.enabled)
   gd.enabled = envBool('TOKEN_GOAT_GDRIVE_ENABLED', gd.enabled)
 
+  const red_raw = section(raw, 'redaction')
+  const red = getDefaultConfig('redaction') as RedactionConfig
+  red.custom_patterns = validatedStrList(red_raw['custom_patterns'], red.custom_patterns)
+  red.custom_patterns = envStrList('TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', red.custom_patterns, ',')
+  red.strict = validatedBool(red_raw['strict'], red.strict)
+  red.strict = envBool('TOKEN_GOAT_REDACTION_STRICT', red.strict)
+
   const net_raw = section(raw, 'network')
   const net = getDefaultConfig('network') as NetworkConfig
   net.offline = validatedBool(net_raw['offline'], net.offline)
@@ -1825,6 +1851,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     context: ctx,
     injection: inj,
     gdrive: gd,
+    redaction: red,
     network: net,
     mcp,
     hint_stats: hs,
@@ -1904,6 +1931,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'indexing.cross_project_symbols': ['TOKEN_GOAT_CROSS_PROJECT_SYMBOLS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
   'gdrive.enabled': ['TOKEN_GOAT_GDRIVE_ENABLED'],
+  'redaction.custom_patterns': ['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS'],
+  'redaction.strict': ['TOKEN_GOAT_REDACTION_STRICT'],
   'network.offline': ['TOKEN_GOAT_OFFLINE'],
   'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
   'mcp.allowed_roots': ['TOKEN_GOAT_MCP_ALLOWED_ROOTS'],
@@ -2080,6 +2109,10 @@ export function saveConfig(config: Config): void {
     },
     gdrive: {
       enabled: config.gdrive.enabled,
+    },
+    redaction: {
+      custom_patterns: config.redaction.custom_patterns,
+      strict: config.redaction.strict,
     },
     network: {
       offline: config.network.offline,

@@ -48,6 +48,7 @@ describe('checkSecurityPosture', () => {
       'Security injection',
       'Security gdrive',
       'Security fetch policy',
+      'Security redaction',
       'Security mcp roots',
       'Security data dir',
     ])

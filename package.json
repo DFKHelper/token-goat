@@ -58,6 +58,7 @@
     "docs/cli.md",
     "docs/install.md",
     "docs/security.md",
+    "docs/C4_RUNTIME_ARCHITECTURE.md",
     "LICENSE",
     "scripts/install-git-hooks.mjs"
   ],

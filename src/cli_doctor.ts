@@ -4,6 +4,7 @@
  * Provides check utilities and the runDoctor() entrypoint for the doctor command.
  */
 
+import { compileCustomPatterns } from './secret_redact.js'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -803,6 +804,28 @@ export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorRe
       ? `${allow} allowed host pattern${allow === 1 ? '' : 's'}, ${deny} denied: nothing outside the allow list is fetched`
       : `no allow list, ${deny} denied pattern${deny === 1 ? '' : 's'}: any host not denied can be fetched`,
   })
+
+  const custom = compileCustomPatterns(cfg.redaction.custom_patterns)
+  const strictNote = cfg.redaction.strict ? 'strict mode on' : 'strict mode off (redaction.strict)'
+  const patternNote =
+    custom.patterns.length === 0
+      ? 'built-in patterns only'
+      : `${custom.patterns.length} custom pattern${custom.patterns.length === 1 ? '' : 's'} plus the built-in ones`
+  results.push(
+    custom.problems.length > 0
+      ? {
+          name: 'Security redaction',
+          // A pattern the operator believes is redacting, but which never compiled, is the one
+          // failure here that is invisible from the output itself -- so it warns rather than
+          // being reported as a healthy count that happens to be short.
+          status: 'warn',
+          message:
+            `${custom.problems.length} custom redaction pattern${custom.problems.length === 1 ? '' : 's'} could not be used ` +
+            `and ${custom.problems.length === 1 ? 'is' : 'are'} not redacting anything: ` +
+            custom.problems.map((p) => `${p.pattern} (${p.reason})`).join('; '),
+        }
+      : { name: 'Security redaction', status: 'ok', message: `${patternNote}, ${strictNote}` },
+  )
 
   const extraRoots = cfg.mcp.allowed_roots.length
   results.push(

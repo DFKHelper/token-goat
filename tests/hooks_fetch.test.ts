@@ -1108,3 +1108,34 @@ describe('postFetchHandler secret redaction on the live post hook', () => {
     expect(result.updatedOutput).toContain('[REDACTED:aws_access_key]');
   });
 });
+
+describe('the cloud metadata floor, through the hook that actually ships', () => {
+  // Testing `metadataEndpointRefusal` in isolation proves the matcher works, not that anything
+  // calls it. This repo has shipped exactly that gap before -- a worker whose real default path
+  // wrote nothing while every test injected its own callback -- so the deny is asserted here
+  // against `preFetchHandler`, on a default config, which is the code path a real WebFetch takes.
+  function fetchEvent(url: string): HookEvent {
+    return {
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'metadata-floor-session',
+      agentId: undefined,
+      raw: {},
+    }
+  }
+
+  it('denies an IMDS credentials fetch on a default install, with no allow or deny list set', () => {
+    const cfg = defaultConfig()
+    expect(cfg.webfetch.allow, 'the default allow list is no longer empty; this test assumed it was').toEqual([])
+    expect(cfg.webfetch.deny, 'the default deny list is no longer empty; this test assumed it was').toEqual([])
+
+    const out = preFetchHandler(fetchEvent('http://169.254.169.254/latest/meta-data/iam/security-credentials/'))
+    expect(out.hookType, 'a metadata fetch was not denied by the shipping hook').toBe('deny')
+    expect(JSON.stringify(out)).toContain('metadata')
+  })
+
+  it('still lets an ordinary URL through the same hook, so the deny is specific', () => {
+    expect(preFetchHandler(fetchEvent('https://example.com/docs')).hookType).not.toBe('deny')
+  })
+})

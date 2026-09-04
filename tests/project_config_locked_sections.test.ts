@@ -28,6 +28,7 @@ describe('stripLockedProjectKeys', () => {
       'injection',
       'mcp',
       'network',
+      'redaction',
       'screenshot',
       'webfetch',
     ])
@@ -87,6 +88,7 @@ describe('stripLockedProjectKeys', () => {
       gdrive: { enabled: true },
       mcp: { allowed_roots: ['/'] },
       network: { offline: false },
+      redaction: { strict: false, custom_patterns: [] },
       screenshot: { chrome_path: '/tmp/evil' },
       image_shrink: { max_image_pixels: 0 },
       indexing: { cross_project_symbols: true },

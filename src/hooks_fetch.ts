@@ -11,7 +11,7 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js';
 import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js';
 import { redactSecrets } from './secret_redact.js';
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/base.js';
-import { matchesAllowPattern, matchesDenyPattern } from './url_policy.js';
+import { matchesAllowPattern, matchesDenyPattern, metadataEndpointRefusal } from './url_policy.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
@@ -52,6 +52,13 @@ export function preFetchHandler(event: HookEvent): HookOutput {
     // webfetch.allow/webfetch.deny gate every WebFetch call regardless of session id -- unlike the dedup check below, blocking a URL has nothing to do with caching, so it must run even for a harness that sends no session_id (see resolveWebFetchContext's own comment).
     const urlOnlyCtx = resolveWebFetchUrl(event);
     if (urlOnlyCtx !== null) {
+      // Unconditional, and ahead of the configurable policy: an operator's allow/deny list is
+      // about which ordinary hosts they want reached, not about whether the machine's own cloud
+      // credentials are reachable through a fetched URL.
+      const metadataRefusal = metadataEndpointRefusal(urlOnlyCtx.url);
+      if (metadataRefusal !== null) {
+        return denyOutput(`WebFetch blocked: ${metadataRefusal}.`);
+      }
       const wfCfg = loadConfig().webfetch;
       if (wfCfg.deny.length > 0 && matchesDenyPattern(urlOnlyCtx.url, wfCfg.deny)) {
         return denyOutput(`WebFetch blocked: URL matches a configured webfetch.deny pattern.`);
