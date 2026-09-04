@@ -6,9 +6,8 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
 
-// Regression test mirroring image_shrink_sharp_unavailable.test.ts: image-meta reads sharp
-// metadata only, so it must degrade with a clear, actionable message (not crash, not report
-// fabricated dimensions) when the optional `sharp` dependency is unavailable.
+// Regression test verifying that image-meta operates completely independently
+// of native sharp using the built-in pure-JS image engine.
 vi.mock('sharp', () => {
   throw new Error('Cannot find module \'sharp\'')
 })
@@ -21,6 +20,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 import { runImageMeta } from '../src/read_commands.js'
 import { run } from '../src/cli.js'
+import { encodePng } from '../src/image_engine.js'
 
 /** Captures everything the CLI's own out() (process.stdout.write) prints during `fn`. */
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
@@ -35,24 +35,30 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   return output
 }
 
-describe('image-meta sharp unavailable degrade path', () => {
-  it('runImageMeta returns sharpAvailable: false instead of throwing when sharp cannot be loaded', async () => {
+describe('image-meta pure JS engine without sharp', () => {
+  it('runImageMeta succeeds and reports valid dimensions without sharp', async () => {
     const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imgmeta-nosharp-'))
     const file = path.join(TMP, 'x.png')
-    fs.writeFileSync(file, Buffer.alloc(1024, 1))
+    const rgba = Buffer.alloc(10 * 20 * 4, 255)
+    const png = encodePng(10, 20, rgba)
+    fs.writeFileSync(file, png)
 
     const meta = await runImageMeta(file)
-    expect(meta.sharpAvailable).toBe(false)
-    expect(meta.width).toBe(0)
-    expect(meta.bytes).toBe(1024)
+    expect(meta.width).toBe(10)
+    expect(meta.height).toBe(20)
+    expect(meta.format).toBe('png')
+    expect(meta.sharpAvailable).toBe(true)
   })
 
-  it('the image-meta CLI command prints a clear, actionable unavailable message', async () => {
+  it('the image-meta CLI command prints valid dimensions without sharp', async () => {
     const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imgmeta-nosharp-cli-'))
     const file = path.join(TMP, 'x.png')
-    fs.writeFileSync(file, Buffer.alloc(1024, 1))
+    const rgba = Buffer.alloc(15 * 25 * 4, 255)
+    const png = encodePng(15, 25, rgba)
+    fs.writeFileSync(file, png)
 
     const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file]))
-    expect(output).toContain('image-meta unavailable (install sharp to use this feature)')
+    expect(output).toContain('15x25')
   })
 })
+
