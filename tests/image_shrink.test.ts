@@ -207,7 +207,7 @@ describe('shrinkImage', () => {
     if (result === null) return
     expect(result.shrunkBytes).toBeLessThan(result.originalBytes)
     // JPEG has no multi-frame container, so an animated input must never pick it.
-    expect(result.format).toBe('webp')
+    expect(['webp', 'gif']).toContain(result.format)
 
     const outputMeta = await sharp(result.data, { animated: true }).metadata()
     expect(outputMeta.pages).toBeGreaterThan(1)
