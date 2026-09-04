@@ -133,3 +133,15 @@ export function reaches(
   }
   return false
 }
+
+/**
+ * Comments removed, everything else kept verbatim.
+ *
+ * Distinct from `codeOnly` above, which also blanks template literals. Some source in this repo
+ * *is* a template literal -- every bridge shim body is one -- so a guard reading that text must not
+ * use `codeOnly`, which would erase exactly what it came to read. What has to go either way is
+ * comment prose: a line explaining why `shell: true` is needed matches a scan for `shell: true`.
+ */
+export function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ')
+}

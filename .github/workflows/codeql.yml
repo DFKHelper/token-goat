@@ -1,0 +1,58 @@
+name: CodeQL
+
+# The interprocedural half of the security scan. `tests/guards/dangerous_sinks_are_named.test.ts`
+# runs in `npm test` and answers "where are the sinks" exhaustively and offline; it cannot answer
+# "does untrusted data reach one", because that needs dataflow across files and a query engine far
+# too heavy to sit in a suite that also runs on Windows and macOS. This is where that half lives.
+#
+# Scheduled as well as triggered: a query pack updated next month can find a bug in code that has
+# not changed since, and a push-only scan would never run it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Tuesday 04:17 UTC. Off the hour on purpose -- the top of the hour is when every cron-scheduled
+    # workflow on the platform queues at once, and this job has no deadline.
+    - cron: '17 4 * * 2'
+
+# Least privilege by default, matching ci.yml. The analyse job asks for the two extra scopes it
+# needs in the open, rather than the workflow granting them to every job.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Upload the SARIF result to the repository's code-scanning view.
+      security-events: write
+      # CodeQL reads workflow metadata to attribute results to a run.
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # v2.26.4 (tag codeql-bundle-v2.26.4)
+        with:
+          languages: javascript-typescript
+          # `security-extended` over the default suite. The default is tuned to keep false positives
+          # near zero on any codebase; this one hands strings to shells and reads paths from tool
+          # output, so the extra queries are the ones that pay. Anything it gets wrong is triaged in
+          # the code-scanning view, not by narrowing the suite back.
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - dist
+              - node_modules
+              - tests/fixtures
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # v2.26.4 (tag codeql-bundle-v2.26.4)
+        with:
+          category: /language:javascript-typescript
