@@ -45,6 +45,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 import { pinnedPopulation } from './population.js'
+import { codeOnly, functionMap, parseTopLevelFunctions, reaches } from './reachability.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -166,119 +167,6 @@ function callsFence(body: string): boolean {
   // cli.ts's shared boundary: `_applyFiltersAndPrint(text, opts, true, ...)` runs the scan and
   // fence internally when its third argument (`fenceByProvenance`) is `true`.
   if (/_applyFiltersAndPrint\([^;]*?,\s*true\b/.test(body)) return true
-  return false
-}
-
-interface FnInfo {
-  readonly name: string
-  readonly body: string
-}
-
-/**
- * Every top-level `function name(...) { ... }` / `async function name(...) { ... }` declaration
- * in `src`, keyed by file, with each function's full body text (brace-matched, so a `}` inside a
- * string or a nested block never ends it early).
- */
-function parseTopLevelFunctions(src: string): FnInfo[] {
-  const out: FnInfo[] = []
-  const declRe = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^(]*>)?\s*\(/gm
-  let m: RegExpExecArray | null
-  while ((m = declRe.exec(src)) !== null) {
-    const name = m[1]!
-    const parenStart = m.index + m[0].length - 1 // the '(' the regex ended on
-    let depth = 0
-    let seenParams = false
-    let open = -1
-    for (let i = parenStart; i < src.length; i++) {
-      const c = src[i]
-      if (c === '(') {
-        depth++
-        seenParams = true
-      } else if (c === ')') {
-        depth--
-      } else if (c === '{' && seenParams && depth === 0) {
-        open = i
-        break
-      }
-    }
-    if (open === -1) continue
-    let braceDepth = 0
-    let close = -1
-    for (let i = open; i < src.length; i++) {
-      if (src[i] === '{') braceDepth++
-      else if (src[i] === '}' && --braceDepth === 0) {
-        close = i
-        break
-      }
-    }
-    if (close === -1) continue
-    out.push({ name, body: src.slice(open, close + 1) })
-  }
-  return out
-}
-
-/** A file's function bodies, keyed by name, for same-file transitive-call resolution. */
-function functionMap(fns: readonly FnInfo[]): Map<string, string> {
-  const m = new Map<string, string>()
-  for (const fn of fns) m.set(fn.name, fn.body)
-  return m
-}
-
-/** Direct callee names referenced in `body` (a superset of real calls -- good enough for BFS,
- * since a false-positive edge can only make `reaches()` MORE permissive, matching this guard's
- * conservative-toward-not-flagging design given its stated scope limit above). */
-function calleeNames(body: string): string[] {
-  const names: string[] = []
-  const callRe = /\b([A-Za-z_]\w*)\s*\(/g
-  let m: RegExpExecArray | null
-  while ((m = callRe.exec(body)) !== null) names.push(m[1]!)
-  return names
-}
-
-/** True when `fn`'s body, or any locally-defined function reachable from it by same-file calls,
- * satisfies `predicate`. */
-/**
- * A function body with comments and string/template literals removed, so that *naming* one of
- * these functions is not mistaken for *calling* it.
- *
- * This is not cosmetic, and it is wrong in both directions without it. A doc comment or a
- * `'file.ts::fetchDoc (...)'` pointer string makes the source scan report a function that reads
- * nothing -- noisy but visible. The dangerous direction is the other one: `callsFence` matches on
- * a bare substring, so a comment that merely mentions `fenceUntrustedContent` marks its function
- * as fenced, and the guard then reports green about a function that never fences anything. A call
- * can never live inside a literal or a comment, so removing them cannot hide a real one.
- */
-const codeCache = new Map<string, string>()
-function codeOnly(body: string): string {
-  const hit = codeCache.get(body)
-  if (hit !== undefined) return hit
-  // Order matters: comments first, then literals, matching the helper in
-  // capabilities_cover_every_egress.test.ts so both guards strip the same way.
-  const stripped = body
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/^\s*\/\/.*$/gm, ' ')
-    .replace(/`(?:[^`\\]|\\[\s\S])*`/g, '``')
-    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
-    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
-  codeCache.set(body, stripped)
-  return stripped
-}
-
-function reaches(fn: FnInfo, byName: Map<string, string>, predicate: (body: string) => boolean): boolean {
-  const visited = new Set<string>()
-  const stack: string[] = [fn.name]
-  while (stack.length > 0) {
-    const name = stack.pop()!
-    if (visited.has(name)) continue
-    visited.add(name)
-    const raw = byName.get(name)
-    if (raw === undefined) continue
-    const body = codeOnly(raw)
-    if (predicate(body)) return true
-    for (const callee of calleeNames(body)) {
-      if (!visited.has(callee) && byName.has(callee)) stack.push(callee)
-    }
-  }
   return false
 }
 

@@ -35,6 +35,8 @@ import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_
 import { loadConfig } from './config.js'
 import { redactSecrets } from './secret_redact.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { fenceUntrusted } from './untrusted_fence.js'
 
 /**
  * Deterministic, session-scoped recall id for a BashOutput poll snapshot --
@@ -124,17 +126,28 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     storePollSnapshot(event.sessionId, bashId, output)
     if (Buffer.byteLength(delta, 'utf-8') < minBytes) return passOutput()
     const deltaNotice = `[token-goat: bash_id ${bashId} delta since last poll]\n`
+    // The delta is the shell's own bytes and the notice above them is ours, so the two need a
+    // boundary the model can see: without one, a background process that prints a line in the
+    // marker's shape is writing text the model reads as token-goat's. The notice stays outside the
+    // opening tag, matching every other substitution site -- our voice never rides inside the
+    // fence, both because that is the ambiguity the fence exists to remove and because the marker
+    // neutraliser would escape it.
+    const fenced = fenceUntrusted(delta, UNTRUSTED_TOOL_TAG)
+    const body = `${deltaNotice}${fenced}`
+    // Priced on the string actually emitted rather than on the delta plus the notice: the fence is
+    // ~120 bytes this rewrite now spends, and pricing it as though it were free is how a rewrite
+    // ships that costs more than it saves.
     if (
       !isRewriteWorthwhile({
         originalBytes: Buffer.byteLength(output, 'utf-8'),
-        rewrittenBytes: Buffer.byteLength(delta, 'utf-8'),
-        noticeBytes: Buffer.byteLength(deltaNotice, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(body, 'utf-8'),
+        noticeBytes: 0,
         minNetSavingsBytes: resolveMinNetSavingsBytes(),
       })
     ) {
       return passOutput()
     }
-    return emitRewrite(`${deltaNotice}${delta}`, 'bashoutput', { kind: 'bashoutput:delta', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
+    return emitRewrite(body, 'bashoutput', { kind: 'bashoutput:delta', originalBytes: Buffer.byteLength(rawOutput, 'utf-8') })
   } catch {
     return passOutput()
   }
