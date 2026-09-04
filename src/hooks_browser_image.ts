@@ -39,7 +39,7 @@ import { emitRewrite, getToolName, passOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
 import { formatShrinkSummary, imageQualifiesForShrink, probeImageMeta, shrinkImage, visionTokens, visionTokensSaved } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
-import { getLastTabContext, hasSeenImage, recordSeenImage, setLastTabContext } from './session.js'
+import { hasSeenImage, lastTabContextMatches, recordSeenImage, setLastTabContext } from './session.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
@@ -145,7 +145,7 @@ const TAB_CONTEXT_UNCHANGED_NOTICE = '(tabs unchanged since last check)'
 
 function dedupTabContext(text: string): { text: string; changed: boolean } {
   if (!TAB_CONTEXT_RE.test(text)) return { text, changed: false }
-  const isRepeat = getLastTabContext() === text
+  const isRepeat = lastTabContextMatches(text)
   setLastTabContext(text)
   if (!isRepeat) return { text, changed: false }
   // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
