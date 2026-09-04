@@ -531,7 +531,7 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
 
     const rewritten = output.args['filePath'] as string
     expect(rewritten).not.toBe(imgPath)
-    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9]+\.(jpeg|webp)$/)
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
     expect(existsSync(rewritten)).toBe(true)
     expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
     expect(existsSync(stalePath)).toBe(false)
@@ -571,7 +571,7 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     const rewritten = result.params?.['path'] as string
     expect(typeof rewritten).toBe('string')
     expect(rewritten).not.toBe(imgPath)
-    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9]+\.(jpeg|webp)$/)
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
     expect(existsSync(rewritten)).toBe(true)
     expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
     expect(result.params?.['offset']).toBe(1)
@@ -634,7 +634,7 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     const rewritten = parsed.modifiedArgs?.['path'] as string
     expect(typeof rewritten).toBe('string')
     expect(rewritten).not.toBe(imgPath)
-    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9]+\.(jpeg|webp)$/)
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
     expect(existsSync(rewritten)).toBe(true)
     expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
     // Copilot's modifiedArgs REPLACES the tool call's arguments wholesale (ESr in the 1.0.80 bundle), so the rewrite must carry every original arg, not a bare path object.
