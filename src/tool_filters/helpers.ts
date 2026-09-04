@@ -137,6 +137,34 @@ export function hasUnquotedOperator(cmd: string, ops: readonly string[]): boolea
 }
 
 const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
+
+/**
+ * The trailing lines {@link capBytes} and {@link capTokens} append in token-goat's own voice,
+ * as one anchored pattern. Both spellings, repeated, at the very end and nowhere else.
+ */
+const OWN_TRAILING_NOTICE_RE =
+  /(?:\n(?:\[token-goat: output capped at ~\d+ tokens\]|\.\.\. \[\d+ bytes elided by token-goat\]))+$/
+
+/**
+ * Split a filtered body into the bytes the command produced and the notices token-goat appended
+ * to the end of them.
+ *
+ * A caller that fences its output needs this. The fence's contract is that everything inside it
+ * came from somewhere else, and a cap notice is not from somewhere else -- it is token-goat
+ * explaining what it just did. Left inside, it makes our own voice indistinguishable from a
+ * forgery of it, which is the ambiguity the fence exists to remove; the marker neutraliser in
+ * `injection_scan.ts` makes that visible by escaping it, and an escaped notice of our own is the
+ * symptom, not the disease. Exempting the notice from that escape would be worse than either:
+ * the string is not a secret, so anything an attacker's output prints would inherit the same
+ * exemption.
+ *
+ * Nothing positional is lost by moving it out. Both cappers truncate the tail, so the point they
+ * are describing is the end of the body, which the closing tag already marks.
+ */
+export function splitOwnTrailingNotices(text: string): { body: string; notices: string } {
+  const m = OWN_TRAILING_NOTICE_RE.exec(text)
+  return m ? { body: text.slice(0, m.index), notices: m[0] } : { body: text, notices: '' }
+}
 const DIGITS_RE = /\d+/g
 // C0/C1 control chars except tab (09), newline (0A), carriage return (0D).
 // eslint-disable-next-line no-control-regex
