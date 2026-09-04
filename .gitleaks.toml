@@ -6,16 +6,17 @@
 # such a fixture -- AWS's own documented example key `AKIAIOSFODNN7EXAMPLE`, GitHub tokens written
 # as a split string of keyboard runs, PEM blocks whose body is the literal text `first-key-body`.
 #
-# The allowlist below is scoped to paths, not to rules, and deliberately does not cover `src/`. A
+# The allowlists below are scoped to paths and rules, and deliberately do not cover `src/`. A
 # credential committed anywhere the shipping code lives still fails the scan. That boundary is held
-# by a test rather than by review: see tests/guards/gitleaks_allowlist_scope.test.ts.
+# by a test rather than by review: see tests/guards/gitleaks_allowlist_scope.test.ts, which also
+# checks that CI runs this scan -- a config nothing executes suppresses nothing.
 
 title = "token-goat"
 
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Redaction fixtures and directories that are not this project's source"
 paths = [
   # Fixtures for the redaction feature. Never real credentials: the suite needs no account
@@ -26,4 +27,24 @@ paths = [
   # Build and coverage output, reproducible from source.
   '''^dist/''',
   '''^coverage/''',
+]
+
+# The changelog describes what the redactor learned to recognize, which means it quotes armored
+# private key headers as text -- `-----BEGIN ENCRYPTED PRIVATE KEY-----` and two others appear in
+# the 2.8.x entry explaining that they used to slip past it. Prose about a key header is not a key,
+# but the `private-key` rule cannot tell the difference, so it is turned off for changelog files and
+# nothing else.
+#
+# Scoped two ways on purpose. `targetRules` keeps every other rule live in these files, so an AWS
+# key or a GitHub token pasted into a release note still fails the scan; the paths keep `private-key`
+# itself live everywhere outside them. The alternative -- pinning the finding's `file:rule:line`
+# fingerprint in a `.gitleaksignore` -- was rejected because this archive grows at the top, so the
+# line number drifts on every release and CI would break for a reason unrelated to the change that
+# broke it.
+[[allowlists]]
+description = "Armored key headers quoted as prose in release notes about the redactor"
+targetRules = ["private-key"]
+paths = [
+  '''^CHANGELOG\.md$''',
+  '''^CHANGELOG-ARCHIVE\.md$''',
 ]
