@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
+import { stripComments } from './reachability.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const BRIDGES_DIR = path.join(HERE, '..', '..', 'src', 'bridges')
@@ -75,18 +76,6 @@ const CALLER_SUPPLIED: ReadonlyMap<
 /** Calls to `fn`, skipping its own declaration, capturing the first character of the first argument. */
 function callsTo(fn: string): RegExp {
   return new RegExp(`(?<!\\bfunction\\s)\\b${fn}\\s*\\(\\s*([^\\s)])`, 'g')
-}
-
-/**
- * Comments removed, everything else kept verbatim.
- *
- * Deliberately not `reachability.ts`'s `codeOnly`, which also blanks template literals: every shim
- * body in this directory *is* a template literal, so that helper would erase the exact text this
- * guard exists to read. Prose mentioning `callHookViaSpawn` in a comment is the only thing that has
- * to go, and it is the thing that made this scan report a call that was not one.
- */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ')
 }
 
 function bridgeFiles(): readonly string[] {
