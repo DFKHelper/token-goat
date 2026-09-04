@@ -308,6 +308,11 @@ Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot
 
 You rarely type these yourself. Installation writes a routing guide into the agent's instructions, and the agent picks the command that answers its question: a surgical read (`read`, `symbol`, `section`, `skeleton`), a search (`semantic`, `refs`), orientation in an unfamiliar repo (`map`, `arch`, `affected`), recall of output it already has (`bash-output`, `web-output`, `mcp-output`), or a bounded reader for a PDF, Word file, slide deck, workbook, SQLite database or image.
 
+One command is for people working on token-goat rather than for agents: `token-goat bench` replays a
+corpus of captured shell output through the real compression path and reports how much smaller the
+result got, alongside a count of the lines each case is not allowed to lose. Deleting output makes
+the first number look better, so the second one is what keeps the first honest.
+
 Every command, with its flags, its output, and the comparison workflows that chain them: **[CLI reference](docs/cli.md)**.
 
 ## MCP server

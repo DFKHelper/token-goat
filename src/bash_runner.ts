@@ -16,11 +16,9 @@ import {
   ToolFilter,
   compressedTokensSaved,
   capTokens,
-  combineStreams,
-  compressOutput,
+  deliverCompressed,
   dispatchArgv,
   filterByName,
-  resolveMinNetSavingsBytes,
   selectFilter,
   shlexSplit,
 } from './tool_filters/index.js'
@@ -222,25 +220,21 @@ function wrapAndCompress(
   }
 
   const limits = resolveCompressLimits()
-  const compressed = compressOutput(filter, stdoutText, stderrText, exitCode, argv, {
+  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't
+  // clear the marker's own cost plus the configured floor destabilises the bytes (breaks
+  // provider prefix caching) for a saving too small to be worth it, so below the floor that
+  // function returns the ORIGINAL streams with no marker -- exactly as though no filter had
+  // matched. `token-goat bench` measures delivery through the same function, so a benchmark
+  // cannot drift from what actually ships.
+  const { applied, marker, compressed, text: delivered } = deliverCompressed(filter, stdoutText, stderrText, exitCode, argv, {
     compressionProfile: profile,
     maxLines: limits.maxLines,
     maxBytes: limits.maxBytes,
   })
-  // Net-benefit gate: a rewrite whose bytesSaved doesn't clear the marker's own
-  // cost plus the configured floor destabilises the bytes (breaks provider
-  // prefix caching) for a saving too small to be worth it. Below the floor,
-  // ship the ORIGINAL output untouched with no marker -- exactly as though no
-  // filter had matched -- rather than the (marker-less but still rewritten)
-  // compressed body. `CompressedOutput.worthApplying` is the single definition
-  // of this decision; `withMarker()` below reuses it so the two can't drift.
-  const minNetSavingsBytes = resolveMinNetSavingsBytes()
-  const applied = compressed.worthApplying(minNetSavingsBytes)
   // Apply the pressure-scaled token cap to the body BEFORE appending the marker so the savings marker survives truncation and stays visible to the agent.
-  let text = applied ? compressed.text : combineStreams(stdoutText, stderrText)
+  let text = delivered
   const maxTokens = opts.maxTokens ?? 0
   if (maxTokens > 0) text = capTokens(text, maxTokens)
-  const marker = applied ? compressed.withMarker(minNetSavingsBytes).slice(compressed.text.length) : ''
   const body = text + marker
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 

@@ -1,0 +1,9 @@
+{
+  "provenance": "CAPTURE -- `npx vitest run tests/paths.test.ts tests/config.test.ts --reporter=verbose` run in this repository on 2026-09-04, stdout+stderr redirected to vitest-run.txt verbatim.",
+  "command": "npx vitest run tests/paths.test.ts tests/config.test.ts --reporter=verbose",
+  "exitCode": 0,
+  "mustKeep": [
+    "Test Files  2 passed (2)",
+    "Tests  140 passed (140)"
+  ]
+}

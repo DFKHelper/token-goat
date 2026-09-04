@@ -2,6 +2,16 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **`token-goat bench` scores the shell-output compressors, so a change to one can be measured instead of argued about.** It replays a corpus of captured command output through the same function that decides what a real shell command hands back to the model, and prints how much smaller each case got. Measuring through that function rather than a copy of it is the point: a benchmark with its own idea of when compression applies would keep reporting the old number after delivery changed.
+
+  It reports two numbers, not one. The first is how much was saved, and it is the number to push up. The second counts the lines each case declares it must never lose, and it is what stops the first from being gamed, because deleting output is the easiest way to save bytes. A dropped line exits 1, so an automated loop can revert on the exit code alone. `--validate` proves that guard still works by running two deliberately broken filters against the corpus: one that changes nothing, which must score nothing, and one that deletes everything, which scores the best ratio possible and is caught. Run it after editing the corpus; must-keep lists that have gone soft pass every benchmark while measuring nothing.
+
+  The corpus ships in [tests/fixtures/bench](tests/fixtures/bench), and `--corpus <dir>` points at your own. Every case has to say where its output came from, and one that does not is refused rather than scored, because output written by hand proves nothing about what a real command prints. `--tsv <path>` appends a row per run so a sequence of attempts leaves a history. No reindex is needed. See [src/cli_bench.ts](src/cli_bench.ts) and the [CLI reference](docs/cli.md).
+
 ## [2.9.2] - 2026-09-03
 
 ### Security

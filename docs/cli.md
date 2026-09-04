@@ -337,3 +337,56 @@ are shown alongside the automatic percentage but never blended into it. `--json`
 Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is not the same as
 "which LLM model" — no bridge in this codebase exposes an LLM model identifier to hooks, so
 harness is the closest real signal available.
+
+### Scoring the compressors — `token-goat bench`
+
+`token-goat bench` replays a fixed corpus of captured command output through the same function
+that decides what a real shell command hands back to the model, and reports how much smaller the
+result is. It exists so a change to a compressor can be measured instead of guessed at:
+
+```
+$ token-goat bench
+case          filter           in        out    saved  fidelity
+---------------------------------------------------------------
+git-log-stat  git-log       57227       3027    94.7%  2/2
+npm-ls-all    dep-list      34546       1060    96.9%  2/2
+vitest-run    vitest        22684      22682        -  2/2
+---------------------------------------------------------------
+TOTAL                      114457      26769    76.6%  6/6
+
+ratio    76.6% saved  (PRIMARY -- must improve; measured floor 0.0%, headroom 23.4%)
+fidelity 6/6 kept   (GUARD -- must not regress; any miss exits 1)
+coverage 3/157 filters exercised, 2/3 cases compressed
+```
+
+There are two numbers on purpose. **Ratio** is the thing to push up. **Fidelity** counts the lines
+each case declares it must never lose, and it is what stops the ratio from being gamed: deleting
+output raises the ratio, so a benchmark reporting only the ratio would reward destroying the very
+content the compressors exist to preserve. A dropped must-keep line exits 1, so a loop can revert
+on the exit code alone.
+
+The corpus lives in `tests/fixtures/bench`: one `<id>.json` naming the command, its exit code,
+and its must-keep lines, beside an `<id>.txt` holding that run's real output. Point `--corpus
+<dir>` at your own directory to score commands you care about. Every case must declare where its
+output came from; a fixture with no `provenance` field is refused rather than scored, because
+output written by hand proves nothing about what a real command emits.
+
+`--tsv <path>` appends one row per run (timestamp, commit, sizes, ratio, fidelity, coverage), so a
+sequence of attempts leaves a readable history instead of a scrollback. `--json` emits the same
+report as an object. `--validate` runs the benchmark's own negative controls and says whether the
+corpus can tell good from bad at all:
+
+```
+$ token-goat bench --validate
+ok    floor: the net-benefit gate refuses a no-op filter on every case -- identity control applied to 0/3 cases, measured floor 0.0%
+ok    floor: a no-op filter keeps every must-keep line -- identity control kept 6/6
+ok    guard: deleting everything is caught -- destroy control kept 0/6 at 99.8% saved
+
+The corpus discriminates: a ratio measured against it cannot be raised by deleting content.
+```
+
+The first two controls establish the floor: a filter that changes nothing must score nothing, so
+the reported percentage is a real saving rather than an offset every number carries. The third
+runs a filter that deletes the entire output. It scores 99.8%, the best ratio possible, and the
+fidelity guard fails it. Run `--validate` after changing the corpus; a corpus whose must-keep
+lists have gone soft passes every benchmark while measuring nothing.

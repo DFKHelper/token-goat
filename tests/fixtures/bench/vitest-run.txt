@@ -1,0 +1,149 @@
+
+ RUN  v4.1.11 C:/Projects/token-goat
+
+ ✓ tests/paths.test.ts > safeJoin > joins normally when no part contains a colon 28ms
+ ✓ tests/paths.test.ts > safeJoin > throws when any part contains a colon (drive-letter escape) 1ms
+ ✓ tests/paths.test.ts > safeJoin > throws when a colon appears in a later part 0ms
+ ✓ tests/paths.test.ts > safeJoin > throws on an NTFS-stream-style colon fragment 0ms
+ ✓ tests/paths.test.ts > safeJoin > works with zero extra parts 0ms
+ ✓ tests/paths.test.ts > normalizePath > converts backslashes to forward slashes 0ms
+ ✓ tests/paths.test.ts > normalizePath > lowercases an uppercase drive-letter prefix 0ms
+ ✓ tests/paths.test.ts > normalizePath > leaves an already-lowercase forward-slash path unchanged 0ms
+ ✓ tests/paths.test.ts > normalizePath > converts a WSL /mnt path to Windows drive form 0ms
+ ✓ tests/paths.test.ts > normalizePath > lowercases the WSL drive letter and collapses leading slashes 0ms
+ ✓ tests/paths.test.ts > normalizePath > leaves a plain POSIX path unchanged 0ms
+ ✓ tests/paths.test.ts > normalizePath > normalizes mixed-separator WSL paths fully 0ms
+ ✓ tests/paths.test.ts > normalizePath > converts a WSL /mnt path whose remainder contains a literal newline byte 0ms
+ ✓ tests/paths.test.ts > normalizePath > lowercases a UNC path host and share segment 0ms
+ ✓ tests/paths.test.ts > normalizePath > normalizes two differently-cased UNC references to the same share to the identical string 0ms
+ ✓ tests/paths.test.ts > normalizePath > does not case-fold a UNC path's segments beyond host/share 0ms
+ ✓ tests/paths.test.ts > normalizePath > normalizes a plain \\?\ extended-length path identically to its non-extended equivalent 0ms
+ ✓ tests/paths.test.ts > normalizePath > normalizes a \\?\UNC\ extended-length UNC path identically to its non-extended equivalent 0ms
+ ✓ tests/paths.test.ts > normalizePath > Git Bash /<drive>/ mount form (win32-gated) > rewrites /c/Projects/x to c:/Projects/x on win32 0ms
+ ✓ tests/paths.test.ts > normalizePath > Git Bash /<drive>/ mount form (win32-gated) > lowercases the drive and handles a bare /C root on win32 0ms
+ ✓ tests/paths.test.ts > normalizePath > Git Bash /<drive>/ mount form (win32-gated) > leaves a multi-letter /cab/ directory untouched on win32 0ms
+ ✓ tests/paths.test.ts > normalizePath > Git Bash /<drive>/ mount form (win32-gated) > leaves /c/foo unchanged on non-win32 (a real POSIX path) 0ms
+ ✓ tests/paths.test.ts > normalizePath > 8.3 short-name expansion (win32-gated) > expands a short-name segment to its long form via fs.realpathSync.native 1ms
+ ✓ tests/paths.test.ts > normalizePath > 8.3 short-name expansion (win32-gated) > does not touch a path with no short-name segment 0ms
+ ✓ tests/paths.test.ts > normalizePath > 8.3 short-name expansion (win32-gated) > is a no-op on non-win32 even with a short-name-shaped segment 0ms
+ ✓ tests/paths.test.ts > normalizePath > 8.3 short-name expansion (win32-gated) > resolves through the last short-name segment when a path contains two 0ms
+ ✓ tests/paths.test.ts > normalizePath > 8.3 short-name expansion (win32-gated) > falls back to the original path when the native lookup throws (path does not exist) 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > lowercases an uppercase ASCII drive-letter prefix 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > leaves an already-lowercase drive-letter prefix unchanged 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > leaves a string with no colon at index 1 unchanged 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > leaves a digit immediately before a colon unchanged (no-op either way, since toLowerCase() on a digit is already a no-op) 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > does not fold a non-ASCII uppercase letter before a colon (the guard this helper preserves from paths.ts's original inline check): a real Windows drive letter is always ASCII A-Z, so a non-ASCII character here is never a genuine drive letter, and folding it would invoke locale-sensitive String.prototype.toLowerCase() semantics for no real benefit 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > lowercases a UNC path host and share segment 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > normalizes two differently-cased UNC host/share references to the identical string 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > leaves a UNC path's segments beyond host/share untouched, mirroring the drive-letter-only fold 0ms
+ ✓ tests/paths.test.ts > lowercaseDriveLetter > leaves a UNC-shaped string with no share segment unchanged (no match, falls through) 0ms
+ ✓ tests/paths.test.ts > normalizeDarwinSystemAlias > normalizes only the /var path boundary on macOS 0ms
+ ✓ tests/paths.test.ts > normalizeDarwinSystemAlias > normalizes a bare uppercase /VAR (no trailing content) case-insensitively on macOS 0ms
+ ✓ tests/paths.test.ts > resolveIndexPath > uses path.win32.resolve, not the ambient path.resolve, when file is Windows-drive-absolute (fail-on-buggy: passes trivially on a real Windows host even without the fix, since the ambient resolve is win32-native there) 0ms
+ ✓ tests/paths.test.ts > resolveIndexPath > uses path.win32.resolve, not the ambient path.resolve, when only base (cwd) is Windows-drive-absolute and file is relative 0ms
+ ✓ tests/paths.test.ts > resolveIndexPath > does not use path.win32.resolve for a relative file against a POSIX-style base 0ms
+ ✓ tests/paths.test.ts > resolveIndexPath > dedups a relative-vs-Windows-absolute reference to the same file under a Windows-style cwd (fail-on-buggy: breaks if the ambient path.resolve is used instead of path.win32.resolve) 0ms
+ ✓ tests/paths.test.ts > resolveIndexPath > dedups a drive-letter-case-only difference under a Windows-style cwd 0ms
+ ✓ tests/paths.test.ts > resolveIndexPath > does not treat a drive-relative path (colon with no following separator) as Windows-absolute 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > returns the absolute path unchanged when no root is available 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > does not fall back to cwd-relative output when root is undefined 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > returns a forward-slashed relative path for a target inside root 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > returns the absolute path unchanged for a target outside root 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > returns the root itself as "." 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > handles a trailing separator on root 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > strips the root even when the two sides are spelled differently 0ms
+ ✓ tests/paths.test.ts > toDisplayPath > cross-drive (win32-gated) > returns the absolute path unchanged for a target on a different drive letter than root 0ms
+ ✓ tests/config.test.ts > loadConfig > reads image_shrink.vision_tier, and ignores a value that is not one of the two tiers 7ms
+ ✓ tests/config.test.ts > loadConfig > lets TOKEN_GOAT_VISION_TIER override the configured tier 2ms
+ ✓ tests/config.test.ts > loadConfig > returns all defaults when config file is absent 1ms
+ ✓ tests/config.test.ts > loadConfig > applies env var override for TOKEN_GOAT_COMPACT_ASSIST 1ms
+ ✓ tests/config.test.ts > loadConfig > applies env var override for TOKEN_GOAT_BASH_COMPRESS 1ms
+ ✓ tests/config.test.ts > loadConfig > applies env var override for TOKEN_GOAT_OVERFLOW_GUARD 1ms
+ ✓ tests/config.test.ts > loadConfig > applies env var override for TOKEN_GOAT_OVERFLOW_MAX_TOKENS 1ms
+ ✓ tests/config.test.ts > loadConfig > applies env var override for TOKEN_GOAT_HINT_JSON_SIDECAR 1ms
+ ✓ tests/config.test.ts > loadConfig > applies env var override for TOKEN_GOAT_LARGE_READ_BYTES 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps an out-of-range env var override for TOKEN_GOAT_OVERFLOW_MAX_TOKENS to the documented max (1000-1_000_000) 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps an out-of-range env var override for TOKEN_GOAT_LARGE_READ_BYTES to the documented max (0-100_000_000) 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps an out-of-range env var override for TOKEN_GOAT_MCP_DEDUP_TTL_SECS to the documented max (1-3600s) 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps an out-of-range env var override for TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS to the documented max (1-86400s) 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps a below-range env var override for TOKEN_GOAT_HOOK_WATCHDOG_MS to the documented min (100ms) 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps an out-of-range env var override for TOKEN_GOAT_WORKER_MAX_POOL to the documented max (1-8) 1ms
+ ✓ tests/config.test.ts > loadConfig > clamps an out-of-range env var override for TOKEN_GOAT_EMBED_THREADS to the documented max (1-16) 1ms
+ ✓ tests/config.test.ts > loadConfig > defaults to a small fixed share of the host, not a host-sized thread pool 1ms
+ ✓ tests/config.test.ts > loadConfig > defaults to a priority below normal, so indexing yields to the user 0ms
+ ✓ tests/config.test.ts > loadConfig > mtime cache: second call with unchanged file returns same object reference 1ms
+ ✓ tests/config.test.ts > loadConfig > the cached object is frozen (regression: a caller mutating a sub-field of the shared cached config, e.g. loadConfig().hints.foo = x, used to silently corrupt every other caller sharing that same reference until the next cache invalidation) 1ms
+ ✓ tests/config.test.ts > loadConfig > mtime cache: invalidated by invalidateConfigCache() 2ms
+ ✓ tests/config.test.ts > loadConfig > content-hash cache: a second write landing on the same mtime is still picked up (regression: the old mtime-only cache key silently served the first write forever once two writes shared an mtime tick) 2ms
+ ✓ tests/config.test.ts > loadConfig > round-trips saveConfig → loadConfig with modified values 4ms
+ ✓ tests/config.test.ts > loadConfig > treats a persisted reread_deny_min_bytes of exactly 2048 as the stale pre-a1fad4c6 default and falls through to the current default (51_200), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before a1fad4c6 permanently persisted the then-in-memory-only 2048 default, which a1fad4c6 later wired up as the real re-read-deny gate) 1ms
+ ✓ tests/config.test.ts > loadConfig > respects a persisted reread_deny_min_bytes that is not the legacy 2048 sentinel (proving the fix only clobbers the exact stale default, not real user values) 1ms
+ ✓ tests/config.test.ts > loadConfig > treats a persisted large_read_redirect_bytes of exactly 45_000 as the stale pre-4b6f30dc default and falls through to the current default (512_000), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before 4b6f30dc permanently persisted the then-in-memory-only 45_000 default, which 4b6f30dc later wired up as the real pressure-scaled first-read deny gate) 1ms
+ ✓ tests/config.test.ts > loadConfig > respects a persisted large_read_redirect_bytes that is not the legacy 45_000 sentinel (proving the fix only clobbers the exact stale default, not real user values) 1ms
+ ✓ tests/config.test.ts > loadConfig > treats a persisted cache_min_bytes of exactly 0 as the stale pre-687758ae default and falls through to the current default (512), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before 687758ae permanently persisted the then-in-memory-only 0 default, which 687758ae later wired up as the real cache minimum-size gate) 1ms
+ ✓ tests/config.test.ts > loadConfig > respects a persisted cache_min_bytes that is not the legacy 0 sentinel (proving the fix only clobbers the exact stale default, not real user values) 1ms
+ ✓ tests/config.test.ts > loadConfig > round-trips warn_unbalanced_shell_quoting, cross_session_read_dedup, and cross_session_read_dedup_ttl_secs (fail-on-buggy: saveConfig previously omitted these three hints fields, silently resetting them to defaults on every save) 2ms
+ ✓ tests/config.test.ts > saveConfig and auto_trigger_multiplier explicitness (#323 regression) > a saveConfig() for an unrelated key does not bake the still-default auto_trigger_multiplier into the raw TOML (regression: saveConfig always resaved every field, so isAutoTriggerMultiplierExplicit() returned true forever after any config set, permanently discarding the harness-tuned default multiplier) 4ms
+ ✓ tests/config.test.ts > saveConfig and auto_trigger_multiplier explicitness (#323 regression) > a saveConfig() preserves an explicitly-set non-default auto_trigger_multiplier 3ms
+ ✓ tests/config.test.ts > saveConfig and auto_trigger_multiplier explicitness (#323 regression) > a saveConfig() writes the key when the user explicitly sets the default value itself (2.0 written on purpose is not indistinguishable from never-touched, once isAutoTriggerMultiplierExplicit() already saw it explicit pre-save) 3ms
+ ✓ tests/config.test.ts > loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression) > getLastConfigParseError() is null when config.toml is simply absent 1ms
+ ✓ tests/config.test.ts > loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression) > getLastConfigParseError() reports the parse failure when config.toml exists but is invalid TOML, while loadConfig still falls back to defaults 1ms
+ ✓ tests/config.test.ts > loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression) > getLastConfigParseError() clears back to null on the next load once the file is fixed 2ms
+ ✓ tests/config.test.ts > loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression) > loadPersistedConfig() also reports the parse failure, distinct from an absent file 3ms
+ ✓ tests/config.test.ts > loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression) > loadPersistedConfig() ignores a transient TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES env override instead of baking it into the persisted-on-disk view (regression: withoutConfigEnv only cleared its hand-maintained ENV_KEYS list, which omitted this var, so an env override active for the current invocation leaked through and would get permanently written to config.toml by a `config set` on any unrelated key) 1ms
+ ✓ tests/config.test.ts > loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression) > loadPersistedConfig() ignores a transient TOKEN_GOAT_OCR_ENABLED env override instead of baking it into the persisted-on-disk view (regression: same withoutConfigEnv omission as glob_dedup_min_matches above) 1ms
+ ✓ tests/config.test.ts > defaultConfig field spot-checks > CompactAssistConfig defaults 0ms
+ ✓ tests/config.test.ts > defaultConfig field spot-checks > CompactAssistConfig no longer carries lazy_skill_injection 0ms
+ ✓ tests/config.test.ts > defaultConfig field spot-checks > BashCompressConfig defaults 0ms
+ ✓ tests/config.test.ts > defaultConfig field spot-checks > SkillPreservationConfig defaults 0ms
+ ✓ tests/config.test.ts > defaultConfig field spot-checks > HintsConfig defaults 0ms
+ ✓ tests/config.test.ts > defaultConfig field spot-checks > ImageShrinkConfig defaults 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > clamps large_file_symbol_only_kb to not exceed large_file_skip_kb when symbol_only_kb is configured larger 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > applies env var override for TOKEN_GOAT_BASH_DEDUP_MIN_BYTES 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > clamps an out-of-range env var override for TOKEN_GOAT_BASH_DEDUP_MIN_BYTES to the documented max (0-100_000) 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > applies env var override for TOKEN_GOAT_WEB_DEDUP_MIN_BYTES 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > clamps an out-of-range env var override for TOKEN_GOAT_WEB_DEDUP_MIN_BYTES to the documented max (0-100_000) 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > applies env var override for TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > clamps an out-of-range env var override for TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES to the documented max (0-100_000) 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > applies env var override for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > picks up a mid-process change to TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES without an explicit invalidateConfigCache() call (regression: configEnvFingerprint's hand-maintained ENV_KEYS list omitted this var, so loadConfig()'s cache never saw the change and kept serving the stale value) 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > TOKEN_GOAT_PROTECT_RECENT_READS overrides hints.protect_recent_reads (envInt) 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > TOKEN_GOAT_REREAD_DENY overrides hints.reread_deny (envBool) 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > TOKEN_GOAT_QUIET_HOURS overrides hints.quiet_hours (envStr) 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > picks up a mid-process change to TOKEN_GOAT_OCR_ENABLED without an explicit invalidateConfigCache() call (regression: same ENV_KEYS omission as glob_dedup_min_matches above) 1ms
+ ✓ tests/config.test.ts > cross-field config clamping > applies env var override for TOKEN_GOAT_WEB_CACHE_MAX_FILES 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > clamps an out-of-range env var override for TOKEN_GOAT_WEB_CACHE_MAX_FILES to the documented max (0-10_000_000) 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > applies env var override for TOKEN_GOAT_WEB_CACHE_MAX_BYTES 0ms
+ ✓ tests/config.test.ts > cross-field config clamping > clamps an out-of-range env var override for TOKEN_GOAT_WEB_CACHE_MAX_BYTES to the documented max (0-100 * 1024 * 1024 * 1024) 0ms
+ ✓ tests/config.test.ts > ENV_KEYS registry (constants.ts) > does not export a dead PREFER_AVIF entry (no feature ever reads it; removed from the canonical env-var registry) 0ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > falls back to global-only behavior unchanged when no .token-goat.toml is present (regression: existing behavior) 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > a valid .token-goat.toml overriding one known key changes that key's effective value 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > per-project file overriding a value also set in the global file: per-project wins 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > per-project file setting one key in a section leaves sibling keys in that section inherited from the global file (field-level merge, not whole-section replace) 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > an unknown key in .token-goat.toml is ignored, same as an unknown key in the global config.toml 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > an unknown section in .token-goat.toml is ignored, same as an unknown section in the global config.toml 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > a malformed .token-goat.toml fails open: global config still loads, and the parse error is reported separately from the global one 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > an out-of-bounds value in .token-goat.toml is clamped/rejected the same way an out-of-bounds value in the global config is 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > an env var override wins over both the global file and the per-project file 2ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > cache: a change to the per-project file (with the global file and env unchanged) is picked up on the next loadConfig() after invalidateConfigCache() 2ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > getProjectConfigInfo() reports the overridden dotted keys for the config-list display 1ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > getProjectConfigInfo() returns null when no .token-goat.toml exists 0ms
+ ✓ tests/config.test.ts > per-project .token-goat.toml override > does not break existing zero-arg loadConfig() callers (signature stays backward compatible) 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > reads the global config written as UTF-8 with a mark 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > reads the global config written as UTF-16LE with a mark 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > reads the global config written as UTF-8 with no mark 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > reads a per-project file written with a mark, and still refuses its locked keys 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > has doctor agree with the loader about a config written as UTF-8 with a mark 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > has doctor agree with the loader about a config written as UTF-16LE with a mark 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > has doctor agree with the loader about a config written as UTF-8 with no mark 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > has config validate agree with the loader about a config written as UTF-8 with a mark 3ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > has config validate agree with the loader about a config written as UTF-16LE with a mark 2ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > has config validate agree with the loader about a config written as UTF-8 with no mark 3ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > still has doctor report a genuinely malformed BOM-prefixed file as failing 1ms
+ ✓ tests/config.test.ts > a config file written with a byte-order mark > still reports a genuinely malformed file as a parse error rather than swallowing it 1ms
+
+ Test Files  2 passed (2)
+      Tests  140 passed (140)
+   Start at  08:16:18
+   Duration  1.64s (transform 1.05s, setup 58ms, import 1.24s, tests 144ms, environment 0ms)
+

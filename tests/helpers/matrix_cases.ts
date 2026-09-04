@@ -2842,6 +2842,41 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const arr = JSON.parse(rj.stdout) as unknown[]
     expect(Array.isArray(arr)).toBe(true)
   },
+
+  bench: () => {
+    // `run` executes from an isolated scratch repo, so the corpus is named absolutely rather than
+    // left to the default relative path. Exercising the shipped bundle matters here beyond the
+    // usual reason: bench measures the compressors through `deliverCompressed`, so a build that
+    // tree-shook a filter registry would report a corpus with no filters matched -- as a clean 0%
+    // run, not as an error.
+    const corpus = path.join(ROOT, 'tests', 'fixtures', 'bench')
+    const r = run(['bench', '--corpus', corpus])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/ratio\s+\d+\.\d% saved/)
+    expect(r.stdout).toMatch(/fidelity \d+\/\d+ kept/)
+
+    const rj = run(['bench', '--corpus', corpus, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const report = JSON.parse(rj.stdout) as {
+      ratioPercent: number
+      floorPercent: number
+      fidelityIntact: boolean
+      appliedCases: number
+      coveredFilters: number
+      cases: { filter: string | null }[]
+    }
+    expect(report.fidelityIntact).toBe(true)
+    // Every corpus command must still route to a real filter through the bundled dispatch table.
+    expect(report.cases.every((c) => c.filter !== null)).toBe(true)
+    expect(report.coveredFilters).toBeGreaterThan(0)
+    expect(report.appliedCases).toBeGreaterThan(0)
+    expect(report.ratioPercent).toBeGreaterThan(report.floorPercent)
+
+    // The metric's own negative controls, run against the shipped binary.
+    const rv = run(['bench', '--corpus', corpus, '--validate'])
+    expect(rv.status, rv.stderr).toBe(0)
+    expect(rv.stdout).toContain('The corpus discriminates')
+  },
 }
 
 /** Number of sharded command_matrix_e2e.*.test.ts files the case table is split across. A guard asserts this equals the number of shard files actually on disk, since raising it without adding the file would drop those cases from the run while every other check still passed. */

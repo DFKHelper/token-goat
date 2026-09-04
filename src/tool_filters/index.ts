@@ -131,6 +131,7 @@ export {
   detectFromCommand,
   tryWrapCompoundSegments,
   compressOutput,
+  deliverCompressed,
   filterByName,
 } from './dispatch.js'
-export type { CompressOptions } from './dispatch.js'
+export type { CompressOptions, DeliveredCompression } from './dispatch.js'

@@ -1,0 +1,9 @@
+{
+  "provenance": "CAPTURE -- `git log --stat -25` run in this repository on 2026-09-04, stdout+stderr redirected to git-log-stat.txt verbatim.",
+  "command": "git log --stat -25",
+  "exitCode": 0,
+  "mustKeep": [
+    "3d5550c94978e07e48ac74d7db047877ec1d38ac",
+    "chore: bump version to 2.9.2"
+  ]
+}

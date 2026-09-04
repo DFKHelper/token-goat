@@ -1,0 +1,9 @@
+{
+  "provenance": "CAPTURE -- `npm ls --all` run in this repository on 2026-09-04 (exit 1, caused by the extraneous package below), stdout+stderr redirected to npm-ls-all.txt verbatim.",
+  "command": "npm ls --all",
+  "exitCode": 1,
+  "mustKeep": [
+    "token-goat@2.9.2",
+    "@emnapi/runtime@1.11.3 extraneous"
+  ]
+}
