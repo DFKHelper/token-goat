@@ -4,6 +4,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vitest output from a verbose run is now compressed, where before it came back whole.** `vitest --reporter=verbose` prints one line per test carrying the full `file > describe > name` path, and it indents its summary. Both shapes matched none of the rules token-goat used to recognise a vitest run, so a 22,684-byte run came back 2 bytes smaller. It now comes back at 348 bytes, with the run header and every count kept. A second, quieter problem went with it: a test whose name happens to end in something shaped like a duration was counted as a passing file rather than a passing test, so the collapsed count was wrong in a way that depended on which reporter produced the run. Third, a summary line that followed a block of captured stdout was counted into that block and dropped, which is the one part of a passing run nobody can do without.
+
+  The reason none of this was caught is worth writing down: the existing tests wrote their summary lines flush against the left margin, which is what the rule required and what vitest has never printed. A fixture shaped by the code it tests agrees with that code by construction. The new tests are copied byte for byte out of a real run. No reindex is needed. See [src/tool_filters/test_runners.ts](src/tool_filters/test_runners.ts).
+
 ### Added
 
 - **`token-goat bench` scores the shell-output compressors, so a change to one can be measured instead of argued about.** It replays a corpus of captured command output through the same function that decides what a real shell command hands back to the model, and prints how much smaller each case got. Measuring through that function rather than a copy of it is the point: a benchmark with its own idea of when compression applies would keep reporting the old number after delivery changed.
