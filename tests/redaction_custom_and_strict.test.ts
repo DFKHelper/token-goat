@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { loadConfig, type Config, type RedactionConfig } from '../src/config.js'
+import { invalidateConfigCache, loadConfig, type Config, type RedactionConfig } from '../src/config.js'
 import { compileCustomPatterns, redactSecrets } from '../src/secret_redact.js'
 
 function withRedaction(redaction: Partial<RedactionConfig>): Config {
@@ -108,5 +108,68 @@ describe('redaction.strict', () => {
     const twice = redactSecrets(once, withRedaction({ strict: true }))
     expect(twice.text).toBe(once)
     expect(twice.count).toBe(0)
+  })
+})
+
+/**
+ * Ways a custom pattern can be wrong that produce silence rather than an error.
+ *
+ * PROVENANCE
+ *
+ * CAPTURE. Every case here is an input an adversarial review ran against the shipped
+ * `compileCustomPatterns` / `redactSecrets` and recorded the wrong output from. The comma case is
+ * quoted from its report verbatim: `EMP-[0-9]{4,8}` reached the compiler as `EMP-[0-9]{4` and `8}`,
+ * both of which compile, so `problems` came back empty and the operator's rule matched nothing.
+ */
+describe('a custom redaction pattern that is wrong in a way nothing would otherwise report', () => {
+  it('rejects a pattern that matches the empty string instead of shredding the text', () => {
+    const { patterns, problems } = compileCustomPatterns(['x*'])
+    expect(patterns, 'an empty-matching pattern was compiled and will be applied').toEqual([])
+    expect(problems.map((p) => p.pattern)).toEqual(['x*'])
+    expect(problems[0]?.reason).toContain('empty string')
+
+    const out = redactSecrets('hello world', withRedaction({ custom_patterns: ['x*'] }))
+    expect(out.text, 'the text was rewritten by a pattern that should have been refused').toBe('hello world')
+    expect(out.count, 'a refused pattern must not inflate the redaction count').toBe(0)
+  })
+
+  it('rejects a group that repeats inside a repeat, which can take exponential time', () => {
+    const { patterns, problems } = compileCustomPatterns(['(a+)+$'])
+    expect(patterns, 'a catastrophic-backtracking pattern was compiled').toEqual([])
+    expect(problems[0]?.reason).toContain('exponential')
+  })
+
+  it('still accepts the ordinary patterns an operator actually writes', () => {
+    const good = ['EMP-[0-9]{4,8}', 'SOL-[A-Z]{3}-\\d+', 'internal-[a-f0-9]{16}']
+    const { patterns, problems } = compileCustomPatterns(good)
+    expect(problems, `a legitimate pattern was refused: ${JSON.stringify(problems)}`).toEqual([])
+    expect(patterns).toHaveLength(3)
+
+    const out = redactSecrets('employee EMP-12345678 filed it', withRedaction({ custom_patterns: good }))
+    expect(out.text).toBe('employee [REDACTED:custom] filed it')
+  })
+})
+
+describe('the environment variable that carries custom patterns', () => {
+  // A comma is how a regex writes a quantifier range, so a comma-separated list cuts `{4,8}` in
+  // half. Both halves compile -- `{4` and `8}` degrade to literals -- which is why this failed
+  // silently rather than loudly, and why the separator had to change rather than the validation.
+  it('does not split a quantifier range down the middle', () => {
+    const prev = process.env['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS']
+    try {
+      process.env['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS'] = 'EMP-[0-9]{4,8}'
+      // loadConfig memoizes, so without this the assertion below reads a config built before the
+      // environment was set and passes whatever the separator is -- which is how this test first
+      // stayed green against the very bug it exists to catch.
+      invalidateConfigCache()
+      const cfg = loadConfig()
+      expect(cfg.redaction.custom_patterns, 'the pattern was split into fragments').toEqual(['EMP-[0-9]{4,8}'])
+      const out = redactSecrets('employee EMP-12345678', cfg)
+      expect(out.text, 'the operator rule set through the environment did not redact').toBe('employee [REDACTED:custom]')
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS']
+      else process.env['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS'] = prev
+      invalidateConfigCache()
+    }
   })
 })

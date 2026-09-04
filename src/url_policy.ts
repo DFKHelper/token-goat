@@ -216,14 +216,61 @@ export function urlPolicyDenialReason(url: string, policy: UrlPolicy): string | 
  * surface: the harness's own `WebFetch` tool runs outside our process, and all we can do is refuse
  * to let the call start.
  */
+export /** Parses an IPv6 literal into its eight 16-bit groups, or null if it isn't one. Handles `::`
+ * zero-compression, a `%zone` suffix, and a dotted-quad tail (`::ffff:127.0.0.1`), which it
+ * folds into the equivalent two hex groups so the classifier only ever sees one representation.
+ * Needed because a substring/prefix test can't see through those spellings: `::ffff:127.0.0.1`
+ * is normalized by `new URL` to `::ffff:7f00:1`, which matches no textual loopback pattern. */
+function parseIpv6Groups(text: string): number[] | null {
+  let rest = text
+  const zoneAt = rest.indexOf('%')
+  if (zoneAt !== -1) rest = rest.slice(0, zoneAt)
+  if (!/^[0-9a-f:.]+$/i.test(rest) || !rest.includes(':')) return null
+
+  const lastColon = rest.lastIndexOf(':')
+  const tail = rest.slice(lastColon + 1)
+  if (tail.includes('.')) {
+    const quad = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(tail)
+    if (!quad) return null
+    const octets = [Number(quad[1]), Number(quad[2]), Number(quad[3]), Number(quad[4])]
+    if (octets.some((n) => n > 255)) return null
+    const hi = ((octets[0] as number) << 8) | (octets[1] as number)
+    const lo = ((octets[2] as number) << 8) | (octets[3] as number)
+    rest = `${rest.slice(0, lastColon + 1)}${hi.toString(16)}:${lo.toString(16)}`
+  }
+
+  const parseGroup = (g: string): number | null => (/^[0-9a-f]{1,4}$/i.test(g) ? parseInt(g, 16) : null)
+  const halves = rest.split('::')
+  if (halves.length > 2) return null
+
+  let parts: string[]
+  if (halves.length === 2) {
+    const left = (halves[0] as string).length > 0 ? (halves[0] as string).split(':') : []
+    const right = (halves[1] as string).length > 0 ? (halves[1] as string).split(':') : []
+    if (left.length + right.length > 7) return null // `::` must stand for at least one group
+    parts = [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right]
+  } else {
+    parts = rest.split(':')
+    if (parts.length !== 8) return null
+  }
+
+  const groups: number[] = []
+  for (const part of parts) {
+    const value = parseGroup(part)
+    if (value === null) return null
+    groups.push(value)
+  }
+  return groups
+}
+
 const METADATA_HOSTNAMES: ReadonlySet<string> = new Set([
   'metadata.google.internal',
   'metadata.goog',
+  // GCE answers on the bare name too, and it is the form most of Google's own docs use.
+  'metadata',
   // Alibaba Cloud's equivalent of 169.254.169.254.
   '100.100.100.200',
 ])
-
-/** AWS's IPv6 instance metadata address, in the spellings a URL can carry it in. */
 const METADATA_IPV6: ReadonlySet<string> = new Set(['fd00:ec2::254', '[fd00:ec2::254]'])
 
 /**
@@ -236,6 +283,22 @@ const METADATA_IPV6: ReadonlySet<string> = new Set(['fd00:ec2::254', '[fd00:ec2:
  * which is where operator policy belongs. Note that `localhost` is deliberately absent: fetching a
  * local development server is normal work, and refusing it would cost real users something real to
  * defend against nothing.
+ *
+ * Numeric spellings of 169.254.169.254 -- decimal `2852039166`, hex `0xA9FEA9FE`, octal
+ * `0251.0376.0251.0376` -- need no handling here, because WHATWG `URL` has already normalised them
+ * to the dotted quad by the time `hostname` is read. IPv6 is the case that does need handling, and
+ * an adversarial review found it missing: `URL` normalises `[::ffff:169.254.169.254]` to
+ * `[::ffff:a9fe:a9fe]`, which matches no dotted-quad pattern and no name. So the address is parsed
+ * and any embedded IPv4 is decoded before it is classified, through {@link parseIpv6Groups} -- the
+ * same parser `screenshot.ts` uses, imported rather than reimplemented, because a second
+ * hand-rolled copy of this classification is exactly how the gap arose.
+ *
+ * What this cannot do, stated because the limit matters more than the check: the test is on the
+ * address as written. A *name* that resolves into 169.254.0.0/16 is not caught, and neither is a
+ * redirect from an allowed host onto a metadata address, because the fetch this guards runs in
+ * another process that follows its own redirects. Token-goat's own fetcher closes both of those
+ * ({@link performHttpFetch} pins DNS and re-checks each hop); this function governs the URL a
+ * harness tool was asked to fetch, and that is the whole of its reach.
  */
 export function metadataEndpointRefusal(url: string): string | null {
   let host: string
@@ -253,5 +316,30 @@ export function metadataEndpointRefusal(url: string): string | null {
   if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) {
     return `URL is a link-local address (${host}), where cloud metadata services answer`
   }
+  const embedded = embeddedIpv4InIpv6(host)
+  if (embedded !== null && embedded[0] === 169 && embedded[1] === 254) {
+    return `URL is a link-local address written as IPv6 (${host}), where cloud metadata services answer`
+  }
   return null
+}
+
+/**
+ * The IPv4 address an IPv6 literal carries, or `null` when it carries none.
+ *
+ * Covers the three encodings that put a routable IPv4 address inside an IPv6 one: IPv4-mapped
+ * (`::ffff:0:0/96`), IPv4-compatible (`::/96`), and the NAT64 well-known prefix `64:ff9b::/96`,
+ * whose low 32 bits a NAT64 gateway translates straight back out. Each spells the same destination
+ * differently, so each has to be decoded before the address is judged rather than after.
+ */
+function embeddedIpv4InIpv6(host: string): [number, number, number, number] | null {
+  const groups = parseIpv6Groups(host.replace(/^\[/, '').replace(/\]$/, ''))
+  if (groups === null) return null
+
+  const mapped = groups.slice(0, 5).every((g) => g === 0) && (groups[5] === 0xffff || groups[5] === 0)
+  const nat64 = groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)
+  if (!mapped && !nat64) return null
+
+  const hi = groups[6] ?? 0
+  const lo = groups[7] ?? 0
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]
 }

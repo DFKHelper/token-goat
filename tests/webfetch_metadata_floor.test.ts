@@ -34,6 +34,14 @@ const BLOCKED: ReadonlyArray<readonly [string, string]> = [
   ['AWS IPv6 IMDS', 'http://[fd00:ec2::254]/latest/meta-data/'],
   ['a trailing-dot hostname, which resolves the same', 'http://metadata.google.internal./x'],
   ['an upper-case spelling', 'http://METADATA.GOOGLE.INTERNAL/x'],
+  // Found by an adversarial review after the first version shipped. `new URL` rewrites an
+  // IPv4-mapped literal to its hex form, so `[::ffff:169.254.169.254]` reaches `hostname` as
+  // `[::ffff:a9fe:a9fe]` and matches neither the name sets nor the dotted-quad pattern.
+  ['IPv4-mapped IPv6', 'http://[::ffff:169.254.169.254]/latest/meta-data/'],
+  ['IPv4-mapped IPv6, already in hex', 'http://[::ffff:a9fe:a9fe]/latest/meta-data/'],
+  ['IPv4-compatible IPv6', 'http://[::169.254.169.254]/latest/meta-data/'],
+  ['the NAT64 well-known prefix, which a gateway translates back out', 'http://[64:ff9b::a9fe:a9fe]/x'],
+  ['GCE bare short name, which answers the same as the fully qualified one', 'http://metadata/computeMetadata/v1/'],
 ]
 
 const REACHABLE: ReadonlyArray<readonly [string, string]> = [

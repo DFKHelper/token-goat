@@ -46,8 +46,32 @@ const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 
  * matches neither clause. That is precisely the omission the converse assertion is there to make
  * expensive, since such a module cannot be added to the inventory without failing it.
  */
-const NETWORK_IMPORT = /from\s+'node:(https?|net|dns)'|from\s+'(https?|net|dns)'|require\('node:(https?|net|dns)'\)/
-const GLOBAL_FETCH = /(?<![\w.])fetch\s*\(/
+/**
+ * Node modules that can open a socket, plus the third-party clients that wrap them.
+ *
+ * The first version of this listed `http`, `https`, `net` and `dns` and required a closing quote
+ * straight after, which meant `node:http2`, `node:tls` and `node:dgram` all read as clean. It also
+ * missed `await import('node:https')`, an idiom used in seventeen places in this repo, so the one
+ * form most likely to be reached for was the one form not covered. An adversarial review found all
+ * of it. The alternation is now anchored on the module name with a boundary rather than a quote,
+ * and both static and dynamic import syntax are matched.
+ */
+const NET_MODULE = String.raw`(?:node:)?(?:https?|http2|net|tls|dns|dgram)`
+const NETWORK_IMPORT = new RegExp(
+  String.raw`from\s+'${NET_MODULE}'|require\(\s*'${NET_MODULE}'\s*\)|import\(\s*'${NET_MODULE}'\s*\)` +
+    String.raw`|from\s+'(?:undici|axios|node-fetch|ws|got|superagent)'`,
+)
+
+/**
+ * A call to global `fetch`.
+ *
+ * The lookbehind excludes a preceding word character so `prefetch(` is not a hit. It deliberately
+ * no longer excludes a preceding dot: that spelling was there to skip `obj.fetch(`, and the cost
+ * was that `globalThis.fetch(` and `undici.fetch(` -- both real ways to reach the network -- read
+ * as clean. Over-matching a property named `fetch` is a false positive that shows up as a build
+ * failure someone has to look at; under-matching is a network path nobody sees.
+ */
+const GLOBAL_FETCH = /(?<!\w)fetch\s*\(/
 const OFFLINE_GATE = /loadConfig\(\)\.network\.offline/
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -70,6 +94,43 @@ function code(text: string): string {
 }
 
 describe('the capability inventory', () => {
+
+  /**
+   * A detector that matches nothing is indistinguishable from a codebase with no egress, and this
+   * repo has shipped that shape before. None of the spellings below appears in `src/` today, which
+   * is exactly why they need asserting somewhere: the walk above cannot demonstrate that the
+   * regexes work, only that they agree with the four modules already declared.
+   *
+   * PROVENANCE
+   *
+   * HAND-DERIVED from Node's own module names and each client's documented import path. Every entry
+   * was added because an adversarial review showed the previous regexes did not match it.
+   */
+  it.each([
+    ["a dynamic import, the idiom this repo uses most", "await import('node:https')"],
+    ['http2', "import { connect } from 'node:http2'"],
+    ['tls', "import tls from 'node:tls'"],
+    ['dgram, which is how a UDP socket opens', "import dgram from 'node:dgram'"],
+    ['require of a bare name', "const net = require('net')"],
+    ['undici', "import { request } from 'undici'"],
+    ['axios', "import axios from 'axios'"],
+    ['ws', "import WebSocket from 'ws'"],
+  ])('detects %s', (_label, line) => {
+    expect(NETWORK_IMPORT.test(line), `NETWORK_IMPORT does not match: ${line}`).toBe(true)
+  })
+
+  it.each([
+    ['a bare call', 'const r = await fetch(url)'],
+    ['through globalThis', 'const r = await globalThis.fetch(url)'],
+    ['through a namespace', 'const r = await undici.fetch(url)'],
+  ])('detects %s', (_label, line) => {
+    expect(GLOBAL_FETCH.test(line), `GLOBAL_FETCH does not match: ${line}`).toBe(true)
+  })
+
+  it('does not match a word that merely ends in fetch', () => {
+    expect(GLOBAL_FETCH.test('await prefetch(url)')).toBe(false)
+  })
+
   it('names every module in src/ that can open a network socket, and nothing that cannot', () => {
     const modules = pinnedPopulation({
       what: 'src/ modules scanned for network egress',
@@ -84,7 +145,7 @@ describe('the capability inventory', () => {
     const found = new Set<string>()
     for (const file of modules) {
       const c = code(fs.readFileSync(file, 'utf8'))
-      if (NETWORK_IMPORT.test(c) || GLOBAL_FETCH.test(c) || OFFLINE_GATE.test(c)) found.add(path.basename(file))
+      if (NETWORK_IMPORT.test(c) || GLOBAL_FETCH.test(c) || OFFLINE_GATE.test(c)) found.add(path.relative(srcDir, file).split(path.sep).join('/'))
     }
 
     // A detector that matches nothing would make every assertion below pass. This repo has shipped

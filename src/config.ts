@@ -1801,7 +1801,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const red_raw = section(raw, 'redaction')
   const red = getDefaultConfig('redaction') as RedactionConfig
   red.custom_patterns = validatedStrList(red_raw['custom_patterns'], red.custom_patterns)
-  red.custom_patterns = envStrList('TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', red.custom_patterns, ',')
+  // Newline-separated, not comma-separated: a comma is how a regex writes a quantifier range, so
+  // splitting on it turned `EMP-[0-9]{4,8}` into `EMP-[0-9]{4` and `8}`. Both halves compile --
+  // the braces degrade to literals -- so nothing failed and nothing was reported, and the
+  // operator's rule silently matched nothing. Found by an adversarial review.
+  red.custom_patterns = envStrList('TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', red.custom_patterns, '\n')
   red.strict = validatedBool(red_raw['strict'], red.strict)
   red.strict = envBool('TOKEN_GOAT_REDACTION_STRICT', red.strict)
 
