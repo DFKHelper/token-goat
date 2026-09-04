@@ -2,6 +2,14 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **Four rows of the architecture doc's component map pointed at files that are not there.** `CLAUDE.md` tells an agent to read [CLAUDE.arch.md](CLAUDE.arch.md) on demand to find where a thing lives, so a row naming a path that does not exist sends the reader nowhere and, on the published docs site, returns a 404. Two rows named a module whose contents had moved: the git-history hints are in [src/read_commands.ts](src/read_commands.ts) and the `ask` command is registered inline in [src/cli.ts](src/cli.ts). One named a file that never existed under that name after the TypeScript port, since the daemon's pid handling and its detached entry points sit in [src/worker.ts](src/worker.ts) beside the loop they start. The last named a file deliberately retired on 2026-07-05, whose row outlived it by two months.
+
+  A stale link fails quietly, which is why all four lasted: the table still renders, it still looks complete, and the only symptom is a reader arriving at nothing. [tests/guards/doc_links_resolve.test.ts](tests/guards/doc_links_resolve.test.ts) now checks every repo-relative link in every living document against `git ls-files`, which is the right oracle rather than the filesystem: this repository is developed on a case-insensitive one that resolves `security.md` against `SECURITY.md` perfectly happily, while the docs site and a Linux checkout do not. The two changelogs are out of scope by design and the guard says so, because an entry describing a past release correctly names the file that release touched even after the file is gone, and rewriting those links would falsify the history the file exists to keep. No reindex is needed.
+
 ## [2.9.3] - 2026-09-04
 
 ### Security
