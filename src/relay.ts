@@ -23,8 +23,9 @@
 import { detectHarness } from './bridges/index.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
+import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { normalizePayload, type Harness } from './hooks_cli.js'
-import { HOOK_EVENTS, type HookEventName } from './types.js'
+import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
 // Re-exported below: this was defined here until it was split out (see stdin_json.ts's own note).
 import { MAX_STDIN_BYTES, readStdinJson } from './stdin_json.js'
@@ -144,6 +145,27 @@ function harnessForNormalization(): Harness {
 }
 
 /**
+ * Remove any `token-goat …` suggestion whose quoting a file path broke out of.
+ *
+ * Every hook's output passes through here, which is the reason the check lives at this seam rather
+ * than at the ~40 places that build one of these strings by concatenation: a new hint site is safe
+ * the day it is written, without its author having to know. See {@link stripUnsafeSuggestions} for
+ * what a break looks like and why a path can contain one.
+ *
+ * Only the two variants token-goat composes itself are rewritten. `rewriteInput` is deliberately
+ * excluded: the one command token-goat makes executable is the `token-goat compress -c '<cmd>'`
+ * wrapper, which is already quoted at its own call site, and a user command legitimately containing
+ * `$` would be destroyed by a check meant for suggestions. `rewriteOutput` is excluded for the
+ * mirror-image reason: it carries captured tool output, so a file that merely quotes a token-goat
+ * command would be edited as though it were one.
+ */
+function safeSuggestions(output: HookOutput): HookOutput {
+  if (output.hookType === 'deny') return { hookType: 'deny', message: stripUnsafeSuggestions(output.message) }
+  if (output.hookType === 'context') return { hookType: 'context', context: stripUnsafeSuggestions(output.context) }
+  return output
+}
+
+/**
  * Run the hook for `eventName` against an already-parsed payload and return the
  * serialized wire JSON response as a string (never writes to stdout/stdin).
  *
@@ -187,7 +209,7 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     } catch {
       // fail-soft: a load failure just means a cold session
     }
-    const output = await runHook(event)
+    const output = safeSuggestions(await runHook(event))
     try {
       saveSessionState(stateKey)
     } catch {
