@@ -1,6 +1,6 @@
 {
   "name": "token-goat",
-  "version": "2.9.1",
+  "version": "2.9.2",
   "description": "Surgical token-reduction companion for Claude Code and other AI coding agents",
   "type": "module",
   "main": "./dist/token-goat.mjs",
