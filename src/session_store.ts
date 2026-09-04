@@ -319,7 +319,7 @@ function coerce(raw: unknown): SerializedSession {
     grepQueries,
     globQueries,
     outstandingAgentSpawns,
-    ...(typeof o['lastTabContext'] === 'string' ? { lastTabContext: o['lastTabContext'] } : {}),
+    ...(typeof o['lastTabContextDigest'] === 'string' ? { lastTabContextDigest: o['lastTabContextDigest'] } : {}),
     ...(seenImageHashes.length > 0 ? { seenImageHashes } : {}),
     ...(typeof o['compactedAt'] === 'number' ? { compactedAt: o['compactedAt'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
@@ -515,10 +515,10 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     // in memory, applied again here because a union of two capped lists can exceed the cap.
     seenImageHashes: mergeSeenImageHashes(disk.seenImageHashes ?? [], mem.seenImageHashes ?? []),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
-    ...(mem.lastTabContext !== undefined
-      ? { lastTabContext: mem.lastTabContext }
-      : disk.lastTabContext !== undefined
-        ? { lastTabContext: disk.lastTabContext }
+    ...(mem.lastTabContextDigest !== undefined
+      ? { lastTabContextDigest: mem.lastTabContextDigest }
+      : disk.lastTabContextDigest !== undefined
+        ? { lastTabContextDigest: disk.lastTabContextDigest }
         : {}),
     // Prefer the value already on disk: it marks the original creation time, and must never be bumped forward to the merge's "now". `mem` never carries one (it is not tracked in memory), so this is really "keep whatever disk has".
     ...(disk.created_ts !== undefined

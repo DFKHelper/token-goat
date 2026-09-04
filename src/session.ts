@@ -83,7 +83,7 @@ let _grepQueries = new Map<string, number>()
 let _globQueries = new Map<string, number>()
 
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
-let _lastTabContext: string | null = null
+let _lastTabContext: string | null = null // fingerprint of the block, never the block; see setLastTabContext
 let _seenImageHashes: string[] = []
 
 /** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's
@@ -504,14 +504,23 @@ export function getGlobMatchCount(signature: string): number | null {
   return _globQueries.get(signature) ?? null
 }
 
-/** Record the most recent "Tab Context:" block text seen this session, for hooks_browser_image.ts's dedup. */
+/**
+ * Record the most recent "Tab Context:" block seen this session, for hooks_browser_image.ts's dedup.
+ *
+ * A fingerprint is stored, never the block itself. The only question ever asked of this value is
+ * whether the next block is identical to it ({@link lastTabContextMatches}), and a fingerprint
+ * answers that exactly. The block does not: it is a list of the tabs open in the user's browser,
+ * titles and full URLs, and session state is written to disk, so keeping the text would put
+ * whatever a URL happens to carry -- a session token, a signed link, a password-reset parameter --
+ * into a file on disk that nothing ever reads back for its content.
+ */
 export function setLastTabContext(text: string): void {
-  _lastTabContext = text
+  _lastTabContext = shortFingerprint(text)
 }
 
-/** Return the last-recorded "Tab Context:" block text this session, or null if none seen yet. */
-export function getLastTabContext(): string | null {
-  return _lastTabContext
+/** Whether `text` is the same "Tab Context:" block already seen this session. */
+export function lastTabContextMatches(text: string): boolean {
+  return _lastTabContext !== null && _lastTabContext === shortFingerprint(text)
 }
 
 /**
@@ -764,7 +773,8 @@ export interface SerializedSession {
   grepQueries?: Array<[string, number]>
   globQueries?: Array<[string, number]>
   outstandingAgentSpawns?: Array<[string, number]>
-  lastTabContext?: string
+  /** Fingerprint of the last "Tab Context:" block, never the block itself. See `setLastTabContext`. */
+  lastTabContextDigest?: string
   /** Fingerprints of screenshots already shown this session, oldest first. See `_seenImageHashes`. */
   seenImageHashes?: string[]
   /** Unix-ms of the most recent context compaction, or absent if none. Merged max-wins by session_store.ts so a stamp made by one hook process is never lost to a concurrent process that predates it. See `_compactedAt`. */
@@ -795,7 +805,7 @@ export function exportSessionState(): SerializedSession {
     grepQueries: Array.from(_grepQueries.entries()),
     globQueries: Array.from(_globQueries.entries()),
     outstandingAgentSpawns: _outstandingAgentSpawns.map((e) => [e.prompt, e.ts]),
-    ...(_lastTabContext !== null ? { lastTabContext: _lastTabContext } : {}),
+    ...(_lastTabContext !== null ? { lastTabContextDigest: _lastTabContext } : {}),
     ...(_seenImageHashes.length > 0 ? { seenImageHashes: [..._seenImageHashes] } : {}),
     ...(_compactedAt > 0 ? { compactedAt: _compactedAt } : {}),
   }
@@ -831,7 +841,7 @@ export function importSessionState(s: SerializedSession): void {
   _globQueries = new Map(s.globQueries ?? [])
   _outstandingAgentSpawns = (s.outstandingAgentSpawns ?? []).map(([prompt, ts]) => ({ prompt, ts }))
   _outstandingAgentSpawnsAtLoad = [..._outstandingAgentSpawns]
-  _lastTabContext = s.lastTabContext ?? null
+  _lastTabContext = s.lastTabContextDigest ?? null
   _seenImageHashes = [...(s.seenImageHashes ?? [])]
   _compactedAt = s.compactedAt ?? 0
 }

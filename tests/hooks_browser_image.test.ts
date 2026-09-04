@@ -11,7 +11,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 import { postBrowserImageHandler } from '../src/hooks_browser_image.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
-import { getLastTabContext } from '../src/session.js'
+import { lastTabContextMatches } from '../src/session.js'
 import { summarize } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import type { HookEvent } from '../src/hook_registry.js'
@@ -240,7 +240,7 @@ describe('postBrowserImageHandler', () => {
       if (result.hookType === 'rewriteOutput') {
         expect(result.updatedOutput).toContain('Tab Context:')
       }
-      expect(getLastTabContext()).toBe(tabContextText)
+      expect(lastTabContextMatches(tabContextText)).toBe(true)
     })
 
     it('shortens an identical Tab Context repeat to a placeholder', async () => {
@@ -259,7 +259,7 @@ describe('postBrowserImageHandler', () => {
       const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: changed }]))
       // Below-threshold image + a non-repeat Tab Context (first-seen-or-changed passes through verbatim, which is a no-op) means nothing actually needs rewriting this call.
       expect(result.hookType).toBe('pass')
-      expect(getLastTabContext()).toBe(changed)
+      expect(lastTabContextMatches(changed)).toBe(true)
     })
 
     it('leaves a below-floor repeated Tab Context untouched -- the placeholder would not clear the net-savings floor', async () => {

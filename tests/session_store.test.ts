@@ -124,14 +124,14 @@ describe('save/load round-trip', () => {
   })
 
   it('persists and restores lastTabContext across a save/load round-trip (regression: coerce() and mergeSessionState() both omitted lastTabContext entirely, so it never survived the disk round-trip even though exportSessionState/importSessionState carry it in-process -- silently making hooks_browser_image.ts\'s cross-process Tab Context dedup inert)', () => {
-    importSessionState({ ...empty(), lastTabContext: 'Tab Context: tab 1' })
+    importSessionState({ ...empty(), lastTabContextDigest: 'abc123def4567890' })
     saveSessionState('sid-tabcontext')
 
     importSessionState(empty())
-    expect(exportSessionState().lastTabContext).toBeUndefined()
+    expect(exportSessionState().lastTabContextDigest).toBeUndefined()
 
     loadSessionState('sid-tabcontext')
-    expect(exportSessionState().lastTabContext).toBe('Tab Context: tab 1')
+    expect(exportSessionState().lastTabContextDigest).toBe('abc123def4567890')
   })
 
   it('persists and restores seenImageHashes across a save/load round-trip, so screenshot dedup survives between hook processes', () => {
