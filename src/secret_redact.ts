@@ -142,12 +142,37 @@ export interface CustomPatternProblem {
 let customCache: { key: string; patterns: RegExp[]; problems: CustomPatternProblem[] } | null = null
 
 /**
- * Compile `redaction.custom_patterns`, reporting what failed rather than throwing.
+ * A quantified group that already contains a quantifier: `(a+)+`, `(\w*)*`, `(\d+\s?)+`.
  *
- * A bad regex in a config file must not take down every command that produces output, and it must
- * not vanish silently either -- a redaction rule the operator believes is running, but is not, is
- * worse than no rule at all, because it is invisible. So an entry that does not compile is skipped
- * and returned in `problems`, which `token-goat doctor` surfaces.
+ * This is the shape behind almost every catastrophic-backtracking regex, because it lets the engine
+ * split the same input between the inner and outer repetition in exponentially many ways. Six
+ * characters are enough -- `(a+)+` against twenty-odd characters does not finish -- which is why
+ * {@link MAX_CUSTOM_PATTERN_LENGTH} bounds nothing that matters here and this check exists instead.
+ *
+ * It is a heuristic and it is stated as one. It catches the common shape, not every super-linear
+ * pattern, and it will occasionally refuse a pattern that would have been fine. Refusing loudly is
+ * the right side to err on: the alternative is a hook that stops responding with no error and no
+ * obvious cause, because a JavaScript regex cannot be interrupted once it starts.
+ */
+const NESTED_QUANTIFIER = /\((?![?*+])[^()*+]*[*+][^()]*\)\s*[*+{]/
+
+/**
+ * The compiled form of every usable custom pattern, plus what was wrong with the rest.
+ *
+ * A pattern is rejected, rather than used, when it cannot compile, when it is longer than
+ * {@link MAX_CUSTOM_PATTERN_LENGTH}, when it matches the empty string, or when it nests a
+ * quantifier inside a quantified group. The last two both come from an adversarial review:
+ *
+ * - `x*` matches the empty string at every position, so the replace inserts a marker between every
+ *   character. `hello world` came back as twelve markers wrapped around eleven letters, with the
+ *   redaction count reported as twelve. Output destroyed, and the counter -- the number an operator
+ *   would read to decide the rule was working -- inflated to agree with it.
+ * - `(a+)+$` did not finish against twenty-two characters in sixty seconds.
+ *
+ * Both are what a trailing `*` or a copied snippet produces, so neither needs an attacker. Every
+ * rejection lands in `problems`, which `token-goat doctor` prints: a redaction rule an operator
+ * believes is running and which is not is worse than no rule at all, and that is only true if the
+ * silence is broken.
  */
 export function compileCustomPatterns(sources: readonly string[]): {
   patterns: RegExp[]
@@ -167,11 +192,28 @@ export function compileCustomPatterns(sources: readonly string[]): {
       problems.push({ pattern: source.slice(0, 60), reason: `longer than ${MAX_CUSTOM_PATTERN_LENGTH} characters` })
       continue
     }
+    if (NESTED_QUANTIFIER.test(source)) {
+      problems.push({
+        pattern: source,
+        reason: 'repeats a group that already repeats, which can take exponential time to match',
+      })
+      continue
+    }
+    let compiled: RegExp
     try {
-      patterns.push(new RegExp(source, 'g'))
+      compiled = new RegExp(source, 'g')
     } catch (e) {
       problems.push({ pattern: source, reason: e instanceof Error ? e.message : 'is not a valid regular expression' })
+      continue
     }
+    if (new RegExp(source).test('')) {
+      problems.push({
+        pattern: source,
+        reason: 'matches the empty string, so it would replace every position in the text',
+      })
+      continue
+    }
+    patterns.push(compiled)
   }
   if (sources.length > MAX_CUSTOM_PATTERNS) {
     problems.push({
@@ -245,6 +287,20 @@ function looksLikeCredential(s: string): boolean {
  *
  * `config` is a parameter rather than a module-level read so a test can drive a specific policy
  * without writing a config file; every production caller takes the default.
+ */
+/**
+ * A note on markers this function did not write.
+ *
+ * Untrusted text can contain the literal string `[REDACTED:aws_access_key]`, and nothing here
+ * removes it, so a marker in the output is not by itself proof that this function put it there.
+ * An adversarial review raised defusing incoming markers as a fix. It was tried and reverted: the
+ * only way to defuse them is to rewrite them, and that breaks idempotence -- redacting
+ * already-redacted text stops being a no-op, which several call sites and their tests rely on,
+ * and it puts a second odd-looking marker in front of the reader to solve a cosmetic problem.
+ *
+ * So the limit is documented instead of papered over: `count` is the number of replacements this
+ * call made, never the number of markers in the text, and a marker is not evidence of anything on
+ * its own. Nothing downstream should read either as a measure of what was handled.
  */
 export function redactSecrets(text: string, config: Config = loadConfig()): RedactResult {
   let count = 0

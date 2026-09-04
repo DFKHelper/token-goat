@@ -11,7 +11,7 @@ import dns from 'node:dns/promises'
 import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
-import { urlPolicyDenialReason } from './url_policy.js'
+import { parseIpv6Groups, urlPolicyDenialReason } from './url_policy.js'
 import { shrinkImage } from './image_shrink.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { atomicWriteBytes, redactUrlQuery, withExtension } from './util.js'
@@ -146,52 +146,6 @@ function isBlockedIpv4Octets(a: number, b: number): boolean {
   return false
 }
 
-/** Parses an IPv6 literal into its eight 16-bit groups, or null if it isn't one. Handles `::`
- * zero-compression, a `%zone` suffix, and a dotted-quad tail (`::ffff:127.0.0.1`), which it
- * folds into the equivalent two hex groups so the classifier only ever sees one representation.
- * Needed because a substring/prefix test can't see through those spellings: `::ffff:127.0.0.1`
- * is normalized by `new URL` to `::ffff:7f00:1`, which matches no textual loopback pattern. */
-function parseIpv6Groups(text: string): number[] | null {
-  let rest = text
-  const zoneAt = rest.indexOf('%')
-  if (zoneAt !== -1) rest = rest.slice(0, zoneAt)
-  if (!/^[0-9a-f:.]+$/i.test(rest) || !rest.includes(':')) return null
-
-  const lastColon = rest.lastIndexOf(':')
-  const tail = rest.slice(lastColon + 1)
-  if (tail.includes('.')) {
-    const quad = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(tail)
-    if (!quad) return null
-    const octets = [Number(quad[1]), Number(quad[2]), Number(quad[3]), Number(quad[4])]
-    if (octets.some((n) => n > 255)) return null
-    const hi = ((octets[0] as number) << 8) | (octets[1] as number)
-    const lo = ((octets[2] as number) << 8) | (octets[3] as number)
-    rest = `${rest.slice(0, lastColon + 1)}${hi.toString(16)}:${lo.toString(16)}`
-  }
-
-  const parseGroup = (g: string): number | null => (/^[0-9a-f]{1,4}$/i.test(g) ? parseInt(g, 16) : null)
-  const halves = rest.split('::')
-  if (halves.length > 2) return null
-
-  let parts: string[]
-  if (halves.length === 2) {
-    const left = (halves[0] as string).length > 0 ? (halves[0] as string).split(':') : []
-    const right = (halves[1] as string).length > 0 ? (halves[1] as string).split(':') : []
-    if (left.length + right.length > 7) return null // `::` must stand for at least one group
-    parts = [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right]
-  } else {
-    parts = rest.split(':')
-    if (parts.length !== 8) return null
-  }
-
-  const groups: number[] = []
-  for (const part of parts) {
-    const value = parseGroup(part)
-    if (value === null) return null
-    groups.push(value)
-  }
-  return groups
-}
 
 function isBlockedIpv6(groups: number[]): boolean {
   if (groups.every((g) => g === 0)) return true // `::` unspecified -- connects to localhost

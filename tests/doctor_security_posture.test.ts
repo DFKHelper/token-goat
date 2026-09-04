@@ -11,8 +11,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { checkSecurityPosture, runDoctor } from '../src/cli_doctor.js'
-import { invalidateConfigCache, loadConfig } from '../src/config.js'
+import { checkSecurityPosture, envWeakenedSecuritySettings, runDoctor } from '../src/cli_doctor.js'
+import { CONFIG_KEY_ENV_OVERRIDES, invalidateConfigCache, loadConfig, PROJECT_LOCKED_SECTIONS } from '../src/config.js'
 import type { Config } from '../src/config.js'
 import type { DoctorResult } from '../src/doctor_result.js'
 
@@ -50,6 +50,7 @@ describe('checkSecurityPosture', () => {
       'Security fetch policy',
       'Security redaction',
       'Security mcp roots',
+      'Security config overrides',
       'Security data dir',
     ])
   })
@@ -174,5 +175,102 @@ describe('the doctor command reports the posture', () => {
     })
 
     expect(`${result.stdout}${result.stderr}`).toContain('Security injection')
+  })
+})
+
+/**
+ * The environment can reopen a setting a project config is forbidden to touch.
+ *
+ * PROVENANCE
+ *
+ * FORMAT-DERIVED. The setting names are read from `PROJECT_LOCKED_SECTIONS` in `src/config.ts`
+ * (the sections a checked-in `.token-goat.toml` cannot write), and each variable name from the
+ * `CONFIG_KEY_ENV_OVERRIDES` entry for that key in the same file. The pairing is restated here on
+ * purpose rather than imported: a test that built its expectations from the same table the
+ * implementation reads would agree with a renamed variable instead of catching it.
+ */
+describe('an environment variable that reopens a project-locked security setting', () => {
+  const LOCKED_AND_WEAKENABLE: ReadonlyArray<[setting: string, envVar: string, weakValue: string]> = [
+    ['gdrive.enabled', 'TOKEN_GOAT_GDRIVE_ENABLED', 'true'],
+    ['injection.enabled', 'TOKEN_GOAT_INJECTION_ENABLED', 'false'],
+    ['redaction.strict', 'TOKEN_GOAT_REDACTION_STRICT', 'false'],
+    ['mcp.confine_reads_to_project_root', 'TOKEN_GOAT_MCP_CONFINE_READS', 'false'],
+    ['screenshot.block_private_targets', 'TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS', 'false'],
+    ['network.offline', 'TOKEN_GOAT_OFFLINE', 'false'],
+  ]
+
+  const saved = new Map<string, string | undefined>()
+
+  beforeEach(() => {
+    for (const [, envVar] of LOCKED_AND_WEAKENABLE) {
+      saved.set(envVar, process.env[envVar])
+      delete process.env[envVar]
+    }
+  })
+
+  afterEach(() => {
+    for (const [envVar, prev] of saved) {
+      if (prev === undefined) delete process.env[envVar]
+      else process.env[envVar] = prev
+    }
+    saved.clear()
+  })
+
+  it.each(LOCKED_AND_WEAKENABLE)('reports %s when %s is set to %s', (setting, envVar, weakValue) => {
+    process.env[envVar] = weakValue
+    const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
+
+    expect(line.status, `${envVar}=${weakValue} was not reported`).toBe('warn')
+    expect(line.message).toContain(setting)
+    expect(line.message, 'the variable to unset is not named').toContain(envVar)
+  })
+
+  // `0`, `no` and `off` all switch a protection off in `_buildConfig`, so a check that only looked
+  // for the literal `false` would miss three of the four spellings and report a clean posture.
+  it.each(['0', 'no', 'off', 'FALSE', ' false '])('recognises %j as off', (spelling) => {
+    process.env['TOKEN_GOAT_INJECTION_ENABLED'] = spelling
+    const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
+    expect(line.status, `${JSON.stringify(spelling)} read as leaving injection scanning on`).toBe('warn')
+  })
+
+  it('stays quiet when the environment sets nothing', () => {
+    const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
+    expect(line.status).toBe('ok')
+  })
+
+  // Reporting a variable that tightens a setting would train the reader to skim this line, which is
+  // the one outcome that makes the real warning useless.
+  it('says nothing when the environment makes a setting safer, not weaker', () => {
+    process.env['TOKEN_GOAT_GDRIVE_ENABLED'] = 'false'
+    process.env['TOKEN_GOAT_REDACTION_STRICT'] = 'true'
+    process.env['TOKEN_GOAT_OFFLINE'] = 'true'
+    const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
+    expect(line.status, `a tightening override was reported: ${line.message}`).toBe('ok')
+  })
+
+  it('names every weakened setting rather than only the first', () => {
+    process.env['TOKEN_GOAT_GDRIVE_ENABLED'] = 'true'
+    process.env['TOKEN_GOAT_REDACTION_STRICT'] = '0'
+    const line = find(checkSecurityPosture(baseConfig(), root), 'Security config overrides')
+
+    expect(line.message).toContain('gdrive.enabled')
+    expect(line.message, 'the second weakened setting was dropped').toContain('redaction.strict')
+  })
+
+  // The two lists this check straddles -- the settings a project config cannot write, and the
+  // variables that override them -- live in `src/config.ts`. If a variable is renamed there and the
+  // doctor's table is not updated, the lookup returns nothing and the check reports a clean posture
+  // forever. Assert the join is non-empty rather than trusting that it resolved.
+  it('resolves a variable name for every setting it claims to cover', () => {
+    for (const [setting, envVar] of LOCKED_AND_WEAKENABLE) {
+      expect(CONFIG_KEY_ENV_OVERRIDES[setting], `${setting} has no env-override entry`).toContain(envVar)
+      const section = setting.split('.')[0] as string
+      expect(PROJECT_LOCKED_SECTIONS, `${setting} is not in a project-locked section`).toContain(section)
+    }
+  })
+
+  it('is reachable from the exported helper, not only through the doctor line', () => {
+    process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = 'off'
+    expect(envWeakenedSecuritySettings()).toEqual(['mcp.confine_reads_to_project_root (TOKEN_GOAT_MCP_CONFINE_READS)'])
   })
 })
