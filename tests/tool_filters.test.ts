@@ -15,6 +15,7 @@ import {
   byteLength,
   capBytes,
   capLongLines,
+  splitOwnTrailingNotices,
   dedupeConsecutive,
   dedupeNumericRuns,
   hasHighEntropyToken,
@@ -515,5 +516,32 @@ describe('dispatch: filterByName + profiles', () => {
     const raw = Array.from({ length: 400 }, (_, i) => `unique-line-${i}`).join('\n')
     const result = compressOutput(new GenericFilter(), raw, '', 0, [], { compressionProfile: 'aggressive' })
     expect(result.text.split('\n').length).toBeLessThanOrEqual(51) // 50 + marker line
+  })
+})
+
+describe('splitOwnTrailingNotices', () => {
+  // HAND-DERIVED: each expected pair is the input cut at the notice, written out here rather than
+  // read back from the splitter. The notice spellings themselves are FORMAT-DERIVED from their
+  // producers, `capTokens` and `capBytes` in src/tool_filters/helpers.ts.
+  it.each([
+    ['a token cap', 'line one\nline two\n[token-goat: output capped at ~2000 tokens]', 'line one\nline two'],
+    ['a byte elision', 'line one\n... [4096 bytes elided by token-goat]', 'line one'],
+  ])('splits off %s', (_name, input, body) => {
+    const r = splitOwnTrailingNotices(input)
+    expect(r.body).toBe(body)
+    expect(body + r.notices).toBe(input)
+  })
+
+  it('leaves a body with no trailing notice untouched', () => {
+    const r = splitOwnTrailingNotices('build succeeded in 10.4s')
+    expect(r).toEqual({ body: 'build succeeded in 10.4s', notices: '' })
+  })
+
+  // Anchored at the end on purpose. A notice-shaped line in the middle of the output came from the
+  // command, not from us, and moving it outside the fence would hand an attacker the one placement
+  // the fence exists to deny.
+  it('leaves a notice-shaped line that is not at the end inside the body', () => {
+    const text = '[token-goat: output capped at ~10 tokens]\nmore real output'
+    expect(splitOwnTrailingNotices(text)).toEqual({ body: text, notices: '' })
   })
 })

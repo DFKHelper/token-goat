@@ -75,7 +75,41 @@ export const UNTRUSTED_WEB_TAG = 'untrusted-web-content'
 function neutralizeFenceMarkers(text: string, tag: string): string {
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?=[\\s/>])[^>]*>`, 'gi')
-  return text.replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+  return neutralizeSpokenMarkers(
+    text.replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;')),
+  )
+}
+
+/**
+ * Escape anything inside the fence that wears token-goat's own `[token-goat...]` marker prefix.
+ *
+ * Closing the tag early is not the only way out of the fence. The fence's own preamble opens with
+ * `[token-goat:`, and every hook that shrinks something signs its work with a marker in the same
+ * shape, so that prefix is a live authority signal in the model's context -- and third-party bytes
+ * can print it. Text that does so is not escaping the fence, it is speaking from inside it in the
+ * voice of the thing that built it, which is the more useful attack: the fence stays intact and
+ * correctly labelled while the model reads a line inside it as token-goat's own.
+ *
+ * Measured 2026-09-04, twelve trials per condition against a headless model, on a build log whose
+ * last lines impersonate a token-goat truncation notice and ask for a canary line back. Unfenced,
+ * the model complied 11 times. Fenced as we shipped it that morning, 6 -- the fence halves the
+ * attack and no more, because it never contradicts the impersonation, it only surrounds it. With
+ * the prefix escaped as below, 1. The same probe found that a *genuine* marker sitting beside an
+ * ordinary injection lends it nothing (0 of 12 either way), so proximity was never the problem and
+ * this is narrowly aimed at the thing that was: forgery of the prefix itself.
+ *
+ * The escape is `&#91;` for the opening bracket alone, matching how the tag neutraliser above
+ * defuses a forged tag: enough that the line no longer reads as our marker, little enough that a
+ * human reading the output still sees what the bytes said. Nothing token-goat writes is ever
+ * legitimately inside a fence -- markers and pointers are appended outside the closing tag -- so
+ * this cannot escape our own text, and an escaped marker showing up in fenced output means either
+ * a real forgery or a bug that folded our voice inside the fence. Both want to be visible.
+ *
+ * A replacer function, not a replacement string, for the same reason as above: `$&` and friends are
+ * substitution sequences in a string replacement, and the matched text is attacker-controlled.
+ */
+function neutralizeSpokenMarkers(text: string): string {
+  return text.replace(/\[\s*token-goat\b/gi, (m) => m.replace('[', '&#91;'))
 }
 
 /**

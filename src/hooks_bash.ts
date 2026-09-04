@@ -21,7 +21,7 @@ import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDi
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
-import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
@@ -1946,9 +1946,17 @@ async function maybeCompressCompoundOutput(
   // write text the model reads as ours. Every other rewrite hook already follows this rule --
   // fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in
   // the codebase that handed the model a replacement body with no fence at all.
+  // A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the
+  // marker outside the tag rather than riding inside with the command's bytes. Leaving it in was
+  // the one case where token-goat's voice really did sit inside its own fence, which is exactly the
+  // ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our
+  // own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the
+  // point it describes is where the body ends, which the closing tag already marks.
+  const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
   const body =
-    fenceUntrusted(compressed.text, UNTRUSTED_TOOL_TAG) +
+    fenceUntrusted(untrusted, UNTRUSTED_TOOL_TAG) +
+    notices +
     marker +
     '\n[token-goat] full output: bash-output ' + id + ' --full'
   // Unlike bash_runner's pipeline, this path appends a recall pointer on top of the filter's own marker, so `compressed.bytesSaved` (which prices in neither) is not what the model gains. Gate and record against the body actually emitted, matching the shared contract every other rewrite hook follows via isRewriteWorthwhile/emitRewrite.
