@@ -35,7 +35,7 @@ export const vitestFilter: ToolFilter = makeNodeTestRunnerFilter({
   name: 'vitest',
   binaries: ['vitest'],
   // File-level pass header carries a duration: `✓ src/x.test.ts (12ms)`.
-  passFileRe: /^\s*✓\s+\S.*\([\d.]+\s*\w+\)/,
+  passFileRe: /^\s*✓\s+\S.*\([\d.]+\s*[a-zA-Z]\w*\)/,
   failFileRe: /^\s*(?:×|FAIL|✗|✘)\s+\S/,
   summaryRe: /^(Test Files|Tests|Modules|Duration|Start at)[\s:]+\d/,
   // Per-test tick is indented ≥2 spaces: `  ✓ should pass`.

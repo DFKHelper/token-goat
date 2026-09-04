@@ -2387,7 +2387,7 @@ const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string; style: DocCom
   { re: /^[ \t]*class\s+([A-Za-z_]\w*)/, kind: 'class', style: 'hash' },
   // TS/JS function & class declarations (optionally exported/async)
   {
-    re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/,
+    re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*(?:\*\s*)?([A-Za-z_$][\w$]*)/,
     kind: 'function',
     style: 'c',
   },
