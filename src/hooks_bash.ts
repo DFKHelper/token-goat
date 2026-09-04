@@ -10,6 +10,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
+import { fenceUntrusted } from './untrusted_fence.js'
+import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath, normalizePath } from './paths.js'
@@ -1938,7 +1940,17 @@ async function maybeCompressCompoundOutput(
   const id = await commandHash(cmd, cwd)
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies
   // head/tail elision, so it would return a truncated view, not the complete original.
-  const body = compressed.withMarker(minNet) + '\n[token-goat] full output: bash-output ' + id + ' --full'
+  // The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall
+  // pointer sit outside it. Fold them in and the model loses its one signal for where our voice
+  // ends and the command's output begins, and anyone who guesses the marker's wording gets to
+  // write text the model reads as ours. Every other rewrite hook already follows this rule --
+  // fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in
+  // the codebase that handed the model a replacement body with no fence at all.
+  const marker = compressed.withMarker(minNet).slice(compressed.text.length)
+  const body =
+    fenceUntrusted(compressed.text, UNTRUSTED_TOOL_TAG) +
+    marker +
+    '\n[token-goat] full output: bash-output ' + id + ' --full'
   // Unlike bash_runner's pipeline, this path appends a recall pointer on top of the filter's own marker, so `compressed.bytesSaved` (which prices in neither) is not what the model gains. Gate and record against the body actually emitted, matching the shared contract every other rewrite hook follows via isRewriteWorthwhile/emitRewrite.
   const emittedBytes = Buffer.byteLength(body, 'utf-8')
   if (
@@ -1992,6 +2004,16 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   if (!cfg.enabled || cfg.disabled_filters.includes('ansi')) return null
   const stripped = stripAnsiEscapes(output)
   const originalBytes = Buffer.byteLength(output, 'utf-8')
+  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat
+  // stops speaking and third-party bytes begin, and it earns that only where token-goat has
+  // something of its own in the block: the compressing path drops lines, vouches for what it kept,
+  // and splices a `[token-goat: ...]` marker in beside content it did not write. This path does
+  // none of that. It emits `stripped` alone -- no marker, no recall pointer, no summary -- so the
+  // model receives the same bytes the harness would have delivered anyway, minus escape sequences
+  // it cannot render. There is no token-goat voice here to delimit.
+  // Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so
+  // the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw
+  // output reaches the model unfenced regardless -- losing the strip and buying no safety.
   if (
     !isRewriteWorthwhile({
       originalBytes,

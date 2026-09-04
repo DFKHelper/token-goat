@@ -4,6 +4,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Security
+
+- **Compressed shell output now reaches the model inside an untrusted-content fence, like every other kind of output token-goat rewrites.** When a command prints more than token-goat is willing to hand over whole, what the model receives is not the command's output but token-goat's account of it: lines dropped, runs collapsed, and token-goat's own marker sitting at the end of the block. Everything else that works this way already fenced what it substituted. A fetched page did, an MCP tool result did, and the same shell output did as soon as it was recalled with `bash-output`. On the way in it did not, so a build running a hostile dependency could put a line in front of the model with nothing marking where the command's words stopped and token-goat's began.
+
+  The fence wraps the command's bytes and stops there. Token-goat's marker and the pointer telling the model how to recall the full output stay outside the closing tag, because that boundary is the only signal the model has for whose words are whose, and folding them in would let anyone who guessed the marker's wording write a line that reads as token-goat speaking.
+
+  One consequence is worth expecting: the fence costs about 123 bytes, and token-goat only rewrites output when the rewrite is a real saving, so a command whose compression barely cleared that bar no longer gets rewritten and comes back whole. That is the intended answer rather than a regression. A rewrite that clears the bar only by leaving off its own delimiter was never saving what it claimed.
+
+  Two cases stay unfenced on purpose, and both are now written down in [the security guide](docs/security.md) instead of being left to inference. Output token-goat does not touch reaches the model as the harness delivered it. So does output whose only change was removing the colour codes a terminal would have rendered, because that path emits the command's own bytes and adds nothing of token-goat's that would need marking off. Fencing those would mean rewriting the result of every shell command an agent runs, to re-label bytes the model was going to see in that form anyway. No reindex is needed. See [src/hooks_bash.ts](src/hooks_bash.ts).
+
 ### Fixed
 
 - **Vitest output from a verbose run is now compressed, where before it came back whole.** `vitest --reporter=verbose` prints one line per test carrying the full `file > describe > name` path, and it indents its summary. Both shapes matched none of the rules token-goat used to recognise a vitest run, so a 22,684-byte run came back 2 bytes smaller. It now comes back at 348 bytes, with the run header and every count kept. A second, quieter problem went with it: a test whose name happens to end in something shaped like a duration was counted as a passing file rather than a passing test, so the collapsed count was wrong in a way that depended on which reporter produced the run. Third, a summary line that followed a block of captured stdout was counted into that block and dropped, which is the one part of a passing run nobody can do without.

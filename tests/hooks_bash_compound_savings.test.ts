@@ -94,20 +94,22 @@ describe('compound-output compression savings accounting', () => {
     return filler + '\n' + 'a repeated line xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n'.repeat(repeats)
   }
 
-  // Measured against the built pipeline: at six repeats the emitted body is 2058 bytes against a
-  // 2152-byte original, a true reduction of 94 bytes -- under the 100-byte min_net_savings_bytes
-  // floor. Pricing only the filter's own marker (and not the recall pointer) let this ship as a
-  // rewrite and record a 162-byte saving for it.
+  // Measured against the built pipeline: at eight repeats the emitted body is 2246 bytes against a
+  // 2246-byte original, no reduction at all once the untrusted-content fence around the third-party
+  // bytes is paid for -- under the 100-byte min_net_savings_bytes floor. Pricing only the filter's
+  // own marker (and not the recall pointer) let a case like this ship as a rewrite and record a
+  // saving for it. The pair below sat at 6/7 repeats before the fence, whose bytes the gate now
+  // counts: a rewrite that clears the floor only by omitting its own delimiter is not a saving.
   it('declines a rewrite whose true reduction is under the net-benefit floor', async () => {
-    const result = await postBashHandler(makePostBashEvent('grep under app.log | sort', tunedOutput(6)))
+    const result = await postBashHandler(makePostBashEvent('grep under app.log | sort', tunedOutput(8)))
     expect(result.hookType).toBe('pass')
     expect(genericSavings()).toEqual([])
   })
 
-  // Control one repeat up: 141 bytes truly removed, comfortably over the floor, so the rewrite must
-  // still ship. A fix that simply tightened the gate too far would fail here.
+  // Control one repeat up: 112 bytes truly removed, over the floor, so the rewrite must still ship.
+  // A fix that simply tightened the gate too far would fail here.
   it('still ships a rewrite whose true reduction clears the net-benefit floor', async () => {
-    const output = tunedOutput(7)
+    const output = tunedOutput(9)
     const result = await postBashHandler(makePostBashEvent('grep over app.log | sort', output))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
