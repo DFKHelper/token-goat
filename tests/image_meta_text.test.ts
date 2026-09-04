@@ -48,7 +48,7 @@ describe('runImageMeta', () => {
     fs.writeFileSync(file, png)
 
     const meta = await runImageMeta(file)
-    expect(meta.sharpAvailable).toBe(true)
+    expect(meta.decodable).toBe(true)
     expect(meta.width).toBe(900)
     expect(meta.height).toBe(600)
     expect(meta.format).toBe('png')
@@ -103,11 +103,11 @@ describe('runImageMeta', () => {
     fs.writeFileSync(file, png)
 
     const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file, '--json']))
-    const parsed = JSON.parse(output) as { width: number; height: number; format: string | null; bytes: number; sharpAvailable: boolean }
+    const parsed = JSON.parse(output) as { width: number; height: number; format: string | null; bytes: number; decodable: boolean }
     expect(parsed.width).toBe(100)
     expect(parsed.height).toBe(50)
     expect(parsed.format).toBe('png')
-    expect(parsed.sharpAvailable).toBe(true)
+    expect(parsed.decodable).toBe(true)
   })
 })
 
@@ -216,7 +216,7 @@ describe('runImageText', () => {
 
     // Missing tesseract.js must not break image-meta.
     const meta = await runImageMeta(file)
-    expect(meta.sharpAvailable).toBe(true)
+    expect(meta.decodable).toBe(true)
     expect(meta.width).toBe(20)
   })
 })

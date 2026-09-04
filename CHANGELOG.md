@@ -2,7 +2,7 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.9.3] - 2026-09-04
 
 ### Security
 
@@ -47,6 +47,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
   Two cases stay unfenced on purpose, and both are now written down in [the security guide](docs/security.md) instead of being left to inference. Output token-goat does not touch reaches the model as the harness delivered it. So does output whose only change was removing the colour codes a terminal would have rendered, because that path emits the command's own bytes and adds nothing of token-goat's that would need marking off. Fencing those would mean rewriting the result of every shell command an agent runs, to re-label bytes the model was going to see in that form anyway. No reindex is needed. See [src/hooks_bash.ts](src/hooks_bash.ts).
 
 ### Fixed
+
+- **A shrunk PNG or GIF served from token-goat's image cache is no longer announced to the model as a WebP.** The cache stored a shrunk image under `.jpg` when it was a JPEG and `.webp` when it was anything else, a rule written when the image pipeline could only ever produce those two. The pipeline now produces PNG and GIF and produces WebP never, so a cached PNG or GIF came back labelled WebP, and that label is what becomes the image type sent to the model and the extension a saved screenshot gets. The cache now files each format under its own extension and refuses to store one it cannot name; entries written before this change are still read correctly. Delete nothing: a stale entry is simply re-encoded once. No reindex is needed. See [src/image_shrink.ts](src/image_shrink.ts).
+
+- **`token-goat image-meta` no longer carries a fallback that would have told you to install a library that cannot help.** Its unreadable-file branch said "install sharp to use this feature", from an era when the image pipeline had an optional native decoder. That decoder is gone, so the advice would have pointed at nothing. The branch is unreachable today, because an unreadable file raises a decode error before it is consulted, which is why nobody has been misdirected by it: the message is corrected and its `sharpAvailable` flag renamed `decodable` so that the next change reaching that branch finds it saying something true. See [src/cli.ts](src/cli.ts).
+
+- **The README's image section described a pipeline token-goat no longer has.** It said the shrink ran on `sharp`, that output was WebP, that `token-goat doctor` reports a `sharp` line to check, and it carried a troubleshooting section about installing libvips and C++ build tools. None of that is true since the move to the pure-TypeScript engine: there is no native dependency, no `sharp` line in `doctor`, and no build step on any platform. It also demonstrated a `token-goat image-shrink` command that does not exist. The section now describes what actually runs, and the worked example uses `token-goat image-meta` with a measurement taken from it.
 
 - **Vitest output from a verbose run is now compressed, where before it came back whole.** `vitest --reporter=verbose` prints one line per test carrying the full `file > describe > name` path, and it indents its summary. Both shapes matched none of the rules token-goat used to recognise a vitest run, so a 22,684-byte run came back 2 bytes smaller. It now comes back at 348 bytes, with the run header and every count kept. A second, quieter problem went with it: a test whose name happens to end in something shaped like a duration was counted as a passing file rather than a passing test, so the collapsed count was wrong in a way that depended on which reporter produced the run. Third, a summary line that followed a block of captured stdout was counted into that block and dropped, which is the one part of a passing run nobody can do without.
 

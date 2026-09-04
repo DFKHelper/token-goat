@@ -1047,11 +1047,11 @@ export const cases: Record<string, () => void | Promise<void>> = {
 
     const rj = run(['image-meta', imgPath, '--json'])
     expect(rj.status, rj.stderr).toBe(0)
-    const meta = JSON.parse(rj.stdout) as { width: number; height: number; format: string | null; sharpAvailable: boolean }
+    const meta = JSON.parse(rj.stdout) as { width: number; height: number; format: string | null; decodable: boolean }
     expect(meta.width).toBe(64)
     expect(meta.height).toBe(32)
     expect(meta.format).toBe('png')
-    expect(meta.sharpAvailable).toBe(true)
+    expect(meta.decodable).toBe(true)
 
     const nonImagePath = path.join(dir, 'notes.txt')
     fs.writeFileSync(nonImagePath, 'not an image')

@@ -327,6 +327,39 @@ describe('preReadImageHandler', () => {
   })
 })
 
+/**
+ * An animated GIF of `frames` full-canvas frames, padded with a comment extension the re-encode
+ * drops so the shrink is genuinely smaller than the input and therefore actually happens.
+ *
+ * Fixture provenance: HAND-DERIVED, assembled here from GIF89a
+ * (w3.org/Graphics/GIF/spec-gif89a.txt) rather than produced by anything this repo encodes. It
+ * exists because every other fixture in this file is a JPEG, whose shrink output is also a JPEG --
+ * the one format whose cache extension was never wrong.
+ */
+function paddedAnimatedGif(width: number, height: number, frames: number, commentBytes: number): Buffer {
+  const parts: Buffer[] = [Buffer.from('GIF89a', 'ascii')]
+  const lsd = Buffer.alloc(7)
+  lsd.writeUInt16LE(width, 0)
+  lsd.writeUInt16LE(height, 2)
+  lsd[4] = 0x80
+  parts.push(lsd, Buffer.from([0, 0, 0, 255, 255, 255]))
+  for (let i = 0; i < frames; i++) {
+    parts.push(Buffer.from([0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00]))
+    const id = Buffer.alloc(10)
+    id[0] = 0x2c
+    id.writeUInt16LE(1, 5)
+    id.writeUInt16LE(1, 7)
+    parts.push(id, Buffer.from([0x02, 0x02, 0x4c, 0x01, 0x00]))
+  }
+  parts.push(Buffer.from([0x21, 0xfe]))
+  for (let written = 0; written < commentBytes; written += 255) {
+    const n = Math.min(255, commentBytes - written)
+    parts.push(Buffer.from([n]), Buffer.alloc(n, 0x20))
+  }
+  parts.push(Buffer.from([0x00]), Buffer.from([0x3b]))
+  return Buffer.concat(parts)
+}
+
 describe('preReadImageHandler shrink cache', () => {
   let prevHome: string | undefined
   let tmpHome: string
@@ -393,6 +426,40 @@ describe('preReadImageHandler shrink cache', () => {
     // shape, as a fresh shrink -- see the "accounting honesty" requirement this covers.
     expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
     expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
+  })
+
+
+  it('round-trips a non-JPEG shrink through the cache under its real format', async () => {
+    // The cache stored jpeg as `.jpg` and every other format as `.webp`, from an era when sharp
+    // only produced those two. The pure-TypeScript engine emits png and gif and webp never, so a
+    // shrunk GIF was written as `.webp` and read back labelled webp -- and that label becomes the
+    // `data:image/...` MIME the model is handed and the extension screenshot.ts saves under.
+    const gifPath = path.join(dir, 'anim.gif')
+    fs.writeFileSync(gifPath, paddedAnimatedGif(600, 600, 3, 1024 * 1024))
+
+    const miss = await preReadImageHandler(makeEvent(gifPath))
+    expect(miss.hookType).toBe('context')
+    if (miss.hookType !== 'context') return
+    expect(miss.context).toContain('data:image/gif;base64,')
+
+    const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
+    expect(entries).toHaveLength(1)
+    expect(
+      entries[0],
+      'the cache entry for a GIF shrink is not stored under .gif, so whatever it is read back as ' +
+        'is not what it holds',
+    ).toMatch(/\.gif$/)
+
+    const hit = await preReadImageHandler(makeEvent(gifPath))
+    expect(hit.hookType).toBe('context')
+    if (hit.hookType !== 'context') return
+    // The discriminator. Identical bytes either way, so the only thing that can differ between a
+    // miss and a hit is the format the entry was filed under -- pre-fix the hit announced
+    // data:image/webp for the same GIF the miss announced correctly.
+    expect(
+      hit.context,
+      'a warm cache hit described the same image differently from the fresh shrink that wrote it',
+    ).toBe(miss.context)
   })
 
   // Provenance for the token figures below: HAND-DERIVED from Anthropic's published rule, computed

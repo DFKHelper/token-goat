@@ -190,7 +190,7 @@ export interface ShrinkResult {
   readonly width: number
   /** Output height in pixels. */
   readonly height: number
-  /** Output container format (`jpeg` or `webp`). */
+  /** Output container format: `jpeg`, `png`, or `gif`. */
   readonly format: string
 }
 
@@ -411,6 +411,31 @@ function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, qua
 }
 
 /**
+ * Output format to the extension its cache entry is stored under, and back again.
+ *
+ * The cache used to know two formats because sharp only ever produced two. The pure-TypeScript
+ * engine emits `png` and `gif` as well and produces `webp` never, so an entry written under the old
+ * rule -- jpeg gets `.jpg`, everything else gets `.webp` -- came back claiming to be a WebP while
+ * holding PNG or GIF bytes. That label is not cosmetic: it becomes the `data:image/...` MIME type
+ * the model is handed, and the extension `screenshot.ts` saves the file under.
+ *
+ * `.webp` stays readable and is no longer written. Entries from before this change are on disk and
+ * really are WebP, so recognising them is correct; producing a new one is not possible.
+ */
+const SHRINK_CACHE_EXTENSION: ReadonlyMap<string, string> = new Map([
+  ['jpeg', '.jpg'],
+  ['png', '.png'],
+  ['gif', '.gif'],
+])
+
+const SHRINK_CACHE_FORMAT: ReadonlyMap<string, string> = new Map([
+  ['.jpg', 'jpeg'],
+  ['.png', 'png'],
+  ['.gif', 'gif'],
+  ['.webp', 'webp'],
+])
+
+/**
  * Look for an already-cached re-encode of this exact (path, size, mtime, quality). Checked BEFORE
  * running the shrink so a repeat Read of an unchanged image can skip the re-encode entirely
  * instead of always re-running it.
@@ -428,7 +453,7 @@ function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, qua
  * as a miss. That is a single re-encode per image, after which the sweep in `pruneShrinkCache`
  * collects the stale file on age like any other.
  */
-function findCachedShrink(originalPath: string, size: number, mtimeMs: number, quality: number): { filePath: string; format: 'webp' | 'jpeg'; originalWidth: number; originalHeight: number } | null {
+function findCachedShrink(originalPath: string, size: number, mtimeMs: number, quality: number): { filePath: string; format: string; originalWidth: number; originalHeight: number } | null {
   const prefix = `token-goat-shrink-${shrinkCacheKey(originalPath, size, mtimeMs, quality)}-`
   const dir = imageShrinkCacheDir()
   let entries: string[]
@@ -439,11 +464,13 @@ function findCachedShrink(originalPath: string, size: number, mtimeMs: number, q
   }
   for (const file of entries) {
     if (!file.startsWith(prefix)) continue
-    const m = /^(\d+)x(\d+)(\.webp|\.jpg)$/.exec(file.slice(prefix.length))
+    const m = /^(\d+)x(\d+)(\.webp|\.jpg|\.png|\.gif)$/.exec(file.slice(prefix.length))
     if (m === null) continue
+    const format = SHRINK_CACHE_FORMAT.get(m[3] ?? '')
+    if (format === undefined) continue
     return {
       filePath: path.join(dir, file),
-      format: m[3] === '.jpg' ? 'jpeg' : 'webp',
+      format,
       originalWidth: Number(m[1]),
       originalHeight: Number(m[2]),
     }
@@ -457,7 +484,10 @@ function writeCachedShrink(originalPath: string, result: ShrinkResult, mtimeMs: 
     const dir = imageShrinkCacheDir()
     ensureDirSync(dir)
     const key = shrinkCacheKey(originalPath, result.originalBytes, mtimeMs, quality)
-    const ext = result.format === 'jpeg' ? '.jpg' : '.webp'
+    // No entry at all beats one that will be read back under the wrong format. A miss costs a
+    // re-encode; a mislabelled hit is served to the model as a different image type than it is.
+    const ext = SHRINK_CACHE_EXTENSION.get(result.format)
+    if (ext === undefined) return
     atomicWriteBytes(path.join(dir, `token-goat-shrink-${key}-${result.originalWidth}x${result.originalHeight}${ext}`), result.data)
   } catch {
     // Best-effort; failing to cache must not block returning the freshly computed shrink.
