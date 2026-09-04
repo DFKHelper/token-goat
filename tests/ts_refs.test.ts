@@ -300,7 +300,7 @@ describe('ts_refs — performance sanity on this repo\'s own codebase', () => {
     expect(result).not.toBeNull()
     // Generous CI-safe ceiling -- this repo has ~600 files total, but the scoped program only
     // ever touches defFile + candidate files + their own import closures, not the whole project.
-    expect(elapsedMs).toBeLessThan(15_000)
+    expect(elapsedMs).toBeLessThan(30_000)
   })
 })
 

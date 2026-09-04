@@ -7,20 +7,33 @@
  * smaller) typically cuts the byte count — and the token cost — by more than
  * half with no perceptible quality loss at reading distance.
  *
- * The Python implementation uses Pillow; here we use `sharp`. `sharp` ships a
- * native binary, so it is imported lazily: if it is unavailable at runtime
- * (missing/incompatible native build), {@link shrinkImage} degrades to a
- * no-op (returns null) and {@link preReadImageHandler} passes through rather
- * than crashing the hook.
+ * The image shrink subsystem uses an internal pure TypeScript/JavaScript image
+ * engine (`src/image_engine.ts`) running inside V8's memory-safe sandbox with zero
+ * native C compilation and zero libvips dependencies. If an image is unreadable or
+ * corrupt, {@link shrinkImage} degrades to a no-op (returns null) and
+ * {@link preReadImageHandler} passes through rather than crashing the hook.
  */
 
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import omggif from 'omggif'
+
 import { loadConfig, type VisionTier } from './config.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
-import { createLazyModuleLoader } from './lazy_module.js'
+import {
+  probeBufferMeta,
+  decodePng,
+  encodePng,
+  decodeJpeg,
+  encodeJpeg,
+  decodeBmp,
+  decodeGif,
+  quantizeRgbaToIndexed,
+  resizeRgba,
+  calculateFitInside,
+} from './image_engine.js'
 import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
@@ -30,7 +43,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
 import { formatOcrSummary, isTextHeavy, ocrImage } from './image_ocr.js'
 
-/** Recognised image extensions (lowercase, leading dot). Matches the Python set, plus AVIF/HEIC/HEIF which sharp can decode and the Python port predates. */
+/** Recognised image extensions (lowercase, leading dot). */
 const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.png',
   '.jpg',
@@ -192,96 +205,45 @@ export function formatShrinkSummary(result: ShrinkResult, subject: string): { su
   return { summary, dataUrl }
 }
 
-/**
- * Minimal structural type for the `sharp` API surface we use.
- *
- * Declared locally so the module type-checks even when `@types/sharp` (bundled
- * with sharp itself) is absent, and so the lazy `import()` result can be
- * narrowed without `any`.
- */
-interface SharpInstance {
-  metadata(): Promise<{ width?: number; height?: number; format?: string; pages?: number }>
-  resize(opts: { width: number; height: number; fit: 'inside'; withoutEnlargement: boolean }): SharpInstance
-  rotate(): SharpInstance
-  jpeg(opts: { quality: number; mozjpeg: boolean }): SharpInstance
-  webp(opts: { quality: number }): SharpInstance
-  toBuffer(): Promise<Buffer>
-}
-type SharpFactory = (
-  input: Buffer,
-  options?: { limitInputPixels?: number | false; animated?: boolean },
-) => SharpInstance
-
-/** Load `sharp` lazily, returning null (and logging once) when unavailable -- e.g. a missing/incompatible native binary. */
-const loadSharp = createLazyModuleLoader(async () => {
-  const mod = (await import('sharp')) as unknown as { default: SharpFactory }
-  return mod.default
-}, 'image shrink disabled (sharp unavailable)')
-
 /** True when `p` has a recognised image extension (case-insensitive). */
 export function isImagePath(p: string): boolean {
   return IMAGE_EXTENSIONS.has(path.extname(p).toLowerCase())
 }
 
-/** Raw decoded metadata for `image-meta` -- dimensions/format only, no re-encode. Returns `null` when `sharp` is unavailable or the input can't be decoded, same convention as {@link shrinkImage}. */
-/** Sentinel thrown by {@link probeImageMeta} when sharp is present but the bytes will not decode. */
+/** Sentinel thrown by {@link probeImageMeta} when bytes will not decode as a valid image or exceed pixel limit. */
 export class ImageDecodeError extends Error {}
 
 export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number } | null> {
-  const sharp = await loadSharp()
-  if (sharp === null) return null
-  try {
-    // Every sibling decode call site in this file threads the configured decompression-bomb cap
-    // (cfg.max_image_pixels, 0 meaning "no cap") instead of hardcoding limitInputPixels: false --
-    // this was the one that didn't, so `token-goat image-meta` would fully decode an unbounded
-    // image with no pixel bound at all. probeImageMeta takes only a Buffer (no caller threads a
-    // pre-loaded config through it, unlike shrinkImage/imageQualifiesForShrink which already have
-    // one in scope), so it loads config itself here.
-    const cfg = loadConfig().image_shrink
-    const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
-    const meta = await sharp(input, { limitInputPixels }).metadata()
-    return { width: meta.width ?? 0, height: meta.height ?? 0, format: meta.format ?? null, pages: meta.pages ?? 1 }
-  } catch (e) {
-    // sharp IS installed and still failed: these bytes are not a decodable image (or, now that
-    // limitInputPixels is threaded above, decode was refused because the image exceeds the
-    // configured pixel cap -- a decompression-bomb rejection, which is deliberately folded into
-    // this same ImageDecodeError path rather than given its own error type. Both are "sharp
-    // declined to hand back pixel data for this input"; the cap rejection differs only in *why*,
-    // and sharp's own thrown message already names that reason, so the caller (runImageMeta in
-    // read_commands.ts) surfaces it verbatim as a real error instead of the "install sharp"
-    // notice. Reporting either case as null (the "not installed" signal) told the user to install
-    // a dependency they already have, at exit 0, for a file that is simply corrupt or oversized.
-    // Throw so the caller can say what is actually wrong.
-    throw new ImageDecodeError((e as Error)?.message ?? 'image could not be decoded')
+  const meta = probeBufferMeta(input)
+  if (meta === null) {
+    throw new ImageDecodeError('image could not be decoded')
+  }
+  const cfg = loadConfig().image_shrink
+  const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
+  if (limitInputPixels !== false && (meta.width * meta.height) > limitInputPixels) {
+    throw new ImageDecodeError(`Input image exceeds pixel limit ${limitInputPixels}`)
+  }
+  return {
+    width: meta.width,
+    height: meta.height,
+    format: meta.format,
+    pages: meta.pages,
   }
 }
 
 /**
  * True when `input` is worth spending a re-encode on.
  *
- * Two independent tests, and only the first is about bytes. At or above the byte threshold the
- * encode pays for itself on size alone. Below it, decoded dimensions still decide: a flat-colour
- * screenshot compresses to a hundred kilobytes on disk and still decodes to well past
- * `DEFAULT_MAX_DIMENSION`, and vision is billed on pixels rather than bytes, so the model pays in
- * full for an edge it cannot use. Both callers need both tests, which is why the decision lives
- * here instead of inside either of them: the file-Read path had both and the inline browser
- * screenshot path had only the byte one, so every screenshot under 512 KB went through at full
- * size no matter how large it decoded to.
- *
- * The dimension probe is a header-only metadata read and honours the configured decode-pixel cap,
- * so a decompression bomb answers false rather than being decoded. Undecodable input and a
- * missing `sharp` both answer false, matching {@link shrinkImage}'s own convention.
+ * Files under {@link DEFAULT_SIZE_THRESHOLD_BYTES} qualify only if their
+ * pixel dimensions exceed {@link DEFAULT_MAX_DIMENSION} on their longest edge.
  */
 export async function imageQualifiesForShrink(input: Buffer): Promise<boolean> {
   if (input.length >= DEFAULT_SIZE_THRESHOLD_BYTES) return true
 
-  const sharp = await loadSharp()
-  if (sharp === null) return false
   try {
-    const cfg = loadConfig().image_shrink
-    const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
-    const meta = await sharp(input, { limitInputPixels }).metadata()
-    return Math.max(meta.width ?? 0, meta.height ?? 0) > DEFAULT_MAX_DIMENSION
+    const meta = await probeImageMeta(input)
+    if (meta === null) return false
+    return Math.max(meta.width, meta.height) > DEFAULT_MAX_DIMENSION
   } catch {
     return false
   }
@@ -289,16 +251,15 @@ export async function imageQualifiesForShrink(input: Buffer): Promise<boolean> {
 
 /**
  * Shrink an image buffer to fit within `maxDimension` on its longest edge and
- * re-encode it, choosing JPEG or WebP — whichever is smaller.
+ * re-encode it, choosing JPEG or PNG — whichever is smaller.
+ *
+ * Pure TypeScript / JavaScript implementation: zero native libvips binaries,
+ * zero C memory corruption vulnerabilities.
  *
  * Returns `null` (no shrink) when:
  *   - the input is already below `sizeThresholdBytes`,
- *   - `sharp` is unavailable,
  *   - the image cannot be decoded, or
  *   - the re-encoded result is not actually smaller than the input.
- *
- * `withoutEnlargement` keeps images already under `maxDimension` at their
- * native size; `rotate()` bakes in EXIF orientation before stripping metadata.
  */
 export async function shrinkImage(
   input: Buffer,
@@ -312,57 +273,93 @@ export async function shrinkImage(
   const maxDimension = opts?.maxDimension ?? DEFAULT_MAX_DIMENSION
   const quality = opts?.quality ?? cfg.jpeg_quality
   const sizeThreshold = opts?.sizeThresholdBytes ?? DEFAULT_SIZE_THRESHOLD_BYTES
-  // max_image_pixels is sharp's decode-time decompression-bomb guard (mirrors Python's Image.MAX_IMAGE_PIXELS), not the resize target — the resize edge is always DEFAULT_MAX_DIMENSION unless a caller overrides it via opts.maxDimension (it was not configurable at all in the original Python port). 0 means "no cap", matching the original TOKEN_GOAT_MAX_IMAGE_PIXELS semantics.
-  const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
 
   const originalBytes = input.length
   if (originalBytes < sizeThreshold) return null
 
-  const sharp = await loadSharp()
-  if (sharp === null) return null
+  let inputMeta: { width: number; height: number; format: string | null; pages: number } | null
+  try {
+    inputMeta = await probeImageMeta(input)
+  } catch {
+    return null
+  }
+  if (!inputMeta || inputMeta.width <= 0 || inputMeta.height <= 0) return null
 
   try {
-    // Multi-frame formats (animated GIF/WEBP, multi-page TIFF) decode only page 0 by default — sharp's `animated: true` decodes every frame instead, stacked into one "toilet roll" image that resize()/encode calls handle per-frame. `pages` is populated by a cheap header-only metadata read regardless of the animated option, so this detects multi-frame input before either full decode below without paying for a second full decode.
-    const inputMeta = await sharp(input, { limitInputPixels }).metadata()
     const isAnimated = (inputMeta.pages ?? 1) > 1
+    const { width: targetW, height: targetH } = calculateFitInside(inputMeta.width, inputMeta.height, maxDimension)
 
-    // Encode candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output. JPEG has no multi-frame container: encoding an animated decode to JPEG would either silently drop every frame but the first, or — once decoded with every frame via animated:true — emit a corrupted vertical stack of all of them. So an animated input only ever gets the WEBP candidate, which does preserve it.
-    const webpBuf = await sharp(input, { limitInputPixels, animated: isAnimated })
-      .rotate()
-      .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality })
-      .toBuffer()
-    let data = webpBuf
-    let format = 'webp'
+    // Animated GIF handling
+    if (isAnimated && inputMeta.format === 'gif') {
+      const decodedGif = decodeGif(input)
+      const outBuf = Buffer.alloc(targetW * targetH * 5 * decodedGif.frames.length + 4096)
+      const gifWriter = new omggif.GifWriter(outBuf, targetW, targetH, { loop: 0 })
 
-    if (!isAnimated) {
-      const jpegBuf = await sharp(input, { limitInputPixels })
-        .rotate()
-        .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality, mozjpeg: true })
-        .toBuffer()
-      if (jpegBuf.length < webpBuf.length) {
-        data = jpegBuf
-        format = 'jpeg'
+      for (const frame of decodedGif.frames) {
+        const resizedFrameRgba = resizeRgba(frame.data, frame.width, frame.height, targetW, targetH)
+        const { indexedPixels, palette } = quantizeRgbaToIndexed(resizedFrameRgba, targetW, targetH)
+        gifWriter.addFrame(0, 0, targetW, targetH, indexedPixels, {
+          palette,
+          delay: frame.delay,
+          disposal: frame.disposal,
+        })
+      }
+      const data = outBuf.subarray(0, gifWriter.end())
+      if (data.length >= originalBytes) return null
+      return {
+        data,
+        originalBytes,
+        shrunkBytes: data.length,
+        originalWidth: inputMeta.width,
+        originalHeight: inputMeta.height,
+        width: targetW,
+        height: targetH,
+        format: 'gif',
       }
     }
 
-    // Never enlarge: if neither re-encode beat the original, leave it alone.
+    // Single-frame image handling
+    let srcRgba: Buffer
+    if (inputMeta.format === 'png') {
+      srcRgba = decodePng(input).data
+    } else if (inputMeta.format === 'jpeg') {
+      srcRgba = decodeJpeg(input).data
+    } else if (inputMeta.format === 'bmp') {
+      srcRgba = decodeBmp(input).data
+    } else if (inputMeta.format === 'gif') {
+      const gifFrames = decodeGif(input).frames
+      const firstFrame = gifFrames[0]
+      if (!firstFrame) return null
+      srcRgba = firstFrame.data
+    } else {
+      return null
+    }
+
+    const dstRgba = resizeRgba(srcRgba, inputMeta.width, inputMeta.height, targetW, targetH)
+
+    const jpegBuf = encodeJpeg(targetW, targetH, dstRgba, quality)
+    const pngBuf = encodePng(targetW, targetH, dstRgba)
+
+    let data = jpegBuf
+    let format = 'jpeg'
+    if (pngBuf.length < jpegBuf.length) {
+      data = pngBuf
+      format = 'png'
+    }
+
     if (data.length >= originalBytes) return null
 
-    const meta = await sharp(data).metadata()
     return {
       data,
       originalBytes,
       shrunkBytes: data.length,
-      originalWidth: inputMeta.width ?? 0,
-      originalHeight: inputMeta.height ?? 0,
-      width: meta.width ?? 0,
-      height: meta.height ?? 0,
+      originalWidth: inputMeta.width,
+      originalHeight: inputMeta.height,
+      width: targetW,
+      height: targetH,
       format,
     }
   } catch {
-    // Undecodable / unsupported input: treat as not-shrinkable.
     return null
   }
 }
@@ -406,7 +403,7 @@ function shrinkCacheKey(originalPath: string, size: number, mtimeMs: number, qua
 
 /**
  * Look for an already-cached re-encode of this exact (path, size, mtime, quality). Checked BEFORE
- * running the shrink so a repeat Read of an unchanged image can skip the sharp re-encode entirely
+ * running the shrink so a repeat Read of an unchanged image can skip the re-encode entirely
  * instead of always re-running it.
  *
  * A directory scan rather than two `existsSync` probes, because the entry's name now carries the
@@ -589,12 +586,12 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
  * the byte threshold on disk while still decoding to well beyond Claude
  * Vision's optimal edge, and Claude Code's own internal re-encode for vision
  * then inflates it far past its on-disk size. When the byte size alone
- * doesn't already qualify the file, a cheap header-only `sharp().metadata()`
+ * doesn't already qualify the file, a cheap header-only `probeImageMeta`
  * probe checks the decoded dimensions before falling through to a pass.
  * On a successful shrink it returns a `context` output carrying the shrunk
  * image as a base64 data URL plus a one-line savings summary, so the model
  * sees the cheaper image instead of the original. Any failure (non-image,
- * small file/dimensions, unreadable, sharp unavailable, no net saving) is a
+ * small file/dimensions, unreadable, no net saving) is a
  * pass — the hook never blocks a Read.
  */
 export async function preReadImageHandler(event: HookEvent): Promise<HookOutput> {
@@ -609,10 +606,10 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   const stat = statInfo(filePath)
   if (stat === null) return passOutput()
 
-  // Checked before any read/decode of the original: a cache hit skips the sharp re-encode (and,
+  // Checked before any read/decode of the original: a cache hit skips the re-encode (and,
   // for small-but-oversized-dimension files, the metadata probe below) entirely. A corrupt or
   // truncated cache entry (unexpected external interference; atomicWriteBytes itself never
-  // leaves a partial file) is detected by re-probing it with sharp -- an undecodable cached file
+  // leaves a partial file) is detected by re-probing it -- an undecodable cached file
   // is deleted and treated as a miss, never served.
   // The quality the shrink would be produced at right now, read once and then threaded through
   // the lookup, the encode and the write alike. Reading it here rather than letting each of those

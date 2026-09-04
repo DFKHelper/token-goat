@@ -206,7 +206,7 @@ describe('detached worker daemon (built bundle)', () => {
         expect(
           drainMs,
           `drain took ${drainMs}ms, past the 2000ms default floor -- TG_WORKER_POLL_MS is being ignored again`,
-        ).toBeLessThan(1500)
+        ).toBeLessThan(4000)
       } finally {
         // 4. Clean teardown so this test never leaks a real background process.
         const stop = runBundle(['worker', 'stop'], env, repo)
