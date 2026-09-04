@@ -972,12 +972,18 @@ export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
  * `semantic` then served it. That is a protection being switched off by a checked-in file, which
  * is exactly what this list exists to prevent.
  *
- * `image_shrink.max_image_pixels` is sharp's decode-time decompression-bomb cap: `0` means "no
- * cap" and the schema accepts it, so a repository that sets it to zero and ships a small file
- * that decodes to billions of pixels turns an ordinary `Read` of that image into an
- * out-of-memory kill. The rest of that section (quality, the OCR thresholds, the redirect
- * switch) is ordinary tuning a repository has a legitimate reason to set, so only this one key
- * is locked rather than the whole section.
+ * `image_shrink.max_image_pixels` is the decompression-bomb cap: `0` means "no cap" and the schema
+ * accepts it, so a repository that sets it to zero and ships a small file that decodes to billions
+ * of pixels turns an ordinary `Read` of that image into an out-of-memory kill. The rest of that
+ * section (quality, the OCR thresholds, the redirect switch) is ordinary tuning a repository has a
+ * legitimate reason to set, so only this one key is locked rather than the whole section.
+ *
+ * It used to be sharp's `limitInputPixels`, which libvips enforced inside the decode. It is now a
+ * check on the dimensions in the file's header, run before token-goat's own decoders in
+ * `image_engine.ts`, which is a weaker position: it sees `width * height` and nothing else, so it
+ * says nothing about an animation's frame count or how far a compressed stream expands. Those are
+ * bounded separately by `MAX_DECODED_BYTES` in that file, which is not configurable and is not
+ * meant to be -- setting this key to `0` does not lift it.
  */
 export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'image_shrink.max_image_pixels',

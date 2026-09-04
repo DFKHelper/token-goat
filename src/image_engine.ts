@@ -4,12 +4,53 @@
  * Provides zero-native-dependency image metadata extraction, decoding, resampling,
  * and re-encoding for PNG, JPEG, GIF, BMP, WebP, TIFF, and SVG formats.
  *
- * 100% memory-safe (zero libvips C buffer overflow vulnerabilities).
+ * No native decoder, so none of the C buffer-overflow classes that come with one. That is not the
+ * same as being safe on untrusted input, and the difference is what {@link MAX_DECODED_BYTES} and
+ * its call sites below exist for: every buffer here is sized from a number an attacker wrote in a
+ * file header, and a size check is the only thing standing between that number and the allocator.
  */
 
 import * as zlib from "node:zlib"
 import jpeg from "jpeg-js"
 import omggif from "omggif"
+
+/**
+ * Ceiling on the pixel buffer a single decode may allocate, in bytes.
+ *
+ * Every decoder below sizes its output from the image's own header, so without a ceiling the file
+ * chooses how much memory token-goat allocates. Measured on this engine before the ceiling existed:
+ * a 3.7 KB GIF declaring a 1600x1600 canvas and 160 frames allocated 1,562 MB, linearly, because
+ * each frame is a full canvas and all of them are held at once -- 500 frames fits in 11.5 KB and
+ * comes to 5.1 GB. `image_shrink.max_image_pixels` does not stop it: that gate is `width * height`
+ * and never looks at the frame count, so 1600x1600 passes with 84% of the budget to spare.
+ *
+ * 256 MB is four times the largest still the default 16 MP gate admits (16,000,000 x 4 bytes of
+ * RGBA = 61 MB), so no single image that passes that gate is refused here. What it bounds is the
+ * multi-frame case, where roughly 26 frames fit at the 1568px resize target and around 130 at
+ * 800x600. Refusing is cheap: {@link shrinkImage} catches the throw and returns null, which passes
+ * the original file through to the model untouched. Declining to shrink a very long animation is a
+ * better outcome than allocating gigabytes to do it.
+ */
+const MAX_DECODED_BYTES = 256 * 1024 * 1024
+
+/**
+ * Throw unless a `width * height * bytesPerPixel * frames` buffer is within {@link MAX_DECODED_BYTES}.
+ *
+ * Takes the dimensions rather than the product so the multiplication happens here, where it is
+ * checked, instead of at each call site where an overflow to `Infinity` or a negative from a signed
+ * header field would be passed in already collapsed to something that compares as safe.
+ */
+function assertDecodableSize(what: string, width: number, height: number, bytesPerPixel: number, frames = 1): void {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || frames <= 0) {
+    throw new Error(`Invalid ${what} dimensions: ${width}x${height} (${frames} frame(s))`)
+  }
+  const bytes = width * height * bytesPerPixel * frames
+  if (bytes > MAX_DECODED_BYTES) {
+    throw new Error(
+      `${what} would allocate ${Math.round(bytes / 1048576)}MB, over the ${MAX_DECODED_BYTES / 1048576}MB decode ceiling`,
+    )
+  }
+}
 
 export interface ImageMeta {
   width: number
@@ -223,7 +264,17 @@ export function probeBufferMeta(buf: Buffer): ImageMeta | null {
     let height = 0
     let pages = 0
 
+    // A TIFF's pages are a linked list, each IFD holding the offset of the next, and nothing in the
+    // format stops that offset pointing at an IFD already visited. Following it without remembering
+    // where it has been is an unbreakable loop: measured before this set existed, a 64-byte file
+    // whose only IFD pointed at itself never returned. It is a synchronous loop with no allocation,
+    // so it does not run out of memory and get killed -- it holds the thread forever, which for a
+    // pre-read hook means the agent's Read never comes back at all.
+    const seenIfdOffsets = new Set<number>()
+
     while (ifdOffset > 0 && ifdOffset + 2 <= buf.length) {
+      if (seenIfdOffsets.has(ifdOffset)) break
+      seenIfdOffsets.add(ifdOffset)
       pages++
       const numEntries = isLE ? buf.readUInt16LE(ifdOffset) : buf.readUInt16BE(ifdOffset)
       let ifdPos = ifdOffset + 2
@@ -301,8 +352,20 @@ export function decodePng(buf: Buffer): DecodedImage {
       height = data.readUInt32BE(4)
       const bitDepth = data[8] ?? 8
       colorType = data[9] ?? 6
-      if (bitDepth !== 8 && bitDepth !== 16 && bitDepth !== 1 && bitDepth !== 2 && bitDepth !== 4) {
+      // Only 8 bits per sample. The row loop below indexes samples as single bytes, so a 16-bit
+      // image read as 8-bit does not fail -- it silently returns the wrong picture. Measured: a
+      // 16-bit opaque red pixel came back as [255, 255, 0, 0], a transparent yellow. Sub-byte
+      // depths (1, 2, 4) pack several pixels into one byte and are wrong the same way. Handing the
+      // model a corrupted image while reporting success is worse than not shrinking it, and
+      // throwing here means shrinkImage passes the untouched original through instead.
+      if (bitDepth !== 8) {
         throw new Error("Unsupported PNG bit depth: " + bitDepth)
+      }
+      // Adam7 stores the image as seven interleaved sub-images. The row loop assumes one pass over
+      // full-width scanlines, so an interlaced file decodes to noise for the same reason.
+      const interlace = data[12] ?? 0
+      if (interlace !== 0) {
+        throw new Error("Unsupported PNG interlace method: " + interlace)
       }
     } else if (type === "PLTE") {
       palette = data
@@ -319,9 +382,6 @@ export function decodePng(buf: Buffer): DecodedImage {
     throw new Error("Missing PNG IHDR chunk")
   }
 
-  const compressed = Buffer.concat(idatChunks)
-  const decompressed = zlib.inflateSync(compressed)
-
   let bpp = 4
   if (colorType === 0) bpp = 1
   else if (colorType === 2) bpp = 3
@@ -329,8 +389,32 @@ export function decodePng(buf: Buffer): DecodedImage {
   else if (colorType === 4) bpp = 2
   else if (colorType === 6) bpp = 4
 
+  assertDecodableSize("PNG", width, height, 4)
+
   const rowBytes = width * bpp
   const rowSize = 1 + rowBytes
+
+  // A non-interlaced PNG's zlib stream is exactly one filter byte plus one row of samples per
+  // scanline. That is a bound the file cannot argue with, so it is the bound used, rather than a
+  // round number: anything past it is not data this image could need.
+  //
+  // Without it the IDAT decides the allocation, and it can be enormously smaller than what it
+  // expands to. Measured on this decoder before the bound: a 510 KB PNG declaring 4000x4000 -- 16
+  // MP exactly, so it clears the pixel gate -- inflated to 512 MB, took 1,025 MB of external memory
+  // once the concatenation is counted, and needed 61 MB. 512 MB was the figure chosen for the test
+  // file, not a limit the code imposed; nothing here stopped it going higher.
+  const maxRawBytes = height * rowSize
+  const compressed = Buffer.concat(idatChunks)
+  let decompressed: Buffer
+  try {
+    decompressed = zlib.inflateSync(compressed, { maxOutputLength: maxRawBytes })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(`PNG image data exceeds the ${maxRawBytes} bytes its ${width}x${height} header allows: ${msg}`, {
+      cause: err,
+    })
+  }
+
   const outRgba = Buffer.alloc(width * height * 4)
   const priorRow = Buffer.alloc(rowBytes)
   const currRow = Buffer.alloc(rowBytes)
@@ -455,6 +539,18 @@ export function decodeBmp(buf: Buffer): DecodedImage {
     throw new Error("Unsupported BMP compression: " + compression)
   }
 
+  // Only 24- and 32-bit BMPs have a branch in the pixel loop below. Every other depth fell through
+  // it and returned the zero-filled buffer: a fully transparent image, with no error, which
+  // shrinkImage would then re-encode and hand to the model as the file's contents.
+  if (bpp !== 24 && bpp !== 32) {
+    throw new Error("Unsupported BMP bit depth: " + bpp)
+  }
+
+  // BMP stores both dimensions signed, and width is used unmodified. A negative one makes the
+  // product negative, which slips under a `> limit` test, so the check has to be for a valid size
+  // rather than merely a small one -- assertDecodableSize rejects on sign and finiteness first.
+  assertDecodableSize("BMP", width, height, 4)
+
   const outRgba = Buffer.alloc(width * height * 4)
   const rowStride = Math.floor((bpp * width + 31) / 32) * 4
 
@@ -487,6 +583,14 @@ export function decodeGif(buf: Buffer): DecodedAnimatedGif {
   const width = reader.width
   const height = reader.height
   const numFrames = reader.numFrames()
+
+  // Every frame is a full canvas and every one is kept, so the cost is the canvas times the frame
+  // count, not the canvas. Frames are cheap to declare -- an empty 1x1 sub-frame is about 23 bytes
+  // -- so the ratio between the file and what it costs to decode is effectively unbounded. This is
+  // the one check that has to happen before the loop rather than inside it: catching it on frame
+  // 400 means 399 canvases have already been allocated.
+  assertDecodableSize("GIF", width, height, 4, numFrames)
+
   const frames: AnimatedGifFrame[] = []
 
   for (let i = 0; i < numFrames; i++) {
