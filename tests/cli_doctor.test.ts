@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -10,6 +10,7 @@ import { setTsModuleForTesting } from '../src/ts_refs.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { normalizePath } from '../src/paths.js'
 import { GLOBAL_SCHEMA_SQL } from '../src/stats.js'
+import { PARSER_FINGERPRINT } from '../src/parser_fingerprint.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
@@ -411,6 +412,75 @@ describe('cli_doctor', () => {
       const result = checkEmbeddingCoverage(dbPath)
       expect(result.status).toBe('ok')
       expect(result.message).toContain('disabled')
+    })
+  })
+
+  describe('checkParserFreshness', () => {
+    // Fixture provenance: CAPTURE. The two stale shapes below are the two the real global.db actually holds -- 12,163 rows with parser_sha NULL (written before the column existed) and 338 with a superseded digest -- measured against 5,007 rows on the running build.
+    const insertParsed = (db: ReturnType<typeof getDb>, p: string, parserSha: string | null) =>
+      db
+        .prepare('INSERT INTO files (path, sha, mtime, language, indexed_at, parser_sha) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(p, 'sha', 1, 'typescript', 1, parserSha)
+
+    it('returns ok (no database yet) when global.db does not exist', () => {
+      const result = checkParserFreshness(path.join(tempDir, 'nope.db'))
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no database yet')
+    })
+
+    it('returns ok when the whole index was written by the running parser', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 10; i++) insertParsed(db, `src/f${i}.ts`, PARSER_FINGERPRINT)
+      const result = checkParserFreshness(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('10 of 10')
+    })
+
+    // Calibration for every negative below: without a case that fires, "did not warn" is satisfied just as well by a check that can never warn at all.
+    it('warns when most of the index predates the running parser', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 9; i++) insertParsed(db, `src/f${i}.ts`, 'aaaaaaaaaaaaaaaa')
+      insertParsed(db, 'src/f9.ts', PARSER_FINGERPRINT)
+      const result = checkParserFreshness(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('9 of 10')
+      expect(result.message).toContain('90%')
+      // A number with no action is not a diagnosis. Name the command, and say --force is not it, because the neighbouring embedding warning does recommend --force and a reader who has seen that one will reach for it here too.
+      expect(result.message).toContain("token-goat index")
+      expect(result.message).toContain('--force is not needed')
+    })
+
+    // The discriminating case. `parser_sha IS NULL` is 12,163 of the 17,508 rows in the real index -- rows written before the column existed -- and every freshness gate already treats them as stale. A `parser_sha != ?` comparison instead of counting the matches would drop every NULL row from BOTH sides of the ratio and report a fully stale index as 100% fresh.
+    it('counts a NULL parser_sha as stale rather than dropping the row', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 9; i++) insertParsed(db, `src/f${i}.ts`, null)
+      insertParsed(db, 'src/f9.ts', PARSER_FINGERPRINT)
+      const result = checkParserFreshness(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('9 of 10')
+    })
+
+    it('scopes the count to the project when a root is given', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const root = normalizePath(path.join(tempDir, 'proj'))
+      for (let i = 0; i < 4; i++) insertParsed(db, `${root}/src/f${i}.ts`, PARSER_FINGERPRINT)
+      // A different project being far behind must not drag this one's verdict down.
+      for (let i = 0; i < 50; i++) insertParsed(db, `${normalizePath(tempDir)}/other/f${i}.ts`, null)
+      const result = checkParserFreshness(dbPath, root)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('4 of 4')
+    })
+
+    it('returns ok (no indexed files yet) on an empty index rather than dividing by zero', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      getDb(dbPath)
+      const result = checkParserFreshness(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no indexed files yet')
     })
   })
 
@@ -891,6 +961,9 @@ describe('cli_doctor', () => {
         'Database',
         'Symbol body size',
         'Config',
+        // The two index-health checks, added together on purpose. Listing only the newer one would leave its twin as the untested sibling beside a tested exemption, which is the shape that hides gaps in this repo rather than the shape that closes them.
+        'Embedding coverage',
+        'Parser freshness',
       ]
 
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
