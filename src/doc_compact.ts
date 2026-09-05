@@ -3,7 +3,8 @@
  *
  * A compact is a user-created or auto-extractive summary of a large reference doc,
  * stored as a sidecar file. Compacts are served instead of full files to save
- * 80-95% of context tokens on first reads.
+ * most of the context tokens a first read would cost -- typically 60-95%, depending on how much
+ * of the doc is prose sitting under headings.
  */
 
 import * as fs from 'fs'

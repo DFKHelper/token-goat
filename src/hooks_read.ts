@@ -698,14 +698,26 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   // Stable-doc compact serving: if a fresh extractive compact sidecar exists for
   // this doc (built via `token-goat compact-doc`), serve its content in place of
-  // the full file — 80-95% smaller. Runs ahead of the markdown large-file
+  // the full file — typically 60-95% smaller. Runs ahead of the markdown large-file
   // intercept below, which is the expensive full-read path this preempts.
   // Gated by [hints] stable_doc_compacts (default on).
   // Grep needs to search the doc's live content for a pattern — serving the compact
   // sidecar instead would swap out the actual search target and skip the search
   // entirely, so Grep is exempt from this intercept (same rationale as the
   // count-based re-read dedup and large-file gate exemptions further below).
-  if (event.toolName !== 'Grep' && loadConfig().hints.stable_doc_compacts && _isDocFile(normalized)) {
+  // A Read carrying offset/limit is asking for one line window, and the compact is a summary of the
+  // whole file: serving it answers a different question and silently drops the requested range. It
+  // also costs more than it saves -- a 5-line window of a 100KB doc is ~200 bytes against a ~9KB
+  // compact. Same rule the subagent-markdown deny below already applies: a read that is surgical
+  // already is left alone.
+  const compactUnrangedRead =
+    readIntToolInput(event, 'offset') === undefined && readIntToolInput(event, 'limit') === undefined
+  if (
+    event.toolName !== 'Grep' &&
+    compactUnrangedRead &&
+    loadConfig().hints.stable_doc_compacts &&
+    _isDocFile(normalized)
+  ) {
     const compactPath = compactPathFor(normalized)
     if (isCompactFresh(compactPath, normalized)) {
       const compactBody = readCompactBody(compactPath)
@@ -718,7 +730,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'Serving the extractive compact sidecar in place of the full file ' +
           '(source unchanged since the last `compact-doc` build):\n\n' +
           fenceUntrustedFileContent(compactBody) +
-          '\n\nUse `token-goat compact-doc "' + shown + '" --force` to rebuild it, ' +
+          '\n\nThis is a lossy extract, not the whole file: front matter and any prose before ' +
+          'the first heading are dropped entirely, each section is cut to its opening ' +
+          'sentences, and long code fences are truncated. If you need content it left out, ' +
+          're-read with offset/limit for a line window, or ' +
+          '`token-goat section "' + shown + '::Heading"` for one section in full. ' +
+          'Use `token-goat compact-doc "' + shown + '" --force` to rebuild it, ' +
           'or `token-goat compact-doc "' + shown + '" --show` to view it directly. ' +
           editAnywayHint(normalized),
         )
