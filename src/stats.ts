@@ -248,6 +248,9 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // with real bytes removed from it. Filing it under the advisory bucket would add non-hint
   // savings to hint_stats.ts's savedBytes, which reads by_source[SOURCE_HINT] wholesale.
   'read:served_elide': SOURCE_CONTENT,
+  // Same bucket and same reasoning as read:served_elide directly above: a rewrite of a Read that
+  // did happen, with real bytes removed, not an advisory about whether to read at all.
+  'read:body_fold': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,
   handoff_resolve: SOURCE_CONTENT,
