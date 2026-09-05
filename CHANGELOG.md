@@ -4,6 +4,20 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Long function bodies can now be folded out of a source file the first time it is read.** Every existing way token-goat shrinks a read depends on having seen the file before: it withholds lines already delivered, or turns a repeat read into a pointer. A first read has no earlier copy to compare against, and first reads are the large majority of what the read hook handles. The new `hints.fold_code_bodies` setting keeps each function's declaration and its first ten lines, replaces the rest with a single line naming the symbol, the exact line range removed and the command that returns it, and leaves everything outside a function body exactly as it was. Imports, types, top-level constants and the comments between declarations all survive untouched. Measured on this repository's own source: of the 162 files over 8 KB, 150 fold, and about 35% of what a read of them delivers is removed.
+
+  It replaces the result of a read that succeeded rather than blocking the read. Refusing a read costs a round trip, and the agent may fetch the file another way or give up on the task; changing what the same successful call returns costs neither.
+
+  Folding only the body sits between two worse options. A signatures-only view is about an eighth of what a read delivers, so serving one withholds the other seven eighths while still looking like an answer. Keeping the first lines of each body leaves a reader everything a signature list has, plus enough of each implementation to judge whether it needs the rest, and the rest is one named command away.
+
+  It is off by default. On a first read there is no earlier copy for the reader to notice an omission against, and how often a reader has to go back for a folded body has never been observed. A repository cannot switch it on either: `hints.fold_code_bodies` is refused from a checked-in `.token-goat.toml`. How much of its own source a repository shows a reader is not the repository's call. Your own config and `TOKEN_GOAT_FOLD_CODE_BODIES` still set it freely, and `token-goat doctor` reports it when the environment turns it on.
+
+  Four things stop a fold. A read that already names an offset or a limit is surgical and is left alone. A file whose index no longer matches what is on disk is skipped, checked on both the content digest and the digest of the parser that produced the rows: a stale line span cuts in the wrong place, and a first read gives no way to catch it. A file holding anything that looks like a secret is passed through whole rather than handed back redacted. And a class or interface is never folded, because its span covers the member signatures the fold exists to preserve.
+
+  One thing had to be fixed for this to be safe. The record of what a read delivered was taken from the file on disk, which is the same text right up until something rewrites it. After a fold it is not, and the record would have claimed the folded lines were shown; a later read coming back for exactly those lines would then have had them withheld as already seen, from a reader that never saw them once. It now records what was actually delivered, in [src/hooks_read.ts](src/hooks_read.ts) alongside the new [src/code_fold.ts](src/code_fold.ts). No reindex is needed.
+
 ### Removed
 
 - **A compression path that was built, tested, fixed four times, and never once run.** `tryWrapCompoundSegments` took a command joined by `&&`, split it, and wrapped each recognized part on its own, so `git diff && git log` would come back with both halves compressed instead of neither. It arrived in June as part of the output-filter framework, and the commit that added it said plainly that nothing was wired to it yet. The rest of that framework was connected over the following weeks. This one function never was, and the import line in [src/hooks_bash.ts](src/hooks_bash.ts) that names eight of its siblings reads as complete without it.

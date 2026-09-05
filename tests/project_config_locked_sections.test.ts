@@ -33,6 +33,7 @@ describe('stripLockedProjectKeys', () => {
       'webfetch',
     ])
     expect([...PROJECT_LOCKED_KEYS].sort()).toEqual([
+      'hints.fold_code_bodies',
       'image_shrink.max_image_pixels',
       'indexing.cross_project_symbols',
       'worker.blocked_roots',
@@ -93,6 +94,7 @@ describe('stripLockedProjectKeys', () => {
       image_shrink: { max_image_pixels: 0 },
       indexing: { cross_project_symbols: true },
       worker: { blocked_roots: [] },
+      hints: { fold_code_bodies: true },
     })
 
     expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())

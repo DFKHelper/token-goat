@@ -595,6 +595,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'browser_tab_dedup',
       'grep:fold',
       'read:served_elide',
+      'read:body_fold',
       'handoff_create',
       'handoff_resolve',
       'plan_echo_collapse',
