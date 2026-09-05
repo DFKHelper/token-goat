@@ -1,12 +1,7 @@
 /**
  * Body-fold coverage.
  *
- * Fixture provenance: every numbered-read fixture below is HAND-DERIVED -- the `N\tline` rendering
- * is written from the shape READ_NUMBERED_ROW_RE accepts, and the line contents are synthetic
- * source written for this test. That is the right tier for logic (does the planner cut where it
- * should) and explicitly NOT evidence about the wire format Claude Code emits; the e2e block below
- * covers the shipping path by indexing a real file and driving the real handler, which is what this
- * repo's "critical path" rule requires of anything touching the indexer or a hook.
+ * Fixture provenance: every numbered-read fixture below is HAND-DERIVED -- the `N\tline` rendering is written from the shape READ_NUMBERED_ROW_RE accepts, and the line contents are synthetic source written for this test. That is the right tier for logic (does the planner cut where it should) and explicitly NOT evidence about the wire format Claude Code emits; the e2e block below covers the shipping path by indexing a real file and driving the real handler, which is what this repo's "critical path" rule requires of anything touching the indexer or a hook.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
@@ -44,16 +39,14 @@ describe('planBodyFolds', () => {
   })
 
   it('never folds a class or interface, whose span encloses the member signatures this preserves', () => {
-    // The whole point is to keep structure. A class span covers every method inside it, so folding
-    // it would swallow exactly the signatures a reader needs to navigate the type.
+    // The whole point is to keep structure. A class span covers every method inside it, so folding it would swallow exactly the signatures a reader needs to navigate the type.
     for (const kind of ['class', 'interface', 'type', 'struct', 'enum']) {
       expect(planBodyFolds(rowsFor(80), [span('Big', 1, 60, kind)], 10, 25)).toEqual([])
     }
   })
 
   it('folds an outer function once rather than folding a nested helper inside it a second time', () => {
-    // Two notices for overlapping ranges would claim the same removed bytes twice in the ledger,
-    // and the inner notice would point at lines the outer fold already took away.
+    // Two notices for overlapping ranges would claim the same removed bytes twice in the ledger, and the inner notice would point at lines the outer fold already took away.
     const folds = planBodyFolds(rowsFor(120), [span('outer', 1, 100), span('inner', 30, 70)], 10, 25)
     expect(folds).toHaveLength(1)
     expect(folds[0]?.name).toBe('outer')
@@ -67,16 +60,14 @@ describe('planBodyFolds', () => {
   })
 
   it('clips a span that runs past the rows actually delivered', () => {
-    // A span may extend beyond a windowed read. Folding to span.lineEnd regardless would emit a
-    // notice claiming lines the read never contained.
+    // A span may extend beyond a windowed read. Folding to span.lineEnd regardless would emit a notice claiming lines the read never contained.
     const folds = planBodyFolds(rowsFor(30), [span('big', 1, 100)], 10, 25)
     expect(folds).toHaveLength(1)
     expect(folds[0]?.lastLine).toBe(30)
   })
 
   it('declines when the delivered rows skip a line inside the span', () => {
-    // Folding across a gap would remove rows the span never covered. Rows 1-20 then 41-60: the
-    // span's range is present on both sides of a hole, and the run is not contiguous.
+    // Folding across a gap would remove rows the span never covered. Rows 1-20 then 41-60: the span's range is present on both sides of a hole, and the run is not contiguous.
     const rows = [...rowsFor(20, 1), ...rowsFor(20, 41)]
     expect(planBodyFolds(rows, [span('big', 1, 60)], 10, 25)).toEqual([])
   })
@@ -156,8 +147,7 @@ describe('body fold on the real Read hook path', () => {
 
     expect(text).toContain('folded')
     expect(text).toContain('longFunction')
-    // Everything outside the body survives. These are the lines a skeleton would also drop, and
-    // dropping them is the difference between a fold and a deny wearing a preview.
+    // Everything outside the body survives. These are the lines a skeleton would also drop, and dropping them is the difference between a fold and a deny wearing a preview.
     expect(text).toContain('TOP_LEVEL_CONSTANT')
     expect(text).toContain('TRAILING_CONSTANT')
     expect(text).toContain('design-rationale comment')
@@ -167,8 +157,7 @@ describe('body fold on the real Read hook path', () => {
   })
 
   it('does not fold when the flag is off — the calibration for every assertion above', () => {
-    // Without this, every negative case in this block would still pass if folding stopped firing
-    // entirely, proving nothing. An uncalibrated null is the failure mode this repo keeps hitting.
+    // Without this, every negative case in this block would still pass if folding stopped firing entirely, proving nothing. An uncalibrated null is the failure mode this repo keeps hitting.
     const { file, body } = makeIndexedSource()
     process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = '0'
     const text = JSON.stringify(postReadHandler(postEvent(file, body)))
@@ -193,11 +182,7 @@ describe('body fold on the real Read hook path', () => {
   })
 
   it('records the FOLDED text as served, not the file on disk', () => {
-    // The trap this fix exists for. recordReadAsServedOutput took its copy from
-    // readWindowFromDisk, so after a fold the store would claim the folded lines had been
-    // delivered -- and the served-run elision would then cut exactly the lines a re-read came back
-    // for, from a model that never saw them once. Storing disk content is correct only while
-    // delivered text equals disk, which a rewrite is precisely the case that breaks.
+    // The trap this fix exists for. recordReadAsServedOutput took its copy from readWindowFromDisk, so after a fold the store would claim the folded lines had been delivered -- and the served-run elision would then cut exactly the lines a re-read came back for, from a model that never saw them once. Storing disk content is correct only while delivered text equals disk, which a rewrite is precisely the case that breaks.
     const { file, body } = makeIndexedSource()
     const out = postReadHandler(postEvent(file, body))
     expect(JSON.stringify(out)).toContain('folded')

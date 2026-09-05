@@ -705,15 +705,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // the full file — typically 60-95% smaller. Runs ahead of the markdown large-file
   // intercept below, which is the expensive full-read path this preempts.
   // Gated by [hints] stable_doc_compacts (default on).
-  // Grep needs to search the doc's live content for a pattern — serving the compact
-  // sidecar instead would swap out the actual search target and skip the search
-  // entirely, so Grep is exempt from this intercept (same rationale as the
-  // count-based re-read dedup and large-file gate exemptions further below).
-  // A Read carrying offset/limit is asking for one line window, and the compact is a summary of the
-  // whole file: serving it answers a different question and silently drops the requested range. It
-  // also costs more than it saves -- a 5-line window of a 100KB doc is ~200 bytes against a ~9KB
-  // compact. Same rule the subagent-markdown deny below already applies: a read that is surgical
-  // already is left alone.
+  // Grep needs to search the doc's live content for a pattern — serving the compact sidecar instead would swap out the actual search target and skip the search entirely, so Grep is exempt from this intercept (same rationale as the count-based re-read dedup and large-file gate exemptions further below). A Read carrying offset/limit is asking for one line window, and the compact is a summary of the whole file: serving it answers a different question and silently drops the requested range. It also costs more than it saves -- a 5-line window of a 100KB doc is ~200 bytes against a ~9KB compact. Same rule the subagent-markdown deny below already applies: a read that is surgical already is left alone.
   const compactUnrangedRead =
     readIntToolInput(event, 'offset') === undefined && readIntToolInput(event, 'limit') === undefined
   if (
@@ -1614,11 +1606,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
     // would disqualify every later complete Read of the same file, which does deliver its window.
     const respText = extractReadOutput(event.raw)
     if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return
-    // What the model was actually handed, which is the disk window ONLY when nothing rewrote it.
-    // A body fold delivers strictly less than the file holds, and storing the disk copy would tell
-    // every later read that the folded lines were served -- so a re-read coming back for exactly
-    // those lines would have them elided as "already seen". The store's whole contract is a record
-    // of what reached the model, and a rewrite is the one case where that differs from disk.
+    // What the model was actually handed, which is the disk window ONLY when nothing rewrote it. A body fold delivers strictly less than the file holds, and storing the disk copy would tell every later read that the folded lines were served -- so a re-read coming back for exactly those lines would have them elided as "already seen". The store's whole contract is a record of what reached the model, and a rewrite is the one case where that differs from disk.
     const served = deliveredRaw ?? readWindowFromDisk(event, normalized)
     if (served === null) return
 
@@ -1922,10 +1910,7 @@ const BODY_FOLD_KEEP_LINES = 10
 /**
  * Shortest function span worth folding, in lines.
  *
- * Measured across 41 sampled source files: keep=10/span>=25 removes 37.1% of delivered bytes,
- * keep=20/span>=40 removes 28.5%, keep=6/span>=15 removes 43.7%. The aggressive setting cuts into
- * bodies short enough to read at a glance, which is where a fold costs the reader more than it
- * saves; this is the middle one.
+ * Measured with this code path over the 162 source files in this repo above 8 KB, against an index written by the same parser build: keep=10/span>=25 removes 34.8% of delivered bytes across 150 files, keep=20/span>=40 removes 25.8% across 126, keep=6/span>=15 removes 41.0% across 152. The aggressive setting cuts into bodies short enough to read at a glance, which is where a fold costs the reader more than it saves; this is the middle one.
  */
 const BODY_FOLD_MIN_SPAN = 25
 
@@ -1935,10 +1920,7 @@ const BODY_FOLD_SYMBOL_LIMIT = 10000
 /**
  * The line standing in for a folded body.
  *
- * It names the symbol, the exact line range removed, and the command that returns it -- everything
- * needed to undo the fold without re-reading the file. Unlike a re-read elision, the reader has
- * never seen these lines, so the notice must read as "here is what is missing and how to get it",
- * not as a pointer to something already in context.
+ * It names the symbol, the exact line range removed, and the command that returns it -- everything needed to undo the fold without re-reading the file. Unlike a re-read elision, the reader has never seen these lines, so the notice must read as "here is what is missing and how to get it", not as a pointer to something already in context.
  */
 function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shownPath: string): string {
   const n = lastLine - firstLine + 1
@@ -1948,17 +1930,11 @@ function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shown
 /**
  * Replace the inside of long function bodies with a pointer, keeping everything else verbatim.
  *
- * This is the only mechanism on the Read path aimed at a FIRST read. Everything beside it --
- * served-run elision, identical-read collapse, the heading-tree re-read deny -- keys on prior
- * sight, and 83.6% of hooked Read bytes have none.
+ * This is the only mechanism on the Read path aimed at a FIRST read. Everything beside it -- served-run elision, identical-read collapse, the heading-tree re-read deny -- keys on prior sight, and 83.6% of hooked Read bytes have none.
  *
- * It uses the rewrite channel rather than a deny on purpose. A deny that carries a compact still
- * blocks the call: the agent pays a round trip, may re-acquire the file anyway, and the measured
- * analogue abandons its task 42.7% of the time and runs edit errors at 4x baseline. A rewrite
- * changes only what the same successful call delivers, so none of those costs apply.
+ * It uses the rewrite channel rather than a deny on purpose. A deny that carries a compact still blocks the call: the agent pays a round trip, may re-acquire the file anyway, and the measured analogue abandons its task 42.7% of the time and runs edit errors at 4x baseline. A rewrite changes only what the same successful call delivers, so none of those costs apply.
  *
- * Returns the rewrite together with the raw text it actually delivered, because the served-output
- * store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}.
+ * Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}.
  */
 function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
   if (!loadConfig().hints.fold_code_bodies) return null
@@ -1967,26 +1943,17 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const normalized = normalizePath(filePath)
   if (isImagePath(normalized)) return null
 
-  // A read carrying offset/limit is surgical already, and folding a window the caller deliberately
-  // narrowed answers a different question than the one asked. Same rule the subagent-markdown deny
-  // and the doc-compact intercept both apply.
+  // A read carrying offset/limit is surgical already, and folding a window the caller deliberately narrowed answers a different question than the one asked. Same rule the subagent-markdown deny and the doc-compact intercept both apply.
   if (readIntToolInput(event, 'offset') !== undefined || readIntToolInput(event, 'limit') !== undefined) return null
   if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
 
-  // Composing a rewrite makes this handler the author of what the model reads, and a file holding a
-  // secret would be handed back redacted. Declining is the honest move: a plain Read gives the user
-  // more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines.
+  // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines.
   if (redactSecrets(respText).count > 0) return null
 
   const parsed = parseNumberedReadResult(respText)
   if (parsed === null) return null
 
-  // The spans come from the index, so they describe the file the indexer last parsed. Fold only
-  // when that is still this file, on BOTH freshness keys: files.sha answers "has the content
-  // changed", parser_sha answers "did different extraction logic write these rows". Content alone
-  // is not enough -- measured on a real index, 37 of 237 source files disagreed with what the
-  // current parser produced while their content sha still matched. A stale span cuts at the wrong
-  // line, and on a first read there is no earlier copy for the reader to notice that against.
+  // The spans come from the index, so they describe the file the indexer last parsed. Fold only when that is still this file, on BOTH freshness keys: files.sha answers "has the content changed", parser_sha answers "did different extraction logic write these rows". Content alone is not enough -- measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched. A stale span cuts at the wrong line, and on a first read there is no earlier copy for the reader to notice that against.
   let spans: FoldSpan[]
   try {
     const entry = getFileEntry(normalized)
@@ -2004,8 +1971,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 
   const shown = displaySafePath(normalized)
   const out: string[] = [...parsed.header]
-  // The raw (un-numbered) form of the same delivery, for the served-output store, which compares
-  // against plain file lines rather than the tool's numbered rendering.
+  // The raw (un-numbered) form of the same delivery, for the served-output store, which compares against plain file lines rather than the tool's numbered rendering.
   const rawOut: string[] = []
   let at = 0
   for (const fold of folds) {
@@ -2062,9 +2028,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 export function postReadHandler(event: HookEvent): HookOutput {
   const respText = extractReadOutput(event.raw)
   const elided = elideAlreadyServedLines(event, respText)
-  // Only one rewrite may win, and elision goes first: it cuts lines the model already holds, which
-  // costs the reader nothing, while a fold withholds lines it has never seen. Running both would
-  // also double-count the same bytes in the ledger.
+  // Only one rewrite may win, and elision goes first: it cuts lines the model already holds, which costs the reader nothing, while a fold withholds lines it has never seen. Running both would also double-count the same bytes in the ledger.
   const folded = elided === null ? foldCodeBodies(event, respText) : null
   const rewrite = elided ?? folded?.output ?? null
   const out = applyHintTracking(event, postReadHandlerInner(event, rewrite !== null), classifyReadHint)
