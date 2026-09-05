@@ -69,6 +69,36 @@ export function getEmbeddingCoverage(dbPath: string, rootDir?: string): { indexe
 }
 
 /**
+ * How many indexed files were written by the extraction logic this build actually runs, scoped exactly like the two counters above.
+ *
+ * `files.parser_sha` exists so a parser change invalidates rows whose content never moved, and every freshness gate treats a mismatch as stale: `token-goat index` reparses the file, the worker's drain reparses it, and the read-hook body fold declines on it outright. Each of those is correct in isolation. What nothing reported is the aggregate, and the aggregate is where it matters -- a mismatch only clears when something touches that file, so after an upgrade a project keeps serving symbols from the previous extractor until it is reindexed, with no signal anywhere that it is doing so. Measured on a real multi-project index: 95.1% of one project's 1,155 files, and 71.4% of 17,508 files overall, disagreed with the running build.
+ *
+ * A NULL or empty `parser_sha` is a row written before the column existed and counts as stale, which is what every gate already does with it.
+ *
+ * Throws on a DB error, matching the two above -- callers own their own fallback.
+ */
+export function getParserFreshness(
+  dbPath: string,
+  parserSha: string,
+  rootDir?: string,
+): { indexedFiles: number; currentFiles: number } {
+  const db = getDb(dbPath)
+  const count = (extra: string, params: unknown[]): number => {
+    if (rootDir === undefined) {
+      return (db.prepare(`SELECT COUNT(*) as c FROM files${extra === '' ? '' : ` WHERE ${extra}`}`).get(...params) as {
+        c: number
+      }).c
+    }
+    const scope = projectScopeClause('path')
+    const where = extra === '' ? scope.clause : `${scope.clause} AND ${extra}`
+    return (db.prepare(`SELECT COUNT(*) as c FROM files WHERE ${where}`).get(...scope.params(rootDir), ...params) as {
+      c: number
+    }).c
+  }
+  return { indexedFiles: count('', []), currentFiles: count('parser_sha = ?', [parserSha]) }
+}
+
+/**
  * True when `dbPath` (scoped to `rootDir` when given, matching checkSymbolCount's own scoping)
  * has zero indexed files and zero symbols -- the exact condition doctor's Symbols check warns
  * on. Only meant to be called AFTER a query already returned empty: it always pays a DB read, so

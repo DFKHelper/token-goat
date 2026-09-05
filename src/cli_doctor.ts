@@ -12,7 +12,8 @@ import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
-import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage } from './index_health.js'
+import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
+import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { CONFIG_KEY_ENV_OVERRIDES, loadConfig, PROJECT_LOCKED_KEYS, PROJECT_LOCKED_SECTIONS, readConfigSource } from './config.js'
 import { envBool } from './env.js'
@@ -396,6 +397,55 @@ export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): Doctor
       name: 'Embedding coverage',
       status: 'warn',
       message: `could not query embedding coverage: ${extractErrorMessage(err)}`,
+    }
+  }
+}
+
+/**
+ * Fraction of a project's indexed files that may predate the running parser before it is worth saying so.
+ *
+ * Not zero: a mismatch is self-healing (the next `index` or worker drain reparses the file), so a handful of rows behind after a fresh upgrade is the mechanism working, not a fault. Set at a quarter, matching the embedding-coverage fraction beside it, because both answer the same question -- has enough of this project silently dropped out of an index-backed feature that the feature's answers no longer describe the project.
+ */
+const PARSER_FRESHNESS_WARN_FRACTION = 0.25
+
+/**
+ * How much of this project's index was written by the parser this build runs.
+ *
+ * The other two index checks ask whether rows exist and whether they are embedded. Neither can see a row that is present, embedded, and produced by a previous version of the extraction logic. Those rows are stale by every gate's own definition -- `token-goat index` reparses them, the worker reparses them, the read-hook body fold refuses to fold them -- and until something touches the file, the project keeps answering from the older extractor with nothing to say so. Measured on a real index before this check existed: 95.1% of one project's files.
+ */
+export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorResult {
+  if (!fs.existsSync(dbPath)) {
+    return { name: 'Parser freshness', status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const { indexedFiles, currentFiles } = getParserFreshness(dbPath, PARSER_FINGERPRINT, rootDir)
+    if (indexedFiles === 0) {
+      // Already reported by the Symbols check; saying it twice adds nothing.
+      return { name: 'Parser freshness', status: 'ok', message: 'no indexed files yet' }
+    }
+    const stale = indexedFiles - currentFiles
+    const pct = Math.round((stale / indexedFiles) * 100)
+    if (currentFiles / indexedFiles < 1 - PARSER_FRESHNESS_WARN_FRACTION) {
+      return {
+        name: 'Parser freshness',
+        status: 'warn',
+        message:
+          `${stale} of ${indexedFiles} indexed file(s) (${pct}%) were parsed by a different build of the ` +
+          `extraction logic, so their symbols are whatever that build extracted — 'symbol', 'read', 'outline' and ` +
+          `'skeleton' answer from those rows, and the read-hook body fold declines on them. Run 'token-goat index' ` +
+          `in this project to reparse them; --force is not needed, a parser mismatch reindexes on its own`,
+      }
+    }
+    return {
+      name: 'Parser freshness',
+      status: 'ok',
+      message: `${currentFiles} of ${indexedFiles} indexed file(s) match the running parser`,
+    }
+  } catch (err) {
+    return {
+      name: 'Parser freshness',
+      status: 'warn',
+      message: `could not query parser freshness: ${extractErrorMessage(err)}`,
     }
   }
 }
@@ -1138,6 +1188,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   // Directly after the availability row: "available" and "3% of files covered" are both true at
   // once, and reading either alone gives the wrong picture of what `semantic` can actually see.
   results.push(checkEmbeddingCoverage(path.join(actualDataDir, 'global.db'), rootDir))
+  results.push(checkParserFreshness(path.join(actualDataDir, 'global.db'), rootDir))
 
   for (const result of checkSecurityPosture(loadConfig(rootDir), actualDataDir)) results.push(result)
 
