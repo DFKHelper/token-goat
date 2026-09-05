@@ -1437,6 +1437,32 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  // A ranged Read asks for a specific line window. Serving the whole compact instead answers a
+  // different question -- and costs more than the slice would have: a 5-line window of a 100KB doc
+  // is ~200 bytes against a ~9KB compact, so the intercept both loses the requested content and
+  // inflates the payload. The sibling subagent-markdown deny already gates on this ("a read that
+  // already carries offset/limit is surgical already and is left alone"); this branch did not.
+  it('does not intercept a ranged Read of a doc file with a fresh compact sidecar — the requested offset/limit window must survive, not be replaced by the whole-file compact', () => {
+    const p = _makeTmpMdFile('# Title\n\n' + Array.from({ length: 200 }, (_, i) => `Line ${i}.`).join('\n') + '\n')
+    writeCompact(compactPathFor(p), p, 'Title\nAn extractive summary of the doc.')
+
+    // Calibration: the same file un-ranged MUST be intercepted. Without this, the assertions below
+    // would still pass if compact serving stopped firing entirely, proving nothing.
+    expect(preReadHandler(readEvent(p)).hookType).toBe('deny')
+
+    // A ranged read may still pick up an advisory hint from a later branch ('context'); what it
+    // must never do is get denied and handed the whole-file compact in place of its window.
+    for (const [offset, limit] of [
+      [50, 5],
+      [50, undefined],
+      [undefined, 5],
+    ] as const) {
+      const r = preReadHandler(readEventWithRange(p, offset, limit))
+      expect(r.hookType).not.toBe('deny')
+      expect(JSON.stringify(r)).not.toContain('Serving the extractive compact sidecar')
+    }
+  })
+
   // Serving a compact sidecar replaces a Read that would itself have been truncated at PER_FILE_COUNTERFACTUAL_CEILING, so the saving is that ceiling minus the compact body the model still pays for -- not the whole on-disk size minus the body, which credited a 400KB doc with roughly four times what it could ever have saved.
   it('caps the compact-serving credit at the per-file counterfactual ceiling minus the body it still emits', () => {
     const body = 'Summary line one.\nSummary line two.'
