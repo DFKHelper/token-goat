@@ -6,7 +6,7 @@
  * approximated per category, and why "harness" stands in for "model" here.
  */
 
-import { getHintStatsSummary, getHintStatsTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
+import { getHintStatsSummary, getHintStatsTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
 import { pad } from './util.js'
 
 export interface HintStatsCommandOptions {
@@ -38,18 +38,33 @@ function suppressedCell(row: CategoryEfficacy): string {
   return row.suppressionPermanent ? 'yes (permanent)' : 'yes'
 }
 
+/**
+ * Renders a category's efficacy cell, marked when the number behind it is scored on an absence.
+ *
+ * A suppression category asks the agent NOT to do something, so its window expiring counts as
+ * compliance and books `acted_on = 1`; a redirect category asks the agent to run a specific
+ * command, and only that command counts. The two percentages therefore sit on incomparable
+ * scales, and printing them in one column with nothing to tell them apart invites the reading
+ * that a 99% suppression row is sixty times better than a 2% redirect row. That reading has been
+ * made off this table, and went into a brief before anyone caught it, so the marker is not
+ * decorative.
+ */
+function efficacyCell(row: CategoryEfficacy): string {
+  const pct = row.efficacyPct === null ? 'n/a' : `${row.efficacyPct}%`
+  return isSuppressionCategory(row.category) ? `${pct} *` : pct
+}
+
 function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {
     process.stdout.write(text)
   }
-  w(pad('category', 22) + pad('emitted', 9) + pad('acted-on', 10) + pad('efficacy', 10) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
+  w(pad('category', 22) + pad('emitted', 9) + pad('acted-on', 10) + pad('efficacy', 12) + pad('suppressed', 17) + pad('manual+', 9) + pad('manual-', 9) + 'spent\n')
   for (const row of rows) {
-    const pct = row.efficacyPct === null ? 'n/a' : `${row.efficacyPct}%`
     w(
       pad(row.category, 22) +
         pad(String(row.emitted), 9) +
         pad(String(row.actedOn), 10) +
-        pad(pct, 10) +
+        pad(efficacyCell(row), 12) +
         pad(suppressedCell(row), 17) +
         pad(String(row.manualEffective), 9) +
         pad(String(row.manualIneffective), 9) +
@@ -110,6 +125,17 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
   printSummary(rows)
+  // The polarity split is documented in hint_stats.ts, which says it is disclosed "here and in
+  // the CLI output". It was not: the table printed both scales in one column with nothing to
+  // separate them, and a reader comparing them straight across drew the opposite of the truth.
+  if (rows.some((r) => isSuppressionCategory(r.category) && r.emitted > 0)) {
+    process.stdout.write(
+      '\n* Scored on an absence: these hints ask the agent NOT to do something, so a window that ' +
+      'expires with no re-read counts as compliance. Their percentage is not comparable with the ' +
+      'unmarked rows, which only count when the agent runs the command the hint named. A high ' +
+      'starred figure means "the warned-against read was not seen", not "this hint persuaded anyone".\n',
+    )
+  }
   // A permanently-suppressed category emits nothing at all, so its efficacy can never rise and
   // the table above will look identical forever. Name the one action that changes it, rather than
   // leaving a reader to trace four source files and two databases to find out -- which is what
