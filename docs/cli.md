@@ -302,12 +302,12 @@ that category — the real cost of emitting it, not just how often it fired):
 
 ```
 $ token-goat hint-stats
-category              emitted  acted-on  efficacy  suppressed  manual+  manual-  spent
-bash_redirect          42       9         21.4%     no          0        0        3150
-bash_recall            18       15        83.3%     no          0        0        1080
-read_reread_dedup      11       2         18.2%     no          0        0        660
-read_structural_nav    7        1         14.3%     yes         0        1        420
-edit_reread_suggest    3        0         0%        no          0        0        180
+category              emitted  acted-on  efficacy   suppressed  manual+  manual-  spent
+bash_redirect          42       9         21.4%      no          0        0        3150
+bash_recall            18       15        83.3%      no          0        0        1080
+read_reread_dedup      11       2         18.2% *    no          0        0        660
+read_structural_nav    7        1         14.3%      yes         0        1        420
+edit_reread_suggest    3        0         0% *       no          0        0        180
 
 TOTAL   saved=48200   spent=5490   net=42710
 ```
@@ -324,6 +324,13 @@ emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshol
 15%) — the sample-size floor exists so a category is never suppressed off a single unlucky
 emission. Once suppressed, that hook stops emitting that category until `token-goat hint-stats
 --reset` clears the tracked data. Configure both knobs with `token-goat config set hint_stats.min_sample_size <n>` / `token-goat config set hint_stats.suppress_threshold_pct <pct>`.
+
+A `*` on an efficacy figure means that category is scored on an absence. Those hints ask the
+agent *not* to do something, so a window that expires with no re-read counts as compliance, while
+an unmarked category only scores when the agent actually runs the command the hint named. The two
+percentages sit on different scales and comparing them straight across gives the wrong answer: a
+high starred figure means the warned-against read was not seen, not that the hint persuaded
+anyone.
 
 "Acted on" is a real, session-scoped signal (the exact file path or cached-output id the hint's
 own text pointed at is checked against the next few tool calls in that session) — not a guess —

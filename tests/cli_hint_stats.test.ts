@@ -242,3 +242,54 @@ describe('runHintStatsCommand — manual marking', () => {
     expect(row?.efficacyPct).toBe(null)
   })
 })
+
+describe('runHintStatsCommand — efficacy polarity disclosure', () => {
+  // hint_stats.ts's module doc says the proxy nature of this measurement is "disclosed here and
+  // in the CLI output". Only the first half was true. A suppression category books acted_on = 1
+  // when its window simply expires, so its percentage measures an absence, while a redirect
+  // category's measures the agent affirmatively typing a command. Both printed in one bare
+  // `efficacy` column with nothing to separate them, and reading 99.4% against 1.6% as "acting
+  // beats suggesting" is the natural mistake -- it was made off this exact table and carried into
+  // a brief before anyone checked the scoring.
+  //
+  // FIXTURE PROVENANCE: HAND-DERIVED. The categories come from SUPPRESSION_HINT_CATEGORIES in
+  // src/hint_stats.ts (the definition under test, cited deliberately -- this asserts the renderer
+  // agrees with the polarity the scorer applies, which is the coupling that broke). The expected
+  // output shape is not read off the renderer: it is the minimum a reader needs to avoid the
+  // comparison above, written before the assertion was run.
+  it('marks a category whose score is an absence, and says so', () => {
+    const sid = nonce()
+    logHintEmission('edit_reread_suggest', sid, 'C:/x/a.ts')
+    logHintEmission('bash_redirect', sid, 'C:/x/b.ts')
+
+    const output = captureStdout(() => runHintStatsCommand())
+    const line = (cat: string) => output.split('\n').find((l) => l.startsWith(cat)) ?? ''
+
+    expect(
+      line('edit_reread_suggest'),
+      'A suppression-polarity row must carry a marker in its efficacy cell. Without one its ' +
+      'percentage is indistinguishable from an affirmative-action score that means something ' +
+      'entirely different.',
+    ).toMatch(/\d+(\.\d+)?% \*/)
+
+    expect(
+      line('bash_redirect'),
+      'An affirmative-action row must NOT be marked, or the marker distinguishes nothing.',
+    ).not.toContain('*')
+
+    expect(
+      output,
+      'The table needs a footnote saying what the marker means. A bare symbol relocates the ' +
+      'confusion rather than removing it.',
+    ).toContain('Scored on an absence')
+  })
+
+  // The footnote is worth nothing if it prints on a store with no suppression-category data, and
+  // the marker is worth nothing if it appears on every row. Both halves of the branch are checked
+  // because a note that always fires reads as boilerplate and stops being read at all.
+  it('stays silent when no suppression category has emitted', () => {
+    logHintEmission('bash_redirect', nonce(), 'C:/x/c.ts')
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).not.toContain('Scored on an absence')
+  })
+})
