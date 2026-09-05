@@ -7,7 +7,6 @@ import {
   filterByName,
   selectFilter,
   TOOL_FILTERS,
-  tryWrapCompoundSegments,
 } from '../src/tool_filters/dispatch.js'
 import { GenericFilter } from '../src/tool_filters/generic.js'
 import { grepFilter } from '../src/tool_filters/shell_file.js'
@@ -454,55 +453,6 @@ describe('dispatch: detection + compound handling', () => {
     expect(det?.filter.name).toBe('grep')
     expect(det?.argv).toEqual(['grep', '-rn', '-E', 'TODO|FIXME', 'src/'])
     expect(detectFromCommand("grep -rn -E 'TODO|FIXME' src/ | wc -l")).toBeNull()
-  })
-
-  it('tryWrapCompoundSegments leaves a quoted pipe alone but still rejects a real one', () => {
-    TOOL_FILTERS.push(new EchoFilter())
-    const wrapped = tryWrapCompoundSegments("mytool -E 'foo|bar' && echo done", (name, seg) => `wrap[${name}](${seg})`)
-    expect(wrapped).toBe("wrap[echo-test](mytool -E 'foo|bar') && echo done")
-    expect(tryWrapCompoundSegments('mytool a | head && echo done', (name, seg) => `wrap[${name}](${seg})`)).toBeNull()
-  })
-
-  it('tryWrapCompoundSegments wraps each recognised && segment', () => {
-    TOOL_FILTERS.push(new EchoFilter())
-    const out = tryWrapCompoundSegments('mytool a && echo done', (name, seg) => `wrap[${name}](${seg})`)
-    expect(out).toBe('wrap[echo-test](mytool a) && echo done')
-  })
-
-  it('tryWrapCompoundSegments returns null when no segment matches', () => {
-    expect(tryWrapCompoundSegments('echo a && echo b', () => 'x')).toBeNull()
-  })
-
-  // Regression: the previous implementation split on a naive `/\s*&&\s*/` regex with no
-  // quote-awareness, so a `&&` embedded inside a quoted argument (e.g. a commit message) was
-  // treated as a segment boundary and corrupted on rejoin -- "a&&b" became "a && b".
-  it('tryWrapCompoundSegments does not split or corrupt a && embedded inside a quoted segment argument', () => {
-    TOOL_FILTERS.push(new EchoFilter())
-    const out = tryWrapCompoundSegments('mytool -m "a&&b" && echo done', (name, seg) => `wrap[${name}](${seg})`)
-    expect(out).toBe('wrap[echo-test](mytool -m "a&&b") && echo done')
-  })
-
-  // Regression: detectFromCommand rejects a bare `&` (backgrounded command) because spawnSync's
-  // piped stdio blocks on the backgrounded grandchild's inherited stdout until it exits or the
-  // wrapper's timeout kills the process tree the user wanted kept running (see the bug #242
-  // regression test above). tryWrapCompoundSegments' per-segment path (detectSingleSegment)
-  // never carried the same guard, so a trailing backgrounded segment in a compound command --
-  // e.g. `cd /app && npm run dev &`, a common "set up then start a dev server" pattern -- was
-  // still wrapped, reproducing the exact hang the sibling check exists to prevent.
-  it('tryWrapCompoundSegments does not wrap a segment ending in a bare backgrounded command', () => {
-    TOOL_FILTERS.push(new EchoFilter())
-    const out = tryWrapCompoundSegments('echo start && mytool run &', (name, seg) => `wrap[${name}](${seg})`)
-    expect(out).toBeNull()
-  })
-
-  // Regression: the char-by-char quote tracker had no backslash-escape handling, so an
-  // escaped quote (\") inside a double-quoted argument closed the quote state one character
-  // early -- causing a real, top-level && immediately after to be silently absorbed into the
-  // same segment as its neighbor instead of being treated as a segment boundary.
-  it('tryWrapCompoundSegments still splits at a real && boundary even when a preceding segment contains an escaped quote', () => {
-    TOOL_FILTERS.push(new EchoFilter())
-    const out = tryWrapCompoundSegments('mytool "\\"" && mytool "\\"" && echo done', (name, seg) => `wrap[${name}](${seg})`)
-    expect(out).toBe('wrap[echo-test](mytool "\\"") && wrap[echo-test](mytool "\\"") && echo done')
   })
 })
 

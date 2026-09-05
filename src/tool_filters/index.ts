@@ -129,7 +129,6 @@ export {
   selectFilter,
   dispatchArgv,
   detectFromCommand,
-  tryWrapCompoundSegments,
   compressOutput,
   deliverCompressed,
   filterByName,
