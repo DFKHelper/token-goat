@@ -41,13 +41,7 @@ function suppressedCell(row: CategoryEfficacy): string {
 /**
  * Renders a category's efficacy cell, marked when the number behind it is scored on an absence.
  *
- * A suppression category asks the agent NOT to do something, so its window expiring counts as
- * compliance and books `acted_on = 1`; a redirect category asks the agent to run a specific
- * command, and only that command counts. The two percentages therefore sit on incomparable
- * scales, and printing them in one column with nothing to tell them apart invites the reading
- * that a 99% suppression row is sixty times better than a 2% redirect row. That reading has been
- * made off this table, and went into a brief before anyone caught it, so the marker is not
- * decorative.
+ * A suppression category asks the agent NOT to do something, so its window expiring counts as compliance and books `acted_on = 1`; a redirect category asks the agent to run a specific command, and only that command counts. The two percentages therefore sit on incomparable scales, and printing them in one column with nothing to tell them apart invites the reading that a 99% suppression row is sixty times better than a 2% redirect row. That reading has been made off this table, and went into a brief before anyone caught it, so the marker is not decorative.
  */
 function efficacyCell(row: CategoryEfficacy): string {
   const pct = row.efficacyPct === null ? 'n/a' : `${row.efficacyPct}%`
@@ -125,9 +119,7 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
   printSummary(rows)
-  // The polarity split is documented in hint_stats.ts, which says it is disclosed "here and in
-  // the CLI output". It was not: the table printed both scales in one column with nothing to
-  // separate them, and a reader comparing them straight across drew the opposite of the truth.
+  // The polarity split is documented in hint_stats.ts, which says it is disclosed "here and in the CLI output". It was not: the table printed both scales in one column with nothing to separate them, and a reader comparing them straight across drew the opposite of the truth.
   if (rows.some((r) => isSuppressionCategory(r.category) && r.emitted > 0)) {
     process.stdout.write(
       '\n* Scored on an absence: these hints ask the agent NOT to do something, so a window that ' +

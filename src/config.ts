@@ -489,10 +489,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.
     reread_deny_min_bytes: 51_200,
     stable_doc_compacts: true,
-    // Off until measured. This one rewrites what the model reads on a FIRST look at a source
-    // file, where -- unlike every re-read mechanism beside it -- the reader has no prior copy to
-    // notice an omission against. Its restore rate and edit-error delta cannot be observed until
-    // it has run, so the honest default is the one that changes nothing.
+    // Off until measured. This one rewrites what the model reads on a FIRST look at a source file, where -- unlike every re-read mechanism beside it -- the reader has no prior copy to notice an omission against. Its restore rate and edit-error delta cannot be observed until it has run, so the honest default is the one that changes nothing.
     fold_code_bodies: false,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
@@ -992,12 +989,7 @@ export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
  * meant to be -- setting this key to `0` does not lift it.
  */
 export const PROJECT_LOCKED_KEYS: readonly string[] = [
-  // A repository must not be able to decide how much of its own source an agent gets to see.
-  // Turning this on folds function bodies out of every Read of this project's files, so a
-  // checked-in `.token-goat.toml` setting it true would shrink what a reviewing agent is shown of
-  // the very code it came to review -- and the fold is silent about intent, so it reads as normal
-  // output. The user's own global config and TOKEN_GOAT_FOLD_CODE_BODIES still set it freely;
-  // only the project-supplied layer is refused.
+  // A repository must not be able to decide how much of its own source an agent gets to see. Turning this on folds function bodies out of every Read of this project's files, so a checked-in `.token-goat.toml` setting it true would shrink what a reviewing agent is shown of the very code it came to review -- and the fold is silent about intent, so it reads as normal output. The user's own global config and TOKEN_GOAT_FOLD_CODE_BODIES still set it freely; only the project-supplied layer is refused.
   'hints.fold_code_bodies',
   'image_shrink.max_image_pixels',
   'indexing.cross_project_symbols',
