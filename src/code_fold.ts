@@ -134,6 +134,40 @@ export interface CommentSyntax {
 }
 
 const SLASH_STAR: CommentSyntax = { line: ['//'], open: '/*', close: '*/' }
+
+/**
+ * Advance the "am I inside a template literal" state across one row, for the `/* *\/` languages only.
+ *
+ * {@link planCommentFolds} is purely lexical over delivered text and carried no string state at all, so a row whose trimmed text merely *began* with the block-open marker latched a comment run open until some later row happened to contain a close marker. Swept over 870 files of this repository with the shipping constants, that produced one real hit: `tests/languages.test.ts` folded rows 4393-5155, 598 of them executable code, opened by a `/*`-looking sequence inside a SQL template literal and closed 764 rows later by an unrelated comment inside a protobuf fixture. The notice then asserted the removed rows were comments, so nothing in the delivered output suggested code had gone missing.
+ *
+ * A backtick is the only string delimiter that spans rows in these languages, which is what makes cross-row state necessary and also what keeps this short of a lexer: single- and double-quoted spans end at the row that opens them, so they are handled within the row and never leak. `${...}` substitutions are deliberately not parsed. A backtick inside one flips the state twice on the same row and cancels out; one that does not is a mismatch this can get wrong, and it gets it wrong in the direction of folding less, which costs bytes rather than content.
+ */
+function advanceTemplateState(text: string, inTemplate: boolean): boolean {
+  let t = inTemplate
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\') {
+      i++
+      continue
+    }
+    if (c === '`') {
+      t = !t
+      continue
+    }
+    if (t) continue
+    // Outside a template, the rest of the row cannot open one once a line comment starts, and a quoted span cannot contain a template-opening backtick that survives the row.
+    if (c === '/' && text[i + 1] === '/') return t
+    if (c === "'" || c === '"') {
+      const q = c
+      i++
+      while (i < text.length && text[i] !== q) {
+        if (text[i] === '\\') i++
+        i++
+      }
+    }
+  }
+  return t
+}
 const HASH: CommentSyntax = { line: ['#'] }
 const DOUBLE_DASH: CommentSyntax = { line: ['--'] }
 
@@ -173,12 +207,24 @@ export function planCommentFolds(
   const folds: BodyFold[] = []
   let i = 0
   let inBlock = false
+  // Tracked only where a template literal exists, which is exactly the syntax whose block-open marker can appear inside one. See {@link advanceTemplateState}.
+  const tracksTemplates = syntax.open === '/*'
+  let inTemplate = false
   while (i < rows.length) {
     const start = i
     // Walk forward while rows stay comment. `inBlock` persists across the loop body so a `/* ... */` spanning many rows counts as one run rather than restarting at each line.
     while (i < rows.length) {
       const text = rows[i]?.text ?? ''
       const trimmed = text.trim()
+      if (tracksTemplates) {
+        const wasInTemplate = inTemplate
+        inTemplate = advanceTemplateState(text, inTemplate)
+        // A row that is string content cannot open, continue, or close a comment run. Breaking rather than skipping ends the current run here, which is right: the rows on either side of a template literal are not one contiguous comment block.
+        if (wasInTemplate || inTemplate) {
+          inBlock = false
+          break
+        }
+      }
       if (inBlock) {
         if (syntax.close !== undefined && trimmed.includes(syntax.close)) inBlock = false
         i++

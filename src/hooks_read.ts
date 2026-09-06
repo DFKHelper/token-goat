@@ -1808,7 +1808,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 
   // Repo-relative, because the notice repeats this path once per fold and an absolute Windows path is most of the notice: measured over 201 session transcripts, the absolute form costs 10.9 KB of notice against 9.0 KB relative. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on, and either way the notice stays a command that can be run as printed.
   const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
-  const folded = foldDelivery(parsed.rows, normalized, shown)
+  const folded = foldDelivery(parsed.rows, normalized, shown, requestedOffset !== undefined || readIntToolInput(event, 'limit') !== undefined)
   if (folded === null) return null
 
   const rewritten = [...parsed.header, ...folded.numbered, ...parsed.trailer].join('\n')
