@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { capTokens, clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
+import { capBytes, capTokens, clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
 import { filterByName } from '../src/tool_filters/index.js'
 
 /**
@@ -107,5 +107,40 @@ describe('filter input cap keeps both ends', () => {
     const whole = filter?.apply(small, '', 0, ['grep', '-rn', 'value', 'src']).text as string
     expect(whole).toContain('grep: 200 matches across 4 file(s)')
     expect(whole).not.toContain('at least')
+  })
+
+  it('keeps the tail when the final byte cap binds, instead of undoing the line cap that just chose it', () => {
+    // capBytes is step 9 of apply(), running after step 8 has already made a head-and-tail selection. A head trim here deleted the tail step 8 had just kept, so a large failing run had its summary selected and then discarded one step later. HAND-DERIVED fixture: the verdict is the final line, which is the shape every command output this runs over actually has.
+    const body = [...Array.from({ length: 4000 }, (_, i) => `line ${i} of routine console noise padded out to a reasonable width`), 'VERDICT-AT-THE-END'].join('\n')
+    const capped = capBytes(body, 4096)
+    expect(capped).toContain('VERDICT-AT-THE-END')
+    expect(capped).toContain('line 0 of routine console noise')
+    expect(Buffer.byteLength(capped)).toBeLessThanOrEqual(4096)
+    // The elided figure is measured against what survived, so it must exceed the naive `original - cap`, which ignores the clamp's own marker and would report less lost than really was.
+    const elided = Number(/\[(\d+) bytes elided by token-goat\]/.exec(capped)?.[1])
+    expect(elided).toBeGreaterThan(Buffer.byteLength(body) - 4096)
+    expect(Buffer.byteLength(body) - elided).toBe(Buffer.byteLength(capped.replace(/\n\.\.\. \[\d+ bytes elided by token-goat\]$/, '')))
+  })
+
+  it('spends a tight error-context budget on both ends, not on whichever signals come first by line number', () => {
+    // The both-ends signal selection is undone downstream if the context those signals need is gathered wholesale and then sliced by line index: the slice keeps the lowest indices, so the late-file signal chosen from the tail is the first thing dropped whenever context outruns the budget. Here 10 signals need 50 context lines and the budget is 10.
+    const lines = Array.from({ length: 5000 }, (_, i) => `line ${i} ordinary output`)
+    for (let i = 100; i < 105; i++) lines[i] = `error: early cascade ${i}`
+    for (let i = 4000; i < 4005; i++) lines[i] = `error: late failure ${i}`
+    lines[4004] = 'error: LATE-SENTINEL the assertion that actually broke'
+    const out = truncateMiddleSmart(lines, 30).join('\n')
+    expect(out).toContain('LATE-SENTINEL')
+    // The early signals must still be reachable, because a compiler's first error is usually the cause.
+    expect(out).toContain('early cascade 100')
+    expect(out.split('\n').length).toBeLessThanOrEqual(30 + 12)
+  })
+
+  it('charges its own elision marker against the budget, so a small cap is not overrun', () => {
+    // The marker is ~40 bytes. Against the 500KB input cap that is noise; against a caller passing 60 it is the whole budget, and capBytes passes exactly that. Unreserved, a 50-line input capped at 60 bytes came back at 83.
+    const text = Array.from({ length: 50 }, (_, i) => `line-${i}`).join('\n')
+    for (const cap of [40, 60, 120, 300]) {
+      const out = clampKeepingEnds(text, cap)
+      expect(Buffer.byteLength(out ?? text)).toBeLessThanOrEqual(cap)
+    }
   })
 })

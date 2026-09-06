@@ -56,7 +56,9 @@ export function clampKeepingEnds(text: string, maxBytes: number): string | null 
   const buf = Buffer.from(text, 'utf8')
   if (buf.length <= maxBytes) return null
   const lines = text.split('\n')
-  const half = Math.floor(maxBytes / 2)
+  // The marker is part of the output, so its width comes out of the budget before the two ends are measured. Sized against the largest count it can ever print, so the figure finally rendered is never wider than the space reserved for it. Without this the result overran `maxBytes` by the marker's ~40 bytes, which is nothing against the 500KB input cap and decisive against a caller passing 60: {@link capBytes} is one, and it more than doubled its own limit. Where the reservation leaves nothing to split, there is no room for two ends and a marker at all, and the character-safe prefix below is the only shape that respects the cap.
+  const budget = maxBytes - Buffer.byteLength(`... [${lines.length} more lines elided by token-goat]\n`, 'utf8')
+  const half = Math.floor(budget / 2)
   let headEnd = 0
   for (let used = 0; headEnd < lines.length; headEnd++) {
     const n = Buffer.byteLength(lines[headEnd] as string, 'utf8') + 1
@@ -434,19 +436,26 @@ export function truncateMiddleSmart(
           ...errorIndices.slice(errorIndices.length - Math.floor(maxErrorLines / 2)),
         ]
 
+  const budgetForMiddle = Math.max(0, maxLines - effHead - effTail)
+  // Context is gathered in signal order and stopped at the budget, rather than gathered wholesale and then sliced. Slicing a set sorted by line index keeps its lowest indices, which would have re-imposed the exact head bias the selection above exists to remove: whenever the context lines outrun the budget, the first thing dropped is the late-file signal deliberately taken from the tail. The visit order alternates front and back, and walks the back signals from the very end inwards, so a budget too small for all of them still spends on both ends and spends the last of it nearest the point a run stopped.
+  const half = Math.ceil(chosenErrors.length / 2)
+  const front = chosenErrors.slice(0, half)
+  const back = chosenErrors.slice(half).reverse()
+  const visitOrder: number[] = []
+  for (let k = 0; k < Math.max(front.length, back.length); k++) {
+    if (k < front.length) visitOrder.push(front[k]!)
+    if (k < back.length) visitOrder.push(back[k]!)
+  }
+
   const middle = new Set<number>()
-  for (let k = 0; k < chosenErrors.length; k++) {
-    const ei = chosenErrors[k]!
+  outer: for (const ei of visitOrder) {
     for (let ci = Math.max(0, ei - errorContext); ci < Math.min(total, ei + errorContext + 1); ci++) {
+      if (ci < effHead || ci >= total - effTail) continue
+      if (middle.size >= budgetForMiddle) break outer
       middle.add(ci)
     }
   }
-  for (let i = 0; i < effHead; i++) middle.delete(i)
-  for (let i = total - effTail; i < total; i++) middle.delete(i)
-
-  const budgetForMiddle = Math.max(0, maxLines - effHead - effTail)
-  let sortedMiddle = Array.from(middle).sort((a, b) => a - b)
-  if (sortedMiddle.length > budgetForMiddle) sortedMiddle = sortedMiddle.slice(0, budgetForMiddle)
+  const sortedMiddle = Array.from(middle).sort((a, b) => a - b)
 
   const result: string[] = []
   const appendSection = (indices: number[]): void => {
@@ -489,19 +498,14 @@ export function truncateMiddleSmart(
 export function capBytes(text: string, maxBytes: number): string {
   const encoded = Buffer.from(text, 'utf8')
   if (encoded.length <= maxBytes) return text
-  const marker = `\n... [${encoded.length - maxBytes} bytes elided by token-goat]`
-  const budget = maxBytes - Buffer.byteLength(marker, 'utf8')
-  if (budget <= 0) return marker.trim()
-  let slice = encoded.subarray(0, budget)
-  const nl = slice.lastIndexOf(0x0a)
-  if (nl > budget / 2) slice = slice.subarray(0, nl)
-  // Never cut inside a multi-byte UTF-8 sequence: if the byte immediately
-  // after the slice is a continuation byte (10xxxxxx), the cut landed
-  // mid-character, so back up until it doesn't.
-  while (slice.length > 0 && (encoded[slice.length]! & 0xc0) === 0x80) {
-    slice = slice.subarray(0, slice.length - 1)
-  }
-  return slice.toString('utf8') + marker
+  // Sized against the largest count this can ever print, so the exact figure below is never wider than the space reserved for it and the result cannot overshoot `maxBytes`.
+  const widestMarker = `\n... [${encoded.length} bytes elided by token-goat]`
+  const budget = maxBytes - Buffer.byteLength(widestMarker, 'utf8')
+  if (budget <= 0) return widestMarker.trim()
+  // Both ends, not a head trim. This runs as step 9 of {@link ToolFilter.apply}, after step 8 has already made a deliberate head-and-tail selection, so a head trim here deleted exactly the tail the step before it chose to keep. On a failing 2.4MB test run that meant the summary and the failure block were selected and then dropped one step later. `capBytes` is also the last thing every filter passes through and the only cap `misc.ts` applies at all, so the class landed on every family at once. See {@link clampKeepingEnds}.
+  const kept = clampKeepingEnds(text, budget) ?? text
+  // Measured against what actually survived rather than against `maxBytes`: the both-ends clamp spends some of its budget on its own elision marker, so a count derived from the cap alone would understate the loss and report less discarded than really was.
+  return `${kept}\n... [${encoded.length - Buffer.byteLength(kept, 'utf8')} bytes elided by token-goat]`
 }
 
 /**
