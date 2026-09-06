@@ -14,13 +14,17 @@ import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
-import { resolveIndexPath, normalizePath } from './paths.js'
+import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
+import { foldDelivery, type FoldRow } from './fold_delivery.js'
+import { foldDetail, type BodyFold } from './code_fold.js'
+import { redactSecrets } from './secret_redact.js'
+import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
@@ -1888,6 +1892,38 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
   return out.join('\n')
 }
 
+/**
+ * Fold the long bodies out of a shell read of a source file, the way the Read hook already folds its own first reads.
+ *
+ * Why this surface needs its own caller: measured over 814 session transcripts, 15.61 MB of source arrives through `cat`, `head` and `sed -n` rather than through the Read tool, and none of it is visible to the Read hook. It is a first-read surface, so every mechanism beside this one is useless on it -- the elision above needs an earlier delivery to withhold against, and on a first read there is not one.
+ *
+ * It cannot borrow the Read path's safety rule. That path declines any read carrying offset or limit, on the grounds that a window the caller deliberately narrowed is surgical already; here 14.61 MB of the 15.61 MB is a range, so the same rule would exempt the surface rather than protect it. What protects a range instead is `planBodyFolds` requiring a span's declaration to sit among the delivered rows, which is what stops a window landing inside one enormous function from folding away to a single notice.
+ *
+ * Returns null whenever the delivery cannot be pinned to file lines. A `tail` has no fixed first line, and a compound read interleaves its ranges with whatever the segments between them printed, so `deliveredLineNumbers` reports every row as unknown. Folding either would cut at a guessed line and then print that guess inside a notice, where it reads exactly like a real answer.
+ */
+function foldShellReadBodies(cmd: string, output: string, fileKey: string, cwd: string | null): { text: string; folds: readonly BodyFold[] } | null {
+  if (!loadConfig().hints.fold_code_bodies) return null
+  // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain read gives the user more of their own file than a redacted rewrite would. Same call foldCodeBodies makes on the Read side.
+  if (redactSecrets(output).count > 0) return null
+
+  const lines = output.split('\n')
+  const numbers = deliveredLineNumbers(cmd, lines.length)
+  if (numbers === null) return null
+  const rows: FoldRow[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const no = numbers[i]
+    // One unknown row abandons the whole fold. `?? 0` here would put a fabricated line number into a notice that otherwise reads as a precise answer.
+    // Defence in depth, and deliberately not claimed as more than that: `deliveredLineNumbers` today returns either all-real numbers or all-null, and the all-null case is already rejected downstream by the `lastRow.no - firstRow.no + 1 === len` contiguity check in both planners, so mutating this line to `?? 0` leaves the suite green. What it guards is a *mixed* array, which no producer emits yet and which the contiguity check would wave through for any run that happened to be numbered.
+    if (no === undefined || no === null) return null
+    rows.push({ no, text: lines[i] ?? '', raw: lines[i] ?? '' })
+  }
+
+  // Repo-relative, so the notice stays a command that can be run as printed without carrying an absolute Windows path once per fold. Against the directory a leading `cd` actually left the shell in, which is the cwd already resolved into fileKey.
+  const folded = foldDelivery(rows, fileKey, displaySafePath(toDisplayPath(findProject(cwd ?? process.cwd())?.root, fileKey)))
+  if (folded === null) return null
+  return { text: folded.numbered.join('\n'), folds: folded.folds }
+}
+
 
 /**
  * Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy.
@@ -1955,14 +1991,24 @@ async function maybeCollapseIdenticalRead(
   if (containerId === null) {
     // Nothing served this session contains these lines whole. That is not the same as nothing having been served: a read overlapping an earlier one without nesting inside it lands here too, and used to ship every already-seen line again. Withhold just those stretches, then cache what was actually delivered so a later read is matched against what the model saw rather than what the command printed.
     const elided = elideServedShellLines(cmd, output, priorIds)
-    const delivered = elided ?? output
-    const storedId = await storeBashOutput(cmd, delivered, exitCode ?? 0, cwd)
+    const priced = (text: string): boolean => isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(text, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })
+
+    // Elision first, because withholding lines the model has already been shown always beats folding lines it has not. The fold is what is left for a first read, which is where this branch spends most of its time: there is nothing served to withhold and, until now, nothing else to do either.
+    let rewrite: { text: string; reason: string; kind: string; detail?: string } | null = null
+    if (elided !== null) {
+      if (priced(elided)) rewrite = { text: elided, reason: 'already-served file lines withheld', kind: 'bash_compress:served-elide' }
+    } else {
+      const folded = foldShellReadBodies(cmd, output, fileKey, cwd)
+      if (folded !== null && priced(folded.text)) rewrite = { text: folded.text, reason: 'code bodies folded', kind: 'bash_compress:body-fold', detail: foldDetail(fileKey, folded.folds) }
+    }
+
+    // Exactly what the model was shown, never what the command printed. A later read of this file is matched against this copy, so storing a rewrite the net-benefit gate went on to decline would record lines as withheld that the reader actually received.
+    const storedId = await storeBashOutput(cmd, rewrite?.text ?? output, exitCode ?? 0, cwd)
     recordBashOutput(sessionKey, storedId, originalBytes)
     recordFileServedOutput(fileKey, storedId)
-    if (elided === null) return null
-    if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(elided, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
+    if (rewrite === null) return null
     // Priced against the delivered size for the same reason the containment pointer below is: the harness truncates a Bash result before the model sees it, so collapsing an oversized body spares at most the delivered slice.
-    return emitRewrite(elided, 'already-served file lines withheld', { kind: 'bash_compress:served-elide', originalBytes: deliveredOutputBytes(originalBytes) })
+    return emitRewrite(rewrite.text, rewrite.reason, { kind: rewrite.kind, originalBytes: deliveredOutputBytes(originalBytes), ...(rewrite.detail === undefined ? {} : { detail: rewrite.detail }) })
   }
 
   const pointer = identical

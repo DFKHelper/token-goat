@@ -75,6 +75,10 @@ export function planBodyFolds(
   // Outermost-first, so a nested helper is skipped by the containment test below rather than racing its parent. Ties on start go to the longer span for the same reason.
   const ordered = [...spans].sort((a, b) => a.lineStart - b.lineStart || b.lineEnd - a.lineEnd)
 
+  // Lowest line number actually delivered, which is the earliest declaration a reader could have seen. Taken as a minimum rather than from `rows[0]` because nothing here promises the rows arrive in line order.
+  let firstDeliveredLine: number | null = null
+  for (const line of rowAt.keys()) if (firstDeliveredLine === null || line < firstDeliveredLine) firstDeliveredLine = line
+
   const folds: BodyFold[] = []
   let foldedThrough = -1
   for (const span of ordered) {
@@ -82,6 +86,9 @@ export function planBodyFolds(
     if (span.lineEnd - span.lineStart + 1 < minSpan) continue
     // Nested inside a span already folded: its lines are gone, and a second notice for them would claim the same bytes twice.
     if (span.lineStart <= foldedThrough) continue
+
+    // The declaration has to be one of the delivered rows. Clipping to the window below is what lets a span run past the end of a windowed read, but it says nothing about a window that sits *inside* a span: there every delivered row is body, the clip removes nothing, and the whole window folds to a notice pointing at a symbol whose declaration the reader never saw. A caller asking for lines 100-140 gets none of them back. A whole-file read starts at line 1, so no span can fail this and the shipped behaviour there is unchanged.
+    if (firstDeliveredLine !== null && span.lineStart < firstDeliveredLine) continue
 
     // Keep the declaration plus `keep - 1` lines of body, fold from there to the end of the span. The closing line is folded with the rest: a lone `}` left behind reads as a truncation.
     const firstFolded = span.lineStart + keep

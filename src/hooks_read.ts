@@ -28,7 +28,6 @@ interface NumberedRow {
   readonly text: string
   readonly raw: string
 }
-import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs } from './session.js'
@@ -59,10 +58,8 @@ import { findVerifiedFileEvidence, recordEvidence } from './evidence_cache.js'
 import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
-import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, foldDetail, type FoldSpan } from './code_fold.js'
-import { querySymbols, getFileEntry } from './index_reader.js'
-import { fingerprintFile } from './fingerprint.js'
-import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
+import { foldDetail } from './code_fold.js'
+import { foldDelivery } from './fold_delivery.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -1782,49 +1779,6 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   return emitRewrite(rewritten, 'read', { kind: 'read:served_elide', originalBytes })
 }
 
-/** Lines kept at the head of each folded body: the declaration plus enough to judge the rest. */
-const BODY_FOLD_KEEP_LINES = 8
-
-/**
- * Shortest function span worth folding, in lines.
- *
- * Measured with this code path over the 162 source files in this repo above 8 KB, against an index written by the same parser build: keep=10/span>=25 removes 34.8% of delivered bytes across 150 files, keep=20/span>=40 removes 25.8% across 126, keep=6/span>=15 removes 41.0% across 152. The aggressive setting cuts into bodies short enough to read at a glance, which is where a fold costs the reader more than it saves; this is the middle one.
- */
-const BODY_FOLD_MIN_SPAN = 20
-
-/** Rows kept at the head of each folded comment block: enough for the summary a doc block opens with, and for a banner's title. */
-const COMMENT_FOLD_KEEP_LINES = 2
-
-/**
- * Shortest comment block worth folding, in rows.
- *
- * Measured over this repo's 256 source files, holding keep=10/span>=25 fixed and varying only this: >=30 rows adds 2.6 points of first-read savings, >=20 adds 5.1, >=12 adds 9.9, >=8 adds 14.2. The last of those starts folding ordinary eight-line explanations, which is where the notice costs a reader more than the rationale it defers; 12 is the point where a block is an essay rather than a note.
- */
-const COMMENT_FOLD_MIN_BLOCK = 12
-
-/** Symbols pulled per file. Matches ALL_SYMBOLS_IN_FILE_LIMIT without importing graph_commands. */
-const BODY_FOLD_SYMBOL_LIMIT = 10000
-
-/**
- * The line standing in for a folded body.
- *
- * It names the symbol, the exact line range removed, and the command that returns it -- everything needed to undo the fold without re-reading the file. Unlike a re-read elision, the reader has never seen these lines, so the notice must read as "here is what is missing and how to get it", not as a pointer to something already in context.
- */
-function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shownPath: string): string {
-  const n = lastLine - firstLine + 1
-  return `... ${n} more lines of ${name} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${name}"`
-}
-
-/**
- * The line standing in for a folded comment block.
- *
- * A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span, which is also the one Read shape this fold never touches -- offset/limit reads are left alone as already surgical -- so the pointer cannot loop back into another fold.
- */
-function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {
-  const n = lastLine - firstLine + 1
-  return `... ${n} more comment lines (${firstLine}-${lastLine}) folded -- Read "${shownPath}" with offset=${firstLine}, limit=${n}`
-}
-
 /**
  * Replace the inside of long function bodies with a pointer, keeping everything else verbatim.
  *
@@ -1851,62 +1805,12 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const parsed = parseNumberedReadResult(respText, readStartLine(event))
   if (parsed === null) return null
 
-  // The spans come from the index, so they describe the file the indexer last parsed. Fold only when that is still this file, on BOTH freshness keys: files.sha answers "has the content changed", parser_sha answers "did different extraction logic write these rows". Content alone is not enough -- measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched. A stale span cuts at the wrong line, and on a first read there is no earlier copy for the reader to notice that against.
-  // An unusable index costs the body folds and nothing else. Comment blocks are read off the delivered text, so they cannot be stale and do not need the index at all -- which is what keeps this working on a file the indexer has never seen, the case that used to return nothing.
-  const syntax = commentSyntaxFor(normalized)
-  let spans: FoldSpan[] = []
-  try {
-    const entry = getFileEntry(normalized)
-    if (
-      entry !== null &&
-      entry.sha !== '' &&
-      entry.sha === fingerprintFile(normalized) &&
-      entry.parserSha === PARSER_FINGERPRINT
-    ) {
-      spans = querySymbols({ filePath: normalized, limit: BODY_FOLD_SYMBOL_LIMIT })
-    } else if (syntax !== null) {
-      // The gate just failed, so this read gets comment folds only. Queue the file so the worker's next drain reindexes it and the NEXT read of it can fold bodies too -- the worker's own skip gate checks parser_sha alongside content sha, so a file that is stale only because the extraction logic moved is still reparsed. Without this the miss is permanent for any file nothing happens to edit: measured over 201 session transcripts, 32 whole-file reads folded and another 22 would have once reindexed, worth 76% more folded bytes than the fold currently produces. Gated on a known comment syntax so reads of files the parser does not handle at all do not append to the queue on every read.
-      enqueueDirtyPathSafe(normalized)
-    }
-  } catch {
-    // A missing or locked index is not a reason to fail a Read that already succeeded.
-    spans = []
-  }
-
-  const bodyFolds = planBodyFolds(parsed.rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN)
-  const claimed = new Set<number>()
-  for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
-  const commentFolds = planCommentFolds(
-    parsed.rows,
-    syntax,
-    COMMENT_FOLD_KEEP_LINES,
-    COMMENT_FOLD_MIN_BLOCK,
-    claimed,
-  )
-  const folds = mergeFolds(bodyFolds, commentFolds)
-  if (folds.length === 0) return null
-
   // Repo-relative, because the notice repeats this path once per fold and an absolute Windows path is most of the notice: measured over 201 session transcripts, the absolute form costs 10.9 KB of notice against 9.0 KB relative. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on, and either way the notice stays a command that can be run as printed.
   const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
-  const out: string[] = [...parsed.header]
-  // The raw (un-numbered) form of the same delivery, for the served-output store, which compares against plain file lines rather than the tool's numbered rendering.
-  const rawOut: string[] = []
-  let at = 0
-  for (const fold of folds) {
-    for (let i = at; i < fold.startIdx; i++) {
-      out.push(parsed.rows[i]?.raw ?? '')
-      rawOut.push(parsed.rows[i]?.text ?? '')
-    }
-    out.push(fold.kind === 'comment' ? commentFoldNotice(fold.firstLine, fold.lastLine, shown) : bodyFoldNotice(fold.name, fold.firstLine, fold.lastLine, shown))
-    at = fold.startIdx + fold.len
-  }
-  for (let i = at; i < parsed.rows.length; i++) {
-    out.push(parsed.rows[i]?.raw ?? '')
-    rawOut.push(parsed.rows[i]?.text ?? '')
-  }
-  out.push(...parsed.trailer)
+  const folded = foldDelivery(parsed.rows, normalized, shown)
+  if (folded === null) return null
 
-  const rewritten = out.join('\n')
+  const rewritten = [...parsed.header, ...folded.numbered, ...parsed.trailer].join('\n')
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
   if (
     !isRewriteWorthwhile({
@@ -1919,8 +1823,8 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
     return null
   }
   return {
-    output: emitRewrite(rewritten, 'read', { kind: 'read:body_fold', originalBytes, detail: foldDetail(normalized, folds) }),
-    deliveredRaw: rawOut.join('\n'),
+    output: emitRewrite(rewritten, 'read', { kind: 'read:body_fold', originalBytes, detail: foldDetail(normalized, folded.folds) }),
+    deliveredRaw: folded.raw.join('\n'),
   }
 }
 
