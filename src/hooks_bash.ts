@@ -31,10 +31,13 @@ import { isUnderSystemTemp } from './project.js'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
-/** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
+/** Separator that can follow a leading `cd <dir>`: an operator, or just the end of the line. A newline is the commonest of the three in a multi-line block and used to be the one nothing here handled, which left every interceptor looking at `cd` instead of at the command underneath it. */
+const CD_PREFIX_RE = /^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)[ \t]*(?:&&|;|\r?\n)\s*)+/
+
+/** Strip one or more leading `cd <dir>` prefixes so interceptors match the actual command. */
 function stripCdPrefix(cmd: string): string {
-  // Handles: `cd /path && CMD`, `cd "path with spaces" && CMD`, `cd 'path' && CMD`
-  const stripped = cmd.replace(/^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/, '')
+  // Handles: `cd /path && CMD`, `cd "path with spaces" && CMD`, `cd 'path'; CMD`, and `cd /path` on its own line above CMD.
+  const stripped = cmd.replace(CD_PREFIX_RE, '')
   return stripped.trim() || cmd
 }
 
@@ -60,10 +63,11 @@ function isDirectTestRunnerCommand(cmd: string): boolean {
  * own cwd — before that path is embedded in a suggested follow-up command.
  */
 function extractCdPrefixDirs(rawCmd: string): string[] {
-  const prefixMatch = rawCmd.match(/^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/)
+  // Must stay in step with CD_PREFIX_RE: this names the directories that one consumes, and a prefix stripped there but not extracted here resolves the file against the hook's own cwd instead of the directory the shell actually landed in.
+  const prefixMatch = rawCmd.match(CD_PREFIX_RE)
   if (prefixMatch === null) return []
   const dirs: string[] = []
-  const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))\s*&&/g
+  const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))[ \t]*(?:&&|;|\r?\n)/g
   let match: RegExpExecArray | null
   while ((match = segmentPattern.exec(prefixMatch[0])) !== null) {
     const dir = match[1] ?? match[2] ?? match[3]
@@ -80,13 +84,15 @@ function extractCdPrefixDirs(rawCmd: string): string[] {
  * filePath unchanged if the prefix can't be parsed into at least one directory.
  */
 function resolveCdHintPath(rawCmd: string, filePath: string, cwd: string): string {
-  const dirs = extractCdPrefixDirs(rawCmd)
-  if (dirs.length === 0) return filePath
-  let targetDir = cwd
-  for (const dir of dirs) {
-    targetDir = resolveIndexPath(dir, targetDir)
-  }
-  return resolveIndexPath(filePath, targetDir)
+  if (extractCdPrefixDirs(rawCmd).length === 0) return filePath
+  return resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd))
+}
+
+/** The directory a leading `cd DIR` prefix leaves the shell in, or `cwd` when there is none. Split out of resolveCdHintPath because a caller building a cache key needs the resolution unconditionally, where one building a path to display wants the original text back when there was no prefix to account for. */
+function cdPrefixCwd(rawCmd: string, cwd: string): string {
+  let dir = cwd
+  for (const target of extractCdPrefixDirs(rawCmd)) dir = resolveIndexPath(target, dir)
+  return dir
 }
 
 /**
@@ -1891,6 +1897,7 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
  */
 async function maybeCollapseIdenticalRead(
   cmd: string,
+  rawCmd: string,
   output: string,
   exitCode: number | null,
   cwd: string | null,
@@ -1917,7 +1924,8 @@ async function maybeCollapseIdenticalRead(
   // it is several spellings of overlapping reads of one file, which hash differently and return
   // different bytes. Newest first, since a later body is the more likely container and stopping at
   // the first hit bounds how many blobs get read.
-  const fileKey = resolveIndexPath(filePath, cwd ?? process.cwd())
+  // Against the directory a leading `cd DIR` actually leaves the shell in, not this hook's own cwd: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with the prefix already stripped, so the raw form is what still knows where the shell went.
+  const fileKey = resolveIndexPath(filePath, cdPrefixCwd(rawCmd, cwd ?? process.cwd()))
   const priorIds = getFileServedOutputs(fileKey)
   let containerId: string | null = null
   let identical = false
@@ -3056,7 +3064,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       // suppresses. Re-reading the same unchanged file therefore cost its full body every time.
       // Collapse the byte-identical repeat first, since it is strictly cheaper than compressing
       // a body the model has already been given verbatim.
-      const identical = await maybeCollapseIdenticalRead(cmd, output, exitCode, cwd, cacheMinBytes)
+      const identical = await maybeCollapseIdenticalRead(cmd, rawCmd, output, exitCode, cwd, cacheMinBytes)
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap
       // for compression) gets its already-captured output compressed here instead. Single

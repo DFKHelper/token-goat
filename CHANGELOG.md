@@ -4,7 +4,13 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **A shell read run after `cd` into another directory no longer matches a same-named file in the directory it started from.** The session's record of what it has already shown is kept per file, and a read written as `cd docs && sed -n '1,40p' README.md` was filed under the `README.md` beside the shell rather than the one in `docs`. Two files can hold identical text, which is the whole reason that record is per file, so the wrong entry could answer a read of a file it knows nothing about. The directory each leading `cd` moves to is now resolved in turn, the way the suggestion hints have always resolved it. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
+
 ### Changed
+
+- **A `cd` on its own line above a command is now seen through, like `cd ... &&` always was.** Only the `&&` form was recognised, so in a multi-line block every rule that looks at what a command does saw `cd` and stopped there. The read underneath it was invisible: not deduplicated against what the session had already shown, not compressed, not offered a narrower command. This is the commonest way a multi-line block starts. Measured over 201 sessions, reads written this way carry 1.26 MB of lines that had already been delivered, on top of the 1.93 MB reachable before. `cd dir; command` is recognised on the same terms. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
 
 - **A folded read now records which file and which symbols it folded.** The ledger already stored how many bytes each fold saved, and nothing about what it removed. That left the other half of the trade unmeasurable: how often a reader has to come back for a span that was folded away could not be worked out from stored data, however long the feature ran. That missing number is the reason `hints.fold_code_bodies` ships off by default, and nothing about running it for longer was going to produce it.
 

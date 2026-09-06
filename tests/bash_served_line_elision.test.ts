@@ -138,6 +138,30 @@ describe('postBashHandler: per-stretch elision of already-served shell lines', (
     expect(body).not.toContain(fileLine(130))
   })
 
+  it('sees through a `cd` on its own line above the read', async () => {
+    // The commonest spelling in a multi-line block, and the one nothing used to strip: only `cd X &&`
+    // was handled, so every interceptor saw `cd` rather than the read underneath it. Measured over
+    // 201 sessions this shape alone carries 1.26 MB of already-served lines.
+    await postBashHandler(postEvent("sed -n '120,160p' README.md", slice(120, 160)))
+    const second = slice(100, 140)
+    // `cd .` so the file is the same one the earlier read served: what is under test here is whether
+    // the read below the prefix is found at all, not path resolution, which the case after this owns.
+    const out = await postBashHandler(postEvent("cd .\nsed -n '100,140p' README.md", second))
+    const body = delivered(out, second)
+    expect(body).toContain(fileLine(100))
+    expect(body).not.toContain(fileLine(130))
+  })
+
+  it('resolves the read against the directory the `cd` moves to, not the hook cwd', async () => {
+    // The trap in the line above: stripping the prefix and naming the directory it moved to are two
+    // regexes, and one widened without the other silently resolves `README.md` against the hook's own
+    // cwd. Two files can hold identical text, so the only thing keeping this honest is the path.
+    await postBashHandler(postEvent("sed -n '1,40p' README.md", slice(1, 40)))
+    const same = slice(1, 40)
+    const out = await postBashHandler(postEvent('cd docs\nsed -n \'1,40p\' README.md', same))
+    expect(out.hookType).not.toBe('rewriteOutput')
+  })
+
   it('leaves a read whose lines are all new completely alone', async () => {
     // The calibration for every case above: without it they only prove that something was rewritten,
     // not that overlap is what drives it.
