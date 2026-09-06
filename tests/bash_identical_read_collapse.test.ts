@@ -99,7 +99,10 @@ describe('postBashHandler: identical file-read collapse', () => {
     // with the new body intact -- collapsing here would delete a real change.
     const changed = BODY.replace('line 7:', 'line 7!')
     const second = await postBashHandler(postEvent(cmd, changed))
-    expect(second.hookType).not.toBe('rewriteOutput')
+    // The one line that moved must survive. Everything around it is byte-identical to what was already served and is withheld per stretch; what must never happen is the edited line going with them, which is what a whole-body collapse would have done.
+    const changedBody = second.hookType === 'rewriteOutput' ? second.updatedOutput : changed
+    expect(changedBody).toContain('line 7!')
+    expect(changedBody).not.toContain('line 8:')
   })
 
   it('does not collapse a command that is not a pure file read', async () => {
@@ -140,12 +143,14 @@ describe('postBashHandler: identical file-read collapse', () => {
 
   it('does not collapse a read that reaches past everything already served', async () => {
     // The reverse order of the case above. The narrow read comes first, so the wider one carries
-    // lines never shown; withholding it would delete them. Containment is one-directional and this
-    // is the direction that must not fire.
+    // lines never shown; withholding it would delete them. Containment is one-directional and this is the direction in which the body must never collapse whole -- the ten lines past the earlier read have to arrive, while the thirty before them, which were served as lines, are withheld per stretch.
     const narrowBody = BODY.split('\n').slice(0, 30).join('\n')
     await postBashHandler(postEvent("sed -n '1,30p' CHANGELOG.md", narrowBody))
     const wide = await postBashHandler(postEvent('head -40 CHANGELOG.md', BODY))
-    expect(wide.hookType).not.toBe('rewriteOutput')
+    const body = wide.hookType === 'rewriteOutput' ? wide.updatedOutput : ''
+    expect(body).toContain('line 39:')
+    expect(body).toContain('line 30:')
+    expect(body).not.toContain('line 29:')
   })
 
   it('does not collapse against a body served for a different file', async () => {
@@ -167,7 +172,11 @@ describe('postBashHandler: identical file-read collapse', () => {
     expect(priorBody).toContain(fragment)
     expect(Buffer.byteLength(fragment, 'utf-8')).toBeGreaterThan(512)
     const partial = await postBashHandler(postEvent("sed -n '1,21p' CHANGELOG.md", fragment))
-    expect(partial.hookType).not.toBe('rewriteOutput')
+    // The two ragged ends are the point: line 0 and line 20 arrive as fragments of a served line, never as that line, so neither may be withheld. The whole lines between them were served as lines and may be.
+    const body = partial.hookType === 'rewriteOutput' ? partial.updatedOutput : ''
+    expect(body).toContain('line 0: ')
+    expect(body).toContain('prefix-line 20: ')
+    expect(body).not.toContain('prefix-line 10: ')
   })
 
   it('does no cache work at all for a body below the size floor', async () => {

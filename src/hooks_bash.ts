@@ -21,6 +21,7 @@ import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDi
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
+import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { canRunWrappedShell } from './shell.js'
@@ -1815,6 +1816,60 @@ function pureFileReadPath(cmd: string): string | null {
   return extractCatFile(cmd)?.filePath ?? extractHeadFile(cmd)?.filePath ?? extractTailFile(cmd)?.filePath ?? extractLineRangeRead(cmd)?.filePath ?? null
 }
 
+/**
+ * The file line number each delivered line carries, or null when the command alone does not say.
+ *
+ * Read off the command's own ranges rather than counted from the output, so the notice below names lines that exist in the file. A `tail` has no answer here at all -- where its window starts depends on how long the file is, which the command does not state -- so it gets no elision rather than a plausible-looking guess. A range list overshoots on a short file, which is harmless because the surplus numbers are never used; it can only undershoot by the one empty row a trailing newline adds, which is padded.
+ */
+function deliveredLineNumbers(cmd: string, lineCount: number): number[] | null {
+  const ranged = extractLineRangeRead(cmd)
+  if (ranged !== null) {
+    const nums: number[] = []
+    for (const [lo, hi] of ranged.ranges) for (let n = lo; n <= hi; n++) nums.push(n)
+    if (nums.length === 0) return null
+    while (nums.length < lineCount) nums.push((nums[nums.length - 1] ?? 0) + 1)
+    return nums
+  }
+  if (extractCatFile(cmd) !== null || extractHeadFile(cmd) !== null) return Array.from({ length: lineCount }, (_, i) => i + 1)
+  return null
+}
+
+/**
+ * The stretches of a shell file read this session already served, withheld in place.
+ *
+ * The containment collapse this sits inside is all-or-nothing: it fires only when the whole output appears verbatim inside one earlier body. Measured over 201 session transcripts, that caught 0.49 MB across 211 of 3,848 shell range reads, while another 1.96 MB of already-served lines shipped again inside reads that merely overlapped rather than nested -- `sed -n '100,140p'` after `sed -n '120,160p'` is not contained in anything, yet half of it has been seen. This applies the per-stretch search the Read hook already uses, over the same per-file served store, differing only in that shell output carries no line-number gutter so a row's rendered form is the line itself.
+ *
+ * Returns null when the numbering is unknowable, when nothing overlaps, or when no cut pays for the notice replacing it.
+ */
+function elideServedShellLines(cmd: string, output: string, priorIds: readonly string[]): string | null {
+  if (priorIds.length === 0) return null
+  const lines = output.split('\n')
+  const numbers = deliveredLineNumbers(cmd, lines.length)
+  if (numbers === null) return null
+  const rows: NumberedRow[] = lines.map((text, i) => ({ no: numbers[i] ?? 0, text, raw: text }))
+  const bodies: ServedBody[] = []
+  for (let i = priorIds.length - 1; i >= 0; i--) {
+    const id = priorIds[i]
+    if (id === undefined) continue
+    const prior = getBashOutput(id)
+    if (prior !== null) bodies.push(indexServedBody(id, prior.output))
+  }
+  const cuts = planServedElisions(rows, bodies)
+  if (cuts.length === 0) return null
+  const out: string[] = []
+  let at = 0
+  for (const cut of cuts) {
+    for (let i = at; i < cut.start; i++) out.push(rows[i]?.raw ?? '')
+    const first = rows[cut.start]
+    const last = rows[cut.start + cut.len - 1]
+    if (first === undefined || last === undefined) return null
+    out.push(servedRunNotice(first.no, last.no, cut.id))
+    at = cut.start + cut.len
+  }
+  for (let i = at; i < rows.length; i++) out.push(rows[i]?.raw ?? '')
+  return out.join('\n')
+}
+
 
 /**
  * Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy.
@@ -1878,13 +1933,16 @@ async function maybeCollapseIdenticalRead(
 
   const sessionKey = shortFingerprint(stripOutputPipeline(cmd))
   if (containerId === null) {
-    // Nothing served this session covers these lines: a first read, a file that changed, or a read
-    // reaching past everything shown so far. Cache the body so a later read of the same file has
-    // something to be matched against, and leave the output alone -- nothing is redundant yet.
-    const storedId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+    // Nothing served this session contains these lines whole. That is not the same as nothing having been served: a read overlapping an earlier one without nesting inside it lands here too, and used to ship every already-seen line again. Withhold just those stretches, then cache what was actually delivered so a later read is matched against what the model saw rather than what the command printed.
+    const elided = elideServedShellLines(cmd, output, priorIds)
+    const delivered = elided ?? output
+    const storedId = await storeBashOutput(cmd, delivered, exitCode ?? 0, cwd)
     recordBashOutput(sessionKey, storedId, originalBytes)
     recordFileServedOutput(fileKey, storedId)
-    return null
+    if (elided === null) return null
+    if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(elided, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
+    // Priced against the delivered size for the same reason the containment pointer below is: the harness truncates a Bash result before the model sees it, so collapsing an oversized body spares at most the delivered slice.
+    return emitRewrite(elided, 'already-served file lines withheld', { kind: 'bash_compress:served-elide', originalBytes: deliveredOutputBytes(originalBytes) })
   }
 
   const pointer = identical
