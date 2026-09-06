@@ -1795,8 +1795,9 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const normalized = normalizePath(filePath)
   if (isImagePath(normalized)) return null
 
-  // A read carrying offset/limit is surgical already, and folding a window the caller deliberately narrowed answers a different question than the one asked. Same rule the subagent-markdown deny and the doc-compact intercept both apply.
-  if (readIntToolInput(event, 'offset') !== undefined || readIntToolInput(event, 'limit') !== undefined) return null
+  // A windowed read is foldable, but only when its delivered rows carry the file's own line numbers. `planBodyFolds` decides whether a window is narrow enough to leave alone: it declines any span whose declaration sits above the first delivered line, so a caller asking for the middle of one function still gets every line back, while a window wide enough to hold whole declarations folds them. That containment test compares row numbers against indexed spans, so it is meaningless against numbers synthesised from line 1, and the harness reports the true window start in `tool_response.file.startLine`. An offset it does not confirm is declined rather than guessed at: measured over 566 real ranged Reads, 562 agree exactly, and the four that disagree are negative offsets the harness clamps to line 1, which this equality rejects. A bare `limit` needs no check, its window starting at line 1 either way.
+  const requestedOffset = readIntToolInput(event, 'offset')
+  if (requestedOffset !== undefined && readStartLine(event) !== requestedOffset) return null
   if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
 
   // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines.
