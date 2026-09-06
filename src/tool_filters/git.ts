@@ -219,8 +219,15 @@ function _capPatchLinesInBlock(block: string, maxLines: number): string {
   const headerLines = lines.slice(0, diffStart)
   let diffLines = lines.slice(diffStart)
   if (diffLines.length > maxLines) {
+    // The budget is spent on both ends of the patch rather than all on its front. A commit's patch runs file by file, so a head-only cap showed the first file and dropped every later one outright: on a commit touching a dozen files, the one the reader was looking for was usually not the alphabetically first. The split is weighted towards the head, since a hunk's opening carries the file header that says what is being changed.
+    const tailKeep = Math.min(10, Math.floor(maxLines / 3))
+    const headKeep = maxLines - tailKeep
     const elided = diffLines.length - maxLines
-    diffLines = [...diffLines.slice(0, maxLines), `--- patch: ${elided} lines omitted by token-goat ---`]
+    diffLines = [
+      ...diffLines.slice(0, headKeep),
+      `--- patch: ${elided} lines omitted by token-goat ---`,
+      ...diffLines.slice(diffLines.length - tailKeep),
+    ]
   }
   return [...headerLines, ...diffLines].join('\n')
 }

@@ -186,9 +186,13 @@ export class RgFilter extends ToolFilter {
     const kept = groups.filter((_, i) => topIdx.has(i))
     const suppressed = groups.length - kept.length
     const joined = kept.join('\n' + RgFilter._SEP + '\n')
+    // Groups are ranked by match count, and a sort is stable, so groups tied on that count are kept in the order ripgrep printed them: alphabetical by path. Where the cut falls between two equal scores the survivors were selected by filename, not by relevance, and the note said only that groups were suppressed. Saying which of the two happened is the difference between "these are the densest matches" and "these five came first"; a search where every group has one match is the second, and it is the common case.
+    const lastKept = scored[Math.min(_RG_TOP_GROUPS, scored.length) - 1]?.score
+    const firstDropped = scored[_RG_TOP_GROUPS]?.score
+    const tied = firstDropped !== undefined && firstDropped === lastKept
     return (
       joined +
-      `\n[token-goat: ${suppressed} more match groups suppressed — rerun with -l for filenames only]`
+      `\n[token-goat: ${suppressed} more match groups suppressed${tied ? ', tied on match count with the ones kept and separated only by filename order' : ', each with fewer matches than those kept'}: rerun with -l for filenames only]`
     )
   }
 

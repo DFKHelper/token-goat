@@ -104,6 +104,10 @@ export function combineStreams(stdout: string, stderr: string): string {
 export const ERROR_SIGNAL_RE =
   /error:|Error:|ERROR|FAILED|failed|fatal:|Traceback|exception:|Exception:|AssertionError|assert |panic:/i
 
+/** A resource-table row whose status column reads as anything other than healthy, which is the row the command was almost certainly run to find. Deliberately drawn from the state vocabularies the two callers of {@link truncateTableRows} actually print (kubectl pod/node phases and container waiting reasons, AWS resource and instance states) rather than from {@link ERROR_SIGNAL_RE}, whose `failed`/`error` substring matching hits a resource merely *named* `error-handler` and would have promoted a healthy row on its name alone. Word-bounded for the same reason. */
+export const TABLE_ROW_ANOMALY_RE =
+  /\b(?:CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerError|CreateContainerConfigError|InvalidImageName|RunContainerError|OOMKilled|Evicted|Terminating|ContainerCreating|PodInitializing|NotReady|SchedulingDisabled|Unschedulable|Pending|Failed|Error|Unknown|Unhealthy|DEGRADED|UNAVAILABLE|STOPPED|STOPPING|TERMINATED|TERMINATING|FAILED|ROLLBACK_COMPLETE|ROLLBACK_FAILED|CREATE_FAILED|UPDATE_FAILED|DELETE_FAILED)\b/
+
 /** ISO-8601 / datetime / HH:MM:SS line-prefix used by CI logs and kubectl. */
 export const TIMESTAMP_PREFIX_RE =
   /^\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\]?\s*|^\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+/
@@ -557,8 +561,21 @@ export function truncateTableRows(text: string, maxRows: number, hint: string): 
   const lines = text.split('\n')
   const nonEmpty = lines.filter((l) => l.trim())
   if (nonEmpty.length <= maxRows + 1) return text
-  const elided = nonEmpty.length - maxRows - 1
-  return `${nonEmpty.slice(0, maxRows + 1).join('\n')}\n[token-goat: ${elided} more rows; ${hint}]`
+  const header = nonEmpty[0] as string
+  const rows = nonEmpty.slice(1)
+  // Position is not what makes a row worth keeping. Nobody runs `kubectl get pods` or `aws ... --output table` to read the first ten rows: they run it to find the one that is not healthy, and which line that is depends on the order the API happened to return, not on anything the reader chose. Keeping the head alone therefore dropped the answer whenever the unhealthy resource sorted past the budget. Rows carrying a not-healthy signal are taken first, the remainder is filled from the top, and the survivors are re-emitted in their original order so the table still reads as a table.
+  const wanted = new Set<number>()
+  for (let i = 0; i < rows.length && wanted.size < maxRows; i++) {
+    if (TABLE_ROW_ANOMALY_RE.test(rows[i] as string)) wanted.add(i)
+  }
+  const anomalies = wanted.size
+  for (let i = 0; i < rows.length && wanted.size < maxRows; i++) wanted.add(i)
+  const kept = [...wanted].sort((a, b) => a - b)
+  const elided = rows.length - kept.length
+  const note = anomalies
+    ? `[token-goat: ${elided} more rows; ${anomalies} row(s) kept for a not-ready status, the rest from the top; ${hint}]`
+    : `[token-goat: ${elided} more rows; ${hint}]`
+  return `${[header, ...kept.map((i) => rows[i] as string)].join('\n')}\n${note}`
 }
 
 /** Keep only the first `keep` lines matching `pattern`; drop the rest with a count. */
