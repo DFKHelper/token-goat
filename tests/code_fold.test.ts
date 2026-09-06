@@ -16,6 +16,7 @@ import { getFileServedOutputs } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
+import { dirtyQueuePath } from '../src/hooks_index.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
 /** Rows as parseNumberedReadResult produces them: 1-based line numbers, in order. */
@@ -217,6 +218,62 @@ describe('body fold on the real Read hook path', () => {
     expect(row.detail).toContain('::')
     expect(row.detail).toContain('longFunction')
     expect(row.detail).toContain(normalizePath(file))
+  })
+
+  /** What the dirty queue gained while `run` executed, so an unrelated concurrent append cannot be mistaken for this read's. */
+  function queueDelta(run: () => void): string {
+    const read = (): string => {
+      try {
+        return fs.readFileSync(dirtyQueuePath(), 'utf8')
+      } catch {
+        return ''
+      }
+    }
+    const before = read()
+    run()
+    return read().slice(before.length)
+  }
+
+  it('queues a parser-stale file for reindex, so the next read of it can fold bodies', () => {
+    const { file, body } = makeIndexedSource()
+    // Content is untouched, only the extraction logic moved on. This is the case files.sha alone cannot see and the one that left 22 of 54 foldable reads unfolded in the transcript measurement.
+    getDb(globalDbPath())
+      .prepare('UPDATE files SET parser_sha = ? WHERE path = ?')
+      .run('stale-parser-fingerprint', normalizePath(file))
+    const delta = queueDelta(() => {
+      // Without usable spans there is nothing here to fold, so this read passes through whole. That pass-through IS the miss the enqueue exists to repair, and it is why the queue entry has to be written on the way past rather than after a successful fold.
+      expect(JSON.stringify(postReadHandler(postEvent(file, body)))).toBe('{"hookType":"pass"}')
+    })
+    expect(delta).toContain(path.basename(file))
+  })
+
+  it('does not queue a file whose index is already fresh — the calibration for the test above', () => {
+    // Without this, the assertion above would pass just as well if the hook enqueued on every single read, which would append to the dirty queue on the hottest path in the tool.
+    const { file, body } = makeIndexedSource()
+    const delta = queueDelta(() => {
+      expect(JSON.stringify(postReadHandler(postEvent(file, body)))).toContain('folded')
+    })
+    expect(delta).not.toContain(path.basename(file))
+  })
+
+  it('names the file relative to the project root in the fold notice, not by absolute path', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fold-proj-'))
+    fs.mkdirSync(path.join(root, '.git'), { recursive: true })
+    const nested = path.join(root, 'src', 'deeply', 'nested')
+    fs.mkdirSync(nested, { recursive: true })
+    const file = path.join(nested, 'folded.ts')
+    const { body } = makeIndexedSource()
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+    indexFileSync(normalizePath(file))
+    const base = postEvent(file, body)
+    const event: HookEvent = { ...base, raw: { ...(base.raw as Record<string, unknown>), cwd: root } }
+    const text = JSON.stringify(postReadHandler(event))
+
+    expect(text).toContain('folded')
+    expect(text).toContain('src/deeply/nested/folded.ts::longFunction')
+    // The absolute form is what the notice used to repeat once per fold, and on Windows it is most of the notice.
+    expect(text).not.toContain(normalizePath(root))
   })
 })
 
