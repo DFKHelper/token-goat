@@ -12,9 +12,9 @@
  * rows, so the two callers share the search and differ only in how they render the result.
  */
 
-/** A delivered line: its number in the file, its text, and the form it occupies in the output. */
+/** A delivered line: its number in the file, its text, and the form it occupies in the output. `no` is null when the caller cannot know the number, which costs only the notice's precision: the search itself is on text and never on position. */
 export interface NumberedRow {
-  readonly no: number
+  readonly no: number | null
   readonly text: string
   readonly raw: string
 }
@@ -98,10 +98,11 @@ export function longestServedRun(
 /** Most runs one result may have withheld. Past this the result reads as a list of notices. */
 export const MAX_SERVED_ELISIONS = 3
 
-/** The notice standing in for a withheld run, phrased so the line numbers it replaces stay visible. */
-export function servedRunNotice(firstLine: number, lastLine: number, id: string): string {
+/** The notice standing in for a withheld run, phrased so the line numbers it replaces stay visible. A caller that cannot know them passes null and gets a count instead: a wrong line number reads exactly like a right one, so there is no honest way to guess. */
+export function servedRunNotice(firstLine: number | null, lastLine: number | null, id: string, len: number): string {
+  const which = firstLine !== null && lastLine !== null ? 'lines ' + firstLine + '-' + lastLine : len + ' lines here'
   return (
-    '[token-goat] lines ' + firstLine + '-' + lastLine +
+    '[token-goat] ' + which +
     ' were already served verbatim in this session; withheld here. ' +
     'Recall them with `token-goat bash-output ' + id + '`.'
   )
@@ -153,7 +154,7 @@ export function planServedElisions(rows: readonly NumberedRow[], bodies: readonl
     const first = rows[bestRun.start]
     const last = rows[bestRun.start + bestRun.len - 1]
     if (first === undefined || last === undefined) break
-    const noticeBytes = Buffer.byteLength(servedRunNotice(first.no, last.no, bestRun.id), 'utf-8') + 1
+    const noticeBytes = Buffer.byteLength(servedRunNotice(first.no, last.no, bestRun.id, bestRun.len), 'utf-8') + 1
     if (renderedRunBytes(rows, bestRun.start, bestRun.len) <= noticeBytes) break
     cuts.push(bestRun)
     const chosen = spans[bestSpan]

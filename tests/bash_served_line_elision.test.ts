@@ -162,6 +162,32 @@ describe('postBashHandler: per-stretch elision of already-served shell lines', (
     expect(out.hookType).not.toBe('rewriteOutput')
   })
 
+  it('withholds inside a compound read of one file, and counts the lines rather than naming them', async () => {
+    // Paging a file is normally written as several ranges of it in one command with an `echo` between
+    // them. That whole shape used to be invisible to the collapse. It is worth 0.64 MB of already-served
+    // lines over 201 sessions, on top of the single-command form.
+    await postBashHandler(postEvent("sed -n '120,160p' README.md", slice(120, 160)))
+    const second = slice(100, 140) + '\n---\n' + slice(150, 170)
+    const out = await postBashHandler(postEvent("sed -n '100,140p' README.md\necho ---\nsed -n '150,170p' README.md", second))
+    const body = delivered(out, second)
+    expect(body).toContain(fileLine(100))
+    expect(body).toContain(fileLine(170))
+    expect(body).not.toContain(fileLine(130))
+    // An `echo` between the ranges can print any number of lines, so no row here can be tied to a file
+    // line. Naming one anyway would read exactly like a correct one.
+    expect(body).toContain('lines here were already served')
+    expect(body).not.toMatch(/lines \d+-\d+ were already served/)
+  })
+
+  it('refuses a compound read that spans two files', async () => {
+    // The record of what has been shown is per file, so a two-file read has no single entry to be
+    // filed under. Merging them under either would let a read of one answer for the other.
+    await postBashHandler(postEvent("sed -n '120,160p' README.md", slice(120, 160)))
+    const second = slice(120, 160) + '\n---\n' + slice(1, 20)
+    const out = await postBashHandler(postEvent("sed -n '120,160p' README.md\necho ---\nsed -n '1,20p' CHANGELOG.md", second))
+    expect(delivered(out, second)).toContain(fileLine(130))
+  })
+
   it('leaves a read whose lines are all new completely alone', async () => {
     // The calibration for every case above: without it they only prove that something was rewritten,
     // not that overlap is what drives it.

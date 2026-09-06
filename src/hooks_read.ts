@@ -20,7 +20,14 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
-import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
+import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
+
+/** A line of a Read result: its number in the file, its text, and the numbered form it occupies in the delivered output. Narrower than the shared {@link NumberedRow} in one way that matters -- the harness always numbers a Read, so `no` is never unknown here, and the fold planners below are free to do arithmetic on it. */
+interface NumberedRow {
+  readonly no: number
+  readonly text: string
+  readonly raw: string
+}
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
@@ -1754,7 +1761,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
     const first = parsed.rows[cut.start]
     const last = parsed.rows[cut.start + cut.len - 1]
     if (first === undefined || last === undefined) return null
-    out.push(servedRunNotice(first.no, last.no, cut.id))
+    out.push(servedRunNotice(first.no, last.no, cut.id, cut.len))
     at = cut.start + cut.len
   }
   for (let i = at; i < parsed.rows.length; i++) out.push(parsed.rows[i]?.raw ?? '')
