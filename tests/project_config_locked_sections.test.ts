@@ -34,6 +34,7 @@ describe('stripLockedProjectKeys', () => {
     ])
     expect([...PROJECT_LOCKED_KEYS].sort()).toEqual([
       'hints.fold_code_bodies',
+      'hints.fold_prose_paragraphs',
       'image_shrink.max_image_pixels',
       'indexing.cross_project_symbols',
       'worker.blocked_roots',
@@ -94,7 +95,7 @@ describe('stripLockedProjectKeys', () => {
       image_shrink: { max_image_pixels: 0 },
       indexing: { cross_project_symbols: true },
       worker: { blocked_roots: [] },
-      hints: { fold_code_bodies: true },
+      hints: { fold_code_bodies: true, fold_prose_paragraphs: true },
     })
 
     expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())

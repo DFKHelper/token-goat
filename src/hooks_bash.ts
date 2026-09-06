@@ -21,7 +21,7 @@ import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDi
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
-import { foldDelivery, type FoldRow } from './fold_delivery.js'
+import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
@@ -1902,7 +1902,7 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
  * Returns null whenever the delivery cannot be pinned to file lines. A `tail` has no fixed first line, and a compound read interleaves its ranges with whatever the segments between them printed, so `deliveredLineNumbers` reports every row as unknown. Folding either would cut at a guessed line and then print that guess inside a notice, where it reads exactly like a real answer.
  */
 function foldShellReadBodies(cmd: string, output: string, fileKey: string, cwd: string | null): { text: string; folds: readonly BodyFold[] } | null {
-  if (!loadConfig().hints.fold_code_bodies) return null
+  if (!foldingEnabled()) return null
   // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain read gives the user more of their own file than a redacted rewrite would. Same call foldCodeBodies makes on the Read side.
   if (redactSecrets(output).count > 0) return null
 

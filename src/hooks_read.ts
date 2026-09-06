@@ -59,7 +59,7 @@ import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
 import { foldDetail } from './code_fold.js'
-import { foldDelivery } from './fold_delivery.js'
+import { foldDelivery, foldingEnabled } from './fold_delivery.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -1789,7 +1789,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
  * Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}.
  */
 function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
-  if (!loadConfig().hints.fold_code_bodies) return null
+  if (!foldingEnabled()) return null
   const filePath = getFilePath(event)
   if (filePath === undefined) return null
   const normalized = normalizePath(filePath)

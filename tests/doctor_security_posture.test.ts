@@ -230,6 +230,7 @@ describe('an environment variable that reopens a project-locked security setting
     ['network.offline', 'TOKEN_GOAT_OFFLINE', 'false', 'weakened'],
     ['indexing.cross_project_symbols', 'TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', 'true', 'weakened'],
     ['hints.fold_code_bodies', 'TOKEN_GOAT_FOLD_CODE_BODIES', 'true', 'weakened'],
+    ['hints.fold_prose_paragraphs', 'TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', 'true', 'weakened'],
     ['webfetch.compress_bodies', 'TOKEN_GOAT_WEB_COMPRESS', 'false', 'weakened'],
     ['mcp.allowed_roots', 'TOKEN_GOAT_MCP_ALLOWED_ROOTS', '/', 'replaced'],
     ['redaction.custom_patterns', 'TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', 'EMP-[0-9]{4,8}', 'replaced'],

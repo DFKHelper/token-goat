@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+import { BODY_FOLD_KEEP_LINES } from '../src/fold_delivery.js'
 import { postBashHandler } from '../src/hooks_bash.js'
 import { querySymbols } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
@@ -71,6 +72,21 @@ function longestSpan(): { name: string; lineStart: number; lineEnd: number } {
   const best = spans[0]
   if (best === undefined) throw new Error(`no function span of 40+ lines indexed in ${TARGET_REL}; fixture assumption broken`)
   return { name: best.name, lineStart: best.lineStart, lineEnd: best.lineEnd }
+}
+
+/**
+ * A line from deep inside `span` that appears exactly once in the whole file.
+ *
+ * The fixture is this repository's own `src/code_fold.ts`, so any line picked by position alone can be duplicated by an unrelated edit elsewhere in that file, and a "must not appear" assertion then answers about the wrong copy: it reads as a passing fold while the fold under test does nothing. This one happened for real, when a second short function ending `return folds` was added and the surviving copy came from a span too short to fold at all. Throwing when no unique line exists is deliberate, since silently falling back to a duplicated one is the failure this exists to prevent.
+ */
+function deepUniqueBodyLine(span: { lineStart: number; lineEnd: number }): string {
+  const counts = new Map<string, number>()
+  for (const line of LINES) counts.set(line, (counts.get(line) ?? 0) + 1)
+  for (let n = span.lineEnd - 1; n > span.lineStart + BODY_FOLD_KEEP_LINES; n--) {
+    const line = LINES[n - 1]
+    if (line !== undefined && line.trim().length > 0 && counts.get(line) === 1) return line
+  }
+  throw new Error(`no line unique to the file inside ${span.lineStart}-${span.lineEnd}; fixture assumption broken`)
 }
 
 function postEvent(command: string, output: string, sessionId = 's') {
@@ -116,7 +132,7 @@ describe('postBashHandler: body folding on a shell read', () => {
     expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}"`)
     // Declaration kept, deep body gone. Both matter: keeping the first lines is the whole difference between this and a skeleton.
     expect(body).toContain(LINES[span.lineStart - 1] ?? '')
-    expect(body).not.toContain(LINES[span.lineEnd - 2] ?? '')
+    expect(body).not.toContain(deepUniqueBodyLine(span))
     expect(body.length).toBeLessThan(SOURCE.length)
   })
 
