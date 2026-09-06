@@ -2,6 +2,14 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Changed
+
+- **A folded read now records which file and which symbols it folded.** The ledger already stored how many bytes each fold saved, and nothing about what it removed. That left the other half of the trade unmeasurable: how often a reader has to come back for a span that was folded away could not be worked out from stored data, however long the feature ran. That missing number is the reason `hints.fold_code_bodies` ships off by default, and nothing about running it for longer was going to produce it.
+
+  Each `read:body_fold` row now carries the file and the folded symbol names, in the same `file::symbol` shape a recovery read would use, so a later `token-goat read` can be matched back to the fold that prompted it. A folded comment block has no symbol to name and carries the line range its notice points at instead. The text is capped so that one file with hundreds of folds cannot bloat a row, and a file whose path alone fills the cap still records the path, which is the part a match needs. Recorded in [src/code_fold.ts](src/code_fold.ts) and passed through the shared rewrite helper in [src/hooks_common.ts](src/hooks_common.ts), which accepted this value from other callers and dropped it on the way to the database. Rows written before this release stay empty. No reindex is needed.
+
 ## [2.9.4] - 2026-09-06
 
 ### Added

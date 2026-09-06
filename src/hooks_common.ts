@@ -249,6 +249,8 @@ export interface RewriteSavings {
   /** Registered stat kind. Must appear in `stats.ts`'s KIND_TO_SOURCE or it silently files as `other`. */
   kind: string
   originalBytes: number
+  /** What this rewrite acted on, for the stats row's `detail` column. Without it a kind records how much it saved and never what it touched, which is enough to total a benefit and not enough to measure a cost. */
+  detail?: string
 }
 
 /**
@@ -302,7 +304,7 @@ export function emitRewrite(
   if (savings !== undefined) {
     const bytesSaved = savings.originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
     // Only a positive delta is recorded. Every caller sits behind an `isRewriteWorthwhile` gate so this should always hold, but a stat kind that can log a negative saving silently corrupts every total that sums it, and the gate is a separate line a future edit could reorder.
-    if (bytesSaved > 0) recordStat(savings.kind, bytesSaved, savedTokensFromBytes(bytesSaved))
+    if (bytesSaved > 0) recordStat(savings.kind, bytesSaved, savedTokensFromBytes(bytesSaved), undefined, savings.detail)
   }
   return { hookType: 'rewriteOutput', updatedOutput }
 }

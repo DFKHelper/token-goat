@@ -8,12 +8,14 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, type FoldSpan } from '../src/code_fold.js'
+import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, foldDetail, MAX_FOLD_DETAIL, type FoldSpan } from '../src/code_fold.js'
 import { postReadHandler } from '../src/hooks_read.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/util.js'
 import { getFileServedOutputs } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
+import { getDb } from '../src/db.js'
+import { globalDbPath } from '../src/constants.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
 /** Rows as parseNumberedReadResult produces them: 1-based line numbers, in order. */
@@ -194,6 +196,55 @@ describe('body fold on the real Read hook path', () => {
     // The signature was delivered and must be recorded; the folded interior was not and must not.
     expect(stored?.output ?? '').toContain('export function longFunction')
     expect(stored?.output ?? '').not.toContain('localVariable59')
+  })
+
+  it('writes the folded file and symbol into the stat row, so the cost side is recoverable from the ledger', () => {
+    // The gap this closes. `read:body_fold` recorded how many bytes it saved and nothing about what it removed, so how often a reader has to come back for a folded span could not be computed however long the feature ran -- and that unmeasurable cost is the reason the flag stays off by default. Asserted end to end rather than on foldDetail alone: the value was being dropped by emitRewrite, which called recordStat with three arguments, so a unit test of the formatter would have passed against the broken shipping path.
+    const { file, body } = makeIndexedSource()
+    const db = getDb(globalDbPath())
+    const countOf = (): number =>
+      (db.prepare("SELECT count(*) c FROM stats WHERE kind='read:body_fold'").get() as { c: number }).c
+    const before = countOf()
+
+    expect(JSON.stringify(postReadHandler(postEvent(file, body)))).toContain('folded')
+    expect(countOf()).toBe(before + 1)
+
+    const row = db
+      .prepare("SELECT detail FROM stats WHERE kind='read:body_fold' ORDER BY id DESC LIMIT 1")
+      .get() as { detail: string | null }
+    expect(row.detail).toBeTruthy()
+    // The shape a recovery read would use, so a later `read "file::symbol"` joins back to the fold that provoked it.
+    expect(row.detail).toContain('::')
+    expect(row.detail).toContain('longFunction')
+    expect(row.detail).toContain(normalizePath(file))
+  })
+})
+
+describe('foldDetail', () => {
+  function bodyFold(name: string) {
+    return { startIdx: 0, len: 5, name, kind: 'body' as const, firstLine: 1, lastLine: 5 }
+  }
+
+  it('joins the path to every folded symbol name', () => {
+    expect(foldDetail('src/a.ts', [bodyFold('one'), bodyFold('two')])).toBe('src/a.ts::one,two')
+  })
+
+  it('names a comment fold by the line span its notice points at, having no symbol to name', () => {
+    const comment = { startIdx: 9, len: 12, name: '', kind: 'comment' as const, firstLine: 10, lastLine: 21 }
+    expect(foldDetail('src/a.ts', [comment])).toBe('src/a.ts::#10-21')
+  })
+
+  it('truncates to the cap and says how many were dropped, so one pathological file cannot bloat the row', () => {
+    const many = Array.from({ length: 200 }, (_, i) => bodyFold(`symbolNumber${i}`))
+    const out = foldDetail('src/a.ts', many)
+    expect(out.length).toBeLessThanOrEqual(MAX_FOLD_DETAIL)
+    expect(out).toMatch(/,\+\d+ more$/)
+    expect(out.startsWith('src/a.ts::symbolNumber0,')).toBe(true)
+  })
+
+  it('keeps the path when it alone eats the budget, since the file is the part a join needs', () => {
+    const longPath = `src/${'d'.repeat(MAX_FOLD_DETAIL)}/a.ts`
+    expect(foldDetail(longPath, [bodyFold('one'), bodyFold('two')])).toBe(`${longPath}::+2 folds`)
   })
 })
 

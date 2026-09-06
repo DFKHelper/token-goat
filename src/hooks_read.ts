@@ -50,7 +50,7 @@ import { findVerifiedFileEvidence, recordEvidence } from './evidence_cache.js'
 import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
-import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, type FoldSpan } from './code_fold.js'
+import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, foldDetail, type FoldSpan } from './code_fold.js'
 import { querySymbols, getFileEntry } from './index_reader.js'
 import { fingerprintFile } from './fingerprint.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
@@ -2055,7 +2055,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
     return null
   }
   return {
-    output: emitRewrite(rewritten, 'read', { kind: 'read:body_fold', originalBytes }),
+    output: emitRewrite(rewritten, 'read', { kind: 'read:body_fold', originalBytes, detail: foldDetail(normalized, folds) }),
     deliveredRaw: rawOut.join('\n'),
   }
 }
