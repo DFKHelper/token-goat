@@ -8,7 +8,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { planBodyFolds, type FoldSpan } from '../src/code_fold.js'
+import { planBodyFolds, planCommentFolds, mergeFolds, commentSyntaxFor, type FoldSpan } from '../src/code_fold.js'
 import { postReadHandler } from '../src/hooks_read.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/util.js'
@@ -293,5 +293,107 @@ describe('body fold against the captured Claude Code Read envelope', () => {
     const resp = (event.raw as Record<string, unknown>)['tool_response'] as Record<string, unknown>
     delete (resp['file'] as Record<string, unknown>)['startLine']
     expect(JSON.stringify(postReadHandler(event))).toContain('folded')
+  })
+})
+
+/**
+ * Comment folding.
+ *
+ * Fixture provenance: HAND-DERIVED. The rows below are synthetic source written for this test and
+ * the expected spans are computed from the inputs by hand, independently of the planner. That is
+ * the right tier for logic and explicitly NOT evidence about any wire format; the captured-envelope
+ * block above is what covers the shape Claude Code actually delivers.
+ *
+ * The markdown case is the one that matters most. A run of `#` lines is a comment block in Python
+ * and a run of headings in Markdown, so a content sniff would fold a document's entire heading
+ * structure -- the one thing a reader navigates by. Keying on extension is what prevents that, and
+ * the assertion below fails if anyone swaps it for a sniff.
+ */
+function crows(lines: string[], from = 1): Array<{ no: number; text: string }> {
+  return lines.map((text, i) => ({ no: from + i, text }))
+}
+
+describe('commentSyntaxFor', () => {
+  it('never returns a syntax for markdown, whose # runs are headings rather than comments', () => {
+    expect(commentSyntaxFor('doc.md')).toBeNull()
+    expect(commentSyntaxFor('README.markdown')).toBeNull()
+  })
+
+  it('returns nothing for an unknown or extensionless path, the safe direction', () => {
+    expect(commentSyntaxFor('Makefile')).toBeNull()
+    expect(commentSyntaxFor('notes.xyz')).toBeNull()
+  })
+
+  it('resolves the three families it supports', () => {
+    expect(commentSyntaxFor('a.ts')?.line).toEqual(['//'])
+    expect(commentSyntaxFor('a.ts')?.open).toBe('/*')
+    expect(commentSyntaxFor('a.py')?.line).toEqual(['#'])
+    expect(commentSyntaxFor('a.sql')?.line).toEqual(['--'])
+  })
+})
+
+describe('planCommentFolds', () => {
+  const ts = commentSyntaxFor('x.ts')
+
+  it('keeps the summary rows of a long block and folds the rationale under them', () => {
+    const lines = ['/**', ' * Summary line.', ...Array.from({ length: 12 }, (_, i) => ` * rationale ${i}`), ' */', 'code()']
+    const folds = planCommentFolds(crows(lines), ts, 2, 12, new Set())
+    expect(folds).toHaveLength(1)
+    // Rows 1-2 (the opener and the summary) survive; the fold starts at row 3 and runs to the `*/`.
+    expect(folds[0]?.firstLine).toBe(3)
+    expect(folds[0]?.lastLine).toBe(15)
+    expect(folds[0]?.kind).toBe('comment')
+  })
+
+  it('folds a long run of line comments', () => {
+    const lines = [...Array.from({ length: 14 }, (_, i) => `// note ${i}`), 'code()']
+    const folds = planCommentFolds(crows(lines), ts, 2, 12, new Set())
+    expect(folds).toHaveLength(1)
+    expect(folds[0]?.firstLine).toBe(3)
+    expect(folds[0]?.lastLine).toBe(14)
+  })
+
+  it('leaves a block shorter than commentMinBlock alone', () => {
+    const lines = [...Array.from({ length: 8 }, (_, i) => `// note ${i}`), 'code()']
+    expect(planCommentFolds(crows(lines), ts, 2, 12, new Set())).toEqual([])
+  })
+
+  it('folds nothing when the extension has no known comment syntax', () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `# heading ${i}`)
+    expect(planCommentFolds(crows(lines), commentSyntaxFor('doc.md'), 2, 12, new Set())).toEqual([])
+  })
+
+  it('skips rows a body fold already claimed, which would otherwise bill the same lines twice', () => {
+    const lines = [...Array.from({ length: 14 }, (_, i) => `// note ${i}`), 'code()']
+    const claimed = new Set([5, 6, 7])
+    expect(planCommentFolds(crows(lines), ts, 2, 12, claimed)).toEqual([])
+  })
+
+  it('refuses a run whose delivered line numbers are not contiguous', () => {
+    const rows = [...crows(Array.from({ length: 7 }, (_, i) => `// a ${i}`), 1), ...crows(Array.from({ length: 7 }, (_, i) => `// b ${i}`), 100)]
+    expect(planCommentFolds(rows, ts, 2, 12, new Set())).toEqual([])
+  })
+
+  it('does not treat a one-row /* ... */ as opening a block that swallows the code after it', () => {
+    const lines = ['/* short */', 'code1()', 'code2()', ...Array.from({ length: 20 }, (_, i) => `real${i}()`)]
+    expect(planCommentFolds(crows(lines), ts, 2, 12, new Set())).toEqual([])
+  })
+})
+
+describe('mergeFolds', () => {
+  it('drops a comment fold overlapping a body fold and keeps the body fold, which names a command', () => {
+    const body = planBodyFolds(rowsFor(60), [span('big', 1, 40)], 10, 25)
+    const overlapping = [{ startIdx: 12, len: 5, name: 'comment', kind: 'comment' as const, firstLine: 13, lastLine: 17 }]
+    const merged = mergeFolds(body, overlapping)
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.kind).toBe('body')
+  })
+
+  it('keeps both when they do not overlap, in position order', () => {
+    const body = planBodyFolds(rowsFor(60), [span('big', 1, 20)], 5, 15)
+    const later = [{ startIdx: 40, len: 5, name: 'comment', kind: 'comment' as const, firstLine: 41, lastLine: 45 }]
+    const merged = mergeFolds(body, later)
+    expect(merged).toHaveLength(2)
+    expect(merged[0]!.startIdx).toBeLessThan(merged[1]!.startIdx)
   })
 })
