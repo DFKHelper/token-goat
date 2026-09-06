@@ -196,3 +196,102 @@ describe('body fold on the real Read hook path', () => {
     expect(stored?.output ?? '').not.toContain('localVariable59')
   })
 })
+
+/**
+ * The shape Claude Code actually delivers.
+ *
+ * Fixture provenance: CAPTURE. The envelope and the un-numbered `file.content` below were read off
+ * real `toolUseResult` records in a Claude Code session transcript on 2026-09-05 -- 104 of 104 Read
+ * results carried the file's own text, none carried a `cat -n` rendering. The block above this one
+ * numbers its fixture and says in a comment that numbering is "what the hook parses"; that claim was
+ * written from READ_NUMBERED_ROW_RE rather than from the harness, and it was wrong. Because every
+ * fold and elision test agreed with it, both post-read rewrites were dead code on this harness --
+ * the fold booked 0 events across a full session while the rest of the read hook ran normally.
+ */
+describe('body fold against the captured Claude Code Read envelope', () => {
+  const tmpFiles: string[] = []
+  const prevFlag = process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
+
+  function makeIndexedSource(): { file: string; body: string } {
+    const lines = [
+      "import { thing } from './thing.js'",
+      '',
+      'export const TOP_LEVEL_CONSTANT = 42',
+      '',
+      'export function longFunction(n: number): number {',
+    ]
+    for (let i = 0; i < 60; i++) lines.push(`  const localVariable${i} = n + ${i} // body line ${i}`)
+    lines.push('  return n', '}', '', 'export const TRAILING_CONSTANT = 7', '')
+    const body = lines.join('\n')
+    const file = path.join(os.tmpdir(), `tg-fold-cap-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+    indexFileSync(normalizePath(file))
+    return { file, body }
+  }
+
+  /** The captured envelope: `file.content` is the file's own text, not a numbered rendering. */
+  function capturedEvent(file: string, body: string): HookEvent {
+    const lineCount = body.split('\n').length
+    return {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: file },
+      sessionId: `fold-cap-${Math.random().toString(36).slice(2)}`,
+      agentId: undefined,
+      raw: {
+        tool_response: {
+          type: 'text',
+          file: { filePath: file, content: body, numLines: lineCount, startLine: 1, totalLines: lineCount },
+        },
+      },
+    }
+  }
+
+  beforeEach(() => {
+    process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = '1'
+  })
+
+  afterEach(() => {
+    if (prevFlag === undefined) delete process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
+    else process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = prevFlag
+    for (const f of tmpFiles.splice(0)) {
+      try {
+        fs.unlinkSync(f)
+      } catch {
+        /* best effort */
+      }
+    }
+  })
+
+  it('folds a body delivered as raw file content, which is every real Read', () => {
+    const { file, body } = makeIndexedSource()
+    const out = postReadHandler(capturedEvent(file, body))
+    const text = JSON.stringify(out)
+
+    expect(text).toContain('folded')
+    expect(text).toContain('longFunction')
+    // Structure outside the body still survives, same contract as the numbered path.
+    expect(text).toContain('TOP_LEVEL_CONSTANT')
+    expect(text).toContain('TRAILING_CONSTANT')
+    expect(text).not.toContain('localVariable59')
+  })
+
+  it('writes back un-numbered content, because that is the field it came from', () => {
+    const { file, body } = makeIndexedSource()
+    const out = postReadHandler(capturedEvent(file, body))
+    const updated = (out as { updatedOutput?: string }).updatedOutput ?? ''
+    expect(updated).not.toBe('')
+    // A numbered rendering here would be numbered a second time on display. The signature must come back exactly as it sits in the file.
+    expect(updated).toContain('export function longFunction(n: number): number {')
+    expect(updated.split('\n').some(l => /^\s*\d+\t/.test(l))).toBe(false)
+  })
+
+  it('still folds when the harness sends no startLine at all', () => {
+    const { file, body } = makeIndexedSource()
+    const event = capturedEvent(file, body)
+    const resp = (event.raw as Record<string, unknown>)['tool_response'] as Record<string, unknown>
+    delete (resp['file'] as Record<string, unknown>)['startLine']
+    expect(JSON.stringify(postReadHandler(event))).toContain('folded')
+  })
+})
