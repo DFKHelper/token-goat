@@ -19,6 +19,7 @@
  *     (`hooks_bash.ts::isTempPath`), so a fixture under os.tmpdir() is classified as "not a file
  *     read" and every case here would pass by never running the code at all.
  */
+import { spawnSync } from 'node:child_process'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,6 +28,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { postBashHandler } from '../src/hooks_bash.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { BUNDLE } from './helpers/bundle.js'
+import { rewrittenBody } from './helpers/updated-tool-output.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -197,6 +200,41 @@ describe('postBashHandler: per-stretch elision of already-served shell lines', (
     expect(out.hookType).not.toBe('rewriteOutput')
   })
 
+})
+
+function runHook(command: string, output: string, sessionId: string) {
+  const payload = JSON.stringify({
+    hook_event_name: 'PostToolUse',
+    session_id: sessionId,
+    cwd: REPO,
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: { stdout: output, exitCode: 0 },
+  })
+  return spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: payload, encoding: 'utf8' })
+}
+
+describe('built bundle: compound same-file elision survives across processes', () => {
+  it('withholds the already-served stretch of a compound read in a separate hook process', () => {
+    // The in-process cases above prove the rule; this proves the rule is in the shipped artifact and
+    // reachable through the real hook entrypoint. A tree-shaken helper or an admission path that only
+    // exists in source would leave every test above green and this one emitting `{}`.
+    const first = runHook("sed -n '120,160p' README.md", slice(120, 160), 'e2e-compound')
+    expect(first.status).toBe(0)
+
+    const second = slice(100, 140) + '\n---\n' + slice(150, 170)
+    const out = runHook("sed -n '100,140p' README.md\necho ---\nsed -n '150,170p' README.md", second, 'e2e-compound')
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as { hookSpecificOutput?: { updatedToolOutput?: unknown } }
+    expect(parsed.hookSpecificOutput?.updatedToolOutput).toBeDefined()
+
+    const body = rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)
+    expect(body).toContain(fileLine(100))
+    expect(body).toContain(fileLine(170))
+    expect(body).not.toContain(fileLine(130))
+    expect(body).toContain('lines here were already served')
+    expect(body).not.toMatch(/lines \d+-\d+ were already served/)
+  })
 })
 
 // Session scoping is deliberately not asserted here. It cannot be: in-process these two calls share
