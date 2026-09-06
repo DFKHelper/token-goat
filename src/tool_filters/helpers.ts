@@ -512,7 +512,8 @@ export function capTokens(text: string, maxTokens: number): string {
   const clean = stripAnsiCodes(text)
   if (clean.length / 3.5 <= maxTokens) return text
   const maxBytes = Math.floor(maxTokens * 3.5)
-  let truncated = capBytes(clean, maxBytes)
+  // Both ends, not the first `maxBytes`: every caller passes command output, whose verdict sits at the end. `bash_runner` applies this to the delivered body of any filter once context pressure sets a budget, so a head-only cut here threw away the very tail the pre-filter clamp preserves, and a 1,071,063-byte run capped to 2,000 tokens came back holding its first 57 lines and nothing else. See {@link clampKeepingEnds}.
+  let truncated = clampKeepingEnds(clean, maxBytes) ?? clean
   if (!truncated.includes('[token-goat: output capped at')) {
     truncated = truncated.replace(BYTES_ELIDED_MARKER_RE, '')
     truncated += `\n[token-goat: output capped at ~${maxTokens} tokens]`

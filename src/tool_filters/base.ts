@@ -184,6 +184,16 @@ export class CompressedOutput {
   }
 }
 
+/**
+ * What {@link ToolFilter.apply} knows about the input that its {@link ToolFilter.compress} cannot work out for itself.
+ *
+ * Exists for one honesty problem. A filter that reports a total about the *input* (grep's match count is the clear case: the count is the answer, not a description of what the filter did) computes it from whatever survived the pre-filter clamp, and then prints it as a fact. On a 985,533-byte grep of 9,000 matching lines the delivered line read `grep: 4685 matches across 40 file(s)`. Optional and defaulted, so the eighty-odd existing `compress` overrides that do not report input totals need no change: a TypeScript override may take fewer parameters than it implements.
+ */
+export interface CompressContext {
+  /** True when the clamp dropped part of the input, so any count derived from it is a lower bound rather than a total. */
+  readonly inputTruncated?: boolean
+}
+
 /** Options accepted by {@link ToolFilter.apply}. */
 export interface ApplyOptions {
   maxLines?: number
@@ -272,12 +282,12 @@ export abstract class ToolFilter {
    * Filters that handle errors structurally (pytest, cargo) override this
    * directly and leave `errorPassthrough` false.
    */
-  compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
+  compress(stdout: string, stderr: string, exitCode: number, argv: string[], ctx: CompressContext = {}): string {
     if (this.errorPassthrough) {
       const err = preserveStderrOnError(stdout, stderr, exitCode)
       if (err !== null) return err
     }
-    return this.compressBody(stdout, stderr, exitCode, argv)
+    return this.compressBody(stdout, stderr, exitCode, argv, ctx)
   }
 
   /**
@@ -285,7 +295,7 @@ export abstract class ToolFilter {
    * Default is a passthrough that joins the two streams — useful when the only
    * compression is the ANSI / progress strip `apply` already performed.
    */
-  protected compressBody(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+  protected compressBody(stdout: string, stderr: string, _exitCode: number, _argv: string[], _ctx: CompressContext = {}): string {
     if (stderr && stdout) return `${stdout.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
     return stdout || stderr
   }
@@ -353,7 +363,7 @@ export abstract class ToolFilter {
         body = fallbackTruncate(normOut, normErr, maxLines)
       } else {
         // Step 7: structural compression.
-        body = this.compress(normOut, normErr, exitCode, argv)
+        body = this.compress(normOut, normErr, exitCode, argv, { inputTruncated: soClamped !== null || seClamped !== null })
       }
     } catch (exc) {
       const kind = exc instanceof Error ? exc.constructor.name : 'Error'
