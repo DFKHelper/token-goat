@@ -192,6 +192,17 @@ function readIntToolInput(event: HookEvent, key: string): number | undefined {
   return undefined
 }
 
+/** The 1-based file line the delivered body starts at, from `tool_response.file.startLine`. Defaults to 1, which is both the whole-file case and the safe answer when the harness sends no such field: a wrong start would shift every fold span against the file it came from. */
+function readStartLine(event: HookEvent): number {
+  const resp = event.raw['tool_response']
+  if (resp === null || typeof resp !== 'object') return 1
+  const file = (resp as Record<string, unknown>)['file']
+  if (file === null || typeof file !== 'object') return 1
+  const start = (file as Record<string, unknown>)['startLine']
+  if (typeof start === 'number' && Number.isSafeInteger(start) && start >= 1) return start
+  return 1
+}
+
 /** Cap on bytes scanned while estimating an offset/limit slice — keeps the estimate itself cheap. */
 const SLICE_ESTIMATE_SCAN_CAP_BYTES = 2 * 1024 * 1024
 
@@ -1648,9 +1659,13 @@ interface ParsedReadResult {
  * system-reminder or notice appended after the rows is preserved verbatim instead of costing the
  * whole rewrite.
  *
- * Null when there is no numbered block at all: an image read, an error, a deny message.
+ * A result carrying no numbered block at all is not necessarily unusable. Claude Code hands the hook the file's own text in `tool_response.file.content` and applies the `cat -n` rendering afterwards, for display only, so every real Read arrives here unnumbered -- 104 of 104 in a captured session. Treating that as unparseable made both post-read rewrites dead code on that harness: the fold booked 0 events across a full session while the rest of the read hook ran normally. So an unnumbered result is parsed as one row per line, numbered from `firstLine`, and both callers keep working against whichever form the harness sends.
+ *
+ * `raw` equals `text` for those synthesized rows, which is what a caller must emit back: `updatedToolOutput.file.content` is the same unnumbered field the content came from, and writing a numbered rendering into it would number the file twice on display.
+ *
+ * Null only when there is nothing to work with: an empty body, an image read, an error, a deny message.
  */
-function parseNumberedReadResult(respText: string): ParsedReadResult | null {
+function parseNumberedReadResult(respText: string, firstLine = 1): ParsedReadResult | null {
   const lines = respText.split('\n')
   const header: string[] = []
   const rows: NumberedRow[] = []
@@ -1675,7 +1690,11 @@ function parseNumberedReadResult(respText: string): ParsedReadResult | null {
     rows.push({ no: prev.no + 1, text: m[2] ?? '', raw: line })
   }
   for (; i < lines.length; i++) trailer.push(lines[i] ?? '')
-  return rows.length > 0 ? { header, rows, trailer } : null
+  if (rows.length > 0) return { header, rows, trailer }
+  // No numbered block: the harness sent the file's own text. One row per line, numbered from firstLine, nothing treated as header or trailer -- there is no wrapper here to preserve, and claiming one would drop a real line.
+  if (respText === '') return null
+  const plain = lines.map((text, idx) => ({ no: firstLine + idx, text, raw: text }))
+  return { header: [], rows: plain, trailer: [] }
 }
 
 /** Maximum line-to-line comparisons one elision search may spend before giving up and passing. */
@@ -1813,7 +1832,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
 
   const ids = getFileServedOutputs(normalized)
   if (ids.length === 0) return null
-  const parsed = parseNumberedReadResult(respText)
+  const parsed = parseNumberedReadResult(respText, readStartLine(event))
   if (parsed === null) return null
 
   // Composing a rewrite makes this handler the author of what the model reads, and every sibling
@@ -1950,7 +1969,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines.
   if (redactSecrets(respText).count > 0) return null
 
-  const parsed = parseNumberedReadResult(respText)
+  const parsed = parseNumberedReadResult(respText, readStartLine(event))
   if (parsed === null) return null
 
   // The spans come from the index, so they describe the file the indexer last parsed. Fold only when that is still this file, on BOTH freshness keys: files.sha answers "has the content changed", parser_sha answers "did different extraction logic write these rows". Content alone is not enough -- measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched. A stale span cuts at the wrong line, and on a first read there is no earlier copy for the reader to notice that against.
