@@ -24,6 +24,12 @@ export const DEFAULT_MAX_INPUT_BYTES = 500 * 1024
 /** Per-line char cap in fallback truncation (minified JS, base64 blobs). */
 export const FALLBACK_MAX_LINE_CHARS = 400
 
+/** Longest single line any filter's output may carry before {@link capLongLines} clips it. Deliberately looser than {@link FALLBACK_MAX_LINE_CHARS}, which applies only to a runaway log already being head/tail truncated: this one runs over ordinary, otherwise-untouched output, where a wide table row or a long path list is real content and clipping it would be a loss. Measured over 814 session transcripts (77.0 MB of shell output), lines past 1,000 chars hold 1.32 MB and are almost entirely machine-generated -- minified source, base64, a JSON record on one line. The same measurement at 400 chars reaches 5.25 MB and was rejected: the filtered body is what gets cached, so clipped characters are not recoverable afterwards, and a threshold that low would spend real content to buy the difference. */
+export const LONG_LINE_MAX_CHARS = 1000
+
+/** A line already carrying an elision marker, from this helper or from the grep clip beside it. */
+const ELIDED_MARKER_RE = /… \[\d+ chars elided\]/
+
 /** Effective input cap: env `TOKEN_GOAT_FILTER_MAX_BYTES` override or default. */
 export function getMaxInputBytes(): number {
   const raw = process.env['TOKEN_GOAT_FILTER_MAX_BYTES']
@@ -917,6 +923,8 @@ export function shlexSplit(cmd: string): string[] {
 export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS): string[] {
   return lines.map((line) => {
     if (line.length <= maxChars) return line
+    // A line the grep clip already shortened still exceeds a smaller cap, and cutting it again would append a second marker whose count is measured against the first marker's text rather than against the original line: two elision notices on one line, the second one wrong. One clip per line, whoever made it.
+    if (ELIDED_MARKER_RE.test(line)) return line
     let cut = maxChars
     // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a
     // cut landing between a high surrogate and its low surrogate (e.g. inside

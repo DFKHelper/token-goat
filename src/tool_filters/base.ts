@@ -11,8 +11,10 @@ import {
   combineStreams,
   compressBashOutput,
   compressionMarker,
+  capLongLines,
   fallbackTruncate,
   getMaxInputBytes,
+  LONG_LINE_MAX_CHARS,
   normalise,
   pathName,
   pathStem,
@@ -357,6 +359,8 @@ export abstract class ToolFilter {
       body = fallbackTruncate(fbOut, fbErr, maxLines)
     }
 
+    // Step 7.5: per-line cap. Step 8 below counts lines and step 9 measures the whole body, so a single enormous line passed both and shipped at full length: the grep filter grew its own centred clip for exactly that reason, and every other filter still had nothing. Applied here, once, for all of them rather than per filter. Idempotent, so grep's already-clipped lines are left as they are.
+    body = capLongLines(body.split('\n'), LONG_LINE_MAX_CHARS).join('\n')
     // Step 8: line cap (error-preserving).
     const lines = body.split('\n')
     if (lines.length > maxLines) body = truncateMiddleSmart(lines, maxLines).join('\n')
