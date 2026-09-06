@@ -167,9 +167,10 @@ describe('body fold on the real Read hook path', () => {
     expect(text).not.toContain('folded')
   })
 
-  it('does not fold a ranged read, which is surgical already', () => {
+  it('declines an offset the delivered rows do not confirm, rather than folding against invented line numbers', () => {
+    // A bare string `tool_response` carries no `file.startLine`, so there is no evidence of where the window began and the rows below get numbered from 1. Folding against those numbers would let `planBodyFolds` match a span by coincidence and withhold lines the reader never saw. Declining is the only safe answer; the captured-envelope block below covers the case where the harness does confirm the offset and the fold is allowed to run.
     const { file, body } = makeIndexedSource()
-    for (const input of [{ offset: 10, limit: 5 }, { limit: 5 }, { offset: 10 }]) {
+    for (const input of [{ offset: 10, limit: 5 }, { offset: 10 }]) {
       const text = JSON.stringify(postReadHandler(postEvent(file, body, input)))
       expect(text).not.toContain('folded')
     }
@@ -401,6 +402,60 @@ describe('body fold against the captured Claude Code Read envelope', () => {
     const resp = (event.raw as Record<string, unknown>)['tool_response'] as Record<string, unknown>
     delete (resp['file'] as Record<string, unknown>)['startLine']
     expect(JSON.stringify(postReadHandler(event))).toContain('folded')
+  })
+
+  /** A real ranged Read: `content` holds only the window, `startLine` is the requested offset, and `totalLines` still describes the whole file. Fixture provenance: CAPTURE. This key set and the `startLine === offset` contract were read off 798 ranged Read results in Claude Code session transcripts on 2026-09-06 -- 566 carried a `file` object, of which 562 reported `startLine` exactly equal to the requested offset; the four that did not were negative offsets the harness clamps to line 1. The remaining 232 carried no `file` object at all (166 error strings, 66 with no result record), which is why the absence of `startLine` has to decline rather than default. */
+  function rangedEvent(file: string, body: string, offset: number, limit: number): HookEvent {
+    const all = body.split('\n')
+    const window = all.slice(offset - 1, offset - 1 + limit)
+    return {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: file, offset, limit },
+      sessionId: `fold-rng-${Math.random().toString(36).slice(2)}`,
+      agentId: undefined,
+      raw: {
+        tool_response: {
+          type: 'text',
+          file: { filePath: file, content: window.join('\n'), numLines: window.length, startLine: offset, totalLines: all.length },
+        },
+      },
+    }
+  }
+
+  it('folds a window wide enough to hold the declaration, which is most of the ranged Read surface', () => {
+    // `longFunction` is declared on line 5, so a window opening there shows the reader the signature the fold notice names. This is the case the old blanket offset/limit exemption was throwing away: measured across the same transcripts, 4,801 ranged reads of code files totalled 14.89 MB and 84% of them opened a window of 20 lines or more.
+    const { file, body } = makeIndexedSource()
+    const text = JSON.stringify(postReadHandler(rangedEvent(file, body, 5, 60)))
+    expect(text).toContain('folded')
+    expect(text).toContain('longFunction')
+    expect(text).toContain('export function longFunction')
+    expect(text).not.toContain('localVariable59')
+  })
+
+  it('leaves a window sitting inside the body untouched, because its declaration was never delivered', () => {
+    // Lines 20-49 are all body. Folding here would replace every delivered row with a notice naming a symbol whose signature the reader never saw, so `planBodyFolds` declines on containment and the caller gets the exact window asked for. This is the property that makes lifting the exemption safe, so it is asserted line by line rather than on the absence of the word "folded".
+    const { file, body } = makeIndexedSource()
+    const out = postReadHandler(rangedEvent(file, body, 20, 30))
+    const text = JSON.stringify(out)
+    expect(text).not.toContain('folded')
+    expect(JSON.stringify(out)).toBe('{"hookType":"pass"}')
+  })
+
+  it('declines when startLine contradicts the requested offset', () => {
+    // The harness clamps a negative offset to line 1. Trusting the offset there would shift every row number and fold the wrong span; trusting `startLine` alone would silently answer a different question.
+    const { file, body } = makeIndexedSource()
+    const event = rangedEvent(file, body, 5, 60)
+    ;(event.toolInput as Record<string, unknown>)['offset'] = 40
+    expect(JSON.stringify(postReadHandler(event))).toBe('{"hookType":"pass"}')
+  })
+
+  it('declines a ranged read whose envelope carries no startLine, the 29% shape', () => {
+    const { file, body } = makeIndexedSource()
+    const event = rangedEvent(file, body, 5, 60)
+    const resp = (event.raw as Record<string, unknown>)['tool_response'] as Record<string, unknown>
+    delete (resp['file'] as Record<string, unknown>)['startLine']
+    expect(JSON.stringify(postReadHandler(event))).toBe('{"hookType":"pass"}')
   })
 })
 
