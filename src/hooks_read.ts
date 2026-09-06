@@ -19,7 +19,8 @@ import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
-import { displaySafePath, normalizePath } from './paths.js'
+import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
+import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs } from './session.js'
@@ -1994,6 +1995,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 
   // The spans come from the index, so they describe the file the indexer last parsed. Fold only when that is still this file, on BOTH freshness keys: files.sha answers "has the content changed", parser_sha answers "did different extraction logic write these rows". Content alone is not enough -- measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched. A stale span cuts at the wrong line, and on a first read there is no earlier copy for the reader to notice that against.
   // An unusable index costs the body folds and nothing else. Comment blocks are read off the delivered text, so they cannot be stale and do not need the index at all -- which is what keeps this working on a file the indexer has never seen, the case that used to return nothing.
+  const syntax = commentSyntaxFor(normalized)
   let spans: FoldSpan[] = []
   try {
     const entry = getFileEntry(normalized)
@@ -2004,6 +2006,9 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
       entry.parserSha === PARSER_FINGERPRINT
     ) {
       spans = querySymbols({ filePath: normalized, limit: BODY_FOLD_SYMBOL_LIMIT })
+    } else if (syntax !== null) {
+      // The gate just failed, so this read gets comment folds only. Queue the file so the worker's next drain reindexes it and the NEXT read of it can fold bodies too -- the worker's own skip gate checks parser_sha alongside content sha, so a file that is stale only because the extraction logic moved is still reparsed. Without this the miss is permanent for any file nothing happens to edit: measured over 201 session transcripts, 32 whole-file reads folded and another 22 would have once reindexed, worth 76% more folded bytes than the fold currently produces. Gated on a known comment syntax so reads of files the parser does not handle at all do not append to the queue on every read.
+      enqueueDirtyPathSafe(normalized)
     }
   } catch {
     // A missing or locked index is not a reason to fail a Read that already succeeded.
@@ -2015,7 +2020,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   const commentFolds = planCommentFolds(
     parsed.rows,
-    commentSyntaxFor(normalized),
+    syntax,
     COMMENT_FOLD_KEEP_LINES,
     COMMENT_FOLD_MIN_BLOCK,
     claimed,
@@ -2023,7 +2028,8 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const folds = mergeFolds(bodyFolds, commentFolds)
   if (folds.length === 0) return null
 
-  const shown = displaySafePath(normalized)
+  // Repo-relative, because the notice repeats this path once per fold and an absolute Windows path is most of the notice: measured over 201 session transcripts, the absolute form costs 10.9 KB of notice against 9.0 KB relative. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on, and either way the notice stays a command that can be run as printed.
+  const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
   const out: string[] = [...parsed.header]
   // The raw (un-numbered) form of the same delivery, for the served-output store, which compares against plain file lines rather than the tool's numbered rendering.
   const rawOut: string[] = []
