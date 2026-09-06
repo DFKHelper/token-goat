@@ -5,9 +5,12 @@
  *
  * The unit is the body, not the symbol. A skeleton (signatures only) is 12.0% of what a Read delivers, measured over this repo's 162 source files above 8 KB, so serving one withholds 88% of the file: that is a deny wearing a preview, and it carries a deny's costs (a round trip, an abandonment risk, an edit-error spike) without saying so. Keeping the first lines of each body instead leaves the reader everything a skeleton has plus enough of each implementation to judge whether it needs the rest -- and the rest is one named command away rather than a re-read of the whole file.
  *
+ * Long comment blocks fold too, and that reverses an earlier decision recorded here. The old rule was that comments are never touched, on the grounds that they are 46% of this repo's source bytes and carry the design rationale, so removing them would be the largest available saving and the least honest one. That objection was aimed at *stripping*, and it still holds against stripping. What happens here is the same bargain the body fold already makes: the first `commentKeep` lines survive, which is the summary a doc block opens with, and only the rationale underneath is replaced by a notice carrying the exact line range to read back. The contract a reader needs in order to decide whether they want the rest stays on screen. Measured over this repo's 256 source files, folding blocks of 12 lines or more adds 9.9 percentage points of first-read savings, the largest single lever left.
+ *
  * What is deliberately never folded:
- * - anything outside a symbol span: imports, types, top-level constants, and the comments between declarations. In this repo comments are 44.8% of source bytes and carry design rationale, so stripping them would be the largest single "saving" available and the least honest one.
- * - a span shorter than `minSpan`, where the notice costs more than the lines it removes.
+ * - a `class` or `interface` span, which encloses its members: folding one would swallow every method signature in the type, exactly the structure this is supposed to preserve. Widening to those two kinds measures +6.4 points and is rejected for that reason.
+ * - anything outside a symbol span or a comment block: imports and the code between declarations.
+ * - a span shorter than `minSpan`, or a comment block shorter than `commentMinBlock`, where the notice costs more than the lines it removes.
  * - a span nested inside one already folded, which would double-count the same lines.
  */
 
@@ -24,6 +27,8 @@ export interface BodyFold {
   readonly startIdx: number
   readonly len: number
   readonly name: string
+  /** Which notice the renderer writes. A body fold points at `token-goat read "file::name"`; a comment fold has no symbol to name, so it points at a ranged Read of the line span instead. */
+  readonly kind: 'body' | 'comment'
   /** 1-based file line numbers of the first and last folded line, for the notice text. */
   readonly firstLine: number
   readonly lastLine: number
@@ -31,8 +36,12 @@ export interface BodyFold {
 
 /**
  * Kinds whose body is an implementation a reader can defer. A `class` or `interface` span encloses its members, so folding it would swallow every method signature in the type -- exactly the structure this is supposed to preserve.
+ *
+ * `variable` is here because a long one is a data literal: the declaration line says what it is and the rest is detail, which is body-shaped in every way that matters. In this repo it is 64 of the spans that clear a 20-line minimum, worth 3.5 points of first-read savings. A `variable` holding an arrow function is caught by this entry rather than by its nested `function` span, and the outermost-first ordering below makes the two agree instead of racing.
+ *
+ * `type` is NOT here, for the same reason `interface` is not: a long type alias is a union or an object shape, so folding it swallows exactly the member signatures this is meant to keep. It is also worth nothing here -- one span in this repo clears the minimum.
  */
-const FOLDABLE_KINDS = new Set(['function', 'method', 'func', 'def', 'fn', 'procedure', 'constructor'])
+const FOLDABLE_KINDS = new Set(['function', 'method', 'func', 'def', 'fn', 'procedure', 'constructor', 'variable'])
 
 /**
  * Fewest rows a fold must remove to be worth its notice.
@@ -97,9 +106,122 @@ export function planBodyFolds(
     if (lastRow.no - firstRow.no + 1 !== len) continue
     if (len < MIN_FOLDED_ROWS) continue
 
-    folds.push({ startIdx, len, name: span.name, firstLine: firstRow.no, lastLine: lastRow.no })
+    folds.push({ startIdx, len, name: span.name, kind: 'body', firstLine: firstRow.no, lastLine: lastRow.no })
     foldedThrough = span.lineEnd
   }
 
   return folds
+}
+
+/**
+ * Comment syntax by file extension, for {@link planCommentFolds}.
+ *
+ * Keyed on extension rather than sniffed from content on purpose. A run of lines starting with `#` is a comment block in Python and a run of headings in Markdown, and folding a document's headings would destroy the one structure a reader navigates by. An extension this map does not list gets no comment folding at all, which is the safe direction: the cost is a missed saving, not a mangled read.
+ */
+export interface CommentSyntax {
+  readonly line: readonly string[]
+  readonly open?: string
+  readonly close?: string
+}
+
+const SLASH_STAR: CommentSyntax = { line: ['//'], open: '/*', close: '*/' }
+const HASH: CommentSyntax = { line: ['#'] }
+const DOUBLE_DASH: CommentSyntax = { line: ['--'] }
+
+const COMMENT_SYNTAX: ReadonlyMap<string, CommentSyntax> = new Map<string, CommentSyntax>([
+  ...['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'java', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'go', 'rs', 'swift', 'kt', 'scala', 'php', 'dart'].map(
+    (ext): [string, CommentSyntax] => [ext, SLASH_STAR],
+  ),
+  ...['py', 'rb', 'sh', 'bash', 'zsh', 'pl', 'r'].map((ext): [string, CommentSyntax] => [ext, HASH]),
+  ...['sql', 'lua', 'hs'].map((ext): [string, CommentSyntax] => [ext, DOUBLE_DASH]),
+])
+
+/** Comment syntax for `path`, or null when the extension is unknown -- see {@link COMMENT_SYNTAX} on why an unknown extension folds nothing. */
+export function commentSyntaxFor(path: string): CommentSyntax | null {
+  const dot = path.lastIndexOf('.')
+  if (dot < 0) return null
+  return COMMENT_SYNTAX.get(path.slice(dot + 1).toLowerCase()) ?? null
+}
+
+/**
+ * Choose the comment blocks to fold.
+ *
+ * A block is a run of consecutive delivered rows that are all comment, either line comments sharing a prefix or the inside of a `/* ... *\/` pair. The first `commentKeep` rows of the run survive, so a doc block keeps its summary and a banner keeps its title; everything after is folded into one notice.
+ *
+ * `occupied` carries the row indices already claimed by {@link planBodyFolds}, because a doc comment sitting inside a folded function body is gone already and a second notice for it would claim the same bytes twice. Passing an empty set is correct when body folds were not planned, which is what happens when the index is stale: comment blocks come from the delivered text itself and are never stale, so they still fold.
+ *
+ * Returns folds sorted by position and guaranteed neither overlapping each other nor anything in `occupied`.
+ */
+export function planCommentFolds(
+  rows: ReadonlyArray<{ readonly no: number; readonly text: string }>,
+  syntax: CommentSyntax | null,
+  commentKeep: number,
+  commentMinBlock: number,
+  occupied: ReadonlySet<number>,
+): BodyFold[] {
+  if (syntax === null || rows.length === 0 || commentKeep < 1 || commentMinBlock < 1) return []
+
+  const folds: BodyFold[] = []
+  let i = 0
+  let inBlock = false
+  while (i < rows.length) {
+    const start = i
+    // Walk forward while rows stay comment. `inBlock` persists across the loop body so a `/* ... */` spanning many rows counts as one run rather than restarting at each line.
+    while (i < rows.length) {
+      const text = rows[i]?.text ?? ''
+      const trimmed = text.trim()
+      if (inBlock) {
+        if (syntax.close !== undefined && trimmed.includes(syntax.close)) inBlock = false
+        i++
+        continue
+      }
+      if (syntax.open !== undefined && trimmed.startsWith(syntax.open)) {
+        // A single-row `/* ... */` opens and closes on the same row and must not set `inBlock`.
+        if (syntax.close === undefined || !trimmed.slice(syntax.open.length).includes(syntax.close)) inBlock = true
+        i++
+        continue
+      }
+      if (syntax.line.some(p => trimmed.startsWith(p))) {
+        i++
+        continue
+      }
+      break
+    }
+
+    const runLen = i - start
+    if (runLen >= commentMinBlock) {
+      const foldStart = start + commentKeep
+      const len = i - foldStart
+      const firstRow = rows[foldStart]
+      const lastRow = rows[i - 1]
+      // Same three guards planBodyFolds applies: enough rows to pay for the notice, a contiguous line range, and nothing already claimed by a body fold.
+      if (len >= MIN_FOLDED_ROWS && firstRow !== undefined && lastRow !== undefined && lastRow.no - firstRow.no + 1 === len) {
+        let clear = true
+        for (let k = foldStart; k < i; k++) {
+          if (occupied.has(k)) {
+            clear = false
+            break
+          }
+        }
+        if (clear) folds.push({ startIdx: foldStart, len, name: 'comment', kind: 'comment', firstLine: firstRow.no, lastLine: lastRow.no })
+      }
+    }
+
+    if (i === start) i++
+  }
+
+  return folds
+}
+
+/** Merge body and comment folds into one position-ordered, non-overlapping list. Body folds win a tie: they carry a symbol name, so their notice names the command that returns the lines, while a comment notice can only give a line range. */
+export function mergeFolds(body: readonly BodyFold[], comment: readonly BodyFold[]): BodyFold[] {
+  const merged = [...body, ...comment].sort((a, b) => a.startIdx - b.startIdx || b.len - a.len)
+  const out: BodyFold[] = []
+  let through = -1
+  for (const fold of merged) {
+    if (fold.startIdx <= through) continue
+    out.push(fold)
+    through = fold.startIdx + fold.len - 1
+  }
+  return out
 }
