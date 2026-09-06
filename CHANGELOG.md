@@ -22,6 +22,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **`outline` now ends each symbol's note on a complete sentence.** The note was cut at 140 characters, on the understanding that this keeps roughly the first sentence. It does not. Measured over 448 documented symbols in this project's own source, cutting at the cap leaves 297 of them ending mid-clause, which costs the full 140 characters and still does not finish the thought.
+
+  A docstring's first sentence is its summary, by convention in every language token-goat parses, so that is where the cut goes now. Where no sentence ends within the cap, the old behaviour stands and the note is cut at the last word boundary before it. Notes come out 10.6% shorter overall and 250 of the 448 now end on a complete thought, against 151 before. None came out longer. An ellipsis still marks anything dropped, so a note that was already a single sentence is unchanged. Changed in [src/read_commands.ts](src/read_commands.ts). `--json` is untouched and still carries the whole docstring.
+
 - **A Read of part of a file now folds long bodies, instead of being passed over.** Folding declined any Read carrying `offset` or `limit`, on the grounds that it is already narrow enough. That holds for a read of thirty lines in the middle of a function. It does not hold for the shape that produces most of them: a large file paged through a window at a time, which is a whole-file read wearing a range. Measured over 814 sessions, ranged reads of source files number 4,801 and carry 14.89 MB, and 84% of them open a window of twenty lines or more. All of it was passed over.
 
   What decides now is the same rule the shell side already uses: a body is folded only when its own declaration is among the lines delivered. A window sitting inside one function fails that test and every line comes back, which is the behaviour the old rule was reaching for. A window that opens on a declaration folds it. Reading 55 lines of this project's `src/served_lines.ts` from the line `planServedElisions` is declared on now returns 10.
