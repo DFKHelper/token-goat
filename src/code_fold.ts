@@ -225,3 +225,34 @@ export function mergeFolds(body: readonly BodyFold[], comment: readonly BodyFold
   }
   return out
 }
+
+/** Longest `detail` this writes, so one pathological file cannot bloat the stats row. */
+export const MAX_FOLD_DETAIL = 400
+
+/** Room reserved inside {@link MAX_FOLD_DETAIL} for the `,+N more` suffix, so the cap is a hard bound rather than one the suffix can overshoot. */
+const FOLD_DETAIL_SUFFIX_BUDGET = 16
+
+/**
+ * Identify what a fold removed, for the `detail` column of its stats row.
+ *
+ * The bytes a fold saved were always recorded and what it folded was not, so the cost side -- how often a reader has to come back for a span that was folded away -- could not be computed from the ledger however long the feature ran. That is the specific gap keeping `hints.fold_code_bodies` off by default: the benefit is measured and the harm is not yet measurable.
+ *
+ * The shape deliberately matches the command a recovery read would use, `file::name`, so a later `read` can be joined back to the fold that provoked it. A comment fold has no symbol to name, so it carries the line span its notice points at instead, in the same `#first-last` form the notice prints.
+ */
+export function foldDetail(path: string, folds: readonly BodyFold[], maxLen: number = MAX_FOLD_DETAIL): string {
+  const head = `${path}::`
+  const ids = folds.map((f) => (f.kind === 'comment' ? `#${f.firstLine}-${f.lastLine}` : f.name))
+  // A path long enough to eat the whole budget still has to identify the file, which is the part a join needs; drop every id rather than return something unjoinable.
+  const budget = maxLen - head.length - FOLD_DETAIL_SUFFIX_BUDGET
+  const kept: string[] = []
+  let used = 0
+  for (const id of ids) {
+    const add = kept.length === 0 ? id.length : id.length + 1
+    if (used + add > budget) break
+    kept.push(id)
+    used += add
+  }
+  const dropped = ids.length - kept.length
+  if (kept.length === 0) return `${head}+${ids.length} folds`
+  return dropped > 0 ? `${head}${kept.join(',')},+${dropped} more` : `${head}${kept.join(',')}`
+}
