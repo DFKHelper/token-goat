@@ -1,0 +1,84 @@
+import { describe, it, expect } from 'vitest'
+import { clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
+import { filterByName } from '../src/tool_filters/index.js'
+
+/**
+ * The pre-filter input cap has to keep the end of the output, not just the beginning.
+ *
+ * Fixture provenance: CAPTURE for the summary block, HAND-DERIVED for the logic cases. The four
+ * summary lines below are the literal tail of a real `npm test` run of this repository on
+ * 2026-09-06, captured to a file and read back: 2,406,737 bytes whose last 200 hold
+ * `Test Files 577 passed (577)` and `Tests 12100 passed | 17 skipped (12117)`. Under the head-only
+ * cut this replaces, that run reached the model as 5.5KB containing none of them. The padding
+ * around them is synthetic, because only its size matters.
+ *
+ * There is no ratio assertion here on purpose: a cap's ratio improves by dropping more, which is
+ * the failure under test. Every case names text that must survive.
+ */
+describe('filter input cap keeps both ends', () => {
+  const SUMMARY = [
+    ' Test Files  577 passed (577)',
+    '      Tests  12100 passed | 17 skipped (12117)',
+    '   Start at  15:25:42',
+    '   Duration  100.15s (transform 30.83s, setup 15.79s, import 164.47s, tests 893.39s, environment 58ms)',
+  ]
+
+  /** A run whose verdict sits in the final lines, with `padKb` of noise in front of it. */
+  function suiteOutput(padKb: number): string {
+    const noise = Array.from({ length: padKb * 8 }, (_, i) => `stdout | tests/pad_${i}.test.ts > emits a line of about 128 bytes of console noise, repeated to fill the cap`)
+    return [' RUN  v4.1.11 C:/Projects/token-goat', ...noise, ...SUMMARY].join('\n')
+  }
+
+  it('keeps the trailing verdict when the input is far over the cap', () => {
+    const text = suiteOutput(80)
+    const cap = 16 * 1024
+    expect(Buffer.byteLength(text)).toBeGreaterThan(cap * 4)
+    const clamped = clampKeepingEnds(text, cap)
+    expect(clamped).not.toBeNull()
+    // The whole point: the summary is at the very end, so a head-only cut loses all four lines.
+    for (const line of SUMMARY) expect(clamped).toContain(line)
+    // The head is worth keeping too, and is what the old behaviour got right.
+    expect(clamped).toContain('RUN  v4.1.11')
+    expect(Buffer.byteLength(clamped as string)).toBeLessThanOrEqual(cap)
+  })
+
+  it('says how many lines it dropped rather than eliding silently', () => {
+    const clamped = clampKeepingEnds(suiteOutput(80), 16 * 1024) as string
+    const marker = clamped.split('\n').find((l) => l.includes('elided by token-goat'))
+    expect(marker).toMatch(/^\.\.\. \[\d+ more lines elided by token-goat\]$/)
+  })
+
+  it('returns null when the text already fits, so short output is untouched', () => {
+    expect(clampKeepingEnds(SUMMARY.join('\n'), 16 * 1024)).toBeNull()
+  })
+
+  it('never splits a multi-byte character, even with no line boundary to cut on', () => {
+    // One line wider than the entire budget has no boundary available, so the fallback prefix is the only path that can split a UTF-8 sequence. Every character here is 3 bytes, so a naive byte cut at an odd offset lands mid-sequence.
+    const oneLine = '✓'.repeat(4000)
+    const clamped = clampKeepingEnds(oneLine, 1001) as string
+    expect(clamped).not.toBeNull()
+    expect(clamped).not.toContain('\uFFFD')
+    expect(Buffer.byteLength(clamped)).toBeLessThanOrEqual(1001)
+  })
+
+  it('spends its error-context budget on both ends, not the first signals it meets', () => {
+    // Measured on the same red run: the filter kept 60,720 lines holding 139 ERROR_SIGNAL_RE matches, the first ten of which fell between lines 379 and 3,813, while the failing test sat at line 60,685. Taking the first `maxErrorLines` signals therefore gave the real failure no context, and the delivered output reported that a test had failed without naming which one.
+    const noise = Array.from({ length: 400 }, (_, i) => `stdout | tests/noise_${i}.test.ts > logs the word error: ${i} as ordinary content`)
+    const failure = ['FAIL  tests/real_probe.test.ts > the assertion that actually broke', 'AssertionError: expected 1 to be 2']
+    // The failure has to sit outside the unconditional 10-line tail window, or the tail keeps it whichever signals were chosen and the test passes against the very behaviour it exists to reject. In the measured run it sat 35 lines from the end; the 25 quiet lines below reproduce that gap.
+    const afterFailure = Array.from({ length: 25 }, (_, i) => ` ✓ tests/late_${i}.test.ts (2 tests) 4ms`)
+    const lines = [...noise, ...Array.from({ length: 400 }, (_, i) => `quiet line ${i}`), ...failure, ...afterFailure, ...SUMMARY]
+    const out = truncateMiddleSmart(lines, 60).join('\n')
+    for (const line of failure) expect(out).toContain(line)
+    // The head must still be reachable, because a compiler's first error is usually the root cause.
+    expect(out).toContain('noise_0.test.ts')
+  })
+
+  it('delivers the vitest verdict through the real filter, not just the clamp', () => {
+    // The unit above tests the helper; this drives the shipping path the hook actually uses, because the cap is applied inside `apply` and a filter that dropped the summary downstream would still pass the helper's tests.
+    const filter = filterByName('vitest')
+    expect(filter).not.toBeNull()
+    const out = filter?.apply(suiteOutput(600), '', 0, ['vitest', 'run']).text as string
+    for (const line of SUMMARY) expect(out).toContain(line.trim())
+  })
+})
