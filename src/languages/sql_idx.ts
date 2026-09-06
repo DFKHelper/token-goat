@@ -16,7 +16,7 @@ import {
 } from './common.js'
 import { countContentLines } from '../util.js'
 
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 const MAX_HEADING_LEN = 128
 
 // SQL identifier: bare, double-quoted, backtick-quoted, or bracket-quoted. Qualified names are captured as a single token, up to the four parts SQL Server permits (server.database.schema.object); BigQuery/Snowflake/SQL Server three-part names (project.dataset.table, db.schema.table) are common, and capturing only two segments would name the symbol after its schema and silently drop the real object name.

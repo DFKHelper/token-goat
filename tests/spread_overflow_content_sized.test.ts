@@ -44,12 +44,13 @@ describe('a single-file component with more declarations than can be spread as c
     (ext, extract, content) => {
       const result = extract(content, `big.${ext}`)
 
-      // MAX_SYMBOLS caps the returned list at 500, but it is applied at the END of extraction,
-      // after the whole declaration list has already been appended -- so the append really does
-      // see all 130,000 and the overflow really is reachable. Asserting the exact capped count
-      // rather than "did not throw", so a fix that swallowed the error and returned a short or
-      // empty list could not pass.
-      expect(result.symbols).toHaveLength(500)
+      // MAX_SYMBOLS caps the returned list at 10,000 (raised from 500 -- see makeSymbolEmitter's
+      // own comment in common.ts for the measurement), but it is applied at the END of
+      // extraction, after the whole declaration list has already been appended -- so the append
+      // really does see all 130,000 and the overflow really is reachable. Asserting the exact
+      // capped count rather than "did not throw", so a fix that swallowed the error and returned
+      // a short or empty list could not pass.
+      expect(result.symbols).toHaveLength(10_000)
     },
   )
 })

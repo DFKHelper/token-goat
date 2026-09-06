@@ -11,7 +11,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -71,7 +71,7 @@ import {
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
-import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, type PdfLocateMatch, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
+import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
@@ -1255,13 +1255,15 @@ interface TruncationTotal {
 /**
  * The honest reference total for a page of `refs` output.
  *
- * `countRefs` reruns the SQL filters with no LIMIT, which is exact. `--exclude-tests`/`--grep` have
- * no SQL equivalent, so their total is the post-filter count of the REFS_TOP_SCAN_LIMIT window the
- * rows came from -- exact only while that window had room to spare, a floor once it filled.
+ * `countRefs` reruns the SQL filters with no LIMIT, which is exact. The client-side filters (`--exclude-tests`, `--grep`, and the typed-refs tier) have no SQL equivalent, so their total is the post-filter count of the window the rows came from: exact only while that window had room to spare, a floor once it filled.
+ *
+ * `scanLimit` is the window the rows were actually fetched under, which is NOT one fixed number. `--exclude-tests`/`--grep`/`--top` widen it to REFS_TOP_SCAN_LIMIT, an explicit `--limit` sets it, and a query with none of those gets queryRefs' own DEFAULT_QUERY_LIMIT. Comparing against the widened constant in every case would call a filled narrow window exact, which is the one shape that is certainly a floor.
+ *
+ * No CLI path reaches that wrong branch today, and the fix is deliberately not sold as one: {@link truncationNotice} prints nothing unless `shown >= limit` and `count > shown`, and on every route that leaves this window narrow the window IS the display limit, so the post-filter count cannot exceed what was shown. That is a coincidence held together three call frames apart, and it is the whole reason to compare against the window actually used instead: widening a default here, or slicing to something other than the query limit there, silently turns a floor into a claimed total with no test able to see it happen.
  */
-function refsTotal(clientFiltered: boolean, filteredTotal: number | undefined, shown: number, countExact: () => number, preScanCount: number): TruncationTotal {
+function refsTotal(clientFiltered: boolean, filteredTotal: number | undefined, shown: number, countExact: () => number, preScanCount: number, scanLimit: number): TruncationTotal {
   if (!clientFiltered) return { count: countExact(), exact: true }
-  return { count: filteredTotal ?? shown, exact: preScanCount < REFS_TOP_SCAN_LIMIT }
+  return { count: filteredTotal ?? shown, exact: preScanCount < scanLimit }
 }
 
 /** The sentence {@link truncationFooter} wraps, or null when nothing was dropped. See its doc comment. */
@@ -1715,9 +1717,12 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
   // each with their own `refresh`), narrow to candidates whose line range falls inside a
   // symbol named symBase in the same file — otherwise the wrong class's method can win.
   if (methodName !== undefined && candidates.length > 1) {
+    // Narrow the container query by the requested file's basename in SQL, not just via the filePath containment check applied to its results below: without this, a container name shared by more than 50 classes across the index (a common name like "Handler" or "Config") sorts the file we actually want past the LIMIT 50 cutoff before that check ever sees it, and disambiguation silently falls through to the wrong same-named method. `candidates` at this point may already span more than one file (the fallback above matches on a path boundary, not exact equality), so this narrows by basename rather than exact filePath, and the per-candidate filePath equality check a few lines down still picks the right one.
+    const containerBaseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
     const containers = querySymbols({
       name: symBase,
       limit: 50,
+      ...(containerBaseName !== '' ? { fileBaseName: containerBaseName } : {}),
       ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
     })
     // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a method's
@@ -2356,7 +2361,10 @@ function renderRefsTargets(
     if (rootDir !== undefined) queryOpts.rootDir = rootDir
     const scanned = queryRefs(queryOpts)
     const preScanCount = scanned.length
+    const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
     let results = applyTypedRefsTier(symbol, file, scanned)
+    // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.
+    const typedFilterDropped = results.length < scanned.length
     let suppressed = 0
     if (opts.excludeTests === true) {
       const f = applyExcludeTestsFilter(results)
@@ -2367,9 +2375,11 @@ function renderRefsTargets(
     const preGrepCount = results.length
     const matchesGrep = refGrepFilter(opts.grep)
     if (matchesGrep !== undefined) results = results.filter(matchesGrep)
+    // The typed-tier filter is a client-side filter over the same REFS_TOP_SCAN_LIMIT window as --exclude-tests/--grep, so a query where it alone dropped rows can only report a floor too: see refsTotal's doc comment.
+    const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
     let filteredTotal: number | undefined
-    if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
-    if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
+    if (clientFiltered) filteredTotal = results.length
+    if (clientFiltered && opts.top === undefined) {
       results = results.slice(0, opts.limit ?? 100)
     }
     if (results.length > 0) anyFound = true
@@ -2390,7 +2400,7 @@ function renderRefsTargets(
         // --exclude-tests or --grep, countRefs has no way to rerun that filter, so filteredTotal
         // (the pre-slice filtered count, already scanned with full headroom above) is the honest total.
         const capped = guardJsonRows(results)
-        const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
+        const trueTotal = clientFiltered ? (filteredTotal ?? results.length) : countRefs(queryOpts)
         jsonOut[key] = withHidden({ items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal })
       }
       continue
@@ -2421,7 +2431,7 @@ function renderRefsTargets(
       const notice = truncationNotice(
         results.length,
         opts.limit ?? 100,
-        () => refsTotal(opts.excludeTests === true || matchesGrep !== undefined, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount),
+        () => refsTotal(clientFiltered, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount, scanLimit),
         'references',
         '--limit',
       )
@@ -2523,10 +2533,12 @@ function runRefsSingle(opts: RefsOptions): number {
   if (rootDir !== undefined) queryOpts.rootDir = rootDir
 
   const scanned = queryRefs(queryOpts)
-  // How full the query window came back, so a client-side filter drawn from a window that filled
-  // can report its count as a floor rather than as a total. See {@link refsTotal}.
+  // How full the query window came back, and how big that window was, so a client-side filter drawn from a window that filled can report its count as a floor rather than as a total. See {@link refsTotal}.
   const preScanCount = scanned.length
+  const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
   let results = applyTypedRefsTier(symName, defFileHint, scanned)
+  // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.
+  const typedFilterDropped = results.length < scanned.length
   let suppressed = 0
   if (opts.excludeTests === true) {
     const f = applyExcludeTestsFilter(results)
@@ -2537,9 +2549,11 @@ function runRefsSingle(opts: RefsOptions): number {
   const preGrepCount = results.length
   const matchesGrep = refGrepFilter(opts.grep)
   if (matchesGrep !== undefined) results = results.filter(matchesGrep)
+  // The typed-tier filter is a client-side filter over the same REFS_TOP_SCAN_LIMIT window as --exclude-tests/--grep, so a query where it alone dropped rows can only report a floor too: see refsTotal's doc comment.
+  const clientFiltered = opts.excludeTests === true || matchesGrep !== undefined || typedFilterDropped
   let filteredTotal: number | undefined
-  if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
-  if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
+  if (clientFiltered) filteredTotal = results.length
+  if (clientFiltered && opts.top === undefined) {
     results = results.slice(0, opts.limit ?? 100)
   }
 
@@ -2602,7 +2616,7 @@ function runRefsSingle(opts: RefsOptions): number {
       // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
       // Same --exclude-tests/--grep honest-total reasoning as runRefs's per-symbol branch above.
       const capped = guardJsonRows(results)
-      const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
+      const trueTotal = clientFiltered ? (filteredTotal ?? results.length) : countRefs(queryOpts)
       payload = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially
@@ -2625,7 +2639,7 @@ function runRefsSingle(opts: RefsOptions): number {
   // `--top` renders its own elision note; the per-reference modes printed exactly `limit` lines and
   // stopped, so 100 of 150 references read as "these are all of them". Same honest total the --json
   // branch above computes, and only paid when the page came back full.
-  const refsFooter = opts.top !== undefined ? '' : truncationFooter(results.length, opts.limit ?? 100, () => refsTotal(opts.excludeTests === true || matchesGrep !== undefined, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount), 'references', '--limit')
+  const refsFooter = opts.top !== undefined ? '' : truncationFooter(results.length, opts.limit ?? 100, () => refsTotal(clientFiltered, filteredTotal, results.length, () => countRefs(queryOpts), preScanCount, scanLimit), 'references', '--limit')
   const text = lines.join('\n')
   // Guarded first, footer after: the overflow guard must not be able to trim off the very line
   // that says how much was left out.
@@ -4153,7 +4167,7 @@ export async function runPdfLocate(
   file: string,
   pattern: string,
   opts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string },
-): Promise<PdfLocateMatch[]> {
+): Promise<PdfLocateResult> {
   if (!fileExists(file)) {
     throw new Error(`Could not read: ${file}`)
   }

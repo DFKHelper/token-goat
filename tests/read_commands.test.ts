@@ -12,6 +12,8 @@ vi.mock('../src/index_reader.js', () => ({
   countRefs: vi.fn(() => 0),
   getFileEntry: vi.fn(() => null),
   queryRefCounts: vi.fn(() => new Map()),
+  // Not a function to stub but a plain constant the module under test reads, so it has to be mirrored here or the import resolves to undefined and every window-fullness comparison silently answers false. FORMAT-DERIVED: value read off its declaration in src/index_reader.js, which is also the only place it is defined.
+  DEFAULT_QUERY_LIMIT: 100,
 }))
 
 // Stubbed for the same reason as the index_reader stub above: the empty-index check is a real DB count, and these tests drive the query layer through mocks, so without this every miss would look like an unindexed project.
@@ -7903,6 +7905,56 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
 
     expect(stdout).toContain(callerA)
     expect(stdout).not.toContain(callerB)
+  })
+
+  // Defect 5 (batch fix): the typed-refs filter above is a client-side filter over the same
+  // scanned window --exclude-tests/--grep already account for, and runRefsSingle omitted it from
+  // the `clientFiltered` flag fed to refsTotal, so a query where typed filtering alone dropped
+  // rows from a filled window printed the SQL-wide `countRefs` total (mocked to 0 below, since
+  // it cannot replicate a JS-side type-checker filter) as if it were exact, instead of the
+  // honest post-typed-filter floor. HAND-DERIVED: the 20,001-row scanned count and the 2-row
+  // --limit are computed directly from REFS_TOP_SCAN_LIMIT's own value (src/read_commands.ts:113,
+  // 20_000) and refsTotal's own `exact = preScanCount < REFS_TOP_SCAN_LIMIT` check, not from
+  // running this fix and pasting its output back.
+  it('reports a floor, not a bare exact total, when the typed-refs filter alone drops rows from a filled scan window', () => {
+    const fooSrc = ['export class Foo {', '  run(): void {', "    console.log('foo')", '  }', '}', ''].join('\n')
+    const barSrc = ['export class Bar {', '  run(): void {', "    console.log('bar')", '  }', '}', ''].join('\n')
+    const callerASrc = ["import { Foo } from './fileA'", 'const foo = new Foo()', 'foo.run()', ''].join('\n')
+    const callerBSrc = ["import { Bar } from './fileB'", 'const bar = new Bar()', 'bar.run()', ''].join('\n')
+    const fileA = path.join(dir, 'fileA.ts')
+    const callerA = path.join(dir, 'callerA.ts')
+    const callerB = path.join(dir, 'callerB.ts')
+    fs.writeFileSync(fileA, fooSrc)
+    fs.writeFileSync(path.join(dir, 'fileB.ts'), barSrc)
+    fs.writeFileSync(callerA, callerASrc)
+    fs.writeFileSync(callerB, callerBSrc)
+
+    mockQuerySymbols.mockReturnValue([
+      { name: 'run', kind: 'method', filePath: fileA, lineStart: 2, lineEnd: 4, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
+    ])
+    // 5 genuine refs to Foo.run (kept: the type checker resolves callerA's `foo.run()` to the
+    // real definition) plus 19,996 false-positive refs to Bar's unrelated same-named `run`
+    // (dropped: the checker resolves callerB's `bar.run()` to a different declaration) -- 20,001
+    // total, past REFS_TOP_SCAN_LIMIT (20,000), so the scan window reads as filled.
+    const genuineRef = { filePath: callerA, name: 'run', line: 3, col: 0, context: '' }
+    const falsePositiveRef = { filePath: callerB, name: 'run', line: 3, col: 0, context: '' }
+    mockQueryRefs.mockReturnValue([
+      ...Array.from({ length: 5 }, () => ({ ...genuineRef })),
+      ...Array.from({ length: 19_996 }, () => ({ ...falsePositiveRef })),
+    ])
+    // countRefs cannot rerun a JS-side type-checker filter, so it can only answer the raw
+    // name-matched SQL count -- deliberately 0 here (a value the honest floor must never equal)
+    // to make a pre-fix "showing 2 of 0" (suppressed by refsTotal's own count<=shown guard) and
+    // a post-fix "showing 2 of at least 5" unambiguous to tell apart.
+    mockCountRefs.mockReturnValue(0)
+
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: `${fileA}::run`, limit: 2 })
+      expect(code).toBe(0)
+    })
+
+    expect(stdout).toContain('showing 2 of at least 5 references')
+    expect(stdout).not.toContain('showing 2 of 5 references')
   })
 
   it('falls back to unfiltered name-based results when the definition is ambiguous (querySymbols finds 2+ matches)', () => {

@@ -56,7 +56,7 @@ function isNoise(name: string): boolean {
 // Cap on total html_id/html_class symbols emitted, consistent with the MAX_SYMBOLS convention
 // used by the other language adapters (e.g. powershell_idx.ts, ini_idx.ts) - minified or
 // framework-generated HTML can otherwise emit thousands of duplicate symbol rows.
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
 export function extractHtml(
   content: string,
