@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
+import { capTokens, clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
 import { filterByName } from '../src/tool_filters/index.js'
 
 /**
@@ -74,11 +74,38 @@ describe('filter input cap keeps both ends', () => {
     expect(out).toContain('noise_0.test.ts')
   })
 
+  it('keeps both ends when capping to a token budget too, so the clamp is not undone downstream', () => {
+    // `bash_runner` runs this over the delivered body of every filter once context pressure sets a budget, after the pre-filter clamp has already preserved the tail. A head-only cut here threw that tail away again: a 1,071,063-byte run capped to 2,000 tokens came back holding its first 57 lines and nothing else.
+    const body = [...Array.from({ length: 9000 }, (_, i) => `commit ${String(i).padStart(40, '0')}  routine noise`), 'FINAL-ANSWER-SENTINEL'].join('\n')
+    const capped = capTokens(body, 2000)
+    expect(capped).toContain('FINAL-ANSWER-SENTINEL')
+    expect(capped).toContain('commit 0000000000000000000000000000000000000000')
+    expect(capped).toContain('[token-goat: output capped at ~2000 tokens]')
+  })
+
   it('delivers the vitest verdict through the real filter, not just the clamp', () => {
     // The unit above tests the helper; this drives the shipping path the hook actually uses, because the cap is applied inside `apply` and a filter that dropped the summary downstream would still pass the helper's tests.
     const filter = filterByName('vitest')
     expect(filter).not.toBeNull()
     const out = filter?.apply(suiteOutput(600), '', 0, ['vitest', 'run']).text as string
     for (const line of SUMMARY) expect(out).toContain(line.trim())
+  })
+
+  it('marks a grep match count as a floor when the input was clamped, instead of stating it flat', () => {
+    // The count is the answer the caller asked for, not a description of the filter's own work, so a number computed after the clamp dropped part of the input is not a fact. Measured: a 985,533-byte search of 9,000 matching lines delivered `grep: 4685 matches across 40 file(s)`, stated flat. HAND-DERIVED fixture: real grep line shape (`path:lineno:text`), synthetic content, sized to cross the 500KB clamp.
+    const filter = filterByName('grep')
+    expect(filter).not.toBeNull()
+    const big = Array.from({ length: 9000 }, (_, i) => `src/file${i % 40}.ts:${i}:  const value = someCall(${i}) // padding to widen the line well past a hundred bytes so the whole input clears the clamp`).join('\n')
+    expect(Buffer.byteLength(big)).toBeGreaterThan(500 * 1024)
+    const truncated = filter?.apply(big, '', 0, ['grep', '-rn', 'value', 'src']).text as string
+    expect(truncated).toContain('grep: at least ')
+    expect(truncated).toContain('lower bounds')
+    expect(truncated).not.toMatch(/grep: \d+ matches across/)
+
+    // The same filter over an input that fits must keep saying the count flat, or the honest case has been made to lie too.
+    const small = Array.from({ length: 200 }, (_, i) => `src/file${i % 4}.ts:${i}:  const value = someCall(${i})`).join('\n')
+    const whole = filter?.apply(small, '', 0, ['grep', '-rn', 'value', 'src']).text as string
+    expect(whole).toContain('grep: 200 matches across 4 file(s)')
+    expect(whole).not.toContain('at least')
   })
 })

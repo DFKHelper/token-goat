@@ -2,7 +2,7 @@
 //
 // Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. EzaFilter must precede LsFilter — both claim `ls` (an aliased `alias ls=eza` shell setup means token-goat only ever sees the literal "ls ..." command text), but EzaFilter's matches() only claims a bare 'ls' invocation when an eza-only flag (--tree/--icons/--git/--level/...) is present; a plain `ls` with none of those falls through to LsFilter's simpler truncation.
 
-import { ToolFilter } from './base.js'
+import { ToolFilter, type CompressContext } from './base.js'
 import { loadConfig } from '../config.js'
 import {
   headTailCompress,
@@ -43,7 +43,7 @@ export class GrepFilter extends ToolFilter {
     return false
   }
 
-  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
+  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[], ctx: CompressContext = {}): string {
     const text = this.combineOutput(stdout, stderr)
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
@@ -78,7 +78,10 @@ export class GrepFilter extends ToolFilter {
 
     const totalMatches = [...fileCounts.values()].reduce((a, b) => a + b, 0) + unattributed
     const numFiles = fileCounts.size
-    const outLines: string[] = [`grep: ${totalMatches} matches across ${numFiles} file(s)`]
+    // These counts are the answer the caller wanted, not a description of what this filter did, so when the clamp dropped part of the input they are a floor and have to say so. Stated flat, a 985,533-byte search of 9,000 matching lines reported `grep: 4685 matches across 40 file(s)`, and the per-file counts below are understated the same way.
+    const outLines: string[] = ctx.inputTruncated
+      ? [`grep: at least ${totalMatches} matches across ${numFiles} file(s) (counted over a truncated input; per-file counts below are lower bounds)`]
+      : [`grep: ${totalMatches} matches across ${numFiles} file(s)`]
 
     const sorted = [...fileCounts.entries()].sort((a, b) => b[1] - a[1])
     const shown = sorted.slice(0, _GREP_MAX_FILE_LINES)
