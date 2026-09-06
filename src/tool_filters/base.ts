@@ -13,6 +13,7 @@ import {
   compressionMarker,
   capLongLines,
   fallbackTruncate,
+  clampKeepingEnds,
   getMaxInputBytes,
   LONG_LINE_MAX_CHARS,
   normalise,
@@ -307,16 +308,19 @@ export abstract class ToolFilter {
     // Step 2: pre-filter input cap, applied per-stream before normalisation so even normalisation stays O(capped_bytes).
     const maxInput = getMaxInputBytes()
     const notes: string[] = []
+    // Captured before clamping: step 3 prices the reduction against what the command really produced, so a clamp that discards the middle must not also shrink the denominator.
     const soBytes = Buffer.from(so, 'utf8')
     const seBytes = Buffer.from(se, 'utf8')
-    if (soBytes.length > maxInput) {
-      so = soBytes.subarray(0, maxInput).toString('utf8')
-      notes.push(`input truncated at ${Math.floor(maxInput / 1024)}KB (TOKEN_GOAT_FILTER_MAX_BYTES)`)
+    const soClamped = clampKeepingEnds(so, maxInput)
+    const seClamped = clampKeepingEnds(se, maxInput)
+    if (soClamped !== null) {
+      so = soClamped
+      notes.push(`input over ${Math.floor(maxInput / 1024)}KB: kept both ends (TOKEN_GOAT_FILTER_MAX_BYTES)`)
     }
-    if (seBytes.length > maxInput) {
-      se = seBytes.subarray(0, maxInput).toString('utf8')
-      if (!notes.some((n) => n.includes('input truncated'))) {
-        notes.push(`stderr truncated at ${Math.floor(maxInput / 1024)}KB (TOKEN_GOAT_FILTER_MAX_BYTES)`)
+    if (seClamped !== null) {
+      se = seClamped
+      if (!notes.some((n) => n.includes('kept both ends'))) {
+        notes.push(`stderr over ${Math.floor(maxInput / 1024)}KB: kept both ends (TOKEN_GOAT_FILTER_MAX_BYTES)`)
       }
     }
 

@@ -37,6 +37,47 @@ export function getMaxInputBytes(): number {
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_INPUT_BYTES
 }
 
+/** Largest cut point at or below `n` that does not land inside a UTF-8 sequence. Continuation bytes match `10xxxxxx`, so a cut whose first excluded byte is one of those is splitting a character and has to back off to that character's lead byte. */
+function utf8SafeEnd(buf: Buffer, n: number): number {
+  if (n >= buf.length) return buf.length
+  let end = n
+  while (end > 0 && ((buf[end] as number) & 0xc0) === 0x80) end--
+  return end
+}
+
+/**
+ * Clamp `text` to `maxBytes`, keeping its head **and** its tail. Returns `null` when it already fits.
+ *
+ * A head-only cut is wrong for very nearly every command a filter runs over, because the verdict lives at the end: a test runner's summary and its failure bodies, a linter's error count, a compiler's last diagnostic, an installer's result. Measured on this repository's own suite, a 2,406,737-byte `npm test` cut to its first 512,000 bytes delivered 5.5KB holding none of `Test Files 577 passed`, `Tests 12100 passed | 17 skipped` or `Duration` -- those four lines sit in the final 200 bytes. Had that run failed, vitest prints its failure section at the end too, so a red suite would have arrived looking green.
+ *
+ * The budget is split evenly. Both ends carry content worth keeping (the head has the command echo and the earliest failures, the tail has the verdict) and nothing measured here justifies a ratio between them, so this does not invent one. Cuts land on line boundaries, which both keeps a UTF-8 sequence intact and avoids presenting half a line as whole; the marker matches {@link headTailCompress} rather than adding a second spelling of the same idea. A single line wider than the whole budget has no boundary to cut on and falls back to a character-safe prefix.
+ */
+export function clampKeepingEnds(text: string, maxBytes: number): string | null {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= maxBytes) return null
+  const lines = text.split('\n')
+  const half = Math.floor(maxBytes / 2)
+  let headEnd = 0
+  for (let used = 0; headEnd < lines.length; headEnd++) {
+    const n = Buffer.byteLength(lines[headEnd] as string, 'utf8') + 1
+    if (used + n > half) break
+    used += n
+  }
+  let tailStart = lines.length
+  for (let used = 0; tailStart > headEnd; tailStart--) {
+    const n = Buffer.byteLength(lines[tailStart - 1] as string, 'utf8') + 1
+    if (used + n > half) break
+    used += n
+  }
+  if (headEnd === 0 && tailStart === lines.length) return buf.subarray(0, utf8SafeEnd(buf, maxBytes)).toString('utf8')
+  const elided = tailStart - headEnd
+  return [
+    ...lines.slice(0, headEnd),
+    `... [${elided} more line${elided === 1 ? '' : 's'} elided by token-goat]`,
+    ...lines.slice(tailStart),
+  ].join('\n')
+}
+
 /** Trailing compression-summary marker appended by `CompressedOutput.withMarker`. */
 export function compressionMarker(filter: string, pct: number): string {
   return `\n[token-goat: ${filter} filter -${Math.round(pct)}%; disable via TOKEN_GOAT_BASH_COMPRESS]`
@@ -384,9 +425,18 @@ export function truncateMiddleSmart(
   const effHead = Math.min(headKeep, Math.floor(total / 4))
   const effTail = Math.min(tailKeep, Math.floor(total / 4))
 
+  // Error signals are drawn from both ends rather than taking the first `maxErrorLines`. Which end carries the real fault depends on the tool: a compiler's first error is usually the root cause and everything after it a cascade, while a test runner's failure block and verdict sit at the very end. Measured on a 2,407,245-byte `npm test` of this repository, the vitest filter kept 60,720 lines holding 139 error signals; the first ten fell between lines 379 and 3,813, so the actual failing test at line 60,685 -- and the five signals after it -- received no context at all, and the delivered output said a test had failed without saying which. Splitting the budget keeps both ends reachable without ranking one convention above the other.
+  const chosenErrors =
+    errorIndices.length <= maxErrorLines
+      ? errorIndices
+      : [
+          ...errorIndices.slice(0, Math.ceil(maxErrorLines / 2)),
+          ...errorIndices.slice(errorIndices.length - Math.floor(maxErrorLines / 2)),
+        ]
+
   const middle = new Set<number>()
-  for (let k = 0; k < errorIndices.length && k < maxErrorLines; k++) {
-    const ei = errorIndices[k]!
+  for (let k = 0; k < chosenErrors.length; k++) {
+    const ei = chosenErrors[k]!
     for (let ci = Math.max(0, ei - errorContext); ci < Math.min(total, ei + errorContext + 1); ci++) {
       middle.add(ci)
     }
