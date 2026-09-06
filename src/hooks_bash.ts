@@ -1819,7 +1819,16 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
  * bytes, yet the second shows nothing the first did not.
  */
 function pureFileReadPath(cmd: string): string | null {
-  return extractCatFile(cmd)?.filePath ?? extractHeadFile(cmd)?.filePath ?? extractTailFile(cmd)?.filePath ?? extractLineRangeRead(cmd)?.filePath ?? null
+  const single = extractCatFile(cmd)?.filePath ?? extractHeadFile(cmd)?.filePath ?? extractTailFile(cmd)?.filePath ?? extractLineRangeRead(cmd)?.filePath
+  if (single !== undefined) return single
+  return singleFileCompoundReadPath(cmd)
+}
+
+/** The one file a compound read covers, or null when it covers none or several. Paging a file is normally written as several ranges of it in one command with an `echo` between them, which is one read of one file however many segments it takes; a command touching two files has no single per-file record to be filed under, and merging them under either would let a read of one answer for the other. */
+function singleFileCompoundReadPath(cmd: string): string | null {
+  const reads = extractLineRangeReadsCompound(cmd)
+  if (reads === null || reads.length !== 1) return null
+  return reads[0]?.filePath ?? null
 }
 
 /**
@@ -1827,7 +1836,7 @@ function pureFileReadPath(cmd: string): string | null {
  *
  * Read off the command's own ranges rather than counted from the output, so the notice below names lines that exist in the file. A `tail` has no answer here at all -- where its window starts depends on how long the file is, which the command does not state -- so it gets no elision rather than a plausible-looking guess. A range list overshoots on a short file, which is harmless because the surplus numbers are never used; it can only undershoot by the one empty row a trailing newline adds, which is padded.
  */
-function deliveredLineNumbers(cmd: string, lineCount: number): number[] | null {
+function deliveredLineNumbers(cmd: string, lineCount: number): Array<number | null> | null {
   const ranged = extractLineRangeRead(cmd)
   if (ranged !== null) {
     const nums: number[] = []
@@ -1837,6 +1846,8 @@ function deliveredLineNumbers(cmd: string, lineCount: number): number[] | null {
     return nums
   }
   if (extractCatFile(cmd) !== null || extractHeadFile(cmd) !== null) return Array.from({ length: lineCount }, (_, i) => i + 1)
+  // A compound read interleaves its ranges with whatever the segments between them printed, and an `echo` can emit any number of lines, so no row can be tied to a file line with certainty. The notice falls back to a count, and the search, which is on text alone, is unaffected.
+  if (singleFileCompoundReadPath(cmd) !== null) return Array.from({ length: lineCount }, () => null)
   return null
 }
 
@@ -1852,7 +1863,8 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
   const lines = output.split('\n')
   const numbers = deliveredLineNumbers(cmd, lines.length)
   if (numbers === null) return null
-  const rows: NumberedRow[] = lines.map((text, i) => ({ no: numbers[i] ?? 0, text, raw: text }))
+  // `?? null` rather than `?? 0`: a row whose number the command does not determine has to stay unknown all the way to the notice, which then counts the lines instead of naming them. Coercing it to a number here would print `lines 0-0`, which reads exactly like a real answer.
+  const rows: NumberedRow[] = lines.map((text, i) => ({ no: numbers[i] ?? null, text, raw: text }))
   const bodies: ServedBody[] = []
   for (let i = priorIds.length - 1; i >= 0; i--) {
     const id = priorIds[i]
@@ -1869,7 +1881,7 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
     const first = rows[cut.start]
     const last = rows[cut.start + cut.len - 1]
     if (first === undefined || last === undefined) return null
-    out.push(servedRunNotice(first.no, last.no, cut.id))
+    out.push(servedRunNotice(first.no, last.no, cut.id, cut.len))
     at = cut.start + cut.len
   }
   for (let i = at; i < rows.length; i++) out.push(rows[i]?.raw ?? '')
