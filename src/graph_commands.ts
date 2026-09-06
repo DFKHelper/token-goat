@@ -786,7 +786,11 @@ function hasAncestorDispatchRef(methodName: string, scopeName: string, classFile
     const baseSyms = querySymbols({ name: baseName, kind: 'class', limit: 1, rootDir })
     const baseSym = baseSyms[0]
     if (baseSym === undefined) return false
-    const baseRefs = queryRefs({ name: methodName, filePath: baseSym.filePath, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    let baseRefs = queryRefs({ name: methodName, filePath: baseSym.filePath, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    // Second site needing the same rescue runDead applies to its own scoped-refs check just below (see that call site's comment): this is also an absence claim (no dispatch ref found), and queryRefs orders by (file_path, line) and caps at DEFAULT_REF_QUERY_LIMIT, so for a widely-used method name every row inside the cap can sit outside the base class's own line range while the genuine self-dispatch ref sits just past it. Re-run uncapped only when the cap was actually reached and nothing in it matched, same UNBOUNDED_REF_LIMIT rescue as runDead's.
+    if (baseRefs.length >= DEFAULT_REF_QUERY_LIMIT && !baseRefs.some((ref) => ref.line >= baseSym.lineStart && ref.line <= baseSym.lineEnd)) {
+      baseRefs = queryRefs({ name: methodName, filePath: baseSym.filePath, limit: UNBOUNDED_REF_LIMIT, rootDir })
+    }
     if (baseRefs.some((ref) => ref.line >= baseSym.lineStart && ref.line <= baseSym.lineEnd)) return true
     currentName = baseName
     currentFile = baseSym.filePath

@@ -142,12 +142,15 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
   return { clause: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', params }
 }
 
+/** Rows returned when a caller names no `limit`. Exported because a caller that reports whether its scan was complete has to compare its row count against the window it actually got, and an implicit default it cannot see makes that comparison silently wrong. */
+export const DEFAULT_QUERY_LIMIT = 100
+
 export function querySymbols(
   opts: SymbolQueryOpts & { limit?: number } = {},
   dbPath: string = globalDbPath(),
 ): SymbolEntry[] {
   const { clause, params } = buildSymbolWhere(opts)
-  const limit = opts.limit ?? 100
+  const limit = opts.limit ?? DEFAULT_QUERY_LIMIT
   const sql =
     `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent ` +
     `FROM symbols ${clause} ORDER BY file_path, line_start LIMIT ?`
@@ -221,7 +224,7 @@ export function queryRefs(
   dbPath: string = globalDbPath(),
 ): RefEntry[] {
   const { clause, params } = buildRefsWhere(opts)
-  const limit = opts.limit ?? 100
+  const limit = opts.limit ?? DEFAULT_QUERY_LIMIT
   const sql = `SELECT file_path, name, line, col, context FROM refs ${clause} ORDER BY file_path, line LIMIT ?`
 
   const db = getDb(dbPath)

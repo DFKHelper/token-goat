@@ -11,7 +11,7 @@ import type { MiniSection } from './common.js'
 import { assignFlatEndLines, buildLineIndex, makeSymbolEmitter, offsetToLine, propagateEndLinesToSymbols} from './common.js'
 import { countContentLines } from '../util.js'
 
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 const MAX_HEADING_LEN = 120
 
 // Strip # comments but preserve newlines so line numbers stay correct. GNU Make treats `\#` as

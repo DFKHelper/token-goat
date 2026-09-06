@@ -148,11 +148,17 @@ export interface PdfLocateMatch {
  * match on that page, whitespace collapsed) is enough to confirm the hit --
  * dumping the whole page would defeat the point of locating first.
  */
+export interface PdfLocateResult {
+  matches: PdfLocateMatch[]
+  // True only when the scan stopped because maxMatches was reached while pages remained unscanned: a scan that covered every requested page and happened to find exactly maxMatches results is a complete answer, not a truncated one, and must report false here so a caller can print a plain total instead of a floor for that case.
+  truncated: boolean
+}
+
 export async function locatePdfPages(
   data: Uint8Array,
   pattern: string,
   opts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string },
-): Promise<PdfLocateMatch[]> {
+): Promise<PdfLocateResult> {
   // Compile up front so an invalid pattern fails with a message naming it,
   // rather than leaking a bare SyntaxError with no indication of which input
   // caused it (or paying pdfjs's document load only to throw afterwards).
@@ -175,7 +181,8 @@ export async function locatePdfPages(
     const end = range ? range.end : doc.numPages
 
     const matches: PdfLocateMatch[] = []
-    for (let i = start; i <= end && matches.length < maxMatches; i++) {
+    let i = start
+    for (; i <= end && matches.length < maxMatches; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
       const textItems = content.items.filter((item) => 'str' in item) as unknown as LayoutTextItem[]
@@ -185,7 +192,9 @@ export async function locatePdfPages(
       if (m === null) continue
       matches.push({ page: i, snippet: locateSnippet(pageText, m.index, m[0].length, context) })
     }
-    return matches
+    // The loop above exits either by scanning through `end` (i > end, a complete answer) or by hitting maxMatches with pages still left to scan (i <= end). Only the latter is truncation: a scan that covered every page and happened to land exactly on maxMatches results is not missing anything and must not be reported as a floor.
+    const truncated = matches.length >= maxMatches && i <= end
+    return { matches, truncated }
   })
 }
 

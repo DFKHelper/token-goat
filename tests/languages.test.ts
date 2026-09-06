@@ -1310,15 +1310,16 @@ describe('html adapter', () => {
     // MAX_SYMBOLS cap and no dedup, unlike every other language adapter in this codebase.
     // Minified/framework-generated HTML can emit thousands of duplicate symbol rows.
     const lines: string[] = []
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 5100; i++) {
       lines.push(`<div id="dup-widget" class="dup-token">item ${i}</div>`)
     }
     const content = lines.join('\n')
     const { symbols } = extractHtml(content, 'huge.html')
     // Each id/class occurrence is on its own line, so (name, line) dedup does not collapse them
-    // - without a cap this would emit 1200 symbol rows (600 ids + 600 classes). The cap must
-    // stop emission at exactly MAX_SYMBOLS.
-    expect(symbols.length).toBe(500)
+    // - without a cap this would emit 10,200 symbol rows (5100 ids + 5100 classes). The cap must
+    // stop emission at exactly MAX_SYMBOLS (10,000, raised from 500 -- see makeSymbolEmitter's own
+    // comment in common.ts for the measurement).
+    expect(symbols.length).toBe(10_000)
     // Duplicate id/class values within the SAME line must be deduped, not just capped.
     const sameLineContent = '<div id="only-once" class="only-once-cls only-once-cls">x</div>'
     const { symbols: sameLineSymbols } = extractHtml(sameLineContent, 'sameline.html')
@@ -4425,6 +4426,19 @@ CREATE TABLE real_table (id int);
   it('detects .sql language via parseFile', async () => {
     const result = await parseFixture('schema.sql', 'CREATE TABLE foo (id INT);')
     expect(result.language).toBe('sql')
+  })
+
+  it('indexes past the old 500-symbol cap: 600 CREATE TABLE statements all come back', () => {
+    // HAND-DERIVED: tableCount is a loop bound chosen independently of extractSql's own output,
+    // comfortably past the old MAX_SYMBOLS = 500 (which silently dropped everything past it with
+    // no disclosure) and well under the new 10,000 (see common.ts's makeSymbolEmitter comment for
+    // the measurement: a 35,000-statement/1.7MB file indexed in 2.4s, and this repo's own largest
+    // file was already at 439 symbols, 88% of the old cap).
+    const tableCount = 600
+    const content = Array.from({ length: tableCount }, (_, i) => `CREATE TABLE tbl_${i} (id int);`).join('\n')
+    const symbols = extractSql(content, 'many600.sql')
+    expect(symbols).toHaveLength(tableCount)
+    expect(symbols.map((s) => s.name)).toContain('tbl_599')
   })
 })
 

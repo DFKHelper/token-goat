@@ -90,4 +90,28 @@ describe('workspace evidence cache', () => {
     expect(hits[0]?.source).toBe(normalizePath(path.join(project, 'ocean.md')))
     expect(fs.readFileSync(path.join(testDataDir, 'workspace-evidence.json'), 'utf8')).toContain('"embedding"')
   })
+
+  // HAND-DERIVED: the counts and ordering below are computed directly from recordEvidence's own
+  // documented behaviour (unshift = newest-first, per its top-of-function comment) and the old
+  // MAX_SEMANTIC_CANDIDATES = 100 cap this fix removes -- not from running the fixed code and
+  // pasting its output back. 105 filler entries recorded after the target push it to index 105,
+  // past the old cap, so a pre-score recency slice would drop it before scoring ever saw it.
+  it('finds the best semantic match even when 100+ newer entries were recorded after it', async () => {
+    const project = path.join(testDataDir, 'project')
+    setPipelineFnForTesting(async () => async (text: string) => {
+      const vector = new Float32Array(384)
+      vector[text.includes('marine') ? 0 : 1] = 1
+      return { data: vector }
+    })
+
+    // Recorded first, so unshift pushes it toward the tail as every later call adds to the front.
+    recordEvidence({ projectRoot: project, source: path.join(project, 'ocean.md'), representation: 'file', text: 'marine biology report' })
+    for (let i = 0; i < 105; i += 1) {
+      recordEvidence({ projectRoot: project, source: path.join(project, `filler-${i}.md`), representation: 'file', text: `unrelated filler entry ${i}` })
+    }
+
+    const hits = await searchEvidenceSemantically(project, 'marine research')
+
+    expect(hits.map((h) => h.source)).toContain(normalizePath(path.join(project, 'ocean.md')))
+  })
 })

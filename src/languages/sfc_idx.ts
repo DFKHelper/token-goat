@@ -57,7 +57,7 @@ export interface SfcResult {
   readonly refs: RefEntry[]
 }
 
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
 function dedupe<T>(values: T[], key: (value: T) => string): T[] {
   const seen = new Set<string>()

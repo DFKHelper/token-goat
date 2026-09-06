@@ -2285,6 +2285,64 @@ describe('runDead virtual-dispatch rescue', () => {
   })
 })
 
+// ---- hasAncestorDispatchRef ref-query cap (defect 4 in the batch this file was added for) ----
+
+describe('runDead virtual-dispatch rescue survives more same-name refs in the base file than the query cap', () => {
+  // Regression: hasAncestorDispatchRef's own queryRefs call ordered by (file_path, line) and
+  // capped at DEFAULT_REF_QUERY_LIMIT (500) with the line-range containment check applied in
+  // TypeScript AFTER that cap -- an absence claim over a truncated scan, the same shape runDead's
+  // OWN scoped-refs check one function over already rescues (see that call site's comment).
+  // The fixture crosses the cap the same way 'runDead ref-query cap' above does: 600 filler refs
+  // to `compressBody` ahead of the base class's real `this.compressBody(...)` self-dispatch call,
+  // so the first 500 refs queryRefs returns are all fillers and the genuine dispatch ref sorts
+  // past the cap, inside the base class's own file. HAND-DERIVED: the 600-filler count and the
+  // ordering it relies on (queryRefs sorts by file_path, line ascending) are computed from
+  // DEFAULT_REF_QUERY_LIMIT's own value and queryRefs' own documented ORDER BY, not from running
+  // this fix and pasting its output back.
+  it('does not report a polymorphic override dead when the base class self-dispatch ref sits past the 500-ref cap', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-vdispatch-refcap-'))
+    try {
+      let base = ''
+      for (let i = 0; i < 600; i++) base += `function vdispatchCapFiller8q4_${i}() { return compressBody() }\n`
+      base +=
+        'export class Base {\n  compress(): string {\n    return this.compressBody("x")\n  }\n\n  compressBody(s: string): string {\n    return s\n  }\n}\n'
+      const baseFile = normalizePath(join(root, 'base.ts'))
+      const implFile = normalizePath(join(root, 'impl.ts'))
+      writeFileSync(baseFile, base)
+      writeFileSync(
+        implFile,
+        'import { Base } from "./base.js"\n\nexport class Impl extends Base {\n  override compressBody(s: string): string {\n    return s.toUpperCase()\n  }\n\n  neverCalledMethod9k2(): void {\n    return\n  }\n}\n',
+      )
+      indexFileSync(baseFile)
+      indexFileSync(implFile)
+
+      // Proves the fixture actually crosses the bound the fix is about: without more than
+      // DEFAULT_REF_QUERY_LIMIT refs to this name in base.ts, the rescue branch is never
+      // selected and the assertions below would hold identically with and without the fix.
+      const selected = queryRefs({ name: 'compressBody', filePath: baseFile, limit: -1, rootDir: normalizePath(root) }).length
+      expect(selected).toBeGreaterThan(500)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          runDead({ json: true, top: 500, kind: 'method' })
+        })
+        const parsed = envelopeItems<{ name: string; file: string; filePath: string }>(captured)
+        // The override is reachable only via Base's self-dispatch, which sits past the cap --
+        // must not be flagged dead.
+        expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, implFile))).toBe(false)
+        expect(parsed.some((r) => r.name === 'compressBody' && r.filePath === toRel(root, implFile))).toBe(false)
+        // A genuinely unused sibling method on the same class must still be flagged.
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.file === toRel(root, implFile))).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- runDead --exclude-tests (additive opt-in) ------------------------------
 
 describe('runDead --exclude-tests', () => {

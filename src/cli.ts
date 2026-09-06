@@ -1449,7 +1449,7 @@ async function cmdPdfLocate(
   if (opts.maxMatches !== undefined) locateOpts.maxMatches = requirePositiveInt('--max-matches', opts.maxMatches)
   if (opts.context !== undefined) locateOpts.context = requirePositiveInt('--context', opts.context)
   if (opts.pages !== undefined) locateOpts.pages = opts.pages
-  const matches = await runPdfLocate(file, pattern, locateOpts)
+  const { matches, truncated } = await runPdfLocate(file, pattern, locateOpts)
 
   // Each snippet is text pulled straight out of the PDF -- fence it the same as pdf-extract's
   // body text. The printed form takes one unconditional fence around the whole match list: a
@@ -1461,7 +1461,7 @@ async function cmdPdfLocate(
   let printed: string
   if (opts.json === true) {
     const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet) }))
-    printed = JSON.stringify({ file, pattern, matchCount: fencedMatches.length, pages, matches: fencedMatches }, null, 2)
+    printed = JSON.stringify({ file, pattern, matchCount: fencedMatches.length, truncated, pages, matches: fencedMatches }, null, 2)
     out(printed)
   } else if (matches.length === 0) {
     // A clean "found nothing", not an error -- the caller asked where a term is and the answer is "nowhere".
@@ -1470,9 +1470,11 @@ async function cmdPdfLocate(
     out(printed)
   } else {
     const lines = matches.map((m) => `p${m.page}: ${m.snippet}`)
-    printed = fenceFileText(
-      `${lines.join('\n')}\n\n${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`,
-    )
+    // The scan stops per-page on --max-matches, so a hit count that stopped early cannot be printed as an exact total (the same "cannot print a total the code has no way to know" rule as the grep-line cap a few hundred lines up in this file): print it as a floor and name the escape hatch instead.
+    const summary = truncated
+      ? `at least ${countNoun(matches.length, 'match', 'matches')} across at least ${countNoun(pages.length, 'page')}; scan stopped at --max-matches, raise it for more`
+      : `${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
+    printed = fenceFileText(`${lines.join('\n')}\n\n${summary}`)
     out(printed)
   }
   // Same registry/producer desync guarded against as cmdPdfExtract above -- see the comment there.

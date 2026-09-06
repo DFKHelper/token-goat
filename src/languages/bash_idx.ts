@@ -20,7 +20,7 @@
 import type { SymbolEntry } from '../parser_types.js'
 import { isInsideStringLiteral, stripStringLiterals, makeLineSymbol } from './common.js'
 
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
 // A bash function name is any word that is not a shell metacharacter, so `-`, `.`, `+` and `:` are all legal and all common in the wild (`docker-run()`, `npm.install()`). Restricting the name to `\w` dropped `my-func()` outright and, worse, silently truncated `function other-func` to `other` -- indexed under a name nothing will ever search for. Variable names have no such freedom: `NAME=value` only accepts `\w`, so VAR_RE is left alone.
 const FUNC_NAME = '[A-Za-z_][A-Za-z0-9_.+:-]*'

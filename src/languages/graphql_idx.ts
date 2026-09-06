@@ -77,7 +77,7 @@ const KIND_MAP: ReadonlyMap<string, string> = new Map([
   ['scalar', 'graphql_scalar'],
 ])
 
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 const MAX_HEADING_LEN = 120
 
 /**

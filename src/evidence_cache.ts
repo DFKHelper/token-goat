@@ -11,7 +11,6 @@ import { ensureDirSync } from './util.js'
 
 const MAX_ENTRIES = 500
 const MAX_TEXT_BYTES = 128 * 1024
-const MAX_SEMANTIC_CANDIDATES = 100
 const CACHE_FILE = 'workspace-evidence.json'
 
 export type EvidenceRepresentation = 'file' | 'tool-output'
@@ -160,9 +159,8 @@ function cosineSimilarity(left: Float32Array, right: Float32Array): number {
 export async function searchEvidenceSemantically(projectRoot: string, query: string, limit = 10): Promise<EvidenceEntry[]> {
   if (query.trim() === '' || !isAvailable()) return []
   const root = normalizePath(projectRoot)
-  const entries = load()
-    .filter((entry) => entry.projectRoot === root)
-    .slice(0, MAX_SEMANTIC_CANDIDATES)
+  // Score every entry the project holds (bounded by MAX_ENTRIES = 500 total across all projects, so this project's slice is cheap to run cosine similarity over) before capping to `limit`: a pre-score slice by recency would drop entries that outrank whatever survives it, silently reporting a miss for evidence the cache actually holds.
+  const entries = load().filter((entry) => entry.projectRoot === root)
   if (entries.length === 0) return []
 
   try {

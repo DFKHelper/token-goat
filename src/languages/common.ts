@@ -1152,14 +1152,20 @@ export function makeLineSymbol(
 
 /**
  * Factory that returns a closure for emitting one (symbol + section) pair.
- * Deduplicates by (name, kind, line). Caps at maxSymbols (default 500).
+ * Deduplicates by (name, kind, line). Caps at maxSymbols (default 10,000: raised from 500 after
+ * measuring the actual cost of a much higher cap -- indexing a synthetic 35,000-statement, 1.7 MB
+ * SQL file (the densest a single file can get before indexing.large_file_skip_kb's 2 MB default
+ * excludes it outright) took 2.4s and grew global.db by 11.7 MB, a one-time per-file-change cost,
+ * while this repo's own largest real file sits at 439 symbols (88% of the old 500 cap). The old
+ * cap was silently discarding symbols in files not much larger than this project's own biggest
+ * one, for negligible protection against a cost the byte-size skip already bounds).
  */
 export function makeSymbolEmitter(
   symbols: SymbolEntry[],
   sections: MiniSection[],
   seen: Set<string>,
   filePath: string,
-  maxSymbols = 500,
+  maxSymbols = 10_000,
   maxHeadingLen = 120,
 ): (name: string, kind: string, line: number) => void {
   return function emit(name: string, kind: string, line: number): void {

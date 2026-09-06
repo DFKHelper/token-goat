@@ -2,7 +2,7 @@
 import type { SymbolEntry } from '../parser_types.js'
 import { stripMultilineStringSpan, type MultilineStringState, makeLineSymbol } from './common.js'
 
-const MAX_SYMBOLS = 500
+const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
 // PowerShell identifiers are not restricted to ASCII, and `\w` in a JavaScript regex is. An ASCII-only class does not merely miss a non-ASCII name, it truncates one: `function Get-Ünicode` matched as far as `Get-` and stored that fabricated prefix as a real symbol.
 const IDENT_START = 'A-Za-z_\\u00C0-\\uFFFF'

@@ -31,44 +31,61 @@ function threePageBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(THREE_PAGE_PDF, 'latin1'))
 }
 
+// The new truncated-scan assertions below are HAND-DERIVED: which pages match "a" and how many
+// pages the fixture has are read off THREE_PAGE_PDF's own text streams above, independently of
+// locatePdfPages's implementation -- not from running the code and pasting its output back.
 describe('locatePdfPages', () => {
   it('returns only the single page whose text matches', async () => {
-    const matches = await locatePdfPages(threePageBytes(), 'beta', {})
+    const { matches, truncated } = await locatePdfPages(threePageBytes(), 'beta', {})
     expect(matches.map((m) => m.page)).toEqual([2])
     // Full line, trailing word included -- guards against the fixture's page text being
     // silently clipped (a too-narrow MediaBox drops the last word, and a snippet check for
     // just "beta" would still pass on the truncated text).
     expect(matches[0]?.snippet).toBe('beta summary detail')
+    expect(truncated).toBe(false)
   })
 
   it('matches a trailing word that a narrow page box would have clipped', async () => {
     // "notes" is the last word of page 3; if the fixture ever truncates, this goes red.
-    const matches = await locatePdfPages(threePageBytes(), 'notes', {})
+    const { matches } = await locatePdfPages(threePageBytes(), 'notes', {})
     expect(matches.map((m) => m.page)).toEqual([3])
     expect(matches[0]?.snippet).toBe('gamma appendix notes')
   })
 
   it('returns matching pages in ascending order when several pages match', async () => {
-    const matches = await locatePdfPages(threePageBytes(), 'alpha|gamma', {})
+    const { matches } = await locatePdfPages(threePageBytes(), 'alpha|gamma', {})
     expect(matches.map((m) => m.page)).toEqual([1, 3])
   })
 
   it('matches case-insensitively only when ignoreCase is set', async () => {
     const sensitive = await locatePdfPages(threePageBytes(), 'ALPHA', {})
-    expect(sensitive).toEqual([])
+    expect(sensitive.matches).toEqual([])
     const insensitive = await locatePdfPages(threePageBytes(), 'ALPHA', { ignoreCase: true })
-    expect(insensitive.map((m) => m.page)).toEqual([1])
+    expect(insensitive.matches.map((m) => m.page)).toEqual([1])
   })
 
-  it('stops after maxMatches page-matches', async () => {
-    // "a" appears on every page (alpha, beta, gamma); the cap must stop at 2 pages.
-    const matches = await locatePdfPages(threePageBytes(), 'a', { maxMatches: 2 })
+  it('stops after maxMatches page-matches and reports the scan as truncated', async () => {
+    // "a" appears on every page (alpha, beta, gamma); the cap must stop at 2 pages, with page 3
+    // left unscanned -- this is the case that must be disclosed, not printed as a plain total.
+    const { matches, truncated } = await locatePdfPages(threePageBytes(), 'a', { maxMatches: 2 })
     expect(matches.map((m) => m.page)).toEqual([1, 2])
+    expect(truncated).toBe(true)
+  })
+
+  it('does not report truncated when the cap is reached on the exact last page scanned', async () => {
+    // maxMatches equals the number of matching pages in the full 3-page document (and the whole
+    // document is scanned) -- the cap and the true total coincide, so this must NOT be reported
+    // as truncated even though matches.length === maxMatches. This is the distinction the fix
+    // exists to get right: hitting the cap is not the same as stopping early.
+    const { matches, truncated } = await locatePdfPages(threePageBytes(), 'a', { maxMatches: 3 })
+    expect(matches.map((m) => m.page)).toEqual([1, 2, 3])
+    expect(truncated).toBe(false)
   })
 
   it('returns an empty array when nothing matches', async () => {
-    const matches = await locatePdfPages(threePageBytes(), 'zzzznope', {})
+    const { matches, truncated } = await locatePdfPages(threePageBytes(), 'zzzznope', {})
     expect(matches).toEqual([])
+    expect(truncated).toBe(false)
   })
 
   it('throws an error naming the bad pattern for an invalid regex', async () => {
@@ -77,7 +94,7 @@ describe('locatePdfPages', () => {
 
   it('restricts the scan to the --pages window', async () => {
     // "a" matches all three pages, but the 2-3 window must exclude page 1.
-    const matches = await locatePdfPages(threePageBytes(), 'a', { pages: '2-3' })
+    const { matches } = await locatePdfPages(threePageBytes(), 'a', { pages: '2-3' })
     expect(matches.map((m) => m.page)).toEqual([2, 3])
   })
 })
@@ -137,14 +154,28 @@ describe('pdf-locate CLI', () => {
       file: string
       pattern: string
       matchCount: number
+      truncated: boolean
       pages: number[]
       matches: Array<{ page: number; snippet: string }>
     }
     expect(parsed.pattern).toBe('beta')
     expect(parsed.matchCount).toBe(1)
+    expect(parsed.truncated).toBe(false)
     expect(parsed.pages).toEqual([2])
     expect(parsed.matches).toHaveLength(1)
     expect(parsed.matches[0]?.page).toBe(2)
     expect(parsed.matches[0]?.snippet).toContain('beta')
+  })
+
+  // HAND-DERIVED: "a" matches all three pages of THREE_PAGE_PDF's own text (read off the fixture
+  // above), so a --max-matches of 2 must stop with page 3 unscanned -- the exact "cap reached
+  // while pages remained" case defect 1 exists to disclose, not the coincidental exact-cap case.
+  it('renders a floor with the max-matches escape hatch when the scan is truncated', async () => {
+    const code = await runCli(['pdf-locate', '<file>', 'a', '--max-matches', '2'])
+    expect(code).toBe(0)
+    const text = stdout.join('')
+    expect(text).toContain('at least 2 matches across at least 2 pages')
+    expect(text).toContain('raise it for more')
+    expect(text).not.toMatch(/(?<!at least )\b2 matches across 2 pages\b/)
   })
 })
