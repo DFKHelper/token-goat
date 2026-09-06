@@ -54,8 +54,8 @@ export function foldingEnabled(): boolean {
   return hints.fold_code_bodies || hints.fold_prose_paragraphs
 }
 
-/** Document extensions a prose fold applies to. Deliberately the same set the shell path's `isDoc` classification uses, so a file that gets a "read this with `section` instead" hint is the same file that folds when the hint is not taken. */
-const PROSE_FOLDABLE_EXT_RE = /\.(?:md|mdx|markdown|rst|txt)$/i
+/** Document extensions a prose fold applies to. Narrower than the shell path's `isDoc` classification, which also admits `.rst` and `.txt`: pointing a reader at `section` is harmless on any document, while folding one is only safe where the planner can recognise the structure it must leave alone, and every rule it has for that is markdown (fences, ATX headings, pipe tables, blockquotes). Against a `.txt` there is no markup at all to recognise, so a wrapped log record reads as a paragraph and folds to its first sentence with every stack frame after it discarded, and `.rst` marks its literal blocks by indentation and `..` directives that none of those rules see. */
+const PROSE_FOLDABLE_EXT_RE = /\.(?:md|mdx|markdown)$/i
 
 /** True for a path a prose fold may touch. */
 export function isProseFoldablePath(normalizedPath: string): boolean {
@@ -115,17 +115,18 @@ function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean): Fo
  *
  * Returns null when nothing is worth folding, which the callers treat as "leave the output exactly as it arrived". Header and trailer lines are the caller's business: a Read result carries a preamble this never sees, and a shell read has none.
  */
-export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, shownPath: string): FoldedDelivery | null {
+export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, windowed = false): FoldedDelivery | null {
   const syntax = commentSyntaxFor(normalizedPath)
   const spans = resolveFoldSpans(normalizedPath, syntax !== null)
 
   const bodyFolds = loadConfig().hints.fold_code_bodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
   const claimed = new Set<number>()
   for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
-  const commentFolds = loadConfig().hints.fold_code_bodies ? planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed) : []
+  const commentFolds = !windowed && loadConfig().hints.fold_code_bodies ? planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed) : []
   for (const fold of commentFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   // Prose folding is the only thing that reaches a document, which has no symbol spans for the body planner and no comment syntax for the comment planner. It carries its own setting because the trade differs from code's: a folded body is recovered by naming its symbol, while a folded paragraph is recovered from the cached original.
-  const proseFolds = isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs ? planProseFolds(rows, claimed) : []
+  // Declined on a window, which is what {@link commentFoldNotice} already promised and this did not deliver. Both of these notices point at a ranged Read of the exact span, so folding a ranged Read makes each pointer a fixed point: the paragraph pointer's one row is the same over-long paragraph and folds to the same opening sentence, and the comment pointer's n rows re-fold to the two the planner keeps, handing back 2 lines where n were promised. A body fold has no such loop, its pointer being a `token-goat read "file::symbol"` that never re-enters this path, so windows keep folding bodies.
+  const proseFolds = !windowed && isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs ? planProseFolds(rows, claimed) : []
   const folds = mergeFolds(mergeFolds(bodyFolds, commentFolds), proseFolds)
   if (folds.length === 0) return null
 
