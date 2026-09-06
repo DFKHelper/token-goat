@@ -27,8 +27,10 @@ export interface BodyFold {
   readonly startIdx: number
   readonly len: number
   readonly name: string
-  /** Which notice the renderer writes. A body fold points at `token-goat read "file::name"`; a comment fold has no symbol to name, so it points at a ranged Read of the line span instead. */
-  readonly kind: 'body' | 'comment'
+  /** Which notice the renderer writes. A body fold points at `token-goat read "file::name"`; a comment fold has no symbol to name, so it points at a ranged Read of the line span instead; a prose fold replaces one long paragraph with its own opening sentence, held in {@link keep}. */
+  readonly kind: 'body' | 'comment' | 'prose'
+  /** For a prose fold, the opening sentence to keep in place of the paragraph. Absent on every other kind, which drop their rows outright. */
+  readonly keep?: string
   /** 1-based file line numbers of the first and last folded line, for the notice text. */
   readonly firstLine: number
   readonly lastLine: number
@@ -240,6 +242,70 @@ export const MAX_FOLD_DETAIL = 400
 const FOLD_DETAIL_SUFFIX_BUDGET = 16
 
 /**
+/** Longest paragraph line left alone. Below this a fold cannot clear the net-benefit floor once its marker is added, and short paragraphs are where a document's structure lives. */
+const PROSE_FOLD_MIN_CHARS = 400
+
+/** A kept opening may not run past this share of the paragraph. Beyond it the fold is mostly marker, and the reader pays a recall pointer for almost the whole text anyway. */
+const PROSE_FOLD_MAX_KEEP_RATIO = 0.6
+
+/** Shortest opening accepted as a summary. A bare "Deprecated." or "Note." says less than the words after it, so the scan moves on to the next sentence. Matches the floor `outline`'s doc-summary clip uses, for the same reason. */
+const PROSE_FOLD_MIN_SENTENCE = 40
+
+/** Structural lines a prose fold never touches, however long: headings, fenced code, table rows, block quotes, and a bare list marker. Folding any of these would remove the document's shape, which is the part a reader scanning it is actually after. */
+const PROSE_STRUCTURAL_RE = /^\s*(?:#{1,6}\s|```|~~~|\||>|\d+[.)]\s*$|[-*+]\s*$)/
+
+/** A fenced-block delimiter, in either markdown spelling. Kept separate from {@link PROSE_STRUCTURAL_RE} because these two rules answer different questions: that one asks whether this line may be folded, this one asks whether the lines after it may be. */
+const PROSE_FENCE_RE = /^\s*(?:```|~~~)/
+
+/** A period that ends an abbreviation or an initial rather than a sentence. Same three shapes the outline doc-summary scan skips. */
+const PROSE_ABBREV_RE = /(?:\b(?:e\.g|i\.e|vs|cf|etc|approx|al|Dr|Mr|Ms|St|Fig|No)\.|\b[^\W\d_]\.)$/
+
+/** End offset of the first real sentence in `text`, or `null` when it has none. */
+function proseSentenceEnd(text: string): number | null {
+  // The terminator may be followed by closing inline markup before the space: a changelog entry leads with `**Bold sentence.**`, and a lookahead demanding whitespace immediately after the full stop walks straight past it into the next sentence, keeping most of the paragraph. Any run of closers is consumed and returned as part of the kept text, so the emphasis it closes is not left hanging open.
+  for (const m of text.matchAll(/[.!?][*_`)\]"'”’]*(?=\s|$)/gu)) {
+    const term = m.index + 1
+    const end = m.index + m[0].length
+    if (end < PROSE_FOLD_MIN_SENTENCE) continue
+    if (PROSE_ABBREV_RE.test(text.slice(0, term))) continue
+    return end
+  }
+  return null
+}
+
+/**
+ * Fold each long prose paragraph down to its opening sentence.
+ *
+ * Documents have no symbol spans, so {@link planBodyFolds} has nothing to work with and a markdown read arrives whole however long it is. What they do have is paragraphs, and a paragraph's opening sentence is its summary by the same convention that makes a docstring's first sentence one. Measured over 814 sessions, shell reads of markdown carry 9.62 MB, of which 1,153 reads holding 6.40 MB contain a paragraph long enough to fold; folding them removes 51.1% of those bytes.
+ *
+ * One paragraph is one row here, which is how markdown is normally written and is what lets the opening sentence stay in place rather than being dropped with the rest. Every structural line is left alone ({@link PROSE_STRUCTURAL_RE}), so headings, code fences and tables survive intact: on this project's own changelog the fold keeps every heading and every entry's bolded lead while removing 83% of the body text.
+ *
+ * `claimed` carries the row indices an earlier planner already took, so a document that also holds indexed spans cannot have the same row folded twice.
+ */
+export function planProseFolds(rows: ReadonlyArray<{ readonly no: number; readonly text: string }>, claimed: ReadonlySet<number>): BodyFold[] {
+  const folds: BodyFold[] = []
+  // Inside a fenced block nothing is prose: a long line there is a JSON payload, a log record or a command, and cutting it at the first full stop corrupts the one kind of content a writer fenced specifically to keep intact. The structural rule declines the delimiter lines themselves but says nothing about what sits between them, which let 70 fenced lines fold across the 2,032 real document reads this was measured on. A window that begins part-way through a block has no delimiter to open the state, so this reads as unfenced; that is the residue, and it is bounded by the fold being one line wide.
+  let inFence = false
+  for (let i = 0; i < rows.length; i++) {
+    if (claimed.has(i)) continue
+    const row = rows[i]
+    if (row === undefined) continue
+    const text = row.text
+    if (PROSE_FENCE_RE.test(text)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence) continue
+    if (text.length < PROSE_FOLD_MIN_CHARS) continue
+    if (PROSE_STRUCTURAL_RE.test(text)) continue
+    const end = proseSentenceEnd(text)
+    if (end === null || end > text.length * PROSE_FOLD_MAX_KEEP_RATIO) continue
+    folds.push({ startIdx: i, len: 1, name: 'paragraph', kind: 'prose', keep: text.slice(0, end), firstLine: row.no, lastLine: row.no })
+  }
+  return folds
+}
+
+/**
  * Identify what a fold removed, for the `detail` column of its stats row.
  *
  * The bytes a fold saved were always recorded and what it folded was not, so the cost side -- how often a reader has to come back for a span that was folded away -- could not be computed from the ledger however long the feature ran. That is the specific gap keeping `hints.fold_code_bodies` off by default: the benefit is measured and the harm is not yet measurable.
@@ -248,7 +314,8 @@ const FOLD_DETAIL_SUFFIX_BUDGET = 16
  */
 export function foldDetail(path: string, folds: readonly BodyFold[], maxLen: number = MAX_FOLD_DETAIL): string {
   const head = `${path}::`
-  const ids = folds.map((f) => (f.kind === 'comment' ? `#${f.firstLine}-${f.lastLine}` : f.name))
+  // Only a body fold has a symbol to name. A comment and a prose fold are both identified by their line span, and for prose that is also what keeps the paragraph's own words out of the ledger: `name` there holds document text, which has no business in a stats row.
+  const ids = folds.map((f) => (f.kind === 'body' ? f.name : `#${f.firstLine}-${f.lastLine}`))
   // A path long enough to eat the whole budget still has to identify the file, which is the part a join needs; drop every id rather than return something unjoinable.
   const budget = maxLen - head.length - FOLD_DETAIL_SUFFIX_BUDGET
   const kept: string[] = []

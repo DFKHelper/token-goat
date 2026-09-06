@@ -3009,7 +3009,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
  */
 const DOC_SUMMARY_MAX_CHARS = 140
 
-/** Shortest prefix of a doc line that is a complete sentence, or `null` when it has no usable sentence end. Skips the three shapes that are not sentence ends however much they look like one: a known abbreviation (`e.g.`), a single letter (an initial, or `a.` opening a list), and the point in a decimal. A sentence shorter than this floor is a fragment like "Not used." that says less than the words after it, so it is passed over in favour of the next candidate. */
+/** Shortest prefix of a doc line that is a complete sentence, or `null` when it has no usable sentence end. Skips the two shapes that are not sentence ends however much they look like one: a known abbreviation (`e.g.`) and a single letter (an initial, or `a.` opening a list). The point in a decimal needs no check of its own, because a terminator only counts here when whitespace or the end of the line follows it, and the digits after `0.75` are neither. A sentence shorter than this floor is a fragment like "Not used." that says less than the words after it, so it is passed over in favour of the next candidate. */
 function firstSentenceEnd(line: string): number | null {
   const MIN_SENTENCE_CHARS = 30
   const ABBREV = /(?:\b(?:e\.g|i\.e|vs|cf|etc|approx|al|Dr|Mr|Ms|St|Fig|No)\.|\b\p{L}\.)$/u
@@ -3018,7 +3018,6 @@ function firstSentenceEnd(line: string): number | null {
     if (end < MIN_SENTENCE_CHARS) continue
     const head = line.slice(0, end)
     if (ABBREV.test(head)) continue
-    if (m[0] === '.' && /\d$/.test(line.slice(0, m.index)) && /^\d/.test(line.slice(end))) continue
     return end
   }
   return null

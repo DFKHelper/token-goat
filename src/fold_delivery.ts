@@ -3,7 +3,8 @@
  *
  * Split out of hooks_read.ts when the shell read path became a second caller. The two surfaces gate very differently (a Read is a whole file with a numbered rendering around it, a shell read is bare text from a command that may or may not pin its line numbers) but everything between "here are the delivered rows" and "here is the folded text" is identical, and that middle is where the index-freshness rule and the notice wording live. One copy, so a change to either reaches both.
  */
-import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, type BodyFold, type FoldSpan } from './code_fold.js'
+import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, planProseFolds, type BodyFold, type FoldSpan } from './code_fold.js'
+import { loadConfig } from './config.js'
 import { fingerprintFile } from './fingerprint.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { getFileEntry, querySymbols } from './index_reader.js'
@@ -47,6 +48,29 @@ export function bodyFoldNotice(name: string, firstLine: number, lastLine: number
  *
  * A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span, which is also the one Read shape this fold never touches -- offset/limit reads are left alone as already surgical -- so the pointer cannot loop back into another fold.
  */
+/** True when any fold is enabled. The two hook entry points gate on this rather than on one setting each: which kind of fold a given file is eligible for is decided inside {@link foldDelivery} by what the file actually is, and a caller checking only the code setting would make a document unfoldable no matter how the prose setting was left. */
+export function foldingEnabled(): boolean {
+  const hints = loadConfig().hints
+  return hints.fold_code_bodies || hints.fold_prose_paragraphs
+}
+
+/** Document extensions a prose fold applies to. Deliberately the same set the shell path's `isDoc` classification uses, so a file that gets a "read this with `section` instead" hint is the same file that folds when the hint is not taken. */
+const PROSE_FOLDABLE_EXT_RE = /\.(?:md|mdx|markdown|rst|txt)$/i
+
+/** True for a path a prose fold may touch. */
+export function isProseFoldablePath(normalizedPath: string): boolean {
+  return PROSE_FOLDABLE_EXT_RE.test(normalizedPath)
+}
+
+/**
+ * The opening sentence of a folded paragraph, followed by the pointer that returns the rest.
+ *
+ * Worded to match {@link commentFoldNotice} rather than inventing a third shape, for two reasons found by running it. A pointer has to be actionable exactly as printed: an earlier draft named `token-goat section "file::<heading>"`, and a placeholder standing in for a heading the reader is expected to work out themselves is not a pointer at all. The paragraph is a single line, so a one-line ranged Read names it precisely. And the notice must carry no `[token-goat]` marker: the delivered body is fenced as untrusted output, which escapes an opening bracket to `&#91;`, so a marker inside the text a reader sees arrives mangled.
+ */
+export function proseFoldNotice(keep: string, line: number, shownPath: string): string {
+  return `${keep} ... rest of paragraph folded (line ${line}) -- Read "${shownPath}" with offset=${line}, limit=1`
+}
+
 export function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {
   const n = lastLine - firstLine + 1
   return `... ${n} more comment lines (${firstLine}-${lastLine}) folded -- Read "${shownPath}" with offset=${firstLine}, limit=${n}`
@@ -95,10 +119,14 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
   const syntax = commentSyntaxFor(normalizedPath)
   const spans = resolveFoldSpans(normalizedPath, syntax !== null)
 
-  const bodyFolds = planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN)
+  const bodyFolds = loadConfig().hints.fold_code_bodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
   const claimed = new Set<number>()
   for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
-  const folds = mergeFolds(bodyFolds, planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed))
+  const commentFolds = loadConfig().hints.fold_code_bodies ? planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed) : []
+  for (const fold of commentFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
+  // Prose folding is the only thing that reaches a document, which has no symbol spans for the body planner and no comment syntax for the comment planner. It carries its own setting because the trade differs from code's: a folded body is recovered by naming its symbol, while a folded paragraph is recovered from the cached original.
+  const proseFolds = isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs ? planProseFolds(rows, claimed) : []
+  const folds = mergeFolds(mergeFolds(bodyFolds, commentFolds), proseFolds)
   if (folds.length === 0) return null
 
   const numbered: string[] = []
@@ -109,7 +137,23 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
       numbered.push(rows[i]?.raw ?? '')
       raw.push(rows[i]?.text ?? '')
     }
-    const notice = fold.kind === 'comment' ? commentFoldNotice(fold.firstLine, fold.lastLine, shownPath) : bodyFoldNotice(fold.name, fold.firstLine, fold.lastLine, shownPath)
+    // Written as an exhaustive switch rather than a ternary chain: a new fold kind added to `BodyFold` must fail to compile here instead of silently rendering as a body fold and naming a symbol that does not exist.
+    let notice: string
+    switch (fold.kind) {
+      case 'comment':
+        notice = commentFoldNotice(fold.firstLine, fold.lastLine, shownPath)
+        break
+      case 'prose':
+        notice = proseFoldNotice(fold.keep ?? '', fold.firstLine, shownPath)
+        break
+      case 'body':
+        notice = bodyFoldNotice(fold.name, fold.firstLine, fold.lastLine, shownPath)
+        break
+      default: {
+        const unreachable: never = fold.kind
+        throw new Error(`unhandled fold kind: ${String(unreachable)}`)
+      }
+    }
     numbered.push(notice)
     at = fold.startIdx + fold.len
   }

@@ -164,6 +164,7 @@ export interface HintsConfig {
   reread_deny_min_bytes: number
   stable_doc_compacts: boolean
   fold_code_bodies: boolean
+  fold_prose_paragraphs: boolean
   truncated_read_min_lines: number
   protect_recent_reads: number
   warn_unbalanced_shell_quoting: boolean
@@ -491,6 +492,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     stable_doc_compacts: true,
     // Off until measured. This one rewrites what the model reads on a FIRST look at a source file, where -- unlike every re-read mechanism beside it -- the reader has no prior copy to notice an omission against. Its restore rate and edit-error delta cannot be observed until it has run, so the honest default is the one that changes nothing.
     fold_code_bodies: false,
+    // Off for the same reason as the fold above, and one of its own: a document has no symbols, so a folded paragraph is recovered from the cached original rather than by naming what was removed. Nothing observes how often that recall is needed until the fold has run.
+    fold_prose_paragraphs: false,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
     warn_unbalanced_shell_quoting: true,
@@ -991,6 +994,8 @@ export const PROJECT_LOCKED_SECTIONS: readonly string[] = [
 export const PROJECT_LOCKED_KEYS: readonly string[] = [
   // A repository must not be able to decide how much of its own source an agent gets to see. Turning this on folds function bodies out of every Read of this project's files, so a checked-in `.token-goat.toml` setting it true would shrink what a reviewing agent is shown of the very code it came to review -- and the fold is silent about intent, so it reads as normal output. The user's own global config and TOKEN_GOAT_FOLD_CODE_BODIES still set it freely; only the project-supplied layer is refused.
   'hints.fold_code_bodies',
+  // Same reasoning one document over: a repository must not be able to fold its own README or changelog out of what a reviewing agent is shown. The user's global config and TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS still set it freely.
+  'hints.fold_prose_paragraphs',
   'image_shrink.max_image_pixels',
   'indexing.cross_project_symbols',
   'worker.blocked_roots',
@@ -1698,6 +1703,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.reread_deny_min_bytes = validatedIntWithLegacySentinel(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 2048, ...boundsOf('hints.reread_deny_min_bytes'))
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.fold_code_bodies = validatedBool(hi_raw['fold_code_bodies'], hi.fold_code_bodies)
+  hi.fold_prose_paragraphs = validatedBool(hi_raw['fold_prose_paragraphs'], hi.fold_prose_paragraphs)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
   hi.warn_unbalanced_shell_quoting = validatedBool(hi_raw['warn_unbalanced_shell_quoting'], hi.warn_unbalanced_shell_quoting)
@@ -1728,6 +1734,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.git_hint_max_ms = envInt('TOKEN_GOAT_GIT_HINT_MAX_MS', hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
   hi.stable_doc_compacts = envBool('TOKEN_GOAT_STABLE_DOC_COMPACTS', hi.stable_doc_compacts)
   hi.fold_code_bodies = envBool('TOKEN_GOAT_FOLD_CODE_BODIES', hi.fold_code_bodies)
+  hi.fold_prose_paragraphs = envBool('TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', hi.fold_prose_paragraphs)
   hi.context_threshold_advisory = envBool('TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY', hi.context_threshold_advisory)
   hi.pre_skill_advisory = envBool('TOKEN_GOAT_PRE_SKILL_ADVISORY', hi.pre_skill_advisory)
   hi.quiet_hours = envStr('TOKEN_GOAT_QUIET_HOURS', hi.quiet_hours)
@@ -1934,6 +1941,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.git_hint_max_ms': ['TOKEN_GOAT_GIT_HINT_MAX_MS'],
   'hints.stable_doc_compacts': ['TOKEN_GOAT_STABLE_DOC_COMPACTS'],
   'hints.fold_code_bodies': ['TOKEN_GOAT_FOLD_CODE_BODIES'],
+  'hints.fold_prose_paragraphs': ['TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS'],
   'hints.context_threshold_advisory': ['TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY'],
   'hints.pre_skill_advisory': ['TOKEN_GOAT_PRE_SKILL_ADVISORY'],
   'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
@@ -2082,6 +2090,7 @@ export function saveConfig(config: Config): void {
       reread_deny_min_bytes: config.hints.reread_deny_min_bytes,
       stable_doc_compacts: config.hints.stable_doc_compacts,
       fold_code_bodies: config.hints.fold_code_bodies,
+      fold_prose_paragraphs: config.hints.fold_prose_paragraphs,
       truncated_read_min_lines: config.hints.truncated_read_min_lines,
       protect_recent_reads: config.hints.protect_recent_reads,
       prompt_triggers: config.hints.prompt_triggers,

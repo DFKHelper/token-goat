@@ -841,6 +841,7 @@ const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
   'network.offline': true,
   'indexing.cross_project_symbols': false,
   'hints.fold_code_bodies': false,
+  'hints.fold_prose_paragraphs': false,
   'webfetch.compress_bodies': true,
 }
 
