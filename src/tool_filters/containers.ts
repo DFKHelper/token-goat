@@ -446,7 +446,8 @@ export class KubectlFilter extends ToolFilter {
     } else if (subcommand === 'diff') {
       const diffLines = text.split('\n')
       if (diffLines.length > 50) {
-        text = headTailCompress(diffLines, 50, 0, 'diff lines')
+        // Same 50-line budget, no longer spent entirely on the front. A `kubectl diff` lists resources in whatever order the manifests were given, so the change that matters is as likely to be in the last resource as the first, and a tail of zero meant every resource past the budget vanished with only a count to show for it.
+        text = headTailCompress(diffLines, 35, 15, 'diff lines')
       }
     }
 
