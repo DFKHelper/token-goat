@@ -1466,38 +1466,18 @@ function makeMultiHunkDiff(nHunks: number): string {
   return ['diff --git a/big.py b/big.py', '--- a/big.py', '+++ b/big.py', ...hunks].join('\n')
 }
 
-describe('GitFilter diff/show honors [bash_diff].max_hunks_per_file (not hardcoded 3)', () => {
-  // saveConfig does not create configPath()'s parent directory itself; make
-  // sure it exists before writing (same pattern as bash_runner.test.ts).
-  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
-
-  afterEach(() => {
-    invalidateConfigCache()
-    try {
-      fs.unlinkSync(configPath())
-    } catch {
-      // ok — may not exist
+describe('GitFilter diff/show fallback delegates to the live diff compressor', () => {
+  // GitDiffFilter claims both subcommands and is registered ahead of the generic GitFilter, so this branch is never dispatched -- the selectFilter assertions earlier in this file are what establish that. It used to carry its own near-duplicate diff compressor, and that copy had drifted from the live one: it built its stat-only view by walking only the `diff --git` blocks, so every standalone notice between them was dropped without a word, and it returned before appending stderr, so a diff large enough to trigger the stat view discarded whatever git wrote there. Neither defect was reachable and neither was catchable. The branch now delegates instead of reimplementing, and this pins the delegation so a second copy cannot grow back. It also subsumes what this block used to assert, that the fallback honors [bash_diff].max_hunks_per_file: whatever the live compressor does with that knob, the fallback now does too, by construction.
+  it('produces byte-identical output to GitDiffFilter for both subcommands', () => {
+    // 60 hunks, not 6: under the default cap of 10 a 6-hunk diff is returned unchanged, and the net-benefit floor then hands back the input for a non-delegating fallback too, so both sides are the passthrough and the assertion holds no matter what the branch does. Verified by mutation: with 6 hunks, replacing the delegation with `return stdout` left this test green.
+    const diff = makeMultiHunkDiff(60)
+    const live = new GitDiffFilter()
+    for (const sub of ['diff', 'show']) {
+      const viaFallback = apply(_gitFilter, diff, ['git', sub])
+      // Guard the guard: if the compressor ever stops shrinking this fixture, the equality above goes vacuous again rather than failing.
+      expect(viaFallback.length).toBeLessThan(diff.length - 100)
+      expect(viaFallback).toBe(apply(live, diff, ['git', sub]))
     }
-  })
-
-  it('a configured max_hunks_per_file lower than the hardcoded default of 3 elides more hunks', () => {
-    const cfg = defaultConfig()
-    cfg.bash_diff.max_hunks_per_file = 2 // config.ts's validated floor is 1
-    saveConfig(cfg)
-
-    const out = apply(_gitFilter, makeMultiHunkDiff(6), ['git', 'diff'])
-    // With the hardcoded default of 3, this 6-hunk diff would elide 3 hunks
-    // ("+3 more hunks..."); a configured cap of 2 must elide 4 instead.
-    expect(out).toContain('[token-goat: +4 more hunks in this file elided]')
-    expect(out).not.toContain('+3 more hunks in this file elided')
-  })
-
-  it('an unconfigured (default) max_hunks_per_file of 10 keeps all hunks of a 6-hunk diff, unlike the old hardcoded 3', () => {
-    invalidateConfigCache()
-    const out = apply(_gitFilter, makeMultiHunkDiff(6), ['git', 'diff'])
-    expect(out).not.toContain('more hunks in this file elided')
-    expect(out).toContain('new line 0')
-    expect(out).toContain('new line 5')
   })
 })
 
@@ -1509,8 +1489,7 @@ describe('GitFilter diff/show honors [bash_diff].max_hunks_per_file (not hardcod
 // _compressGitDiffBody, which only trimmed the CONTENT of individual large hunks
 // (MAX_HUNK_CHANGED) but never capped the NUMBER of hunks kept per file -- so a
 // configured [bash_diff].max_hunks_per_file had zero effect on `git diff`/`git show`
-// output, unlike the raw `diff` command (shell_file.ts's DiffFilter) and the
-// never-dispatched GitFilter fallback above, both of which did honor it.
+// output, unlike the raw `diff` command (shell_file.ts's DiffFilter), which did honor it.
 // ---------------------------------------------------------------------------
 
 describe('GitDiffFilter (live git diff/show path) honors [bash_diff].max_hunks_per_file', () => {

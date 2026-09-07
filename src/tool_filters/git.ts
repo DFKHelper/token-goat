@@ -703,49 +703,6 @@ function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 
   return text
 }
 
-/**
- * Simple diff compression for the generic GitFilter fallback.
- * Keeps first N hunks per file; for very large diffs (>200 files) emits a stat-only view.
- */
-function _compressGitDiffSimple(stdout: string, stderr: string, maxHunksPerFile = 3): string {
-  const fileBlocks = splitBlocks(stdout, _GIT_DIFF_FILE_RE)
-  if (!fileBlocks.length) return stdout
-  const realFiles = fileBlocks.filter((b) => _GIT_DIFF_FILE_RE.test(b))
-  if (realFiles.length > 200) {
-    const statLines = realFiles.map((b) => {
-      const header = b.split('\n', 1)[0] ?? ''
-      const lines = b.split('\n')
-      const adds = lines.filter(_isDiffAdd).length
-      const dels = lines.filter(_isDiffRemove).length
-      return `${header}  +${adds} -${dels}`
-    })
-    return (
-      `[token-goat: large diff (${realFiles.length} files); showing stat-only view]\n` +
-      statLines.join('\n')
-    )
-  }
-  const outBlocks: string[] = []
-  for (const block of fileBlocks) {
-    if (!_GIT_DIFF_FILE_RE.test(block)) {
-      outBlocks.push(block)
-      continue
-    }
-    const hunks = splitBlocks(block, _GIT_DIFF_HUNK_RE)
-    if (hunks.length <= maxHunksPerFile + 1) {
-      outBlocks.push(block)
-      continue
-    }
-    const head = hunks.slice(0, maxHunksPerFile + 1)
-    const elided = hunks.slice(maxHunksPerFile + 1)
-    outBlocks.push(
-      head.join('\n') + `\n[token-goat: +${elided.length} more hunks in this file elided]`,
-    )
-  }
-  let text = outBlocks.join('\n')
-  if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
-  return text
-}
-
 /** Format-aware diff compression. */
 function _compressGitDiffEnhanced(stdout: string, stderr: string, argv: string[]): string {
   const flags = new Set(argv)
@@ -1392,17 +1349,8 @@ export class GitFilter extends GitBaseFilter {
     const positionals = gitPositionalArgs(argv.slice(1))
     const subcommand = positionals[0] ?? ''
     if (subcommand === 'diff' || subcommand === 'show') {
-      // [bash_diff] max_hunks_per_file (default 10); falls back to this
-      // function's own built-in default (3) on config load failure.
-      let maxHunksPerFile: number | undefined
-      try {
-        maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
-      } catch {
-        maxHunksPerFile = undefined
-      }
-      return maxHunksPerFile === undefined
-        ? _compressGitDiffSimple(stdout, stderr)
-        : _compressGitDiffSimple(stdout, stderr, maxHunksPerFile)
+      // Unreachable today: GitDiffFilter claims both subcommands and is registered ahead of this catch-all, confirmed through selectFilter rather than by reading the registry order. Kept as a fallback against a future registry change, and pointed at the same compressor GitDiffFilter uses. It previously called a second, near-duplicate diff compressor that had drifted from the live one: that copy built its stat-only view by walking only the `diff --git` blocks, so every standalone notice between them was dropped without a word, and it returned before appending stderr, so a diff large enough to trigger the stat view discarded whatever git wrote there. Neither defect was reachable, and neither was catchable, which is the argument against keeping a second copy at all.
+      return _compressGitDiffEnhanced(stdout, stderr, argv)
     }
     if (subcommand === 'ls-files' || subcommand === 'ls-tree')
       return _truncateListing(stdout, stderr, 100)
