@@ -56,6 +56,16 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TARGET = path.join(REPO, 'README.md')
 const LINES = decodeSource(fs.readFileSync(TARGET)).split('\n')
 
+// This file drives one seam and nothing else: the served-output producer and the shell re-read collapse.
+// Paragraph folding and comment-block folding both ship on now, and README.md is a document the first of
+// them rewrites, so every "did not collapse" case below would otherwise see a fold in place of the bare
+// output it asserts and fail for a reason unrelated to the seam. Turning them off here narrows the tests to
+// their subject rather than weakening them: each negative case is still paired with a positive control that
+// asserts the collapse pointer by name, so a producer that wrote nothing at all still cannot pass. Set at
+// module scope because the built-bundle cases spawn a child process that inherits this environment.
+process.env['TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS'] = '0'
+process.env['TOKEN_GOAT_FOLD_COMMENT_BLOCKS'] = '0'
+
 /** The exact bytes `sed -n 'start,endp' README.md` prints, taken from the file itself. */
 function slice(start: number, end: number): string {
   return LINES.slice(start - 1, end).join('\n')
