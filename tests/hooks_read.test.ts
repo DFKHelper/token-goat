@@ -3608,3 +3608,31 @@ describe('snapshot store keyed by sessionStateKey, not the unsalted getSessionId
     })
   })
 })
+
+describe('denied ranged Read credits only the requested window, not the whole file (#defect-3)', () => {
+  it('a 3rd-read count-based deny carrying offset/limit credits ~the window, never ~the whole file', () => {
+    pinProtectRecentReadsToZero()
+    // A large source-extension file (.cs) so the count-based deny (isSourceExtension && reads >= 2)
+    // fires on the 3rd read, with plenty of lines to request a narrow window from.
+    const p = makeTmpMultilineFileWithExt(50_000, 'cs')
+    const fullBytes = fs.statSync(p).size
+    expect(fullBytes).toBeGreaterThan(40_000)
+
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('context')
+
+    const beforeHintBytes = summarize(30).by_source[SOURCE_HINT]?.bytes_saved ?? 0
+
+    // 3rd read asks for a 3-line window only.
+    const r3 = preReadHandler(readEventWithRange(p, 1, 3))
+    expect(r3.hookType).toBe('deny')
+
+    const afterHintBytes = summarize(30).by_source[SOURCE_HINT]?.bytes_saved ?? 0
+    const credited = afterHintBytes - beforeHintBytes
+    // Must-not-happen: crediting anywhere near the whole file for a 3-line request.
+    expect(credited, 'a 3-line ranged Read deny must not credit anywhere near the 50KB file').toBeLessThan(fullBytes / 20)
+    expect(credited).toBeGreaterThan(0)
+  })
+})
