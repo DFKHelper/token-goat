@@ -471,3 +471,110 @@ describe('hints.pre_skill_advisory wiring', () => {
     }
   });
 });
+
+// HAND-DERIVED fixtures below: bodies are constructed directly from the heading/byte-count
+// thresholds the production code checks (OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, OUTLINE_MIN_HEADINGS,
+// OUTLINE_MAX_REPLACEMENT_RATIO), not read off preSkillHandler's own implementation.
+describe('preSkillHandler — heading-tree fallback for an oversized skill with no compact marker', () => {
+  it('(a) denies with the heading tree inlined and names both recall commands when there are enough headings and the tree clears the ratio cap', async () => {
+    const skillName = 'heading-tree-enough-headings';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    // 8 short headings, each followed by a 1200-byte filler paragraph: >6000 bytes total, well
+    // past OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, but the rendered tree (a handful of short
+    // bullet lines) stays a small fraction of that -- clears OUTLINE_MAX_REPLACEMENT_RATIO (0.4).
+    const paragraph = 'p'.repeat(1200);
+    const body = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
+    const bodyBytes = Buffer.byteLength(body, 'utf-8');
+    expect(bodyBytes).toBeGreaterThan(6000);
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const before = summarize(30).by_kind['skill_heading_tree_inlined']?.bytes_saved ?? 0;
+    const out = await preSkillHandler(skillPreEvent(skillName, 'sess-heading-tree-a'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType !== 'deny' || !out.message) return;
+
+    // Anti-vacuity guard: the inlined tree has to be materially smaller than the body before
+    // any assertion about its content means anything -- otherwise a branch that accidentally
+    // inlined the whole body back would still pass a bare "contains these substrings" check.
+    expect(out.message.length).toBeLessThan(bodyBytes * 0.5);
+
+    expect(out.message).toContain('with no compact slice');
+    expect(out.message).toContain('inlined below');
+    expect(out.message).toContain('Section 0');
+    expect(out.message).toContain('token-goat skill-section ' + skillName);
+    expect(out.message).toContain('token-goat skill-body ' + skillName);
+    expect(out.message.indexOf('skill-section') < out.message.lastIndexOf('skill-body')).toBe(true);
+
+    const delta = (summarize(30).by_kind['skill_heading_tree_inlined']?.bytes_saved ?? 0) - before;
+    expect(delta).toBeGreaterThan(0);
+  });
+
+  it('(b) passes through when the body is oversized but has fewer headings than OUTLINE_MIN_HEADINGS', async () => {
+    const skillName = 'heading-tree-too-few-headings';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    // 3 headings (below the 6-heading floor), padded past the oversize threshold with filler.
+    const paragraph = 'p'.repeat(2100);
+    const body = Array.from({ length: 3 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
+    expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(6000);
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent(skillName, 'sess-heading-tree-b'));
+    expect(out.hookType).toBe('pass');
+  });
+
+  it('(c) passes through when the rendered tree would not clear OUTLINE_MAX_REPLACEMENT_RATIO', async () => {
+    const skillName = 'heading-tree-ratio-too-large';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    // 45 headings, each carrying a long title and no body text under it, so headings are nearly
+    // the entire file: the rendered tree ends up close to the same size as the body it would
+    // replace, well past OUTLINE_MAX_REPLACEMENT_RATIO (0.4).
+    const longTitle = 'L'.repeat(150);
+    const body = Array.from({ length: 45 }, (_, i) => `## H${i} ${longTitle}`).join('\n');
+    expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(6000);
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent(skillName, 'sess-heading-tree-c'));
+    expect(out.hookType).toBe('pass');
+  });
+
+  it('(d) an oversized skill WITH a compact marker is unaffected by the heading-tree fallback, even when its detail section has plenty of headings', async () => {
+    const skillName = 'heading-tree-marker-unaffected';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'Compact summary.';
+    const paragraph = 'p'.repeat(1200);
+    // Same shape of detail as fixture (a) -- enough headings to satisfy the tree gate on its
+    // own -- but with a marker present, so the existing compact-inline/pointer path must own
+    // this deny and the new heading-tree branch must never run at all.
+    const detail = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
+    const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent(skillName, 'sess-heading-tree-d'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType !== 'deny' || !out.message) return;
+    expect(out.message).toContain('compact slice');
+    expect(out.message).not.toContain('with no compact slice');
+    expect(out.message).not.toContain('headings) is inlined below');
+  });
+
+  it('(e) a small skill with no compact marker, enough headings, and a tree that would otherwise clear the ratio cap still passes through because it is under the size threshold', async () => {
+    const skillName = 'heading-tree-under-size-threshold';
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    // Same shape as fixture (a) -- 8 headings, each with enough filler that the rendered tree
+    // would clear OUTLINE_MAX_REPLACEMENT_RATIO -- but scaled down so the body itself never
+    // crosses OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES (6000). This isolates the size gate: a
+    // fixture with too few headings or a bad ratio would still pass for the wrong reason.
+    const paragraph = 'p'.repeat(600);
+    const body = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
+    expect(Buffer.byteLength(body, 'utf-8')).toBeLessThan(6000);
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent(skillName, 'sess-heading-tree-e'));
+    expect(out.hookType).toBe('pass');
+  });
+});

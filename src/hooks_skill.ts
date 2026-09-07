@@ -15,6 +15,9 @@ import {
 } from './skill_cache.js';
 import { recordSkillVersionSnapshot } from './skill_version_drift.js';
 import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js';
+import { extractMarkdownHeadings, formatHeadingTreeParts } from './hints/markdown_hints.js';
+import { OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO } from './fold_structure.js';
+import { fenceUntrustedFileContent } from './injection_scan.js';
 
 const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
@@ -117,6 +120,23 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
               ' \'<heading>\'` to load a specific section, `token-goat skill-body ' + skillName +
               ' --compact` to load the compact slice, or `token-goat skill-body ' + skillName + '` for the full body.',
           );
+        } else if (bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES) {
+          // Oversized with no marker at all: falling through here used to hand over the entire body. Build a heading tree instead, so the model gets a map of the skill plus the commands to pull any part, rather than 6-70+ KB of body. Only worth it when the skill actually has enough structure to map (OUTLINE_MIN_HEADINGS) and the resulting tree is genuinely small next to the body (OUTLINE_MAX_REPLACEMENT_RATIO) -- both floors reused verbatim from fold_structure.ts's large-markdown outline, which measured them against real session transcripts. Below either floor, fall through to the normal load exactly as before: a map of three things is not worth the round trip.
+          const headings = extractMarkdownHeadings(body);
+          if (headings.length >= OUTLINE_MIN_HEADINGS) {
+            const { sectionsList } = formatHeadingTreeParts(headings, skillName);
+            const treeBytes = Buffer.byteLength(sectionsList, 'utf-8');
+            if (treeBytes <= bodyBytes * OUTLINE_MAX_REPLACEMENT_RATIO) {
+              const savedBytes = bodyBytes - treeBytes;
+              recordStat('skill_heading_tree_inlined', savedBytes, savedTokensFromBytes(savedBytes));
+              return denyOutput(
+                'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes) with no compact slice; its heading tree (' +
+                  headings.length + ' headings) is inlined below instead of the full body. Use `token-goat skill-section ' + skillName +
+                  ' \'<heading>\'` to load a specific section, or `token-goat skill-body ' + skillName + '` for the full body.\n\n' +
+                  fenceUntrustedFileContent(sectionsList),
+              );
+            }
+          }
         }
       } catch {
         // fail-soft: unreadable file just falls through to the normal load

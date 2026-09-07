@@ -240,6 +240,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   skill_oversized_first_load: SOURCE_SKILL,
   // Cold first load of an oversized skill where preSkillHandler inlined the compact slice in its reply instead of pointing at `skill-body --compact`. Unlike its skill_oversized_first_load sibling (event-only, 0 bytes -- the pointer deny saves nothing by itself, the follow-up command does) this one records real savings: the full body never landed, the slice did, so bytesSaved is body minus slice.
   skill_compact_inlined: SOURCE_SKILL,
+  // Cold first load of an oversized skill with no compact marker at all, where preSkillHandler inlined a heading tree in its reply instead of letting the whole body fall through. Same shape as skill_compact_inlined: real savings, bytesSaved is body minus the rendered tree.
+  skill_heading_tree_inlined: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
   // Fail-soft diagnostic counters from hooks_edit.ts: they record that a side task threw, never a byte saving, so "other" is the right home. Listed explicitly rather than left to kindToSource()'s fallback so the registration guard can tell a deliberate placement from an unregistered kind.
   dirty_queue_append_failed: SOURCE_OTHER,
