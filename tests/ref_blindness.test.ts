@@ -5,7 +5,10 @@
  *   Kind. Only value-position usages are recorded (call, `new`, macro invocation, a few bare
  *   identifier shapes), never a type annotation. So `token-goat dead --kind interface` reported
  *   616 of this repo's 717 interfaces as dead; every one of them is used, as a type. The command
- *   was answering a question the index cannot answer.
+ *   was answering a question the index cannot answer. The same blindness reached the four
+ *   single-symbol commands one release later: `refs src/types.ts::HookOutput` printed "No
+ *   references found" for an interface named in 27 files, in TypeScript, where the language gate
+ *   below correctly stays silent.
  *
  *   Language. `REF_LANGUAGES` in src/parser.ts gates ref extraction to nine tree-sitter
  *   languages. For a C#/PHP/Kotlin/Swift/Lua/... file, `refs` returned "No references found",
@@ -57,9 +60,16 @@ beforeAll(() => {
     'export function tsCallerZq(s: UsedShapeZq): number { return tsComputeZq() + s.n }',
     '',
   ].join('\n'))
-  // C# half: a class whose method is called from the same file. The call site is real; the index simply never walks it, because csharp is outside REF_LANGUAGES.
+  // Mixed-kind half: one name declared both as an interface (type position only, unsearchable) and as a function (value position, genuinely searchable), neither of them referenced. An empty result is a real answer for the function and no answer at all for the interface, so this is the case that must be answered with a disclosure rather than refused outright.
+  writeFileSync(join(project, 'mixed.ts'), [
+    'export interface MixedZq { readonly n: number }',
+    'export function MixedZq(): number { return 1 }',
+    '',
+  ].join('\n'))
+  // C# half: a class whose method is called from the same file. The call site is real; the index simply never walks it, because csharp is outside REF_LANGUAGES. The interface is blind BOTH ways -- unindexed language AND type-only kind -- which is what fixes the precedence between the two notices.
   writeFileSync(join(project, 'Widget.cs'), [
     'namespace Demo {',
+    '  public interface IShapeZq { int SizeZq(); }',
     '  public class WidgetZq {',
     '    public int ComputeZq() { return 42; }',
     '  }',
@@ -76,6 +86,9 @@ beforeAll(() => {
   expect(outline.stdout, 'the TypeScript fixture must be in the index').toContain('UsedShapeZq')
   const csOutline = tg('outline', 'Widget.cs')
   expect(csOutline.stdout, 'the C# fixture must be in the index, or the language gate is never reached').toContain('ComputeZq')
+  expect(csOutline.stdout, 'the C# interface must be in the index, or the precedence test is vacuous').toContain('IShapeZq')
+  const mixedOutline = tg('outline', 'mixed.ts')
+  expect(mixedOutline.stdout, 'both definitions of the mixed-kind name must be in the index, or the partial-disclosure tests are vacuous').toContain('MixedZq')
 })
 
 afterAll(() => {
@@ -199,8 +212,98 @@ describe('refs and its siblings: a language whose call sites are never indexed s
     expect(text).not.toContain('call sites are not indexed')
   })
 
+  // The three tests above call callers/impact with a BARE name, the one input shape where `opts.symbol` and the bare symbol name are the same string -- so a notice built from the spec reads correctly there and the defect is invisible. Driven with the `file::symbol` form instead, the suggested command came back as `rg -n -w Widget.cs::ComputeZq`, which matches nothing and sends the caller to a dead end at exactly the moment the tool has admitted it cannot answer. Asserting the negative as well as the positive, since a message that happens to contain the bare name as a substring of the spec would satisfy the positive alone.
+  it.each([['callers'], ['impact']])('%s suggests a runnable search when given a file::symbol spec, not the spec itself', (cmd) => {
+    const text = out(tg(cmd, 'Widget.cs::ComputeZq'))
+    expect(text).toContain('C# call sites are not indexed')
+    expect(text, 'the suggested command must be runnable').toContain('rg -n -w ComputeZq')
+    expect(text, 'rg takes a pattern, and `Widget.cs::ComputeZq` matches no line in any file').not.toContain('rg -n -w Widget.cs::ComputeZq')
+  })
+
   it('emits no control characters, which a bare \\b inside a template literal would silently produce', () => {
     const text = out(tg('refs', 'Widget.cs::ComputeZq'))
+    // Built from char codes rather than written as a regex literal: eslint's no-control-regex bans the literal form, and the point here is to detect exactly those characters in shipped output.
+    const control = [...text].some((ch) => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13 })
+    expect(control, `control character in: ${JSON.stringify(text)}`).toBe(false)
+  })
+})
+
+describe('refs and its siblings: a kind whose usages are never recorded says so too', () => {
+  it('refs refuses an interface instead of reporting a confident absence', () => {
+    const r = tg('refs', 'widget.ts::UsedShapeZq')
+    const text = out(r)
+    expect(r.status, 'an unanswerable question is not a successful answer').toBe(1)
+    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text).toContain('never type annotations')
+    expect(text, 'the alternative must be runnable as printed').toContain('rg -n -w UsedShapeZq')
+    expect(text, 'the misleading message must be replaced, not merely accompanied').not.toContain('No references found')
+  })
+
+  it('callers refuses it too, since it reads the same empty ref rows', () => {
+    const r = tg('callers', 'widget.ts::UsedShapeZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text).not.toContain('No references found')
+  })
+
+  it('impact refuses it too: a BFS from a type declaration starts on an empty frontier', () => {
+    const r = tg('impact', 'widget.ts::UsedShapeZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text, 'a BFS over empty rows must not report absence as a finding').not.toContain('No callers found')
+  })
+
+  it('call-chain says so, the one sibling whose empty answer exits 0 and so reads as a verdict', () => {
+    const r = tg('call-chain', 'widget.ts::UsedShapeZq')
+    const text = out(r)
+    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(r.stdout, 'the bare "(no callers)" verdict must not be presented for a symbol nobody could have looked for callers of').not.toContain('(no callers)\n')
+    expect(r.stdout).toContain('(no callers recorded)')
+  })
+
+  it('call-chain --json carries the disclosure in a field, since the prose goes to stderr', () => {
+    const r = tg('call-chain', 'widget.ts::UsedShapeZq', '--json')
+    const parsed = JSON.parse(r.stdout) as { chains: string[][]; refBlindKinds?: string[] }
+    expect(parsed.refBlindKinds, 'an empty envelope with no field reads as a settled "no callers"').toEqual(['interface'])
+    expect(parsed.chains, 'the chain rendering keeps its shape; the field is added, never substituted').toEqual([['UsedShapeZq']])
+  })
+
+  it('answers a mixed-kind name for the half it can, and discloses the half it cannot', () => {
+    const r = tg('refs', 'MixedZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    // Must-not-drop: the assessable definition was genuinely searched, so its honest empty answer survives rather than being swallowed by a wholesale refusal.
+    expect(text, 'the function definition WAS searched, so its real answer must still be given').toContain("No references found for 'MixedZq'")
+    expect(text, 'the exclusion must be counted, not dropped').toContain("Note: 1 of 2 definitions of 'MixedZq' ('interface')")
+    expect(text).toContain('never type annotations')
+    expect(text, 'a partial answer must not be refused wholesale').not.toContain('Cannot determine references')
+  })
+
+  it('gives the language message, not the kind message, when a symbol is blind both ways', () => {
+    const r = tg('refs', 'Widget.cs::IShapeZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text, 'naming the file and language is the more actionable of the two').toContain('C# call sites are not indexed')
+    expect(text, 'only one notice, or the caller is told two different mechanisms for one absence').not.toContain('is an interface')
+  })
+
+  // Control. Without this, every test above is satisfied by a `refs` that refuses everything.
+  it('CONTROL: a function keeps both its real answers, hits and honest zero alike', () => {
+    const hit = tg('refs', 'widget.ts::tsComputeZq')
+    expect(hit.status).toBe(0)
+    expect(hit.stdout).toContain('tsCallerZq')
+    const zero = tg('refs', 'widget.ts::tsUnusedZq')
+    const text = out(zero)
+    expect(zero.status).toBe(1)
+    expect(text).toContain("No references found for 'tsUnusedZq'")
+    expect(text, 'a value-position kind must not be reported as unassessable').not.toContain('never type annotations')
+    expect(text).not.toContain('Note:')
+  })
+
+  it('emits no control characters, which a bare \\b inside a template literal would silently produce', () => {
+    const text = out(tg('refs', 'widget.ts::UsedShapeZq')) + out(tg('refs', 'MixedZq'))
     // Built from char codes rather than written as a regex literal: eslint's no-control-regex bans the literal form, and the point here is to detect exactly those characters in shipped output.
     const control = [...text].some((ch) => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13 })
     expect(control, `control character in: ${JSON.stringify(text)}`).toBe(false)
@@ -222,6 +325,8 @@ describe('structural guards against the two lists drifting', () => {
 
   it('REF_BLIND_KINDS covers every type-declaration kind, so a new one cannot become assessable-looking by omission', () => {
     expect(TYPE_KINDS.length, 'the TYPE_KINDS population must be non-empty').toBeGreaterThan(5)
+    // Population guard for the derived list itself: the four single-symbol gates test membership in REF_BLIND_KINDS, and an emptied list would make every one of them silently stop firing while all the "answers correctly" controls still passed.
+    expect(REF_BLIND_KINDS.length, 'the REF_BLIND_KINDS population must be non-empty, or every kind gate silently stops firing').toBeGreaterThan(5)
     for (const k of TYPE_KINDS) {
       expect(REF_BLIND_KINDS, `type kind '${k}' must be treated as unassessable by dead`).toContain(k)
     }

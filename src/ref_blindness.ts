@@ -85,3 +85,28 @@ export const REF_BLIND_KIND_REASON =
 
 // How many definitions of one name a single-symbol reference lookup fetches when deciding whether every one of them sits in a ref-blind language. The verdict is all-or-nothing, and a handful of rows settles it; nothing here needs the full definition list.
 export const REF_BLIND_DEF_PROBE_LIMIT = 50
+
+// Renders one kind id with its indefinite article, so a message reads "is an interface" / "is a struct" rather than naming the id bare. Vowel test only: every kind id in REF_BLIND_KINDS is an ordinary lowercase word or an underscore-joined pair of them, none of them a silent-h or long-u word where the vowel rule misfires.
+function kindWithArticle(kind: string): string {
+  return `${/^[aeiou]/.test(kind) ? 'an' : 'a'} ${kind}`
+}
+
+// How the blind kinds of one name's definitions are spelled inside a sentence: a single kind reads as "'Foo' is an interface", several as a list, since a name defined once as an interface and once as a type alias is one symbol with two type-position declarations and neither is more the answer than the other.
+function refBlindKindClause(symbolName: string, kinds: ReadonlyArray<string>): string {
+  const first = kinds[0]
+  if (kinds.length === 1 && first !== undefined) return `'${symbolName}' is ${kindWithArticle(first)}`
+  return `every definition of '${symbolName}' is a type declaration (${kinds.map((k) => `'${k}'`).join(', ')})`
+}
+
+/** The message a single-symbol reference lookup emits instead of a bare empty result, when every definition of the name is of a kind whose usages the index never records: the sibling of {@link refBlindLanguageNotice} for the second blind spot. Names the kind, quotes {@link REF_BLIND_KIND_REASON} for the mechanism so there is one wording rather than two, and points at a search that does answer the question. */
+export function refBlindKindNotice(symbolName: string, kinds: ReadonlyArray<string>): string {
+  return `Cannot determine references for '${symbolName}': ${refBlindKindClause(symbolName, kinds)}, and ${REF_BLIND_KIND_REASON}. ` +
+    'This is a gap in token-goat\'s index, not evidence the symbol is unreferenced. ' +
+    `Search the source directly instead, e.g. \`rg -n -w ${symbolName}\`.`
+}
+
+/** The note emitted alongside an ordinary empty result when only SOME definitions of the name are of a ref-blind kind. The remaining ones were genuinely searched, so the result stands for them and is not refused, but dropping the blind ones without a word is the same defect wearing the opposite sign: it presents a partial answer as a whole one. */
+export function refBlindKindPartialNote(symbolName: string, kinds: ReadonlyArray<string>, blindCount: number, totalCount: number): string {
+  return `Note: ${blindCount} of ${totalCount} definitions of '${symbolName}' (${kinds.map((k) => `'${k}'`).join(', ')}) are not covered by this result -- ${REF_BLIND_KIND_REASON}. ` +
+    `The empty result above speaks only for the other ${totalCount - blindCount}; for the rest, search the source directly, e.g. \`rg -n -w ${symbolName}\`.`
+}

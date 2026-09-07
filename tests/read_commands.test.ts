@@ -33,9 +33,11 @@ vi.mock('../src/section_reader.js', () => ({
   findContainingSection: vi.fn(() => null),
 }))
 
-vi.mock('../src/graph_commands.js', () => ({
-  resolveCallers: vi.fn(() => []),
-}))
+// Partial-mock for the same reason src/constants.js below is one: only resolveCallers needs stubbing, and a bare factory listing it alone silently drops every other export, so the first module reaching for a different one dies with "No X export is defined on the mock" rather than getting the real value. That is exactly what happened when runRefsSingle started consulting refBlindKindVerdict.
+vi.mock('../src/graph_commands.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  return { ...actual, resolveCallers: vi.fn(() => []) }
+})
 
 vi.mock('../src/parser.js', () => ({
   indexFileSync: vi.fn(),
