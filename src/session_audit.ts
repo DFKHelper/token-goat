@@ -403,6 +403,13 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
   { kind: 'generic_reread_deny', re: /was already read this session \(\d+ read/ },
   { kind: 'large_file_deny', re: /is very large \(\d+(?:\.\d+)?KB\)\./ },
   { kind: 'file_type_handler_deny', re: /too large to preview \(exceeds the in-hook scan cap\)|cannot be read as text\.|Read cannot return spreadsheet content|Read cannot return slide content|Read cannot return document content|Use Read with offset and limit parameters to read specific line ranges/ },
+  // Skill-tool denies from src/hooks_skill.ts's preSkillHandler -- kind names prefixed skill_ so they read as a family, distinct from the Read-deny kinds above. The two heading-tree wordings share the prose around them ("...its heading tree...instead of the full body. Use `token-goat skill-section NAME '<heading>'`...") but each anchors on an infix the other never emits -- truncated always says "shows N of M headings below" (no "inlined"), complete always says "(N headings) is inlined below" (no "shows") -- so neither regex can match the other's text; skill_heading_tree_truncated_deny is still listed first on the same specific-before-generic principle as markdown_heading_tree_deny above, in case a future rewording narrows the gap.
+  { kind: 'skill_already_loaded_deny', re: /was already loaded this session and is cached/ },
+  { kind: 'skill_compact_slice_deny', re: /has a compact slice available/ },
+  // The compact slice has two outcomes and they are separate kinds because they cost different things: the pointer above withholds the slice behind a command, this one inlines the slice and withholds only the rest of the body. Its "(N bytes) is inlined below" cannot collide with the heading-tree wording below, which requires "heading tree (N headings) is inlined below".
+  { kind: 'skill_compact_slice_inlined_deny', re: /compact slice \(\d+ bytes\) is inlined below instead of the full body/ },
+  { kind: 'skill_heading_tree_truncated_deny', re: /heading tree shows \d+ of \d+ headings below instead of the full body/ },
+  { kind: 'skill_heading_tree_complete_deny', re: /heading tree \(\d+ headings\) is inlined below instead of the full body/ },
 ]
 
 /** Every kind DENY_TEMPLATES can classify, exported so the suite can assert its fixture set covers all of them. Without that assertion a kind added to the array without a fixture is never exercised by any test: it can be born stale, match nothing the code emits, and drop its events from the census silently, which is the exact failure the fixtures exist to prevent. */
@@ -768,11 +775,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             s.editErrorBaseline.totalErrors += 1
             editErrorById.set(id, true)
           }
-          if (name === 'Read') {
-            s.readInterception.readResults += 1
-            // Deny-outcome census: orthogonal to the divert/full-serve split above -- a deny
-            // template match opens a new pending row that watches the calls following it in
-            // this same file, regardless of whether READ_DIVERT_MARKER_RE also matched.
+          // Deny-outcome census: orthogonal to the Read-only divert/full-serve split below -- a deny template match opens a new pending row that watches the calls following it in this same file, regardless of tool. Runs for both Read and Skill results (Skill denies from hooks_skill.ts have no path, so readPathById.get(id) misses and path/basename fall back to '', which safely never matches the path-keyed isReadSamePath/isEditSamePath/isSurgicalSamePath checks further down).
+          if (name === 'Read' || name === 'Skill') {
             const denyTemplate = DENY_TEMPLATES.find((t) => t.re.test(text))
             if (denyTemplate !== undefined) {
               const path = readPathById.get(id) ?? ''
@@ -788,6 +792,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 toolCalls: [],
               })
             }
+          }
+          if (name === 'Read') {
+            s.readInterception.readResults += 1
             if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes
