@@ -1,0 +1,120 @@
+509ee9b4 docs(readme): add the source-skeleton row, raise the first-read figure to 49%
+b6450d24 feat(read): return a large source file as its imports and declarations
+4c1fd231 docs(readme): add the first-read outline measurement, leave the totals alone
+6d00e3da feat(read): return a large document as its lead-in and heading tree
+f7415f88 feat(fold): fold long comment blocks and document prose on every install
+6d5d61d8 fix(stats): stop crediting savings the code cannot prove were saved
+ad3eaf9a fix(index,refs,pdf): stop six caps and counts from reporting a partial answer as a whole one
+84e64022 fix(fold): stop three folds from removing what the reader came for
+afb105a5 fix(filters): choose what to keep by what the reader was looking for
+48621877 fix(filters): stop the last two steps from undoing the both-ends cap
+86055cf0 fix(filters): stop stating a count and a token cap as more than they are
+293a84f8 fix(filters): keep the end of a large output, where the verdict lives
+68f735a9 feat(fold): fold a long document paragraph to its opening sentence
+e0f91ce9 feat(outline): cut each symbol's doc note at the end of its first sentence
+5391e5e4 feat(read): fold a ranged Read whose window holds a whole declaration
+55183fb9 feat(bash): fold long bodies out of a source file read through the shell
+5375bbc0 feat(filters): clip one enormous line so it stops shipping whole
+dc1666c4 test(bash): pin the compound elision in the built bundle, not only in process
+04287512 feat(bash): treat several sed ranges of one file in one command as one read
+1438eac4 feat(bash): see through a `cd` on its own line, and key a read on where it moved to
+53deae0f feat(bash): withhold only the stretch of a shell read the session already served
+9359fe17 feat(fold): repair the index on a fold miss and shorten the notice path
+c9ee48c1 feat(fold): record which file and symbols a fold removed
+9141cc40 chore: bump version to 2.9.4
+23eda44e feat(read): fold long comment blocks and constants, not just function bodies
+4e1f0191 fix(read): parse the shape Claude Code actually sends, not a rendering it never sends
+712a60b0 style(comments): put every comment I wrote on one line, and correct two measured figures
+073029d0 feat(doctor): report how much of the index a different parser build wrote
+bc33216b feat(read): fold long function bodies out of a first read
+58e268de fix(read): stop serving a whole-file compact in place of a ranged read
+96ec7f8e refactor(tool_filters): delete the compound-segment wrapper nothing ever called
+ea1b066a fix(hint-stats): mark the efficacy figures that are scored on an absence
+433ccffa fix(docs): repoint four component-map rows at files that exist
+ed0b6654 chore: bump version to 2.9.3
+425ce8c6 fix(image): bound the shrink path's output buffer, not just the decode
+942ed88a fix(image): bound every decoder allocation, and refuse formats that would decode to the wrong picture
+37ab66cd Merge branch 'main' of github.com:DFKHelper/token-goat
+1fd751e9 Merge branch 'main' of github.com:DFKHelper/token-goat
+31a551ec test(guards): add a static pass over every interpreter sink, plus a CodeQL job for the dataflow half
+7dcce1e9 fix(security): override fast-uri and qs to resolve rescan SCA advisories
+f8c6aaa0 fix(bridges): reject an event name the Copilot map never declared
+801facf2 feat(security): fence the poll deltas, and guard every substitution site
+ade38b6a fix(fence): defuse text impersonating token-goat's marker, and move our cap notice out of the fence
+7316c8ba fix(bench): bound the corpus files bench reads, and pin the claim that its paths are operator-typed
+b2d2343f fix(bash): fence the compressed shell output token-goat substitutes for a tool result
+e3c8c889 docs(image): update image_shrink comments to reflect pure-TS engine
+90cead96 test: adjust micro-benchmark ceilings for concurrent full-suite execution
+0cfb2d92 test(ts_refs): increase performance sanity ceiling for concurrent full-suite runs
+378477c3 feat(image): add pure TypeScript image engine replacing Sharp dependencies
+c2670d0a fix(filters): recognise vitest --reporter=verbose, which compressed by 2 bytes
+66cfc031 feat(cli): add bench, a corpus-replay score for the shell-output compressors
+3d5550c9 chore: bump version to 2.9.2
+f6ff57db fix(security): close the six gaps a second adversarial review found
+f768c8c0 fix(security): close five holes an adversarial review found in the controls shipped last commit
+1679317b feat(security): custom and strict redaction, plus an unconditional cloud-metadata refusal
+3e8194c8 feat(cli): add capabilities, a checkable statement of what a build can do
+47056a73 fix(guards): stop a comment standing in for a call in the fence guard
+d66ef51f fix(security): store a fingerprint of the browser tab list, not the list
+1fce8e8c fix(security): stop a file name smuggling a command into hint text
+a0368730 fix(security): gate catastrophic regex backtracking, and fix the 39 real cases
+f394121e fix(security): run the secrets scan the repo only described, and pin its exemptions
+7b1333ab chore(deps): bump the extension's @types/node to match the root tree
+91882b7f chore(deps): update the tree to the versions Dependabot proposed
+e713cce9 Raise test timeouts for browser screenshot tests
+1f723d25 Prefix preToolUse deny output messages with [tg]
+08aed3b6 chore(site): stop publishing two internal working documents
+3c1ba1ce fix(deps): let sharp take dependency updates again
+895cb499 docs: split the README into three reader-facing pages
+13cc79d6 docs(readme): drop the availability section and correct the base-stack claim
+a6013d13 docs(changelog): humanizer pass over the 2.9.1 section
+c8a102c7 chore: release 2.9.1
+ec6ea899 fix(stats): price image-meta and image-text in visual tokens
+37cdaae8 fix(stats): credit a Bash saving against the harness delivery cap
+b77129b5 fix(hooks): shape updatedToolOutput like the tool's own result
+dc1f86af test(quote-hint): pin the exact outcome, not just the absence of the hint
+b3b40c90 fix(filters): make the compound-command gate quote-aware for |, ; and &&/||
+456b4dfc fix(bash): derive the filter argv from the same peeled command the filter was chosen from
+af09f75c test(grep): pin the per-line refusal when a literal pattern is absent from a long line
+8a7483cd fix(grep): clip an over-long grep match line around the match instead of shipping it whole
+1d2821b8 feat(hooks): add an off-by-default deny for a subagent's first read of a large markdown file
+9edb779d fix(stats): measure the refs saving against the search it replaces
+89431d50 fix(snapshots): salt snapshot keys with agentId, matching session-state keying
+fb1f1bab fix(session-audit): keep classifying deny wordings the code no longer emits
+3d044feb fix(read): stop the MEMORY.md deny from claiming a manifest section that doesn't exist
+6ce0d976 fix(read): stop a truncated snapshot from fabricating a re-read diff
+fa4c448f feat(hooks_read): serve unchanged/diff snapshot on memory-file re-read
+3a62c046 feat(hooks_read): serve unchanged/diff snapshot on markdown heading-tree re-read
+a6f83b78 test: add built-bundle e2e for session-audit deny-outcome census
+71d48c97 fix(hooks_read): move markdown heading-tree guidance outside the untrusted fence
+908a1c3f test(untrusted_file_fence): strengthen assertion to detect fence-boundary violations
+380285dd fix(hooks_read): drop the edit-anyway hint from re-read denials
+96e45b4d fix(session-audit): add editWithin10Count denominator for canary rate comparison
+c6a39f43 feat(session-audit): see shell reads and unanchored surgical commands after a deny
+2f3fa8e0 fix(hooks_read): record session_hint stat for markdown heading-tree re-read denials
+94303ee3 feat(session-audit): add a deny-outcome census over Read denials
+7c697826 fix(cli): make `help --full` reach the long listing again
+2780e5cd fix(cli): compact --help output to 2318 bytes under 4096 limit
+b77c2845 feat(skill): offer skill-section in denial notices before skill-body
+e688ed90 fix(baseline): exclude test files and short names from top symbols
+325d549c fix(stats): cap the whole-file counterfactual, and stamp each row with the writing version
+b154c898 docs: correct the repeated-WebFetch rows, which described a gate that does not exist
+d114838f feat(read): withhold only the stretch of a Read the session already saw
+0b359c00 feat(read): withhold a Read whose exact bytes were already served
+05595f56 feat(read): let a completed Read feed the shell re-read collapse
+776e32ff feat(bash): strip terminal colour codes from shell output the compressors skip
+78716640 feat(bash): collapse a file read whose lines were already served this session
+02a5b023 fix(bash): scope the identical-read collapse to the current session
+a2be6627 feat(bash): collapse a byte-identical shell file re-read to a pointer
+abe04f36 feat(arch): group the import graph into modules, and say how strong the grouping is
+807f78c1 docs(changelog): trim to the five releases the file says it holds, and date 2.9.0
+0526014c feat: reconcile the index at session start, add affected, and let the MCP tool surface be trimmed
+0588b4ed chore: bump version to 2.8.6
+97064dbc fix: disclose six more silent row drops, and verify the reasons that exempted them
+3703ca26 fix: eleven commands that dropped rows or lines without saying so
+6659fab4 fix: disclose every truncation, and stop guards passing on an empty sweep
+2e75b8ee perf(index): default embed_threads to 4, measured against foreground responsiveness
+74512d9d fix(doctor): report embedding coverage, and say when semantic searched almost nothing
+7d07a1dd perf(index): cap the embedding thread pool and run indexing below normal priority
+cf959532 fix(scope): stop the per-file cap dropping the symbol that encloses the line
+64f680ac test(guards): pin the population each structural guard actually reads

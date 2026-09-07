@@ -13,6 +13,7 @@ import * as path from 'node:path'
 import { resolveProjectRoot } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
+import { estimateTokensFromLength } from './overflow_guard.js'
 
 export interface McpAuditCommandOptions {
   project?: string
@@ -180,8 +181,8 @@ export function analyzeMcpCache(): Map<string, { callCount: number; perCallEstim
     const metrics = serverMetrics.get(toolName)!
     metrics.callCount += 1
     metrics.totalBytes += sizeBytes
-    // Average the per-call estimate
-    metrics.perCallEstimate = Math.floor(metrics.totalBytes / metrics.callCount / 3) + 1
+    // Average the per-call estimate. The divisor used to be typed out here, which is the same duplicated-arithmetic defect the saved_tokens_use_one_divisor guard exists for, so it goes through the shared helper and one pricing change reaches every caller. estimateTokensFromLength, not savedTokensFromBytes: this figure is a COST an MCP server imposes, never a saving token-goat credits itself, and the repo's split (see the note on estimateTokensFromLength) puts a cost on the guard's deliberately-high divide-by-three and a credit on the conservative divide-by-four. Byte-identical to the arithmetic it replaces for every non-negative input, so no printed number moves.
+    metrics.perCallEstimate = estimateTokensFromLength(metrics.totalBytes / metrics.callCount)
   }
 
   return serverMetrics

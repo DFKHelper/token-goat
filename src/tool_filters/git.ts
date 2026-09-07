@@ -7,6 +7,7 @@
 // CRLF warning stripping runs via postNormalise on every stream before the per-subcommand compressor sees the text — the base class pipeline calls it after normalise() on both stdout and stderr.
 
 import { ToolFilter } from './base.js'
+import type { CompressContext } from './base.js'
 import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
@@ -288,7 +289,7 @@ function _compressGitLogStat(stdout: string, stderr: string): string {
 }
 
 /** Format-aware log compression: dispatch to the right strategy. */
-function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[]): string {
+function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[], inputTruncated = false): string {
   const flags = new Set(argv)
 
   // Detect --oneline / short format
@@ -336,7 +337,11 @@ function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[])
     let keptLines: string[]
     if (blocks.length > ONELINE_CAP) {
       const elided = blocks.length - ONELINE_CAP
-      keptLines = [...blocks.slice(0, ONELINE_CAP), `[token-goat: +${elided} more commits]`]
+      // `elided` is counted over whatever survived the pre-filter clamp, so on a clamped log it is the number of commits THIS filter dropped and not the number the reader is missing: the clamp already discarded some upstream. Ship it as a floor in that case rather than as a total nothing here can prove.
+      const elidedNote = inputTruncated
+        ? `[token-goat: at least ${elided} more commits (counted over a truncated input)]`
+        : `[token-goat: +${elided} more commits]`
+      keptLines = [...blocks.slice(0, ONELINE_CAP), elidedNote]
     } else {
       keptLines = blocks
     }
@@ -355,8 +360,8 @@ export class GitLogFilter extends GitBaseFilter {
   readonly name = 'git-log'
   override readonly subcommands = new Set(['log'])
 
-  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
-    return _compressGitLogEnhanced(stdout, stderr, argv)
+  override compress(stdout: string, stderr: string, _exitCode: number, argv: string[], ctx: CompressContext = {}): string {
+    return _compressGitLogEnhanced(stdout, stderr, argv, ctx.inputTruncated === true)
   }
 }
 

@@ -30,6 +30,8 @@ import { findClaudeMdFiles } from './cli_context_stats.js'
 export interface ProjectMap {
   readonly rootDir: string
   readonly fileCount: number
+  // True when {@link walkProject} hit its file ceiling, making `fileCount` and `languages` lower bounds rather than totals. Optional so existing hand-built ProjectMap literals need no change, and absent means the walk completed, which is what every producer other than a capped walk means.
+  readonly fileCountTruncated?: boolean
   readonly languages: Record<string, number>
   readonly topSymbols: SymbolEntry[]
   readonly recentFiles: string[]
@@ -68,6 +70,8 @@ export const MAX_FILES_SCANNED = 20000
 export interface WalkResult {
   readonly files: string[]
   readonly languages: Record<string, number>
+  // True when the walk stopped at its `maxFiles` ceiling rather than running out of tree, so `files.length` and every `languages` tally are floors, not totals. Any renderer that prints either as a fact MUST consult this: `Files: 20000` on a capped walk is indistinguishable from a repo that really holds exactly 20000 files.
+  readonly truncated: boolean
 }
 
 /**
@@ -128,7 +132,7 @@ export function walkProject(
     }
   }
 
-  return { files, languages }
+  return { files, languages, truncated: files.length >= maxFiles }
 }
 
 /** Raw `symbols` row shape for the top-symbols aggregate query. */
@@ -247,7 +251,7 @@ export function buildProjectMap(
 ): ProjectMap {
   const root = path.resolve(rootDir)
   const config = loadConfig()
-  const { files, languages } = walkProject(root, { excludeTests: config.repomap.exclude_tests })
+  const { files, languages, truncated } = walkProject(root, { excludeTests: config.repomap.exclude_tests })
   // Auto-switch to the compact rendering once a project's file count crosses repomap.compact_file_threshold, even when the caller didn't pass --compact -- keeps the default `map`/`baseline` output within a sane token budget on large repos without requiring every large-project user to remember the flag.
   const compact = opts.compact === true || files.length > config.repomap.compact_file_threshold
   const symbolLimit = compact ? 10 : 30
@@ -271,6 +275,7 @@ export function buildProjectMap(
   return {
     rootDir: root,
     fileCount: files.length,
+    fileCountTruncated: truncated,
     languages,
     topSymbols,
     recentFiles,
@@ -290,11 +295,14 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
   const rel = path.basename(map.rootDir)
 
   lines.push(`# Project map: ${rel}`)
-  lines.push(`Files: ${map.fileCount}`)
+  // A capped walk cannot prove its file count is the whole population, so it ships as a floor rather than as a bare number no reader can tell apart from a completed walk. Same reasoning collectWalkIndexFiles (walk_index.ts) already applies to the identical ceiling in its refusal message.
+  lines.push(map.fileCountTruncated === true ? `Files: at least ${map.fileCount} (walk stopped at the ${MAX_FILES_SCANNED}-file cap)` : `Files: ${map.fileCount}`)
 
   const langPairs = Object.entries(map.languages).sort((a, b) => b[1] - a[1])
   const langSummary = langPairs.map(([lang, n]) => `${lang} ${n}`).join(', ')
-  lines.push(`Languages: ${langSummary || '(none)'}`)
+  // The histogram is tallied over the same capped walk, so when it stopped early every per-language count is understated too, not only the total above.
+  const langSuffix = map.fileCountTruncated === true ? ' (counted over a truncated walk; each count is a lower bound)' : ''
+  lines.push(`Languages: ${langSummary || '(none)'}${langSuffix}`)
 
   if (map.topSymbols.length > 0) {
     lines.push('')
