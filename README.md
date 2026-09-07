@@ -11,7 +11,7 @@ permalink: /
 
 ***Give the model what it needs, not everything you have.***
 
-**85%** smaller reads · **40%** of first-read bytes withheld · **97.4%** image compression · **180+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
+**85%** smaller reads · **49%** of first-read bytes withheld · **97.4%** image compression · **180+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
 
 **Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**
 
@@ -186,11 +186,12 @@ Returns relevance-ranked, distance-scored hits straight from the notes, the same
 
 ## Token savings, measured
 
-Numbers below come from synthetic-fixture benchmarks in the test suite, except the first row, which is measured on a corpus of real sessions and says so. Each row points at the source file where the measurement is reproduced.
+Numbers below come from synthetic-fixture benchmarks in the test suite, except the first two rows, which are measured on a corpus of real sessions and say so. Each row points at the source file where the measurement is reproduced.
 
 | Source | Improvement | Measured impact | Where |
 |--------|-------------|-----------------|-------|
 | Large-document outline | A read naming no `offset` or `limit` on a markdown document over 8 KB with six or more headings returns the lead-in and heading tree, plus the `token-goat section` command that reads any section verbatim | Measured on 13,870 real reads across 5,104 sessions: withholds 40.4% of all bytes the Read tool delivers. A 104,890 B document returns 1,541 B with its opening paragraph intact. Sections sum to the document, so a reader who pulls every one back pays about 3% over reading it whole | `src/hooks_read.ts` (`foldMarkdownOutline`) |
+| Large-source skeleton | A read naming no `offset` or `limit` on a source file over 12 KB with eight or more declarations returns the preamble and one line per declaration, each withheld run naming the `token-goat read "file::Symbol"` or ranged `Read` that returns it | Measured on the same corpus: withholds up to 8.6% of all bytes the Read tool delivers, a ceiling rather than a booked total, since the shipping gates are narrower than the measurement's. The skeleton is 10.5% of a `.ts` file. Median symbol body is 4.1% of its file, so a reader breaks even at roughly 22 bodies pulled back out of an average 30.8 | `src/hooks_read.ts` (`foldSourceSkeleton`) |
 | Image shrink | Every still is encoded both ways and the smaller file wins, rather than one codec being assumed | 2560x1440 screenshot-shaped PNG: 2,782,963 -> 259,475 bytes (91% smaller) | `src/image_shrink.ts` (codec selection) |
 | Repomap output | `--compact` trims the top-symbols list to 10 (vs 30) and drops the recent-files section and per-symbol locations | Denser overview for the same byte budget | `src/baseline.ts` (`buildProjectMap`, `token-goat map --compact`) |
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
