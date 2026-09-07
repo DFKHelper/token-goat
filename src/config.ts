@@ -167,6 +167,7 @@ export interface HintsConfig {
   fold_comment_blocks: boolean
   fold_prose_paragraphs: boolean
   outline_large_documents: boolean
+  skeleton_large_sources: boolean
   truncated_read_min_lines: number
   protect_recent_reads: number
   warn_unbalanced_shell_quoting: boolean
@@ -500,6 +501,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     fold_prose_paragraphs: true,
     // On. Fires on an untargeted (no offset/limit) Read of a markdown document at least 8,000 bytes with at least 6 headings, replacing the delivered body with a heading tree plus the document preamble when that replacement is meaningfully smaller. Built from the delivered text itself, never the index, so it works on a document the indexer has never seen. Measured over 5,104 real session transcripts (13,870 Read deliveries, 130,249,204 bytes): untargeted markdown reads with >=6 headings at this 8,000-byte floor withhold 41.03% of all Read bytes, within 1.8 points of the best floor tried (2,000 B) while firing far less often on small documents where the interruption is least worth it.
     outline_large_documents: true,
+    // On. The source-code sibling of outline_large_documents directly above, and gated the same way: an untargeted (no offset/limit) Read of a tree-sitter language at least 12,000 bytes with at least 8 symbols is replaced by its structural skeleton, the preamble plus one declaration line per symbol, with each withheld run named and pointed at the command that returns it. Symbols come from tree-sitter over the delivered text, never the index and never the regex extractors, so a partial symbol list turns the fold off rather than shipping a skeleton missing declarations nothing signals. Measured over 5,104 real session transcripts (130,325,670 delivered Read bytes): 558 reads clear this floor, and the fold withholds 11,241,796 B, 8.63% of all Read bytes.
+    skeleton_large_sources: true,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
     warn_unbalanced_shell_quoting: true,
@@ -1006,6 +1009,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'hints.fold_prose_paragraphs',
   // Same reasoning again: a repository must not be able to hide its own documentation's structure from a reviewing agent by disabling the heading-tree replacement, nor -- more to the point here -- by leaving it on to shrink what a reviewing agent sees of a doc the repo itself ships. The user's global config and TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS still set it freely.
   'hints.outline_large_documents',
+  // Same reasoning one file type over: a repository must not be able to decide, from its own checked-in config, how much of its source a reviewing agent is shown -- neither by turning the skeleton off to bury a declaration in a wall of bodies, nor by leaving it on to withhold the bodies themselves. The user's global config and TOKEN_GOAT_SKELETON_LARGE_SOURCES still set it freely.
+  'hints.skeleton_large_sources',
   'image_shrink.max_image_pixels',
   'indexing.cross_project_symbols',
   'worker.blocked_roots',
@@ -1716,6 +1721,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.fold_comment_blocks = validatedBool(hi_raw['fold_comment_blocks'], hi.fold_comment_blocks)
   hi.fold_prose_paragraphs = validatedBool(hi_raw['fold_prose_paragraphs'], hi.fold_prose_paragraphs)
   hi.outline_large_documents = validatedBool(hi_raw['outline_large_documents'], hi.outline_large_documents)
+  hi.skeleton_large_sources = validatedBool(hi_raw['skeleton_large_sources'], hi.skeleton_large_sources)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
   hi.warn_unbalanced_shell_quoting = validatedBool(hi_raw['warn_unbalanced_shell_quoting'], hi.warn_unbalanced_shell_quoting)
@@ -1749,6 +1755,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.fold_comment_blocks = envBool('TOKEN_GOAT_FOLD_COMMENT_BLOCKS', hi.fold_comment_blocks)
   hi.fold_prose_paragraphs = envBool('TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', hi.fold_prose_paragraphs)
   hi.outline_large_documents = envBool('TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS', hi.outline_large_documents)
+  hi.skeleton_large_sources = envBool('TOKEN_GOAT_SKELETON_LARGE_SOURCES', hi.skeleton_large_sources)
   hi.context_threshold_advisory = envBool('TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY', hi.context_threshold_advisory)
   hi.pre_skill_advisory = envBool('TOKEN_GOAT_PRE_SKILL_ADVISORY', hi.pre_skill_advisory)
   hi.quiet_hours = envStr('TOKEN_GOAT_QUIET_HOURS', hi.quiet_hours)
@@ -1958,6 +1965,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.fold_comment_blocks': ['TOKEN_GOAT_FOLD_COMMENT_BLOCKS'],
   'hints.fold_prose_paragraphs': ['TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS'],
   'hints.outline_large_documents': ['TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS'],
+  'hints.skeleton_large_sources': ['TOKEN_GOAT_SKELETON_LARGE_SOURCES'],
   'hints.context_threshold_advisory': ['TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY'],
   'hints.pre_skill_advisory': ['TOKEN_GOAT_PRE_SKILL_ADVISORY'],
   'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
@@ -2109,6 +2117,7 @@ export function saveConfig(config: Config): void {
       fold_comment_blocks: config.hints.fold_comment_blocks,
       fold_prose_paragraphs: config.hints.fold_prose_paragraphs,
       outline_large_documents: config.hints.outline_large_documents,
+      skeleton_large_sources: config.hints.skeleton_large_sources,
       truncated_read_min_lines: config.hints.truncated_read_min_lines,
       protect_recent_reads: config.hints.protect_recent_reads,
       prompt_triggers: config.hints.prompt_triggers,

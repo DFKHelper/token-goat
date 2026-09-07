@@ -2523,44 +2523,67 @@ function parseContent(content: string, filePath: string, language: Language): Pa
     return parseContent(virtual.content, filePath, 'python')
   }
 
-  if (isTreeSitterAvailable(language)) {
-    try {
-      const Ctor = loadParserCtor()
-      const grammar = loadGrammar(language, filePath, content)
-      if (Ctor !== null && grammar !== null) {
-        const parser = new Ctor()
-        parser.setLanguage(grammar)
-        const tree = parser.parse(content)
-        const root = tree.rootNode
-        let symbols: SymbolEntry[]
-        if (language === 'python') {
-          symbols = extractPythonSymbols(root, filePath)
-        } else if (language === 'go') {
-          symbols = extractGoSymbols(root, filePath, content.split(/\r?\n/))
-        } else if (language === 'rust') {
-          symbols = extractRustSymbols(root, filePath, content.split(/\r?\n/))
-        } else if (language === 'ruby') {
-          symbols = extractRubySymbols(root, filePath, content.split(/\r?\n/))
-        } else if (language === 'java') {
-          symbols = extractJavaSymbols(root, filePath, content.split(/\r?\n/))
-        } else if (language === 'cpp' || language === 'c') {
-          symbols = extractCppSymbols(root, filePath, content.split(/\r?\n/))
-        } else {
-          symbols = extractTsJsSymbols(root, filePath, content.split(/\r?\n/))
-        }
-        const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
-        const parsed = { symbols, refs }
-        return language === 'javascript' && isLwcFile(filePath, '.js')
-          ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
-          : parsed
-      }
-    } catch {
-      // Parser threw on this input — fall through to the regex pass below.
-    }
-  }
+  const viaTreeSitter = parseWithTreeSitter(content, filePath, language)
+  if (viaTreeSitter !== null) return viaTreeSitter
 
   // Regex-based extractors for languages without tree-sitter
   return extractNoTreeSitter(content, filePath, language)
+}
+
+/**
+ * The tree-sitter half of {@link parseContent}, split out so a caller that must never be handed the regex fallback can ask for tree-sitter alone.
+ *
+ * `null` means tree-sitter did not produce this file's symbols: no grammar or no parser constructor for the language, or the parse threw. It never means "this file has no symbols", which is the empty array. {@link parseSourceSymbolsTreeSitterOnly} is the caller that needs that distinction, while {@link parseContent} itself reads null as "fall through to the regex pass", exactly as it did when this block was inline.
+ */
+function parseWithTreeSitter(content: string, filePath: string, language: Language): ParseContentResult | null {
+  if (!isTreeSitterAvailable(language)) return null
+  try {
+    const Ctor = loadParserCtor()
+    const grammar = loadGrammar(language, filePath, content)
+    if (Ctor === null || grammar === null) return null
+    const parser = new Ctor()
+    parser.setLanguage(grammar)
+    const tree = parser.parse(content)
+    const root = tree.rootNode
+    let symbols: SymbolEntry[]
+    if (language === 'python') {
+      symbols = extractPythonSymbols(root, filePath)
+    } else if (language === 'go') {
+      symbols = extractGoSymbols(root, filePath, content.split(/\r?\n/))
+    } else if (language === 'rust') {
+      symbols = extractRustSymbols(root, filePath, content.split(/\r?\n/))
+    } else if (language === 'ruby') {
+      symbols = extractRubySymbols(root, filePath, content.split(/\r?\n/))
+    } else if (language === 'java') {
+      symbols = extractJavaSymbols(root, filePath, content.split(/\r?\n/))
+    } else if (language === 'cpp' || language === 'c') {
+      symbols = extractCppSymbols(root, filePath, content.split(/\r?\n/))
+    } else {
+      symbols = extractTsJsSymbols(root, filePath, content.split(/\r?\n/))
+    }
+    const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
+    const parsed = { symbols, refs }
+    return language === 'javascript' && isLwcFile(filePath, '.js')
+      ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+      : parsed
+  } catch {
+    // Parser threw on this input: the caller decides whether a regex pass is an acceptable substitute for what it could not produce.
+    return null
+  }
+}
+
+/**
+ * Symbols for one file's content from tree-sitter and nothing else, or `null` when tree-sitter could not supply them.
+ *
+ * This exists for the post-read source-skeleton fold in hooks_read.ts, which composes what the model reads out of the symbols returned here. A regex fallback would be wrong there in a way it is not wrong for the index: `extractWithRegex` finds 40-57% of what tree-sitter finds on the same files (measured: 9 against 21, 33 against 82, 48 against 85), and a skeleton built from a partial symbol list omits declarations with nothing in the output to signal the omission. An incomplete map is worse than no map, so that caller delivers the file whole on `null`.
+ *
+ * Takes content rather than a path on purpose: the fold runs on the FIRST read of a file the indexer may never have touched, and the bytes it has to describe are the ones the harness just delivered, not whatever is on disk now.
+ */
+export function parseSourceSymbolsTreeSitterOnly(content: string, filePath: string, language: Language): SymbolEntry[] | null {
+  // The same BOM strip parseContent does, for the same reason: the delivered text of a file an editor saved with U+FEFF would otherwise shift every tree-sitter offset by one.
+  const text = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content
+  const parsed = parseWithTreeSitter(text, filePath, language)
+  return parsed === null ? null : parsed.symbols
 }
 
 /**

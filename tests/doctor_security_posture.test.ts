@@ -236,6 +236,8 @@ describe('an environment variable that reopens a project-locked security setting
     ['hints.fold_comment_blocks', 'TOKEN_GOAT_FOLD_COMMENT_BLOCKS', 'true', 'replaced'],
     // Same reasoning as fold_prose_paragraphs above: this fold ships on, so neither direction is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
     ['hints.outline_large_documents', 'TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS', 'true', 'replaced'],
+    // Same reasoning again: the source skeleton ships on, so neither direction is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
+    ['hints.skeleton_large_sources', 'TOKEN_GOAT_SKELETON_LARGE_SOURCES', 'true', 'replaced'],
     ['mcp.allowed_roots', 'TOKEN_GOAT_MCP_ALLOWED_ROOTS', '/', 'replaced'],
     ['redaction.custom_patterns', 'TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', 'EMP-[0-9]{4,8}', 'replaced'],
     ['webfetch.allow', 'TOKEN_GOAT_WEBFETCH_ALLOW', 'example.com', 'replaced'],
