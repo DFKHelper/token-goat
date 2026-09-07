@@ -14,7 +14,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { auditSessionCorpus, formatSessionAudit } from '../src/session_audit.js'
+import { DENY_TEMPLATE_KINDS, auditSessionCorpus, formatSessionAudit } from '../src/session_audit.js'
 import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
 
 const use = (id: string, name: string, input: Record<string, unknown>): string =>
@@ -107,7 +107,12 @@ afterAll(() => {
 })
 
 describe('DENY_TEMPLATES classification', () => {
-  it('classifies every one of the 25 kinds to its own row, with no cross-kind collisions', async () => {
+  it('has a fixture for every DENY_TEMPLATES kind, and no fixture outliving its template', () => {
+    // The test below iterates DENY_FIXTURES and sizes itself against DENY_FIXTURES.length, so a kind added to DENY_TEMPLATES without a fixture is exercised by nothing at all: it can be born stale, match none of the text the code emits, and drop its events from the census without any test noticing. Set equality in both directions, so a fixture that outlives the template it was written for is caught too.
+    expect([...DENY_TEMPLATE_KINDS].sort()).toEqual(DENY_FIXTURES.map((f) => f.kind).sort())
+  })
+
+  it('classifies every kind to its own row, with no cross-kind collisions', async () => {
     const s = await auditSessionCorpus({ dir: kindsDir })
     expect(s.denyOutcomes.length).toBe(DENY_FIXTURES.length)
     const byKind = new Map(s.denyOutcomes.map((r) => [r.kind, r]))
