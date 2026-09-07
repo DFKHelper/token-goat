@@ -111,6 +111,18 @@ function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean): Fo
 }
 
 /**
+ * Drop any fold touching the first or last delivered row, on a window only.
+ *
+ * This is what lets a windowed read fold comment blocks and prose paragraphs at all. The two notices point at a ranged Read of exactly the span they replaced, so before this the only way to stop a recall read from re-folding its own answer was to decline every window. A recall read delivers precisely the folded span, so any fold it plans spans every row it was given and touches both ends -- filtered here, and the reader gets the lines the notice promised. A fold strictly inside a wider window has no such loop: its recall is narrower than the window that produced it, and narrows again to nothing foldable.
+ *
+ * Deliberately keyed on row position rather than on a line-number comparison against the requested offset. The rows are what the reader is actually holding, so an off-by-one in an offset the harness reported cannot turn a fold that touches the edge into one that looks interior.
+ */
+function strictlyInteriorOnWindow(folds: readonly BodyFold[], rowCount: number, windowed: boolean): BodyFold[] {
+  if (!windowed) return [...folds]
+  return folds.filter((f) => f.startIdx > 0 && f.startIdx + f.len < rowCount)
+}
+
+/**
  * Fold the long bodies and long comment blocks out of one delivered slice of a file.
  *
  * Returns null when nothing is worth folding, which the callers treat as "leave the output exactly as it arrived". Header and trailer lines are the caller's business: a Read result carries a preamble this never sees, and a shell read has none.
@@ -124,11 +136,11 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
   const bodyFolds = foldBodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
   const claimed = new Set<number>()
   for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
-  const commentFolds = !windowed && loadConfig().hints.fold_comment_blocks ? planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed) : []
+  const commentFolds = loadConfig().hints.fold_comment_blocks ? strictlyInteriorOnWindow(planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed), rows.length, windowed) : []
   for (const fold of commentFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   // Prose folding is the only thing that reaches a document, which has no symbol spans for the body planner and no comment syntax for the comment planner. It carries its own setting because the trade differs from code's: a folded body is recovered by naming its symbol, while a folded paragraph is recovered from the cached original.
-  // Declined on a window, which is what {@link commentFoldNotice} already promised and this did not deliver. Both of these notices point at a ranged Read of the exact span, so folding a ranged Read makes each pointer a fixed point: the paragraph pointer's one row is the same over-long paragraph and folds to the same opening sentence, and the comment pointer's n rows re-fold to the two the planner keeps, handing back 2 lines where n were promised. A body fold has no such loop, its pointer being a `token-goat read "file::symbol"` that never re-enters this path, so windows keep folding bodies.
-  const proseFolds = !windowed && isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs ? planProseFolds(rows, claimed) : []
+  // Admitted on a window through {@link strictlyInteriorOnWindow} rather than declined outright. The decline this replaces was justified on the grounds that both notices point at a ranged Read of their own span, so a recall would re-fold and hand back less than was promised. That holds for the PROSE fold, whose pointer is `limit=1` on the very row it folded, which the planner would fold again to the same opening sentence. It does NOT hold for the comment fold, and the old comment here was wrong to claim it did: the recall range starts after the kept `/**` and summary line, and planCommentFolds needs an opening marker to enter a block, so the recalled rows are not a comment run and fold to nothing. Measured, not reasoned -- the test's positive control failed when it asserted otherwise. The edge filter is kept for both anyway, since it costs one predicate and makes the property structural rather than dependent on where a planner happens to place its kept lines. A body fold is never filtered, its pointer being a `token-goat read "file::symbol"` that does not re-enter this path.
+  const proseFolds = isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs ? strictlyInteriorOnWindow(planProseFolds(rows, claimed), rows.length, windowed) : []
   const folds = mergeFolds(mergeFolds(bodyFolds, commentFolds), proseFolds)
   if (folds.length === 0) return null
 

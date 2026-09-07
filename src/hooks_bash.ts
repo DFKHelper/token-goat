@@ -1920,8 +1920,11 @@ function foldShellReadBodies(cmd: string, output: string, fileKey: string, cwd: 
     rows.push({ no, text: lines[i] ?? '', raw: lines[i] ?? '' })
   }
 
+  // Whether the model is holding a slice rather than the whole file. Left to its default this was false for every shell read, so the shell door folded windows without the edge guard the Read door applies. A fold touching an edge of a slice has a recall that re-folds its own answer and hands back less than the notice promised. A ranged read is always a slice. A `head -n N` that came back with fewer than N rows hit end-of-file, so it delivered the whole file and its edges are the file's own; one that returned N or more may have been truncated and is treated as a window. That ambiguous case costs at most one edge fold, where guessing the other way ships a recall that folds itself. Written as positive matchers rather than `extractCatFile(cmd) === null` so a command both matchers claim is still treated as the window it is, mirroring the precedence deliveredLineNumbers already uses.
+  const headRead = extractHeadFile(cmd)
+  const windowed = extractLineRangeRead(cmd) !== null || (headRead !== null && lines.length >= headRead.n)
   // Repo-relative, so the notice stays a command that can be run as printed without carrying an absolute Windows path once per fold. Against the directory a leading `cd` actually left the shell in, which is the cwd already resolved into fileKey.
-  const folded = foldDelivery(rows, fileKey, displaySafePath(toDisplayPath(findProject(cwd ?? process.cwd())?.root, fileKey)))
+  const folded = foldDelivery(rows, fileKey, displaySafePath(toDisplayPath(findProject(cwd ?? process.cwd())?.root, fileKey)), windowed)
   if (folded === null) return null
   return { text: folded.numbered.join('\n'), folds: folded.folds }
 }
