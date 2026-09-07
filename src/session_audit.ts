@@ -405,6 +405,9 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
   { kind: 'file_type_handler_deny', re: /too large to preview \(exceeds the in-hook scan cap\)|cannot be read as text\.|Read cannot return spreadsheet content|Read cannot return slide content|Read cannot return document content|Use Read with offset and limit parameters to read specific line ranges/ },
 ]
 
+/** Every kind DENY_TEMPLATES can classify, exported so the suite can assert its fixture set covers all of them. Without that assertion a kind added to the array without a fixture is never exercised by any test: it can be born stale, match nothing the code emits, and drop its events from the census silently, which is the exact failure the fixtures exist to prevent. */
+export const DENY_TEMPLATE_KINDS: readonly string[] = DENY_TEMPLATES.map((t) => t.kind)
+
 /** Kinds whose message template prints a byte figure (formatBytes/toKB style) that parseWithheldBytes can extract. Every other kind's withheldBytes is unconditionally null -- not every template prints a size, and guessing one from unrelated digits in the message (e.g. a reread count, or bytes inside a fenced diff) would be worse than admitting it is unknown. */
 const DENY_KINDS_WITH_SIZE = new Set(['large_file_deny', 'session_artifact_large_deny', 'file_type_handler_deny'])
 
