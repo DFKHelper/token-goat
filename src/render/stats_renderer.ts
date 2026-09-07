@@ -596,6 +596,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'grep:fold',
       'read:served_elide',
       'read:body_fold',
+      'read:markdown_outline',
       'handoff_create',
       'handoff_resolve',
       'plan_echo_collapse',
