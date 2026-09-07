@@ -213,6 +213,25 @@ function readStartLine(event: HookEvent): number {
   return 1
 }
 
+/** The notice Claude Code prints when a whole-file Read overruns the token cap, anchored to the start of a line: the notice is its own line (measured over 5,114 real transcripts, all 160 occurrences begin their string at index 0), while a source file that merely quotes the literal has it embedded mid-line inside a string, and folding that file is correct. Only the full `[Truncated: PARTIAL view` form is matched, never the bare `[Truncated:` prefix: across 13,904 real Read results the only bodies ever carrying that prefix were this repo's own six guard lines and one comment in session.ts, i.e. false positives without exception. */
+const HARNESS_TRUNCATION_NOTICE_RE = /^[ \t]*\[Truncated: PARTIAL view/m
+
+/**
+ * True when the harness handed back only part of the read, so folding it would withhold lines the model never received.
+ *
+ * Two signals, strongest first. `tool_response.file.truncatedByTokenCap` is the structural one Claude Code sets on exactly the reads its token cap cut short: over 13,904 real Read results it appears on 159, is `true` on all 159, and is absent from every other read. It is strictly better than a string scan because it cannot be spoofed by a file that discusses truncation, and it is the only signal that fires at all on current Claude Code, which delivers the notice as a separate attachment banner the hook never sees in `tool_response`. The notice text is kept as a second arm for harnesses that splice it into the body instead, where dropping it would be a false negative nobody could characterise.
+ *
+ * `numLines < totalLines` is deliberately NOT used: it holds on 7,469 of those same 13,904 reads, almost all of them ordinary windowed reads that fold correctly, so it discriminates nothing.
+ */
+export function isTruncatedReadDelivery(event: HookEvent, respText: string): boolean {
+  const resp = event.raw['tool_response']
+  if (resp !== null && typeof resp === 'object') {
+    const file = (resp as Record<string, unknown>)['file']
+    if (file !== null && typeof file === 'object' && (file as Record<string, unknown>)['truncatedByTokenCap'] === true) return true
+  }
+  return HARNESS_TRUNCATION_NOTICE_RE.test(respText)
+}
+
 /** Cap on bytes scanned while estimating an offset/limit slice — keeps the estimate itself cheap. */
 const SLICE_ESTIMATE_SCAN_CAP_BYTES = 2 * 1024 * 1024
 
@@ -1448,7 +1467,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   const normalized = normalizePath(filePath)
   const shown = displaySafePath(normalized)
   const respText = extractReadOutput(event.raw)
-  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) {
+  if (isTruncatedReadDelivery(event, respText)) {
     markFileTruncated(normalized)
   }
 
@@ -1637,7 +1656,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
     // ever been truncated: that flag is sticky for the rest of the session, so one truncated Read
     // would disqualify every later complete Read of the same file, which does deliver its window.
     const respText = extractReadOutput(event.raw)
-    if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return
+    if (isTruncatedReadDelivery(event, respText)) return
     // What the model was actually handed, which is the disk window ONLY when nothing rewrote it. A body fold delivers strictly less than the file holds, and storing the disk copy would tell every later read that the folded lines were served -- so a re-read coming back for exactly those lines would have them elided as "already seen". The store's whole contract is a record of what reached the model, and a rewrite is the one case where that differs from disk.
     const served = deliveredRaw ?? readWindowFromDisk(event, normalized)
     if (served === null) return
@@ -1741,7 +1760,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   if (filePath === undefined) return null
   const normalized = normalizePath(filePath)
   if (isImagePath(normalized)) return null
-  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
+  if (isTruncatedReadDelivery(event, respText)) return null
 
   const ids = getFileServedOutputs(normalized)
   if (ids.length === 0) return null
@@ -1867,7 +1886,7 @@ function foldMarkdownOutline(event: HookEvent, respText: string): { output: Hook
 
   // Untargeted only: a reader who asked for a specific window gets that window, not a tree.
   if (readIntToolInput(event, 'offset') !== undefined || readIntToolInput(event, 'limit') !== undefined) return null
-  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
+  if (isTruncatedReadDelivery(event, respText)) return null
   if (redactSecrets(respText).count > 0) return null
 
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
@@ -2032,7 +2051,7 @@ function foldSourceSkeleton(event: HookEvent, respText: string): { output: HookO
   const language = detectLanguage(normalized)
   if (!isTreeSitterAvailable(language)) return null
 
-  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
+  if (isTruncatedReadDelivery(event, respText)) return null
   // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move, same call as foldCodeBodies and foldMarkdownOutline.
   if (redactSecrets(respText).count > 0) return null
 
@@ -2081,7 +2100,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   // A windowed read is foldable, but only when its delivered rows carry the file's own line numbers. `planBodyFolds` decides whether a window is narrow enough to leave alone: it declines any span whose declaration sits above the first delivered line, so a caller asking for the middle of one function still gets every line back, while a window wide enough to hold whole declarations folds them. That containment test compares row numbers against indexed spans, so it is meaningless against numbers synthesised from line 1, and the harness reports the true window start in `tool_response.file.startLine`. An offset it does not confirm is declined rather than guessed at: measured over 566 real ranged Reads, 562 agree exactly, and the four that disagree are negative offsets the harness clamps to line 1, which this equality rejects. A bare `limit` needs no check, its window starting at line 1 either way.
   const requestedOffset = readIntToolInput(event, 'offset')
   if (requestedOffset !== undefined && readStartLine(event) !== requestedOffset) return null
-  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
+  if (isTruncatedReadDelivery(event, respText)) return null
 
   // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain Read gives the user more of their own file than a redacted rewrite would. Same call as elideAlreadyServedLines.
   if (redactSecrets(respText).count > 0) return null

@@ -176,6 +176,19 @@ afterEach(() => {
   }
 })
 
+/**
+ * Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of
+ * random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the
+ * 25,000-token cap; this is the notice byte-for-byte as the harness emitted it, only the temp path
+ * left as it was written. It is the only truncation-notice form with external provenance: Claude
+ * Code's own changelog documents the "PARTIAL view" notice, and a scan of 13,904 real Read results
+ * turned up no other form. The fixtures this replaced ('first chunk Truncated: PARTIAL view of
+ * file' and '[Truncated: file too large, showing first 33K tokens]') were both written from
+ * hooks_read.ts's own matcher and so agreed with it by construction.
+ */
+const HARNESS_TRUNCATION_NOTICE =
+  '[Truncated: PARTIAL view — C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
+
 describe('preReadHandler', () => {
   it('returns pass when no file_path in input', () => {
     const result = preReadHandler(readEvent(undefined))
@@ -661,7 +674,8 @@ describe('preReadHandler', () => {
         toolInput: { file_path: p },
         sessionId: 'test',
         agentId: undefined,
-        raw: { tool_response: content + ' [Truncated: file too large, showing first 33K tokens]' },
+        raw: { tool_response: `${HARNESS_TRUNCATION_NOTICE}
+${content}` },
       }
       postReadHandler(postEvent)
       return p
@@ -730,7 +744,8 @@ describe('preReadHandler', () => {
         toolInput: { file_path: p },
         sessionId: 'test',
         agentId: undefined,
-        raw: { tool_response: 'content here [Truncated: file too large, showing first 33K tokens]' },
+        raw: { tool_response: `${HARNESS_TRUNCATION_NOTICE}
+content here` },
       }
       postReadHandler(postEvent)
 
@@ -2370,7 +2385,7 @@ Some content that makes the file large enough`
   })
 
   // Item 1: post-read truncation detection
-  it('postReadHandler marks a file as truncated when response contains [Truncated:', () => {
+  it('postReadHandler marks a file as truncated when the harness truncation notice opens the response', () => {
     // hints.truncated_read_min_lines gates this deny (default 200); this fixture is a
     // 1-line file, so lower the threshold to 0 to keep exercising the deny path itself.
     const cfg = defaultConfig()
@@ -2386,7 +2401,8 @@ Some content that makes the file large enough`
       toolInput: { file_path: p },
       sessionId: 'test',
       agentId: undefined,
-      raw: { tool_response: 'content here [Truncated: file too large, showing first 33K tokens]' },
+      raw: { tool_response: `${HARNESS_TRUNCATION_NOTICE}
+content here` },
     }
     postReadHandler(postEvent)
 
@@ -2420,7 +2436,7 @@ Some content that makes the file large enough`
       toolInput: { file_path: p },
       sessionId: 'test',
       agentId: undefined,
-      raw: { tool_response: 'first chunk Truncated: PARTIAL view of file' },
+      raw: { tool_response: `${HARNESS_TRUNCATION_NOTICE}\n     1\tcontent` },
     }
     postReadHandler(postEvent)
     const result = preReadHandler(readEvent(p))
@@ -2449,6 +2465,84 @@ Some content that makes the file large enough`
     postReadHandler(postEvent)
     // First pre-read should pass (not yet read)
     const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  /**
+   * Fixture provenance: CAPTURE. The `truncatedByTokenCap` key and its shape come from the stored
+   * `toolUseResult.file` object of real Claude Code Read results: across 13,904 of them the key is
+   * present on 159 and `true` on all 159, and those 159 are exactly the reads the harness cut at its
+   * token cap. On that harness the notice itself never enters `tool_response` at all (it rides as a
+   * separate attachment banner), so this flag is the only signal a hook can see.
+   */
+  it('postReadHandler marks file truncated on the structural truncatedByTokenCap flag, with no marker in the body', () => {
+    const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 0
+    cfg.hints.truncated_read_min_lines = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    const p = makeTmpFile('content')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      agentId: undefined,
+      raw: {
+        tool_response: {
+          type: 'text',
+          file: { filePath: p, content: '     1\tcontent', numLines: 529, startLine: 1, totalLines: 1601, truncatedByTokenCap: true },
+        },
+      },
+    }
+    postReadHandler(postEvent)
+    const result = preReadHandler(readEvent(p))
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(_testConfigPath)
+    } catch {
+      // ok -- may not exist
+    }
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('truncated on last read')
+    }
+  })
+
+  /**
+   * Fixture provenance: HAND-DERIVED. The body below is a source line written for this test that
+   * quotes the marker inside a string literal, which is where every real occurrence of the literal
+   * in a Read body has been: measured over 13,904 real Read results, the only bodies ever carrying
+   * `[Truncated:` were this repo's own guard lines and one comment in session.ts, i.e. a file
+   * discussing truncation rather than a truncated read.
+   */
+  it('postReadHandler does not mark file truncated when the body merely quotes the marker mid-line', () => {
+    // Same config the two positive cases above use, so the only thing that can make this pass is the
+    // file never being flagged truncated: with a deny this cheap to trigger, a pass is the signal.
+    const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 0
+    cfg.hints.truncated_read_min_lines = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    const p = makeTmpFile('content')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      agentId: undefined,
+      raw: { tool_response: "     1\tif (respText.includes('[Truncated: PARTIAL view')) return null" },
+    }
+    postReadHandler(postEvent)
+    const result = preReadHandler(readEvent(p))
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(_testConfigPath)
+    } catch {
+      // ok -- may not exist
+    }
     expect(result.hookType).toBe('pass')
   })
 

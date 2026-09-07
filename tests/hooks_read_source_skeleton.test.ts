@@ -197,6 +197,70 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     expect(stored.length).toBeLessThan(body.split('\n').length)
   })
 
+  /**
+   * Fixture provenance: HAND-DERIVED for the quoting line (a source line written for this test, of
+   * the same shape as the guard lines in src/hooks_read.ts), CAPTURE for the notice constant below.
+   *
+   * The guard against folding a truncated delivery used to scan the whole body for `[Truncated:`
+   * anywhere in it, so any file whose own text discussed truncation became permanently unfoldable:
+   * src/hooks_read.ts and tests/hooks_read.test.ts, the two files an agent working on this subsystem
+   * reads most, were the largest casualties.
+   */
+  it('still folds a source file whose own body quotes the truncation marker inside a string', () => {
+    const quoting = "  if (respText.includes('[Truncated: PARTIAL view')) return null"
+    const body = tsFile(12, 12).replace(BODY_FILLER, `${BODY_FILLER}\n${quoting}`)
+    expect(body).toContain(quoting)
+    const file = writeSource(body, '.ts')
+    const text = rewrittenText(postReadHandler(postEvent(file, body)))
+
+    expect(text).toContain('structural skeleton')
+    for (const imp of IMPORT_LINES) expect(text).toContain(imp)
+    for (let i = 0; i < 12; i++) expect(text).toContain(declLine(i))
+  })
+
+  /**
+   * Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of
+   * random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the
+   * 25,000-token cap; this is the notice byte-for-byte as the harness emitted it.
+   */
+  const HARNESS_TRUNCATION_NOTICE =
+    '[Truncated: PARTIAL view — C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
+
+  it('declines to fold when the harness truncation notice opens the delivered body', () => {
+    const body = tsFile(12, 12)
+    const file = writeSource(body, '.ts')
+    const event: HookEvent = { ...postEvent(file, body), raw: { tool_response: `${HARNESS_TRUNCATION_NOTICE}\n${numbered(body)}` } }
+    expect(JSON.stringify(postReadHandler(event))).not.toContain('structural skeleton')
+  })
+
+  /**
+   * Fixture provenance: CAPTURE. The `tool_response.file` shape and the `truncatedByTokenCap` key
+   * are taken from the stored `toolUseResult.file` object of real Claude Code Read results: across
+   * 13,904 of them the key is present on 159 and `true` on all 159, and those 159 are exactly the
+   * reads the harness cut at its token cap. On that harness the notice text never reaches the hook
+   * through `tool_response` at all, so this flag is the guard's only live true positive.
+   */
+  it('declines to fold when tool_response.file.truncatedByTokenCap is set, with no marker in the body', () => {
+    const body = tsFile(12, 12)
+    const file = writeSource(body, '.ts')
+    const fileField = (truncated: boolean): Record<string, unknown> => ({
+      filePath: file,
+      content: numbered(body),
+      numLines: body.split('\n').length,
+      startLine: 1,
+      totalLines: body.split('\n').length,
+      ...(truncated ? { truncatedByTokenCap: true } : {}),
+    })
+
+    const truncatedEvent: HookEvent = { ...postEvent(file, body), raw: { tool_response: { type: 'text', file: fileField(true) } } }
+    expect(JSON.stringify(postReadHandler(truncatedEvent))).not.toContain('structural skeleton')
+
+    // Calibration: the identical payload without the flag folds, so the decline above is the flag
+    // and not the nested `tool_response.file` shape going unread.
+    const completeEvent: HookEvent = { ...postEvent(file, body), raw: { tool_response: { type: 'text', file: fileField(false) } } }
+    expect(JSON.stringify(postReadHandler(completeEvent))).toContain('structural skeleton')
+  })
+
   it('writes a read:source_skeleton row so the ledger reflects the rewrite', () => {
     const body = tsFile(12, 12)
     const file = writeSource(body, '.ts')

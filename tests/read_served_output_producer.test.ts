@@ -71,11 +71,21 @@ function slice(start: number, end: number): string {
   return LINES.slice(start - 1, end).join('\n')
 }
 
+/**
+ * Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of
+ * random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the
+ * 25,000-token cap; this is the notice byte-for-byte as the harness emitted it. The fixture this
+ * replaced ('[Truncated: file too large]') was written from hooks_read.ts's own matcher and so
+ * agreed with it by construction.
+ */
+const HARNESS_TRUNCATION_NOTICE =
+  '[Truncated: PARTIAL view — C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
+
 function readEvent(opts: { offset?: number; limit?: number; truncated?: boolean } = {}) {
   const toolInput: Record<string, unknown> = { file_path: TARGET }
   if (opts.offset !== undefined) toolInput['offset'] = opts.offset
   if (opts.limit !== undefined) toolInput['limit'] = opts.limit
-  const content = opts.truncated ? '[Truncated: file too large]\n' + slice(1, 5) : slice(1, 5)
+  const content = opts.truncated ? HARNESS_TRUNCATION_NOTICE + '\n' + slice(1, 5) : slice(1, 5)
   return makeHookEvent({
     eventName: 'post_tool_use',
     toolName: 'Read',
