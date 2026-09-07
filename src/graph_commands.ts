@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice } from './ref_blindness.js'
+import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote } from './ref_blindness.js'
 import { detectLanguage } from './parser_types.js'
 import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
@@ -367,10 +367,20 @@ export function runCallers(opts: CallersOptions): number {
     const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(opts.symbol, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      emitErr(refBlindLanguageNotice(name, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      return 1
+    }
+    // The kind half of the same gate, checked after the language half so a symbol blind both ways gets the language message: that one names a file and a language and is the more actionable of the two. Fires only when EVERY definition is of a ref-blind kind, the same all-or-nothing rule the language gate uses and for the same reason. Exit 1, matching the language gate and the ordinary empty result beside it, so nothing scripting on the exit code has to learn a third case.
+    // Re-queried scoped to the hinted file rather than reusing defRows, which is name-scoped only: a `file::symbol` spec names ONE definition, and the kinds of same-named definitions elsewhere in the project have no bearing on whether that one could have produced a ref row.
+    const kindRows = fileHint !== undefined ? querySymbols({ name, filePath: fileHint, limit: REF_BLIND_DEF_PROBE_LIMIT }) : defRows
+    const kindVerdict = refBlindKindVerdict(kindRows)
+    if (kindVerdict.allBlind) {
+      emitErr(refBlindKindNotice(name, kindVerdict.blindKinds))
       return 1
     }
     emitErr(`No references found for '${opts.symbol}'`)
+    // A partial answer presented as a whole one is the same defect as a refusal that was not needed: the remaining definitions were genuinely searched, so the message above stands, but the ref-blind ones it cannot speak for are named rather than dropped.
+    if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(name, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     // Only paid after the query already came back empty, and only in text mode -- this branch
     // already emits plain prose regardless of --json (see runRefsSingle's sibling comment), so
     // there's no JSON envelope here to protect either way.
@@ -482,6 +492,14 @@ export function runCallChain(opts: CallChainOptions): number {
     return paths.length > 0 && paths.every((fp) => !isRefIndexedFile(fp)) ? paths[0] : undefined
   }
 
+  // The BFS root's definition rows, for the kind half of the same gate: a root that only ever occurs in type position has an empty frontier by construction, so "(no callers)" is the index's blindness rather than a settled verdict. A function for the same reason its language sibling above is one: only the empty-result branches need the answer, so the populated path must not pay the query. Scoped to the hinted file when a `file::symbol` spec named one definition, since same-named definitions elsewhere say nothing about that one.
+  const refBlindRootKinds = (): { blindKinds: string[]; blindCount: number; allBlind: boolean; total: number } => {
+    const rows = fileHint !== undefined
+      ? querySymbols({ name, filePath: fileHint, limit: REF_BLIND_DEF_PROBE_LIMIT })
+      : querySymbols({ name, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
+    return { ...refBlindKindVerdict(rows), total: rows.length }
+  }
+
   // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
@@ -544,7 +562,9 @@ export function runCallChain(opts: CallChainOptions): number {
     // --exclude-tests never zeroes a non-empty chain set the way --grep can, it only prunes BFS
     // hops before chains are built. Text mode's own sibling branch below already names this.
     const hiddenByExcludeTests = noCallers && opts.excludeTests === true ? suppressedCount : 0
-    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}) }, null, 2))
+    // Same disambiguation once more, for the kind blind spot: the `chains: [[name]]` noCallers shape reads as a settled verdict, and for a type declaration it is not one. Named in the envelope rather than left to the stderr notice, so a --json consumer is not the one caller told nothing -- same reason hiddenByGrep exists. Omitted when zero, so every populated and genuinely caller-less answer stays byte-identical.
+    const refBlindKinds = noCallers ? refBlindRootKinds().blindKinds : []
+    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}), ...(refBlindKinds.length > 0 ? { refBlindKinds } : {}) }, null, 2))
     return 0
   }
 
@@ -564,7 +584,15 @@ export function runCallChain(opts: CallChainOptions): number {
       emit(`${name}  (no callers recorded)`)
       return 0
     }
+    // The kind half, after the language half for the same precedence reason as callers/impact/refs. Exit stays 0 and the chain line keeps its shape on stdout, matching what the language gate does here: this branch's contract is "a chain rendering plus, when the answer is not an answer, a notice on stderr saying so".
+    const rootKinds = refBlindRootKinds()
+    if (rootKinds.allBlind) {
+      emitErr(refBlindKindNotice(name, rootKinds.blindKinds))
+      emit(`${name}  (no callers recorded)`)
+      return 0
+    }
     emit(`${name}  (no callers)`)
+    if (rootKinds.blindCount > 0) emitErr(refBlindKindPartialNote(name, rootKinds.blindKinds, rootKinds.blindCount, rootKinds.total))
     return 0
   }
 
@@ -754,10 +782,18 @@ export function runImpact(opts: ImpactOptions): number {
     const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(opts.symbol, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      emitErr(refBlindLanguageNotice(rootName, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      return 1
+    }
+    // Same kind gate as runCallers', on the command that BFSes the same ref rows: for a type declaration the frontier is empty by construction, so "no impact" describes the index and not the blast radius of changing it. Language gate first, all-or-nothing, exit 1, for the reasons given there.
+    const kindRows = fileHint !== undefined ? querySymbols({ name: rootName, filePath: fileHint, limit: REF_BLIND_DEF_PROBE_LIMIT }) : defRows
+    const kindVerdict = refBlindKindVerdict(kindRows)
+    if (kindVerdict.allBlind) {
+      emitErr(refBlindKindNotice(rootName, kindVerdict.blindKinds))
       return 1
     }
     emitErr(`No callers found for '${opts.symbol}'`)
+    if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(rootName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     return 1
   }
 
@@ -1267,6 +1303,16 @@ export const TYPE_KINDS: ReadonlyArray<string> = [
 
 // Symbol `kind` values whose references the index structurally cannot record, so `dead` cannot assess them: a type declaration's name appears only in type-annotation position, and extractRefs walks call/new/macro nodes plus a few bare-identifier value positions, never a `type_identifier`. Derived from TYPE_KINDS rather than hand-listed so a future type kind added there cannot silently become assessable-looking here. 'impl' (Rust `impl_item`, parser.ts's KIND_MAP) is added on top: it is not a type declaration so it is absent from TYPE_KINDS, but an impl block is named for the type it implements and that name likewise only ever occurs in type position. Measured against the machine-wide index before this gate existed: of symbols whose name matches at least one row in `refs`, function 84.7% / class 64.7% / method 60.8%, against interface 0.2% (n=21730), type 7.6%, struct 4.8%, impl 3.4%, enum 3.3% -- and within TypeScript alone, class 79.5% against interface 0.2%, which isolates the kind from the language. Those hit rates are upper bounds, since a same-named symbol in any other project counts as a hit.
 export const REF_BLIND_KINDS: ReadonlyArray<string> = [...new Set([...TYPE_KINDS, 'impl'])]
+
+/** Classifies the definition rows a single-symbol reference lookup already fetched, for the empty-result gates in `refs`/`callers`/`impact`/`call-chain`. `allBlind` means no definition of this name could ever have produced a ref row, so an empty result is the index's blindness and must be refused rather than reported; a non-empty `blindKinds` with `allBlind` false means the result is real for the other definitions and the excluded ones get disclosed beside it. Defined here rather than in ref_blindness.ts because REF_BLIND_KINDS derives from TYPE_KINDS, which lives in this module, and importing this module from ref_blindness.ts would put a top-level array derivation inside an import cycle. */
+export function refBlindKindVerdict(rows: ReadonlyArray<{ kind: string }>): { blindKinds: string[]; blindCount: number; allBlind: boolean } {
+  const blind = rows.filter((r) => REF_BLIND_KINDS.includes(r.kind))
+  return {
+    blindKinds: [...new Set(blind.map((r) => r.kind))],
+    blindCount: blind.length,
+    allBlind: rows.length > 0 && blind.length === rows.length,
+  }
+}
 
 // Symbol `kind` values every language adapter in this repo is known to emit (collected from the
 // language adapter source, not the runtime index) -- used by `dead --kind` to recognize a
