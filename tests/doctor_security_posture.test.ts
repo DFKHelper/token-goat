@@ -230,8 +230,10 @@ describe('an environment variable that reopens a project-locked security setting
     ['network.offline', 'TOKEN_GOAT_OFFLINE', 'false', 'weakened'],
     ['indexing.cross_project_symbols', 'TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', 'true', 'weakened'],
     ['hints.fold_code_bodies', 'TOKEN_GOAT_FOLD_CODE_BODIES', 'true', 'weakened'],
-    ['hints.fold_prose_paragraphs', 'TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', 'true', 'weakened'],
     ['webfetch.compress_bodies', 'TOKEN_GOAT_WEB_COMPRESS', 'false', 'weakened'],
+    // Reported rather than warned about, because this fold ships on: 'true' restates the default and 'false' shows more, so neither is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
+    ['hints.fold_prose_paragraphs', 'TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', 'true', 'replaced'],
+    ['hints.fold_comment_blocks', 'TOKEN_GOAT_FOLD_COMMENT_BLOCKS', 'true', 'replaced'],
     ['mcp.allowed_roots', 'TOKEN_GOAT_MCP_ALLOWED_ROOTS', '/', 'replaced'],
     ['redaction.custom_patterns', 'TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', 'EMP-[0-9]{4,8}', 'replaced'],
     ['webfetch.allow', 'TOKEN_GOAT_WEBFETCH_ALLOW', 'example.com', 'replaced'],

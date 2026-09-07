@@ -48,10 +48,10 @@ export function bodyFoldNotice(name: string, firstLine: number, lastLine: number
  *
  * A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span, which is also the one Read shape this fold never touches -- offset/limit reads are left alone as already surgical -- so the pointer cannot loop back into another fold.
  */
-/** True when any fold is enabled. The two hook entry points gate on this rather than on one setting each: which kind of fold a given file is eligible for is decided inside {@link foldDelivery} by what the file actually is, and a caller checking only the code setting would make a document unfoldable no matter how the prose setting was left. */
+/** True when any of the three folds is enabled. The two hook entry points gate on this rather than on one setting each: which kind of fold a given file is eligible for is decided inside {@link foldDelivery} by what the file actually is, and a caller checking only one setting would make a file unfoldable no matter how the other two were left. */
 export function foldingEnabled(): boolean {
   const hints = loadConfig().hints
-  return hints.fold_code_bodies || hints.fold_prose_paragraphs
+  return hints.fold_code_bodies || hints.fold_comment_blocks || hints.fold_prose_paragraphs
 }
 
 /** Document extensions a prose fold applies to. Narrower than the shell path's `isDoc` classification, which also admits `.rst` and `.txt`: pointing a reader at `section` is harmless on any document, while folding one is only safe where the planner can recognise the structure it must leave alone, and every rule it has for that is markdown (fences, ATX headings, pipe tables, blockquotes). Against a `.txt` there is no markup at all to recognise, so a wrapped log record reads as a paragraph and folds to its first sentence with every stack frame after it discarded, and `.rst` marks its literal blocks by indentation and `..` directives that none of those rules see. */
@@ -83,7 +83,7 @@ export interface FoldRow {
   readonly raw: string
 }
 
-/** A folded delivery, as two parallel renderings: `numbered` goes back to the model, `raw` goes to the served-output store so a later read is matched against what was actually shown. Notices appear in both, because the reader did not see those lines either way. */
+/** A folded delivery, as two renderings that are deliberately not parallel: `numbered` goes back to the model and carries a notice in place of each folded span, while `raw` goes to the served-output store and carries neither the folded lines nor the notice. That asymmetry is the point. The store answers "which lines of this file has the reader already been shown", so a folded line must be absent from it or a later read would withhold a line nobody ever saw, and the notice must be absent too because it is not a line of the file and would misalign every line after it. */
 export interface FoldedDelivery {
   readonly numbered: string[]
   readonly raw: string[]
@@ -117,12 +117,14 @@ function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean): Fo
  */
 export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, shownPath: string, windowed = false): FoldedDelivery | null {
   const syntax = commentSyntaxFor(normalizedPath)
-  const spans = resolveFoldSpans(normalizedPath, syntax !== null)
+  // Resolved only when a body fold could use it. Spans cost a whole-file hash against the index plus, on a miss, an append to the dirty reindex queue, and both are pure waste for the caller that cannot fold bodies. That caller is now every stock install: prose folding ships on, so `foldingEnabled` is true everywhere and each read of a source file reaches this line, where the old default left it unreachable. A miss is also the common case rather than the rare one (measured on a real index, the parser stamp was stale on 95% of this project's files), so an unguarded call would enqueue most source files for reindex on every read and fold nothing at all in return.
+  const foldBodies = loadConfig().hints.fold_code_bodies
+  const spans = foldBodies ? resolveFoldSpans(normalizedPath, syntax !== null) : []
 
-  const bodyFolds = loadConfig().hints.fold_code_bodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
+  const bodyFolds = foldBodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
   const claimed = new Set<number>()
   for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
-  const commentFolds = !windowed && loadConfig().hints.fold_code_bodies ? planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed) : []
+  const commentFolds = !windowed && loadConfig().hints.fold_comment_blocks ? planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed) : []
   for (const fold of commentFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   // Prose folding is the only thing that reaches a document, which has no symbol spans for the body planner and no comment syntax for the comment planner. It carries its own setting because the trade differs from code's: a folded body is recovered by naming its symbol, while a folded paragraph is recovered from the cached original.
   // Declined on a window, which is what {@link commentFoldNotice} already promised and this did not deliver. Both of these notices point at a ranged Read of the exact span, so folding a ranged Read makes each pointer a fixed point: the paragraph pointer's one row is the same over-long paragraph and folds to the same opening sentence, and the comment pointer's n rows re-fold to the two the planner keeps, handing back 2 lines where n were promised. A body fold has no such loop, its pointer being a `token-goat read "file::symbol"` that never re-enters this path, so windows keep folding bodies.
