@@ -369,16 +369,25 @@ const READ_FULL_SERVE_MIN_BYTES = 10240
  * ours". A live corpus query saw divertedByMarker at 422 against a deny population believed to
  * be roughly 1512: most denies never had a kind at all before this table existed.
  */
-const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
-  { kind: 'node_modules_deny', re: /node_modules is typically noise/ },
-  { kind: 'lock_file_deny', re: /Lock files are rarely useful to read in full/ },
-  { kind: 'tsbuildinfo_deny', re: /TypeScript incremental build cache file/ },
-  { kind: 'generated_build_deny', re: /Generated\/build artifact — read the source file instead\./ },
-  { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/ },
-  { kind: 'notebook_sidecar_served', re: /Serving the output-stripped notebook in place of the full file/ },
+/**
+ * `tool` is the tool whose result can legitimately carry this wording, and matching is refused for
+ * any other. Without it the table matches a *document about* a deny as a deny: a Read of this repo's
+ * own fixture file, or of a measurement script quoting the text, classified as a real event. Measured
+ * over the user's session corpus, that accounted for 16 of 693 skill_ matches -- and for three of the
+ * five skill_ kinds it was every single match, so their true count was zero while the census reported
+ * activity. It also produced a non-zero `retried` rate on a Skill kind, which is structurally
+ * impossible: only a Read result carries the path that outcome matches on.
+ */
+const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }> = [
+  { kind: 'node_modules_deny', re: /node_modules is typically noise/ , tool: 'Read' },
+  { kind: 'lock_file_deny', re: /Lock files are rarely useful to read in full/ , tool: 'Read' },
+  { kind: 'tsbuildinfo_deny', re: /TypeScript incremental build cache file/ , tool: 'Read' },
+  { kind: 'generated_build_deny', re: /Generated\/build artifact — read the source file instead\./ , tool: 'Read' },
+  { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/ , tool: 'Read' },
+  { kind: 'notebook_sidecar_served', re: /Serving the output-stripped notebook in place of the full file/ , tool: 'Read' },
   // Must stay ABOVE markdown_heading_tree_deny: this deny's message embeds the same "Large markdown file (N headings)" guidance block, so the generic alternative would swallow it and the new intervention would be uncountable. DENY_TEMPLATES is scanned with `.find`, so the more specific wording has to come first.
-  { kind: 'subagent_markdown_first_read_deny', re: /Subagent first read of a large markdown file/ },
-  { kind: 'markdown_heading_tree_deny', re: /Large markdown file \(\d+ headings\)/ },
+  { kind: 'subagent_markdown_first_read_deny', re: /Subagent first read of a large markdown file/ , tool: 'Read' },
+  { kind: 'markdown_heading_tree_deny', re: /Large markdown file \(\d+ headings\)/ , tool: 'Read' },
   // The first alternative is a wording hooks_read.ts no longer emits (it claimed a compact-manifest
   // section that never existed, reworded in 3d044feb). It stays because this table classifies a
   // historical corpus, not just today's output: transcripts written before the rewording still
@@ -386,30 +395,30 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp }> = [
   // 30 -- 41% of its history -- with a green suite. A superseded alternative is only removable
   // once no transcript contains it, which source code cannot tell you. See the superseded-wording
   // test in tests/deny_outcomes.test.ts.
-  { kind: 'memory_md_reread_deny', re: /MEMORY\.md was read this session\. Its content is in the compact manifest|already read this session\. Memory files rarely change mid-session/ },
-  { kind: 'improve_state_reread_deny', re: /Orchestrator state already read this session/ },
-  { kind: 'env_reread_deny', re: /Environment files rarely change mid-session/ },
-  { kind: 'session_artifact_truncated_deny', re: /File was truncated on last read\. Use `token-goat bash-output/ },
-  { kind: 'session_artifact_unchanged_deny', re: /is unchanged since last read\. Use `token-goat bash-output/ },
-  { kind: 'session_artifact_diff_deny', re: /Content changed since last read of [\s\S]*?bash-output --file/ },
-  { kind: 'session_artifact_large_deny', re: /(?:Session transcript|Tool-result file) is large \(/ },
-  { kind: 'session_artifact_generic_reread_deny', re: /already read this session\. Use `token-goat bash-output --file/ },
-  { kind: 'truncated_read_deny', re: /File was truncated on last read \(>33K tokens\)/ },
-  { kind: 'doc_unchanged_deny', re: /is unchanged since last read\. Use `token-goat (?:section|read)/ },
-  { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?Use `token-goat (?:section|read)/ },
-  { kind: 'read_served_deny', re: /was already served in this session, byte for byte/ },
-  { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\. Use `token-goat section/ },
-  { kind: 'read_count_deny', re: /Read this file \d+ times already/ },
-  { kind: 'generic_reread_deny', re: /was already read this session \(\d+ read/ },
-  { kind: 'large_file_deny', re: /is very large \(\d+(?:\.\d+)?KB\)\./ },
-  { kind: 'file_type_handler_deny', re: /too large to preview \(exceeds the in-hook scan cap\)|cannot be read as text\.|Read cannot return spreadsheet content|Read cannot return slide content|Read cannot return document content|Use Read with offset and limit parameters to read specific line ranges/ },
+  { kind: 'memory_md_reread_deny', re: /MEMORY\.md was read this session\. Its content is in the compact manifest|already read this session\. Memory files rarely change mid-session/ , tool: 'Read' },
+  { kind: 'improve_state_reread_deny', re: /Orchestrator state already read this session/ , tool: 'Read' },
+  { kind: 'env_reread_deny', re: /Environment files rarely change mid-session/ , tool: 'Read' },
+  { kind: 'session_artifact_truncated_deny', re: /File was truncated on last read\. Use `token-goat bash-output/ , tool: 'Read' },
+  { kind: 'session_artifact_unchanged_deny', re: /is unchanged since last read\. Use `token-goat bash-output/ , tool: 'Read' },
+  { kind: 'session_artifact_diff_deny', re: /Content changed since last read of [\s\S]*?bash-output --file/ , tool: 'Read' },
+  { kind: 'session_artifact_large_deny', re: /(?:Session transcript|Tool-result file) is large \(/ , tool: 'Read' },
+  { kind: 'session_artifact_generic_reread_deny', re: /already read this session\. Use `token-goat bash-output --file/ , tool: 'Read' },
+  { kind: 'truncated_read_deny', re: /File was truncated on last read \(>33K tokens\)/ , tool: 'Read' },
+  { kind: 'doc_unchanged_deny', re: /is unchanged since last read\. Use `token-goat (?:section|read)/ , tool: 'Read' },
+  { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?Use `token-goat (?:section|read)/ , tool: 'Read' },
+  { kind: 'read_served_deny', re: /was already served in this session, byte for byte/ , tool: 'Read' },
+  { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\. Use `token-goat section/ , tool: 'Read' },
+  { kind: 'read_count_deny', re: /Read this file \d+ times already/ , tool: 'Read' },
+  { kind: 'generic_reread_deny', re: /was already read this session \(\d+ read/ , tool: 'Read' },
+  { kind: 'large_file_deny', re: /is very large \(\d+(?:\.\d+)?KB\)\./ , tool: 'Read' },
+  { kind: 'file_type_handler_deny', re: /too large to preview \(exceeds the in-hook scan cap\)|cannot be read as text\.|Read cannot return spreadsheet content|Read cannot return slide content|Read cannot return document content|Use Read with offset and limit parameters to read specific line ranges/ , tool: 'Read' },
   // Skill-tool denies from src/hooks_skill.ts's preSkillHandler -- kind names prefixed skill_ so they read as a family, distinct from the Read-deny kinds above. The two heading-tree wordings share the prose around them ("...its heading tree...instead of the full body. Use `token-goat skill-section NAME '<heading>'`...") but each anchors on an infix the other never emits -- truncated always says "shows N of M headings below" (no "inlined"), complete always says "(N headings) is inlined below" (no "shows") -- so neither regex can match the other's text; skill_heading_tree_truncated_deny is still listed first on the same specific-before-generic principle as markdown_heading_tree_deny above, in case a future rewording narrows the gap.
-  { kind: 'skill_already_loaded_deny', re: /was already loaded this session and is cached/ },
-  { kind: 'skill_compact_slice_deny', re: /has a compact slice available/ },
+  { kind: 'skill_already_loaded_deny', re: /was already loaded this session and is cached/ , tool: 'Skill' },
+  { kind: 'skill_compact_slice_deny', re: /has a compact slice available/ , tool: 'Skill' },
   // The compact slice has two outcomes and they are separate kinds because they cost different things: the pointer above withholds the slice behind a command, this one inlines the slice and withholds only the rest of the body. Its "(N bytes) is inlined below" cannot collide with the heading-tree wording below, which requires "heading tree (N headings) is inlined below".
-  { kind: 'skill_compact_slice_inlined_deny', re: /compact slice \(\d+ bytes\) is inlined below instead of the full body/ },
-  { kind: 'skill_heading_tree_truncated_deny', re: /heading tree shows \d+ of \d+ headings below instead of the full body/ },
-  { kind: 'skill_heading_tree_complete_deny', re: /heading tree \(\d+ headings\) is inlined below instead of the full body/ },
+  { kind: 'skill_compact_slice_inlined_deny', re: /compact slice \(\d+ bytes\) is inlined below instead of the full body/ , tool: 'Skill' },
+  { kind: 'skill_heading_tree_truncated_deny', re: /heading tree shows \d+ of \d+ headings below instead of the full body/ , tool: 'Skill' },
+  { kind: 'skill_heading_tree_complete_deny', re: /heading tree \(\d+ headings\) is inlined below instead of the full body/ , tool: 'Skill' },
 ]
 
 /** Every kind DENY_TEMPLATES can classify, exported so the suite can assert its fixture set covers all of them. Without that assertion a kind added to the array without a fixture is never exercised by any test: it can be born stale, match nothing the code emits, and drop its events from the census silently, which is the exact failure the fixtures exist to prevent. */
@@ -775,9 +784,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             s.editErrorBaseline.totalErrors += 1
             editErrorById.set(id, true)
           }
-          // Deny-outcome census: orthogonal to the Read-only divert/full-serve split below -- a deny template match opens a new pending row that watches the calls following it in this same file, regardless of tool. Runs for both Read and Skill results (Skill denies from hooks_skill.ts have no path, so readPathById.get(id) misses and path/basename fall back to '', which safely never matches the path-keyed isReadSamePath/isEditSamePath/isSurgicalSamePath checks further down).
+          // Deny-outcome census: orthogonal to the Read-only divert/full-serve split below -- a deny template match opens a new pending row that watches the calls following it in this same file. Each template names the tool whose result can carry its wording and matches only that tool, so a Read of a file which merely quotes a deny is not counted as one. Skill denies from hooks_skill.ts have no path, so readPathById.get(id) misses and path/basename fall back to '', which safely never matches the path-keyed isReadSamePath/isEditSamePath/isSurgicalSamePath checks further down -- and with the tool gate in place those three outcomes are now unreachable for a Skill row rather than reachable only by contamination.
           if (name === 'Read' || name === 'Skill') {
-            const denyTemplate = DENY_TEMPLATES.find((t) => t.re.test(text))
+            const denyTemplate = DENY_TEMPLATES.find((t) => t.tool === name && t.re.test(text))
             if (denyTemplate !== undefined) {
               const path = readPathById.get(id) ?? ''
               const lastSlash = path.lastIndexOf('/')
