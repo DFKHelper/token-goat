@@ -22,6 +22,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
+import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
 import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
@@ -1926,6 +1927,66 @@ function foldShellReadBodies(cmd: string, output: string, fileKey: string, cwd: 
 
 
 /**
+ * The shell shapes whose stdout can be the file and nothing else.
+ *
+ * An allowlist, deliberately, and not a list of separators to reject: this repo has already shipped a denylist that missed redirection, where `a" > ~/.bashrc "b.ts` chains nothing, passes a separator check and truncates a file. Everything outside `[A-Za-z0-9._\-/\\:+@]` (plus a space inside quotes) is refused, so a pipe, a redirect, a `;`, a `$`, a backtick, a glob, a brace, a second path or a non-ASCII name all fail to match rather than being individually enumerated. A backslash is allowed for the Windows path spelling and cannot smuggle anything in, since every character it could escape into meaning is already outside the class.
+ *
+ * No flags on the dump verbs: `cat -n` prefixes a gutter, `Get-Content -TotalCount` delivers a window, and both make the stdout something other than the file. `bat` is left out entirely even though {@link extractCatFile} recognises it, because its decorations (a header, a gutter, a grid) depend on terminal detection this hook cannot observe from the command alone.
+ *
+ * `head -n N` and `tail -n N` are admitted on the strength of the on-disk size check in {@link foldShellReadStructure}, which is what actually decides whether a window happened to be the whole file: a count short of the file fails that check and is declined. Only `-n` with a plain line count is matched, so the byte (`-c`), follow (`-f`) and offset (`-n +N`) spellings never reach it.
+ *
+ * The `2>&1` and `2>/dev/null` suffixes are admitted for the same reason. `2>/dev/null` leaves stdout untouched, and `2>&1` differs only when the command wrote to stderr, which lengthens stdout past the file and fails the size check.
+ */
+const WHOLE_FILE_DUMP_RE = /^(?:(?:cat|type|Get-Content|gc)|(?:head|tail)[ \t]+-n[ \t]+\d+)[ \t]+(?:"([A-Za-z0-9._\-/\\:+@ ]+)"|'([A-Za-z0-9._\-/\\:+@ ]+)'|([A-Za-z0-9._\-/\\:+@]+))(?:[ \t]+2>(?:&1|\/dev\/null))?[ \t]*$/i
+
+/**
+ * True when `cmd` has the shape of a bare whole-file dump AND names the file {@link pureFileReadPath} already extracted from it.
+ *
+ * The extractors stay the extractors: the regex above only asserts the command's SHAPE, and the path it saw must be the one the shared quote-aware extraction already returned. A second parse deciding on its own is exactly the defect this repo shipped once already, where argv was split twice, the second split unpeeled, and an `includes('|')` check sat one line above a quote-aware one.
+ */
+function isWholeFileDump(cmd: string, extractedPath: string): boolean {
+  const m = WHOLE_FILE_DUMP_RE.exec(cmd)
+  if (m === null) return false
+  const shaped = m[1] ?? m[2] ?? m[3]
+  return shaped !== undefined && shaped === extractedPath
+}
+
+/**
+ * Replace a bare whole-file shell dump of a large document or source file with the same structural view the Read hook already gives the identical bytes: a heading tree for prose, a declaration skeleton for code.
+ *
+ * The planners are shared with hooks_read.ts (see fold_structure.ts), so `cat CLAUDE.arch.md` and `Read CLAUDE.arch.md` either both fold or both decline. What is local here is the proof the Read side gets for free from its tool input: that this stdout genuinely IS the file's bytes.
+ *
+ * That proof is the on-disk size check. A command whose output is the file has stdout exactly as long as the file, so a mismatch means something else happened -- the harness truncated the delivery, the command was not what the shape check took it for, or the file changed under it -- and any of those make a fold a claim the bytes do not support. It is also the only truncation guard available on this surface, which has no equivalent of the notice the Read tool prints. A `Get-Content` of a CRLF file, whose line-ending handling changes the byte count, fails it and is declined rather than folded on a guess.
+ */
+function foldShellReadStructure(cmd: string, filePath: string, output: string, fileKey: string, cwd: string | null): { text: string; kind: string; detail: string } | null {
+  if (!isWholeFileDump(cmd, filePath)) return null
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  let onDisk: number
+  try {
+    onDisk = statSync(fileKey).size
+  } catch {
+    return null
+  }
+  if (onDisk !== originalBytes) return null
+  // Composing a rewrite makes this handler the author of what the model reads, and a file holding a secret would be handed back redacted. Declining is the honest move: a plain read gives the user more of their own file than a redacted rewrite would. Same call foldShellReadBodies makes above.
+  if (redactSecrets(output).count > 0) return null
+
+  const lines = output.split('\n')
+  // A file ending in a newline splits to a final empty element that is not one of its lines. Left in, it becomes a phantom row the skeleton's `limit=` pointer would over-count by one.
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  const rows: FoldRow[] = lines.map((text, i) => ({ no: i + 1, text, raw: text }))
+
+  // Repo-relative, so each notice stays a command that can be run as printed without carrying an absolute Windows path. Against the directory a leading `cd` actually left the shell in, which is the cwd already resolved into fileKey.
+  const shown = displaySafePath(toDisplayPath(findProject(cwd ?? process.cwd())?.root, fileKey))
+  const fold = planMarkdownOutline(rows, fileKey, shown, originalBytes) ?? planSourceSkeleton(rows, fileKey, shown, originalBytes)
+  if (fold === null) return null
+  const text = fold.numbered.join('\n')
+  if (!isStructuralRewriteAccepted(originalBytes, Buffer.byteLength(text, 'utf-8'), fold.ratioCap)) return null
+  // Filed under the bash_compress prefix, not the read: kinds the planners carry for their own surface, so the ledger attributes these bytes to the shell surface that actually delivered them.
+  return { text, kind: fold.kind === 'read:markdown_outline' ? 'bash_compress:markdown-outline' : 'bash_compress:source-skeleton', detail: fold.detail }
+}
+
+/**
  * Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy.
  *
  * Unlike every other rewrite in this handler, this one needs no judgement about which parts of the
@@ -1998,8 +2059,15 @@ async function maybeCollapseIdenticalRead(
     if (elided !== null) {
       if (priced(elided)) rewrite = { text: elided, reason: 'already-served file lines withheld', kind: 'bash_compress:served-elide' }
     } else {
-      const folded = foldShellReadBodies(cmd, output, fileKey, cwd)
-      if (folded !== null && priced(folded.text)) rewrite = { text: folded.text, reason: 'code bodies folded', kind: 'bash_compress:body-fold', detail: foldDetail(fileKey, folded.folds) }
+      // Structural replacement ahead of the body fold, matching the order postReadHandler applies to the identical bytes arriving through the Read tool. It is also the coarser of the two and the only one that works without an index: the body fold needs symbol spans written by the current parser build, and measured on a real index that stamp sits stale on 95% of this project's rows, so on most first reads it plans nothing at all.
+      const structural = foldShellReadStructure(cmd, filePath, output, fileKey, cwd)
+      if (structural !== null && priced(structural.text)) {
+        rewrite = { text: structural.text, reason: structural.kind === 'bash_compress:markdown-outline' ? 'document replaced with its heading tree' : 'source replaced with its structural skeleton', kind: structural.kind, detail: structural.detail }
+      }
+      if (rewrite === null) {
+        const folded = foldShellReadBodies(cmd, output, fileKey, cwd)
+        if (folded !== null && priced(folded.text)) rewrite = { text: folded.text, reason: 'code bodies folded', kind: 'bash_compress:body-fold', detail: foldDetail(fileKey, folded.folds) }
+      }
     }
 
     // Exactly what the model was shown, never what the command printed. A later read of this file is matched against this copy, so storing a rewrite the net-benefit gate went on to decline would record lines as withheld that the reader actually received.
@@ -3116,7 +3184,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
-    if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) {
+    // A whole-file dump goes to the file-read branch even when a monitoring pattern also names it, and one does: MONITORING_COMMAND_PATTERNS carries `cat <file>.(ts|py|go|...)`, so every `cat` of a SOURCE file was classified as a monitored command and routed past this branch entirely, while the same `cat` of a document -- which no monitoring pattern names -- fell into it and folded normally. That left the whole first-read fold below unreachable for exactly the files it was written for. The branch still caches the output under the same key the monitoring path would (shortFingerprint(stripOutputPipeline(cmd)), see maybeCollapseIdenticalRead), so recall by id is unaffected; what a source-file read gives up is the cross-run delta summary, in exchange for the stronger identical/contained collapse the same branch already applies to every other file read.
+    // The diversion is gated on pureFileReadPath alone. An additional whole-file SHAPE test was tried here on the theory that pureFileReadPath would also admit `tail -f app.log`, the live-log shape monitoring exists to summarise; measured against 15 fold controls and 6 monitoring shapes it changed no outcome, so it was dropped rather than kept as an unfalsifiable second opinion. Re-deciding the path's identity at this site is how a repo ends up with two parsers disagreeing: that check stays inside isWholeFileDump, where the fold weighs it against the on-disk size.
+    const isFileRead = pureFileReadPath(cmd) !== null
+    if (isFileRead || (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd))) {
       // A plain file read reaches here and, before this branch existed, left with nothing: no
       // cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger
       // suppresses. Re-reading the same unchanged file therefore cost its full body every time.
