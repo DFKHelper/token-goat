@@ -597,6 +597,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'read:served_elide',
       'read:body_fold',
       'read:markdown_outline',
+      'read:source_skeleton',
       'handoff_create',
       'handoff_resolve',
       'plan_echo_collapse',
