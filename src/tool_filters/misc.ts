@@ -3,6 +3,7 @@
 // Faithful TypeScript port of the Python bash_compress.py db-client, runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (all other 15 filters) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: it's content-based and applied explicitly (via filterByName or post-execution paths), not auto-matched by command — matches() always returns false — so its tail position is precautionary, not load-bearing.
 
 import { ToolFilter } from './base.js'
+import type { CompressContext } from './base.js'
 import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
@@ -459,7 +460,7 @@ export class Sqlite3Filter extends ToolFilter {
   private static readonly ROW_THRESHOLD = 20
   private static readonly KEEP_ROWS = 5
 
-  override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+  override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[], ctx: CompressContext = {}): string {
     const merged = this.combineOutput(stdout, stderr)
     const lines = merged.split('\n')
     const nonEmpty = lines.filter((ln) => ln.trim())
@@ -484,7 +485,12 @@ export class Sqlite3Filter extends ToolFilter {
     const nonEmptyBody = bodyLines.filter((ln) => ln.trim())
     if (nonEmptyBody.length > Sqlite3Filter.ROW_THRESHOLD) {
       kept.push(...nonEmptyBody.slice(0, Sqlite3Filter.KEEP_ROWS))
-      kept.push(`[token-goat: ${nonEmptyBody.length} rows (showing first ${Sqlite3Filter.KEEP_ROWS})]`)
+      // The row count answers "how big is this result set", so it is a claim about the query's data rather than a description of what this filter did. When the pre-filter clamp already dropped part of stdout, the surviving rows are all this can count, which makes the figure a floor: say so, instead of letting a clamped read of a 90000-row table print an exact `2000 rows` nothing here can prove.
+      kept.push(
+        ctx.inputTruncated === true
+          ? `[token-goat: at least ${nonEmptyBody.length} rows (counted over a truncated input; showing first ${Sqlite3Filter.KEEP_ROWS})]`
+          : `[token-goat: ${nonEmptyBody.length} rows (showing first ${Sqlite3Filter.KEEP_ROWS})]`,
+      )
     } else {
       kept.push(...bodyLines)
     }

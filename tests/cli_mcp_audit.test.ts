@@ -13,6 +13,7 @@ import { storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
 import { analyzeMcpCache, buildMcpAuditReport, printReport } from '../src/cli_mcp_audit.js'
 import { normalizePath } from '../src/paths.js'
+import { estimateTokensFromLength } from '../src/overflow_guard.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 
 interface McpServer {
@@ -279,6 +280,38 @@ describe('mcp-audit', () => {
       const report = buildMcpAuditReport(lowerDriveRoot, homeDir)
       expect(report.configFound).toBe(true)
       expect(report.servers.some((s) => s.name === 'github')).toBe(true)
+    })
+
+    // The per-call token figure is a COST estimate, so it belongs on the shared overflow-guard
+    // estimator, not on arithmetic typed out here. The divisor used to be spelled inline as
+    // `Math.floor(bytes / callCount / 3) + 1`, which is the same duplicated-constant defect
+    // tests/saved_tokens_use_one_divisor.test.ts exists for on the savings side of the split.
+    // Provenance: HAND-DERIVED for the arithmetic (2400 bytes over 2 calls is 1200 per call, and
+    // the guard estimator is floor(1200 / 3) + 1 = 401), plus a source scan for the structural half.
+    it('prices a per-call estimate through the shared estimator rather than a hand-written divisor', () => {
+      const bytes = 1200
+      for (const id of ['mcp_a', 'mcp_b']) {
+        storeBlob(BASH_OUTPUT_SUBDIR, id, { command: 'mcp:mcp__acme__list', sizeBytes: bytes })
+      }
+      const metrics = analyzeMcpCache().get('acme')
+      expect(metrics?.callCount).toBe(2)
+      expect(metrics?.perCallEstimate).toBe(401)
+      expect(metrics?.perCallEstimate).toBe(estimateTokensFromLength(bytes))
+    })
+
+    it('leaves no byte-to-token divisor spelled out inside cli_mcp_audit.ts', () => {
+      // Structural half. The numeric case above cannot see the difference between calling the
+      // shared helper and re-typing its body, because the two return the same number by
+      // construction -- which is exactly how the constant drifts out of one place unnoticed.
+      const source = fs.readFileSync(path.join(process.cwd(), 'src', 'cli_mcp_audit.ts'), 'utf8')
+      const offenders = source
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
+        .filter((line) => /Math\.(round|floor)\(.*\/\s*\d/.test(line))
+      expect(
+        offenders,
+        'each of these converts bytes to tokens inline: call estimateTokensFromLength (src/overflow_guard.ts) for a cost figure, or savedTokensFromBytes (src/stats.ts) for a credit, so one pricing change reaches every caller',
+      ).toEqual([])
     })
 
     // Plugin-provided servers have no on-disk config at all -- the report must say so rather
