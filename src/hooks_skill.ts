@@ -129,9 +129,15 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             if (treeBytes <= bodyBytes * OUTLINE_MAX_REPLACEMENT_RATIO) {
               const savedBytes = bodyBytes - treeBytes;
               recordStat('skill_heading_tree_inlined', savedBytes, savedTokensFromBytes(savedBytes));
+              // The displayed tree caps at MAX_HEADINGS (40); when the file has more H1-H3 headings than that, the message above must say so or the model reads a truncated tree as a complete map and never learns the remaining sections exist.
+              const totalHeadings = extractMarkdownHeadings(body, Number.MAX_SAFE_INTEGER).length;
+              const headingCountPhrase = totalHeadings > headings.length
+                ? 'its heading tree shows ' + headings.length + ' of ' + totalHeadings +
+                  ' headings below instead of the full body; the remaining sections are reachable only through `token-goat skill-body ' + skillName + '`.'
+                : 'its heading tree (' + headings.length + ' headings) is inlined below instead of the full body.';
               return denyOutput(
-                'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes) with no compact slice; its heading tree (' +
-                  headings.length + ' headings) is inlined below instead of the full body. Use `token-goat skill-section ' + skillName +
+                'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes) with no compact slice; ' + headingCountPhrase +
+                  ' Use `token-goat skill-section ' + skillName +
                   ' \'<heading>\'` to load a specific section, or `token-goat skill-body ' + skillName + '` for the full body.\n\n' +
                   fenceUntrustedFileContent(sectionsList),
               );

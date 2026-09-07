@@ -578,3 +578,45 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
     expect(out.hookType).toBe('pass');
   });
 });
+
+// HAND-DERIVED fixtures below: both bodies are constructed directly from the heading-count
+// thresholds the production code checks (OUTLINE_MIN_HEADINGS, the MAX_HEADINGS=40 display cap
+// inside extractMarkdownHeadings, OUTLINE_MAX_REPLACEMENT_RATIO), not read off preSkillHandler's
+// own implementation or its message-building logic.
+describe('preSkillHandler — heading-tree message states the true total when the displayed tree is capped', () => {
+  it('over-cap (51 real headings) and under-cap (8 real headings) fixtures produce DIFFERENT deny-message wording', async () => {
+    const paragraph = 'p'.repeat(1200);
+    const overCapName = 'heading-tree-over-cap';
+    const overCapDir = path.join(sourceDir, overCapName);
+    await fs.mkdir(overCapDir, { recursive: true });
+    const overCapBody = Array.from({ length: 51 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
+    await fs.writeFile(path.join(overCapDir, 'SKILL.md'), overCapBody, 'utf-8');
+
+    const underCapName = 'heading-tree-under-cap';
+    const underCapDir = path.join(sourceDir, underCapName);
+    await fs.mkdir(underCapDir, { recursive: true });
+    const underCapBody = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
+    await fs.writeFile(path.join(underCapDir, 'SKILL.md'), underCapBody, 'utf-8');
+
+    const overCapOut = await preSkillHandler(skillPreEvent(overCapName, 'sess-heading-tree-over-cap'));
+    const underCapOut = await preSkillHandler(skillPreEvent(underCapName, 'sess-heading-tree-under-cap'));
+    expect(overCapOut.hookType).toBe('deny');
+    expect(underCapOut.hookType).toBe('deny');
+    if (overCapOut.hookType !== 'deny' || !overCapOut.message || underCapOut.hookType !== 'deny' || !underCapOut.message) return;
+
+    // Anti-vacuity guard, evaluated before either fixture's content is checked: if a bug made
+    // both bodies take the same message branch, a pair of tests that only check "contains the
+    // right substring" could both still pass.
+    expect(overCapOut.message).not.toBe(underCapOut.message);
+    const overCapSentence = overCapOut.message.slice(0, overCapOut.message.indexOf('Use `token-goat skill-section'));
+    const underCapSentence = underCapOut.message.slice(0, underCapOut.message.indexOf('Use `token-goat skill-section'));
+    expect(overCapSentence).not.toBe(underCapSentence);
+
+    expect(overCapOut.message).toContain('its heading tree shows 40 of 51 headings');
+    expect(overCapOut.message).toContain('token-goat skill-body ' + overCapName);
+    expect(overCapOut.message).not.toContain('40 headings) is inlined below');
+
+    expect(underCapOut.message).toContain('its heading tree (8 headings) is inlined below');
+    expect(underCapOut.message).not.toContain('reachable only through');
+  });
+});
