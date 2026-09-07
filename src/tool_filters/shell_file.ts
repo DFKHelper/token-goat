@@ -13,6 +13,7 @@ import {
   positionalArgs,
   compressTestOutput,
   clipGrepLines,
+  capLongLines,
 } from './helpers.js'
 import { stripAnsiCodes } from '../bash_compress.js'
 
@@ -915,6 +916,15 @@ export class RsyncFilter extends ToolFilter {
 const _DIFF_FILE_HEADER_RE = /^(?:diff\s|---\s)/
 const _DIFF_HUNK_RE = /^@@ /
 const _DIFF_MAX_FULL_FILES = 20
+// Aggregate cap on the non-diff lines the stat-only view carries through (`Only in ...`, `Binary files ... differ`, ...). 40 is double the file-block cap above, so a tree whose every entry differs by presence still reports in full while an adversarial input stays bounded; anything past it is disclosed as a count rather than dropped.
+const _DIFF_MAX_STAT_EXTRA_LINES = 40
+
+// True for lines that belong to a unified-diff body or header pair (context/added/removed lines, `@@` hunk headers, `--- `/`+++ ` file headers, and git's `\ No newline at end of file`). Everything else inside or between file blocks is diff-tool commentary about whole files (`Only in ...`, `Binary files ... differ`, `Common subdirectories: ...`) and must survive the stat-only view.
+function _isDiffBodyLine(line: string): boolean {
+  if (line === '') return true
+  const c = line[0] ?? ''
+  return c === ' ' || c === '+' || c === '-' || c === '@' || c === '\\'
+}
 
 function _isDiffAdd(line: string): boolean {
   return line.startsWith('+') && !line.startsWith('+++')
@@ -1062,12 +1072,34 @@ export class DiffFilter extends ToolFilter {
       const statLines = [
         `[token-goat: large diff (${realFiles.length} files); stat-only view]`,
       ]
-      for (const blockStr of realFiles) {
+      // Walk rawBlocks, not realFiles: a recursive diff interleaves non-diff lines (`Only in <dir>: <name>`, `Binary files ... differ`, `Common subdirectories: ...`, plus any preamble ahead of the first file header) with the file blocks, and each one reports a whole file present on only one side, which no stat row can carry. A former version of this branch iterated realFiles alone and dropped every such line without a word. They are kept verbatim and in place, individually clipped by capLongLines, and capped in aggregate at _DIFF_MAX_STAT_EXTRA_LINES with the omitted count disclosed.
+      let extrasKept = 0
+      let extrasDropped = 0
+      const emitExtras = (candidates: string[]): void => {
+        const foreign = candidates.filter(l => l.trim() !== '' && !_isDiffBodyLine(l))
+        for (const line of capLongLines(foreign)) {
+          if (extrasKept >= _DIFF_MAX_STAT_EXTRA_LINES) {
+            extrasDropped++
+            continue
+          }
+          extrasKept++
+          statLines.push(line)
+        }
+      }
+      for (const blockStr of rawBlocks) {
         const blockLines = blockStr.split('\n')
-        const header = blockLines[0]
+        const header = blockLines[0] ?? ''
+        if (!_DIFF_FILE_HEADER_RE.test(header)) {
+          emitExtras(blockLines)
+          continue
+        }
         const adds = blockLines.filter(_isDiffAdd).length
         const dels = blockLines.filter(_isDiffRemove).length
         statLines.push(`${header}  +${adds} -${dels}`)
+        emitExtras(blockLines.slice(1))
+      }
+      if (extrasDropped > 0) {
+        statLines.push(`[token-goat: ${extrasDropped} more non-diff line${extrasDropped === 1 ? '' : 's'} omitted]`)
       }
       return statLines.join('\n')
     }
