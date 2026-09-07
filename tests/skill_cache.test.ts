@@ -364,6 +364,73 @@ describe('extractNamedSection', () => {
     expect(section).toContain('First')
     expect(section).not.toContain('Second')
   })
+
+  // HAND-DERIVED: composed to exercise the H1-H3 heading resolution added for the H3-dead-pointer bug (token-goat skill-section only matched H2 before this fix).
+  it('resolves an H1 heading and stops at the next H1', () => {
+    const body = '# Intro\nIntro body\n# Next\nNext body'
+    const section = extractNamedSection(body, 'Intro')
+    expect(section).not.toBe('')
+    expect(section).not.toContain('Next body')
+    expect(section).toContain('Intro body')
+  })
+
+  // HAND-DERIVED: composed for the same fix; an H2 section must still swallow its own H3 children.
+  it('resolves an H2 heading and still includes its H3 children', () => {
+    const body = '## Parent\nParent body\n### Child\nChild body\n## Sibling\nSibling body'
+    const section = extractNamedSection(body, 'Parent')
+    expect(section).not.toBe('')
+    expect(section).not.toContain('Sibling body')
+    expect(section).toContain('Parent body')
+    expect(section).toContain('### Child')
+    expect(section).toContain('Child body')
+  })
+
+  // HAND-DERIVED: composed for the same fix; an H3 section stops at the next H3, not at the parent H2's end.
+  it('resolves an H3 heading and stops at the next H3', () => {
+    const body = '## Parent\n### First\nFirst body\n### Second\nSecond body'
+    const section = extractNamedSection(body, 'First')
+    expect(section).not.toBe('')
+    expect(section).not.toContain('Second body')
+    expect(section).toContain('First body')
+  })
+
+  // HAND-DERIVED: composed for the same fix; an H3 section also stops when the next heading is a higher-level H2.
+  it('resolves an H3 heading and stops at a following H2', () => {
+    const body = '## Parent\n### Child\nChild body\n## Next Parent\nNext body'
+    const section = extractNamedSection(body, 'Child')
+    expect(section).not.toBe('')
+    expect(section).not.toContain('Next body')
+    expect(section).toContain('Child body')
+  })
+
+  // HAND-DERIVED: composed for the same fix; a fenced code block containing a literal '### ' line must not be treated as a real heading boundary.
+  it('does not treat ### inside a code block as a heading boundary', () => {
+    const body = '### Real\nSome text\n```\n### Not a heading\ncode\n```\nmore text\n### Real End\nafter'
+    const section = extractNamedSection(body, 'Real')
+    expect(section).not.toBe('')
+    expect(section).not.toContain('after')
+    expect(section).toContain('### Not a heading')
+    expect(section).toContain('more text')
+  })
+
+  // HAND-DERIVED: composed for the same fix; the ordinal/duplicate-heading path must keep working for H3 headings, not just H2.
+  it('handles ordinal selection with #2 suffix on an H3 heading', () => {
+    const body = '### Item\nFirst\n### Item\nSecond'
+    const first = extractNamedSection(body, 'Item#1')
+    const second = extractNamedSection(body, 'Item#2')
+    expect(first).not.toBe('')
+    expect(second).not.toBe('')
+    expect(first).not.toContain('Second')
+    expect(second).not.toContain('First')
+    expect(first).toContain('First')
+    expect(second).toContain('Second')
+  })
+
+  // HAND-DERIVED: composed for the same fix; H4 stays out of scope and must remain unresolvable.
+  it('does not resolve an H4 heading', () => {
+    const body = '#### Deep\nDeep body'
+    expect(extractNamedSection(body, 'Deep')).toBeNull()
+  })
 })
 
 describe('extractChecklistSection', () => {

@@ -144,10 +144,15 @@ function* contentLineEntries(lines: string[]): Generator<[index: number, strippe
   }
 }
 
-// Collects `lines` from `startIdx` up to (not including) the next top-level `## ` heading that
-// isn't itself inside a fenced code block. Shared by extractNamedSection/extractChecklistSection,
-// whose "gather this section's body" loops were otherwise byte-identical apart from the start index.
-function collectSectionBody(lines: string[], startIdx: number): string[] {
+// Returns the ATX heading level (1-6) for `stripped` if it is a heading line with a non-empty title, or 0 otherwise. Shared by extractNamedSection's heading matcher and collectSectionBody's boundary check so both agree on what counts as a heading.
+function headingLevel(stripped: string): number {
+  const match = stripped.match(/^(#{1,6}) (.*)$/)
+  if (!match) return 0
+  return match[2]!.trim() ? match[1]!.length : 0
+}
+
+// Collects `lines` from `startIdx` up to (not including) the next heading whose level is <= `matchedLevel` and isn't itself inside a fenced code block, so an H2 section still contains its H3 children while stopping at the next H2 or H1. Shared by extractNamedSection/extractChecklistSection, whose "gather this section's body" loops were otherwise byte-identical apart from the start index.
+function collectSectionBody(lines: string[], startIdx: number, matchedLevel: number): string[] {
   const bodyLines: string[] = []
   let inBodyCodeBlock = false
   for (let j = startIdx; j < lines.length; j++) {
@@ -155,7 +160,10 @@ function collectSectionBody(lines: string[], startIdx: number): string[] {
     if (isCodeFenceDelimiter(stripped)) {
       inBodyCodeBlock = !inBodyCodeBlock
     }
-    if (!inBodyCodeBlock && stripped.startsWith('## ')) break
+    if (!inBodyCodeBlock) {
+      const level = headingLevel(stripped)
+      if (level >= 1 && level <= matchedLevel) break
+    }
     bodyLines.push(lines[j]!)
   }
   return bodyLines
@@ -229,14 +237,17 @@ export function extractNamedSection(body: string, heading: string): string | nul
 
   let matchCount = 0
   let startIdx = -1
+  let matchedLevel = 0
 
   for (const [i, stripped] of contentLineEntries(lines)) {
-    if (stripped.startsWith('## ') && stripped.length > 3) {
-      const headingText = stripLower(stripped.slice(3))
+    const level = headingLevel(stripped)
+    if (level >= 1 && level <= 3) {
+      const headingText = stripLower(stripped.slice(level))
       if (headingText === headingLower) {
         matchCount++
         if (matchCount === ordinal) {
           startIdx = i + 1
+          matchedLevel = level
           break
         }
       }
@@ -245,7 +256,7 @@ export function extractNamedSection(body: string, heading: string): string | nul
 
   if (startIdx === -1) return null
 
-  const text = collectSectionBody(lines, startIdx).join('\n').trim()
+  const text = collectSectionBody(lines, startIdx, matchedLevel).join('\n').trim()
   return text || null
 }
 
@@ -275,7 +286,7 @@ export function extractChecklistSection(body: string): string | null {
 
   if (bestStart === -1) return null
 
-  const bodyLines = collectSectionBody(lines, bestStart + 1)
+  const bodyLines = collectSectionBody(lines, bestStart + 1, 2)
   let text = bodyLines.join('\n').trim()
   const maxChars = 2000
   if (text.length > maxChars) {
