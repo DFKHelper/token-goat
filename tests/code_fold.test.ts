@@ -176,13 +176,57 @@ describe('body fold on the real Read hook path', () => {
     }
   })
 
-  it('does not fold a file whose index is stale, where a span would cut at the wrong line', () => {
+  it('folds a file whose index is stale at the line the file actually has, rather than at the line the index remembers', () => {
     const { file, body } = makeIndexedSource()
-    // Change the file on disk without reindexing: the spans now describe a different file.
-    fs.writeFileSync(file, '// prepended line, every span is now off by one\n' + body)
+    // Change the file on disk without reindexing: the indexed spans now describe a different file, every one off by one.
+    fs.writeFileSync(file, '// prepended line, every indexed span is now off by one\n' + body)
     const changed = fs.readFileSync(file, 'utf-8')
     const text = JSON.stringify(postReadHandler(postEvent(file, changed)))
+
+    // The stale index is not consulted for this; the file in front of the reader is parsed instead. Asserting the exact shifted range is the whole point: a fold at 16-70, the pre-edit range, would mean the stale spans were used and the notice is cutting one line early.
+    expect(text).toContain('longFunction')
+    expect(text).toContain('(17-71) folded')
+    // Must-not-drop: the declaration and both constants are outside the body and have to survive, or this is a truncation wearing a fold's notice.
+    expect(text).toContain('export function longFunction')
+    expect(text).toContain('TOP_LEVEL_CONSTANT')
+    expect(text).toContain('TRAILING_CONSTANT')
+    expect(text).not.toContain('localVariable59')
+  })
+
+  it('declines when the delivered text does not match the file on disk, since the line numbers a span carries would then point at rows the reader never saw', () => {
+    // The hazard the disk parse inherits and closes. Spans are line numbers into the file; they get applied to rows someone else delivered. If a write lands between the read and this hook, folding at a disk line number cuts somewhere the delivered rows do not agree with, under a notice naming a symbol that is not there. Exercised by delivering the pre-edit body while disk holds the shifted one, which is exactly the ordering a concurrent editor produces.
+    const { file, body } = makeIndexedSource()
+    fs.writeFileSync(file, '// prepended after the read was served, so delivered and disk disagree\n' + body)
+    const text = JSON.stringify(postReadHandler(postEvent(file, body)))
     expect(text).not.toContain('folded')
+  })
+
+  it('folds a source file the indexer has never seen, which is the state almost every file is actually in', () => {
+    // The gap this closes, and why a green suite hid it for so long. resolveFoldSpans answered only from the index, and the index has to match on BOTH a content hash and a parser stamp; the stamp changes whenever extraction logic does, invalidating every indexed file at once. Measured on the live index while writing this: 46 of 17,952 files carried the shipping stamp (0.3%), and 0 of 3,322 `.js` files did. Every existing test here indexes its fixture first via makeIndexedSource, so all of them exercised the 0.3% and none the 99.7%. A replay of 1,562 real shell reads over this repo put the difference at 558,622 B withheld against 669,520 B, 15.2% to 18.2%.
+    const lines = [
+      "import { thing } from './thing.js'",
+      '',
+      'export const TOP_LEVEL_CONSTANT = 42',
+      '',
+      'export function neverIndexedFunction(n: number): number {',
+    ]
+    for (let i = 0; i < 60; i++) lines.push(`  const localVariable${i} = n + ${i} // body line ${i}`)
+    lines.push('  return n', '}', '', 'export const TRAILING_CONSTANT = 7', '')
+    const body = lines.join('\n')
+    const file = path.join(os.tmpdir(), `tg-fold-unindexed-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+    // Deliberately no indexFileSync: that call is what every other fixture in this file makes, and skipping it is the entire point of this case.
+
+    const text = JSON.stringify(postReadHandler(postEvent(file, body)))
+    expect(text).toContain('neverIndexedFunction')
+    // The exact range, so this cannot pass on some other fold firing somewhere in the same delivery. CAPTURE: `... 55 more lines of neverIndexedFunction (13-67) folded` is what the handler emitted on this fixture. The body opens at line 6 and BODY_FOLD_KEEP_LINES of it are kept, so the withheld run starts at 13.
+    expect(text).toContain('(13-67) folded')
+    // Must-not-drop: a fold keeps the declaration and everything outside the body. Without these, collapsing the file wholesale would satisfy the assertions above.
+    expect(text).toContain('export function neverIndexedFunction')
+    expect(text).toContain('TOP_LEVEL_CONSTANT')
+    expect(text).toContain('TRAILING_CONSTANT')
+    expect(text).not.toContain('localVariable59')
   })
 
   it('records the FOLDED text as served, not the file on disk', () => {
@@ -242,8 +286,8 @@ describe('body fold on the real Read hook path', () => {
       .prepare('UPDATE files SET parser_sha = ? WHERE path = ?')
       .run('stale-parser-fingerprint', normalizePath(file))
     const delta = queueDelta(() => {
-      // Without usable spans there is nothing here to fold, so this read passes through whole. That pass-through IS the miss the enqueue exists to repair, and it is why the queue entry has to be written on the way past rather than after a successful fold.
-      expect(JSON.stringify(postReadHandler(postEvent(file, body)))).toBe('{"hookType":"pass"}')
+      // The read itself is now served by parsing the file on the spot, so the stale stamp no longer costs this reader the fold. The enqueue still has to happen, and that is what makes this test worth keeping: the disk parse is a fallback paid on every read of an unindexed file, and the queue entry is what lets the next read take the cheap indexed path instead. Asserted around a read that DOES fold, so it cannot pass by the hook bailing out early for some unrelated reason.
+      expect(JSON.stringify(postReadHandler(postEvent(file, body)))).toContain('folded')
     })
     expect(delta).toContain(path.basename(file))
   })

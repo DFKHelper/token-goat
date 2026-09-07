@@ -3,12 +3,16 @@
  *
  * Split out of hooks_read.ts when the shell read path became a second caller. The two surfaces gate very differently (a Read is a whole file with a numbered rendering around it, a shell read is bare text from a command that may or may not pin its line numbers) but everything between "here are the delivered rows" and "here is the folded text" is identical, and that middle is where the index-freshness rule and the notice wording live. One copy, so a change to either reaches both.
  */
+import { readFileSync, statSync } from 'node:fs'
+
 import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, planProseFolds, type BodyFold, type FoldSpan } from './code_fold.js'
 import { loadConfig } from './config.js'
 import { fingerprintFile } from './fingerprint.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { getFileEntry, querySymbols } from './index_reader.js'
+import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
+import { detectLanguage } from './parser_types.js'
 
 /** Lines kept at the head of each folded body: the declaration plus enough to judge the rest. */
 export const BODY_FOLD_KEEP_LINES = 8
@@ -90,14 +94,48 @@ export interface FoldedDelivery {
   readonly folds: readonly BodyFold[]
 }
 
+/** Largest file this will parse on the read path when the index cannot answer. A body fold is worth a few milliseconds and not a few hundred: past this the read stays whole and the enqueued reindex is left to serve the next one. */
+const FOLD_SPAN_PARSE_MAX_BYTES = 400_000
+
 /**
- * The symbol spans to fold against, or an empty list when the index cannot vouch for them.
+ * Symbol spans for a file the index cannot vouch for, parsed from disk on the spot.
+ *
+ * The index is the fast path and stays the fast path; this is what the miss falls back to. It exists because the miss is not the rare case it reads as. The freshness gate demands both a content hash and a parser stamp match, and the stamp changes whenever extraction logic does, which invalidates every already-indexed file at once. Measured on the live index while writing this: 46 of 17,952 files carried the shipping stamp, 0.3%, and 0 of 3,322 `.js` files did. Enqueueing the miss for reindex, which the caller does, heals a file for next time but returns nothing for this read, and a project that was never indexed at all is never healed by it either. So the lever that folds a long function body out of a delivered slice was firing on almost nothing.
+ *
+ * The whole file is parsed, never the delivered slice, and that is the point rather than an inefficiency. Spans have to be absolute file line numbers for {@link planBodyFolds} to place them, and a slice starting mid-body parses as a fragment whose recovered spans name the wrong lines. Parsing the file the reader is reading gives the same spans the indexer would have written, so a window is folded on the same evidence as a whole-file read.
+ */
+function parseFoldSpansFromDisk(normalizedPath: string, rows: readonly FoldRow[]): FoldSpan[] {
+  try {
+    if (statSync(normalizedPath).size > FOLD_SPAN_PARSE_MAX_BYTES) return []
+    const language = detectLanguage(normalizedPath)
+    if (!isTreeSitterAvailable(language)) return []
+    const fileText = readFileSync(normalizedPath, 'utf-8')
+    // The spans about to be produced are line numbers into this disk text, and they get applied to rows delivered by someone else. If the two disagree the fold cuts at a line the reader never saw, under a notice naming a symbol that is not there. So the delivered rows are checked against the file they claim to come from, and one mismatch abandons the whole file rather than a single span: once any line is displaced, every later line number is suspect too. Comparison ignores a trailing carriage return, which is the one difference a shell read legitimately introduces on this platform. This check is what makes the disk parse safer than the index path it falls back from, which only ever verified the index against disk and took delivered-equals-disk on trust.
+    const diskLines = fileText.split('\n')
+    for (const row of rows) {
+      const disk = diskLines[row.no - 1]
+      if (disk === undefined || disk.replace(/\r$/, '') !== row.text.replace(/\r$/, '')) return []
+    }
+    // Tree-sitter only, never the regex fallback: a regex adapter recovers a declaration line but not a reliable body end, and a body fold that trusts a wrong `lineEnd` withholds lines belonging to the next declaration under a notice naming this one.
+    const symbols = parseSourceSymbolsTreeSitterOnly(fileText, normalizedPath, language)
+    if (symbols === null) return []
+    return symbols.slice(0, BODY_FOLD_SYMBOL_LIMIT).map((s) => ({ name: s.name, kind: s.kind, lineStart: s.lineStart, lineEnd: s.lineEnd }))
+  } catch {
+    // The file may have moved, been deleted or be unreadable since the read that delivered it, and a hook that already has the caller's output in hand must not turn that into a failure.
+    return []
+  }
+}
+
+/**
+ * The symbol spans to fold against: from the index when it can vouch for them, otherwise parsed from disk.
  *
  * The spans come from the index, so they describe the file the indexer last parsed. Fold only when that is still this file, on BOTH freshness keys: files.sha answers "has the content changed", parser_sha answers "did different extraction logic write these rows". Content alone is not enough -- measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched. A stale span cuts at the wrong line, and on a first read there is no earlier copy for the reader to notice that against.
  *
  * On a miss the file is queued for the worker's next drain, so the NEXT read of it can fold bodies too. Without this the miss is permanent for any file nothing happens to edit: measured over 201 session transcripts, 32 whole-file reads folded and another 22 would have once reindexed, worth 76% more folded bytes than the fold currently produces. Gated on a known comment syntax so reads of files the parser does not handle at all do not append to the queue on every read.
+ *
+ * A miss is not a decline. It falls through to {@link parseFoldSpansFromDisk}, which answers the same question from the file itself, so a project the indexer has never touched folds on its first read rather than on some later one.
  */
-function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean): FoldSpan[] {
+function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean, rows: readonly FoldRow[]): FoldSpan[] {
   try {
     const entry = getFileEntry(normalizedPath)
     if (entry !== null && entry.sha !== '' && entry.sha === fingerprintFile(normalizedPath) && entry.parserSha === PARSER_FINGERPRINT) {
@@ -107,7 +145,7 @@ function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean): Fo
   } catch {
     // A missing or locked index is not a reason to fail a read that already succeeded. An unusable index costs the body folds and nothing else: comment blocks are read off the delivered text, so they cannot be stale and do not need the index at all, which is what keeps this working on a file the indexer has never seen.
   }
-  return []
+  return parseFoldSpansFromDisk(normalizedPath, rows)
 }
 
 /**
@@ -131,7 +169,7 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
   const syntax = commentSyntaxFor(normalizedPath)
   // Resolved only when a body fold could use it. Spans cost a whole-file hash against the index plus, on a miss, an append to the dirty reindex queue, and both are pure waste for the caller that cannot fold bodies. That caller is now every stock install: prose folding ships on, so `foldingEnabled` is true everywhere and each read of a source file reaches this line, where the old default left it unreachable. A miss is also the common case rather than the rare one (measured on a real index, the parser stamp was stale on 95% of this project's files), so an unguarded call would enqueue most source files for reindex on every read and fold nothing at all in return.
   const foldBodies = loadConfig().hints.fold_code_bodies
-  const spans = foldBodies ? resolveFoldSpans(normalizedPath, syntax !== null) : []
+  const spans = foldBodies ? resolveFoldSpans(normalizedPath, syntax !== null, rows) : []
 
   const bodyFolds = foldBodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
   const claimed = new Set<number>()
