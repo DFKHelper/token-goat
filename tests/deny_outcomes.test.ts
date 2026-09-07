@@ -200,6 +200,36 @@ describe('Skill deny classification reaches the census (TASK D)', () => {
     expect(text).toContain('skill_already_loaded_deny')
   })
 
+  it('does not count a Read whose file content merely quotes a Skill deny (contamination guard)', async () => {
+    // Measured over the user's session corpus before this gate existed: 16 of 693 skill_ matches came
+    // from Read results, and for skill_already_loaded_deny and both heading-tree kinds that was 100% of
+    // their matches -- the census reported activity for three kinds whose true count was zero. The
+    // files doing it were this repo's own fixture file and the measurement scripts quoting the wording.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-quote-'))
+    try {
+      const projectDir = path.join(dir, 'p0')
+      fs.mkdirSync(projectDir)
+      const quoted = DENY_FIXTURES.find((f) => f.kind === 'skill_heading_tree_complete_deny')!
+      // A Read result whose body embeds the deny text, exactly as reading the fixture file would.
+      const body = 'const DENY_FIXTURES = [\n  { kind: "x", text: "' + quoted.text.replace(/\n/g, '\\n') + '" },\n]\n'
+      const lines = [
+        use('r1', 'Read', { file_path: '/repo/tests/deny_outcomes.test.ts' }), result('r1', body),
+        use('r2', 'Read', { file_path: '/repo/a.ts' }), result('r2', 'a'),
+        use('r3', 'Read', { file_path: '/repo/b.ts' }), result('r3', 'b'),
+        use('r4', 'Read', { file_path: '/repo/c.ts' }), result('r4', 'c'),
+      ]
+      fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
+      const s = await auditSessionCorpus({ dir })
+      // Anti-vacuity first: the fixture text really does match the template, so a zero below is the
+      // tool gate working rather than the regex having quietly stopped matching anything at all.
+      expect(quoted.text).toMatch(/heading tree \(\d+ headings\) is inlined below instead of the full body/)
+      expect(body).toContain('heading tree (19 headings) is inlined below instead of the full body')
+      expect(s.denyOutcomes.filter((r) => r.kind.startsWith('skill_'))).toHaveLength(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('renders a per-kind row in the text report and a matching denyOutcomes array over --json', async () => {
     const s = await auditSessionCorpus({ dir: kindsDir })
     const text = formatSessionAudit(s)
