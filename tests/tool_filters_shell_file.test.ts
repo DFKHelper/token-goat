@@ -906,6 +906,50 @@ describe('DiffFilter compression', () => {
   })
 })
 
+describe('DiffFilter stat-only view keeps the non-diff lines', () => {
+  const f = new DiffFilter()
+  const argv = ['diff', '-ru', 'a', 'b']
+  // CAPTURE: `diff -ru a b` run with GNU diffutils 3.12 on 2026-09-07 over a synthetic tree (21 differing text files f1..f21, one file only in a, one only in b, one binary pair that differs, plus a sub/ directory holding one differing file and one file only in a). 22 file blocks, past the 20-file stat-only threshold. Three of the four non-diff lines lead the output; `Only in a/sub: ONLYSUB.txt` sits between the f9 and sub/g1 file blocks, so it arrives as a trailing line inside a file block rather than as a standalone block.
+  const DIFF_RU_CAPTURE = fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'tool_output', 'diffutils-3.12-ru-recursive-only-in.txt'),
+    'utf8',
+  )
+
+  it('preserves every `Only in` / `Binary files` line verbatim while still compressing', () => {
+    const out = compress(f, DIFF_RU_CAPTURE, argv)
+    expect(out).toContain('stat-only view')
+    // Must-not-drop list: these four lines each report a whole file that exists on only one side (or cannot be diffed at all), which no stat row carries.
+    expect(out).toContain('Only in a: GONE_FROM_B.txt')
+    expect(out).toContain('Only in b: NEW_IN_B.txt')
+    expect(out).toContain('Binary files a/bin.dat and b/bin.dat differ')
+    expect(out).toContain('Only in a/sub: ONLYSUB.txt')
+    // In place, not gathered at the end: the sub/ notice precedes the sub/g1.txt stat row it was captured before.
+    expect(out.indexOf('Only in a/sub: ONLYSUB.txt')).toBeLessThan(out.indexOf('a/sub/g1.txt'))
+    // Paired ratio floor, so a "fix" that keeps the lines by disabling compression fails too.
+    expect(out.length).toBeLessThan(DIFF_RU_CAPTURE.length * 0.4)
+  })
+
+  it('discloses the count when more non-diff lines arrive than the aggregate cap keeps', () => {
+    // HAND-DERIVED: 21 file blocks (past the 20-file threshold) followed by 45 `Only in` lines, built here to exceed the 40-line aggregate cap. The `Only in <dir>: <name>` wording matches the captured fixture above.
+    const parts: string[] = []
+    for (let i = 0; i < 21; i++) {
+      parts.push(`diff -ru a/file${i}.ts b/file${i}.ts`)
+      parts.push(`--- a/file${i}.ts\t2024-01-01 00:00:00.000000000 +0000`)
+      parts.push(`+++ b/file${i}.ts\t2024-01-01 00:00:01.000000000 +0000`)
+      parts.push('@@ -1,3 +1,3 @@')
+      parts.push(' context line')
+      parts.push('-old line')
+      parts.push('+new line')
+    }
+    for (let i = 0; i < 45; i++) parts.push(`Only in a: extra${i}.txt`)
+    const out = compress(f, parts.join('\n'), argv)
+    expect(out).toContain('Only in a: extra0.txt')
+    expect(out).toContain('Only in a: extra39.txt')
+    expect(out).not.toContain('Only in a: extra40.txt')
+    expect(out).toContain('[token-goat: 5 more non-diff lines omitted]')
+  })
+})
+
 describe('DiffFilter honors [bash_diff].max_hunks_per_file for the density cap (not hardcoded-disabled 0)', () => {
   // saveConfig does not create configPath()'s parent directory itself; make
   // sure it exists before writing (same pattern as bash_runner.test.ts).

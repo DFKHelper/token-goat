@@ -30,10 +30,36 @@ export default function setup(): (() => void) | void {
 // entries in it). Parenting them under one per-run root fixes that at the source, because globalSetup
 // teardown runs in the main vitest process, which does exit normally -- one directory per run to clean
 // up instead of 862 to abandon.
+// The teardown below only runs when the main vitest process exits normally, so every interrupted run (Ctrl-C, a killed agent, a crash) abandons its root: measured 65 abandoned tg-run-* roots totalling 127 MB, all under two days old, 55 of them from a single day. sweepStaleRunRoots() reclaims them on the next run.
+// Age gate for an abandoned run root. The root's own mtime is the liveness signal: isolate-home creates a tg-test-data-*/tg-test-home-* pair directly inside it for every test file, so a live run bumps it continuously. 6h against a ~110s full suite is ~200x headroom, and it also clears the one false-positive shape a tighter gate would hit: a `vitest` watcher left open and idle, whose root goes untouched between saves.
+const STALE_RUN_ROOT_MS = 6 * 60 * 60 * 1000
+
+// Best-effort removal of run roots abandoned by earlier interrupted runs. Only `tg-run-` prefixed directories are considered, so the deliberately shared tg-test-v8-compile-cache survives. Any failure (a permission error, a root another process holds open) is skipped: this must never fail the run.
+export function sweepStaleRunRoots(): void {
+  try {
+    const tmp = os.tmpdir()
+    const cutoff = Date.now() - STALE_RUN_ROOT_MS
+    for (const entry of fs.readdirSync(tmp)) {
+      if (!entry.startsWith('tg-run-')) continue
+      const full = path.join(tmp, entry)
+      try {
+        const st = fs.statSync(full)
+        if (!st.isDirectory() || st.mtimeMs >= cutoff) continue
+        fs.rmSync(full, { recursive: true, force: true, maxRetries: 1 })
+      } catch {
+        // best-effort: skip this root
+      }
+    }
+  } catch {
+    // best-effort: nothing swept
+  }
+}
+
 function createRunRoot(): (() => void) | void {
   // A nested `vitest run` inherits this config; it must reuse the outer run's root rather than create
   // and then delete its own out from under the workers still using it.
   if (process.env['TG_TEST_RUN_ROOT']) return
+  sweepStaleRunRoots()
   let root: string
   try {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-run-'))

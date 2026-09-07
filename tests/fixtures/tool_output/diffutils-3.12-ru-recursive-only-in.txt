@@ -1,0 +1,200 @@
+Only in a: GONE_FROM_B.txt
+Only in b: NEW_IN_B.txt
+Binary files a/bin.dat and b/bin.dat differ
+diff -ru a/f1.txt b/f1.txt
+--- a/f1.txt	2026-09-07 01:46:33.434848400 -0500
++++ b/f1.txt	2026-09-07 01:46:33.435368500 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f10.txt b/f10.txt
+--- a/f10.txt	2026-09-07 01:46:33.444968600 -0500
++++ b/f10.txt	2026-09-07 01:46:33.444968600 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f11.txt b/f11.txt
+--- a/f11.txt	2026-09-07 01:46:33.444968600 -0500
++++ b/f11.txt	2026-09-07 01:46:33.446016800 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f12.txt b/f12.txt
+--- a/f12.txt	2026-09-07 01:46:33.446016800 -0500
++++ b/f12.txt	2026-09-07 01:46:33.446016800 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f13.txt b/f13.txt
+--- a/f13.txt	2026-09-07 01:46:33.446016800 -0500
++++ b/f13.txt	2026-09-07 01:46:33.447016900 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f14.txt b/f14.txt
+--- a/f14.txt	2026-09-07 01:46:33.447016900 -0500
++++ b/f14.txt	2026-09-07 01:46:33.447016900 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f15.txt b/f15.txt
+--- a/f15.txt	2026-09-07 01:46:33.447016900 -0500
++++ b/f15.txt	2026-09-07 01:46:33.448518700 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f16.txt b/f16.txt
+--- a/f16.txt	2026-09-07 01:46:33.448518700 -0500
++++ b/f16.txt	2026-09-07 01:46:33.448518700 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f17.txt b/f17.txt
+--- a/f17.txt	2026-09-07 01:46:33.448518700 -0500
++++ b/f17.txt	2026-09-07 01:46:33.448518700 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f18.txt b/f18.txt
+--- a/f18.txt	2026-09-07 01:46:33.450060300 -0500
++++ b/f18.txt	2026-09-07 01:46:33.450060300 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f19.txt b/f19.txt
+--- a/f19.txt	2026-09-07 01:46:33.450722800 -0500
++++ b/f19.txt	2026-09-07 01:46:33.450722800 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f2.txt b/f2.txt
+--- a/f2.txt	2026-09-07 01:46:33.435368500 -0500
++++ b/f2.txt	2026-09-07 01:46:33.435903400 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f20.txt b/f20.txt
+--- a/f20.txt	2026-09-07 01:46:33.451225500 -0500
++++ b/f20.txt	2026-09-07 01:46:33.451745900 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f21.txt b/f21.txt
+--- a/f21.txt	2026-09-07 01:46:33.451745900 -0500
++++ b/f21.txt	2026-09-07 01:46:33.452268000 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f3.txt b/f3.txt
+--- a/f3.txt	2026-09-07 01:46:33.436425800 -0500
++++ b/f3.txt	2026-09-07 01:46:33.436425800 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f4.txt b/f4.txt
+--- a/f4.txt	2026-09-07 01:46:33.436425800 -0500
++++ b/f4.txt	2026-09-07 01:46:33.437089300 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f5.txt b/f5.txt
+--- a/f5.txt	2026-09-07 01:46:33.437612700 -0500
++++ b/f5.txt	2026-09-07 01:46:33.437612700 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f6.txt b/f6.txt
+--- a/f6.txt	2026-09-07 01:46:33.438130700 -0500
++++ b/f6.txt	2026-09-07 01:46:33.438130700 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f7.txt b/f7.txt
+--- a/f7.txt	2026-09-07 01:46:33.440206500 -0500
++++ b/f7.txt	2026-09-07 01:46:33.442899400 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f8.txt b/f8.txt
+--- a/f8.txt	2026-09-07 01:46:33.443415700 -0500
++++ b/f8.txt	2026-09-07 01:46:33.443933500 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+diff -ru a/f9.txt b/f9.txt
+--- a/f9.txt	2026-09-07 01:46:33.443933500 -0500
++++ b/f9.txt	2026-09-07 01:46:33.444451500 -0500
+@@ -1,3 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
++delta
+Only in a/sub: ONLYSUB.txt
+diff -ru a/sub/g1.txt b/sub/g1.txt
+--- a/sub/g1.txt	2026-09-07 01:46:33.453306100 -0500
++++ b/sub/g1.txt	2026-09-07 01:46:33.453821700 -0500
+@@ -1,2 +1,2 @@
+ p
+-q
++Q
