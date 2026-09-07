@@ -39,11 +39,17 @@ vi.mock('../src/graph_commands.js', async (importOriginal) => {
   return { ...actual, resolveCallers: vi.fn(() => []) }
 })
 
-vi.mock('../src/parser.js', () => ({
+import type * as ParserModule from '../src/parser.js'
+import type * as HooksIndexModule from '../src/hooks_index.js'
+
+// Spread the real module and override only the one function each test needs stubbed. A bare factory replaces the WHOLE module for every importer in the graph, not just the file under test, so any other consumer of these modules silently receives undefined for exports the factory never listed -- the injected-seam trap this repo has shipped before.
+vi.mock('../src/parser.js', async () => ({
+  ...(await vi.importActual<typeof ParserModule>('../src/parser.js')),
   indexFileSync: vi.fn(),
 }))
 
-vi.mock('../src/hooks_index.js', () => ({
+vi.mock('../src/hooks_index.js', async () => ({
+  ...(await vi.importActual<typeof HooksIndexModule>('../src/hooks_index.js')),
   enqueueDirtyPathSafe: vi.fn(),
 }))
 
