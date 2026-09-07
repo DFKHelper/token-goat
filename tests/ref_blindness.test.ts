@@ -270,6 +270,24 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     expect(parsed.chains, 'the chain rendering keeps its shape; the field is added, never substituted').toEqual([['UsedShapeZq']])
   })
 
+  it('call-chain --json carries the LANGUAGE disclosure too, not only the kind one', () => {
+    // The kind field above was added and its language counterpart was not, so an envelope for a C#-defined root read as a settled `(no callers)` while text mode said on stderr that C# call sites are never indexed. Asserting the field's contents, not merely its presence: a field carrying the wrong language sends the caller to the wrong conclusion just as confidently.
+    const r = tg('call-chain', 'Widget.cs::ComputeZq', '--json')
+    const parsed = JSON.parse(r.stdout) as { chains: string[][]; refBlindLanguage?: { language: string; definedIn: string } }
+    expect(parsed.refBlindLanguage?.language, 'an empty envelope with no field reads as a settled "no callers"').toBe('csharp')
+    expect(parsed.refBlindLanguage?.definedIn).toContain('Widget.cs')
+    expect(parsed.chains, 'the chain rendering keeps its shape; the field is added, never substituted').toEqual([['ComputeZq']])
+  })
+
+  it('CONTROL: a TypeScript root with real callers carries neither blind-spot field', () => {
+    // Without this, the test above is satisfied by an envelope that always carries the field.
+    const r = tg('call-chain', 'widget.ts::tsComputeZq', '--json')
+    const parsed = JSON.parse(r.stdout) as { chains: string[][]; refBlindLanguage?: unknown; refBlindKinds?: unknown }
+    expect(parsed.refBlindLanguage).toBeUndefined()
+    expect(parsed.refBlindKinds).toBeUndefined()
+    expect(parsed.chains.length, 'and the control must actually have callers, or it proves nothing').toBeGreaterThan(0)
+  })
+
   it('answers a mixed-kind name for the half it can, and discloses the half it cannot', () => {
     const r = tg('refs', 'MixedZq')
     const text = out(r)
