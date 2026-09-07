@@ -582,6 +582,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'skill_load',
       'skill_oversized_first_load',
       'skill_compact_inlined',
+      'skill_heading_tree_inlined',
     ]),
   },
   // SOURCE_CONTENT: real rewrites of tool output that remove real bytes (agent report compaction, Grep fold, browser tab dedup, bash/content compression and the handoff pair). The by-source table has shown a 'content' row since the source was added, but the by-kind table had no member set for it, so every one of these kinds printed under 'Other'. The taskoutput: prefix branch in _kindGroupLabel routes here too.
