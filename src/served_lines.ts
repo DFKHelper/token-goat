@@ -104,7 +104,8 @@ export function servedRunNotice(firstLine: number | null, lastLine: number | nul
   return (
     '[token-goat] ' + which +
     ' were already served verbatim in this session; withheld here. ' +
-    'Recall them with `token-goat bash-output ' + id + '`.'
+    // `--full` is load-bearing, not decoration: without it every render path in cmdBashOutput elides the middle past head+tail, so the command this notice names returns less than the notice just withheld and following our own instruction still loses lines.
+    'Recall them with `token-goat bash-output ' + id + ' --full`.'
   )
 }
 

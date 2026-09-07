@@ -85,7 +85,7 @@ export function preFetchHandler(event: HookEvent): HookOutput {
         recordStat('webfetch:recall', cachedBytes, savedTokensFromBytes(cachedBytes));
         return denyOutput(
           'Already fetched this URL with this prompt; the response is cached. ' +
-          'Use `token-goat web-output ' + cacheId + '` to recall it ' +
+          'Use `token-goat web-output ' + cacheId + ' --full` to recall it ' +
           '(append `--grep PATTERN` to filter or `--section Heading` for a markdown section) instead of re-fetching.',
         );
       }
