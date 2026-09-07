@@ -42,7 +42,7 @@ export interface FileEntry {
   readonly wasEdited: boolean
   /** File size in bytes captured at the last read (0 if unreadable). */
   readonly sizeBytes: number
-  /** True when a Read result contained a truncation marker ([Truncated:). */
+  /** True when the session saw this file's content delivered incompletely: a Read result carrying a `[Truncated:` marker, or a tail-style shell dump whose shown lines cannot be placed against the file. */
   readonly wasTruncated?: boolean
   /**
    * Symbol/section/range tokens this file was read *surgically* by this session
@@ -693,11 +693,19 @@ export function getFileServedOutputs(filePath: string): readonly string[] {
 }
 
 /**
- * Mark `filePath` as having been truncated during a Read this session.
+ * Mark `filePath` as having been delivered incompletely this session.
  *
- * Called by the post_tool_use Read hook when the tool response contains a
- * `[Truncated:` marker. The next pre_tool_use for the same file will deny
- * with a skeleton/surgical-read hint instead of allowing another full read.
+ * Two callers, not one: the post_tool_use Read hook when the tool response
+ * carries a `[Truncated:` marker, and the post_tool_use Bash hook for a
+ * tail-style dump, whose shown lines cannot be placed against the file because
+ * their absolute start depends on a total line count the hook does not have.
+ *
+ * A later pre_tool_use for the same file may then deny with a
+ * skeleton/surgical-read hint rather than serve another full read. May, not
+ * will: the deny is gated on `hints.truncated_read_min_lines`, so a small file
+ * that merely tripped the token-based marker is still read normally, a redirect
+ * there costing more than it saves. Session-artifact files take a separate
+ * branch with their own recall message.
  */
 export function markFileTruncated(filePath: string): void {
   const normalized = normalizePath(filePath)
