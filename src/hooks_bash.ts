@@ -20,7 +20,7 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
-import { deliveredOutputBytes } from './delivery_cap.js'
+import { deliveredOutputBytes, bashOutputCapBytes } from './delivery_cap.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
 import { foldDetail, type BodyFold } from './code_fold.js'
@@ -29,6 +29,7 @@ import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
 import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
+import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
@@ -2231,6 +2232,58 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
 }
 
+// A `curl` GET of an HTML page is the one Bash shape hooks_fetch.ts's WebFetch path already solves and this surface never reached: the harness's delivery cap (see delivery_cap.ts) truncates a Bash result long before article text past the `<head>`/inline CSS/`<script>` preamble arrives, so the model can pay the full cap and still receive zero article content. Modelled on maybeStripAnsiOnly above, but this pass is lossy (extractCleanText drops markup, not just display-only bytes) so, unlike that one, it appends a recall notice pointing at the raw cached copy and prices that notice's own bytes in the net-benefit gate.
+function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput | null {
+  if (!isCurlGetCommand(cmd) || !looksLikeHtml(output)) return null
+  let cfg: { enabled: boolean; disabled_filters: string[] }
+  try {
+    cfg = loadConfig().bash_compress
+  } catch {
+    return null
+  }
+  if (!cfg.enabled || cfg.disabled_filters.includes('curl-html')) return null
+  let cleaned: string
+  try {
+    cleaned = extractCleanText(output)
+  } catch {
+    return null
+  }
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  // `--full` is mandatory here: `bash-output <id>` alone returns only a head slice, so a notice omitting the flag would point the reader at a command that silently loses most of the raw markup.
+  const notice = `[token-goat: curl HTML body cleaned via extractCleanText; use \`token-goat bash-output ${id} --full\` to recall the raw markup]\n`
+  const noticeBytes = Buffer.byteLength(notice, 'utf-8')
+  // Fenced like maybeCompressCompoundOutput above: the cleaned text is a fetched webpage's own words, third-party content by provenance the same way a WebFetch body is, so it gets the same untrusted-content fence and injection scan hooks_fetch.ts already applies to that surface.
+  // Clipped to the harness delivery cap rather than shipped whole, because unlike every other rewrite in this file this one can legitimately EXCEED that cap: extractCleanText shrinks a page enormously relative to its markup and still leaves more prose than the cap carries, measured at 29,252 bytes of cleaned text from a 197,504-byte Wikipedia article. Shipping past the cap costs nothing in bytes (the harness truncates either way) but loses the tail, and the tail is where the closing fence marker and the recall notice sit. Losing the notice is the expensive half: the harness persists the CLEANED text it was handed, so once this hook substitutes, the raw markup survives only in token-goat's own bash cache and that notice is its only route back. Overhead is measured off an actual fence call rather than assumed, since fenceUntrusted returns the text unchanged when injection fencing is switched off.
+  const clipNote = '\n[token-goat: cleaned text clipped to the harness delivery cap; the notice at the top of this output recalls the full raw markup]'
+  const cap = bashOutputCapBytes()
+  const fenceOverhead = Buffer.byteLength(fenceUntrusted(cleaned, UNTRUSTED_TOOL_TAG), 'utf-8') - Buffer.byteLength(cleaned, 'utf-8')
+  const room = cap === null ? null : cap - noticeBytes - fenceOverhead - Buffer.byteLength(clipNote, 'utf-8')
+  let body = cleaned
+  let clipped = ''
+  if (room !== null && room > 0 && Buffer.byteLength(cleaned, 'utf-8') > room) {
+    // Cut back to the last complete line so the clip lands on a boundary the model can read, which also drops any multi-byte character the byte-wise slice split in half.
+    const sliced = Buffer.from(cleaned, 'utf-8').subarray(0, room).toString('utf-8')
+    const lastNewline = sliced.lastIndexOf('\n')
+    body = lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced
+    clipped = clipNote
+  }
+  // The clip note stays OUTSIDE the fence: it is token-goat's own sentence, and the fence escapes `[token-goat:` markers found within it so that third-party bytes cannot forge one, which rendered this note as `&#91;token-goat: ...` when it was fenced along with the page text.
+  const fenced = fenceUntrusted(body, UNTRUSTED_TOOL_TAG) + clipped
+  if (
+    !isRewriteWorthwhile({
+      originalBytes,
+      rewrittenBytes: Buffer.byteLength(fenced, 'utf-8'),
+      noticeBytes,
+      minNetSavingsBytes: resolveMinNetSavingsBytes(),
+    })
+  ) {
+    return null
+  }
+  // Default 'count-here' redaction accounting, matching the other lossy-rewrite sites in this file (the generic compress and identical/contained-reread paths above): extractCleanText performs no redaction of its own, so this is the same posture as those sites rather than the ansi path's 'counted-elsewhere', which exists only because that path is a pure identity transform on bytes already accounted for elsewhere.
+  // Notice FIRST, not appended: it is the only pointer back to the raw markup, and a trailing one sits exactly where the harness truncates.
+  return emitRewrite(notice + fenced, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
+}
+
 /**
  * Recover the original command from a `token-goat compress … -c <cmd>` wrapper
  * (the rewrite emitted by {@link maybeCompressRewrite}) so the post-hook keys its
@@ -3223,6 +3276,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         return contextOutput(delta + ' — full output: bash-output ' + id + ' --full')
       }
     }
+    // A curl of an HTML page is folded before the ansi-only pass, since the ansi pass alone
+    // cannot help a page that carries no escape codes at all.
+    const curlHtmlFold = maybeFoldCurlHtml(cmd, output, id)
+    if (curlHtmlFold !== null) return curlHtmlFold
     // Deliberately after the delta hint, which keeps its existing priority: a hook returns one
     // channel, and the delta is only reachable on a rerun whose output actually changed. Every
     // other cached command -- including the colourised build runs `isBuildCommand` routes here --
