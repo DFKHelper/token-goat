@@ -2012,8 +2012,8 @@ async function maybeCollapseIdenticalRead(
   }
 
   const pointer = identical
-    ? '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + containerId + '`.'
-    : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + filePath + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + '`.'
+    ? '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + containerId + ' --full`.'
+    : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + filePath + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + ' --full`.'
   if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(pointer, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
   // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the
   // earlier run as safe for the compaction manifest to drop, which is right when a newer *full*
@@ -3149,7 +3149,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       const delta = summarizeOutputDelta(priorEntry.output, output)
       if (delta !== null) {
         recordStat('session_hint', 0, 0)
-        return contextOutput(delta + ' — full output: bash-output ' + id)
+        return contextOutput(delta + ' — full output: bash-output ' + id + ' --full')
       }
     }
     // Deliberately after the delta hint, which keeps its existing priority: a hook returns one

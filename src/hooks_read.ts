@@ -1549,10 +1549,13 @@ function readWindowFromDisk(event: HookEvent, normalized: string): string | null
   if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
   const text = decodeSource(fs.readFileSync(normalized))
   const limit = readIntToolInput(event, 'limit')
-  if (limit === undefined || limit <= 0) return text
   const offset = readIntToolInput(event, 'offset')
   const start = offset !== undefined && offset >= 1 ? offset : 1
-  return text.split('\n').slice(start - 1, start - 1 + limit).join('\n')
+  // `offset` bounds the window on its own: a Read carrying an offset and no limit delivers from that line to the end of the file, never the head. Consulting `offset` only when a `limit` was also given recorded the WHOLE file as served for such a read, and a later whole-file Read then had its never-delivered head withheld under a notice claiming it had already been served verbatim.
+  if (start === 1 && (limit === undefined || limit <= 0)) return text
+  const lines = text.split('\n')
+  const from = start - 1
+  return (limit === undefined || limit <= 0 ? lines.slice(from) : lines.slice(from, from + limit)).join('\n')
 }
 
 /**
