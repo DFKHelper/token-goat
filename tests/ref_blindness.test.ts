@@ -1,0 +1,232 @@
+/**
+ * The reference index has two blind spots, and in both of them an empty result set is
+ * indistinguishable from a genuine "this symbol has no callers":
+ *
+ *   Kind. Only value-position usages are recorded (call, `new`, macro invocation, a few bare
+ *   identifier shapes), never a type annotation. So `token-goat dead --kind interface` reported
+ *   616 of this repo's 717 interfaces as dead; every one of them is used, as a type. The command
+ *   was answering a question the index cannot answer.
+ *
+ *   Language. `REF_LANGUAGES` in src/parser.ts gates ref extraction to nine tree-sitter
+ *   languages. For a C#/PHP/Kotlin/Swift/Lua/... file, `refs` returned "No references found",
+ *   which reads as "this symbol is unused" and invites deleting live code.
+ *
+ * Provenance:
+ *   CAPTURE for every behavioural test below. Each one spawns the real built bundle
+ *   (dist/token-goat.mjs) against a real on-disk project it indexes first, and asserts the literal
+ *   bytes that process wrote to stdout/stderr plus its exit code. Nothing is stubbed.
+ *   FORMAT-DERIVED for the REF_LANGUAGES mirror guard: the expected set is parsed out of
+ *   src/parser.ts itself, the producer that gates extraction, so the two cannot drift apart. It is
+ *   cited as a source rather than trusted as evidence of behaviour, which is what the CAPTURE
+ *   tests above supply.
+ *
+ * Every assertion pairs the honest form being PRESENT with the misleading form being ABSENT: a
+ * test that only checks for the new message passes even when the old wrong output is still emitted
+ * alongside it, which is exactly how this class of defect survives a green suite.
+ */
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+import { beforeAll, afterAll, describe, expect, it } from 'vitest'
+
+import { BUNDLE, ROOT } from './helpers/bundle.js'
+import { REF_INDEXED_LANGUAGES } from '../src/ref_blindness.js'
+import { REF_BLIND_KINDS, TYPE_KINDS } from '../src/graph_commands.js'
+
+let project: string
+
+function tg(...args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const res = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: project, encoding: 'utf8' })
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+}
+
+/** stdout and stderr as one string, since these commands split honest prose onto stderr and rows onto stdout and an assertion about "what the caller was told" spans both. */
+function out(r: { stdout: string; stderr: string }): string {
+  return `${r.stdout}\n${r.stderr}`
+}
+
+beforeAll(() => {
+  project = mkdtempSync(join(tmpdir(), 'tg-refblind-'))
+  // TypeScript half: one referenced function, one genuinely unreferenced function, and one interface used ONLY as a type annotation -- the exact shape the indexer cannot see.
+  writeFileSync(join(project, 'widget.ts'), [
+    'export interface UsedShapeZq { readonly n: number }',
+    'export function tsComputeZq(): number { return 42 }',
+    'export function tsUnusedZq(): number { return 7 }',
+    'export function tsCallerZq(s: UsedShapeZq): number { return tsComputeZq() + s.n }',
+    '',
+  ].join('\n'))
+  // C# half: a class whose method is called from the same file. The call site is real; the index simply never walks it, because csharp is outside REF_LANGUAGES.
+  writeFileSync(join(project, 'Widget.cs'), [
+    'namespace Demo {',
+    '  public class WidgetZq {',
+    '    public int ComputeZq() { return 42; }',
+    '  }',
+    '  public class CallerZq {',
+    '    public int GoZq() { var w = new WidgetZq(); return w.ComputeZq(); }',
+    '  }',
+    '}',
+    '',
+  ].join('\n'))
+  const indexed = tg('index', '--walk')
+  expect(indexed.status, `indexing the fixture must succeed or every assertion below is vacuous: ${out(indexed)}`).toBe(0)
+  // Population guard: if the fixture indexed nothing, every "the misleading output is absent" assertion below would pass for the wrong reason.
+  const outline = tg('outline', 'widget.ts')
+  expect(outline.stdout, 'the TypeScript fixture must be in the index').toContain('UsedShapeZq')
+  const csOutline = tg('outline', 'Widget.cs')
+  expect(csOutline.stdout, 'the C# fixture must be in the index, or the language gate is never reached').toContain('ComputeZq')
+})
+
+afterAll(() => {
+  if (project !== undefined) rmSync(project, { recursive: true, force: true })
+})
+
+describe('dead: a kind whose references are never recorded is refused, not answered', () => {
+  it('refuses --kind interface instead of listing every interface as dead', () => {
+    const r = tg('dead', '--kind', 'interface')
+    const text = out(r)
+    expect(r.status, 'an unanswerable question is not a successful answer').toBe(1)
+    expect(text).toContain('Cannot assess deadness for kind')
+    expect(text).toContain('never type annotations')
+    // The misleading forms. `UsedShapeZq` is what the old code printed; "No dead symbols found." is the opposite failure, a false-clean verdict.
+    expect(text, 'the pre-fix output listed the interface as dead').not.toContain('UsedShapeZq')
+    expect(text, 'refusing must not be spelled as a clean codebase').not.toContain('No dead symbols found')
+  })
+
+  it('still answers the kinds it can, and discloses the excluded one rather than dropping it silently', () => {
+    const r = tg('dead', '--kind', 'interface,function')
+    const text = out(r)
+    expect(r.status).toBe(0)
+    // Must-not-drop: the answerable half of the request still produces its real answer.
+    expect(r.stdout, 'the function half of the request must still be answered').toContain('tsUnusedZq')
+    expect(text, 'the exclusion must be disclosed').toContain("Note: 'interface' excluded")
+    expect(text, 'a silent exclusion is the same defect wearing the opposite sign').toContain('never type annotations')
+    expect(r.stdout, 'the excluded kind must not contribute rows').not.toContain('UsedShapeZq')
+  })
+
+  it('names the exclusion in --json too, where a bare items list cannot carry prose', () => {
+    const r = tg('dead', '--kind', 'interface,function', '--json')
+    const parsed = JSON.parse(r.stdout) as { excludedKinds?: string[]; excludedKindsReason?: string; items: Array<{ name: string }> }
+    expect(parsed.excludedKinds).toEqual(['interface'])
+    expect(parsed.excludedKindsReason).toContain('never type annotations')
+    expect(parsed.items.map((i) => i.name), 'the excluded kind must not appear among the rows').not.toContain('UsedShapeZq')
+  })
+
+  it('skips symbols in a language whose call sites are never indexed, and says how many', () => {
+    // The second axis of the same defect: even for an assessable KIND, a C# method has no ref rows at all, so listing it as dead would report the indexer's blindness as a property of the code.
+    const r = tg('dead', '--kind', 'method')
+    const text = out(r)
+    expect(r.status).toBe(0)
+    expect(text, 'the skipped population must be disclosed').toMatch(/Note: \d+ symbols? skipped/)
+    expect(text, 'the reason must name the index, not the code').toContain('token-goat does not index')
+    expect(r.stdout, 'a C# method must not be listed as dead').not.toContain('ComputeZq')
+    expect(r.stdout, 'nor its uncalled sibling, which is equally unassessable').not.toContain('GoZq')
+  })
+
+  it('reports the language skip in --json, where the prose note is not emitted', () => {
+    const r = tg('dead', '--kind', 'method', '--json')
+    const parsed = JSON.parse(r.stdout) as { unassessableByLanguage?: number; items: Array<{ name: string }> }
+    expect(parsed.unassessableByLanguage, 'the two C# methods must be counted, not silently dropped').toBeGreaterThanOrEqual(2)
+    expect(parsed.items.map((i) => i.name)).not.toContain('ComputeZq')
+  })
+
+  // Control. Without this, the two tests above are satisfied by a `dead` that refuses everything.
+  it('leaves an answerable kind untouched: no refusal, no exclusion note, real rows', () => {
+    const r = tg('dead', '--kind', 'function')
+    const text = out(r)
+    expect(r.status).toBe(0)
+    expect(r.stdout, 'a genuinely unreferenced function is still reported dead').toContain('tsUnusedZq')
+    expect(r.stdout, 'a called function is still not reported dead').not.toContain('tsComputeZq')
+    expect(text).not.toContain('Cannot assess deadness')
+    expect(text).not.toContain('excluded --')
+  })
+})
+
+describe('refs and its siblings: a language whose call sites are never indexed says so', () => {
+  // Control pair. These two prove the probe can produce a positive AND that the pre-existing honest message for a genuinely unreferenced symbol is not collateral damage of the fix.
+  it('CONTROL: a referenced TypeScript symbol still resolves its references', () => {
+    const r = tg('refs', 'widget.ts::tsComputeZq')
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('tsCallerZq')
+  })
+
+  it('CONTROL: a genuinely unreferenced TypeScript symbol keeps the old, correct message', () => {
+    const r = tg('refs', 'widget.ts::tsUnusedZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text).toContain("No references found for 'tsUnusedZq'")
+    expect(text, 'a ref-indexed language must not be reported as unindexed').not.toContain('call sites are not indexed')
+  })
+
+  it('refs names the language instead of returning a flat zero', () => {
+    const r = tg('refs', 'Widget.cs::ComputeZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text).toContain('C# call sites are not indexed')
+    expect(text).toContain('not evidence the symbol is unreferenced')
+    expect(text, 'the misleading message must be replaced, not merely accompanied').not.toContain('No references found')
+  })
+
+  it('callers names the language too, since it reads the same empty ref rows', () => {
+    const r = tg('callers', 'ComputeZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text).toContain('C# call sites are not indexed')
+    expect(text).not.toContain('No references found')
+  })
+
+  it('impact names the language too', () => {
+    const r = tg('impact', 'ComputeZq')
+    const text = out(r)
+    expect(r.status).toBe(1)
+    expect(text).toContain('C# call sites are not indexed')
+    expect(text, 'a BFS over empty rows must not report absence as a finding').not.toContain('No callers found')
+  })
+
+  it('call-chain names the language, the one sibling whose empty answer exits 0', () => {
+    const r = tg('call-chain', 'ComputeZq')
+    const text = out(r)
+    expect(text).toContain('C# call sites are not indexed')
+    expect(r.stdout, 'the bare "(no callers)" verdict must not be presented for a symbol nobody looked for callers of').not.toContain('(no callers)\n')
+    expect(r.stdout).toContain('(no callers recorded)')
+  })
+
+  it('CONTROL: call-chain still prints the plain verdict for a ref-indexed language', () => {
+    const r = tg('call-chain', 'tsUnusedZq')
+    const text = out(r)
+    expect(r.stdout).toContain('(no callers)')
+    expect(text).not.toContain('call sites are not indexed')
+  })
+
+  it('emits no control characters, which a bare \\b inside a template literal would silently produce', () => {
+    const text = out(tg('refs', 'Widget.cs::ComputeZq'))
+    // Built from char codes rather than written as a regex literal: eslint's no-control-regex bans the literal form, and the point here is to detect exactly those characters in shipped output.
+    const control = [...text].some((ch) => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13 })
+    expect(control, `control character in: ${JSON.stringify(text)}`).toBe(false)
+  })
+})
+
+describe('structural guards against the two lists drifting', () => {
+  it('REF_INDEXED_LANGUAGES mirrors REF_LANGUAGES in src/parser.ts, which cannot be imported without changing PARSER_FINGERPRINT', () => {
+    const src = readFileSync(join(ROOT, 'src', 'parser.ts'), 'utf8')
+    const start = src.indexOf('const REF_LANGUAGES')
+    expect(start, 'REF_LANGUAGES must still exist in src/parser.ts under that name, or this guard scans nothing').toBeGreaterThan(-1)
+    const end = src.indexOf('])', start)
+    expect(end).toBeGreaterThan(start)
+    const declared = [...src.slice(start, end).matchAll(/'([a-z+#]+)'/g)].map((m) => m[1])
+    // Population guard: a rename or reformat that emptied this list would otherwise let the equality below pass forever against two empty sets.
+    expect(declared.length, 'the parsed REF_LANGUAGES population must be non-empty').toBeGreaterThanOrEqual(5)
+    expect([...declared].sort()).toEqual([...REF_INDEXED_LANGUAGES].sort())
+  })
+
+  it('REF_BLIND_KINDS covers every type-declaration kind, so a new one cannot become assessable-looking by omission', () => {
+    expect(TYPE_KINDS.length, 'the TYPE_KINDS population must be non-empty').toBeGreaterThan(5)
+    for (const k of TYPE_KINDS) {
+      expect(REF_BLIND_KINDS, `type kind '${k}' must be treated as unassessable by dead`).toContain(k)
+    }
+    expect(REF_BLIND_KINDS, 'Rust impl blocks are named for the type they implement, so their name only ever occurs in type position').toContain('impl')
+    expect(REF_BLIND_KINDS, 'a class is constructed with `new`, a value position the index does record').not.toContain('class')
+    expect(REF_BLIND_KINDS, 'functions are the one kind dead is unambiguously able to assess').not.toContain('function')
+  })
+})

@@ -18,6 +18,8 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
+import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice } from './ref_blindness.js'
+import { detectLanguage } from './parser_types.js'
 import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
@@ -352,11 +354,20 @@ export function runCallers(opts: CallersOptions): number {
     // Distinguish "not indexed at all" from "indexed, genuinely zero callers" -- same trap as
     // above, one step earlier. `fileHint`, when set, already proved `name` exists in that file
     // (the check at the top of this function), so this can only fire on the bare-name path.
-    if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
+    // Fetched as rows rather than a bare existence count for the same reason runRefsSingle does it: the defining file's language decides whether an empty caller set is an answer or an artefact of the index. Capped, since all this needs to know is whether every definition sits in a ref-blind language.
+    const defRows = querySymbols({ name, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
+    if (defRows.length === 0) {
       emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`)
       // Same empty-index note as the "No references found" branch below -- an empty project
       // index makes EVERY symbol look unindexed, so this must still surface the real cause.
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+      return 1
+    }
+    // Same honesty gate as runRefsSingle's, on the command that consumes the identical ref rows: `callers` reading zero for a C#/Kotlin/Swift/PHP symbol says nothing about that symbol, only that token-goat never walked its call sites. Requires EVERY definition to be ref-blind, so a name also defined in a ref-indexed language keeps today's message.
+    const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
+    const firstDefPath = defPaths[0]
+    if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
+      emitErr(refBlindLanguageNotice(opts.symbol, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
       return 1
     }
     emitErr(`No references found for '${opts.symbol}'`)
@@ -465,6 +476,12 @@ export function runCallChain(opts: CallChainOptions): number {
     return 1
   }
 
+  // The BFS root's defining file when EVERY definition of that name sits in a language the reference index never walks, else undefined -- the "(no callers)" branch far below has no other way to tell an empty frontier caused by the indexer's blindness from a genuine root entry point. Deliberately a function rather than a hoisted const: it runs one extra symbol query, and only the empty-result branch needs the answer, so the populated path must not pay for it.
+  const refBlindRootPath = (): string | undefined => {
+    const paths = fileHint !== undefined ? [fileHint] : querySymbols({ name, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT }).map((r) => r.filePath)
+    return paths.length > 0 && paths.every((fp) => !isRefIndexedFile(fp)) ? paths[0] : undefined
+  }
+
   // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
@@ -538,6 +555,13 @@ export function runCallChain(opts: CallChainOptions): number {
     // is byte-identical to today.
     if (opts.excludeTests === true && suppressedCount > 0) {
       emit(`${name}  (no non-test callers; ${excludeTestsHiddenNote(suppressedCount)})`)
+      return 0
+    }
+    // Same honesty gate as callers/impact/refs, on the one sibling whose empty answer is rendered as a SUCCESS ("(no callers)", exit 0) rather than an error -- which makes it the easiest of the four to misread as a settled verdict. Emitted on stderr so the chain rendering on stdout keeps its shape for anything parsing it.
+    const blindRoot = refBlindRootPath()
+    if (blindRoot !== undefined) {
+      emitErr(refBlindLanguageNotice(name, detectLanguage(blindRoot), toDisplayPath(rootDir, blindRoot)))
+      emit(`${name}  (no callers recorded)`)
       return 0
     }
     emit(`${name}  (no callers)`)
@@ -721,8 +745,16 @@ export function runImpact(opts: ImpactOptions): number {
     // Distinguish "not indexed at all" from "indexed, genuinely zero impact" -- same trap as
     // runCallers/runRefsSingle. `fileHint`, when set, already proved `rootName` exists in that
     // file (the check near the top of this function), so this can only fire on the bare-name path.
-    if (querySymbols({ name: rootName, rootDir, limit: 1 }).length === 0) {
+    const defRows = querySymbols({ name: rootName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
+    if (defRows.length === 0) {
       emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(rootName, rootDir)}`)
+      return 1
+    }
+    // Same honesty gate as runCallers'/runRefsSingle's: impact is a BFS over the same ref rows, so for a symbol defined only in a language whose call sites are never indexed the BFS starts from an empty frontier and "no impact" is a fact about the index alone.
+    const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
+    const firstDefPath = defPaths[0]
+    if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
+      emitErr(refBlindLanguageNotice(opts.symbol, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
       return 1
     }
     emitErr(`No callers found for '${opts.symbol}'`)
@@ -883,14 +915,35 @@ export function runDead(opts: DeadOptions): number {
     return 1
   }
 
+  // A kind whose references the index never records cannot be assessed for deadness at all: every symbol of that kind comes back with zero refs, so `dead` would list the entire population as dead. Before this gate, `dead --kind interface` reported 616 of this repo's 717 interfaces as dead; all of them are used, as type annotations the indexer does not walk. Refuse the question rather than answer it wrongly. When only SOME of the requested kinds are blind the answerable ones still run, but the exclusion is disclosed below rather than dropped silently, since a silent exclusion is the same defect wearing the opposite sign.
+  const blindKinds = kinds.filter((k) => REF_BLIND_KINDS.includes(k))
+  const assessableKinds = kinds.filter((k) => !REF_BLIND_KINDS.includes(k))
+  if (blindKinds.length > 0 && assessableKinds.length === 0) {
+    const blindLabel = blindKinds.length === 1 ? 'kind' : 'kinds'
+    emitErr(`Cannot assess deadness for ${blindLabel}: ${blindKinds.map((k) => `'${k}'`).join(', ')} -- ${REF_BLIND_KIND_REASON}.`)
+    emitErr(`Every symbol of ${blindKinds.length === 1 ? 'this kind' : 'these kinds'} would be reported dead, so no result is emitted rather than a wrong one. To hunt unused type declarations, list them with 'token-goat types --json' and search the source for each name directly.`)
+    return 1
+  }
+  // Printed before any row so it is visible whether the remaining kinds turn up dead symbols or not: an exclusion disclosed only alongside results would vanish on exactly the "No dead symbols found." output most likely to be misread as a clean verdict.
+  const blindKindNote = blindKinds.length > 0
+    ? `Note: ${blindKinds.map((k) => `'${k}'`).join(', ')} excluded -- ${REF_BLIND_KIND_REASON}.`
+    : undefined
+  if (blindKindNote !== undefined && opts.json !== true) emitErr(blindKindNote)
+
   // Scanned uncapped. The previous 5000-per-kind cap was exceeded by real projects (querySymbols orders by (file_path, line), so past 5000 every symbol in the alphabetically-later part of the tree went unexamined), and nothing downstream said so: `totalCount` counted the SCANNED set while reading as the whole one, so half a project's dead code was invisible with no notice at all.
-  const syms = kinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir }))
+  const syms = assessableKinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir }))
   const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
 
   let suppressed = 0
+  // Symbols defined in a language the reference index never walks (everything outside parser.ts's REF_LANGUAGES: C#, PHP, Kotlin, Swift, Scala, Dart, Elixir, Lua, R, Zig, PowerShell, Apex, SQL, GraphQL, proto, Terraform, the SFC family, and every markup/config language) come back with zero refs unconditionally, so listing them as dead would report the indexer's blindness as a property of the code. Excluded here and disclosed below rather than silently dropped.
+  let refBlindByLanguage = 0
   for (const sym of syms) {
+    if (!isRefIndexedFile(sym.filePath)) {
+      refBlindByLanguage += 1
+      continue
+    }
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
     // limit raised from 1 to 500 (matching resolveCallers' default cap): a bare-name existence
     // check can no longer stop at the first match, since that match might be filtered out below
@@ -922,6 +975,11 @@ export function runDead(opts: DeadOptions): number {
     results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
 
+  // Disclosed for the same reason the kind exclusion above is: a symbol the index cannot answer for must not be quietly absent from a list whose whole meaning is absence. Emitted only when something was actually excluded, so a project made entirely of ref-indexed languages sees byte-identical output.
+  if (refBlindByLanguage > 0 && opts.json !== true) {
+    emitErr(`Note: ${countNoun(refBlindByLanguage, 'symbol')} skipped -- defined in a language whose call sites token-goat does not index, so deadness cannot be determined for them.`)
+  }
+
   // --grep narrows the confirmed-dead set (after --exclude-tests already dropped test-file
   // definitions), and it runs BEFORE the --top slice so it selects from the whole dead set
   // rather than from an already-capped page.
@@ -950,7 +1008,8 @@ export function runDead(opts: DeadOptions): number {
     // tell "--exclude-tests hid every dead symbol" from "no dead symbols hidden by tests
     // either, the codebase is genuinely clean" -- brief's own hiddenByExcludeTests field, same
     // omit-when-zero convention.
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
+    // `excludedKinds`/`unassessableByLanguage` are the machine-readable form of the two stderr notes above: without them a `--json` consumer sees the same `items: []` for "nothing is dead" and for "the index cannot answer this at all". Omitted when zero, matching hiddenByGrep's convention.
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}), ...(blindKinds.length > 0 ? { excludedKinds: blindKinds, excludedKindsReason: REF_BLIND_KIND_REASON } : {}), ...(refBlindByLanguage > 0 ? { unassessableByLanguage: refBlindByLanguage } : {}) }, null, 2))
     return 0
   }
 
@@ -1205,6 +1264,9 @@ export const TYPE_KINDS: ReadonlyArray<string> = [
   // Kotlin/Scala object.
   'graphql_extend',
 ]
+
+// Symbol `kind` values whose references the index structurally cannot record, so `dead` cannot assess them: a type declaration's name appears only in type-annotation position, and extractRefs walks call/new/macro nodes plus a few bare-identifier value positions, never a `type_identifier`. Derived from TYPE_KINDS rather than hand-listed so a future type kind added there cannot silently become assessable-looking here. 'impl' (Rust `impl_item`, parser.ts's KIND_MAP) is added on top: it is not a type declaration so it is absent from TYPE_KINDS, but an impl block is named for the type it implements and that name likewise only ever occurs in type position. Measured against the machine-wide index before this gate existed: of symbols whose name matches at least one row in `refs`, function 84.7% / class 64.7% / method 60.8%, against interface 0.2% (n=21730), type 7.6%, struct 4.8%, impl 3.4%, enum 3.3% -- and within TypeScript alone, class 79.5% against interface 0.2%, which isolates the kind from the language. Those hit rates are upper bounds, since a same-named symbol in any other project counts as a hit.
+export const REF_BLIND_KINDS: ReadonlyArray<string> = [...new Set([...TYPE_KINDS, 'impl'])]
 
 // Symbol `kind` values every language adapter in this repo is known to emit (collected from the
 // language adapter source, not the runtime index) -- used by `dead --kind` to recognize a

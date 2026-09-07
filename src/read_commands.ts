@@ -32,6 +32,8 @@ import { loadConfig } from './config.js'
 import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
+import { isRefIndexedFile, refBlindLanguageNotice, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
+import { detectLanguage } from './parser_types.js'
 import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
@@ -2599,13 +2601,22 @@ function runRefsSingle(opts: RefsOptions): number {
     // why this matters). Resolved here rather than hoisted to the top of the function since it's
     // only ever paid once the query already came back empty.
     const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
-    if (querySymbols({ name: symName, rootDir, limit: 1 }).length === 0) {
+    // Fetched as rows rather than as a bare existence count, because the defining file's LANGUAGE decides whether an empty result is an answer at all: parser.ts's REF_LANGUAGES walks call sites for nine tree-sitter languages only, and for a file outside that set the refs table is empty by construction. Capped rather than unbounded -- this only needs to know whether every definition of the name sits in a ref-blind language, and a name with more definitions than this cap in a single project is not a case where one more row changes that verdict.
+    const defRows = querySymbols({ name: symName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
+    if (defRows.length === 0) {
       emitErr(`Symbol not found: ${symName}${unknownSymbolSuggestion(symName, rootDir)}`)
       // Same empty-index note as the "No references found" branch below -- an empty project
       // index makes EVERY symbol look unindexed, so this must still surface the real cause
       // instead of leaving the caller staring at a suggestion-free "not found" for a project
       // that was simply never indexed.
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+      return 1
+    }
+    // The honesty gate for Bug B: when EVERY file defining this name is in a language whose call sites are never indexed, "No references found" is a statement about token-goat's index that reads as a statement about the code, and agents delete code on the strength of it. Say which it is. Requires all definitions to be ref-blind: a name also defined in TypeScript has had its call sites genuinely searched, so the ordinary message is still the honest one there.
+    const defPaths = defFileHint !== undefined ? [defFileHint] : defRows.map((r) => r.filePath)
+    const firstDefPath = defPaths[0]
+    if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
+      emitErr(refBlindLanguageNotice(symName, detectLanguage(firstDefPath), refsDisplayPath(firstDefPath)))
       return 1
     }
     emitErr(`No references found for '${symName}'`)
