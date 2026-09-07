@@ -1933,12 +1933,22 @@ describe('runDead integration', () => {
     vi.mocked(distinctSymbolKinds).mockReturnValue([])
     vi.mocked(querySymbols).mockReturnValue([])
     try {
-      const sample = ['var', 'apex_class', 'proto_message', 'graphql_type']
-      for (const kind of sample) {
+      // Split by whether `dead` can assess the kind at all, which is a separate question from whether it RECOGNIZES it. Every kind here must clear the typo check; the type-declaration ones then hit the ref-blindness refusal instead of returning a result, because the index records no type-position references for them (see tests/ref_blindness.test.ts). Before that refusal existed all four returned 0, and `--kind interface` listed 616 of this repo's 717 interfaces as dead.
+      const assessableSample = ['var']
+      const refBlindSample = ['apex_class', 'proto_message', 'graphql_type']
+      for (const kind of assessableSample) {
         const errCaptured = captureStderr(() => {
           expect(runDead({ kind })).toBe(0)
         })
         expect(errCaptured).not.toContain('Unrecognized kind')
+        expect(errCaptured).not.toContain('Cannot assess deadness')
+      }
+      for (const kind of refBlindSample) {
+        const errCaptured = captureStderr(() => {
+          expect(runDead({ kind })).toBe(1)
+        })
+        expect(errCaptured, `'${kind}' is a real adapter kind and must never read as a typo`).not.toContain('Unrecognized kind')
+        expect(errCaptured, `'${kind}' is a type declaration, so its deadness is unanswerable rather than answerable`).toContain('Cannot assess deadness')
       }
     } finally {
       vi.mocked(distinctSymbolKinds).mockReset()
