@@ -564,7 +564,10 @@ export function runCallChain(opts: CallChainOptions): number {
     const hiddenByExcludeTests = noCallers && opts.excludeTests === true ? suppressedCount : 0
     // Same disambiguation once more, for the kind blind spot: the `chains: [[name]]` noCallers shape reads as a settled verdict, and for a type declaration it is not one. Named in the envelope rather than left to the stderr notice, so a --json consumer is not the one caller told nothing -- same reason hiddenByGrep exists. Omitted when zero, so every populated and genuinely caller-less answer stays byte-identical.
     const refBlindKinds = noCallers ? refBlindRootKinds().blindKinds : []
-    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}), ...(refBlindKinds.length > 0 ? { refBlindKinds } : {}) }, null, 2))
+    // The language half of the very disclosure the line above exists to make. Text mode's noCallers branch names it on stderr and the envelope carried no counterpart at all, so a --json consumer reading `chains: [[name]]` could not tell a language whose call sites are never indexed from a genuine root entry point: the same gap refBlindKinds closes, left open on the half that fires for whole languages rather than for one symbol kind. dead-code --json already discloses both halves side by side. Emitted alongside the kind field rather than instead of it, unlike text mode's precedence, because an envelope can carry two facts where a single stderr line has to pick one. Omitted when absent, so every other answer stays byte-identical.
+    const blindRootPath = noCallers ? refBlindRootPath() : undefined
+    const refBlindLanguage = blindRootPath !== undefined ? { language: detectLanguage(blindRootPath), definedIn: toDisplayPath(rootDir, blindRootPath) } : undefined
+    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}), ...(refBlindKinds.length > 0 ? { refBlindKinds } : {}), ...(refBlindLanguage !== undefined ? { refBlindLanguage } : {}) }, null, 2))
     return 0
   }
 
