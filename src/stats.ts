@@ -70,6 +70,17 @@ export interface StatsSummary {
    * see {@link COUNT_ONLY_KINDS}. Absent kinds simply had no rows in the window.
    */
   counts: Record<string, number>
+  /**
+   * Totals split by the `tg_version` that wrote each row, so a headline `total_tokens_saved`
+   * spanning rows priced under different pricing-formula eras (a divisor change, a new kind, a
+   * fixed baseline) is never presented as a single commensurable number without disclosure. Rows
+   * written before the `tg_version` column existed, or by a build where it failed to record,
+   * are bucketed under {@link PRICING_VERSION_UNRECORDED} rather than attributed to the version
+   * running now -- exactly the same reasoning `HARNESS_UNRECORDED` already applies to `by_harness`.
+   * `hasMixedPricingEras` reduces this to the one boolean callers actually need: whether the sum
+   * above is safe to show unqualified.
+   */
+  by_pricing_version: Record<string, StatsBucket>
   window_days: number
 }
 
@@ -78,6 +89,14 @@ export interface StatsSummary {
  * marks the absence of a measurement, and any renderer showing it must not let it read as one.
  */
 export const HARNESS_UNRECORDED = 'unrecorded (pre-2.8.1)'
+
+/** Same role as {@link HARNESS_UNRECORDED}, for `tg_version`: marks a row written before that column existed (or that failed to record it) rather than the empty string or the running version. */
+export const PRICING_VERSION_UNRECORDED = 'unrecorded (pre-tg_version column)'
+
+/** True when {@link StatsSummary.by_pricing_version} spans more than one key -- i.e. `total_tokens_saved` sums rows priced under more than one formula era and must be disclosed as such rather than shown as a single authoritative figure. A summary with zero rows, or rows from exactly one version, is not mixed. */
+export function hasMixedPricingEras(summary: Pick<StatsSummary, 'by_pricing_version'>): boolean {
+  return Object.keys(summary.by_pricing_version).length > 1
+}
 
 export const SOURCE_IMAGE = 'image'
 export const SOURCE_HINT = 'hint'
@@ -653,6 +672,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   const byKind: Record<string, StatsBucket> = {}
   const byDay: Record<string, StatsBucket> = {}
   const byHarness: Record<string, StatsBucket> = {}
+  const byPricingVersion: Record<string, StatsBucket> = {}
   let totalEvents = 0
   let totalBytes = 0
   let totalTokens = 0
@@ -662,9 +682,15 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   // module never migrated, and naming a missing column would throw out of summarize() entirely
   // rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
-  const cols = hasHarness
-    ? 'ts, kind, bytes_saved, tokens_saved, harness'
-    : 'ts, kind, bytes_saved, tokens_saved'
+  const hasVersion = statsHasVersionColumn(db)
+  const cols = [
+    'ts',
+    'kind',
+    'bytes_saved',
+    'tokens_saved',
+    ...(hasHarness ? ['harness'] : []),
+    ...(hasVersion ? ['tg_version'] : []),
+  ].join(', ')
   const query =
     sinceTs !== null
       ? `SELECT ${cols} FROM stats WHERE ts >= ? ORDER BY ts DESC`
@@ -714,6 +740,12 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
       byHarness[harness] = zeroBucket()
     }
     incBucket(byHarness[harness], bytesSaved, tokensSaved)
+
+    const pricingVersion = (row as { tg_version?: string | null }).tg_version || PRICING_VERSION_UNRECORDED
+    if (!byPricingVersion[pricingVersion]) {
+      byPricingVersion[pricingVersion] = zeroBucket()
+    }
+    incBucket(byPricingVersion[pricingVersion], bytesSaved, tokensSaved)
   }
 
   const bySourceDict: Record<string, StatsBucket> = {}
@@ -760,6 +792,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     by_project: byProjectList,
     by_source: bySourceDict,
     by_harness: byHarness,
+    by_pricing_version: byPricingVersion,
     counts,
     by_command: Object.entries(byCommandDict)
       .map(([command, bucket]) => ({ ...bucket, command }))
@@ -777,6 +810,19 @@ function _totalsLines(summary: StatsSummary): string[] {
     `Total events:   ${summary.total_events}`,
     `Bytes saved:    ${fmtBytes(summary.total_bytes_saved)}`,
     `Tokens saved:   ${summary.total_tokens_saved}`,
+    // Disclosure, not a correction: `total_tokens_saved` above sums rows written under whichever
+    // pricing formula was live when each was recorded, and `tg_version` cannot be read back into
+    // "which formula" for a row from before this disclosure existed (PRICING_VERSION_UNRECORDED is
+    // the overwhelming majority of all-time rows). Excluding those rows from the headline would
+    // discard nearly the whole figure rather than fix it, so the honest move is to keep the sum and
+    // say plainly that it spans more than one era, not to quietly present a mixed total as single-formula.
+    ...(hasMixedPricingEras(summary)
+      ? [
+          `Pricing note:   totals mix ${countNoun(Object.keys(summary.by_pricing_version).length, 'tg_version era')} ` +
+            `(${countNoun(summary.by_pricing_version[PRICING_VERSION_UNRECORDED]?.events ?? 0, 'row')} unrecorded); ` +
+            `see 'token-goat stats --json' -> by_pricing_version for the breakdown`,
+        ]
+      : []),
     // Printed on its own line, below the token total and never inside it, because it counts
     // placeholders rather than tokens. Omitted entirely when nothing was redacted, so the line is
     // information rather than a permanent zero. See COUNT_ONLY_KINDS.

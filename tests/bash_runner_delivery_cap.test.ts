@@ -48,9 +48,9 @@ function bashCompressRows(): Array<[string, number, number]> {
     .map((c) => [c[0] as string, c[1] as number, c[2] as number])
 }
 
-/** The token rule this repo's compressed outputs use: floor(n / 3) + 1, restated here independently. */
+/** The token rule this repo's compressed outputs use: round(n / 4), restated here independently -- matches src/stats.ts's savedTokensFromBytes. */
 function expectedTokens(bytesSaved: number): number {
-  return bytesSaved <= 0 ? 0 : Math.max(1, Math.floor(bytesSaved / 3) + 1)
+  return bytesSaved <= 0 ? 0 : Math.max(1, Math.round(bytesSaved / 4))
 }
 
 let savedOverride: string | undefined

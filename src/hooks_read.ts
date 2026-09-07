@@ -1161,8 +1161,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
+    // A denied Read that carried offset/limit was only ever going to hand over its requested
+    // window, not the whole file -- crediting rereadBytes (the on-disk file size) unconditionally
+    // here booked every windowed re-read as if it had asked for everything, the same defect the
+    // read_served_deny branch above already avoids via counterfactualCredit(alreadyServed.bytes).
+    // estimateRequestedSlice cheaply sizes just that window when one was requested; anything else
+    // (no offset/limit, or a shape it can't size cheaply) still gates on the whole file.
+    const requestedSlice = estimateRequestedSlice(event, normalized)
+    const rereadCreditBasis = requestedSlice.kind === 'bytes' ? requestedSlice.bytes : rereadBytes
     // What a blocked re-read may claim it saved. Gating below still uses the true size -- only the amount CREDITED is capped, because the counterfactual being priced is "the Read that didn't happen", and that Read would itself have been truncated. See PER_FILE_COUNTERFACTUAL_CEILING.
-    const rereadCredit = counterfactualCredit(rereadBytes)
+    const rereadCredit = counterfactualCredit(rereadCreditBasis)
 
     const config = loadConfig()
     if (config.hints.log_large_file_hint_outcomes) {

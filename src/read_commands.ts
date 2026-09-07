@@ -573,6 +573,18 @@ export function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
 // Canonical rationale lives with the constant in util.ts; re-exported here under its original name because tests and other modules already import it from this module.
 export { PER_FILE_COUNTERFACTUAL_CEILING as SUM_FILE_SIZES_PER_FILE_CEILING } from './util.js'
 
+/** Baseline byte cost `changed` replaces: a minimal-context unified diff (`git diff --unified=0`) scoped to the files actually in the result set. This is the artifact an agent would otherwise have had to read to learn what changed or which symbols moved -- never the on-disk size of the changed files themselves, which nobody reads end to end just to see a file list or a symbol name (the `refs` command hit the identical defect: crediting whole-file bytes for what is really a search-shaped result, see `refsSearchBaselineBytes` above). Falls back to 0 -- no credit, not a guess -- when git fails or there are no files to scope to. */
+function changedDiffBaselineBytes(cwd: string, ref: string, files: readonly string[]): number {
+  if (files.length === 0) return 0
+  try {
+    const result = runGit(['diff', ref, '--unified=0', '--', ...files], { cwd })
+    if (result.exitCode === 0) return Buffer.byteLength(result.stdout, 'utf8')
+  } catch {
+    // Fall through to the 0 baseline below.
+  }
+  return 0
+}
+
 function sumFileSizes(filePaths: Iterable<string>): number {
   let total = 0
   for (const fp of new Set(filePaths)) {
@@ -4922,10 +4934,16 @@ export function runChanged(opts: ChangedOptions = {}): number {
     // symbol in any file that has any changed line — a one-line edit in a large file
     // shouldn't report the whole file as "changed" at symbol granularity.
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
+    let symbolDiffBaselineBytes = 0
     try {
-      const diffResult = runGit(['diff', ref, '--unified=0'], { cwd })
+      // Scoped to `changedFiles` (post --grep/--exclude-tests filtering) so both the hunk map
+      // and the baseline byte count this command credits itself for agree with the file set
+      // actually reported below -- an unscoped diff would size a repo-wide diff against a
+      // filtered result and overcredit whatever --grep/--exclude-tests excluded.
+      const diffResult = runGit(['diff', ref, '--unified=0', '--', ...changedFiles], { cwd })
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
+        symbolDiffBaselineBytes = Buffer.byteLength(diffResult.stdout, 'utf8')
       }
     } catch {
       // Hunk-level diff unavailable — fall back to file-level scoping below.
@@ -4951,7 +4969,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
       emit('No symbols changed.')
       return 0
     }
-    const symbolFullBytes = sumFileSizes(changedFiles.map((f) => resolveIndexPath(f, projectRoot)))
+    const symbolFullBytes = symbolDiffBaselineBytes
     if (opts.json === true) {
       const capped = guardJsonRows(allSymbols)
       const text = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
@@ -4967,7 +4985,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 0
   }
 
-  const fullBytes = sumFileSizes(changedFiles.map((f) => resolveIndexPath(f, projectRoot)))
+  const fullBytes = changedDiffBaselineBytes(cwd, ref, changedFiles)
   if (opts.json === true) {
     const capped = guardJsonRows(changedFiles)
     const text = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)

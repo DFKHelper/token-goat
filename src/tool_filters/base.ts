@@ -29,6 +29,7 @@ import {
 } from './helpers.js'
 import { redactSecrets } from '../secret_redact.js'
 import { loadConfig } from '../config.js'
+import { savedTokensFromBytes } from '../stats.js'
 
 /**
  * Default `bash_compress.min_net_savings_bytes` floor, used when config fails
@@ -100,15 +101,9 @@ export function isRewriteWorthwhile({
  * `originalBytes` is `stdout + stderr` size post-decode / pre-filter, so
  * `percentSaved` reflects the true reduction the model sees.
  */
-/**
- * Token savings for a byte delta: the single definition of the `n // 3 + 1` rule that
- * {@link CompressedOutput.tokensSaved} used to inline. Exported so a caller that must recompute
- * the figure against a different byte delta -- notably a delta capped at the harness delivery
- * cap, see `deliveredOutputBytes` in src/delivery_cap.ts -- prices it by the same rule rather
- * than deriving a second one that can drift.
- */
+/** Token savings for a byte delta credited by a bash-output compression filter: delegates to {@link savedTokensFromBytes} (bytes/4, stats.ts's single pricing constant) rather than defining its own divisor. This used to divide by 3 (the `estimateTokensFromLength` overflow-guard estimator's ratio, deliberately conservative-high for a budget check, which is the wrong direction for a credit -- see the comment on `savedTokensFromBytes`), which booked every `bash_compress:*` kind roughly a third richer than every sibling kind in the same summed column. Exported so a caller that must recompute the figure against a different byte delta -- notably a delta capped at the harness delivery cap, see `deliveredOutputBytes` in src/delivery_cap.ts -- prices it by the same rule rather than deriving a second one that can drift. */
 export function compressedTokensSaved(bytesSaved: number): number {
-  return bytesSaved <= 0 ? 0 : Math.max(1, Math.floor(bytesSaved / 3) + 1)
+  return bytesSaved <= 0 ? 0 : Math.max(1, savedTokensFromBytes(bytesSaved))
 }
 
 export class CompressedOutput {
@@ -126,7 +121,7 @@ export class CompressedOutput {
     return Math.max(0, this.originalBytes - this.compressedBytes)
   }
 
-  /** Estimated token savings (`n // 3 + 1`, matching `estimateTokens`). */
+  /** Estimated token savings, matching `compressedTokensSaved` (bytes/4, the codebase-wide pricing constant). */
   get tokensSaved(): number {
     return compressedTokensSaved(this.bytesSaved)
   }

@@ -210,7 +210,7 @@ describe('CompressedOutput', () => {
   it('computes savings, tokens, and percentage', () => {
     const co = new CompressedOutput('out', 100, 25, 'demo')
     expect(co.bytesSaved).toBe(75)
-    expect(co.tokensSaved).toBe(Math.floor(75 / 3) + 1)
+    expect(co.tokensSaved).toBe(Math.round(75 / 4)) // FORMAT-DERIVED from src/stats.ts's savedTokensFromBytes (bytes/4), the codebase-wide pricing constant compressedTokensSaved now delegates to
     expect(co.percentSaved).toBeCloseTo(75)
   })
 
