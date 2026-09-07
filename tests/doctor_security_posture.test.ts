@@ -234,6 +234,8 @@ describe('an environment variable that reopens a project-locked security setting
     // Reported rather than warned about, because this fold ships on: 'true' restates the default and 'false' shows more, so neither is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
     ['hints.fold_prose_paragraphs', 'TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', 'true', 'replaced'],
     ['hints.fold_comment_blocks', 'TOKEN_GOAT_FOLD_COMMENT_BLOCKS', 'true', 'replaced'],
+    // Same reasoning as fold_prose_paragraphs above: this fold ships on, so neither direction is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
+    ['hints.outline_large_documents', 'TOKEN_GOAT_OUTLINE_LARGE_DOCUMENTS', 'true', 'replaced'],
     ['mcp.allowed_roots', 'TOKEN_GOAT_MCP_ALLOWED_ROOTS', '/', 'replaced'],
     ['redaction.custom_patterns', 'TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS', 'EMP-[0-9]{4,8}', 'replaced'],
     ['webfetch.allow', 'TOKEN_GOAT_WEBFETCH_ALLOW', 'example.com', 'replaced'],

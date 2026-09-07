@@ -46,6 +46,7 @@ import {
   getWellKnownSections,
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
+  type MarkdownHeading,
 } from './hints/markdown_hints.js'
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
@@ -59,7 +60,7 @@ import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
 import { foldDetail } from './code_fold.js'
-import { foldDelivery, foldingEnabled } from './fold_delivery.js'
+import { foldDelivery, foldingEnabled, isProseFoldablePath } from './fold_delivery.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -1796,6 +1797,121 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
  *
  * Returns the rewrite together with the raw text it actually delivered, because the served-output store must record what the model saw and not what is on disk -- see {@link recordReadAsServedOutput}.
  */
+/** Body size floor for the large-markdown outline replacement below: measured over 5,104 real session transcripts (13,870 Read deliveries, 130,249,204 bytes), untargeted markdown reads with >=6 headings at this floor withhold 41.03% of all Read bytes, within 1.8 points of the best floor sampled (2,000 B) while firing far less often on documents small enough that the interruption outweighs the win. */
+const OUTLINE_MIN_BODY_BYTES = 8_000
+/** Heading-count floor: at the 8,000 B body floor, sensitivity ran >=2 43.35%, >=4 42.95%, >=6 41.03%, >=10 29.15%, >=15 18.66% -- six is the knee, costing about 2 points against >=4 in exchange for a real guarantee the tree is worth showing rather than a stub of one or two entries. */
+const OUTLINE_MIN_HEADINGS = 6
+/** The replacement must land at or under this fraction of the original body, on top of the generic isRewriteWorthwhile floor below -- a document that just barely clears the size and heading gates but whose tree is nearly as large as the body it replaces is not worth the interruption. Evaluated against the FULL replacement, lead-in included, never the smaller heading-tree-only shape, or a document could pass a gate for output it no longer produces. */
+const OUTLINE_MAX_REPLACEMENT_RATIO = 0.4
+/** Hard byte cap on the lead-in kept ahead of the heading tree, applied before the prose fold below gets a chance to shrink it further. Sized from the same corpus this feature was measured against: median section 1,014 B, mean 2,127 B, p90 4,225 B -- a cap at p90 keeps the common case (and the median by a wide margin) whole while bounding the rare oversized one. */
+const OUTLINE_LEADIN_MAX_BYTES = 4_225
+
+/**
+ * The lead-in a large-document outline keeps ahead of its heading tree: the document body up to its first second-level (`##`) heading when it opens with an H1, or -- when it does not, so there is no "everything under the H1" region to speak of -- the body up to its very first heading of any level, same as before this lead-in concept existed. Either way this is what a reader loses if it goes unkept: the paragraph that says what the document is.
+ *
+ * `headings[0]` rather than a scan is enough to tell which case applies: `extractMarkdownHeadings` returns headings in document order, so the very first entry is either the leading H1 or it is not.
+ */
+function outlineLeadInRows(rows: readonly NumberedRow[], headings: readonly MarkdownHeading[]): NumberedRow[] {
+  const opensWithH1 = headings[0]?.level === 1
+  const boundary = opensWithH1 ? headings.find((h, i) => i > 0 && h.level === 2) : headings[0]
+  if (boundary === undefined) return []
+  const boundaryIdx = rows.findIndex((r) => r.no === boundary.lineNumber)
+  return boundaryIdx > 0 ? rows.slice(0, boundaryIdx) : []
+}
+
+/**
+ * Cap `rows` to `OUTLINE_LEADIN_MAX_BYTES`, cutting at a row boundary rather than mid-line, and returning a notice disclosing the cut in place -- never a silent trim. Rows past the cap are dropped from the return value entirely, so they cannot leak into `foldDelivery`'s prose fold or the served-output record below.
+ */
+function capLeadIn(rows: readonly NumberedRow[], shownPath: string): { rows: NumberedRow[]; notice: string | null } {
+  let bytes = 0
+  let cutAt = rows.length
+  for (let i = 0; i < rows.length; i++) {
+    bytes += Buffer.byteLength(rows[i]!.text, 'utf-8') + 1
+    if (bytes > OUTLINE_LEADIN_MAX_BYTES) {
+      cutAt = i
+      break
+    }
+  }
+  if (cutAt >= rows.length) return { rows: [...rows], notice: null }
+  const kept = rows.slice(0, cutAt)
+  const cutFrom = rows[cutAt]!.no
+  const cutTo = rows[rows.length - 1]!.no
+  const n = cutTo - cutFrom + 1
+  return {
+    rows: kept,
+    notice: `... ${n} more lead-in line${n === 1 ? '' : 's'} (${cutFrom}-${cutTo}) cut at the ${OUTLINE_LEADIN_MAX_BYTES} B lead-in cap -- Read "${shownPath}" with offset=${cutFrom}, limit=${n}`,
+  }
+}
+
+/**
+ * Replace a large, untargeted markdown Read with its heading tree plus the document's lead-in, so a reader who wanted the whole document's prose still gets pointed at each section by name instead of losing it outright.
+ *
+ * Built from the DELIVERED text, never the index: an index-derived tree would be stale (measured elsewhere in this file, the parser stamp sits stale on 95% of this project's own rows) and cannot serve the first read of a file the indexer has never touched, which is exactly the surface a never-before-read large document is. `extractMarkdownHeadings` already skips `#` inside a fenced code block via `eachUnfencedLine`, so a fence never gets mistaken for a heading here either.
+ *
+ * Declines on any windowed read (offset/limit present), a truncated delivery, a file whose secrets have not been redacted (composing a rewrite makes this handler the author of what the model reads, same call as foldCodeBodies above), a document under the size floor, one with too few headings, or a replacement that is not meaningfully smaller than the body it replaces.
+ *
+ * The recorded `deliveredRaw` is `foldDelivery`'s own `raw` field for the (capped) lead-in and nothing else: that field already excludes anything a prose fold replaced with a notice, exactly the same contract `foldCodeBodies` below relies on, so a line trimmed by the cap or shortened by the prose fold is never recorded as served. The heading tree itself is a reformatted rendering of the file's heading text, not verbatim lines, so it never enters `deliveredRaw` either.
+ */
+function foldMarkdownOutline(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
+  if (!loadConfig().hints.outline_large_documents) return null
+  const filePath = getFilePath(event)
+  if (filePath === undefined) return null
+  const normalized = normalizePath(filePath)
+  if (!isProseFoldablePath(normalized)) return null
+
+  // Untargeted only: a reader who asked for a specific window gets that window, not a tree.
+  if (readIntToolInput(event, 'offset') !== undefined || readIntToolInput(event, 'limit') !== undefined) return null
+  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) return null
+  if (redactSecrets(respText).count > 0) return null
+
+  const originalBytes = Buffer.byteLength(respText, 'utf-8')
+  if (originalBytes < OUTLINE_MIN_BODY_BYTES) return null
+
+  const parsed = parseNumberedReadResult(respText, readStartLine(event))
+  if (parsed === null) return null
+
+  const fileText = parsed.rows.map((r) => r.text).join('\n')
+  const headings = extractMarkdownHeadings(fileText)
+  if (headings.length < OUTLINE_MIN_HEADINGS) return null
+
+  const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
+  const { guidance, sectionsList } = formatHeadingTreeParts(headings, shown)
+
+  const leadInRows = outlineLeadInRows(parsed.rows, headings)
+  const { rows: cappedLeadIn, notice: capNotice } = capLeadIn(leadInRows, shown)
+  // Fed through the same prose fold every other document read gets, rather than exempting the lead-in from it: a long-but-under-cap lead-in still gets its over-long paragraphs folded to their opening sentence. `windowed=false` is correct here regardless of the outer Read's own offset/limit (already declined above) -- this is a fold of the lead-in slice itself, not of the file at large.
+  const leadInFolded = foldDelivery(cappedLeadIn, normalized, shown, false)
+  const leadInNumbered = leadInFolded !== null ? leadInFolded.numbered : cappedLeadIn.map((r) => r.raw)
+  const leadInRaw = leadInFolded !== null ? leadInFolded.raw : cappedLeadIn.map((r) => r.text)
+
+  // headings.length is a floor, not a total: extractMarkdownHeadings caps display extraction at 40 entries and H1-H3 only, so a document with more headings or deeper nesting reports fewer than it actually has. Disclosed as "at least" for that reason, never as an exact count. The lead-in clause is worded from what the rewrite actually kept: claiming "its lead-in" when leadInRows came back empty would be a claim the output does not support.
+  const headingCount = `at least ${headings.length} heading${headings.length === 1 ? '' : 's'} found`
+  const notice =
+    leadInRows.length > 0
+      ? `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was replaced with its lead-in (the content before its first section) and a heading tree (${headingCount}). Run token-goat section "${shown}::<Heading>" to read one section verbatim.`
+      : `Partial view: this ${originalBytes.toLocaleString('en-US')} B document has no lead-in before its first section, so it was replaced with a heading tree alone (${headingCount}). Run token-goat section "${shown}::<Heading>" to read one section verbatim.`
+
+  const numberedBody = [...leadInNumbered, ...(capNotice !== null ? [capNotice] : []), notice, guidance, fenceUntrustedFileContent(sectionsList)]
+  const rewritten = [...parsed.header, ...numberedBody, ...parsed.trailer].join('\n')
+  const rewrittenBytes = Buffer.byteLength(rewritten, 'utf-8')
+  if (rewrittenBytes > originalBytes * OUTLINE_MAX_REPLACEMENT_RATIO) return null
+  if (
+    !isRewriteWorthwhile({
+      originalBytes,
+      rewrittenBytes,
+      noticeBytes: 0,
+      minNetSavingsBytes: resolveMinNetSavingsBytes(),
+    })
+  ) {
+    return null
+  }
+
+  return {
+    output: emitRewrite(rewritten, 'read', { kind: 'read:markdown_outline', originalBytes, detail: shown }),
+    deliveredRaw: leadInRaw.join('\n'),
+  }
+}
+
 function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutput; deliveredRaw: string } | null {
   if (!foldingEnabled()) return null
   const filePath = getFilePath(event)
@@ -1859,11 +1975,12 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 export function postReadHandler(event: HookEvent): HookOutput {
   const respText = extractReadOutput(event.raw)
   const elided = elideAlreadyServedLines(event, respText)
-  // Only one rewrite may win, and elision goes first: it cuts lines the model already holds, which costs the reader nothing, while a fold withholds lines it has never seen. Running both would also double-count the same bytes in the ledger.
-  const folded = elided === null ? foldCodeBodies(event, respText) : null
-  const rewrite = elided ?? folded?.output ?? null
+  // Only one rewrite may win, and elision goes first: it cuts lines the model already holds, which costs the reader nothing, while a fold withholds lines it has never seen. Running both would also double-count the same bytes in the ledger. The outline replacement runs before the granular fold: it only ever fires on a large, untargeted, many-headinged markdown document, which is a coarser and larger win than the line-level body/comment/prose folds below it would find on the same delivery.
+  const outlined = elided === null ? foldMarkdownOutline(event, respText) : null
+  const folded = elided === null && outlined === null ? foldCodeBodies(event, respText) : null
+  const rewrite = elided ?? outlined?.output ?? folded?.output ?? null
   const out = applyHintTracking(event, postReadHandlerInner(event, rewrite !== null), classifyReadHint)
-  recordReadAsServedOutput(event, folded?.deliveredRaw ?? null)
+  recordReadAsServedOutput(event, outlined?.deliveredRaw ?? folded?.deliveredRaw ?? null)
   return rewrite ?? out
 }
 

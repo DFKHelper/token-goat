@@ -269,6 +269,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   'read:served_elide': SOURCE_CONTENT,
   // Same bucket and same reasoning as read:served_elide directly above: a rewrite of a Read that did happen, with real bytes removed, not an advisory about whether to read at all.
   'read:body_fold': SOURCE_CONTENT,
+  // Same bucket and same reasoning as read:body_fold directly above: a coarser sibling rewrite of a large untargeted markdown Read (hooks_read.ts foldMarkdownOutline) that replaces the body with a heading tree plus preamble, with real bytes removed, not an advisory about whether to read at all.
+  'read:markdown_outline': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,
   handoff_resolve: SOURCE_CONTENT,
