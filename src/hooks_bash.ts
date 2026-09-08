@@ -577,6 +577,7 @@ export function extractCatFilesMulti(
 
 const POWERSHELL_WRAP_RE = /^(?:powershell|pwsh)(?:\.exe)?(?:\s+-[a-zA-Z]+(?:\s+\S+)?)*\s+(?:-Command|-c|-EncodedCommand)\s+(?:"([^"]*)"|'([^']*)')\s*$/i
 const PS_GETCONTENT_INNER_RE = /^(?:Get-Content|gc|cat|type)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i
+const PS_FILE_METHOD_RE = /\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadAllBytes|ReadLines|OpenText)\(\s*['"]([^'"]+)['"]/i
 // A temp-path read only floods context when the file is large; a small scratch read stays silent.
 const PS_TEMP_READ_FLOOD_BYTES = 16 * 1024
 
@@ -603,6 +604,30 @@ export function extractPowerShellWrappedGetContent(cmd: string): { filePath: str
   // Temp reads are normally scratch and skipped, but a large one still floods context; gate on size rather than excluding unconditionally.
   if (isTempPath(filePath) && !isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
   return { filePath, ...flags }
+}
+
+/**
+ * Extracts file path from PowerShell .NET static file read calls:
+ * `[System.IO.File]::ReadAllText(...)`, `[IO.File]::ReadAllLines(...)`,
+ * `[IO.File]::ReadAllBytes(...)`, `[IO.File]::ReadLines(...)`, etc.
+ */
+export function extractPowerShellFileMethodRead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
+  let inner = cmd.trim()
+  const w = POWERSHELL_WRAP_RE.exec(inner)
+  if (w) {
+    inner = (w[1] ?? w[2] ?? '').trim()
+  }
+  const m = PS_FILE_METHOD_RE.exec(inner)
+  if (!m?.[1]) return null
+  const filePath = m[1]
+  if (isOrchestratorStateFile(filePath)) return null
+  if (isTempPath(filePath) && !isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
+  const flags = classifyFileExtensions(filePath)
+  if (flags === null) {
+    const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+    return { filePath, isDoc, isConfig, isSql }
+  }
+  return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isSql: flags.isSql }
 }
 
 /**
@@ -1336,7 +1361,8 @@ function extractDirectoryListing(cmd: string): boolean {
     /^ls\s+(?:\S+\s+)*-[a-zA-Z]*R[a-zA-Z]*(?:\s|$)/.test(cmd) ||
     /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*head/.test(cmd) ||
     /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*grep/.test(cmd) ||
-    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*wc/.test(cmd)
+    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*wc/.test(cmd) ||
+    /^(?:Get-ChildItem|gci|dir)\b.*(?:-Recurse|-r\b|\/s\b)/i.test(cmd)
   )
 }
 
@@ -2796,6 +2822,24 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
+  const psMethodRead = extractPowerShellFileMethodRead(cmd)
+  if (psMethodRead !== null) {
+    const { filePath, isDoc, isConfig, isSql } = psMethodRead
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. '
+    if (isSql) {
+      recordStat('session_hint', 0, 0)
+      return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+    }
+    const hint = isDoc
+      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+      : isConfig
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
+    recordStat('session_hint', 0, 0)
+    return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
+  }
+
   if (extractGrepPipeChain(cmd)) {
     recordStat('session_hint', 0, 0)
     return contextOutput(
@@ -3114,6 +3158,16 @@ function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): vo
   const wslCat = extractWslCatFile(cmd)
   if (wslCat !== null) {
     recordFileRead(resolve(wslCat.filePath))
+    return
+  }
+  const nodeRead = extractNodeFileRead(cmd)
+  if (nodeRead !== null) {
+    recordFileRead(resolve(nodeRead.filePath))
+    return
+  }
+  const psMethod = extractPowerShellFileMethodRead(cmd)
+  if (psMethod !== null) {
+    recordFileRead(resolve(psMethod.filePath))
     return
   }
 }

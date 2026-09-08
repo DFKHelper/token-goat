@@ -4,6 +4,13 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **PowerShell .NET static file read interception.** Calls using `[System.IO.File]::ReadAllText()`, `[IO.File]::ReadAllLines()`, `ReadAllBytes()`, or `OpenText()` are now intercepted with surgical read hints (`token-goat read`, `token-goat section`, `token-goat config-get`) and recorded in the session read cache for deduplication. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
+- **PowerShell recursive directory walk interception.** Sweeps using `Get-ChildItem -Recurse`, `gci -r`, or `dir /s` are intercepted with `token-goat map --compact` guidance to avoid terminal output floods. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
+- **Copilot CLI MCP server configuration discovery in `mcp-audit`.** `token-goat mcp-audit` now inspects `~/.copilot/mcp-config.json` alongside `.mcp.json` and `~/.claude.json`, reporting active server counts and prompt definition token weight. Changed in [src/cli_mcp_audit.ts](src/cli_mcp_audit.ts).
+- **Copilot CLI hook bridge tool translation.** Mapped `web_search`, `skill`, and `exit_plan_mode` tool names to canonical hook equivalents. Changed in [src/bridges/copilot_cli.ts](src/bridges/copilot_cli.ts).
+
 ## [2.9.6] - 2026-09-08
 
 ### Security
