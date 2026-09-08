@@ -974,9 +974,10 @@ export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorRe
       ? {
           name: 'Security mcp roots',
           status: 'ok',
+          // Two separate controls, and reporting only the first read as a guarantee about the second. `confine_reads_to_project_root` keeps a read inside the root the caller named; `mcp.allowed_roots` decides which roots may be named at all, and empty means any of them (assertRootAllowed returns early). Saying "confined to the project root" while the caller picks that root overstates the confinement, so the empty case now names itself.
           message: extraRoots === 0
-            ? 'reads are confined to the project root'
-            : `reads are confined to the project root plus ${extraRoots} configured root${extraRoots === 1 ? '' : 's'}`,
+            ? 'reads are confined to the project root the caller names, but mcp.allowed_roots is empty, so an MCP caller may name any root on this machine'
+            : `reads are confined to the project root, and callers may name only the ${extraRoots} root${extraRoots === 1 ? '' : 's'} in mcp.allowed_roots`,
         }
       : { name: 'Security mcp roots', status: 'warn', message: 'confinement is off (mcp.confine_reads_to_project_root): a read can leave the project' },
   )
