@@ -840,7 +840,7 @@ const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
   'screenshot.block_private_targets': true,
   'network.offline': true,
   'indexing.cross_project_symbols': false,
-  'hints.fold_code_bodies': false,
+  // `hints.fold_code_bodies` is deliberately absent for the same reason as `hints.fold_prose_paragraphs` below: it now ships on. Its cost was the thing keeping it off, and that cost is now measured rather than assumed -- 6.6 points of recovery reads beyond what the same symbols draw anyway, against a fold that withholds a whole function body. It remains project-locked, so the environment deciding it is still reported by the value-replacement arm.
   // `hints.fold_prose_paragraphs` is deliberately absent: it now ships on, so neither direction is a weakening. Setting it true restates the shipped default, and setting it false shows the reader MORE of a document, so warning on either would break this file's own rule that a default install stays quiet. It remains project-locked, so the environment deciding it is still worth reporting, which is what the value-replacement arm below does.
   'webfetch.compress_bodies': true,
 }

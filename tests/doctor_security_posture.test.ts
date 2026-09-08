@@ -229,7 +229,8 @@ describe('an environment variable that reopens a project-locked security setting
     ['screenshot.block_private_targets', 'TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS', 'false', 'weakened'],
     ['network.offline', 'TOKEN_GOAT_OFFLINE', 'false', 'weakened'],
     ['indexing.cross_project_symbols', 'TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', 'true', 'weakened'],
-    ['hints.fold_code_bodies', 'TOKEN_GOAT_FOLD_CODE_BODIES', 'true', 'weakened'],
+    // Same reasoning as the folds below: this one ships on now too, so neither direction is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
+    ['hints.fold_code_bodies', 'TOKEN_GOAT_FOLD_CODE_BODIES', 'true', 'replaced'],
     ['webfetch.compress_bodies', 'TOKEN_GOAT_WEB_COMPRESS', 'false', 'weakened'],
     // Reported rather than warned about, because this fold ships on: 'true' restates the default and 'false' shows more, so neither is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
     ['hints.fold_prose_paragraphs', 'TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS', 'true', 'replaced'],

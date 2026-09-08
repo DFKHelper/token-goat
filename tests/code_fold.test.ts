@@ -131,6 +131,20 @@ describe('body fold on the real Read hook path', () => {
     process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = '1'
   })
 
+  // The one case in this file that does NOT force the flag on. Every other body-fold test here sets TOKEN_GOAT_FOLD_CODE_BODIES=1 in the beforeEach above, so for as long as the setting shipped off they all exercised a configuration no install had, and the shipped default was covered by nothing: flipping it in src/config.ts changed no test result in either direction. That is the injected-seam trap CLAUDE.md names, in its exact shape -- the test always supplied the dependency the shipping path omitted. This asserts the product contract instead of the boolean: a stock install, with no config file and no environment override, folds a long body out of a first read.
+  it('folds on a stock install, with nothing setting the flag', () => {
+    delete process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
+    const { file, body } = makeIndexedSource()
+    const text = JSON.stringify(postReadHandler(postEvent(file, body)))
+    expect(text).toContain('folded')
+    expect(text).toContain('longFunction')
+    // Must-not-drop, so a wholesale collapse cannot satisfy the line above.
+    expect(text).toContain('TOP_LEVEL_CONSTANT')
+    expect(text).toContain('TRAILING_CONSTANT')
+    expect(text).not.toContain('localVariable59')
+  })
+
+
   afterEach(() => {
     if (prevFlag === undefined) delete process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
     else process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = prevFlag
