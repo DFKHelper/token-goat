@@ -65,7 +65,7 @@ import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs } from '../src/db.js'
 import { getFileEntry, querySymbols } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
-import { resolveIndexPath } from '../src/paths.js'
+import { normalizePath, resolveIndexPath } from '../src/paths.js'
 import { drainOnce } from '../src/worker.js'
 
 function writeQueue(dir: string, lines: string[]): void {
@@ -150,9 +150,16 @@ describe('indexFileSync read-failure handling (regression)', () => {
 
     // The bad file must not be counted as a successful index...
     expect(count).toBe(1)
-    // ...and nothing was ever actually written for it (files.sha row untouched)...
-    expect(getFileEntry(bad, projectDb)).toBeNull()
+    // ...and no index content was written for it. A bare `toBeNull()` here used to stand in for that, and it stopped being true once a failed index started leaving a retry-bookkeeping row (see processDirtyBatch's INDEX_FAILED branch): the row is the retry budget, carrying a path and a count and nothing else. What must hold is that it carries no extraction -- no sha, no timestamp, no symbols.
+    // Looked up in the spelling `bumpRetryCount` writes (normalizePath's forward-slash form), not the native one: `getFileEntry` folds case but does not normalize separators, so a bare `path.join` spelling misses the row on Windows and hits it on Linux. That divergence is what let the old assertion read as green here and fail in CI.
+    const badEntry = getFileEntry(normalizePath(bad), projectDb)
+    // The retry row is found, not merely absent: without this the two checks below would pass just as well on a lookup that matched nothing.
+    expect(badEntry).not.toBeNull()
+    expect(badEntry?.sha ?? '').toBe('')
+    expect(badEntry?.indexedAt ?? 0).toBe(0)
     expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, projectDb).length).toBe(0)
+    // ...and the path is back in the queue rather than dropped, which is the guarantee that row exists to serve.
+    expect(fs.readFileSync(path.join(TMP, 'queue', 'dirty.txt'), 'utf8')).toContain(bad)
     // ...while the rest of the batch still succeeds.
     expect(querySymbols({ name: 'knownGoodSymbol', limit: 10 }, projectDb).length).toBeGreaterThan(
       0,
