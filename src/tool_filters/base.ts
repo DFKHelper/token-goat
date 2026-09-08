@@ -14,6 +14,8 @@ import {
   capLongLines,
   fallbackTruncate,
   clampKeepingEnds,
+  clipWideLines,
+  INPUT_MAX_LINE_CHARS,
   getMaxInputBytes,
   LONG_LINE_MAX_CHARS,
   normalise,
@@ -327,6 +329,15 @@ export abstract class ToolFilter {
       if (!notes.some((n) => n.includes('kept both ends'))) {
         notes.push(`stderr over ${Math.floor(maxInput / 1024)}KB: kept both ends (TOKEN_GOAT_FILTER_MAX_BYTES)`)
       }
+    }
+
+    // Step 2b: bound every line's width before normalisation or any per-tool filter regex runs. The byte clamp above bounds a stream, not a line, and the filter regexes are line-oriented with polynomial backtracking suppressed on the premise that a line is short. Nothing enforced that premise.
+    const soClipped = clipWideLines(so)
+    const seClipped = clipWideLines(se)
+    if (soClipped !== so || seClipped !== se) {
+      so = soClipped
+      se = seClipped
+      notes.push(`clipped line(s) wider than ${INPUT_MAX_LINE_CHARS} chars`)
     }
 
     // Step 3: original byte count from pre-truncation byte arrays.

@@ -10,7 +10,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { ensureDataDirPrivate } from './constants.js'
@@ -1329,3 +1329,48 @@ function encodeUtf32(text: string, littleEndian: boolean): Buffer {
   })
   return out
 }
+
+/**
+ * Resolve `label` to an executable **on PATH**, never one sitting in the current directory.
+ *
+ * This used to shell out to `where.exe` and take its first line. `where.exe` searches the current
+ * directory before PATH and reports it first, so any repository could ship a `claude.bat` at its
+ * root and have `token-goat ask` run it -- with the operator's entire environment inherited and
+ * the question on its stdin, and its stdout printed back as the model's answer. Arbitrary code
+ * execution from cloning a repo and running a read command in it. `NoDefaultCurrentDirectoryInExePath`,
+ * which does stop `cmd.exe` resolving a bare name from the current directory, has no effect on
+ * `where.exe`: measured on Windows 11, the cwd hit still comes back first with it set.
+ *
+ * POSIX `which` does not search the current directory, so only Windows was exploitable, but this
+ * walks PATH directly on both platforms rather than keeping one behaviour that is safe by design
+ * and another that is safe by accident.
+ *
+ * A PATH entry that is empty, `.`, or resolves to the current directory is skipped: those are the
+ * spellings that put the current directory back on the search path. An absolute label is taken as
+ * given -- an operator naming a specific binary in `TOKEN_GOAT_ASK_BACKEND` is the case this
+ * protects, not the case it guards against -- while a relative label containing a separator is
+ * refused outright, that being the cwd-relative shape.
+ */
+export function resolveOnPath(label: string): string | null {
+  if (path.isAbsolute(label)) return existsSync(label) ? label : null
+  if (label.includes('/') || label.includes('\\')) return null
+
+  const onWindows = process.platform === 'win32'
+  const exts = onWindows ? (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((e) => e.trim() !== '') : ['']
+  let cwd: string
+  try { cwd = realpathSync(process.cwd()) } catch { cwd = path.resolve(process.cwd()) }
+
+  for (const rawDir of (process.env['PATH'] ?? '').split(path.delimiter)) {
+    const dir = rawDir.trim().replace(/^"|"$/g, '')
+    if (dir === '' || dir === '.') continue
+    let resolvedDir: string
+    try { resolvedDir = realpathSync(path.resolve(dir)) } catch { continue }
+    if (foldPath(resolvedDir) === foldPath(cwd)) continue
+    for (const ext of exts) {
+      const candidate = path.join(resolvedDir, label + ext)
+      try { if (statSync(candidate).isFile()) return candidate } catch { /* try the next extension */ }
+    }
+  }
+  return null
+}
+

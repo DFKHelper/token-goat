@@ -54,6 +54,28 @@ export function parseGithubRepoFromRemoteUrl(url: string): string | null {
   return null
 }
 
+/**
+ * True when `repo` is a plain `owner/name` slug safe to interpolate into a `gh api` path.
+ *
+ * `fetchPrComments` builds `repos/${repo}/pulls/${pr}/comments` and hands it to an already
+ * authenticated `gh`, so the slug is a path fragment in a request carrying the user's own token.
+ * `parseGithubRepoFromRemoteUrl` accepts `[^/]+/[^/]+`, which admits `..` in either segment, so a
+ * remote of `https://github.com/../..` resolved to a slug that walks the API path up to a
+ * different endpoint entirely. A leading `-` is refused for the separate reason that the same
+ * value is passed to `gh pr view --repo <repo>`, where a value starting with a dash is read as a
+ * flag rather than as the argument it was meant to be.
+ */
+export function isSafeRepoSlug(repo: string): boolean {
+  const parts = repo.split('/')
+  if (parts.length !== 2) return false
+  return parts.every((p) => /^[A-Za-z0-9._-]+$/.test(p) && p !== '.' && p !== '..' && !p.startsWith('-'))
+}
+
+/** True when `pr` is a bare PR number. Same reasoning as {@link isSafeRepoSlug}: it lands in the same `gh api` path and in the same argv position where a leading dash reads as a flag. */
+export function isSafePrNumber(pr: string): boolean {
+  return /^[0-9]+$/.test(pr)
+}
+
 /** The four `pr-slice` slice specs. */
 export type PrSliceSpec =
   | { kind: 'files' }

@@ -7,6 +7,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { neutralizeSpokenMarkers } from './injection_scan.js'
 
 // Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully. Exported so project.ts's cross-shell canonicalization reuses this exact pattern instead of maintaining a second, flag-divergent copy.
 export const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
@@ -247,8 +248,9 @@ export function safeJoin(base: string, ...parts: string[]): string {
  * here, because this output is only ever read -- nothing decodes it back.
  */
 export function displaySafeText(text: string): string {
+  // Markers first, then the character escaping. Everything routed through here is file-derived text -- a path, a basename, a symbol name -- landing in a line token-goat speaks in its own voice, outside any fence. A repository picks its own filenames, so a file called `[tg] ...` put an unescaped authority marker into a notice with nothing to say it came from the repo; escaping the bracket is what keeps this function's output attributable to token-goat.
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\p{Cf}/gu, ch => {
+  return neutralizeSpokenMarkers(text).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\p{Cf}/gu, ch => {
     if (ch === '\n') return '\\n'
     if (ch === '\r') return '\\r'
     if (ch === '\t') return '\\t'

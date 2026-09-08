@@ -60,6 +60,8 @@ import {
   isGhAvailable,
   isGhAuthenticated,
   parseGithubRepoFromRemoteUrl,
+  isSafeRepoSlug,
+  isSafePrNumber,
   parsePrSliceArg,
   fetchPrFiles,
   fetchPrDiff,
@@ -3858,6 +3860,16 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
       return 1
     }
     repo = resolved
+  }
+
+  // Checked after resolution rather than at argument parsing, so it covers both routes into `repo`: the `--repo` flag and the slug derived from the git remote. The remote route is the one that matters, because a repository controls its own `origin` URL and the slug lands in a `gh api` path sent with the user's token.
+  if (!isSafeRepoSlug(repo)) {
+    emitErr(`"${repo}" is not a plain owner/name repository slug -- pass --repo owner/repo`)
+    return 1
+  }
+  if (!isSafePrNumber(opts.pr)) {
+    emitErr(`"${opts.pr}" is not a pull request number`)
+    return 1
   }
 
   if (!isGhAuthenticated()) {

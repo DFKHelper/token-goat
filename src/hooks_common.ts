@@ -12,6 +12,7 @@ import type { HookOutput } from './types.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { countRedactionPlaceholders } from './secret_redact.js'
 import { loadConfig } from './config.js'
+import { neutralizeOutsideFences } from './injection_scan.js'
 
 /** Return the event's tool name, or `undefined` for non-tool events. */
 export function getToolName(event: HookEvent): string | undefined {
@@ -227,10 +228,24 @@ export function passOutput(): HookOutput {
   return { hookType: 'pass' }
 }
 
-/** Build a `deny` output — block the tool call and surface `message`. */
+/**
+ * Build a `deny` output — block the tool call and surface `message`.
+ *
+ * A deny is the one message token-goat sends that is shaped as an instruction the model is meant
+ * to obey, so the `[tg]` prefix is authority: everything after it reads as token-goat speaking.
+ * Deny messages routinely interpolate file-derived text -- a basename, a path, a symbol name --
+ * and a repository chooses those. Two consequences, both closed here rather than at the ~45 call
+ * sites, since a call site added later would not know to do it:
+ *
+ * The message is neutralized so an interpolated `[tg]`/`[token-goat: ...]` cannot forge a second
+ * marker mid-message, and the prefix is now unconditional. It used to be skipped when the message
+ * already began with `[tg]`, which was meant to avoid doubling token-goat's own prefix -- but no
+ * caller passes one, and a file named `[tg] ...` did begin with it, so the check handed the
+ * attacker the prefix itself: the marker the model saw was the repository's bytes, not ours. A
+ * doubled prefix is a cosmetic defect; a forged one is not.
+ */
 export function denyOutput(message: string): HookOutput {
-  const prefixed = message.startsWith('[tg]') ? message : `[tg] ${message}`
-  return { hookType: 'deny', message: prefixed }
+  return { hookType: 'deny', message: `[tg] ${neutralizeOutsideFences(message)}` }
 }
 
 /** Build a `context` output — let the call proceed but inject `context`. */

@@ -13,6 +13,7 @@ import { GLOBAL_SCHEMA_SQL } from '../src/stats.js'
 import { PARSER_FINGERPRINT } from '../src/parser_fingerprint.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { OVERSIZED_BODY_PROBE_SQL } from '../src/cli_doctor.js'
+import { PACKAGE_NAME } from '../src/version.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -829,7 +830,7 @@ describe('cli_doctor', () => {
       if (result.status === 'ok') {
         expect(result.message).toMatch(/^\d+\.\d+\.\d+/)
       } else {
-        expect(result.message).toBe('token-goat command not found; run: npm install -g token-goat-ts')
+        expect(result.message).toBe(`token-goat command not found; run: npm install -g ${PACKAGE_NAME}`)
       }
     })
   })

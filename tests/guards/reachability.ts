@@ -33,20 +33,36 @@ export function parseTopLevelFunctions(src: string): FnInfo[] {
   while ((m = declRe.exec(src)) !== null) {
     const name = m[1]!
     const parenStart = m.index + m[0].length - 1 // the '(' the regex ended on
+    // Walk the parameter list to its closing paren first, rather than taking the first `{` after it. Taking the first one made an inline object return type -- `function f(...): { output: X; raw: string } | null {` -- look like the body, so the 44 characters of the *type* were scanned in place of the function. That is not a cosmetic parse defect: it silently removed the two real unfenced `emitRewrite` sites in hooks_read.ts from this guard's population, so all of its assertions passed against code that shipped file bytes to the model with no fence. A guard's parser is part of what it is guarding.
     let depth = 0
     let seenParams = false
-    let open = -1
-    for (let i = parenStart; i < src.length; i++) {
+    let i = parenStart
+    for (; i < src.length; i++) {
       const c = src[i]
       if (c === '(') {
         depth++
         seenParams = true
       } else if (c === ')') {
         depth--
-      } else if (c === '{' && seenParams && depth === 0) {
-        open = i
-        break
+        if (seenParams && depth === 0) { i++; break }
       }
+    }
+    // Past the parameters: skip an optional return-type annotation, whose object types carry braces of their own. A brace opens a *type* when it stands where a type is expected -- directly after `:`, a union/intersection operator, a generic `<`, or a `,` -- and opens the *body* otherwise, since a body brace can only follow a complete type (an identifier, `]`, `}`, `>`) or the closing paren. Testing the position rather than tracking whether an annotation is still open is what handles `): { a: X } | null {`, where the body brace follows a bare union member and no bracket at all.
+    let open = -1
+    for (; i < src.length; i++) {
+      if (src[i] !== '{') continue
+      let k = i - 1
+      while (k >= 0 && /\s/.test(src[k]!)) k--
+      const prev = src[k] ?? ''
+      if (prev !== ':' && prev !== '|' && prev !== '&' && prev !== '<' && prev !== ',') { open = i; break }
+      let typeDepth = 0
+      let j = i
+      for (; j < src.length; j++) {
+        if (src[j] === '{') typeDepth++
+        else if (src[j] === '}' && --typeDepth === 0) break
+      }
+      if (j >= src.length) break
+      i = j
     }
     if (open === -1) continue
     let braceDepth = 0

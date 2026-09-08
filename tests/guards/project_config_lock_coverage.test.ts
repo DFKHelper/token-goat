@@ -107,11 +107,8 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   // that project's savings figure, which is a reason to keep the default at the honest floor
   // (it is) rather than a reason to stop a repository from stating which models it is read on.
   'image_shrink.vision_tier',
+  // indexing.skip_dirs, indexing.skip_files, large_file_skip_kb and large_file_symbol_only_kb used to sit here with no reason written beside them. They are locked now: each one lets a checked-in file remove its own source from the index, and an unindexed file is reported in exactly the words an absent one is. A repository that genuinely wants a generated directory skipped can say so in .gitignore, which the walker already honours.
   'indexing.embeddings_enabled',
-  'indexing.large_file_skip_kb',
-  'indexing.large_file_symbol_only_kb',
-  'indexing.skip_dirs',
-  'indexing.skip_files',
   'overflow_guard.enabled',
   'overflow_guard.max_tokens',
   'post_read_code_compress.min_lines',
