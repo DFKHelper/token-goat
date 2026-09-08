@@ -29,6 +29,8 @@ import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
+import { fenceUntrustedFileContent } from './injection_scan.js'
+import { redactSecrets } from './secret_redact.js'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -2273,7 +2275,9 @@ export function runAsk(opts: AskOptions): number {
 
   if (!backendPath) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but '${backendLabel}' was not found on PATH`)
 
-  const context = hits.map((h, i) => `[${i + 1}] ${h.filePath}\n${h.body ?? ''}`).join('\n\n')
+  // The snippets are indexed file bodies, so they are third-party text like any other, and this is the one place token-goat hands such text to a model that has tools: the backend may be `codex` or `claude`. Redact first so a credential sitting in an indexed body is not shipped to the backend, then fence, so a repo cannot put instructions in a function body and have them read as part of the question. The question itself is the operator's own words and stays outside the fence.
+  const rawContext = hits.map((h, i) => `[${i + 1}] ${h.filePath}\n${h.body ?? ''}`).join('\n\n')
+  const context = fenceUntrustedFileContent(redactSecrets(rawContext).text)
   const prompt = `Answer the QUESTION using only the CODE SNIPPETS below.\nQUESTION: ${opts.question}\n\nSNIPPETS:\n${context}\n\nANSWER:`
 
   const isCodex = backendLabel === 'codex'

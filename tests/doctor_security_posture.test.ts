@@ -119,14 +119,30 @@ describe('checkSecurityPosture', () => {
     expect(line.message).not.toContain('other projects')
   })
 
-  it('counts the extra roots rather than reporting plain confinement when there are some', () => {
+  it('names the roots callers may pick from rather than reporting plain confinement when there are some', () => {
     const cfg = baseConfig()
     cfg.mcp.allowed_roots = ['/srv/shared']
 
     const line = find(checkSecurityPosture(cfg, root), 'Security mcp roots')
 
     expect(line.status).toBe('ok')
-    expect(line.message).toContain('plus 1 configured root')
+    expect(line.message).toContain('only the 1 root')
+    expect(line.message).toContain('mcp.allowed_roots')
+    // The empty-allowlist wording must not survive into the configured case, or the two states read alike.
+    expect(line.message).not.toContain('any root on this machine')
+  })
+
+  // `assertRootAllowed` returns early on an empty allowlist, so the caller picks the root and confinement only means "inside whatever you picked". The old wording, "reads are confined to the project root", read as a statement about which root that was.
+  it('does not describe an empty allowlist as confinement, since the caller chooses the root', () => {
+    const cfg = baseConfig()
+    cfg.mcp.confine_reads_to_project_root = true
+    cfg.mcp.allowed_roots = []
+
+    const line = find(checkSecurityPosture(cfg, root), 'Security mcp roots')
+
+    expect(line.status).toBe('ok')
+    expect(line.message).toContain('any root on this machine')
+    expect(line.message).toContain('mcp.allowed_roots')
   })
 
   it('says offline mode is on in terms of what it stops, not just that a flag is set', () => {
