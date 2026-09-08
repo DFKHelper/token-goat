@@ -128,8 +128,8 @@ describe('postBashHandler: body folding on a shell read', () => {
     const body = delivered(out, SOURCE)
 
     const span = longestSpan()
-    // The notice has to be actionable as printed: the symbol it names is one the index really holds, and the path is the repo-relative one a reader can paste back.
-    expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}"`)
+    // The notice has to be actionable as printed: the symbol it names is one the index really holds, the path is the repo-relative one a reader can paste back, and the `@LINE` anchor picks out this declaration specifically, so a file holding two symbols of the same name still yields one body per notice.
+    expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}@${span.lineStart}"`)
     // Declaration kept, deep body gone. Both matter: keeping the first lines is the whole difference between this and a skeleton.
     expect(body).toContain(LINES[span.lineStart - 1] ?? '')
     expect(body).not.toContain(deepUniqueBodyLine(span))
@@ -143,7 +143,7 @@ describe('postBashHandler: body folding on a shell read', () => {
     const out = await postBashHandler(postEvent(cmd, text, 'ranged-from-decl'))
     expect(out.hookType).toBe('rewriteOutput')
     const body = delivered(out, text)
-    expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}"`)
+    expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}@${span.lineStart}"`)
     // The window starts at the declaration, so it survives; the notice replaces only what follows it.
     expect(body.split('\n')[0]).toBe(LINES[span.lineStart - 1])
   })
@@ -157,7 +157,7 @@ describe('postBashHandler: body folding on a shell read', () => {
     const text = slice(lo, hi)
     const out = await postBashHandler(postEvent(cmd, text, 'ranged-inside'))
     const body = delivered(out, text)
-    expect(body).not.toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}"`)
+    expect(body).not.toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}@${span.lineStart}"`)
     // Every line the caller asked for is still there, in order. A comment fold inside the window would be legitimate, so this asserts the body lines specifically rather than byte equality.
     expect(body).toContain(LINES[lo - 1] ?? '')
     expect(body).toContain(LINES[hi - 1] ?? '')

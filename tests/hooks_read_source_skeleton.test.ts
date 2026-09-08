@@ -111,8 +111,11 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
     for (let i = 0; i < 12; i++) expect(text).toContain(declLine(i))
     // The bodies do not survive: that is the whole point of the replacement.
     expect(text).not.toContain(BODY_FILLER)
-    // The recall command is exact and copy-pasteable, per symbol.
-    expect(text).toContain(`token-goat read "${normalizePath(file)}::fixtureSymbol3"`)
+    // The recall command is exact and copy-pasteable, per symbol, and carries the @LINE anchor that picks out this declaration: without it a file holding two symbols of the same name emits two byte-identical commands, and running either lands on the ambiguity error instead of a body. The line number is matched as a digit rather than pinned, since it is a property of the fixture builder and not of the contract under test.
+    const recall = text.split('\n').find((l) => l.includes('::fixtureSymbol3@'))
+    expect(recall, 'no anchored recall command for fixtureSymbol3').toBeDefined()
+    expect(recall).toContain(`token-goat read "${normalizePath(file)}::fixtureSymbol3@`)
+    expect(recall).toMatch(/::fixtureSymbol3@\d+"/)
     // And the whole-file escape hatch, plus the disclosure itself.
     expect(text).toContain(`Read "${normalizePath(file)}" with offset=1, limit=`)
     expect(text).toContain('Partial view')

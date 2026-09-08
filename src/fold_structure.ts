@@ -185,7 +185,7 @@ function planSourceSkeletonRuns(rows: readonly FoldRow[], symbols: readonly Symb
     const firstLine = row.no
     const lastLine = rows[j - 1]?.no ?? firstLine
     const sym = bodyRunStart.get(firstLine)
-    const notice = sym !== undefined && sym.lineEnd === lastLine ? bodyFoldNotice(sym.name, firstLine, lastLine, shownPath) : skeletonGapNotice(firstLine, lastLine, shownPath)
+    const notice = sym !== undefined && sym.lineEnd === lastLine ? bodyFoldNotice(sym.name, firstLine, lastLine, shownPath, sym.lineStart) : skeletonGapNotice(firstLine, lastLine, shownPath)
     let runBytes = 0
     for (let k = i; k < j; k++) runBytes += Buffer.byteLength(rows[k]?.raw ?? '', 'utf-8') + 1
     if (Buffer.byteLength(notice, 'utf-8') >= runBytes) {
