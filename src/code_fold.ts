@@ -31,6 +31,8 @@ export interface BodyFold {
   readonly kind: 'body' | 'comment' | 'prose'
   /** For a prose fold, the opening sentence to keep in place of the paragraph. Absent on every other kind, which drop their rows outright. */
   readonly keep?: string
+  /** 1-based line the folded symbol is DECLARED on, which is not {@link firstLine}: a body fold keeps the opening lines of the body, so the first folded line sits BODY_FOLD_KEEP_LINES below the declaration. Carried so the notice can anchor its recall command with the `file::symbol@LINE` grammar, without which two same-named symbols in one file emit byte-identical commands. Absent on comment and prose folds, which name no symbol. */
+  readonly declLine?: number
   /** 1-based file line numbers of the first and last folded line, for the notice text. */
   readonly firstLine: number
   readonly lastLine: number
@@ -115,7 +117,7 @@ export function planBodyFolds(
     if (lastRow.no - firstRow.no + 1 !== len) continue
     if (len < MIN_FOLDED_ROWS) continue
 
-    folds.push({ startIdx, len, name: span.name, kind: 'body', firstLine: firstRow.no, lastLine: lastRow.no })
+    folds.push({ startIdx, len, name: span.name, kind: 'body', declLine: span.lineStart, firstLine: firstRow.no, lastLine: lastRow.no })
     foldedThrough = span.lineEnd
   }
 

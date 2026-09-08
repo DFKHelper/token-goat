@@ -42,9 +42,11 @@ const BODY_FOLD_SYMBOL_LIMIT = 10000
  *
  * It names the symbol, the exact line range removed, and the command that returns it -- everything needed to undo the fold without re-reading the file. Unlike a re-read elision, the reader has never seen these lines, so the notice must read as "here is what is missing and how to get it", not as a pointer to something already in context.
  */
-export function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shownPath: string): string {
+export function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shownPath: string, declLine?: number): string {
   const n = lastLine - firstLine + 1
-  return `... ${n} more lines of ${name} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${name}"`
+  // The anchor is emitted whenever the declaration line is known, never only when a duplicate name is detected: the fold sees one file's spans and cannot cheaply know whether a name is unique, and an anchored command resolves identically for one that is. The `file::symbol@LINE` grammar is resolveSymbolSpec's, adopted by graph_commands.ts for this same failure.
+  const anchor = declLine === undefined ? '' : `@${declLine}`
+  return `... ${n} more lines of ${name} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${name}${anchor}"`
 }
 
 /**
@@ -200,7 +202,7 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
         notice = proseFoldNotice(fold.keep ?? '', fold.firstLine, shownPath)
         break
       case 'body':
-        notice = bodyFoldNotice(fold.name, fold.firstLine, fold.lastLine, shownPath)
+        notice = bodyFoldNotice(fold.name, fold.firstLine, fold.lastLine, shownPath, fold.declLine)
         break
       default: {
         const unreachable: never = fold.kind
