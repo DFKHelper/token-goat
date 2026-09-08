@@ -600,7 +600,7 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
     if (attempts === MAX_TRANSIENT_RETRIES + 1) {
       appendWorkerErrorLog(
         dir,
-        `${new Date().toISOString()} giving up on ${absPath} after ${MAX_TRANSIENT_RETRIES} consecutive transient read failures -- no longer retrying automatically (will retry again if the file changes)\n`,
+        `${new Date().toISOString()} giving up on ${absPath} after ${MAX_TRANSIENT_RETRIES} consecutive transient failures -- no longer retrying automatically (will retry again if the file changes)\n`,
       )
     }
     return false
@@ -742,8 +742,6 @@ export function processDirtyBatch(
       requeue(dir, p)
       continue
     }
-    // The read succeeded -- clear any transient-retry count from a prior failure streak so a later failure on this same path (e.g. after a fresh edit) starts from a full budget instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount).
-    clearRetryCount(path.join(dir, 'global.db'), p)
     // Opportunistically learn the active project root from this batch's traffic -- see lastKnownProjectRoots' doc comment for why this global, path-keyed queue has no other standing notion of "the current project" for drainOnce's periodic prune sweep to target.
     try {
       const dirname = path.dirname(p)
@@ -761,7 +759,14 @@ export function processDirtyBatch(
     }
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any other return value (including void/undefined from callers that don't bother returning anything) counts as indexed.
     const result = index(p, sha)
-    if (result !== false && result !== INDEX_FAILED) indexed += 1
+    if (result === INDEX_FAILED) {
+      // Requeue for the same reason the fingerprint branch above does, and it is the same class of failure: makeIndexer's catch covers a SQLITE_BUSY on the index write and a lock inside indexFileSync that the earlier fingerprint read happened to miss, both of which clear on their own. drainOnce has already claimed this batch by renaming the queue file aside and will delete it, so a path not requeued here is gone for good -- its rows then stay stale until something edits the file again, silently, which is worse than being visibly behind. The bounded budget in bumpAndCheckRetry is what keeps a genuinely unindexable file from being retried forever.
+      requeue(dir, p)
+      continue
+    }
+    // Clear the transient-retry streak only now, once the path is actually current, so a later failure starts from a full budget instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount). Deliberately after the index rather than after the read that preceded it: a successful read followed by a failed index has made no progress, and clearing there would hand a permanently failing file a fresh budget on every single cycle, so the requeue above would hammer it forever instead of giving up. `false` (the sha-gate found the content already indexed) is progress and belongs on this side of the branch; only INDEX_FAILED is not.
+    clearRetryCount(path.join(dir, 'global.db'), p)
+    if (result !== false) indexed += 1
   }
   return indexed
 }
