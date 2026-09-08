@@ -61,6 +61,7 @@ describe('checkSecurityPosture', () => {
       'Security fetch policy',
       'Security redaction',
       'Security mcp roots',
+      'Security symbol scope',
       'Security config overrides',
       'Security data dir',
     ])
@@ -91,6 +92,31 @@ describe('checkSecurityPosture', () => {
 
     expect(line.status).toBe('warn')
     expect(line.message).toContain('mcp.confine_reads_to_project_root')
+  })
+
+  // Verified live before this line existed: two scratch projects sharing one data dir, `symbol cfg` run from project B printed project A's file body verbatim, and doctor's whole report said nothing about it. Setting the env override to 0 confined it, so the mechanism was never broken -- only silent. Reported at ok in both directions on purpose (see the fetch-policy line it copies): warning on the shipped default would fire on every healthy install.
+  it('says plainly that symbol lookups can leave the project, without warning about the shipped default', () => {
+    const cfg = baseConfig()
+    cfg.indexing.cross_project_symbols = true
+
+    const line = find(checkSecurityPosture(cfg, root), 'Security symbol scope')
+
+    expect(line.status).toBe('ok')
+    expect(line.message).toContain('other projects')
+    // The setting is named, so the reader can act on the line rather than go hunting for what controls it.
+    expect(line.message).toContain('indexing.cross_project_symbols')
+  })
+
+  it('reports confinement when cross-project lookup is off, so the two states are distinguishable', () => {
+    const cfg = baseConfig()
+    cfg.indexing.cross_project_symbols = false
+
+    const line = find(checkSecurityPosture(cfg, root), 'Security symbol scope')
+
+    expect(line.status).toBe('ok')
+    expect(line.message).toContain('confined to this project')
+    // Without this the confined message could still describe the permissive state and pass the assertion above's sibling.
+    expect(line.message).not.toContain('other projects')
   })
 
   it('counts the extra roots rather than reporting plain confinement when there are some', () => {

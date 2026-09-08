@@ -981,6 +981,15 @@ export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorRe
       : { name: 'Security mcp roots', status: 'warn', message: 'confinement is off (mcp.confine_reads_to_project_root): a read can leave the project' },
   )
 
+  // Reported at `ok` in both directions rather than warning on the permissive one, following the fetch-policy line above: cross-project lookup is the shipped default, so a warning would fire on every healthy install and teach people to skip the section. Saying it plainly is the point -- the index is machine-wide, so with this on, `symbol NAME` run in one project can answer with another project's source, verbatim, including anything sensitive that project has in it. That is by design (a monorepo sibling resolves), it is not something the output hides (every hit is printed with its absolute path), and it is the one setting here whose blast radius nothing else in this report describes.
+  results.push({
+    name: 'Security symbol scope',
+    status: 'ok',
+    message: cfg.indexing.cross_project_symbols
+      ? 'symbol lookups can resolve into other projects in the machine-wide index (indexing.cross_project_symbols = false confines them to this project)'
+      : 'symbol lookups are confined to this project',
+  })
+
   const overridden = envOverriddenSecuritySettings()
   const weakened = overridden.filter((o) => o.kind === 'weakened')
   const replaced = overridden.filter((o) => o.kind === 'replaced')
