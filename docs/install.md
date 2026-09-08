@@ -223,6 +223,68 @@ To upgrade cleanly:
 
 **AI agents handling an upgrade:** complete all three steps in sequence. After step 3, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
 
+### Command auto-approval and permissions
+
+By default, `token-goat install` configures hook triggers only. It never writes permission entries into your environment. If your setup requires confirmation for shell commands, an approval prompt can appear whenever file names, line numbers, or arguments change.
+
+You can add wildcard rules to avoid repeated prompts for routine queries:
+
+#### Claude Code (`~/.claude/settings.json`)
+
+To allow all `token-goat` commands without prompting:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(token-goat *)",
+      "Bash(token-goat:*)"
+    ]
+  }
+}
+```
+
+To limit auto-approval strictly to read-only queries:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(token-goat read *)",
+      "Bash(token-goat symbol *)",
+      "Bash(token-goat section *)",
+      "Bash(token-goat outline *)",
+      "Bash(token-goat skeleton *)",
+      "Bash(token-goat brief *)",
+      "Bash(token-goat json-query *)",
+      "Bash(token-goat yaml-query *)",
+      "Bash(token-goat xml-query *)",
+      "Bash(token-goat map *)",
+      "Bash(token-goat refs *)",
+      "Bash(token-goat deps *)"
+    ]
+  }
+}
+```
+
+#### Codex CLI (`~/.codex/config.toml`)
+
+Running `token-goat install --codex` automatically computes and writes `trusted_hash` into `[hooks.state]` so Codex trusts the hooks. To allow automatic command execution, set `approval_policy` in `~/.codex/config.toml`:
+
+```toml
+approval_policy = "never"
+```
+
+#### Copilot and VS Code MCP
+
+For VS Code using the token-goat MCP server (`token-goat install --vscode`), enable MCP auto-approval in your VS Code `settings.json`:
+
+```json
+{
+  "chat.mcp.autoApprove": true
+}
+```
+
 ## What gets installed?
 
 `token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Integrations for other harnesses are additive on the way out as well as in, so a plain uninstall does not touch one you installed with `--codex`, `--copilot`, or a sibling flag: rather than undo something you did not ask about, it names each one still present and the flag that removes it. Run `token-goat doctor` at any time to see which of these are currently present.
