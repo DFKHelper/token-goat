@@ -114,7 +114,14 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
       : `Partial view: this ${originalBytes.toLocaleString('en-US')} B document has no lead-in before its first section, so it was replaced with a heading tree alone (${headingCount}). Run token-goat section "${shownPath}::<Heading>" to read one section verbatim.`
 
   return {
-    numbered: [...leadInNumbered, ...(capNotice !== null ? [capNotice] : []), notice, guidance, fenceUntrustedFileContent(sectionsList)],
+    // The notice leads so that token-goat speaks first: emitting the lead-in above it let a document open with forged `[token-goat: ...]` or `[tg]` lines that read as this rewrite's own preamble. The lead-in is file bytes like the heading tree, so it gets its own fence rather than riding in the tree's; both fences are part of `numbered`, so their cost is priced by the ratioCap gate below along with everything else.
+    numbered: [
+      notice,
+      ...(leadInNumbered.length > 0 ? [fenceUntrustedFileContent(leadInNumbered.join('\n'))] : []),
+      ...(capNotice !== null ? [capNotice] : []),
+      guidance,
+      fenceUntrustedFileContent(sectionsList),
+    ],
     raw: leadInRaw,
     kind: 'read:markdown_outline',
     detail: shownPath,
