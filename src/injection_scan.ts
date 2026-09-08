@@ -109,7 +109,8 @@ function neutralizeFenceMarkers(text: string, tag: string): string {
  * substitution sequences in a string replacement, and the matched text is attacker-controlled.
  */
 function neutralizeSpokenMarkers(text: string): string {
-  return text.replace(/\[\s*token-goat\b/gi, (m) => m.replace('[', '&#91;'))
+  // Both voices token-goat speaks in: the `[token-goat: ...]` marker hooks sign rewrites with, and the `[tg]` prefix denyOutput puts on every deny. The deny prefix is the more dangerous of the two, since a deny is the one message shaped as an instruction the model is meant to obey, and it is matched only with its closing bracket so that ordinary bracketed words like `[tgz]` are left alone.
+  return text.replace(/\[\s*(?:token-goat\b|tg\s*\])/gi, (m) => m.replace('[', '&#91;'))
 }
 
 /**
