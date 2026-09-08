@@ -759,8 +759,15 @@ export async function upsertChunks(
   return 'embedded'
 }
 
-// sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no file_path/partition column on the vector table itself to scope the ANN (MATCH + k) scan against, so a project-scoped KNN query in one pass isn't available. Instead we over-fetch candidates from the unscoped ANN scan, then post-filter each candidate's chunk metadata (joined by rowid) against the project root. If a caller-provided rootDir filters out too many candidates to satisfy topK, we retry once with a larger k (BACKFILL_MULTIPLIER, capped at MAX_OVER_FETCH) -- this trades a bounded amount of extra query latency (at most one retry) for correctness: without it, `token-goat semantic` from project A silently returns chunks from unrelated project B sharing the same machine-wide global.db (see constants.ts).
+// sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no file_path/partition column on the vector table itself to scope the ANN (MATCH + k) scan against, so a project-scoped KNN query in one pass isn't available. Instead we over-fetch candidates from the unscoped ANN scan, then post-filter each candidate's chunk metadata (joined by rowid) against the project root. If a caller-provided rootDir filters out too many candidates to satisfy topK, we grow k by BACKFILL_MULTIPLIER and retry -- without this, `token-goat semantic` from project A silently returns chunks from unrelated project B sharing the same machine-wide global.db (see constants.ts).
 const BACKFILL_MULTIPLIER = 3
+
+// The retry escalates until the answer is found or the index is exhausted, and is deliberately NOT capped at MAX_OVER_FETCH. A fixed candidate ceiling makes the cap-before-predicate shape load-bearing: k bounds the ANN scan, the project predicate runs afterwards on what survived, so a project whose nearest chunk ranks past the ceiling gets an empty result that the caller cannot distinguish from having nothing to match at all. On a machine-wide global.db that is an ordinary situation, not a pathological one: 150 chunks from other projects sitting closer to the query is a small shared database. Termination is guaranteed by the data rather than by a constant -- `candidateCount < k` means the ANN scan ran out of rows, and the k ceiling below is the row count itself -- and the growth is geometric, so exhausting even a million-vector table costs on the order of a dozen queries rather than one per row.
+function countStoredVectors(db: SqliteDatabase): number {
+  // Counted from `chunks` rather than from the vec0 table: `chunks` is an ordinary table with an integer primary key, so this is a cheap index count, while a count over a virtual table can degrade into a full vector scan. It is an upper bound (a chunk row can exist with no vector yet), which is the safe direction: an over-estimate only ever permits one extra retry, and that retry terminates on the `candidateCount < k` check instead.
+  const row = db.prepare('SELECT count(*) AS n FROM chunks').get() as { n: number } | undefined
+  return typeof row?.n === 'number' && Number.isFinite(row.n) ? row.n : 0
+}
 
 /** One over-fetch-and-filter pass: KNN-search `k` candidates, then keep only those within `maxDistance` and (when `rootDir` is set) under that project root. Returns the surviving hits plus how many raw candidates the ANN scan returned, so the caller can tell whether growing `k` further could possibly help (or if the vector index is simply exhausted). Exported (not just used internally by searchSemantic) so tests can exercise the project-scoping/backfill SQL directly with a hand-built query vector, without needing a real embedding-model inference call. */
 export function fetchScopedHits(
@@ -893,15 +900,17 @@ export async function searchSemantic(
     Math.ceil(topK * OVER_FETCH_FACTOR),
   )
 
-  const first = fetchScopedHits(db, queryVec, overFetchK, maxDistance, rootDir)
-  let hits = first.hits
-  const candidateCount = first.candidateCount
+  let k = overFetchK
+  let pass = fetchScopedHits(db, queryVec, k, maxDistance, rootDir)
+  let hits = pass.hits
 
-  // Backfill: when scoped and the first pass didn't surface enough hits, retry once with a larger k -- but only if the ANN scan actually returned as many candidates as requested (candidateCount === overFetchK); if it returned fewer, the vector index is exhausted and a bigger k would return the exact same rows, so retrying would just cost latency for nothing.
-  if (rootDir !== undefined && hits.length < topK && candidateCount === overFetchK && overFetchK < MAX_OVER_FETCH) {
-    const biggerK = Math.min(MAX_OVER_FETCH, overFetchK * BACKFILL_MULTIPLIER)
-    if (biggerK > overFetchK) {
-      hits = fetchScopedHits(db, queryVec, biggerK, maxDistance, rootDir).hits
+  // Backfill: when scoped and the pass didn't surface enough hits, grow k and retry, until the answer is found or the ANN scan runs out of rows. `pass.candidateCount === k` is the only reason to retry: a scan that returned fewer candidates than asked for is exhausted, so a bigger k returns the exact same rows and a retry would cost latency for nothing. See BACKFILL_MULTIPLIER for why this escalates to exhaustion rather than stopping at a fixed candidate ceiling.
+  if (rootDir !== undefined) {
+    const ceiling = countStoredVectors(db)
+    while (hits.length < topK && pass.candidateCount === k && k < ceiling) {
+      k = Math.min(ceiling, k * BACKFILL_MULTIPLIER)
+      pass = fetchScopedHits(db, queryVec, k, maxDistance, rootDir)
+      hits = pass.hits
     }
   }
 
