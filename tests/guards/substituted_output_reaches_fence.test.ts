@@ -42,6 +42,8 @@ const SUBSTITUTION_CALLS: readonly string[] = ['emitRewrite(', 'emitRewriteIfCha
 const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedContent(',
   'fenceUntrusted(',
+  // Spelled out rather than left to `fenceUntrusted(` to cover: that entry is a whole call including its own `(`, so it does not match a longer name sharing its prefix. This is the fencer most of the read path actually calls, and it was matching nothing.
+  'fenceUntrustedFileContent(',
   'fenceWithMatches(',
   'fenceUntrustedOcrText(',
 ]
@@ -70,6 +72,15 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
     'hooks_common.ts::emitRewriteIfChanged',
     'The wrapper itself, not a site. It forwards whatever its caller composed, so the question ' +
       'belongs to the callers -- which is what the rest of this list is.',
+  ],
+  [
+    'hooks_read.ts::emitStructuralFold',
+    'Also a wrapper, one file further out: it joins a StructuralFold that a producer already built ' +
+      'and fenced. The producers are planMarkdownOutline and planSourceSkeleton, both in ' +
+      'fold_structure.ts, and both are pinned by the fold-producer test below so this exemption ' +
+      'cannot outlive them. This walk is same-file, which is exactly why the two real unfenced ' +
+      'sites here went unnoticed for a release: an exemption resting on a cross-file call needs ' +
+      'its own assertion, not a sentence.',
   ],
   // (a) nothing to separate
   [
@@ -210,5 +221,28 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
         'or add the site to UNFENCED_BY_DESIGN with the sentence explaining what of ours is in ' +
         'that block. If that sentence is hard to write, the fence is the answer.',
     ).toEqual([])
+  })
+
+  // Backs the hooks_read.ts::emitStructuralFold exemption, whose whole claim is that fencing
+  // happened one file away. Provenance: HAND-DERIVED -- the producer names are read off
+  // fold_structure.ts's exports and the assertion is that each fences, computed independently of
+  // the same-file walk above rather than from its output.
+  it('every StructuralFold producer fences the file bytes it keeps', () => {
+    const src = fs.readFileSync(path.join(SRC_DIR, 'fold_structure.ts'), 'utf-8')
+    const producers = parseTopLevelFunctions(src).filter((f) => f.body.includes('kind: '))
+    expect(
+      producers.map((f) => f.name).sort(),
+      'The set of functions building a StructuralFold changed. emitStructuralFold is exempted from ' +
+        'the fencing walk on the grounds that these producers fence for it, so a new one has to be ' +
+        'named here before that exemption means anything.',
+    ).toEqual(['planMarkdownOutline', 'planSourceSkeleton'])
+    for (const fn of producers) {
+      expect(
+        callsFence(fn.body),
+        `${fn.name} builds a StructuralFold that emitStructuralFold hands to the model unfenced. ` +
+          'That wrapper is exempted only because this function fences; fence here, or drop the ' +
+          'exemption and fence at the emit site.',
+      ).toBe(true)
+    }
   })
 })

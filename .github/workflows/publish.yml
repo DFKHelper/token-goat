@@ -28,6 +28,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so the ancestry check below has something to check against.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -41,6 +44,20 @@ jobs:
           PKG_VERSION="$(node -p "require('./package.json').version")"
           if [ "$TAG" != "$PKG_VERSION" ]; then
             echo "::error::Release tag v$TAG does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+      # The workflow_dispatch route is pinned to main by the job-level `if`, but the release route
+      # was not pinned to anything: a GitHub release can be cut from any commit on any branch, and
+      # the tag-name check above only compares the tag to package.json. Someone with write access
+      # could tag a feature-branch commit `v9.9.9`, bump package.json to match on that branch, and
+      # publish it to npm under the project's name with provenance attached.
+      - name: Verify the released commit is on main
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Release commit $GITHUB_SHA is not an ancestor of origin/main; refusing to publish"
             exit 1
           fi
       - name: Test

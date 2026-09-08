@@ -1901,7 +1901,8 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const folded = foldDelivery(parsed.rows, normalized, shown, requestedOffset !== undefined || readIntToolInput(event, 'limit') !== undefined)
   if (folded === null) return null
 
-  const rewritten = [...parsed.header, ...folded.numbered, ...parsed.trailer].join('\n')
+  // `folded.numbered` is file bytes with this fold's own `... N lines folded` pointers interleaved, and it shipped unfenced: a source file's own text arrived beside token-goat's narration in one unlabelled block, so a first line spelling `[tg] ...` read as this rewrite's preamble. Fence the whole run, header and trailer (the harness's own framing) left outside it. Same repair as planSourceSkeleton.
+  const rewritten = [...parsed.header, fenceUntrustedFileContent(folded.numbered.join('\n')), ...parsed.trailer].join('\n')
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
   if (
     !isRewriteWorthwhile({

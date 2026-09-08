@@ -141,14 +141,7 @@ const SHELL_TRUE_BY_DESIGN: ReadonlyMap<string, string> = new Map([
  * `execSync` sites. Separate from the map above because `execSync` is a shell by definition -- there
  * is no options flag to turn it off -- so the reason has to be about the command string itself.
  */
-const EXEC_SYNC_BY_DESIGN: ReadonlyMap<string, string> = new Map([
-  [
-    'cli_doctor.ts',
-    'Two calls, both fixed strings. One runs "token-goat --version". The other interpolates a ' +
-      'hardcoded local const holding a Get-CimInstance query into a powershell.exe command line. ' +
-      'Nothing external reaches either. Parameterising one is what this entry is here to catch.',
-  ],
-])
+const EXEC_SYNC_BY_DESIGN: ReadonlyMap<string, string> = new Map<string, string>([])
 
 describe('every interpreter sink in src is absent or named', () => {
   it('scans a real population, so an empty scan cannot pass', () => {
@@ -206,11 +199,15 @@ describe('every interpreter sink in src is absent or named', () => {
     ).toBe(true)
   })
 
-  it.each([...EXEC_SYNC_BY_DESIGN.keys()])('%s is still a real execSync site', (file) => {
-    expect(
-      sites(/(^|[^.\w$])execSync\s*\(/).some((s) => s.startsWith(`${file}:`)),
-      `${file} is exempted in EXEC_SYNC_BY_DESIGN but no longer calls execSync. Remove the entry.`,
-    ).toBe(true)
+  // A loop rather than `it.each`, because the map is currently empty -- `it.each([])` is a suite with no cases, which reports as a pass while asserting nothing. The empty map is the desired state: the last execSync in src was the one that resolved `token-goat` as a bare name through cmd.exe, and it is now a spawnSync with an argv array.
+  it('every execSync exemption is still a real execSync site', () => {
+    const found = sites(/(^|[^.\w$])execSync\s*\(/)
+    for (const file of EXEC_SYNC_BY_DESIGN.keys()) {
+      expect(
+        found.some((s) => s.startsWith(`${file}:`)),
+        `${file} is exempted in EXEC_SYNC_BY_DESIGN but no longer calls execSync. Remove the entry.`,
+      ).toBe(true)
+    }
   })
 
   it('every exemption carries a reason rather than a name alone', () => {

@@ -567,12 +567,27 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string): Prom
 }
 
 /**
+ * Flatten `line` to exactly one physical line, ending in exactly one newline.
+ *
+ * Every caller builds its line by interpolating two values a repository controls: the path of the
+ * file that failed, and the error message, which for a parse failure quotes the file's own bytes.
+ * A newline in either one forges log entries, and `worker-errors.log` is read back by `doctor` and
+ * by `bridges-status`, so a line that reads like a token-goat diagnostic can be written by naming
+ * a file after one. Escaping rather than stripping keeps the log honest about what the name was.
+ */
+export function oneLogLine(line: string): string {
+  const body = line.replace(/[\n\r]+$/, '')
+  // eslint-disable-next-line no-control-regex -- catching the control characters is the point, including the ones a terminal acts on rather than prints.
+  return body.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`) + '\n'
+}
+
+/**
  * Append one failure line to the error log for `dir`. Best-effort: a failure to write the log
  * itself must not throw back out of the indexer's own catch handler.
  */
 function appendWorkerErrorLog(dir: string, line: string): void {
   try {
-    fs.appendFileSync(workerErrorLogPath(dir), line)
+    fs.appendFileSync(workerErrorLogPath(dir), oneLogLine(line))
   } catch {
     // best-effort: nothing more we can do if even the log write itself fails.
   }

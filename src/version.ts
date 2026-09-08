@@ -23,3 +23,25 @@ function resolveVersion(): string {
 }
 
 export const VERSION: string = resolveVersion()
+
+/**
+ * The published npm package name, for any message telling a user how to install this tool.
+ *
+ * Read from the manifest rather than written as a literal. `doctor`'s broken-install message
+ * hardcoded `token-goat-ts`, which is not this package and is an unregistered npm name anyone
+ * could claim -- an install instruction pointing at a package that does not exist yet, printed
+ * exactly when a user's install is broken, and asking for a global install.
+ */
+function resolvePackageName(): string {
+  // Fail-soft, unlike resolveVersion's bare require: this module gets bundled into the in-process hook chunk, which is written to a temp directory with no package.json beside it, so the require throws there and a throw at module load takes the whole hook down. The name is only ever used in an advisory install line, so a literal fallback costs nothing -- and the fallback cannot silently drift, because the test that pins this constant runs from source, where the manifest is found.
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { name?: string }
+    if (typeof pkg.name === 'string' && pkg.name !== '') return pkg.name
+  } catch {
+    /* bundled somewhere with no manifest beside it */
+  }
+  return 'token-goat'
+}
+
+export const PACKAGE_NAME: string = resolvePackageName()

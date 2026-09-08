@@ -12,7 +12,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
@@ -24,7 +24,7 @@ import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSe
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
-import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg } from './util.js'
+import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, windowsCmdQuoteArg, resolveOnPath } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
@@ -2266,12 +2266,7 @@ export function runAsk(opts: AskOptions): number {
   }
 
   const isWin = process.platform === 'win32'
-  let backendPath: string | null = null
-  try {
-    const whichOut = execFileSync(isWin ? 'where.exe' : 'which', [backendLabel], { encoding: 'utf8' })
-    const found = (whichOut ?? '').trim().split('\n')[0]?.trim() ?? ''
-    if (found) backendPath = found
-  } catch { /* fall through */ }
+  const backendPath = resolveOnPath(backendLabel)
 
   if (!backendPath) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but '${backendLabel}' was not found on PATH`)
 

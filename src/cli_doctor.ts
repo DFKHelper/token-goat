@@ -8,9 +8,10 @@ import { compileCustomPatterns } from './secret_redact.js'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { execSync, spawnSync } from 'child_process'
+import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
-import { extractErrorMessage, toKB } from './util.js'
+import { extractErrorMessage, toKB, resolveOnPath } from './util.js'
+import { PACKAGE_NAME } from './version.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
@@ -147,12 +148,17 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null):
 
 function runProcessListCommand(): string {
   const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
-  return execSync(`powershell.exe -NoProfile -NonInteractive -Command "${command}"`, {
+  // The interpreter is named by absolute path under SystemRoot, and the arguments go through an argv array rather than a shell string. `powershell.exe` as a bare name in a shell string is resolved by cmd.exe from the current directory first, so `token-goat doctor` run inside a repository shipping a `powershell.exe` executed that instead. The command text itself was never attacker-controlled -- the binary was.
+  const systemRoot = process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows'
+  const shell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const result = spawnSync(fs.existsSync(shell) ? shell : 'powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
     encoding: 'utf8',
     timeout: 20000,
     maxBuffer: 10 * 1024 * 1024,
     windowsHide: true,
   })
+  if (result.error !== undefined) throw result.error
+  return result.stdout ?? ''
 }
 
 /**
@@ -508,20 +514,19 @@ export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
  * Check if token-goat binary is installed and accessible.
  */
 export function checkInstall(): DoctorResult {
-  try {
-    const output = execSync('token-goat --version', { encoding: 'utf-8' })
-    return {
-      name: 'Installation',
-      status: 'ok',
-      message: output.trim(),
-    }
-  } catch {
-    return {
-      name: 'Installation',
-      status: 'fail',
-      message: 'token-goat command not found; run: npm install -g token-goat-ts',
-    }
+  // Resolved against PATH and then executed by absolute path. This used to be `execSync('token-goat --version')`: a bare name in a shell string, which on Windows `cmd.exe` resolves from the current directory before PATH, so running `token-goat doctor` inside a repository containing a `token-goat.bat` ran that file and printed its output as the installed version. Demonstrated end to end against the shipped bundle. `resolveOnPath` skips the current directory, and spawnSync with an argv array never reaches a shell, so neither half of the original shape remains.
+  const resolved = resolveOnPath('token-goat')
+  if (resolved !== null) {
+    // A global npm install on Windows puts a `.CMD` shim on PATH, and since the argument-injection fix in Node 20.12/21.7 a batch file cannot be spawned directly at all -- spawnSync returns EINVAL. Running it through an explicit absolute cmd.exe with an argv array keeps the property that matters (the name is never re-resolved by an interpreter, so the current directory cannot supply the binary) while still executing the shim. Reported as a FAIL by the shipped build until this was run for real: the resolver was correct and the spawn was the part that broke.
+    const isBatch = /\.(?:cmd|bat)$/i.test(resolved)
+    const comspec = path.join(process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows', 'System32', 'cmd.exe')
+    const result = isBatch
+      ? spawnSync(fs.existsSync(comspec) ? comspec : 'cmd.exe', ['/d', '/s', '/c', resolved, '--version'], { encoding: 'utf-8', timeout: 15000, windowsHide: true })
+      : spawnSync(resolved, ['--version'], { encoding: 'utf-8', timeout: 15000, windowsHide: true })
+    if (result.status === 0) return { name: 'Installation', status: 'ok', message: (result.stdout ?? '').trim() }
   }
+  // The package name is read from the manifest rather than written here: it was hardcoded as `token-goat-ts`, which is not the published name and is an unregistered, claimable npm package. This message prints exactly when a user's install is broken and they are most likely to run the command in it, and it installs globally.
+  return { name: 'Installation', status: 'fail', message: `token-goat command not found; run: npm install -g ${PACKAGE_NAME}` }
 }
 
 /**

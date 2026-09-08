@@ -25,6 +25,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, loadSessionCache } from './compact.js'
+import { displaySafePath, displaySafeText } from './paths.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
 const MEM_EPOCH_TIMEOUT_MS = 800
@@ -50,12 +51,12 @@ function renderReadRow(entry: FileEntry): string {
   const kb = Math.max(1, toKB(entry.sizeBytes))
   const plural = entry.readCount === 1 ? 'read' : 'reads'
   const edited = entry.wasEdited ? ', edited' : ''
-  return `- ${entry.path} (${kb}kb, ${entry.readCount} ${plural}${edited})`
+  return `- ${displaySafePath(entry.path)} (${kb}kb, ${entry.readCount} ${plural}${edited})`
 }
 
 /** Render one surgically-read row: `path (symbols: a, b)`. The symbol list is what the preamble tells the summarizer to keep verbatim, so it is spelled out rather than counted. */
 function renderSymbolReadRow(entry: FileEntry): string {
-  return `- ${entry.path} (symbols: ${(entry.symbols_read ?? []).join(', ')})`
+  return `- ${displaySafePath(entry.path)} (symbols: ${(entry.symbols_read ?? []).map(displaySafeText).join(', ')})`
 }
 
 /**
@@ -112,6 +113,13 @@ function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): Fil
  * before capping -- omitted (e.g. a harness that doesn't send `cwd` on
  * `pre_compact`), the cap falls back to the fixed configured value unchanged.
  */
+/*
+ * Paths and symbol names below go through displaySafePath/displaySafeText rather than being
+ * interpolated raw. They are file-derived and a repository names its own files, while this
+ * manifest is emitted under a preamble instructing the summarizing model to reproduce these
+ * rows exactly as written -- the most persistent place in the tool where an unescaped `[tg]`
+ * marker could sit, since it survives compaction into the next context.
+ */
 export function buildManifest(sessionId?: string, cwd?: string): string {
   const ownFiles = [...getSessionFiles().values()]
   const siblingFiles = sessionId !== undefined ? listSiblingSessionStates(sessionId).flatMap((s) => s.files) : []
@@ -131,7 +139,7 @@ export function buildManifest(sessionId?: string, cwd?: string): string {
   appendCappedSection(
     lines,
     '### Edited files',
-    editedFiles.map((entry) => `- ${entry.path}`),
+    editedFiles.map((entry) => `- ${displaySafePath(entry.path)}`),
     MAX_ROWS,
   )
   appendCappedSection(lines, '### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles.map(renderSymbolReadRow), MAX_ROWS)

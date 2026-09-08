@@ -22,7 +22,8 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { PROJECT_LOCKED_SECTIONS } from '../../src/config.js'
+import { lockedEnvOverridableKeys } from '../../src/cli_doctor.js'
+import { PROJECT_LOCKED_KEYS, PROJECT_LOCKED_SECTIONS } from '../../src/config.js'
 
 const DOC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'security.md')
 
@@ -35,6 +36,25 @@ const NUMBER_WORDS: Record<number, string> = {
   8: 'Eight',
   9: 'Nine',
   10: 'Ten',
+}
+
+// Lower case and reaching further, because the two claims below sit mid-sentence rather than opening one, and both counts are already past ten.
+const COUNT_WORDS: Record<number, string> = {
+  8: 'eight',
+  9: 'nine',
+  10: 'ten',
+  11: 'eleven',
+  12: 'twelve',
+  13: 'thirteen',
+  14: 'fourteen',
+  15: 'fifteen',
+  16: 'sixteen',
+  17: 'seventeen',
+  18: 'eighteen',
+  19: 'nineteen',
+  20: 'twenty',
+  21: 'twenty-one',
+  22: 'twenty-two',
 }
 
 describe('the project-locked section list in docs/security.md', () => {
@@ -57,5 +77,39 @@ describe('the project-locked section list in docs/security.md', () => {
       text,
       `docs/security.md should say "${expected} whole sections", since PROJECT_LOCKED_SECTIONS has ${PROJECT_LOCKED_SECTIONS.length}`,
     ).toContain(`${expected} whole sections`)
+  })
+
+  // The section half of this sentence was guarded from the start and the key half was not, so the
+  // key half is the half that went stale: it still said "plus one individual key" after seven more
+  // had been added, four of them in the same release that added this test.
+  it('names every locked key literally, so a reader is not told a shorter list than the code enforces', () => {
+    expect(PROJECT_LOCKED_KEYS.length, 'the locked-key list is empty, so this guard checks nothing').toBeGreaterThan(0)
+
+    const missing = PROJECT_LOCKED_KEYS.filter((k) => !text.includes(`\`${k}\``))
+    expect(missing, `these keys are locked in code but not named in docs/security.md: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('states the right number of locked keys', () => {
+    const expected = COUNT_WORDS[PROJECT_LOCKED_KEYS.length]
+    expect(expected, `add ${PROJECT_LOCKED_KEYS.length} to COUNT_WORDS`).toBeDefined()
+    // Lower-cased, because this count happens to open its sentence and the doc capitalises a word the table stores lower case.
+    expect(
+      text.toLowerCase(),
+      `docs/security.md should say "${expected} individual keys", since PROJECT_LOCKED_KEYS has ${PROJECT_LOCKED_KEYS.length}`,
+    ).toContain(`${expected} individual keys`)
+  })
+
+  // A different set again: the keys the *environment* can still decide, which is neither the section
+  // list nor the key list but derived from both. `doctor` prints this count at run time, so the doc
+  // and the command disagreeing is something a reader can see for themselves.
+  it('states the right number of environment-overridable locked keys', () => {
+    const n = lockedEnvOverridableKeys().length
+    expect(n, 'the env-overridable set is empty, so this guard checks nothing').toBeGreaterThan(0)
+    const expected = COUNT_WORDS[n]
+    expect(expected, `add ${n} to COUNT_WORDS`).toBeDefined()
+    expect(
+      text,
+      `docs/security.md should say "all ${expected} locked keys", since lockedEnvOverridableKeys() returns ${n}`,
+    ).toContain(`all ${expected} locked keys`)
   })
 })

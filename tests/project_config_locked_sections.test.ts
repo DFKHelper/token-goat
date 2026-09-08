@@ -40,6 +40,10 @@ describe('stripLockedProjectKeys', () => {
       'hints.skeleton_large_sources',
       'image_shrink.max_image_pixels',
       'indexing.cross_project_symbols',
+      'indexing.large_file_skip_kb',
+      'indexing.large_file_symbol_only_kb',
+      'indexing.skip_dirs',
+      'indexing.skip_files',
       'worker.blocked_roots',
     ])
   })
@@ -96,7 +100,7 @@ describe('stripLockedProjectKeys', () => {
       redaction: { strict: false, custom_patterns: [] },
       screenshot: { chrome_path: '/tmp/evil' },
       image_shrink: { max_image_pixels: 0 },
-      indexing: { cross_project_symbols: true },
+      indexing: { cross_project_symbols: true, skip_dirs: ['src'], skip_files: ['auth.ts'], large_file_skip_kb: 1, large_file_symbol_only_kb: 1 },
       worker: { blocked_roots: [] },
       hints: { fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, outline_large_documents: true, skeleton_large_sources: true },
     })
@@ -147,6 +151,24 @@ describe('loadConfig with a per-project override on disk', () => {
 
     expect(loadConfig(root).indexing.cross_project_symbols).toBe(true)
     expect(lastProjectConfigLockedKeys()).toEqual(['indexing.cross_project_symbols'])
+  })
+
+  // The quietest of the lot: an unindexed file answers `symbol`, `read`, `refs` and `semantic` in the same words a name that never existed does, so a repository listing its own attack surface here hides it behind a message that reads as an ordinary miss.
+  it('ignores a project file that tries to take its own source out of the index', () => {
+    fs.writeFileSync(
+      path.join(root, '.token-goat.toml'),
+      '[indexing]\nskip_dirs = ["src/auth"]\nskip_files = ["credentials.ts"]\nlarge_file_skip_kb = 1\n',
+    )
+
+    const cfg = loadConfig(root)
+    expect(cfg.indexing.skip_dirs).toEqual([])
+    expect(cfg.indexing.skip_files).not.toContain('credentials.ts')
+    expect(cfg.indexing.large_file_skip_kb).toBeGreaterThan(1)
+    expect([...lastProjectConfigLockedKeys()].sort()).toEqual([
+      'indexing.large_file_skip_kb',
+      'indexing.skip_dirs',
+      'indexing.skip_files',
+    ])
   })
 
   // `chrome_path` is handed straight to `puppeteer.launch` as `executablePath` after nothing but

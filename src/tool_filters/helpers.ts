@@ -52,6 +52,36 @@ function utf8SafeEnd(buf: Buffer, n: number): number {
  *
  * The budget is split evenly. Both ends carry content worth keeping (the head has the command echo and the earliest failures, the tail has the verdict) and nothing measured here justifies a ratio between them, so this does not invent one. Cuts land on line boundaries, which both keeps a UTF-8 sequence intact and avoids presenting half a line as whole; the marker matches {@link headTailCompress} rather than adding a second spelling of the same idea. A single line wider than the whole budget has no boundary to cut on and falls back to a character-safe prefix.
  */
+/**
+ * Bound the width of every line before any per-tool filter regex sees it.
+ *
+ * The filter regexes are line-oriented and 205 of them carry a standing
+ * `no-super-linear-backtracking` suppression, on the stated grounds that polynomial backtracking
+ * "for the line-at-a-time inputs these patterns see is not the same class of risk". Nothing
+ * enforced that premise: the input clamp in step 2 bounds a stream's total bytes, not any single
+ * line, so one wide line passed through intact. Measured against the shipped bundle, a single
+ * 480 KB adversarial line took 47.5 s inside the hook the harness blocks on, against 0.16 s for
+ * the same bytes in ordinary shape.
+ *
+ * A per-line bound is the fix that covers all 205 at once rather than one pattern at a time.
+ * Every line survives -- only the middle of an over-wide one is dropped, and it says so -- since
+ * discarding whole lines here would put a head bias back into output whose verdict often sits at
+ * the end.
+ */
+export const INPUT_MAX_LINE_CHARS = 4000
+
+export function clipWideLines(text: string, maxChars = INPUT_MAX_LINE_CHARS): string {
+  if (text.length <= maxChars) return text
+  let clipped = 0
+  const out = text.split('\n').map((line) => {
+    if (line.length <= maxChars) return line
+    clipped += 1
+    const keep = Math.floor(maxChars / 2)
+    return line.slice(0, keep) + ` ... [${line.length - maxChars} chars clipped] ... ` + line.slice(line.length - (maxChars - keep))
+  })
+  return clipped === 0 ? text : out.join('\n')
+}
+
 export function clampKeepingEnds(text: string, maxBytes: number): string | null {
   const buf = Buffer.from(text, 'utf8')
   if (buf.length <= maxBytes) return null
