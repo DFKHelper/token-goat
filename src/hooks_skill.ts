@@ -61,6 +61,29 @@ function resolveSkillContext(event: HookEvent): { skillName: string } | null {
   return { skillName };
 }
 
+/**
+ * Heading-tree stand-in for an oversized skill body, or null when the body is not worth mapping.
+ *
+ * Two callers, one floor pair. Both floors come verbatim from fold_structure.ts's large-markdown
+ * outline, which measured them against real session transcripts: a skill needs at least
+ * OUTLINE_MIN_HEADINGS of structure to be worth a map at all, and the map has to be genuinely small
+ * next to the body (OUTLINE_MAX_REPLACEMENT_RATIO) or the round trip costs more than it saves.
+ */
+function planHeadingTree(body: string, bodyBytes: number, skillName: string): { sectionsList: string; treeBytes: number; phrase: string } | null {
+  const headings = extractMarkdownHeadings(body);
+  if (headings.length < OUTLINE_MIN_HEADINGS) return null;
+  const { sectionsList } = formatHeadingTreeParts(headings, skillName);
+  const treeBytes = Buffer.byteLength(sectionsList, 'utf-8');
+  if (treeBytes > bodyBytes * OUTLINE_MAX_REPLACEMENT_RATIO) return null;
+  // The displayed tree caps at MAX_HEADINGS (40); when the file has more H1-H3 headings than that, the message must say so or the model reads a truncated tree as a complete map and never learns the remaining sections exist.
+  const totalHeadings = extractMarkdownHeadings(body, Number.MAX_SAFE_INTEGER).length;
+  const phrase = totalHeadings > headings.length
+    ? 'its heading tree shows ' + headings.length + ' of ' + totalHeadings +
+      ' headings below instead of the full body; the remaining sections are reachable only through `token-goat skill-body ' + skillName + '`.'
+    : 'its heading tree (' + headings.length + ' headings) is inlined below instead of the full body.';
+  return { sectionsList, treeBytes, phrase };
+}
+
 export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const ctx = resolveSkillContext(event);
@@ -99,49 +122,48 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       try {
         const body = await readFile(sourcePath, 'utf-8');
         const bodyBytes = Buffer.byteLength(body, 'utf-8');
-        const compact = bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES ? extractCompactFromMarker(body) : null;
-        if (compact !== null) {
+        if (bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES) {
+          const compact = extractCompactFromMarker(body);
+          if (compact !== null) {
           // The compact slice is already in hand here, so denying with a pointer to `skill-body --compact` costs an extra agent turn (reasoning + Bash call + that command's echo) to re-fetch content this handler just computed. Inline it instead whenever it is genuinely smaller than the body and under COMPACT_INLINE_MAX_BYTES. This used to reuse the oversize gate as the inline bound, which put every slice between 6 KB and the body's size on the deny path -- the agent paid the round trip and received exactly the same bytes anyway, which is why that branch's stat shows real traffic and zero savings. With no marker, a slice no smaller than the body, or a read failure, the original pointer deny stands verbatim.
-          const compactBytes = Buffer.byteLength(compact, 'utf-8');
-          // At least half the body has to disappear for inlining to beat pointing. "Any saving at all" is too weak a test: a marker placed at the very end makes the slice the whole body minus the marker line, which passes a bare `compactBytes < bodyBytes` while handing over every byte and booking it as a saving. Past that ratio the pointer is the better trade, because the agent may not need the body at all.
-          if (compactBytes * 2 <= bodyBytes && compactBytes <= COMPACT_INLINE_MAX_BYTES) {
-            const savedBytes = bodyBytes - compactBytes;
-            recordStat('skill_compact_inlined', savedBytes, savedTokensFromBytes(savedBytes));
-            return denyOutput(
-              'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
-                ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + skillName +
-                ' \'<heading>\'`, or `token-goat skill-body ' + skillName + '` if you need the full body.\n\n' + compact,
-            );
-          }
-          recordStat('skill_oversized_first_load');
-          return denyOutput(
-            'Skill `' + skillName + '` is large (' + bodyBytes +
-              ' bytes) and has a compact slice available. Use `token-goat skill-section ' + skillName +
-              ' \'<heading>\'` to load a specific section, `token-goat skill-body ' + skillName +
-              ' --compact` to load the compact slice, or `token-goat skill-body ' + skillName + '` for the full body.',
-          );
-        } else if (bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES) {
-          // Oversized with no marker at all: falling through here used to hand over the entire body. Build a heading tree instead, so the model gets a map of the skill plus the commands to pull any part, rather than 6-70+ KB of body. Only worth it when the skill actually has enough structure to map (OUTLINE_MIN_HEADINGS) and the resulting tree is genuinely small next to the body (OUTLINE_MAX_REPLACEMENT_RATIO) -- both floors reused verbatim from fold_structure.ts's large-markdown outline, which measured them against real session transcripts. Below either floor, fall through to the normal load exactly as before: a map of three things is not worth the round trip.
-          const headings = extractMarkdownHeadings(body);
-          if (headings.length >= OUTLINE_MIN_HEADINGS) {
-            const { sectionsList } = formatHeadingTreeParts(headings, skillName);
-            const treeBytes = Buffer.byteLength(sectionsList, 'utf-8');
-            if (treeBytes <= bodyBytes * OUTLINE_MAX_REPLACEMENT_RATIO) {
-              const savedBytes = bodyBytes - treeBytes;
-              recordStat('skill_heading_tree_inlined', savedBytes, savedTokensFromBytes(savedBytes));
-              // The displayed tree caps at MAX_HEADINGS (40); when the file has more H1-H3 headings than that, the message above must say so or the model reads a truncated tree as a complete map and never learns the remaining sections exist.
-              const totalHeadings = extractMarkdownHeadings(body, Number.MAX_SAFE_INTEGER).length;
-              const headingCountPhrase = totalHeadings > headings.length
-                ? 'its heading tree shows ' + headings.length + ' of ' + totalHeadings +
-                  ' headings below instead of the full body; the remaining sections are reachable only through `token-goat skill-body ' + skillName + '`.'
-                : 'its heading tree (' + headings.length + ' headings) is inlined below instead of the full body.';
+            const compactBytes = Buffer.byteLength(compact, 'utf-8');
+            // At least half the body has to disappear for inlining to beat pointing. "Any saving at all" is too weak a test: a marker placed at the very end makes the slice the whole body minus the marker line, which passes a bare `compactBytes < bodyBytes` while handing over every byte and booking it as a saving. Past that ratio the pointer is the better trade, because the agent may not need the body at all.
+            if (compactBytes * 2 <= bodyBytes && compactBytes <= COMPACT_INLINE_MAX_BYTES) {
+              const savedBytes = bodyBytes - compactBytes;
+              recordStat('skill_compact_inlined', savedBytes, savedTokensFromBytes(savedBytes));
               return denyOutput(
-                'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes) with no compact slice; ' + headingCountPhrase +
-                  ' Use `token-goat skill-section ' + skillName +
-                  ' \'<heading>\'` to load a specific section, or `token-goat skill-body ' + skillName + '` for the full body.\n\n' +
-                  fenceUntrustedFileContent(sectionsList),
+                'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
+                  ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + skillName +
+                  ' \'<heading>\'`, or `token-goat skill-body ' + skillName + '` if you need the full body.\n\n' + compact,
               );
             }
+          }
+          // The heading tree serves both arms, and the arm that had been missing it is the larger one. A marker sitting near the end of a file produces a slice too big to inline, and that used to fall to a bare pointer naming `skill-section \'<heading>\'` without ever saying what the headings were -- so recovering cost a listing call the deny had all the information to answer. A skill with a badly-placed marker was strictly worse off than one with no marker at all, which got the map. Same replacement, same floors, whichever arm arrives here.
+          const tree = planHeadingTree(body, bodyBytes, skillName);
+          if (tree !== null) {
+            // Two arms, two counterfactuals, and using the no-marker one for both would over-credit. With no marker the handler falls through to a real load, so the body is genuinely what the tree replaces. With a marker the body was never going to be delivered -- the pointer deny already stopped it -- and the bytes the agent would actually have pulled are the slice that pointer named. Credit that instead. On the skills this fires for the two numbers are within a few percent (a marker sitting near the end makes the slice nearly the whole body), which is exactly why the wrong one would have looked right.
+            const replaced = compact !== null ? Buffer.byteLength(compact, 'utf-8') : bodyBytes;
+            const savedBytes = Math.max(0, replaced - tree.treeBytes);
+            // `marker=` carries the authoring signal the merge would otherwise bury: an unusable slice is a fixable marker placement, a missing one is a skill that never opted in, and both now land under the same kind.
+            recordStat('skill_heading_tree_inlined', savedBytes, savedTokensFromBytes(savedBytes), undefined, 'skill=' + skillName + ' marker=' + (compact !== null ? 'unusable' : 'none'));
+            return denyOutput(
+              'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes)' +
+                (compact !== null ? ', and its compact slice is too large to inline; ' : ' with no compact slice; ') + tree.phrase +
+                ' Use `token-goat skill-section ' + skillName + ' \'<heading>\'` to load a specific section' +
+                (compact !== null ? ', `token-goat skill-body ' + skillName + ' --compact` to load the compact slice' : '') +
+                ', or `token-goat skill-body ' + skillName + '` for the full body.\n\n' +
+                fenceUntrustedFileContent(tree.sectionsList),
+            );
+          }
+          if (compact !== null) {
+            // Too little structure to map and a slice too large to inline: the pointer is all that is left, and it is still better than the whole body. Without a marker this falls through to the normal load instead, exactly as before -- there is nothing to point at.
+            recordStat('skill_oversized_first_load');
+            return denyOutput(
+              'Skill `' + skillName + '` is large (' + bodyBytes +
+                ' bytes) and has a compact slice available. Use `token-goat skill-section ' + skillName +
+                ' \'<heading>\'` to load a specific section, `token-goat skill-body ' + skillName +
+                ' --compact` to load the compact slice, or `token-goat skill-body ' + skillName + '` for the full body.',
+            );
           }
         }
       } catch {

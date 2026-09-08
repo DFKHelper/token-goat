@@ -31,6 +31,8 @@ import {
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { makeHookEvent } from './helpers/hook-event.js';
 import { summarize } from '../src/stats.js';
+import { getDb } from '../src/db.js';
+import { dataDir } from '../src/constants.js';
 import { PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -540,15 +542,13 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
     expect(out.hookType).toBe('pass');
   });
 
-  it('(d) an oversized skill WITH a compact marker is unaffected by the heading-tree fallback, even when its detail section has plenty of headings', async () => {
+  it('(d) an oversized skill whose compact slice is small enough to inline takes that path, not the heading tree, even when its detail section has plenty of headings', async () => {
     const skillName = 'heading-tree-marker-unaffected';
     const skillDir = path.join(sourceDir, skillName);
     await fs.mkdir(skillDir, { recursive: true });
     const compact = 'Compact summary.';
     const paragraph = 'p'.repeat(1200);
-    // Same shape of detail as fixture (a) -- enough headings to satisfy the tree gate on its
-    // own -- but with a marker present, so the existing compact-inline/pointer path must own
-    // this deny and the new heading-tree branch must never run at all.
+    // Same shape of detail as fixture (a) -- enough headings to satisfy the tree gate on its own -- but behind a 16-byte slice that clears the inline ratio comfortably. Inlining the slice beats mapping the body, so the tree must not run here. This is specifically NOT the claim that a marker suppresses the tree: a slice too large to inline DOES get one, which is the parity case at the end of this file.
     const detail = Array.from({ length: 8 }, (_, i) => `## Section ${i}\n${paragraph}`).join('\n\n');
     const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
@@ -618,5 +618,123 @@ describe('preSkillHandler — heading-tree message states the true total when th
 
     expect(underCapOut.message).toContain('its heading tree (8 headings) is inlined below');
     expect(underCapOut.message).not.toContain('reachable only through');
+  });
+});
+
+
+// HAND-DERIVED fixtures: each body is built from the thresholds the production code checks
+// (OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES, the compactBytes * 2 <= bodyBytes inline ratio,
+// OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO), never read off preSkillHandler.
+// The marker POSITION is CAPTURE-shaped: three skills installed on the machine this was written on
+// carry <!-- COMPACT_END --> at 97%, 97% and 62% of their body, which is the shape that lands here.
+describe('preSkillHandler -- an oversized skill whose compact slice is too large to inline still gets a map', () => {
+  /** 8 headings with 1200-byte paragraphs, and the marker placed so the slice is ~97% of the body: past the inline ratio, so this is the arm that used to hand back a bare pointer. */
+  function lateMarkerBody(): string {
+    const paragraph = 'p'.repeat(1200);
+    const sections = Array.from({ length: 8 }, (_, i) => '## Section ' + i + String.fromCharCode(10) + paragraph).join(String.fromCharCode(10, 10));
+    return sections + String.fromCharCode(10) + '<!-- COMPACT_END -->' + String.fromCharCode(10) + 'trailing note';
+  }
+
+  /** Newest detail string for a stat kind. summarize() aggregates and drops `detail`, where the marker provenance lives. */
+  function latestDetail(kind: string): string {
+    const db = getDb(path.join(dataDir(), 'global.db'));
+    const row = db.prepare('select detail from stats where kind = ? order by id desc limit 1').get(kind) as { detail: string | null } | undefined;
+    return row?.detail ?? '';
+  }
+
+  async function installSkillBody(skillName: string, body: string): Promise<number> {
+    const skillDir = path.join(sourceDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+    return Buffer.byteLength(body, 'utf-8');
+  }
+
+  // Pre-fix this returned 'is large (N bytes) and has a compact slice available. Use `token-goat
+  // skill-section <name> `<heading>` ...' -- a pointer naming a command whose one required argument
+  // the deny never supplied, so recovering the heading list cost a separate call the handler had
+  // every byte needed to answer. It is the single most-taken branch on this surface.
+  it('inlines the heading tree rather than naming skill-section without ever saying what the headings are', async () => {
+    const body = lateMarkerBody();
+    const bodyBytes = await installSkillBody('late-marker-tree', body);
+
+    const out = await preSkillHandler(skillPreEvent('late-marker-tree', 'sess-late-marker'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType !== 'deny' || !out.message) return;
+
+    // The headings themselves, which is the whole point: skill-section is unusable without them.
+    expect(out.message).toContain('Section 0');
+    expect(out.message).toContain('Section 7');
+    // Anti-vacuity: a branch that regressed to handing back the body would still contain every heading. The replacement has to be materially smaller than what it replaced.
+    expect(out.message.length).toBeLessThan(bodyBytes * 0.5);
+    // The slice is still reachable -- it exists, it is just too big to inline, so the pointer to it stays.
+    expect(out.message).toContain('--compact');
+    expect(out.message).toContain('too large to inline');
+  });
+
+  // The load-bearing invariant, and the one the bug inverted: a marker in the wrong place used to
+  // be strictly worse than no marker at all, because only the no-marker arm reached the tree.
+  it('gives a badly-placed marker the same map a skill with no marker gets', async () => {
+    const withMarker = lateMarkerBody();
+    const withoutMarker = withMarker.slice(0, withMarker.indexOf('<!-- COMPACT_END -->'));
+    await installSkillBody('parity-with-marker', withMarker);
+    await installSkillBody('parity-no-marker', withoutMarker);
+
+    const marked = await preSkillHandler(skillPreEvent('parity-with-marker', 'sess-parity-a'));
+    const markedDetail = latestDetail('skill_heading_tree_inlined');
+    const bare = await preSkillHandler(skillPreEvent('parity-no-marker', 'sess-parity-b'));
+    const bareDetail = latestDetail('skill_heading_tree_inlined');
+
+    expect(marked.hookType).toBe('deny');
+    expect(bare.hookType).toBe('deny');
+    if (marked.hookType !== 'deny' || bare.hookType !== 'deny' || !marked.message || !bare.message) return;
+    // Both arms deliver the same eight headings. Compared as a set rather than as whole strings: the two messages differ on purpose in how they describe the slice, and pinning that prose here would make every future wording change a failure in the wrong file.
+    const headingsOf = (m: string): string[] => (m.match(/Section \d/g) ?? []).sort();
+    expect(headingsOf(marked.message)).toEqual(headingsOf(bare.message));
+    expect(headingsOf(marked.message).length).toBe(8);
+    // Same kind, same credit, and the detail keeps the authoring signal the merge would otherwise bury: 'unusable' is a fixable marker placement, 'none' is a skill that never opted in.
+    expect(markedDetail).toContain('marker=unusable');
+    expect(bareDetail).toContain('marker=none');
+  });
+
+  // The credit has to price the counterfactual this arm actually had. The body was never going to
+  // be delivered here -- the pointer deny already stopped it -- so crediting body-minus-tree would
+  // book bytes nothing was ever going to send. The marker sits at ~60% in this fixture precisely so
+  // the two candidate numbers are far apart; on a real skill the marker sits near the end and they
+  // land within a few percent of each other, which is what would have made the wrong one look right.
+  it('credits the slice the old pointer named, not the body that was already being withheld', async () => {
+    const paragraph = 'p'.repeat(1200);
+    const sections = Array.from({ length: 8 }, (_, i) => '## Section ' + i + String.fromCharCode(10) + paragraph);
+    const slice = sections.slice(0, 5).join(String.fromCharCode(10, 10));
+    const body = slice + String.fromCharCode(10) + '<!-- COMPACT_END -->' + String.fromCharCode(10) + sections.slice(5).join(String.fromCharCode(10, 10));
+    const bodyBytes = await installSkillBody('credit-counterfactual', body);
+    const sliceBytes = Buffer.byteLength(slice, 'utf-8');
+    // Past the inline ratio (so this takes the tree arm) but well short of the whole body (so the two counterfactuals are distinguishable).
+    expect(sliceBytes * 2).toBeGreaterThan(bodyBytes);
+    expect(sliceBytes).toBeLessThan(bodyBytes * 0.8);
+
+    const out = await preSkillHandler(skillPreEvent('credit-counterfactual', 'sess-credit'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType !== 'deny' || !out.message) return;
+
+    const db = getDb(path.join(dataDir(), 'global.db'));
+    const row = db.prepare("select bytes_saved from stats where kind = 'skill_heading_tree_inlined' order by id desc limit 1").get() as { bytes_saved: number } | undefined;
+    const credited = row?.bytes_saved ?? 0;
+    expect(credited).toBeGreaterThan(0);
+    // The mutation-killer: the credit can never exceed the slice the pointer named. The body-shaped number this replaced is bodyBytes minus the same tree, which on this fixture is over 9 KB against a 6 KB slice, so it fails this line outright.
+    expect(credited).toBeLessThanOrEqual(sliceBytes);
+    // And it is the slice minus a small tree, not some unrelated smaller number.
+    expect(credited).toBeGreaterThan(sliceBytes * 0.9);
+  });
+
+  // Guards the fix against over-reach: a body with nothing to map must still fall back to the
+  // pointer, because a tree of one heading is not worth the round trip.
+  it('still falls back to the bare pointer when the body has too little structure to map', async () => {
+    await installSkillBody('late-marker-flat', 'x'.repeat(25_000) + String.fromCharCode(10) + '<!-- COMPACT_END -->' + String.fromCharCode(10) + 'y'.repeat(7000));
+
+    const out = await preSkillHandler(skillPreEvent('late-marker-flat', 'sess-late-flat'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType !== 'deny' || !out.message) return;
+    expect(out.message).toContain('has a compact slice available');
+    expect(out.message).not.toContain('heading tree');
   });
 });
