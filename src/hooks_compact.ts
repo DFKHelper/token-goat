@@ -366,7 +366,7 @@ function buildMemEpochSection(): string[] {
  * On Claude Code this hook's stdout reaches that model as `customInstructions`, so the manifest is
  * addressed to a reader rather than filed as an attachment -- see EVENTS_WITH_RAW_STDOUT_CONTEXT in
  * hook_registry.ts for how that was established and why it is scoped to one harness. {@link
- * MANIFEST_PREAMBLE} is what turns a block of facts into something a summariser can act on.
+ * MANIFEST_PREAMBLE} is what turns a block of facts into something a summarizer can act on.
  *
  * Returns `pass` (no-op) when `compact_assist.enabled` is off -- the config field is fully
  * wired through TOML parsing/validation/env-override (TOKEN_GOAT_COMPACT_ASSIST) and `config
@@ -375,22 +375,50 @@ function buildMemEpochSection(): string[] {
  * even for an otherwise empty session (the counts confirm nothing was dropped).
  */
 /**
- * One line of framing in front of the manifest, addressed to whoever writes the compaction summary.
+ * Framing in front of the manifest, addressed to whoever writes the compaction summary.
  *
- * Deliberately asks for preservation and not for brevity. A shorter summary is the larger prize --
- * summaries measured on this machine average about 21 KB each -- but the summary is the only thing
- * the next turn has, and trading its completeness for tokens is a bad trade to make on a user's
- * behalf without being asked. Naming the paths as the things to keep verbatim is the part that is
- * safe: it costs nothing and it protects exactly the handles a surgical read needs afterwards.
+ * Reaches the summarizer as raw `customInstructions`: `hook_registry.ts` lists `pre_compact` in
+ * EVENTS_WITH_RAW_STDOUT_CONTEXT, so this text is handed over unwrapped rather than rendered as a
+ * tool result. That is the only lever token-goat holds on the compaction channel.
+ *
+ * An earlier revision asked for preservation and deliberately not for brevity, reasoning that
+ * trading a summary's completeness for tokens was a bad trade to make on a user's behalf without
+ * being asked. The budget below exists because the user asked. It does not replace that reasoning:
+ * preservation stays the first instruction, the budget is a target rather than a cap, and
+ * {@link BUDGET_ESCALATION_MARKER} lets a session that genuinely cannot fit exceed it on the
+ * record instead of silently dropping state.
  */
 const MANIFEST_PREAMBLE =
   'When summarizing this session, keep the file paths and symbol names below exactly as written -- they are the handles the next turn needs to resume work. Do not paraphrase them into prose.'
+
+/**
+ * Opening token a summary uses to declare it exceeded its budget on purpose.
+ *
+ * One constant for both voices: {@link summaryBudgetDirective} asks for it and
+ * {@link postCompactHandler} counts it. Two literals would let the emitter drift from the
+ * detector, and that failure is silent -- every escalation would read as an ordinary overrun.
+ */
+export const BUDGET_ESCALATION_MARKER = 'TG-BUDGET-ESCALATION:'
+
+/**
+ * The length target appended to {@link MANIFEST_PREAMBLE}, or an empty string when budgeting is off.
+ *
+ * Measured before it was chosen: 847 summaries over 7 days on the machine this was built on ran
+ * 24.56 MB in total, p50 26,240 characters, max 145,587. A 24,000 target binds 504 of those 847.
+ * The trim that implies is a ceiling on the mechanism's reach and never a prediction -- whether a
+ * summarizer honors a length request in `customInstructions` is exactly what the `budget=` and
+ * `over=` fields recorded by {@link postCompactHandler} exist to answer.
+ */
+export function summaryBudgetDirective(budgetChars: number): string {
+  if (budgetChars <= 0) return ''
+  return ` Aim for at most ${budgetChars} characters. Prefer a shorter summary that keeps every path, symbol, command and decision over a longer one that reproduces tool output verbatim: cite the recall id (\`token-goat bash-output <id> --full\`) rather than quoting the output again. If this session genuinely cannot be summarized within that target without losing state the next turn needs, exceed it and open the summary with a single line reading \`${BUDGET_ESCALATION_MARKER} <one-sentence reason>\`.`
+}
 
 export function preCompactHandler(event: HookEvent): HookOutput {
   // Order is load-bearing: buildManifest reads getSessionFiles(), and markCompacted stamps the epoch that makes every one of those reads count as no-longer-in-context. Stamping first would not corrupt the manifest today (it reads readCount/wasEdited directly rather than going through wasFileReadThisSession), but the dependency is real -- any future manifest input that asks "is this still in context" would silently render empty. Build first, stamp second.
   // The stamp is NOT gated on compact_assist.enabled: compaction happens whether or not we inject a manifest, so the read ledger must be invalidated either way. Gating it would leave hooks_read.ts serving diffs and "unchanged" denials against content the model can no longer see, for every user who turned the manifest off.
   const out = loadConfig().compact_assist.enabled
-    ? contextOutput(`${MANIFEST_PREAMBLE}\n\n${buildManifest(event.sessionId, getCwd(event))}`)
+    ? contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(loadConfig().compact_assist.summary_budget_chars)}\n\n${buildManifest(event.sessionId, getCwd(event))}`)
     : passOutput()
   markCompacted()
   return out
@@ -400,10 +428,15 @@ registerHook('pre_compact', preCompactHandler)
 
 /**
  * Distinct path-shaped tokens to sample from the manifest when checking whether it survived
- * compaction. Small on purpose: the check is a canary, not a census, and each candidate costs
- * one substring scan over a summary that averages roughly 21 KB.
+ * compaction.
+ *
+ * Was 12, which is too narrow to answer the question a summary budget raises. Twelve paths taken
+ * from the head of an insertion-ordered map sample the session's *earliest* files, so the ratio
+ * can read healthy while later state evaporates, and on a session that compacts hundreds of times
+ * that loss compounds invisibly. 64 covers a typical session's whole touched set; the cost is 64
+ * substring scans over a ~26 KB summary, once per compaction.
  */
-const MANIFEST_SURVIVAL_SAMPLE = 12
+const MANIFEST_SURVIVAL_SAMPLE = 64
 
 /**
  * Paths this session touched, in the same order and from the same source {@link buildManifest}
@@ -471,12 +504,16 @@ export function postCompactHandler(event: HookEvent): HookOutput {
   const haystack = foldPath(summary)
   const survived = sample.filter((p) => haystack.includes(foldPath(p))).length
   const trigger = typeof event.raw['trigger'] === 'string' ? event.raw['trigger'] : 'unknown'
+  const budget = loadConfig().compact_assist.summary_budget_chars
+  // Characters against characters: the directive asks for a character count, so a summary carrying non-ASCII would overrun a byte comparison it never actually broke. `bytes` stays byte-length because the token estimate is derived from it.
+  const over = budget > 0 && summary.length > budget ? 1 : 0
+  const escalated = summary.includes(BUDGET_ESCALATION_MARKER) ? 1 : 0
   recordStat(
     'compact_summary',
     0,
     0,
     undefined,
-    `trigger=${trigger} bytes=${bytes} est_tokens=${savedTokensFromBytes(bytes)} manifest_paths=${survived}/${sample.length}`,
+    `trigger=${trigger} bytes=${bytes} est_tokens=${savedTokensFromBytes(bytes)} manifest_paths=${survived}/${sample.length} budget=${budget} over=${over} escalated=${escalated}`,
   )
   return passOutput()
 }

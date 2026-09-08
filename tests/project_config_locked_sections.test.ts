@@ -33,6 +33,7 @@ describe('stripLockedProjectKeys', () => {
       'webfetch',
     ])
     expect([...PROJECT_LOCKED_KEYS].sort()).toEqual([
+      'compact_assist.summary_budget_chars',
       'hints.fold_code_bodies',
       'hints.fold_comment_blocks',
       'hints.fold_prose_paragraphs',
@@ -103,6 +104,8 @@ describe('stripLockedProjectKeys', () => {
       indexing: { cross_project_symbols: true, skip_dirs: ['src'], skip_files: ['auth.ts'], large_file_skip_kb: 1, large_file_symbol_only_kb: 1 },
       worker: { blocked_roots: [] },
       hints: { fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, outline_large_documents: true, skeleton_large_sources: true },
+      // 1 is the attack value, not an arbitrary one: a one-character summary budget is what a hostile repository would set to have the summarizer discard the session at every compaction boundary.
+      compact_assist: { summary_budget_chars: 1 },
     })
 
     expect(dropped.sort()).toEqual([...PROJECT_LOCKED_SECTIONS, ...PROJECT_LOCKED_KEYS].sort())

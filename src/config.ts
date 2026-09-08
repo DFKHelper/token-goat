@@ -28,6 +28,7 @@ export interface CompactAssistConfig {
   wide_session_threshold: number
   orchestrator_commit_threshold: number
   max_manifest_chars: number
+  summary_budget_chars: number
   harness: string
 }
 
@@ -366,6 +367,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     wide_session_threshold: 15,
     orchestrator_commit_threshold: 5,
     max_manifest_chars: 1600,
+    summary_budget_chars: 24000,
     harness: 'auto',
   },
   bash_compress: {
@@ -687,6 +689,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'compact_assist.wide_session_threshold': {min: 1, max: 10000},
   'compact_assist.orchestrator_commit_threshold': {min: 1, max: 10000},
   'compact_assist.max_manifest_chars': {min: 0, max: 16000},
+  'compact_assist.summary_budget_chars': {min: 0, max: 200_000},
   'bash_compress.max_lines': {min: 50, max: 100_000},
   'bash_compress.max_bytes': {min: 1024, max: 16 * 1024 * 1024},
   'bash_compress.timeout_seconds': {min: 5, max: 7200},
@@ -1011,6 +1014,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'hints.outline_large_documents',
   // Same reasoning one file type over: a repository must not be able to decide, from its own checked-in config, how much of its source a reviewing agent is shown -- neither by turning the skeleton off to bury a declaration in a wall of bodies, nor by leaving it on to withhold the bodies themselves. The user's global config and TOKEN_GOAT_SKELETON_LARGE_SOURCES still set it freely.
   'hints.skeleton_large_sources',
+  // The widest blast radius of anything on this list. The fold keys above decide how much of a file an agent is shown; this decides how much of the whole session survives compaction. A checked-in `.token-goat.toml` setting it to a handful of characters would ask the summarizer to discard the session's accumulated state at every compaction boundary, and the loss is silent -- what comes back is a well-formed short summary, not an error. The user's own global config still sets it freely; only the project-supplied layer is refused.
+  'compact_assist.summary_budget_chars',
   'image_shrink.max_image_pixels',
   // The same principle as the four fold keys above, applied one layer earlier and with a wider blast radius: those decide how much of an indexed file is shown, these decide whether it is indexed at all. A checked-in `.token-goat.toml` adding its own attack surface to `skip_dirs` -- or dropping `large_file_skip_kb` to a handful of kilobytes -- removes those files from `symbol`, `read`, `refs`, `semantic` and `graph` for a reviewing agent, and every one of them then answers "not found" in the same words it uses for a name that genuinely does not exist. There is no notice to read, because from the index's point of view nothing was hidden. The user's own global config still sets all three freely; only the project-supplied layer is refused.
   'indexing.skip_dirs',
@@ -1550,6 +1555,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   ca.wide_session_threshold = validatedInt(ca_raw['wide_session_threshold'], ca.wide_session_threshold, ...boundsOf('compact_assist.wide_session_threshold'))
   ca.orchestrator_commit_threshold = validatedInt(ca_raw['orchestrator_commit_threshold'], ca.orchestrator_commit_threshold, ...boundsOf('compact_assist.orchestrator_commit_threshold'))
   ca.max_manifest_chars = validatedInt(ca_raw['max_manifest_chars'], ca.max_manifest_chars, ...boundsOf('compact_assist.max_manifest_chars'))
+  ca.summary_budget_chars = validatedInt(ca_raw['summary_budget_chars'], ca.summary_budget_chars, ...boundsOf('compact_assist.summary_budget_chars'))
   ca.harness = validatedStr(ca_raw['harness'], ca.harness)
   // env overrides
   ca.enabled = envBool('TOKEN_GOAT_COMPACT_ASSIST', envBool('TOKENWISE_COMPACT_ASSIST', ca.enabled))
@@ -2026,6 +2032,7 @@ export function saveConfig(config: Config): void {
       wide_session_threshold: ca.wide_session_threshold,
       orchestrator_commit_threshold: ca.orchestrator_commit_threshold,
       max_manifest_chars: ca.max_manifest_chars,
+      summary_budget_chars: ca.summary_budget_chars,
       harness: ca.harness,
     },
     bash_compress: {

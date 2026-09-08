@@ -188,12 +188,13 @@ describe('postCompactHandler', () => {
   })
 
   it('caps how many paths it samples, so a session with hundreds of files does not scan the summary hundreds of times', () => {
-    for (let i = 0; i < 40; i++) {
+    // Deliberately more files than the cap. The count tracks MANIFEST_SURVIVAL_SAMPLE in src/hooks_compact.ts: at or below it this case stops exercising a cap at all and silently becomes an assertion that the session had exactly this many files.
+    for (let i = 0; i < 96; i++) {
       recordFileRead(makeTmpFile(`sampled-${i}.ts`))
     }
     postCompactHandler(postCompactEvent('a summary naming nothing in particular'))
     const detail = latestCompactSummaryRow()?.detail ?? ''
     const total = Number(/manifest_paths=\d+\/(\d+)/.exec(detail)?.[1])
-    expect(total).toBe(12)
+    expect(total).toBe(64)
   })
 })

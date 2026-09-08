@@ -4,6 +4,18 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **The pre-compaction manifest now carries a length target for the summary itself.** `PreCompact` stdout reaches the summarizer as raw `customInstructions`, which makes the summary the one part of the compaction channel token-goat can speak to, and until now it only asked for file paths to be kept verbatim. A new `compact_assist.summary_budget_chars` (default 24000, 0 turns it off) appends a target and asks for recall ids in place of quoted tool output. Measured over 847 real compaction summaries: 24.56 MB in total, half of them past 26,240 characters, the largest 145,587. The budget is a target rather than a cap: a session that genuinely cannot fit is asked to exceed it and open with `TG-BUDGET-ESCALATION: <reason>`, and `token-goat stats` records `budget`, `over` and `escalated` per compaction so the escape can be counted rather than assumed. Added in [src/hooks_compact.ts](src/hooks_compact.ts).
+
+### Changed
+
+- **The manifest-survival canary samples 64 paths instead of 12.** The ratio in each `compact_summary` row says how much of the manifest survived compaction, and twelve paths drawn from the head of an insertion-ordered map sampled only a session's earliest files, so the number could read healthy while later state fell out. That gap matters more now that a summary carries a length target. Changed in [src/hooks_compact.ts](src/hooks_compact.ts).
+
+### Security
+
+- **A repository cannot set your compaction budget.** `compact_assist.summary_budget_chars` is refused from a checked-in `.token-goat.toml`, joining the project-locked keys. It has the widest reach of anything on that list: the fold keys decide how much of a file an agent is shown, this one decides how much of a whole session survives, and a budget of a few characters would come back as a well-formed short summary rather than an error. Your own global config still sets it freely. Changed in [src/config.ts](src/config.ts).
+
 ## [2.9.6] - 2026-09-08
 
 ### Security
