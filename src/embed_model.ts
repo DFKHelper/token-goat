@@ -128,7 +128,9 @@ async function copyFromSharedCache(shared: string, file: ModelFile, target: stri
   const source = path.join(shared, file.name)
   const temp = `${target}.${process.pid}.shared`
   try {
-    if (!fs.existsSync(source)) return false
+    // lstat rather than exists, and checked before the copy rather than after: the digest can only judge bytes that have already been copied, so it is no help against a source that never finishes producing them. A FIFO here would block the copy forever and a symlink to an endless device would fill the disk under the model directory. The download path has bounded its writes against `file.bytes` all along; this makes the two agree.
+    const info = fs.lstatSync(source, { throwIfNoEntry: false })
+    if (!info?.isFile() || info.size !== file.bytes) return false
     fs.copyFileSync(source, temp)
     if ((await sha256Of(temp)) !== file.sha256) {
       fs.rmSync(temp, { force: true, maxRetries: 20, retryDelay: 25 })
@@ -153,13 +155,18 @@ async function copyFromSharedCache(shared: string, file: ModelFile, target: stri
 function publishToSharedCache(shared: string, file: ModelFile, target: string): void {
   const destination = path.join(shared, file.name)
   const temp = `${destination}.${process.pid}.partial`
+  let created = false
   try {
     if (fs.existsSync(destination)) return
     fs.mkdirSync(path.dirname(destination), { recursive: true })
-    fs.copyFileSync(target, temp)
+    // COPYFILE_EXCL, because this is the one write that lands in a directory the operator named and may share. Without it the copy opens the temp name O_CREAT|O_TRUNC and follows a symlink planted there, so anyone who can write this directory can have the model bytes truncate any file the operator can write; measured, not assumed. With it the copy fails EEXIST and publishing is skipped, which costs a later download and nothing else.
+    fs.copyFileSync(target, temp, fs.constants.COPYFILE_EXCL)
+    created = true
     // Rename last, so a reader never sees a partially written file under the real name however many workers publish at once.
     fs.renameSync(temp, destination)
   } catch {
+    // Gated on having created it, because the copy above refuses a name it did not create: a failure before that point means the thing at this name is somebody else's, and cleaning up after ourselves must not mean deleting it.
+    if (!created) return
     try {
       fs.rmSync(temp, { force: true, maxRetries: 20, retryDelay: 25 })
     } catch {

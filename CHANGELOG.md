@@ -4,6 +4,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.10] - 2026-09-09
+
+### Security
+
+- **The shared model cache now treats its own directory as somebody else's.** `TOKEN_GOAT_MODEL_CACHE_DIR` shipped in 2.9.9 with a verified read path and an unguarded write path, which a review of that release found and a local reproduction confirmed. Publishing a downloaded file copied it to a temporary name without asking whether anything was already there, so on a host where another account can write that directory, a symbolic link left at the temporary name would receive the model bytes and whatever it pointed at would be truncated. The copy is now exclusive: it fails rather than write through a name it did not create, and the cleanup afterwards removes only a file it did create, where before it deleted whatever it found. Reading is bounded too. An entry is passed over unless it is a plain file of the exact expected size, checked from its metadata before a byte moves, because a digest can only judge bytes that have already been copied and is therefore no answer to an entry that never stops producing them or is not a file at all. Both cases carry a test that fails against the 2.9.9 code. Changed in [src/embed_model.ts](src/embed_model.ts).
+
+### Fixed
+
+- **A workflow file that names the `runner` context outside a step is rejected whole.** The 2.9.9 CI change set an environment variable from `${{ runner.temp }}` in a job-level `env:` block. That context exists only inside a step, so GitHub refused the file and the run created no jobs at all, which reports as neither pass nor fail. The value is exported into `$GITHUB_ENV` from a step instead. A guard reads `jobs.<job_id>.env` and `jobs.<job_id>.if` across every workflow and refuses `runner`, `steps` and `job` there, so the next one fails locally instead of after a push. Changed in [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
 ## [2.9.9] - 2026-09-09
 
 ### Fixed

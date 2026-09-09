@@ -184,6 +184,112 @@ describe('the shared model cache is verified, not trusted', () => {
   })
 })
 
+/**
+ * The shared directory is the one place these functions touch that the operator names and may
+ * share, so it is the one place another principal's file can be waiting. A security review of the
+ * 2.9.9 code found two ways that mattered, both confirmed by running them rather than by reading:
+ * a copy that followed a symlink planted at the temp name and overwrote its target with the model
+ * bytes, and a read path with no bound on what it was willing to copy.
+ *
+ * PROVENANCE: HAND-DERIVED. Both cases are constructed from the documented behaviour of the
+ * syscalls, not from what these functions do: `open` with `O_CREAT|O_TRUNC` and no `O_NOFOLLOW`
+ * follows a symlink, `O_EXCL` refuses one, and a `stat` size is knowable without running the copy.
+ * The symlink case is skipped where the platform will not create one unprivileged, which is
+ * ordinary Windows: the code path it guards is the same on every platform.
+ */
+describe('the shared model cache does not trust the directory it writes into', () => {
+  /** Windows refuses symlink creation without Developer Mode or elevation; the assertion is not meaningful there. */
+  function canSymlink(): boolean {
+    const probe = path.join(tmp, 'symlink-probe')
+    try {
+      fs.symlinkSync(path.join(tmp, 'nothing'), probe)
+      fs.unlinkSync(probe)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  it('refuses to publish through a symlink planted at its temp name', async () => {
+    enableSharedCache()
+    if (!canSymlink()) return
+
+    const victim = path.join(tmp, 'victim.txt')
+    fs.writeFileSync(victim, 'PRECIOUS')
+    // The temp name is derived, not guessed: the pid is readable from the process table for as long as a 32 MB download takes.
+    const planted = `${sharedPath('tokenizer.json')}.${process.pid}.partial`
+    fs.mkdirSync(path.dirname(planted), { recursive: true })
+    fs.symlinkSync(victim, planted)
+
+    stubFetch((url) => (url.endsWith('tokenizer.json') ? bodyResponse(REAL_TOKENIZER) : bodyResponse(Buffer.alloc(0))))
+    await expect(ensureModelFiles()).rejects.toThrow()
+
+    expect(fs.readFileSync(victim, 'utf8'), 'the model bytes went through the link and truncated the file').toBe(
+      'PRECIOUS',
+    )
+    // The model still had to land where the caller asked for it: refusing to publish is not refusing to work.
+    expect(fs.readFileSync(cachedPath('tokenizer.json')).equals(REAL_TOKENIZER)).toBe(true)
+  })
+
+  it('leaves a file already sitting at its temp name alone rather than overwriting it', async () => {
+    enableSharedCache()
+    const occupied = `${sharedPath('tokenizer.json')}.${process.pid}.partial`
+    fs.mkdirSync(path.dirname(occupied), { recursive: true })
+    fs.writeFileSync(occupied, 'SOMEONE ELSE')
+
+    stubFetch((url) => (url.endsWith('tokenizer.json') ? bodyResponse(REAL_TOKENIZER) : bodyResponse(Buffer.alloc(0))))
+    await expect(ensureModelFiles()).rejects.toThrow()
+
+    // Portable stand-in for the symlink case above: both are the same refusal to write to a name it did not create.
+    expect(fs.readFileSync(occupied, 'utf8')).toBe('SOMEONE ELSE')
+    expect(fs.readFileSync(cachedPath('tokenizer.json')).equals(REAL_TOKENIZER)).toBe(true)
+  })
+
+  it('will not copy a cached entry that is not a plain file of the expected size', async () => {
+    enableSharedCache()
+    // Right name, wrong size. A digest cannot rule this out ahead of the copy, which is the point: the check has to happen before any bytes move, or a source that never ends is never judged at all.
+    const wrongSize = Buffer.alloc(REAL_TOKENIZER.length + 1, 0x41)
+    writeShared('tokenizer.json', wrongSize)
+    const { urls } = stubFetch((url) =>
+      url.endsWith('tokenizer.json') ? bodyResponse(REAL_TOKENIZER) : bodyResponse(Buffer.alloc(0)),
+    )
+
+    await expect(ensureModelFiles()).rejects.toThrow()
+
+    expect(urls[0], 'a wrong-sized entry must send the run to the network').toMatch(/tokenizer\.json$/)
+    expect(fs.readFileSync(cachedPath('tokenizer.json')).equals(REAL_TOKENIZER)).toBe(true)
+
+    // The load-bearing half, and the reason the assertion above is not enough on its own: the digest check
+    // already sent a wrong-sized file to the network before any of this existed, so "it refetched" is equally
+    // true of the code without the size bound. What is only true with it is that nothing was read. Reading the
+    // bytes is what leads to the eviction below, so the entry surviving is the visible shape of the copy that
+    // did not happen.
+    expect(
+      fs.readFileSync(sharedPath('tokenizer.json')).equals(wrongSize),
+      'a size mismatch is judged from stat alone, so the entry is neither copied nor evicted',
+    ).toBe(true)
+  })
+
+  it('will not copy a cached entry that is a symlink, however good its target looks', async () => {
+    enableSharedCache()
+    if (!canSymlink()) return
+
+    const real = path.join(tmp, 'real-tokenizer.json')
+    fs.writeFileSync(real, REAL_TOKENIZER)
+    const link = sharedPath('tokenizer.json')
+    fs.mkdirSync(path.dirname(link), { recursive: true })
+    fs.symlinkSync(real, link)
+
+    const { urls } = stubFetch((url) =>
+      url.endsWith('tokenizer.json') ? bodyResponse(REAL_TOKENIZER) : bodyResponse(Buffer.alloc(0)),
+    )
+    await expect(ensureModelFiles()).rejects.toThrow()
+
+    // The bytes behind this link are correct, so a digest check would have accepted it. What the link could have been instead is the reason not to follow it.
+    expect(urls[0]).toMatch(/tokenizer\.json$/)
+  })
+})
+
 describe('the shared model cache is filled by the downloads it will later replace', () => {
   it('publishes a freshly downloaded file so the next run copies instead of fetching', async () => {
     enableSharedCache()
