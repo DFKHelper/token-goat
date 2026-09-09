@@ -183,6 +183,7 @@ describe('every function on the context channel has been adjudicated', () => {
       ['hooks_read.ts', 'displaySafePath(path.basename(normalized))'],
       ['hooks_read.ts', 'displaySafePath(match[1]!)'],
       ['hooks_common.ts', "displaySafeText(typeof toolInput['pattern']"],
+      ['hooks_glob.ts', 'displaySafeText(pattern)'],
     ] as const) {
       expect(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'), `${file} no longer contains ${call}`).toContain(call)
     }
