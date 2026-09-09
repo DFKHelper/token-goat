@@ -758,7 +758,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordActualRead(event, normalized)
         const fullSize = statSize(normalized) ?? 0
         const savedBytes = counterfactualCredit(fullSize, compactBody.length)
-        recordStat('session_hint', savedBytes, savedTokensFromBytes(savedBytes))
+        recordStat('session_hint', savedBytes, savedTokensFromBytes(savedBytes), undefined, 'stable-doc-compact')
         return denyOutput(
           'Serving the extractive compact sidecar in place of the full file ' +
           '(source unchanged since the last `compact-doc` build):\n\n' +
@@ -797,7 +797,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (savedBytes >= NB_STRIP_MIN_SAVINGS) {
         recordActualRead(event, normalized)
         const nbCredit = counterfactualCredit(rawBytes.length, sidecarContent.length)
-        recordStat('session_hint', nbCredit, savedTokensFromBytes(nbCredit))
+        recordStat('session_hint', nbCredit, savedTokensFromBytes(nbCredit), undefined, 'notebook-strip')
         return denyOutput(
           'Serving the output-stripped notebook in place of the full file ' +
           '(code-cell outputs and execution counts removed; source and metadata preserved):\n\n' +
@@ -1059,7 +1059,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (snapDiff.kind === 'diff') {
         recordActualRead(event, normalized)
         const artifactDiffCredit = counterfactualCredit(snapDiff.currentContent.length, snapDiff.diff.length)
-        recordStat('session_hint', artifactDiffCredit, savedTokensFromBytes(artifactDiffCredit))
+        recordStat('session_hint', artifactDiffCredit, savedTokensFromBytes(artifactDiffCredit), undefined, 'artifact-snapshot-diff')
         return denyOutput(
           'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
           fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized),
@@ -1080,7 +1080,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordActualRead(event, normalized)
       if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
         const artifactDenyCredit = counterfactualCredit(outputSize)
-        recordStat('session_hint', artifactDenyCredit, savedTokensFromBytes(artifactDenyCredit))
+        recordStat('session_hint', artifactDenyCredit, savedTokensFromBytes(artifactDenyCredit), undefined, 'artifact-large-deny')
         return denyOutput(
           label + ' is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
         )
@@ -1246,14 +1246,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
-          recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
+          recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-truncated-deny')
           return denyOutput(truncatedReadDenyMessage(normalized))
         }
       }
 
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
       if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
-        recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
+        recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-doc-deny')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + shown + '::HeadingName"` to read one section.',
@@ -1281,7 +1281,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
-      recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit))
+      recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
       return denyOutput(
         shown + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
@@ -1330,7 +1330,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
       const denyCredit = counterfactualCredit(size)
-      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit))
+      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'large-file-deny')
       return denyOutput(
         shown + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
         ' ' + editAnywayHint(normalized),

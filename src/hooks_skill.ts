@@ -107,7 +107,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       // (0 bytes) and only fires on an actual load, which this deny prevents.
       const cachedBytes = await sessionOutputBodyBytes(event.sessionId, skillName);
       const denyCredit = cachedBytes !== null ? Math.min(cachedBytes, PER_FILE_COUNTERFACTUAL_CEILING) : 0;
-      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit));
+      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'skill-reload-deny');
       return denyOutput(
         'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-section ' +
           skillName + ' \'<heading>\'` to recall a section, `token-goat skill-body ' +
