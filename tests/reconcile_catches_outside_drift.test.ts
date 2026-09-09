@@ -23,7 +23,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -75,8 +75,11 @@ function dirtyQueue(): string[] {
 }
 
 beforeAll(() => {
-  projectDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-'))
   homeDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-home-'))
+})
+
+beforeEach(() => {
+  projectDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-'))
 
   for (let i = 1; i <= 6; i++) {
     writeFileSync(join(projectDir, `mod${i}.ts`), `export function mod${i}(): number {\n  return ${i}\n}\n`)
@@ -135,6 +138,8 @@ describe('reconcile', () => {
   })
 
   it('queues the drift it found, and queues nothing under --dry-run', () => {
+    writeFileSync(join(projectDir, 'drifted.ts'), 'export const drifted = 1\n')
+    spawnSync('git', ['add', '-A'], { cwd: projectDir, encoding: 'utf-8' })
     const beforeQueue = dirtyQueue().length
     const dry = json(['reconcile', '--dry-run'])
     expect(dry.enqueued, '--dry-run enqueued paths').toBe(0)
@@ -153,6 +158,9 @@ describe('reconcile', () => {
   })
 
   it('detects a file that is indexed but gone from disk', () => {
+    writeFileSync(join(projectDir, 'mod3.ts'), 'export function mod3() { return 3 }')
+    spawnSync('git', ['add', '-A'], { cwd: projectDir, encoding: 'utf-8' })
+    run(['index', '.'])
     rmSync(join(projectDir, 'mod3.ts'))
     spawnSync('git', ['add', '-A'], { cwd: projectDir, encoding: 'utf-8' })
     const r = json(['reconcile', '--dry-run'])
