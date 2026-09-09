@@ -1,5 +1,20 @@
 name: CI
-on: [push, pull_request]
+# `push` is scoped to main on purpose. With a bare `on: [push, pull_request]` a commit on a branch
+# with an open PR fires both events, so the entire suite ran twice for one commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A superseded run is wasted work that also delays the run you are waiting for: four pushes in an
+# hour meant four full suites queued against the same runner pool, and the newest one waited behind
+# three that no longer described any commit anyone cared about. Newest run per ref wins.
+# The cost is real and worth stating: an intermediate commit on main can now end without a green
+# run of its own. That is acceptable here because a release is cut from a tip that gets its own
+# full run, and it is the tip's result that gates publishing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Least privilege by default. CI only ever reads the repository; a job that needs more has to
 # ask for it explicitly, so a future step cannot quietly inherit a writable token.
