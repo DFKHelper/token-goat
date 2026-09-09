@@ -28,7 +28,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractPowerShellFileMethodRead, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractPowerShellFileMethodRead, extractPythonFileRead, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -4763,6 +4763,58 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map --compact')
+    }
+  })
+})
+
+describe('extractPythonFileRead — PowerShell here-string and multi-format support', () => {
+  it('extracts path from PowerShell here-string piped to python -', () => {
+    const cmd = "@'\nwith open(\"src/worker.py\") as f:\n  content = f.read()\n'@ | python -"
+    const r = extractPythonFileRead(cmd)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('src/worker.py')
+    expect(r?.isDoc).toBe(false)
+    expect(r?.isSql).toBe(false)
+  })
+
+  it('extracts path from PowerShell here-string piped to py -', () => {
+    const cmd = "@'\nwith open('README.md') as f:\n  text = f.read()\n'@ | py -"
+    const r = extractPythonFileRead(cmd)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('README.md')
+    expect(r?.isDoc).toBe(true)
+  })
+
+  it('extracts sql path from PowerShell here-string', () => {
+    const cmd = "@'\nwith open('schema/migration.sql') as f:\n  sql = f.read()\n'@ | python"
+    const r = extractPythonFileRead(cmd)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('schema/migration.sql')
+    expect(r?.isSql).toBe(true)
+  })
+
+  it('returns null for PowerShell here-string with write intent', () => {
+    const cmd = "@'\nwith open(\"src/out.ts\", \"w\") as f:\n  f.write(\"hello\")\n'@ | python -"
+    const r = extractPythonFileRead(cmd)
+    expect(r).toBeNull()
+  })
+
+  it('denies PowerShell here-string python read of source file with symbol read hint', () => {
+    const cmd = "@'\nwith open(\"src/worker.py\") as f:\n  content = f.read()\n'@ | python -"
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Python `open()` file reads bypass read hooks')
+      expect(result.message).toContain('token-goat read "src/worker.py::SymbolName"')
+    }
+  })
+
+  it('emits advisory contextOutput for Python reading a SQL file', () => {
+    const cmd = "python -c \"with open('db/schema.sql') as f: print(f.read())\""
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section "db/schema.sql::table_name"')
     }
   })
 })
