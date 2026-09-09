@@ -377,7 +377,8 @@ function isSourceExtension(basename: string): boolean {
 // (binary ones are never read as utf8 text before dispatch) -- single source of truth for
 // both the early large-file-gate exemption below and the universal handler further down.
 const BINARY_FILE_TYPE_EXTS = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp'])
-const TEXT_FILE_TYPE_EXTS = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv', 'vtt', 'srt'])
+// svg/xml belong here for the same reason as every other entry: dispatchFileTypeHandler routes them to handlers with their own thresholds (8 KB and 20 KB), and an extension it knows that this list does not is a handler nothing can reach below the 100 KB generic gate, which is past the point where the catch-all would have fired anyway.
+const TEXT_FILE_TYPE_EXTS = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv', 'vtt', 'srt', 'svg', 'xml'])
 const DISPATCHED_FILE_TYPE_EXTS = new Set([...BINARY_FILE_TYPE_EXTS, ...TEXT_FILE_TYPE_EXTS])
 
 function isDispatchedFileType(basename: string): boolean {
