@@ -268,6 +268,25 @@ function remapToolInput(copilotToolName, input) {
   if (idKey !== undefined && idKey in out) {
     out = Object.assign({}, out, { bash_id: out[idKey] })
   }
+  if (Array.isArray(out.view_range) && out.view_range.length >= 1) {
+    const rawStart = Number(out.view_range[0])
+    if (Number.isFinite(rawStart) && rawStart >= 1) {
+      const mapped = { offset: Math.floor(rawStart) }
+      if (out.view_range.length >= 2) {
+        const rawEnd = Number(out.view_range[1])
+        if (Number.isFinite(rawEnd) && rawEnd >= rawStart) {
+          mapped.limit = Math.floor(rawEnd - rawStart + 1)
+        }
+      }
+      out = Object.assign({}, out, mapped)
+    }
+  }
+  if ('old_str' in out && !('old_string' in out)) {
+    out = Object.assign({}, out, { old_string: out.old_str })
+  }
+  if ('new_str' in out && !('new_string' in out)) {
+    out = Object.assign({}, out, { new_string: out.new_str })
+  }
   return out
 }
 

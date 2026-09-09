@@ -199,6 +199,67 @@ function readIntToolInput(event: HookEvent, key: string): number | undefined {
   return undefined
 }
 
+export interface RequestedSliceWindow {
+  /** 1-based start line number, if requested or clamped */
+  readonly offset?: number | undefined
+  /** Number of lines requested, if bounded */
+  readonly limit?: number | undefined
+  /** Whether the tool input explicitly requested a bounded or partial window */
+  readonly isExplicitSlice: boolean
+}
+
+/**
+ * Normalizes multi-harness line window parameters across Claude Code (`offset`/`limit`),
+ * Copilot CLI (`view_range: [start, end]`), and other tools (`lines`, `range`, `start_line`/`end_line`).
+ */
+export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow {
+  const rawOffset = readIntToolInput(event, 'offset')
+  const rawLimit = readIntToolInput(event, 'limit')
+
+  if (rawOffset !== undefined || rawLimit !== undefined) {
+    return {
+      offset: rawOffset !== undefined && rawOffset >= 1 ? Math.floor(rawOffset) : 1,
+      limit: rawLimit !== undefined && rawLimit > 0 ? Math.floor(rawLimit) : undefined,
+      isExplicitSlice: true,
+    }
+  }
+
+  const rawRange = event.toolInput['view_range'] ?? event.toolInput['lines'] ?? event.toolInput['range']
+  if (Array.isArray(rawRange) && rawRange.length >= 1) {
+    const rawStart = Number(rawRange[0])
+    const startVal = Number.isFinite(rawStart) && rawStart >= 1 ? Math.floor(rawStart) : 1
+    if (rawRange.length >= 2) {
+      const rawEnd = Number(rawRange[1])
+      if (rawEnd === -1) {
+        return { offset: startVal, isExplicitSlice: true }
+      }
+      if (Number.isFinite(rawEnd) && rawEnd >= startVal) {
+        const lineCount = Math.floor(rawEnd - startVal + 1)
+        return { offset: startVal, limit: lineCount, isExplicitSlice: true }
+      }
+    }
+    return { offset: startVal, isExplicitSlice: true }
+  }
+
+  const startLine =
+    readIntToolInput(event, 'start_line') ??
+    readIntToolInput(event, 'startLine') ??
+    readIntToolInput(event, 'start')
+  const endLine =
+    readIntToolInput(event, 'end_line') ??
+    readIntToolInput(event, 'endLine') ??
+    readIntToolInput(event, 'end')
+
+  if (startLine !== undefined || endLine !== undefined) {
+    const effectiveStart = startLine !== undefined && startLine >= 1 ? Math.floor(startLine) : 1
+    const effectiveLimit =
+      endLine !== undefined && endLine >= effectiveStart ? Math.floor(endLine - effectiveStart + 1) : undefined
+    return { offset: effectiveStart, limit: effectiveLimit, isExplicitSlice: true }
+  }
+
+  return { isExplicitSlice: false }
+}
+
 /** The 1-based file line the delivered body starts at, from `tool_response.file.startLine`. Defaults to 1, which is both the whole-file case and the safe answer when the harness sends no such field: a wrong start would shift every fold span against the file it came from. */
 function readStartLine(event: HookEvent): number {
   const resp = event.raw['tool_response']
@@ -310,23 +371,22 @@ type RequestedSlice =
   | { readonly kind: 'nearSingleLine' } // content shape makes any line window meaningless regardless of what's requested
 
 /**
- * Reads `offset`/`limit` off the Read tool call (when present) and estimates the size of
- * just that slice, so a genuinely small, bounded request isn't gated on the whole file's
- * size. Only Read tool calls carry offset/limit — Grep/Glob events always resolve to
+ * Reads `offset`/`limit` (or multi-harness slice params) off the Read tool call and estimates
+ * the size of just that slice, so a genuinely small, bounded request isn't gated on the whole file's
+ * size. Only Read/view tool calls carry windowing — Grep/Glob events always resolve to
  * `unbounded` since they have no notion of a line window.
  */
 function estimateRequestedSlice(event: HookEvent, absPath: string): RequestedSlice {
-  const offset = readIntToolInput(event, 'offset')
-  const limit = readIntToolInput(event, 'limit')
+  const window = readRequestedSliceWindow(event)
   // A non-positive limit (zero or negative) has no well-defined real-world slice size: fed
   // straight into scanRequestedSlice, offset + limit <= offset makes the window close before it
   // opens, so the byte counter never advances and the very first line break trips the "window
   // closed" branch -- fabricating a trustworthy-looking {bytes: 0} instead of reporting that the
   // requested size genuinely can't be estimated. Treat it exactly like a missing limit: fall back
   // to gating on the whole file.
-  if (limit === undefined || limit <= 0) return { kind: 'unbounded' }
-  const effectiveOffset = offset !== undefined && offset >= 1 ? offset : 1
-  const scan = scanRequestedSlice(absPath, effectiveOffset, limit)
+  if (window.limit === undefined || window.limit <= 0) return { kind: 'unbounded' }
+  const effectiveOffset = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
+  const scan = scanRequestedSlice(absPath, effectiveOffset, window.limit)
   if (scan === null) return { kind: 'unbounded' }
   if (scan.nearSingleLine) return { kind: 'nearSingleLine' }
   if (scan.trustworthy) return { kind: 'bytes', bytes: scan.bytes }
@@ -746,8 +806,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // intercept below, which is the expensive full-read path this preempts.
   // Gated by [hints] stable_doc_compacts (default on).
   // Grep needs to search the doc's live content for a pattern — serving the compact sidecar instead would swap out the actual search target and skip the search entirely, so Grep is exempt from this intercept (same rationale as the count-based re-read dedup and large-file gate exemptions further below). A Read carrying offset/limit is asking for one line window, and the compact is a summary of the whole file: serving it answers a different question and silently drops the requested range. It also costs more than it saves -- a 5-line window of a 100KB doc is ~200 bytes against a ~9KB compact. Same rule the subagent-markdown deny below already applies: a read that is surgical already is left alone.
-  const compactUnrangedRead =
-    readIntToolInput(event, 'offset') === undefined && readIntToolInput(event, 'limit') === undefined
+  const compactUnrangedRead = !readRequestedSliceWindow(event).isExplicitSlice
   if (
     event.toolName !== 'Grep' &&
     compactUnrangedRead &&
@@ -941,8 +1000,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // surgical already and is left alone. Like the tooLargeForFirstRead branch above, this
         // deliberately skips recordActualRead: the read never happened, so a retry with
         // offset/limit must still count as a first read rather than tripping the re-read denies.
-        const unrangedRead =
-          readIntToolInput(event, 'offset') === undefined && readIntToolInput(event, 'limit') === undefined
+        const unrangedRead = !readRequestedSliceWindow(event).isExplicitSlice
         if (
           loadConfig().hints.subagent_markdown_first_read_deny &&
           event.agentId !== undefined &&
@@ -1567,9 +1625,9 @@ function readWindowFromDisk(event: HookEvent, normalized: string): string | null
   const size = statSize(normalized)
   if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
   const text = decodeSource(fs.readFileSync(normalized))
-  const limit = readIntToolInput(event, 'limit')
-  const offset = readIntToolInput(event, 'offset')
-  const start = offset !== undefined && offset >= 1 ? offset : 1
+  const window = readRequestedSliceWindow(event)
+  const start = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
+  const limit = window.limit
   // `offset` bounds the window on its own: a Read carrying an offset and no limit delivers from that line to the end of the file, never the head. Consulting `offset` only when a `limit` was also given recorded the WHOLE file as served for such a read, and a later whole-file Read then had its never-delivered head withheld under a notice claiming it had already been served verbatim.
   if (start === 1 && (limit === undefined || limit <= 0)) return text
   const lines = text.split('\n')
@@ -1832,7 +1890,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
 function structuralFoldInputs(event: HookEvent, respText: string): { rows: readonly NumberedRow[]; header: string[]; trailer: string[]; normalized: string; shown: string; originalBytes: number } | null {
   const filePath = getFilePath(event)
   if (filePath === undefined) return null
-  if (readIntToolInput(event, 'offset') !== undefined || readIntToolInput(event, 'limit') !== undefined) return null
+  if (readRequestedSliceWindow(event).isExplicitSlice) return null
   if (isTruncatedReadDelivery(event, respText)) return null
   if (redactSecrets(respText).count > 0) return null
   const parsed = parseNumberedReadResult(respText, readStartLine(event))
@@ -1889,7 +1947,8 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   if (isImagePath(normalized)) return null
 
   // A windowed read is foldable, but only when its delivered rows carry the file's own line numbers. `planBodyFolds` decides whether a window is narrow enough to leave alone: it declines any span whose declaration sits above the first delivered line, so a caller asking for the middle of one function still gets every line back, while a window wide enough to hold whole declarations folds them. That containment test compares row numbers against indexed spans, so it is meaningless against numbers synthesised from line 1, and the harness reports the true window start in `tool_response.file.startLine`. An offset it does not confirm is declined rather than guessed at: measured over 566 real ranged Reads, 562 agree exactly, and the four that disagree are negative offsets the harness clamps to line 1, which this equality rejects. A bare `limit` needs no check, its window starting at line 1 either way.
-  const requestedOffset = readIntToolInput(event, 'offset')
+  const sliceWin = readRequestedSliceWindow(event)
+  const requestedOffset = sliceWin.offset
   if (requestedOffset !== undefined && readStartLine(event) !== requestedOffset) return null
   if (isTruncatedReadDelivery(event, respText)) return null
 
@@ -1901,7 +1960,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
 
   // Repo-relative, because the notice repeats this path once per fold and an absolute Windows path is most of the notice: measured over 201 session transcripts, the absolute form costs 10.9 KB of notice against 9.0 KB relative. toDisplayPath returns the target unchanged when there is no project root or the file sits outside it, so an out-of-tree read still gets a path the reader can act on, and either way the notice stays a command that can be run as printed.
   const shown = displaySafePath(toDisplayPath(findProject(getCwd(event) ?? process.cwd())?.root, normalized))
-  const folded = foldDelivery(parsed.rows, normalized, shown, requestedOffset !== undefined || readIntToolInput(event, 'limit') !== undefined)
+  const folded = foldDelivery(parsed.rows, normalized, shown, sliceWin.isExplicitSlice)
   if (folded === null) return null
 
   // `folded.numbered` is file bytes with this fold's own `... N lines folded` pointers interleaved, and it shipped unfenced: a source file's own text arrived beside token-goat's narration in one unlabelled block, so a first line spelling `[tg] ...` read as this rewrite's preamble. Fence the whole run, header and trailer (the harness's own framing) left outside it. Same repair as planSourceSkeleton.

@@ -22,12 +22,12 @@
  * write is fail-soft: a hook that cannot persist its ledger must still return a valid response.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, relative } from 'node:path'
 
 import { registerHook, type HookEvent } from './hook_registry.js'
-import { contextOutput, getToolName, passOutput } from './hooks_common.js'
-import { displaySafeText } from './paths.js'
+import { contextOutput, getFilePath, getToolName, passOutput } from './hooks_common.js'
+import { displaySafeText, normalizePath } from './paths.js'
 import { sessionSidecarPath } from './session_store.js'
 import type { HookOutput } from './types.js'
 
@@ -119,6 +119,107 @@ export function repeatFailureNotice(toolName: string | undefined): string {
   return `[token-goat] ${tool} just failed with the same error as an earlier call this session. Retrying it unchanged will fail the same way -- change the arguments, the tool, or the approach.`
 }
 
+/** Maximum file size (10 MB) to inspect on an edit failure to avoid memory stalls. */
+const MAX_EDIT_DIAGNOSE_BYTES = 10 * 1024 * 1024
+
+/**
+ * Inspect an Edit tool failure and generate actionable, surgical guidance.
+ *
+ * When an agent fails an edit because `old_string` matches multiple locations or zero locations,
+ * the raw harness error ("Multiple matches found") provides no line numbers or context, causing
+ * blind retry loops. This helper inspects the file on disk to report the exact match counts and
+ * line numbers so the agent can disambiguate immediately.
+ */
+export function diagnoseEditFailure(event: HookEvent, errorText: string): string | null {
+  const toolName = getToolName(event)
+  if (!toolName || !/^(edit|str_replace_editor)$/i.test(toolName)) {
+    return null
+  }
+
+  const isMultiple =
+    /multiple matches|not unique|found \d+ matches|matches \d+ times|more than one match/i.test(errorText)
+  const isNotFound =
+    /no match|not found|could not find|zero matches|string to replace.*not found/i.test(errorText)
+
+  if (!isMultiple && !isNotFound) {
+    return null
+  }
+
+  const filePath =
+    getFilePath(event) ?? (typeof event.toolInput['path'] === 'string' ? event.toolInput['path'] : undefined)
+  if (!filePath) return null
+
+  const oldString =
+    typeof event.toolInput['old_string'] === 'string'
+      ? event.toolInput['old_string']
+      : typeof event.toolInput['old_str'] === 'string'
+        ? event.toolInput['old_str']
+        : typeof event.toolInput['target'] === 'string'
+          ? event.toolInput['target']
+          : undefined
+
+  if (oldString === undefined || oldString === '') return null
+
+  const absPath = normalizePath(filePath)
+  if (!existsSync(absPath)) return null
+
+  try {
+    const stat = statSync(absPath)
+    if (stat.size > MAX_EDIT_DIAGNOSE_BYTES) return null
+
+    const fileContent = readFileSync(absPath, 'utf8')
+    const relDisplay = displaySafeText(relative(process.cwd(), absPath).replace(/\\/g, '/') || absPath)
+
+    if (isMultiple) {
+      const matchLines: number[] = []
+      let pos = 0
+      while (pos < fileContent.length) {
+        const idx = fileContent.indexOf(oldString, pos)
+        if (idx === -1) break
+        const line = fileContent.slice(0, idx).split('\n').length
+        matchLines.push(line)
+        pos = idx + Math.max(1, oldString.length)
+      }
+
+      if (matchLines.length > 1) {
+        const lineList = matchLines.slice(0, 5).join(', ')
+        const overflow = matchLines.length > 5 ? ` (+${matchLines.length - 5} more)` : ''
+        return `[token-goat] Edit failed: string matched ${matchLines.length} times in ${relDisplay} on lines ${lineList}${overflow}. Include 2-3 lines of surrounding context to make old_str unique.`
+      }
+    }
+
+    if (isNotFound) {
+      const normOld = oldString.replace(/\r\n/g, '\n')
+      const normFile = fileContent.replace(/\r\n/g, '\n')
+      if (normFile.includes(normOld)) {
+        return `[token-goat] Edit failed: string not found in ${relDisplay}, but matches with normalized line endings. Check CRLF vs LF line endings or whitespace.`
+      }
+
+      const firstLine = oldString.split(/\r?\n/)[0]?.trim() ?? ''
+      if (firstLine.length >= 10) {
+        const fileLines = fileContent.split('\n')
+        const similarLines: number[] = []
+        for (let i = 0; i < fileLines.length; i++) {
+          const lineText = fileLines[i]
+          if (lineText !== undefined && lineText.includes(firstLine)) {
+            similarLines.push(i + 1)
+            if (similarLines.length >= 3) break
+          }
+        }
+        if (similarLines.length > 0) {
+          return `[token-goat] Edit failed: string not found in ${relDisplay}. A similar line was found on line ${similarLines.join(', ')} — view that range to copy exact text.`
+        }
+      }
+
+      return `[token-goat] Edit failed: string not found in ${relDisplay}. View the target lines to copy the exact current content and indentation.`
+    }
+  } catch {
+    // Non-fatal if file reading or parsing fails
+  }
+
+  return null
+}
+
 export function postToolUseFailureHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId) return passOutput()
@@ -133,9 +234,10 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     const ledger = readLedger(target)
     const priorState = ledger.seen[signature]
 
+    const editDiagnostic = diagnoseEditFailure(event, errorText)
+
     if (priorState === undefined) {
-      // First time this exact failure has been seen: record it and stay silent. A one-off failure
-      // is information the model already has from the failure text itself.
+      // First time this exact failure has been seen: record it.
       ledger.seen[signature] = false
       ledger.order.push(signature)
       while (ledger.order.length > MAX_TRACKED_FAILURES) {
@@ -143,6 +245,15 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
         if (evicted !== undefined) delete ledger.seen[evicted]
       }
       writeLedger(target, ledger)
+
+      // If this is an actionable edit failure (e.g. multiple matches or not found),
+      // advise immediately on the first occurrence so the agent does not enter a blind retry loop.
+      if (editDiagnostic !== null) {
+        ledger.seen[signature] = true
+        writeLedger(target, ledger)
+        return contextOutput(editDiagnostic)
+      }
+
       return passOutput()
     }
 
@@ -150,6 +261,11 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
 
     ledger.seen[signature] = true
     writeLedger(target, ledger)
+
+    if (editDiagnostic !== null) {
+      return contextOutput(editDiagnostic)
+    }
+
     return contextOutput(repeatFailureNotice(toolName))
   } catch {
     return passOutput()

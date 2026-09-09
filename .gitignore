@@ -191,3 +191,11 @@ vscode-extension/*.vsix
 .vitest-probe/
 
 coverage.json
+
+# Proprietary internal deliverables and generators
+token-goat-architecture-qa.html
+*architecture-qa*
+token-goat-enterprise-brief.html
+token-goat-simple-brief.html
+artifacts/
+
