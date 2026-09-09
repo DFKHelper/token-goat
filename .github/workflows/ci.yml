@@ -72,8 +72,12 @@ jobs:
       - name: Scan for committed secrets
         run: ./gitleaks dir . --config=.gitleaks.toml --redact --exit-code 1 --no-banner
 
-  test:
+  test-linux:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -99,16 +103,21 @@ jobs:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
-          command: npm test
+          command: npm test -- --shard=${{ matrix.shard }}/3
       # Explicit, so the extension's regression suite (vscode-extension/tests/security.test.ts)
       # stays wired to a gate even if the root vitest config's default file discovery ever
       # narrows its `include` -- `npm test` above already picks these tests up incidentally
       # today, but that was never intentional and is not something to depend on silently.
       - name: Test (VS Code extension)
+        if: matrix.shard == 1
         run: npm run test:vscode-extension
 
   test-windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -127,12 +136,17 @@ jobs:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
-          command: npm test
+          command: npm test -- --shard=${{ matrix.shard }}/4
       - name: Test (VS Code extension)
+        if: matrix.shard == 1
         run: npm run test:vscode-extension
 
   test-macos:
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -151,6 +165,24 @@ jobs:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
-          command: npm test
+          command: npm test -- --shard=${{ matrix.shard }}/3
       - name: Test (VS Code extension)
+        if: matrix.shard == 1
         run: npm run test:vscode-extension
+
+  # The stable check name the branch ruleset points at. The sharded jobs report as `test-linux (1)`, `test-windows (2)` and so on, so a required context naming a shard would stop gating the moment the shard count changed; this job keeps one name the ruleset can pin, and pulls Windows and macOS under the same gate while it is there.
+  test:
+    if: always()
+    needs: [test-linux, test-windows, test-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every sharded test job succeeded
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "test job results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "::error::A required test job did not succeed (results: $results)."
+              exit 1
+            fi
+          done
