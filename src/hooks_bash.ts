@@ -13,6 +13,7 @@ import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_s
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import type { HookOutput } from './types.js'
+import type { ToolFilter } from './tool_filters/index.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -27,7 +28,7 @@ import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
-import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit, splitOwnTrailingNotices } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNewline, hasUnquotedOperator, isRewriteWorthwhile, resolveMinNetSavingsBytes, shlexSplit, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
@@ -1788,6 +1789,53 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
 }
 
 /**
+ * Stages that hand their input onward without reshaping it: they may drop lines from an end, page,
+ * or duplicate the stream, but a line that survives arrives unchanged. Deliberately an allowlist and
+ * a short one. The question {@link pipelineShapeFilter} has to answer is which stage determines the
+ * shape of the bytes that reach the model, and every wrong answer there feeds a family filter input
+ * it was never written for -- the over-collapse failure mode, where dropping the lines you needed
+ * *improves* the compression ratio and so looks like a better result. `sed`, `awk`, `cut`, `jq`,
+ * `sort -u` and `wc` are all excluded even though several are shape-preserving in common use, because
+ * each can also rewrite a line beyond what its upstream filter expects. `nl` is excluded for
+ * prefixing every line. Anything not named here means the pipeline falls back to the generic filter,
+ * which is exactly the behaviour this whole path had before.
+ */
+const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])
+
+/**
+ * Pick the family filter for a piped command, or null to leave it on the generic filter.
+ *
+ * A compound command is never wrapped by the pre-hook, correctly: its shell operators would break
+ * the `compress -c` argument. It reaches the post hook instead, where the bytes are already captured
+ * and no shell is involved -- and where, until now, every one of them got `filterByName('generic')`
+ * regardless of what produced them. Measured on real commands in this repository, a family filter
+ * cuts 40-91% more than generic on the same bytes (`grep | head` 84.5%, `rg | head` 88.9%,
+ * `ls -laR | head` 91.3%, `git log --stat | cat` 40.1%, `npm ls --all | head` 62.7%), so the whole
+ * cost of the pre-hook's decline was landing here as generic-only compression.
+ *
+ * Two conditions, both narrow on purpose. The command must be a *pure* pipeline: any `&&`, `||` or
+ * `;` means the output is several commands' bytes concatenated, and one stage's filter applied to
+ * that mixture can silently eat another stage's output. And every stage downstream of the first must
+ * be in {@link PIPELINE_PASSTHROUGH_HEADS}, so the first stage really is what shaped the bytes. When
+ * either fails the answer is null and nothing changes.
+ */
+function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter | null {
+  if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) return null
+  // splitShellSegments breaks on a bare `&`, so an fd duplication shears mid-token: `npx vitest run 2>&1 | tail -40` would arrive as ['npx vitest run 2>', '1', 'tail -40'] and the `1` remnant would read as an unknown stage, falling the single most common test-run spelling back to generic. Strip the redirect first, exactly as extractLineRangeReadsCompound already does for the same splitter. Only the segment walk uses this: stripOutputPipeline below parses the unsplit command and removes trailing redirections itself.
+  const segments = splitShellSegments(cmd.replace(/\s2>(?:&1|\/dev\/null)/g, ''))
+  if (segments.length < 2) return null
+  for (const segment of segments.slice(1)) {
+    const head = safeShlexSplit(segment)?.[0]
+    if (head === undefined) return null
+    // Compare on the bare binary name so an absolute or ./-relative spelling of `head` still reads as a pass-through.
+    if (!PIPELINE_PASSTHROUGH_HEADS.has(head.replace(/^.*[/\\]/, ''))) return null
+  }
+  // The first stage with its trailing redirections removed. detectFromCommand refuses anything carrying an unquoted operator, so it has to be asked about that stage alone rather than the whole pipeline.
+  const detected = detectFromCommand(stripOutputPipeline(cmd), cwd ?? undefined)
+  return detected === null ? null : detected.filter
+}
+
+/**
  * Structurally compress the output of a compound/piped/redirect command in the POST hook.
  *
  * Single commands are wrapped by the pre-hook into `token-goat compress` and so get generic
@@ -2162,7 +2210,10 @@ async function maybeCompressCompoundOutput(
   }
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
-  const filter = filterByName('generic')
+  // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; everything else keeps the generic filter this path has always used. A family the user disabled falls back rather than being forced, matching the `disabled_filters` check the generic path makes above.
+  const shaped = pipelineShapeFilter(cmd, cwd)
+  const filter =
+    shaped !== null && !cfg.disabled_filters.includes(shaped.name) ? shaped : filterByName('generic')
   if (filter === null) return null
   // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout.
   const compressed = compressOutput(filter, output, '', exitCode ?? 0, [], {
@@ -2211,7 +2262,8 @@ async function maybeCompressCompoundOutput(
   // emitRewrite prices the saving from the string it returns, which is this same `body`, converts it with the one savedTokensFromBytes every other saving uses, and books the placeholders the filter's own redaction pass left in that body. Nothing booked those before: the cache copy is redacted by bash_output_cache before disk_cache sees it, so disk_cache's count comes back zero and this path's redactions were protecting the model while reporting nothing.
   // originalBytes is capped at the harness delivery cap (src/delivery_cap.ts): the model never
   // receives more than that inline, so a larger counterfactual would book output it could not see.
-  return emitRewrite(body, 'bash', { kind: 'bash_compress:generic', originalBytes: deliveredOutputBytes(compressed.originalBytes) })
+  // The kind names the filter that actually ran, not the one this path used to hardcode. A stat key fixed to `generic` while the filter varies makes every family selection invisible to the ledger and to any test asserting on it, which is the shape commit 6645b3f3 removed from the byte-crediting stats for the same reason.
+  return emitRewrite(body, 'bash', { kind: `bash_compress:${filter.name}`, originalBytes: deliveredOutputBytes(compressed.originalBytes) })
 }
 
 /**
