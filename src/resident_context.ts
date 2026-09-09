@@ -33,6 +33,7 @@
 import * as fs from 'node:fs'
 
 import { estimateTokensFromLength } from './overflow_guard.js'
+import { displaySafeText } from './paths.js'
 
 /**
  * A task list at or above this size is worth telling the agent about. Measured: lists that stayed
@@ -337,13 +338,15 @@ export function repeatedSkillBodyHint(injections: readonly SkillBodyInjection[])
   const worst = injections[0]
   if (worst === undefined) return null
   if (worst.count < SKILL_BODY_REPEAT_THRESHOLD || worst.bytes < LARGE_SKILL_BODY_BYTES) return null
+  // A skill declares its own name, and this advisory reaches the model on the context channel in token-goat's own voice, so the name is escaped before it is quoted. Unlike installedSkillPath, which refuses anything outside its character set, nothing upstream of this parse constrains the value.
+  const skill = displaySafeText(worst.skill)
   const tokens = formatTokenEstimate(estimateTokensFromLength(worst.bytes))
   return (
-    `The \`${worst.skill}\` skill body has been injected ${worst.count} times this session ` +
+    `The \`${skill}\` skill body has been injected ${worst.count} times this session ` +
     `(${formatBytes(worst.bytes)} total, ~${tokens} tok est). Slash expansion and the Skill tool both send the ` +
     'whole body every time, and no hook can intercept either. If it is already loaded, work from it instead of ' +
     're-invoking; to reread one part, ' +
-    `use \`token-goat skill-section ${worst.skill} '<heading>'\`.`
+    `use \`token-goat skill-section ${skill} '<heading>'\`.`
   )
 }
 

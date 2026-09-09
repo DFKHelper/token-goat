@@ -107,6 +107,7 @@ function cdPrefixCwd(rawCmd: string, cwd: string): string {
  * a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own
  * SQL-specific hint and lead-in text, then falls through to this for the rest.
  */
+// Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
 function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean): string {
   return isEnv
     ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
@@ -2736,7 +2737,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd
       // instead of the shell's real one, both mislabeling the hint and missing dedup against a
       // non-cd-prefixed reference to the same file.
-      const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+      const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths.
       // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
@@ -2760,7 +2761,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const catJsonPipe = extractCatJsonPipe(cmd)
   if (catJsonPipe !== null) {
     const { filePath } = catJsonPipe
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput(
       '`cat | jq` loads the whole file. Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to slice one value.',
@@ -2770,7 +2771,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, cmd0, advisoryOnly } = catResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isSql) {
       return contextOutput(
@@ -2787,7 +2788,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const cmd0 = catMulti[0]!.cmd0
     const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql }) => {
-      const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+      const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
       const how = isSql
         ? 'token-goat section "' + hintPath + '::table_name"'
         : isEnv || isConfig
@@ -2805,7 +2806,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const psGetContentResult = extractPowerShellWrappedGetContent(cmd)
   if (psGetContentResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql } = psGetContentResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
     if (isSql) {
@@ -2824,7 +2825,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const wslCatResult = extractWslCatFile(cmd)
   if (wslCatResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql } = wslCatResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isSql) {
       return contextOutput(
@@ -2838,7 +2839,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
     const { filePath, isDoc, isOutputFile } = pyRead
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
       // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript
@@ -2862,7 +2863,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const tailResult = extractTailFile(cmd)
   if (tailResult !== null) {
     const { filePath, isDoc, isConfig, isSql } = tailResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
   }
@@ -2870,7 +2871,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
     const { filePath, isDoc, isConfig, isSql, n } = headResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput(leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
   }
@@ -2878,7 +2879,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
     const { filePath, isDoc, isConfig, isSql } = gcTailResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
   }
@@ -2886,7 +2887,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
     const { filePath, isDoc, isConfig, isSql, n } = gcSelectResult
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
   }
@@ -2894,7 +2895,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const nodeRead = extractNodeFileRead(cmd)
   if (nodeRead !== null) {
     const { filePath, isDoc, isConfig, isSql } = nodeRead
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const lead = 'Node.js `fs.readFileSync()` bypasses read hooks. '
     if (isSql) {
       // SQL reads are always advisory-only (never denied), matching extractCatFile/
@@ -2923,7 +2924,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const psMethodRead = extractPowerShellFileMethodRead(cmd)
   if (psMethodRead !== null) {
     const { filePath, isDoc, isConfig, isSql } = psMethodRead
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. '
     if (isSql) {
       recordStat('session_hint', 0, 0)
@@ -2950,7 +2951,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const mdHeadingGrep = extractMarkdownHeadingGrep(cmd)
   if (mdHeadingGrep !== null) {
     const { filePath } = mdHeadingGrep
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Use `token-goat outline "' + hintPath + '"` to get all headings with line ranges — ' +
@@ -2971,7 +2972,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const rgStructural = extractRgStructuralSearch(cmd)
   if (rgStructural !== null) {
     const { filePath } = rgStructural
-    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Searching for code definitions with `rg`/`grep` is slower than surgical reads. ' +

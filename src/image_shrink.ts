@@ -40,6 +40,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, passOutput } from './hooks_common.js'
+import { displaySafePath } from './paths.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
 import { formatOcrSummary, isTextHeavy, ocrImage } from './image_ocr.js'
@@ -554,7 +555,8 @@ function pruneShrinkCache(): void {
  * visibility into that.
  */
 async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Promise<HookOutput> {
-  const basename = path.basename(filePath)
+  // The image's own file name, so a cloned repository chooses it, and both summaries below reach the model on the context channel, which neither fences nor escapes the markers token-goat speaks in. The OCR body text beside it was already fenced; the name it was announced under was not. Sanitized once here rather than at each use, which also keeps the stats label it feeds from carrying a forged field.
+  const basename = displaySafePath(path.basename(filePath))
 
   // The pixel-shrink saving (original bytes -> shrunk bytes) is real on every path this function
   // takes, so record it up front, before the OCR branch below can return early. The OCR branch
