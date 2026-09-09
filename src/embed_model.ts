@@ -96,6 +96,78 @@ function downloadUrl(file: ModelFile): string {
   return `https://huggingface.co/${DEFAULT_MODEL}/resolve/${PINNED_MODEL_REVISION}/${file.name}`
 }
 
+/**
+ * A copy of the pinned model that outlives the data directory, or null when the feature is off.
+ *
+ * {@link modelDir} sits under the data root, which is exactly what makes it wrong as the only
+ * copy in two situations: a test run pins the data root at a fresh temp directory per worker, and
+ * several tests build their own data roots on top of that, so one CI run downloaded the 32 MB
+ * weights 57 times into 57 directories. Point this at a stable path and each of those becomes a
+ * local file copy instead of a network fetch.
+ *
+ * Reading from here is safe even if the directory is hostile: nothing is trusted on the strength
+ * of its location. Bytes copied out of it are hashed and compared against the same pinned sha256
+ * a download is held to, and a file that fails is discarded and refetched, so the worst a bad
+ * cache can do is cost the download it was meant to save.
+ */
+function sharedModelCacheDir(): string | null {
+  const raw = process.env['TOKEN_GOAT_MODEL_CACHE_DIR']?.trim()
+  if (!raw) return null
+  return path.join(raw, ...DEFAULT_MODEL.split('/'), PINNED_MODEL_REVISION)
+}
+
+/**
+ * Place one model file from the shared cache, reporting whether the caller still needs to
+ * download it.
+ *
+ * The copy is hashed after it lands rather than at the source, so what is verified is the exact
+ * bytes that will be used rather than bytes that were equal to them a moment earlier. It costs
+ * the same single pass either way.
+ */
+async function copyFromSharedCache(shared: string, file: ModelFile, target: string): Promise<boolean> {
+  const source = path.join(shared, file.name)
+  const temp = `${target}.${process.pid}.shared`
+  try {
+    if (!fs.existsSync(source)) return false
+    fs.copyFileSync(source, temp)
+    if ((await sha256Of(temp)) !== file.sha256) {
+      fs.rmSync(temp, { force: true, maxRetries: 20, retryDelay: 25 })
+      // A cached file that does not match is not a file to keep offering to every later run. Drop it so the download below republishes a good one.
+      fs.rmSync(source, { force: true, maxRetries: 20, retryDelay: 25 })
+      return false
+    }
+    fs.renameSync(temp, target)
+    return true
+  } catch {
+    // The shared cache is an optimization and never a reason to fail: any trouble here falls through to the download that would have run anyway.
+    try {
+      fs.rmSync(temp, { force: true, maxRetries: 20, retryDelay: 25 })
+    } catch {
+      // Nothing to add: the caller is about to download regardless.
+    }
+    return false
+  }
+}
+
+/** Offer a freshly downloaded file to the shared cache for the next run. Best effort throughout: a cache that cannot be written is a slower next run, not a failure of this one. */
+function publishToSharedCache(shared: string, file: ModelFile, target: string): void {
+  const destination = path.join(shared, file.name)
+  const temp = `${destination}.${process.pid}.partial`
+  try {
+    if (fs.existsSync(destination)) return
+    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    fs.copyFileSync(target, temp)
+    // Rename last, so a reader never sees a partially written file under the real name however many workers publish at once.
+    fs.renameSync(temp, destination)
+  } catch {
+    try {
+      fs.rmSync(temp, { force: true, maxRetries: 20, retryDelay: 25 })
+    } catch {
+      // Same reasoning as the copy path: the model is already in place and that is what the caller asked for.
+    }
+  }
+}
+
 // onnxruntime-node is optional and loaded on first use rather than at module load. It is a native
 // addon: requiring it eagerly loads its DLLs into the process, and this module is reachable from
 // the CLI's hot hook path via index_prune.ts, which never embeds anything.
@@ -249,6 +321,7 @@ export async function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promi
   ensureDataDirPrivate()
   const dir = modelDir()
   const offline = loadConfig().network.offline
+  const shared = sharedModelCacheDir()
 
   for (const file of MODEL_FILES) {
     const target = path.join(dir, file.name)
@@ -258,6 +331,11 @@ export async function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promi
       // A file that is present and wrong is worse than one that is absent: leaving it would make
       // every later run fail the same way. Replace it, which offline mode cannot do.
       fs.rmSync(target, { force: true })
+    }
+    if (shared) {
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      // Ahead of the offline check on purpose: a hit here needs no network, so offline mode has no reason to refuse it.
+      if (await copyFromSharedCache(shared, file, target)) continue
     }
     if (offline) {
       throw new Error(
@@ -270,6 +348,7 @@ export async function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promi
       `Downloading the embedding model, once (${file.name}, ${Math.round(file.bytes / 1024 / 1024)} MB) into ${dir}`,
     )
     await download(file, target)
+    if (shared) publishToSharedCache(shared, file, target)
   }
   return dir
 }

@@ -37,7 +37,12 @@ const REAL_TOKENIZER: Buffer = zlib.gunzipSync(
   fs.readFileSync(path.join(HERE, 'fixtures', 'wordpiece', 'tokenizer.json.gz')),
 )
 
-const ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_OFFLINE'] as const
+// TOKEN_GOAT_MODEL_CACHE_DIR is cleared rather than merely restored: every assertion below is
+// about which URLs get requested, and a shared cache inherited from the surrounding environment
+// answers some of those requests from disk instead. CI exports it, so leaving it in place made
+// this whole file fail there while passing on a developer machine that had never set it. Tests
+// for the shared cache itself set it explicitly and live in embed_model_shared_cache.test.ts.
+const ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_OFFLINE', 'TOKEN_GOAT_MODEL_CACHE_DIR'] as const
 
 let tmp: string
 let saved: Record<string, string | undefined>
@@ -48,6 +53,7 @@ beforeEach(() => {
   process.env['LOCALAPPDATA'] = tmp
   process.env['XDG_DATA_HOME'] = tmp
   delete process.env['TOKEN_GOAT_OFFLINE']
+  delete process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
   _resetDataDirCacheForTesting()
   clearModuleCaches()
 })
