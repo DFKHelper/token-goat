@@ -405,7 +405,8 @@ function surgicalHint(filePath: string, basename: string, lineCount: number): st
 // Check if a file is a skill definition file (SKILL.md in ~/.claude/skills/<name>/SKILL.md) and return the skill name, or null.
 function detectSkillFile(filePath: string): string | null {
   const match = filePath.match(/\.claude[\\/]skills[\\/]([^\\/]+)[\\/]SKILL\.md$/i)
-  return match ? match[1]! : null
+  // The directory name, which a checkout chooses, and the hint quoting it leaves on the context channel, which neither fences its payload nor escapes the markers token-goat speaks in. Unreachable today for a reason that is not this one: the only caller feeds the name to getCompactAnySessionSync, whose safeSkillName refuses anything outside [A-Za-z0-9_:-], and every spoken marker needs a bracket and a space. That gate exists to keep the name safe as a filename, not to stop an injection, so it is the kind of thing a later change relaxes without noticing what else it was holding. tests/skill_stale_compact_marker_name.test.ts pins it; this call is the survival layer for the day it moves.
+  return match ? displaySafePath(match[1]!) : null
 }
 
 /**
@@ -672,7 +673,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  const basename = path.basename(normalized)
+  // Sanitized at its derivation, the same way `shown` is, because it is interpolated into read hints that leave on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in, and a repository names its own files. Everything else it feeds is an extension test or a diff header, and the escaping is the identity function on any name without a marker or a control character.
+  const basename = displaySafePath(path.basename(normalized))
 
   if (isLockFile(basename)) {
     return denyOutput(
