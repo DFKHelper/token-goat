@@ -131,10 +131,18 @@ describe('post-hook filter selection for a piped command', () => {
     expect(ampBody, 'the backgrounded command’s output must survive the rewrite').toContain('CHANGELOG-MARKER-LINE')
   })
 
-  it('keeps the generic filter for a chain, whose output is several commands concatenated', async () => {
+  it('keeps the generic filter for a non-CI chain, whose output is several commands concatenated', async () => {
     await runAndGetBody('grep -rn "export function" src && echo done')
-    expect(compressFilters(), 'a && chain must fall back').toContain('generic')
+    expect(compressFilters(), 'a non-CI && chain must fall back to generic').toContain('generic')
     expect(compressFilters()).not.toContain('grep')
+    expect(compressFilters()).not.toContain('generic-ci')
+  })
+
+  it('selects generic-ci filter for compound chains containing build/test/lint commands', async () => {
+    const debugLines = Array.from({ length: 300 }, (_, i) => `DEBUG: test runner worker ${i % 4}: syncing fixture batch ${i}`).join('\n')
+    await runAndGetBody('npm run build && npm run typecheck && npm run test:guards', debugLines)
+    expect(compressFilters(), 'a compound build/test chain must select generic-ci').toContain('generic-ci')
+    expect(compressFilters()).not.toContain('generic')
   })
 
   it('compresses a pass-through pipeline strictly harder than the generic path it replaces', async () => {

@@ -60,6 +60,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'The surgical-read hints quote the path out of the shell command, which a repository names. All fifteen sites that build that path wrap it in displaySafePath, which is why the escaping is checkable in one grep rather than at the thirty places that print it. Widening this to a sixteenth unwrapped assignment reopens it.',
   'hooks_grep.ts::preGrepHandler':
     'The structural-search hint quotes the Grep path, also repository-chosen, and it is escaped. Unreachable today for a different reason: extractGrepStructuralSearch refuses any path containing a bracket, which every spoken marker needs, though it refuses it as a glob character rather than for this. tests/hooks_grep.test.ts pins that refusal.',
+  'hooks_glob.ts::preGlobHandler':
+    'The broad recursive glob hint echoes the search pattern, which is model-influenced and escaped with displaySafeText. The fallback delegates to preGlobDedupHandler, adjudicated via makeDedupHintHandlers.',
   'hooks_common.ts::makeDedupHintHandlers':
     'Echoes the search pattern back, and a model very often greps for a literal it just read out of a file, so the value is repository-influenced. Escaped with displaySafeText. The tool name beside it is hardcoded by both call sites.',
   'hooks_session.ts::userPromptSubmitHandler':

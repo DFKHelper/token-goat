@@ -1,3 +1,5 @@
+import { hasUnquotedOperator } from '../tool_filters/helpers.js'
+
 /**
  * Language-agnostic pattern table for read suppression and recall hints.
  *
@@ -436,6 +438,7 @@ function isPsMultilineSystemQuery(cmd: string): boolean {
  */
 export function getMonitoringRecallHint(cmd: string): string | null {
   const trimmed = cmd.trim()
+  if (hasUnquotedOperator(trimmed, ['&&', '||', ';'])) return null
   for (const { pattern, recallHint } of MONITORING_COMMAND_PATTERNS) {
     if (pattern.test(trimmed)) return recallHint
   }

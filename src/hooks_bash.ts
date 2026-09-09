@@ -1886,8 +1886,43 @@ const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less'
  * be in {@link PIPELINE_PASSTHROUGH_HEADS}, so the first stage really is what shaped the bytes. When
  * either fails the answer is null and nothing changes.
  */
+const CI_BUILD_TEST_FILTER_NAMES = new Set([
+  'generic-ci', 'jest', 'vitest', 'pytest', 'go_test', 'cargo_test',
+  'cargo', 'go', 'make', 'cmake', 'gradle', 'maven', 'dotnet', 'turbo', 'nx', 'lerna', 'webpack',
+  'eslint', 'ruff', 'clippy', 'flake8', 'mypy', 'prettier', 'tsc',
+])
+
+function isCiBuildTestSegment(cleaned: string, cwd: string | null): boolean {
+  if (isTestRunnerCommand(cleaned) || isBuildCommand(cleaned) || isTscCommand(cleaned)) return true
+  if (/^\s*(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|lint|typecheck|check|ci|guards)\b/i.test(cleaned)) return true
+  if (/^\s*(cargo|go|dotnet|make|gradle|mvn|pytest|vitest|jest|eslint|ruff)\b/i.test(cleaned)) return true
+  const detected = detectFromCommand(cleaned, cwd ?? undefined)
+  if (detected !== null && CI_BUILD_TEST_FILTER_NAMES.has(detected.filter.name)) return true
+  return false
+}
+
 function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter | null {
-  if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) return null
+  if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) {
+    // For compound command chains (e.g. `npm run build && npm run typecheck && npm run test:guards`),
+    // check if segments contain recognized build, test, or lint commands. If so, route to generic-ci.
+    const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+    if (hasBareBackgroundOrNewline(forSplit)) return null
+    const segments = splitShellSegments(forSplit)
+    if (segments.length >= 2) {
+      let recognizedCiCount = 0
+      for (const segment of segments) {
+        const cleaned = stripOutputPipeline(segment.trim())
+        if (cleaned.length === 0) continue
+        if (isCiBuildTestSegment(cleaned, cwd)) {
+          recognizedCiCount++
+        }
+      }
+      if (recognizedCiCount > 0) {
+        return filterByName('generic-ci')
+      }
+    }
+    return null
+  }
   // splitShellSegments breaks on a bare `&`, so an fd duplication shears mid-token: `npx vitest run 2>&1 | tail -40` would arrive as ['npx vitest run 2>', '1', 'tail -40'] and the `1` remnant would read as an unknown stage, falling the single most common test-run spelling back to generic. Strip the redirect first, exactly as extractLineRangeReadsCompound already does for the same splitter. Only the segment walk uses this: stripOutputPipeline below parses the unsplit command and removes trailing redirections itself.
   const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
   // The line above checks three separators; splitShellSegments recognizes five, and the two it adds are a bare `&` and a newline. That gap let `a | head -20\nb` past the mixture guard while the splitter still saw the trailing command as a pass-through stage, so the first command's family filter ran over a second, unrelated command's bytes -- the exact over-collapse this function exists to refuse, and invisible because dropping the wanted lines improves the ratio. The check is asked about the same string the splitter parses, after the redirect strip rather than before it, so a legitimate `2>&1` is not read as the bare `&` it contains.

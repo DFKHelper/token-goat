@@ -21,7 +21,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-hooks-glob-config-test.toml')
 
-import { postGlobHandler, preGlobDedupHandler } from '../src/hooks_glob.js'
+import { isBroadCatchAllGlob, postGlobHandler, preGlobDedupHandler, preGlobHandler } from '../src/hooks_glob.js'
 import { recordStat } from '../src/stats.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
@@ -159,5 +159,42 @@ describe('preGlobDedupHandler', () => {
     if (result.hookType === 'context') {
       expect(result.context).toContain('0 matches')
     }
+  })
+})
+
+describe('isBroadCatchAllGlob', () => {
+  it('returns true for root wildcard patterns with empty or root path', () => {
+    expect(isBroadCatchAllGlob('*')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*')).toBe(true)
+    expect(isBroadCatchAllGlob('**')).toBe(true)
+    expect(isBroadCatchAllGlob('*.*')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*.*')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*', '.')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*', './')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*', 'src')).toBe(true)
+  })
+
+  it('returns false for narrow patterns or deeply scoped paths', () => {
+    expect(isBroadCatchAllGlob('*.ts')).toBe(false)
+    expect(isBroadCatchAllGlob('src/**/*.ts')).toBe(false)
+    expect(isBroadCatchAllGlob('**/*', 'src/utils/sub')).toBe(false)
+    expect(isBroadCatchAllGlob('**/*.test.ts')).toBe(false)
+  })
+})
+
+describe('preGlobHandler', () => {
+  it('advises token-goat map --compact on broad recursive glob', () => {
+    const result = preGlobHandler(globEvent('**/*', '.'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map --compact')
+      expect(result.context).toContain('**/*')
+    }
+    expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'session_hint')).toBeDefined()
+  })
+
+  it('delegates narrow globs to preGlobDedupHandler without broad warning', () => {
+    const result = preGlobHandler(globEvent('src/**/*.ts'))
+    expect(result.hookType).toBe('pass')
   })
 })

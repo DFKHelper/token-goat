@@ -20,6 +20,9 @@ export const FILE_TYPE_THRESHOLDS = {
   pdf: 0,              // always intercept (any size)
   html: 50_000,
   txt: 20_000,
+  log: 10_000,
+  svg: 8_000,
+  xml: 20_000,
   csv: 10_000,
   tsv: 10_000,
   transcript: 10_000,
@@ -120,11 +123,12 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
 /** Plain text / log handler — blocks when file exceeds threshold. */
 export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
-  if (length < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
-
   // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this
   // tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
+  const threshold = isLog ? FILE_TYPE_THRESHOLDS.log : FILE_TYPE_THRESHOLDS.txt
+  if (length < threshold) return { shouldBlock: false, message: '' }
+
   // `bash-output <id>` errors for a file read directly off disk (never went through the
   // bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching
   // hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
@@ -165,6 +169,75 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     shouldBlock: true,
     // The preview is verbatim file bytes, so it is fenced as untrusted data.
     message: `Large text file (${formatBytes(length)}, ${lines.length.toLocaleString()} lines).\n${fenceUntrustedFileContent(preview)}\n\n${recall}`,
+  }
+}
+
+/** SVG handler — blocks when file exceeds threshold (8 KB) to prevent coordinate flooding. */
+export function handleSvg(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.svg) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: [
+        `Large SVG file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        `Inspect structure: token-goat xml-outline "${filePath}"`,
+        `Query layers/elements: token-goat xml-query "${filePath}" "//g[@id]"`,
+      ].join('\n'),
+    }
+  }
+
+  const titleMatch = content.match(/<title[^>]*>([^<]*)<\/title>/i)
+  const title = titleMatch ? titleMatch[1]?.trim() : ''
+
+  const groupIds: string[] = []
+  const idRegex = /<g[^>]*\bid=["']([^"']+)["']/gi
+  let match: RegExpExecArray | null
+  while ((match = idRegex.exec(content)) !== null && groupIds.length < 10) {
+    if (match[1]) groupIds.push(match[1])
+  }
+
+  const preview = [
+    title ? `Title: ${title}` : '',
+    groupIds.length > 0 ? `Layer/Group IDs: ${groupIds.join(', ')}` : '',
+  ].filter(Boolean).join('\n')
+
+  return {
+    shouldBlock: true,
+    message: [
+      `Large SVG/diagram file (${formatBytes(length)}) — raw coordinate paths flood context.`,
+      preview ? fenceUntrustedFileContent(preview) : '',
+      `Inspect structure: token-goat xml-outline "${filePath}"`,
+      `Query elements: token-goat xml-query "${filePath}" "//g[@id]"`,
+      `Search text labels: token-goat grep "<text>" --glob "${filePath}"`,
+    ].filter(Boolean).join('\n'),
+  }
+}
+
+/** XML handler — blocks when file exceeds threshold (20 KB). */
+export function handleXml(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.xml) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: [
+        `Large XML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        `Inspect structure: token-goat xml-outline "${filePath}"`,
+        `Query nodes: token-goat xml-query "${filePath}" "<selector>"`,
+      ].join('\n'),
+    }
+  }
+
+  return {
+    shouldBlock: true,
+    message: [
+      `Large XML file (${formatBytes(length)}).`,
+      `Inspect hierarchy: token-goat xml-outline "${filePath}"`,
+      `Query specific elements: token-goat xml-query "${filePath}" "<selector>"`,
+    ].join('\n'),
   }
 }
 
@@ -331,6 +404,8 @@ export function dispatchFileTypeHandler(
   const effectiveLength = contentLengthHint ?? content.length
 
   if (ext === 'pdf') return handlePdf(filePath, effectiveLength)
+  if (ext === 'svg') return handleSvg(filePath, content, effectiveLength)
+  if (ext === 'xml') return handleXml(filePath, content, effectiveLength)
   if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content, effectiveLength)
   if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength)
   if (ext === 'xlsx') return handleXlsx(filePath)

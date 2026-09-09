@@ -30,8 +30,24 @@
  *     special case. Decision: (a) only.
  */
 import { registerHook } from './hook_registry.js'
-import { makeDedupHintHandlers } from './hooks_common.js'
+import type { HookEvent } from './hook_registry.js'
+import type { HookOutput } from './types.js'
+import { contextOutput, passOutput, getToolInput, getToolName, makeDedupHintHandlers } from './hooks_common.js'
+import { displaySafeText } from './paths.js'
 import { recordGlobQuery, getGlobMatchCount } from './session.js'
+import { recordStat } from './stats.js'
+
+/**
+ * Returns true if pattern is a broad catch-all glob on a root or unscoped directory.
+ * E.g. wildcard patterns on root paths when path is empty, dot, or a top-level root.
+ */
+export function isBroadCatchAllGlob(pattern: string, pathArg?: string): boolean {
+  const p = pattern.trim()
+  const isBroad = p === '*' || p === '**/*' || p === '**' || p === '*.*' || p === '**/*.*' || p === '**/*.**'
+  if (!isBroad) return false
+  const target = (pathArg ?? '').trim().replace(/[\\/]+$/, '')
+  return target === '' || target === '.' || target === './' || target === '.\\' || (!target.includes('/') && !target.includes('\\'))
+}
 
 /** Session-scoped identity for a Glob call: two calls with the same signature searched the same
  *  thing the same way. Returns null when there is no pattern to key on. Glob's tool_input has
@@ -53,8 +69,43 @@ const { post: postGlobHandler, pre: preGlobDedupHandler } = makeDedupHintHandler
   statName: 'glob_dedup_hint',
 })
 
-export { postGlobHandler, preGlobDedupHandler }
+/**
+ * pre_tool_use handler for the Glob tool.
+ *
+ * Checks for broad catch-all wildcard patterns and advises `token-goat map --compact`,
+ * or delegates to dedup recall hints.
+ */
+function preGlobHandler(event: HookEvent): HookOutput {
+  try {
+    if (getToolName(event) !== 'Glob') return passOutput()
+    const toolInput = getToolInput(event)
+    const pattern = typeof toolInput['pattern'] === 'string' ? toolInput['pattern'] : ''
+    const pathArg =
+      typeof toolInput['path'] === 'string'
+        ? toolInput['path']
+        : typeof toolInput['paths'] === 'string'
+          ? toolInput['paths']
+          : Array.isArray(toolInput['paths']) && toolInput['paths'].length === 1 && typeof toolInput['paths'][0] === 'string'
+            ? toolInput['paths'][0]
+            : undefined
+
+    if (pattern && isBroadCatchAllGlob(pattern, pathArg)) {
+      recordStat('session_hint', 0, 0)
+      return contextOutput(
+        'Broad recursive glob pattern "' +
+          displaySafeText(pattern) +
+          '" traverses entire directory trees and may dump thousands of paths into context. Use `token-goat map --compact` to inspect project directory structure efficiently, or narrow the glob path.',
+      )
+    }
+
+    return preGlobDedupHandler(event)
+  } catch {
+    return passOutput()
+  }
+}
+
+export { postGlobHandler, preGlobDedupHandler, preGlobHandler }
 
 // Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a correctness-relevant deny there (node_modules, oversized file) always takes priority over this purely advisory recall hint.
-registerHook('pre_tool_use', preGlobDedupHandler, { toolName: 'Glob' })
+registerHook('pre_tool_use', preGlobHandler, { toolName: 'Glob' })
 registerHook('post_tool_use', postGlobHandler, { toolName: 'Glob' })

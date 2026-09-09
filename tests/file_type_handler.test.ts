@@ -9,9 +9,11 @@ import {
   handleOfficeBinary,
   handlePdf,
   handlePptx,
+  handleSvg,
   handleTranscript,
   handleTxt,
   handleXlsx,
+  handleXml,
   FILE_TYPE_THRESHOLDS,
 } from '../src/hints/file_type_handler.js'
 
@@ -651,5 +653,74 @@ describe('dispatchFileTypeHandler', () => {
     const content = `col1,col2\n${makeStr(FILE_TYPE_THRESHOLDS.csv * 2)}`
     const result = dispatchFileTypeHandler('/path/to/data.csv', content, 100)
     expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('dispatches large SVG to handleSvg', () => {
+    const content = `<svg><title>Architecture</title><g id="layer1"><path d="M 0 0 L 10 10"/></g>${makeStr(FILE_TYPE_THRESHOLDS.svg)}</svg>`
+    const result = dispatchFileTypeHandler('/path/to/diagram.svg', content)
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('xml-outline')
+    expect(result?.message).toContain('layer1')
+  })
+
+  it('dispatches large XML to handleXml', () => {
+    const content = `<root><node id="1">${makeStr(FILE_TYPE_THRESHOLDS.xml)}</node></root>`
+    const result = dispatchFileTypeHandler('/path/to/data.xml', content)
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('xml-outline')
+  })
+
+  it('blocks .log file at log threshold (10 KB) while same size .txt file passes', () => {
+    const size = FILE_TYPE_THRESHOLDS.log + 100 // 10,100 bytes (above 10KB log threshold, below 20KB txt threshold)
+    const content = makeStr(size)
+    const logResult = dispatchFileTypeHandler('/var/log/server.log', content)
+    const txtResult = dispatchFileTypeHandler('/path/to/notes.txt', content)
+    expect(logResult?.shouldBlock).toBe(true)
+    expect(txtResult?.shouldBlock).toBe(false)
+  })
+})
+
+describe('handleSvg', () => {
+  it('returns shouldBlock false below threshold', () => {
+    const content = `<svg><g id="root"><path d="M 0 0"/></g></svg>`
+    const result = handleSvg('/path/to/icon.svg', content)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks large SVG and extracts title, group IDs, and surgical commands', () => {
+    const lines = [
+      '<svg xmlns="http://www.w3.org/2000/svg">',
+      '<title>System Diagram</title>',
+      '<g id="header-group">',
+      '<text>Header Text</text>',
+      '</g>',
+      '<g id="main-flow">',
+      '<path d="M 10 20 L 30 40 Z"/>',
+      '</g>',
+    ]
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.svg)
+    const result = handleSvg('/path/to/diagram.svg', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('System Diagram')
+    expect(result.message).toContain('header-group')
+    expect(result.message).toContain('main-flow')
+    expect(result.message).toContain('xml-outline')
+    expect(result.message).toContain('xml-query')
+  })
+})
+
+describe('handleXml', () => {
+  it('returns shouldBlock false below threshold', () => {
+    const content = `<root><item id="1">val</item></root>`
+    const result = handleXml('/path/to/data.xml', content)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks large XML and advises xml-outline / xml-query', () => {
+    const content = `<catalog>${makeStr(FILE_TYPE_THRESHOLDS.xml)}</catalog>`
+    const result = handleXml('/path/to/catalog.xml', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('xml-outline')
+    expect(result.message).toContain('xml-query')
   })
 })
