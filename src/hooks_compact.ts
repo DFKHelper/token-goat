@@ -26,6 +26,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, loadSessionCache } from './compact.js'
 import { displaySafePath, displaySafeText } from './paths.js'
+import { neutralizeSpokenMarkers } from './injection_scan.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
 const MEM_EPOCH_TIMEOUT_MS = 800
@@ -149,8 +150,9 @@ export function buildManifest(sessionId?: string, cwd?: string): string {
     '### Web URLs fetched',
     webFetches.map(([key, cacheId]) => {
       const [url = key, prompt = ''] = key.split(WEB_FETCH_KEY_SEP)
-      const promptSuffix = prompt ? `, prompt: ${JSON.stringify(prompt)}` : ''
-      return `- ${url} (cacheId: ${cacheId}${promptSuffix})`
+      // Every other row here routes its file-derived text through displaySafePath/displaySafeText; this one did not, and a URL is no more ours than a filename is. The key holds only the redacted spellings, and redactSecrets removes secrets rather than neutralizing markers, so a fetched URL containing `[tg]` reached the manifest raw inside a block token-goat speaks in its own voice. The prompt is neutralized after JSON.stringify rather than before it: stringify already escapes quotes and control characters, and running the escaper first would leave the backslashes it produces to be escaped a second time.
+      const promptSuffix = prompt ? `, prompt: ${neutralizeSpokenMarkers(JSON.stringify(prompt))}` : ''
+      return `- ${displaySafeText(url)} (cacheId: ${cacheId}${promptSuffix})`
     }),
     MAX_ROWS,
   )
