@@ -4,6 +4,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.9] - 2026-09-09
+
+### Fixed
+
+- **CI no longer refetches the 32 MB embedding model on every job.** A cache step had been pointed at `node_modules/@xenova/transformers/.cache` since it was added, and the model has never lived there: it lives under the data directory. `actions/cache` reported `Path Validation Error` on every job and saved nothing, which is easy to read as harmless and was not. No fixed path could have worked either, because a test run repoints the data root at a fresh temporary directory per worker and several tests build their own roots on top of that. One measured run downloaded the weights 57 times into 57 directories, about 1.8 GB from huggingface.co, which is also the rate limit the `Test` step's retry wrapper exists to absorb. `ensureModelFiles` can now be given a stable directory to keep a verified copy in, through `TOKEN_GOAT_MODEL_CACHE_DIR`, and CI restores that directory instead. Measured on the full suite: 16 downloads become none once the cache is warm. The first run after a cache key changes still fetches, since test files run in parallel and all of them look before any of them publishes. Changed in [src/embed_model.ts](src/embed_model.ts) and [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+### Added
+
+- **`TOKEN_GOAT_MODEL_CACHE_DIR` keeps a verified copy of the embedding model outside the data directory.** Unset by default, in which case nothing changes. When set, a file needed by the model is taken from there instead of the network, and a file that had to be downloaded is offered back for next time. Reading from it is safe even if the directory is not: bytes copied out are hashed against the same pinned sha256 a download has to satisfy, and one that fails is discarded and refetched, so a wrong or hostile cache costs a download rather than placing anything. It is deliberately an environment variable and not a config key, so a per-project config file that arrives with a repository cannot point it anywhere. Changed in [src/embed_model.ts](src/embed_model.ts).
+
 ## [2.9.8] - 2026-09-09
 
 ### Added

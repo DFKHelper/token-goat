@@ -78,6 +78,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
+    env:
+      # Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
+      TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -85,11 +88,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Cache embedding model
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
+      - name: Restore the embedding model cache
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: node_modules/@xenova/transformers/.cache
-          key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          path: ${{ runner.temp }}/tg-model-cache
+          key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
       # Retries absorb two known non-code causes of an otherwise-green run failing here: a
       # transient Hugging Face CDN block/rate-limit on the embedding model download (the app
       # itself now retries+backs off internally too, but a sustained outage outlasts that), and
@@ -111,6 +116,25 @@ jobs:
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: the expensive file would go on being
+      # downloaded while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      - name: Check the embedding model cache is worth saving
+        id: model-cache-complete
+        if: always() && steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          root="${RUNNER_TEMP}/tg-model-cache"
+          if [ -d "$root" ] && [ "$(find "$root" -name '*.onnx' -size +30M | wc -l)" -gt 0 ]; then
+            echo 'ok=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save the embedding model cache
+        if: always() && steps.model-cache-complete.outputs.ok == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tg-model-cache
+          key: ${{ steps.model-cache.outputs.cache-primary-key }}
 
   test-windows:
     runs-on: windows-latest
@@ -118,6 +142,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    env:
+      # Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
+      TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -125,11 +152,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Cache embedding model
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
+      - name: Restore the embedding model cache
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: node_modules/@xenova/transformers/.cache
-          key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          path: ${{ runner.temp }}/tg-model-cache
+          key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -140,6 +169,25 @@ jobs:
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: the expensive file would go on being
+      # downloaded while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      - name: Check the embedding model cache is worth saving
+        id: model-cache-complete
+        if: always() && steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          root="${RUNNER_TEMP}/tg-model-cache"
+          if [ -d "$root" ] && [ "$(find "$root" -name '*.onnx' -size +30M | wc -l)" -gt 0 ]; then
+            echo 'ok=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save the embedding model cache
+        if: always() && steps.model-cache-complete.outputs.ok == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tg-model-cache
+          key: ${{ steps.model-cache.outputs.cache-primary-key }}
 
   test-macos:
     runs-on: macos-latest
@@ -147,6 +195,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
+    env:
+      # Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
+      TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -154,11 +205,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Cache embedding model
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
+      - name: Restore the embedding model cache
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: node_modules/@xenova/transformers/.cache
-          key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          path: ${{ runner.temp }}/tg-model-cache
+          key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -171,6 +224,26 @@ jobs:
         run: npm run test:vscode-extension
 
   # The stable check name the branch ruleset points at. The sharded jobs report as `test-linux (1)`, `test-windows (2)` and so on, so a required context naming a shard would stop gating the moment the shard count changed; this job keeps one name the ruleset can pin, and pulls Windows and macOS under the same gate while it is there.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: the expensive file would go on being
+      # downloaded while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      - name: Check the embedding model cache is worth saving
+        id: model-cache-complete
+        if: always() && steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          root="${RUNNER_TEMP}/tg-model-cache"
+          if [ -d "$root" ] && [ "$(find "$root" -name '*.onnx' -size +30M | wc -l)" -gt 0 ]; then
+            echo 'ok=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save the embedding model cache
+        if: always() && steps.model-cache-complete.outputs.ok == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tg-model-cache
+          key: ${{ steps.model-cache.outputs.cache-primary-key }}
+
   test:
     if: always()
     needs: [test-linux, test-windows, test-macos]
