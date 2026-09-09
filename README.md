@@ -169,6 +169,9 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Fetched web content lands raw in model context | Always wrapped in an untrusted-content fence; scanned for attack patterns, and a matched pattern name is written to the log and into the fence's notice |
 | Chatty log repeats the same error or event thousands of times | `token-goat logfold` collapses consecutive duplicates to `[Nx]` counts; same event logged with different timestamps or request IDs folds correctly — ~90–95% smaller on repetitive logs |
 | Reading poetry.lock or package-lock.json to find a pinned version | `token-goat lockdeps` returns a name/version table of direct dependencies; optional packages and transitive entries excluded |
+| Large SVG / diagram file (≥8 KB) read in full | Coordinate path flooding blocked; extracted layer/group IDs and title shown; redirects to `token-goat xml-outline` and `xml-query` |
+| Broad recursive Glob sweep (`*`, `**/*`) on root directory | Pre-Glob hook warns against tree-dumping and points at `token-goat map --compact` for fast, lightweight structure inspection |
+| Compound test/build pipeline (`npm run build && npm run typecheck && npm test`) | Post-Bash hook routes chained build/test/lint commands to `generic-ci` compression, dropping verbose passing steps and compiler noise |
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
 

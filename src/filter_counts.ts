@@ -35,8 +35,8 @@ export const PATH_PATTERN_COUNT =
 
 // --- Static (update the constant when adding to the corresponding module) ---
 
-/** File type intercept handlers — PDF, HTML, txt/log, XLSX, PPTX, DOCX, office binary (ODT/ODS/OTT/ODP), CSV/TSV, VTT/SRT transcript, generic large (src/hints/file_type_handler.ts). */
-export const FILE_TYPE_HANDLER_COUNT = 10
+/** File type intercept handlers — PDF, HTML, txt/log, SVG, XML, XLSX, PPTX, DOCX, office binary (ODT/ODS/OTT/ODP), CSV/TSV, VTT/SRT transcript, generic large (src/hints/file_type_handler.ts). */
+export const FILE_TYPE_HANDLER_COUNT = 12
 
 /** Pre-bash read interceptors — unbalanced shell quoting/heredoc, cat/cat+flags, cat multi-file, cat+WSL, cat|jq, PowerShell-wrapped Get-Content, python open()/heredoc, head, tail/tail-c, Get-Content -Tail, Get-Content Select-Object -First, node readFileSync/require, tasks output, sed line range, directory listing (incl. ls-pipe), find, markdown heading grep, rg structural, grep|grep chain, monitoring-command recall, curl GET cache, curl -o dedup, gh api GET recall, scoped git status/diff --stat recall, rg symbol search, for-loop wc-l, CLI surgical-read dedup (src/hooks_bash.ts). */
 export const BASH_INTERCEPTOR_COUNT = 27
