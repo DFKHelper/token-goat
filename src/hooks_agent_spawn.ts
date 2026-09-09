@@ -18,6 +18,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { emitRewrite, passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
@@ -347,6 +348,9 @@ const ROSTER_WALK_MAX_DEPTH = 4
 /** Hard cap on definition files parsed per scan, so a mispointed or gigantic roster directory cannot stall a post-tool hook. */
 const ROSTER_WALK_MAX_FILES = 400
 
+/** The shape an agent name has to have before it is allowed into a model-facing advisory: the identifier charset real rosters use, colons included for plugin-scoped names, capped so a single definition cannot fill the notice. */
+const AGENT_NAME_RE = /^[A-Za-z0-9._:-]{1,64}$/
+
 /**
  * Parse a Claude Code agent-definition markdown file's YAML frontmatter, answering the one question
  * the unrestricted-spawn advisory needs: does this definition carry a `tools:` allowlist? Corpus
@@ -366,7 +370,10 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
   // `(.*)$` under /m stops before \n but captures a trailing \r, so every capture below is trimmed before use (see the CRLF line-end-predicate defect class).
   const nameMatch = /^name:(.*)$/m.exec(fm)
   const rawName = nameMatch ? (nameMatch[1] as string).trim().replace(/^["']|["']$/g, '') : ''
-  const name = rawName !== '' ? rawName : fallbackName
+  // Both the frontmatter `name:` and the file basename behind it are repository-authored now that the project roster is a scan root, and whichever wins is interpolated into an advisory that reaches the model in token-goat's own `[token-goat]` voice through a channel that neither fences nor neutralizes. So the value has to be shaped like an agent name before it is allowed to speak: anything else is not a name we can recommend, and a definition we cannot name is dropped rather than passed through.
+  const resolved = AGENT_NAME_RE.test(rawName) ? rawName : fallbackName
+  if (!AGENT_NAME_RE.test(resolved)) return null
+  const name = resolved
   const toolsMatch = /^tools:(.*)$/m.exec(fm)
   if (!toolsMatch) return { name, restricted: false }
   const inline = (toolsMatch[1] as string).trim()
@@ -386,9 +393,11 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
  * directories with a realpath cycle guard) and return the sorted names of every definition that
  * carries a `tools:` allowlist. This is the advisory's existence gate: with no restricted definition
  * on the machine there is nothing actionable to recommend, and an unclearable warning trains the
- * user to ignore every warning the tool emits. Deliberately home-level only, not <cwd>/.claude/agents:
- * the gate asks whether a restricted definition exists ON THE MACHINE, and a cwd-relative root would
- * make the answer flap with the directory the harness happened to launch the hook from.
+ * user to ignore every warning the tool emits. Both the home roster and the project's own
+ * <cwd>/.claude/agents are scanned: the project roster holds exactly the definitions a spawn in that
+ * repo should be reaching for, and scanning it is what makes every name here potentially
+ * repository-authored rather than user-authored, which is why parseAgentDefinition constrains the
+ * name's shape before it can reach a model-facing advisory.
  */
 export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   // The project roster is scanned alongside the home one because a repo's own .claude/agents holds exactly the definitions a spawn in that repo should be reaching for, and a home-only default made them invisible to the advisory: this repo carries three such definitions and the advisory named none of them. Duplicate roots are harmless, since the visited set below folds them.
@@ -470,7 +479,8 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
     if (names.length === 0) return ''
     markHintShown(SPAWN_RESTRICT_HINT_KEY)
     recordStat('session_hint', 0, 0, undefined, 'agent-spawn-restrict')
-    const shown = names.slice(0, SPAWN_RESTRICT_MAX_NAMES).join(', ')
+    // Neutralized even though AGENT_NAME_RE already excludes `[`, because this is the layer that survives someone widening that charset later: only the interpolated names go through it, never the sentence around them, since our own `[token-goat]` prefix is exactly what the neutralizer is built to strip.
+    const shown = neutralizeSpokenMarkers(names.slice(0, SPAWN_RESTRICT_MAX_NAMES).join(', '))
     const more = names.length > SPAWN_RESTRICT_MAX_NAMES ? ` and ${names.length - SPAWN_RESTRICT_MAX_NAMES} more` : ''
     return `[token-goat] This spawn ran as general-purpose (the default when subagent_type is omitted), which is unrestricted: its lane starts by paying for every tool and MCP schema on the machine. Tools-restricted agent definitions exist here: ${shown}${more}. A future spawn that fits one of them can pass that name as subagent_type to start with a much smaller prefix. Advisory only: this spawn has already run, and this notice saved nothing.`
   } catch {

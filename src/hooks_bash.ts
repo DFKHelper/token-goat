@@ -1825,7 +1825,10 @@ const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less'
 function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter | null {
   if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) return null
   // splitShellSegments breaks on a bare `&`, so an fd duplication shears mid-token: `npx vitest run 2>&1 | tail -40` would arrive as ['npx vitest run 2>', '1', 'tail -40'] and the `1` remnant would read as an unknown stage, falling the single most common test-run spelling back to generic. Strip the redirect first, exactly as extractLineRangeReadsCompound already does for the same splitter. Only the segment walk uses this: stripOutputPipeline below parses the unsplit command and removes trailing redirections itself.
-  const segments = splitShellSegments(cmd.replace(/\s2>(?:&1|\/dev\/null)/g, ''))
+  const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+  // The line above checks three separators; splitShellSegments recognizes five, and the two it adds are a bare `&` and a newline. That gap let `a | head -20\nb` past the mixture guard while the splitter still saw the trailing command as a pass-through stage, so the first command's family filter ran over a second, unrelated command's bytes -- the exact over-collapse this function exists to refuse, and invisible because dropping the wanted lines improves the ratio. The check is asked about the same string the splitter parses, after the redirect strip rather than before it, so a legitimate `2>&1` is not read as the bare `&` it contains.
+  if (hasBareBackgroundOrNewline(forSplit)) return null
+  const segments = splitShellSegments(forSplit)
   if (segments.length < 2) return null
   for (const segment of segments.slice(1)) {
     const head = safeShlexSplit(segment)?.[0]

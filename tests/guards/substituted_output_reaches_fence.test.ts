@@ -109,9 +109,17 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   // (b) interleaved, open -- see the class note above
   [
     'hooks_agent_spawn.ts::postAgentHandler',
-    'Interleaved: collapseFencedBlocks and dedupeFencedBlocks splice `[token-goat: N lines ' +
-      'elided]` markers into the middle of the subagent report, so a fence around the result would ' +
-      "escape token-goat's own markers. Open, not settled.",
+    'Two bodies, one key, and the second one is why this reason is written out at length. The ' +
+      'report path is interleaved: collapseFencedBlocks and dedupeFencedBlocks splice ' +
+      "`[token-goat: N lines elided]` markers into the middle of the subagent report, so a fence " +
+      "around the result would escape token-goat's own markers. Open, not settled. The spawn-restrict " +
+      'advisory is a different body through a different channel (contextOutput, which unlike ' +
+      'denyOutput neutralises nothing), and it interpolates agent names that became ' +
+      'repository-authored when <cwd>/.claude/agents was added as a scan root. It is unfenced ' +
+      'because nothing of unbounded shape survives into it: parseAgentDefinition admits only ' +
+      'AGENT_NAME_RE-shaped names and drops the definition otherwise, and the joined names are ' +
+      'neutralised before interpolation. Both halves are load-bearing; widening either one puts ' +
+      'this site back in the offenders list, which is the intent.',
   ],
   [
     'hooks_read.ts::elideAlreadyServedLines',

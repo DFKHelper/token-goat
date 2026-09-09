@@ -111,6 +111,26 @@ describe('post-hook filter selection for a piped command', () => {
     expect(compressFilters()).not.toContain('grep')
   })
 
+  // PROVENANCE: HAND-DERIVED. The two commands below are constructed from the separator sets themselves,
+  // not from any capture: the mixture guard checked `&&`, `||` and `;` while splitShellSegments breaks on
+  // five characters, and the two it adds are exactly a newline and a bare `&`. Both spellings therefore
+  // reached the segment walk as though they were one pipeline, and both trailing stages (`cat`, `sed`)
+  // are ordinary commands whose bytes the first command's family filter was never written for. The
+  // assertions are must-not-drop lines from the second command rather than a ratio, because over-collapse
+  // is the failure mode here and it makes the ratio look better, not worse.
+  it('keeps the generic filter when a newline or a bare & hides a second command behind the pipe', async () => {
+    const twoCommands = GREP_LINES + '\nCHANGELOG-MARKER-LINE unreleased entry\n'
+    const newlineBody = await runAndGetBody('grep -rn "export function" src | head -200\ncat CHANGELOG.md', twoCommands)
+    expect(compressFilters(), 'a newline-separated second command must fall back').toContain('generic')
+    expect(compressFilters()).not.toContain('grep')
+    expect(newlineBody, 'the second command’s output must survive the rewrite').toContain('CHANGELOG-MARKER-LINE')
+    ;(recordStat as unknown as { mockClear: () => void }).mockClear()
+    const ampBody = await runAndGetBody('grep -rn "export function" src | head -5 & sed -n 1p notes.txt', twoCommands)
+    expect(compressFilters(), 'a bare & backgrounding the pipeline must fall back').toContain('generic')
+    expect(compressFilters()).not.toContain('grep')
+    expect(ampBody, 'the backgrounded command’s output must survive the rewrite').toContain('CHANGELOG-MARKER-LINE')
+  })
+
   it('keeps the generic filter for a chain, whose output is several commands concatenated', async () => {
     await runAndGetBody('grep -rn "export function" src && echo done')
     expect(compressFilters(), 'a && chain must fall back').toContain('generic')
