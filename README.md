@@ -37,7 +37,7 @@ Restart your AI sessions. Run `token-goat stats` a couple of minutes after your 
 
 > **Built and continually improved, free, by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, [drop me a line](mailto:token-goat@dfkhelper.com).**
 
-[Install](docs/install.md) · [CLI](docs/cli.md) · [What gets installed?](docs/install.md#what-gets-installed) · [Stats](#stats-display) · [Security & uninstall](docs/security.md)
+[Install](docs/install.md) · [CLI](docs/cli.md) · [Architecture Q&A](docs/architecture-qa.html) · [What gets installed?](docs/install.md#what-gets-installed) · [Stats](#stats-display) · [Security & uninstall](docs/security.md)
 
 ---
 
@@ -323,7 +323,7 @@ corpus of captured shell output through the real compression path and reports ho
 result got, alongside a count of the lines each case is not allowed to lose. Deleting output makes
 the first number look better, so the second one is what keeps the first honest.
 
-Every command, with its flags, its output, and the comparison workflows that chain them: **[CLI reference](docs/cli.md)**.
+Every command, with its flags, its output, and the comparison workflows that chain them: **[CLI reference](docs/cli.md)**. For architectural analysis, empirical evaluations, and technical answers to common engineering questions: **[Architecture & Technical Q&A](docs/architecture-qa.html)**.
 
 ## MCP server
 
