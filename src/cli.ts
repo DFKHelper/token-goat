@@ -166,7 +166,7 @@ import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource, stripLower } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
@@ -2365,8 +2365,18 @@ async function cmdSkillSection(nameHeading: string, headingArg?: string): Promis
     // A bare exit 1 with nothing on either stream is indistinguishable from a crash, and gave a
     // caller no way to tell a mistyped heading from a skill that never had one. `section` says
     // what it looked for and what is near it; say the same here.
-    const messages = [`Section '${heading}' not found in skill '${skillName}'`]
     const allHeadings = listSections(filePath)
+    // extractNamedSection returns null for two different situations -- no such heading, and a heading
+    // whose section is empty -- because it ends on `text || null`. Reporting both as "not found"
+    // produced output that contradicted itself: a heading sitting last in a file with nothing under
+    // it answered "Section 'X' not found" and then "Did you mean: - X", suggesting the exact string
+    // just refused. Separate the two before composing the message, so a present-but-empty section is
+    // named as empty and never draws a did-you-mean pointing at itself.
+    const wanted = stripLower(heading)
+    if (allHeadings.some((h) => stripLower(h) === wanted)) {
+      throw new CliError(`Section '${heading}' in skill '${skillName}' is present but empty`)
+    }
+    const messages = [`Section '${heading}' not found in skill '${skillName}'`]
     const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(didYouMean(available))
     else if (allHeadings.length === 0) messages.push(`skill '${skillName}' has no headings`)

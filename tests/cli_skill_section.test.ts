@@ -94,3 +94,30 @@ describe('skill-section exit code on a missing heading', () => {
     expect(msg, 'must suggest the nearest real heading').toContain('Usage')
   })
 })
+
+// Regression guard: extractNamedSection ends on `return text || null`, so a heading that is
+// present but has nothing under it is indistinguishable from a heading that does not exist.
+// cmdSkillSection reported both as "not found", then ran the did-you-mean pass over the real
+// heading list -- which of course contained the requested heading -- and emitted output that
+// contradicted itself: "Section 'X' not found" followed by "Did you mean: - X". Found live on
+// a real skill whose last line is a body-less "### 1.0 (initial)" heading. The fixture below is
+// HAND-DERIVED: a trailing heading with no body is the minimal input shape that reaches the
+// `text || null` branch, written from the markdown structure rather than from the extractor.
+describe('skill-section on a heading that exists but has an empty body', () => {
+  it('reports the section as empty and never suggests the heading the caller just asked for', async () => {
+    writeFileSync(skillFile, ['# Doc', '', '## Usage', 'usage body text', '', '## Changelog', ''].join('\n'), 'utf-8')
+    await storeOutput('sess-3', 'myskill-empty', 'cached body', { sourcePath: skillFile })
+    const stderr: string[] = []
+    const errSpy = spyOnWrite(process.stderr, stderr)
+    let code: number | string | undefined
+    try {
+      code = await runSkillSection('myskill-empty::Changelog')
+    } finally {
+      errSpy.mockRestore()
+    }
+    const msg = stderr.join('')
+    expect(code).toBe(1)
+    expect(msg, 'must say the section is empty, not absent').toContain("Section 'Changelog' in skill 'myskill-empty' is present but empty")
+    expect(msg, 'must not point the caller back at the heading they asked for').not.toContain('Did you mean')
+  })
+})
