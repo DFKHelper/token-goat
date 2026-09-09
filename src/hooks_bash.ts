@@ -1811,7 +1811,10 @@ const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less'
  * regardless of what produced them. Measured on real commands in this repository, a family filter
  * cuts 40-91% more than generic on the same bytes (`grep | head` 84.5%, `rg | head` 88.9%,
  * `ls -laR | head` 91.3%, `git log --stat | cat` 40.1%, `npm ls --all | head` 62.7%), so the whole
- * cost of the pre-hook's decline was landing here as generic-only compression.
+ * cost of the pre-hook's decline was landing here as generic-only compression. The shape below
+ * admits 15,720 of 229,200 real Bash calls carrying 19.24 MB of output, measured after the
+ * `stripCdPrefix` this handler already applies upstream: classifying the raw command instead
+ * credits a `cd X &&` prefix the shipping path has removed, and understates the reach 2.3x.
  *
  * Two conditions, both narrow on purpose. The command must be a *pure* pipeline: any `&&`, `||` or
  * `;` means the output is several commands' bytes concatenated, and one stage's filter applied to

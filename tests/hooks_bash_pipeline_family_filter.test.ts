@@ -93,14 +93,14 @@ describe('post-hook filter selection for a piped command', () => {
     expect(compressFilters()).not.toContain('generic')
   })
 
-  // NOT COVERED, and deliberately not asserted: a piped TEST or BUILD run (`npx vitest run 2>&1 |
-  // tail -40`) never reaches maybeCompressCompoundOutput at all. postBashHandler routes it by
-  // `isBuildCommand` into the cache/delta branch instead, so the selection this file tests is not
-  // consulted and the bytes ship raw. That is a larger, separate lever -- it moves a branch
-  // boundary rather than choosing a filter inside one -- and the vitest filter is measurably worth
-  // reaching (13,738 bytes to 168, keeping the failure pointer and both verdict lines, against
-  // 6,685 for generic). Left as the next step rather than folded in here, and written down because
-  // an untested gap with no note reads as a decision nobody made.
+  // NOT COVERED, deliberately, and measured rather than assumed: a piped TEST or BUILD run (`npx
+  // vitest run 2>&1 | tail -40`) never reaches maybeCompressCompoundOutput at all, because
+  // postBashHandler routes it by `isBuildCommand` into the cache branch first. Per command the
+  // gap looks worth closing -- the vitest filter takes 13,738 bytes to 168, keeping the failure
+  // pointer and both verdict lines, where generic leaves 6,685. The pool is what kills it: across
+  // 229,200 real Bash calls, piped build commands are 331 calls and 0.15 MB, against 19.24 MB for
+  // the pass-through pipelines this file does cover. A ratio that good on a pool that small buys
+  // nothing, so the branch boundary stays where it is.
 
   it('keeps the generic filter when a downstream stage can reshape the bytes', async () => {
     // `sort` is deliberately absent from PIPELINE_PASSTHROUGH_HEADS: it reorders, and `sort -u`
