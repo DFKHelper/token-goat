@@ -266,6 +266,21 @@ describe('mcp-audit', () => {
       expect(report.servers.some((s) => s.name === 'github')).toBe(true)
     })
 
+    it('discovers servers from ~/.copilot/mcp-config.json when claude config is absent', () => {
+      const copilotDir = path.join(homeDir, '.copilot')
+      fs.mkdirSync(copilotDir, { recursive: true })
+      const copilotJsonPath = path.join(copilotDir, 'mcp-config.json')
+      fs.writeFileSync(copilotJsonPath, JSON.stringify({
+        mcpServers: {
+          confluence: { command: 'confluence-mcp' },
+        },
+      }))
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      expect(report.configFound).toBe(true)
+      expect(report.configSourcePath).toBe(copilotJsonPath)
+      expect(report.servers.some((s) => s.name === 'confluence')).toBe(true)
+    })
+
     // resolveProjectRoot canonicalizes the drive letter to lowercase, but Claude Code's
     // ~/.claude.json keys `projects` by whatever casing it literally saw (often uppercase on
     // Windows) -- a drive-letter-case mismatch must not hide a config that is genuinely there.

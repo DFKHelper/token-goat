@@ -183,8 +183,11 @@ const TOOL_TO_TG = {
   create: 'Write',
   edit: 'Edit',
   web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
   grep: 'Grep',
   glob: 'Glob',
+  skill: 'Skill',
+  exit_plan_mode: 'ExitPlanMode',
 }
 
 // Confirmed via github/copilot-cli#3349 (open, unresolved as of writing): some

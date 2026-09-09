@@ -127,11 +127,14 @@ function readClaudeJsonConfig(claudeJsonPath: string, projectRoot: string): McpS
 function discoverMcpConfig(projectRoot: string, home: string): McpConfigDiscovery {
   const mcpJsonPath = path.join(projectRoot, '.mcp.json')
   const claudeJsonPath = path.join(home, '.claude.json')
-  const sourcesChecked = [mcpJsonPath, claudeJsonPath]
+  const copilotJsonPath = path.join(home, '.copilot', 'mcp-config.json')
+  const sourcesChecked = [mcpJsonPath, claudeJsonPath, copilotJsonPath]
   const fromMcpJson = readMcpJsonFile(mcpJsonPath)
   if (fromMcpJson !== null) return { servers: fromMcpJson, sourcePath: mcpJsonPath, sourcesChecked }
   const fromClaudeJson = readClaudeJsonConfig(claudeJsonPath, projectRoot)
   if (fromClaudeJson !== null) return { servers: fromClaudeJson, sourcePath: claudeJsonPath, sourcesChecked }
+  const fromCopilotJson = readMcpJsonFile(copilotJsonPath)
+  if (fromCopilotJson !== null) return { servers: fromCopilotJson, sourcePath: copilotJsonPath, sourcesChecked }
   return { servers: null, sourcePath: null, sourcesChecked }
 }
 

@@ -28,7 +28,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractPowerShellFileMethodRead, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -4688,3 +4688,82 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     expect(result.updatedOutput).toBe('compiling crate number one\n'.repeat(400))
   })
 })
+
+describe('extractPowerShellFileMethodRead — detects [System.IO.File]::ReadAllText and .NET static file reads', () => {
+  it('extracts path from [System.IO.File]::ReadAllText', () => {
+    const r = extractPowerShellFileMethodRead(`[System.IO.File]::ReadAllText('src/auth.ts')`)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('src/auth.ts')
+    expect(r?.isDoc).toBe(false)
+    expect(r?.isConfig).toBe(false)
+  })
+
+  it('extracts path from [IO.File]::ReadAllLines with double quotes', () => {
+    const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllLines("src/types.ts")`)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('src/types.ts')
+  })
+
+  it('extracts path from [IO.File]::ReadAllBytes', () => {
+    const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllBytes('src/binary.dat')`)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('src/binary.dat')
+  })
+
+  it('handles powershell -Command wrapped .NET file reads', () => {
+    const r = extractPowerShellFileMethodRead(`powershell -Command "[System.IO.File]::ReadAllText('config.json')"`)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('config.json')
+    expect(r?.isConfig).toBe(true)
+  })
+
+  it('classifies markdown files as doc', () => {
+    const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllText('README.md')`)
+    expect(r?.isDoc).toBe(true)
+  })
+
+  it('classifies sql files as sql', () => {
+    const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllText('schema.sql')`)
+    expect(r?.isSql).toBe(true)
+  })
+})
+
+describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('denies a source code .NET file read with surgical symbol read hint', () => {
+    const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('src/auth.ts')`))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('PowerShell `[IO.File]::ReadAllText()` bypasses read hooks')
+      expect(result.message).toContain('token-goat read "src/auth.ts::SymbolName"')
+    }
+  })
+
+  it('denies a doc .NET file read with section hint', () => {
+    const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('README.md')`))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat section "README.md::SectionHeading"')
+    }
+  })
+
+  it('emits advisory contextOutput for SQL .NET file read', () => {
+    const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('schema.sql')`))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section "schema.sql::table_name"')
+    }
+  })
+
+  it('intercepts Get-ChildItem -Recurse as directory listing with map hint', () => {
+    const result = preBashHandler(makeBashEvent('Get-ChildItem -Recurse'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map --compact')
+    }
+  })
+})
+
