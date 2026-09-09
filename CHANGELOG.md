@@ -20,7 +20,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
-- **CI finishes in about four minutes instead of ten.** Each platform job now splits `npm test` across a shard matrix (`--shard=N/M`: three shards on Linux and macOS, four on Windows, one runner each), so a job's wall clock is its slowest shard rather than the whole suite. Every test still runs on every platform. A `test` job waits on all three platforms and fails unless every shard succeeded. That keeps one stable check name for the branch ruleset to require, whatever the shard count becomes, and brings Windows and macOS under that gate for the first time. Changed in [.github/workflows/ci.yml](.github/workflows/ci.yml).
+- **CI finishes in four to five minutes instead of ten.** Each platform job now splits `npm test` across a shard matrix (`--shard=N/M`: three shards on Linux and macOS, four on Windows, one runner each), so a job's wall clock is its slowest shard rather than the whole suite. Every test still runs on every platform. A `test` job waits on all three platforms and fails unless every shard succeeded. That keeps one stable check name for the branch ruleset to require, whatever the shard count becomes, and brings Windows and macOS under that gate for the first time. Changed in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## [2.9.7] - 2026-09-08
 
