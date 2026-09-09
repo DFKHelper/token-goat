@@ -19,7 +19,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = tempConfigPath('tg-hooks-read-config-test.toml')
 
 import type { HookEvent } from '../src/hook_registry.js'
-import { preReadHandler, postReadHandler, buildLineDiff } from '../src/hooks_read.js'
+import { preReadHandler, postReadHandler, buildLineDiff, readRequestedSliceWindow } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState } from '../src/session.js'
@@ -3752,5 +3752,116 @@ describe('denied ranged Read credits only the requested window, not the whole fi
     // Must-not-happen: crediting anywhere near the whole file for a 3-line request.
     expect(credited, 'a 3-line ranged Read deny must not credit anywhere near the 50KB file').toBeLessThan(fullBytes / 20)
     expect(credited).toBeGreaterThan(0)
+  })
+})
+
+describe('multi-harness ranged reads (view_range, lines, range, start_line/end_line)', () => {
+  it('normalizes Copilot CLI view_range correctly', () => {
+    const event = makeHookEvent({
+      toolName: 'view',
+      toolInput: { view_range: [145, 185] },
+      sessionId: 'test-harness',
+    })
+    const win = readRequestedSliceWindow(event)
+    expect(win.isExplicitSlice).toBe(true)
+    expect(win.offset).toBe(145)
+    expect(win.limit).toBe(41) // 185 - 145 + 1
+  })
+
+  it('normalizes Copilot CLI view_range with -1 (read to EOF)', () => {
+    const event = makeHookEvent({
+      toolName: 'view',
+      toolInput: { view_range: [100, -1] },
+      sessionId: 'test-harness',
+    })
+    const win = readRequestedSliceWindow(event)
+    expect(win.isExplicitSlice).toBe(true)
+    expect(win.offset).toBe(100)
+    expect(win.limit).toBeUndefined()
+  })
+
+  it('normalizes array range and lines parameters', () => {
+    const eventLines = makeHookEvent({
+      toolName: 'Read',
+      toolInput: { lines: [10, 25] },
+      sessionId: 'test-harness',
+    })
+    expect(readRequestedSliceWindow(eventLines)).toEqual({
+      offset: 10,
+      limit: 16,
+      isExplicitSlice: true,
+    })
+
+    const eventRange = makeHookEvent({
+      toolName: 'Read',
+      toolInput: { range: [5, 15] },
+      sessionId: 'test-harness',
+    })
+    expect(readRequestedSliceWindow(eventRange)).toEqual({
+      offset: 5,
+      limit: 11,
+      isExplicitSlice: true,
+    })
+  })
+
+  it('normalizes start_line / end_line parameters', () => {
+    const event = makeHookEvent({
+      toolName: 'Read',
+      toolInput: { start_line: 20, end_line: 35 },
+      sessionId: 'test-harness',
+    })
+    expect(readRequestedSliceWindow(event)).toEqual({
+      offset: 20,
+      limit: 16,
+      isExplicitSlice: true,
+    })
+  })
+
+  it('identifies bare unranged reads as not an explicit slice', () => {
+    const event = makeHookEvent({
+      toolName: 'Read',
+      toolInput: { file_path: 'foo.txt' },
+      sessionId: 'test-harness',
+    })
+    expect(readRequestedSliceWindow(event).isExplicitSlice).toBe(false)
+  })
+
+  it('allows small view_range slices of large HTML files without false-positive hard denial', () => {
+    // 60KB HTML file (exceeds the 50KB HTML threshold)
+    const filler = '<p>This is filler content inside a large HTML document.</p>\n'
+    const html = '<html><body>\n' + filler.repeat(1200) + '</body></html>\n'
+    const tmpHtml = path.join(os.tmpdir(), `tg-test-large-${Date.now()}-${Math.random().toString(36).slice(2)}.html`)
+    fs.writeFileSync(tmpHtml, html, 'utf8')
+
+    try {
+      // 1. Unranged read is denied as large HTML file
+      const unranged = preReadHandler(
+        makeHookEvent({
+          toolName: 'view',
+          toolInput: { file_path: tmpHtml },
+          sessionId: 'test-session-html-unranged',
+        }),
+      )
+      expect(unranged.hookType).toBe('deny')
+      if (unranged.hookType === 'deny') {
+        expect(unranged.message).toContain('Large HTML file')
+      }
+
+      // 2. Ranged read with view_range [10, 25] (only 16 lines) is NOT denied as large file
+      const ranged = preReadHandler(
+        makeHookEvent({
+          toolName: 'view',
+          toolInput: { file_path: tmpHtml, view_range: [10, 25] },
+          sessionId: 'test-session-html-ranged',
+        }),
+      )
+      expect(ranged.hookType).not.toBe('deny')
+    } finally {
+      try {
+        fs.unlinkSync(tmpHtml)
+      } catch {
+        // cleanup best effort
+      }
+    }
   })
 })

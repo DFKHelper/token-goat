@@ -1,7 +1,11 @@
+import { unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import {
+  diagnoseEditFailure,
   extractFailureText,
   failureSignature,
   MAX_TRACKED_FAILURES,
@@ -134,5 +138,117 @@ describe('postToolUseFailureHandler', () => {
     }
     // The oldest entry has been evicted, so its next occurrence reads as a first occurrence again.
     expect(postToolUseFailureHandler(failureEvent(session, 'Read', 'oldest failure')).hookType).toBe('pass')
+  })
+})
+
+describe('diagnoseEditFailure', () => {
+  it('returns null for non-edit tools', () => {
+    const event = failureEvent('sess-1', 'Read', 'Multiple matches found')
+    expect(diagnoseEditFailure(event, 'Multiple matches found')).toBeNull()
+  })
+
+  it('returns null for unrelated errors', () => {
+    const event: HookEvent = {
+      eventName: 'post_tool_use_failure',
+      toolName: 'Edit',
+      toolInput: { file_path: 'foo.ts', old_string: 'bar' },
+      sessionId: 'sess-1',
+      agentId: undefined,
+      raw: { session_id: 'sess-1', tool_name: 'Edit', error: 'EACCES: permission denied' },
+    }
+    expect(diagnoseEditFailure(event, 'EACCES: permission denied')).toBeNull()
+  })
+
+  it('detects multiple matches and reports exact count and line numbers', () => {
+    const tmpFile = join(tmpdir(), `tg-edit-diag-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+    const content = ['line 1', 'target phrase', 'line 3', 'target phrase', 'line 5'].join('\n')
+    writeFileSync(tmpFile, content, 'utf8')
+
+    try {
+      const event: HookEvent = {
+        eventName: 'post_tool_use_failure',
+        toolName: 'Edit',
+        toolInput: { file_path: tmpFile, old_string: 'target phrase' },
+        sessionId: 'sess-diag-1',
+        agentId: undefined,
+        raw: { session_id: 'sess-diag-1', tool_name: 'Edit', error: 'Multiple matches found' },
+      }
+
+      const diag = diagnoseEditFailure(event, 'Multiple matches found')
+      expect(diag).not.toBeNull()
+      expect(diag).toContain('matched 2 times')
+      expect(diag).toContain('lines 2, 4')
+      expect(diag).toContain('surrounding context')
+    } finally {
+      try {
+        unlinkSync(tmpFile)
+      } catch {
+        // cleanup best-effort
+      }
+    }
+  })
+
+  it('detects not-found with CRLF line ending differences', () => {
+    const tmpFile = join(tmpdir(), `tg-edit-crlf-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+    const content = 'line 1\r\nline 2\r\nline 3\r\n'
+    writeFileSync(tmpFile, content, 'utf8')
+
+    try {
+      const event: HookEvent = {
+        eventName: 'post_tool_use_failure',
+        toolName: 'Edit',
+        toolInput: { file_path: tmpFile, old_string: 'line 1\nline 2' },
+        sessionId: 'sess-crlf',
+        agentId: undefined,
+        raw: { session_id: 'sess-crlf', tool_name: 'Edit', error: 'string to replace was not found' },
+      }
+
+      const diag = diagnoseEditFailure(event, 'string to replace was not found')
+      expect(diag).not.toBeNull()
+      expect(diag).toContain('normalized line endings')
+      expect(diag).toContain('CRLF vs LF')
+    } finally {
+      try {
+        unlinkSync(tmpFile)
+      } catch {
+        // cleanup best-effort
+      }
+    }
+  })
+
+  it('emits edit failure context advisory on the first occurrence of ambiguity', () => {
+    const session = uniqueSession()
+    const tmpFile = join(tmpdir(), `tg-edit-first-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+    const content = ['alpha', 'ambiguous block', 'beta', 'ambiguous block', 'gamma'].join('\n')
+    writeFileSync(tmpFile, content, 'utf8')
+
+    try {
+      const event: HookEvent = {
+        eventName: 'post_tool_use_failure',
+        toolName: 'Edit',
+        toolInput: { file_path: tmpFile, old_string: 'ambiguous block' },
+        sessionId: session,
+        agentId: undefined,
+        raw: { session_id: session, tool_name: 'Edit', error: 'Multiple matches found' },
+      }
+
+      // First failure must NOT be silent: it should immediately give line numbers!
+      const first = postToolUseFailureHandler(event)
+      expect(first.hookType).toBe('context')
+      if (first.hookType === 'context') {
+        expect(first.context).toContain('matched 2 times')
+        expect(first.context).toContain('lines 2, 4')
+      }
+
+      // Exact repeat must NOT spam (already advised once)
+      const second = postToolUseFailureHandler(event)
+      expect(second.hookType).toBe('pass')
+    } finally {
+      try {
+        unlinkSync(tmpFile)
+      } catch {
+        // cleanup best-effort
+      }
+    }
   })
 })
