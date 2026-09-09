@@ -1903,8 +1903,7 @@ function isCiBuildTestSegment(cleaned: string, cwd: string | null): boolean {
 
 function pipelineShapeFilter(cmd: string, cwd: string | null): ToolFilter | null {
   if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) {
-    // For compound command chains (e.g. `npm run build && npm run typecheck && npm run test:guards`),
-    // check if segments contain recognized build, test, or lint commands. If so, route to generic-ci.
+    // For compound command chains (e.g. `npm run build && npm run typecheck`), route recognized build/test/lint commands to generic-ci.
     const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
     if (hasBareBackgroundOrNewline(forSplit)) return null
     const segments = splitShellSegments(forSplit)

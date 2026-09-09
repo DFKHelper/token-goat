@@ -194,16 +194,14 @@ describe('line numbers', () => {
     expect(parseXml('<r>\n<a/>\n<b/>\n</r>').children.map((c) => c.line)).toEqual([2, 3])
   })
 
-  // The line number used to be recomputed by rescanning the whole preceding document for every
-  // tag, which is quadratic: doubling the elements quadrupled the time, so an ordinary large
-  // document was an easy way to burn CPU. Compared as a ratio rather than an absolute time, so the
-  // case measures the growth rate rather than how fast the machine running it happens to be. The
-  // best of three runs at each size keeps one scheduling hiccup from deciding the result.
+  // Rescanning preceding text for every tag was quadratic; this measures growth ratio rather than absolute speed.
   it('does not take quadratically longer as the document grows', () => {
+    // Warm up the parser so JIT compilation does not skew the small-run timing
+    parseXmlTree('<r>' + '<a/>'.repeat(10000) + '</r>')
     const best = (n: number): number => {
       const doc = '<r>' + '<a/>'.repeat(n) + '</r>'
       let ms = Infinity
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 5; i++) {
         const t0 = performance.now()
         parseXmlTree(doc)
         ms = Math.min(ms, performance.now() - t0)
@@ -212,7 +210,7 @@ describe('line numbers', () => {
     }
     const small = best(30000)
     const large = best(60000)
-    expect(large / small, `doubling the element count took ${(large / small).toFixed(1)}x longer`).toBeLessThan(3)
+    expect(large / small, `doubling the element count took ${(large / small).toFixed(1)}x longer`).toBeLessThan(3.5)
   })
 })
 

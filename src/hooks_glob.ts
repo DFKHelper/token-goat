@@ -37,10 +37,7 @@ import { displaySafeText } from './paths.js'
 import { recordGlobQuery, getGlobMatchCount } from './session.js'
 import { recordStat } from './stats.js'
 
-/**
- * Returns true if pattern is a broad catch-all glob on a root or unscoped directory.
- * E.g. wildcard patterns on root paths when path is empty, dot, or a top-level root.
- */
+/** Returns true if pattern is a broad catch-all glob on a root or unscoped directory (e.g. wildcards on empty, dot, or top-level roots). */
 export function isBroadCatchAllGlob(pattern: string, pathArg?: string): boolean {
   const p = pattern.trim()
   const isBroad = p === '*' || p === '**/*' || p === '**' || p === '*.*' || p === '**/*.*' || p === '**/*.**'

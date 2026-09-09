@@ -6,11 +6,15 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
-- **Large SVG/XML and log file surgical interception in Read hook.** SVG files (`>= 8 KB`) dumping dense XML coordinates are now blocked with targeted `token-goat xml-outline` and `token-goat xml-query` suggestions along with extracted layer/group IDs. XML files (`>= 20 KB`) and `.log` files (`>= 10 KB`) receive tailored structural outline and `--tail` recall suggestions. Changed in [src/hints/file_type_handler.ts](src/hints/file_type_handler.ts).
-- **Broad recursive Glob sweep detection.** Root/unscoped directory sweeps with catch-all wildcard patterns (`*`, `**/*`, `**`, etc.) are now detected in `preGlobHandler` and advised to use `token-goat map --compact` for fast, lightweight project layout exploration. Changed in [src/hooks_glob.ts](src/hooks_glob.ts).
-- **Compound test and build pipeline compression.** Multi-step command chains joined by `&&` or `;` containing recognized build, test, or lint runners (such as `npm run build && npm run typecheck && npm run test:guards` or `cargo check && cargo test`) are now routed to `generic-ci` output compression, avoiding megabytes of verbose step output. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
-- **PowerShell here-string Python script read interception.** Script runs using `@'...'@ | python -` or `@'...'@ | py -` to read files via `open()` are now caught and redirected to surgical reads (`token-goat read`, `token-goat section`, `token-goat config-get`), with SQL reads routed to advisory table section hints and read files cached into the session dedup registry. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
-- **Single-file structural Grep pattern routing.** Targeted `Grep` calls on single source or markdown files matching structural symbols (`def `, `class `, `export function `, `#+`) are now routed to `token-goat skeleton` and `token-goat section`/`outline` advisories instead of producing heavy match dumps. Changed in [src/hooks_grep.ts](src/hooks_grep.ts).
+- **Large SVG/XML and log reads now redirect to outlines instead of dumping raw coordinates or text.** Reading an SVG file (`>= 8 KB`) full of path coordinate strings is intercepted with layer and group IDs plus `xml-outline` and `xml-query` commands. Generic XML files (`>= 20 KB`) receive `xml-outline` and `xml-query` pointers, and `.log` files drop their threshold from 20 KB to 10 KB with `head`, `tail`, or `logfold` suggestions. Changed in [src/hints/file_type_handler.ts](src/hints/file_type_handler.ts).
+
+- **Broad catch-all Glob sweeps are flagged before walking the directory tree.** Root-level searches with wildcards like `*`, `**/*`, and `**` without a directory anchor or file extension trigger an advisory pointing to `token-goat map --compact`, avoiding multi-screen file lists that flood context. Changed in [src/hooks_glob.ts](src/hooks_glob.ts).
+
+- **Chained test and build pipelines now route to `generic-ci` output compression.** Multi-step commands joined by `&&` or `;` (such as `npm run build && npm run typecheck && npm test` or `cargo check && cargo test`) bypass single-command monitoring recall and compress through the post-hook CI filter, stripping compiler noise and passing test steps. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
+
+- **PowerShell here-string Python scripts that read files are intercepted.** Script invocations piping inline Python (`@'...'@ | python -`) to open files are parsed for target paths and redirected to `token-goat read`, `section`, or `config-get`, with SQL files getting table section hints and paths recorded into the session cache. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
+
+- **Single-file structural Grep searches suggest skeleton or outline views.** Searching a single code or markdown file for structural patterns (`def `, `class `, `export function `, markdown `#` headings) routes to `token-goat skeleton`, `outline`, or `section` instead of running a raw regex match. Changed in [src/hooks_grep.ts](src/hooks_grep.ts).
 
 ## [2.9.7] - 2026-09-08
 
