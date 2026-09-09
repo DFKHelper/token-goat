@@ -19,7 +19,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-hooks-grep-config-test.toml')
 
-import { postGrepHandler, preGrepDedupHandler } from '../src/hooks_grep.js'
+import { postGrepHandler, preGrepHandler, preGrepDedupHandler, extractGrepStructuralSearch } from '../src/hooks_grep.js'
 import { recordStat } from '../src/stats.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
@@ -390,5 +390,88 @@ describe('preGrepDedupHandler', () => {
     if (result.hookType === 'context') {
       expect(result.context).toContain('0 matches')
     }
+  })
+})
+
+describe('extractGrepStructuralSearch', () => {
+  it('extracts Python symbol pattern on a single python file', () => {
+    const res = extractGrepStructuralSearch({ path: 'src/worker.py', pattern: 'def ' })
+    expect(res).toEqual({ filePath: 'src/worker.py', isDoc: false, isSource: true })
+  })
+
+  it('extracts TypeScript export pattern on a single typescript file', () => {
+    const res = extractGrepStructuralSearch({ path: 'src/parser.ts', pattern: 'export function ' })
+    expect(res).toEqual({ filePath: 'src/parser.ts', isDoc: false, isSource: true })
+  })
+
+  it('extracts Markdown heading pattern on a markdown file', () => {
+    const res = extractGrepStructuralSearch({ path: 'README.md', pattern: '^## ' })
+    expect(res).toEqual({ filePath: 'README.md', isDoc: true, isSource: false })
+  })
+
+  it('handles paths array with single element', () => {
+    const res = extractGrepStructuralSearch({ paths: ['src/main.rs'], pattern: 'fn ' })
+    expect(res).toEqual({ filePath: 'src/main.rs', isDoc: false, isSource: true })
+  })
+
+  it('returns null for directory search (not single file)', () => {
+    const res = extractGrepStructuralSearch({ path: 'src', pattern: 'def ' })
+    expect(res).toBeNull()
+  })
+
+  it('returns null for multiple paths', () => {
+    const res = extractGrepStructuralSearch({ paths: ['src/a.py', 'src/b.py'], pattern: 'def ' })
+    expect(res).toBeNull()
+  })
+
+  it('returns null for non-structural pattern', () => {
+    const res = extractGrepStructuralSearch({ path: 'src/worker.py', pattern: 'return null' })
+    expect(res).toBeNull()
+  })
+
+  it('returns null for glob path pattern', () => {
+    const res = extractGrepStructuralSearch({ path: 'src/*.py', pattern: 'def ' })
+    expect(res).toBeNull()
+  })
+})
+
+describe('preGrepHandler — single-file structural searches', () => {
+  it('emits a skeleton hint for single-file python def search', () => {
+    const event = makeHookEvent({
+      toolName: 'Grep',
+      toolInput: { path: 'src/worker.py', pattern: 'def ' },
+      sessionId: 'test',
+    })
+    const result = preGrepHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat skeleton "src/worker.py"')
+      expect(result.context).toContain('token-goat read')
+    }
+    expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'session_hint')).toBeDefined()
+  })
+
+  it('emits a section/outline hint for markdown heading search', () => {
+    const event = makeHookEvent({
+      toolName: 'Grep',
+      toolInput: { path: 'docs/arch.md', pattern: '^# ' },
+      sessionId: 'test',
+    })
+    const result = preGrepHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section "docs/arch.md::SectionHeading"')
+      expect(result.context).toContain('token-goat outline "docs/arch.md"')
+    }
+  })
+
+  it('falls back to preGrepDedupHandler when not a single-file structural search', () => {
+    const event = makeHookEvent({
+      toolName: 'Grep',
+      toolInput: { path: 'src', pattern: 'useEffect' },
+      sessionId: 'test',
+    })
+    const result = preGrepHandler(event)
+    expect(result.hookType).toBe('pass')
   })
 })

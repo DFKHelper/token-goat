@@ -9,10 +9,11 @@
 import { registerHook } from './hook_registry.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { emitRewrite, makeDedupHintHandlers, passOutput, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { emitRewrite, makeDedupHintHandlers, passOutput, contextOutput, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { redactSecrets } from './secret_redact.js'
+import { recordStat } from './stats.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
  *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
@@ -143,6 +144,72 @@ function foldGrepContentHandler(event: HookEvent): HookOutput {
   }
 }
 
+const DOC_EXT_RE = /\.(?:md|mdx|rst|txt)$/i
+const SOURCE_EXT_RE = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less)$/i
+
+const STRUCTURAL_DOC_PATTERN_RE = /^(?:\^)?#+\s*/
+const STRUCTURAL_SOURCE_PATTERN_RE = /^(?:\^|\s)*(?:def|class|function|async\s+def|async\s+function|export\s+(?:default\s+)?(?:class|function|interface|type|const|enum)|func|fn|struct|interface|impl|type)\b/i
+
+export interface GrepStructuralSearchResult {
+  filePath: string
+  isDoc: boolean
+  isSource: boolean
+}
+
+/** Extracts target file and pattern classification from a Grep call targeting a single file with structural symbol/heading patterns. */
+export function extractGrepStructuralSearch(toolInput: Record<string, unknown>): GrepStructuralSearchResult | null {
+  const pattern = typeof toolInput['pattern'] === 'string' ? toolInput['pattern'].trim() : ''
+  if (!pattern) return null
+
+  let rawPath: string | null = null
+  if (typeof toolInput['path'] === 'string' && toolInput['path'].trim() !== '') {
+    rawPath = toolInput['path'].trim()
+  } else if (typeof toolInput['paths'] === 'string' && toolInput['paths'].trim() !== '') {
+    rawPath = toolInput['paths'].trim()
+  } else if (Array.isArray(toolInput['paths']) && toolInput['paths'].length === 1 && typeof toolInput['paths'][0] === 'string') {
+    rawPath = toolInput['paths'][0].trim()
+  }
+
+  if (!rawPath) return null
+  if (/[*?[{]/.test(rawPath)) return null
+
+  if (DOC_EXT_RE.test(rawPath) && STRUCTURAL_DOC_PATTERN_RE.test(pattern)) {
+    return { filePath: rawPath, isDoc: true, isSource: false }
+  }
+
+  if (SOURCE_EXT_RE.test(rawPath) && STRUCTURAL_SOURCE_PATTERN_RE.test(pattern)) {
+    return { filePath: rawPath, isDoc: false, isSource: true }
+  }
+
+  return null
+}
+
+/**
+ * pre_tool_use handler for the Grep tool.
+ *
+ * Checks for single-file structural searches (e.g. def/class in Python, headings in Markdown)
+ * to advise surgical token-goat outline/skeleton/section commands instead of dumping large match
+ * outputs, and falls back to duplicate-search deduplication advice.
+ */
+function preGrepHandler(event: HookEvent): HookOutput {
+  try {
+    if (getToolName(event) !== 'Grep') return passOutput()
+    const toolInput = getToolInput(event)
+    const structSearch = extractGrepStructuralSearch(toolInput)
+    if (structSearch !== null) {
+      recordStat('session_hint', 0, 0)
+      const { filePath, isDoc } = structSearch
+      const hint = isDoc
+        ? 'Scanning a document for headings loads large match output. Use `token-goat section "' + filePath + '::SectionHeading"` to read one section or `token-goat outline "' + filePath + '"` to see the document outline.'
+        : 'Scanning a source file for symbols loads large match output. Use `token-goat skeleton "' + filePath + '"` to see the file structure or `token-goat read "' + filePath + '::SymbolName"` to inspect a specific symbol.'
+      return contextOutput(hint)
+    }
+    return preGrepDedupHandler(event)
+  } catch {
+    return passOutput()
+  }
+}
+
 /** Combines the dedup-count recorder (unconditional side effect, always passes) with the
  *  content-mode path-folding rewrite above: the fold's rewrite wins when it fires, otherwise
  *  this falls back to whatever the dedup handler returned (always `pass`). */
@@ -153,8 +220,8 @@ function postGrepHandler(event: HookEvent): HookOutput {
   return dedupResult
 }
 
-export { postGrepHandler, preGrepDedupHandler }
+export { postGrepHandler, preGrepHandler, preGrepDedupHandler }
 
 // Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a correctness-relevant deny there (node_modules, oversized file) always takes priority over this purely advisory recall hint.
-registerHook('pre_tool_use', preGrepDedupHandler, { toolName: 'Grep' })
+registerHook('pre_tool_use', preGrepHandler, { toolName: 'Grep' })
 registerHook('post_tool_use', postGrepHandler, { toolName: 'Grep' })

@@ -866,45 +866,84 @@ function pythonOpenPathsAreAllLiteral(text: string): boolean {
   return calls.length > 0 && calls.every((call) => call.pathLiteral !== null)
 }
 
-/** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
-function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean; isOutputFile: boolean } | null {
-  if (!/^python3?\b/.test(cmd)) return null
+export interface PythonFileReadResult {
+  filePath: string
+  isDoc: boolean
+  isConfig: boolean
+  isEnv: boolean
+  isSql: boolean
+  isOutputFile: boolean
+}
+
+const KNOWN_PYTHON_EXT_STR = 'java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|html|htm|conf|cfg|ini|properties|sql|ps1|psm1|env'
+const OPEN_EXT = new RegExp(`\\.(?:${KNOWN_PYTHON_EXT_STR})$`, 'i')
+
+/** Returns the file path and metadata if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
+export function extractPythonFileRead(cmd: string): PythonFileReadResult | null {
+  let inner = cmd.trim()
+  const w = POWERSHELL_WRAP_RE.exec(inner)
+  if (w) {
+    inner = (w[1] ?? w[2] ?? '').trim()
+  }
+
+  // Check for PowerShell here-string piped to Python:
+  // @'
+  // ...
+  // '@ | python -
+  const psHereMatch =
+    /^@'([\s\S]*?)'@\s*\|\s*(?:python3?|py)(?:\.exe)?(?:\s+-\S*|\s+-)?\s*$/i.exec(inner) ??
+    /^@"([\s\S]*?)"@\s*\|\s*(?:python3?|py)(?:\.exe)?(?:\s+-\S*|\s+-)?\s*$/i.exec(inner)
+  let pythonBody: string | null = null
+  if (psHereMatch) {
+    pythonBody = (psHereMatch[1] ?? '').trim()
+  } else if (/^(?:python3?|py)(?:\.exe)?\b/i.test(inner)) {
+    pythonBody = inner
+  }
+
+  if (pythonBody === null) return null
+
   // Return null when the command shows write intent — these are edits, not reads
-  if (pythonOpenWritesAFile(cmd) || pythonWritesThroughFileObject(cmd)) return null
+  if (pythonOpenWritesAFile(pythonBody) || pythonWritesThroughFileObject(pythonBody)) return null
 
   // .output files are task artifacts, not source, so neither a symbol read nor a section read fits. Which recall command fits is decided by the caller, which can look at the bytes; the extension alone does not say whether this is an agent transcript or a background command's stdout.
-  const outputOpen = /open\s*\(\s*r?['"]([^'"]+\.output)['"]/i.exec(cmd)
+  const outputOpen = /open\s*\(\s*r?['"]([^'"]+\.output)['"]/i.exec(pythonBody)
   if (outputOpen?.[1]) {
     const filePath = outputOpen[1]
     if (isOrchestratorStateFile(filePath)) return null
-    return { filePath, isDoc: false, isOutputFile: true }
+    return { filePath, isDoc: false, isConfig: false, isEnv: false, isSql: false, isOutputFile: true }
   }
 
-  const OPEN_EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|ps1|psm1)/i
+  const classifyResult = (filePath: string): PythonFileReadResult => {
+    const flags = classifyFileExtensions(filePath)
+    if (flags !== null) {
+      return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isEnv: flags.isEnv, isSql: flags.isSql, isOutputFile: false }
+    }
+    const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+    const isEnv = /\.env(\.\w+)?$/i.test(filePath)
+    return { filePath, isDoc, isConfig, isEnv, isSql, isOutputFile: false }
+  }
 
   // Heredoc form: python3 - << 'PYEOF'\n...\nPYEOF
-  const heredocMatch = /^python3?\s+-\s+<<\s*'?(\w+)'?\s*\n([\s\S]*?)\n\1\s*$/.exec(cmd)
+  const heredocMatch = /^python3?\s+-\s+<<\s*'?(\w+)'?\s*\n([\s\S]*?)\n\1\s*$/.exec(pythonBody)
   if (heredocMatch) {
     const body = heredocMatch[2] ?? ''
     // Write-mode exclusion in the heredoc body
     if (pythonOpenWritesAFile(body) || pythonWritesThroughFileObject(body)) return null
     // Direct: open(r'path.ext') or open("path.ext") in body
-    const heredocOpen = /open\s*\(\s*r?['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(body)
+    const heredocOpen = new RegExp(`open\\s*\\(\\s*r?['"]([^'"]+\\.(?:${KNOWN_PYTHON_EXT_STR}))['"]`, 'i').exec(body)
     if (heredocOpen?.[1]) {
       const filePath = heredocOpen[1]
       if (isOrchestratorStateFile(filePath)) return null
-      const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-      return { filePath, isDoc, isOutputFile: false }
+      return classifyResult(filePath)
     }
     // Indirect: open(var, ...) where a string literal with known ext appears in the body
     if (/open\s*\(/.test(body) && !pythonOpenPathsAreAllLiteral(body)) {
-      const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(body)
+      const literal = new RegExp(`['"]([^'"]+\\.(?:${KNOWN_PYTHON_EXT_STR}))['"]`, 'i').exec(body)
       if (literal?.[1]) {
         const filePath = literal[1]
         if (isOrchestratorStateFile(filePath)) return null
         if (OPEN_EXT.test(filePath)) {
-          const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-          return { filePath, isDoc, isOutputFile: false }
+          return classifyResult(filePath)
         }
       }
     }
@@ -912,24 +951,22 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
   }
 
   // Direct: open('path.ext') or open("path.ext")
-  const direct = /open\(['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
+  const direct = new RegExp(`open\\s*\\(\\s*r?['"]([^'"]+\\.(?:${KNOWN_PYTHON_EXT_STR}))['"]`, 'i').exec(pythonBody)
   if (direct) {
     const filePath = direct[1] ?? ''
     if (!filePath) return null
     if (isOrchestratorStateFile(filePath)) return null
-    const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-    return { filePath, isDoc, isOutputFile: false }
+    return classifyResult(filePath)
   }
   // Indirect: open(var, ...) where a string literal with a known extension appears elsewhere in the cmd
-  if (/open\s*\(/.test(cmd) && !pythonOpenPathsAreAllLiteral(cmd)) {
-    const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
+  if (/open\s*\(/.test(pythonBody) && !pythonOpenPathsAreAllLiteral(pythonBody)) {
+    const literal = new RegExp(`['"]([^'"]+\\.(?:${KNOWN_PYTHON_EXT_STR}))['"]`, 'i').exec(pythonBody)
     if (literal) {
       const filePath = literal[1] ?? ''
       if (filePath) {
         if (isOrchestratorStateFile(filePath)) return null
         if (OPEN_EXT.test(filePath)) {
-          const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-          return { filePath, isDoc, isOutputFile: false }
+          return classifyResult(filePath)
         }
       }
     }
@@ -2837,7 +2874,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
-    const { filePath, isDoc, isOutputFile } = pyRead
+    const { filePath, isDoc, isConfig, isEnv, isSql, isOutputFile } = pyRead
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
@@ -2853,9 +2890,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         'This `.output` file is a background command\'s stdout. Use `token-goat bash-output --file "' + hintPath + '"` to narrow it with `--grep PATTERN`, `--tail N` or `--head N`, instead of reading the whole file.',
       )
     }
-    const hint = isDoc
-      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
+    if (isSql) {
+      return contextOutput(
+        'Python `open()` file reads bypass read hooks. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
+      )
+    }
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
     return cdStripped ? contextOutput('Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 
@@ -3266,6 +3306,11 @@ function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): vo
   const psMethod = extractPowerShellFileMethodRead(cmd)
   if (psMethod !== null) {
     recordFileRead(resolve(psMethod.filePath))
+    return
+  }
+  const pyRead = extractPythonFileRead(cmd)
+  if (pyRead !== null && !pyRead.isOutputFile) {
+    recordFileRead(resolve(pyRead.filePath))
     return
   }
 }
