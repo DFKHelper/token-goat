@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.8] - 2026-09-09
+
 ### Added
 
 - **Large SVG/XML and log reads now redirect to outlines instead of dumping raw coordinates or text.** Reading an SVG file (`>= 8 KB`) full of path coordinate strings is intercepted with layer and group IDs plus `xml-outline` and `xml-query` commands. Generic XML files (`>= 20 KB`) receive `xml-outline` and `xml-query` pointers, and `.log` files drop their threshold from 20 KB to 10 KB with `head`, `tail`, or `logfold` suggestions. Changed in [src/hints/file_type_handler.ts](src/hints/file_type_handler.ts).
@@ -15,6 +17,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **PowerShell here-string Python scripts that read files are intercepted.** Script invocations piping inline Python (`@'...'@ | python -`) to open files are parsed for target paths and redirected to `token-goat read`, `section`, or `config-get`, with SQL files getting table section hints and paths recorded into the session cache. Changed in [src/hooks_bash.ts](src/hooks_bash.ts).
 
 - **Single-file structural Grep searches suggest skeleton or outline views.** Searching a single code or markdown file for structural patterns (`def `, `class `, `export function `, markdown `#` headings) routes to `token-goat skeleton`, `outline`, or `section` instead of running a raw regex match. Changed in [src/hooks_grep.ts](src/hooks_grep.ts).
+
+### Changed
+
+- **CI finishes in about four minutes instead of ten.** Each platform job now splits `npm test` across a shard matrix (`--shard=N/M`: three shards on Linux and macOS, four on Windows, one runner each), so a job's wall clock is its slowest shard rather than the whole suite. Every test still runs on every platform. A `test` job waits on all three platforms and fails unless every shard succeeded. That keeps one stable check name for the branch ruleset to require, whatever the shard count becomes, and brings Windows and macOS under that gate for the first time. Changed in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## [2.9.7] - 2026-09-08
 
