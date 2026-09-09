@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { dataDir } from './constants.js'
-import { normalizePath } from './paths.js'
+import { displaySafePath, normalizePath } from './paths.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { redactSecrets } from './secret_redact.js'
 import { embedTexts, isAvailable } from './embeddings.js'
@@ -202,5 +202,6 @@ export function buildDeltaCapsule(projectRoot: string, limit = 8): string | null
     })
     .slice(0, limit)
   if (changed.length === 0) return null
-  return `Cross-session evidence changed since it was cached:\n${changed.map((entry) => `- ${entry.source} (use a fresh surgical read)`).join('\n')}`
+  // The path is repository-authored: it comes from whatever file a Read touched, and this capsule is delivered as a SessionStart context block token-goat speaks in its own voice. A checkout containing a file named with our own marker would otherwise put an instruction-shaped line into that block, so the path goes through the same display helper every other model-facing path in this codebase uses.
+  return `Cross-session evidence changed since it was cached:\n${changed.map((entry) => `- ${displaySafePath(entry.source)} (use a fresh surgical read)`).join('\n')}`
 }

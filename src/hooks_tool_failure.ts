@@ -27,6 +27,7 @@ import { dirname } from 'node:path'
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { contextOutput, getToolName, passOutput } from './hooks_common.js'
+import { displaySafeText } from './paths.js'
 import { sessionSidecarPath } from './session_store.js'
 import type { HookOutput } from './types.js'
 
@@ -113,7 +114,8 @@ function writeLedger(target: string, ledger: FailureLedger): void {
 
 /** The advisory itself. Deliberately one line: it rides alongside a failure the model must read anyway. */
 export function repeatFailureNotice(toolName: string | undefined): string {
-  const tool = toolName === undefined || toolName === '' ? 'This tool' : toolName
+  // A tool name is not our text: an MCP server chooses the names it advertises, and this notice is delivered in token-goat's own voice, so a server naming a tool after our own marker would otherwise speak through us.
+  const tool = toolName === undefined || toolName === '' ? 'This tool' : displaySafeText(toolName)
   return `[token-goat] ${tool} just failed with the same error as an earlier call this session. Retrying it unchanged will fail the same way -- change the arguments, the tool, or the approach.`
 }
 
