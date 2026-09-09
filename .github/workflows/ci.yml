@@ -78,9 +78,6 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    env:
-      # Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
-      TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -88,6 +85,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      # Exported here rather than in a job-level `env:` block, because the `runner` context does not exist at job level and naming it there makes GitHub reject the whole workflow file. Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
+      - name: Point the embedding model cache at a path that outlives the data root
+        shell: bash
+        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
       # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
       - name: Restore the embedding model cache
         id: model-cache
@@ -142,9 +143,6 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    env:
-      # Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
-      TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -152,6 +150,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      # Exported here rather than in a job-level `env:` block, because the `runner` context does not exist at job level and naming it there makes GitHub reject the whole workflow file. Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
+      - name: Point the embedding model cache at a path that outlives the data root
+        shell: bash
+        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
       # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
       - name: Restore the embedding model cache
         id: model-cache
@@ -195,9 +197,6 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    env:
-      # Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
-      TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -205,6 +204,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      # Exported here rather than in a job-level `env:` block, because the `runner` context does not exist at job level and naming it there makes GitHub reject the whole workflow file. Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
+      - name: Point the embedding model cache at a path that outlives the data root
+        shell: bash
+        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
       # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
       - name: Restore the embedding model cache
         id: model-cache
