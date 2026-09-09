@@ -112,6 +112,24 @@ async function callAgentHook(
   return result
 }
 
+// The roster scan reads the project's own .claude/agents alongside the home one, so a suite that sandboxes only HOME still picks up whatever definitions this repo ships: three of them, which is enough to make the advisory fire in tests that assert it stays silent. Running every test from an empty directory puts the whole roster under the test's control, which is what tests pinning the advisory's exact text were always assuming.
+let prevTestCwd = ''
+let cwdSandbox = ''
+beforeEach(() => {
+  prevTestCwd = process.cwd()
+  cwdSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-')))
+  process.chdir(cwdSandbox)
+})
+afterEach(() => {
+  process.chdir(prevTestCwd)
+  // Best-effort: the cross-process tests spawn a child whose cwd is this sandbox, and Windows refuses to remove a directory that is a live process's cwd, so a still-exiting child turns cleanup into an EPERM that has nothing to do with the assertion under test. The sandbox lives inside the run's own temp root and goes away with it.
+  try {
+    fs.rmSync(cwdSandbox, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+})
+
 describe('Agent spawn briefing hook (real runHook dispatch)', () => {
   it('appends a briefing to an Agent tool prompt', async () => {
     const prompt = 'Build a feature that does X.'
@@ -1086,6 +1104,25 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
       expect(findRestrictedAgentNames([root])).toEqual(['alpha', 'zeta-restricted'])
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Every other test here passes `roots` explicitly, which is the injected-seam trap: the argument the test supplies is the one the shipping call omits, so the DEFAULT root set was covered by nothing. It was home-only, and a repo's own .claude/agents went unread; this drives findRestrictedAgentNames() with no argument, the way buildUnrestrictedSpawnAdvisory calls it.
+  it('scans the project roster too when called with no roots, the way the shipping caller invokes it', () => {
+    const proj = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-roster-')))
+    const prevCwd = process.cwd()
+    try {
+      fs.mkdirSync(path.join(proj, '.claude', 'agents'), { recursive: true })
+      fs.writeFileSync(path.join(proj, '.claude', 'agents', 'scoped.md'), '---\nname: project-scoped-agent\ntools: Read, Grep\n---\nb')
+      fs.writeFileSync(path.join(proj, '.claude', 'agents', 'open.md'), UNRESTRICTED_DEF)
+      process.chdir(proj)
+      const names = findRestrictedAgentNames()
+      // toContain rather than toEqual: the home roster is a real directory on the running machine and legitimately contributes names, so pinning the whole array would make this assert the developer's home setup instead of the project-root behavior under test.
+      expect(names).toContain('project-scoped-agent')
+      expect(names).not.toContain('open')
+    } finally {
+      process.chdir(prevCwd)
+      fs.rmSync(proj, { recursive: true, force: true })
     }
   })
 })

@@ -43,6 +43,7 @@ export interface BashCompressConfig {
   cache_max_bytes: number
   cache_max_bytes_per_output: number
   min_net_savings_bytes: number
+  elide_served_shell_output: boolean
 }
 
 export interface AgentReportConfig {
@@ -389,6 +390,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // while the real-win half sits at p75=393B / p90=952B net. 100 kills the
     // marker-doesn't-even-pay-for-itself tier without touching genuine wins.
     min_net_savings_bytes: 100,
+    // Extends the per-file already-served elision (which only reaches cat/head/tail/sed/awk-shaped reads) to every other Bash command's output -- npm test, git, rg, build runs -- matched against a session-wide served-output list instead of a per-file one. On by default: it goes through the same isRewriteWorthwhile net-benefit gate as every other rewrite here, so it never ships a notice that costs more than the lines it withholds.
+    elide_served_shell_output: true,
   },
   agent_report: {
     // Well above the ~2,220 char/call average measured from real claude-skills session transcripts, so only genuine outlier reports are touched. Preserves the hardcoded AGENT_RESULT_CACHE_MIN_BYTES this replaced, so untouched-config installs see no behavior change.
@@ -1583,6 +1586,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
   bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
   bc.min_net_savings_bytes = validatedInt(bc_raw['min_net_savings_bytes'], bc.min_net_savings_bytes, ...boundsOf('bash_compress.min_net_savings_bytes'))
+  bc.elide_served_shell_output = validatedBool(bc_raw['elide_served_shell_output'], bc.elide_served_shell_output)
   bc.enabled = envBool('TOKEN_GOAT_BASH_COMPRESS', bc.enabled)
   bc.cache_min_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MIN_BYTES', bc.cache_min_bytes, ...boundsOf('bash_compress.cache_min_bytes'))
   bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
@@ -2046,6 +2050,7 @@ export function saveConfig(config: Config): void {
       cache_max_bytes: bc.cache_max_bytes,
       cache_max_bytes_per_output: bc.cache_max_bytes_per_output,
       min_net_savings_bytes: bc.min_net_savings_bytes,
+      elide_served_shell_output: bc.elide_served_shell_output,
     },
     agent_report: {
       min_bytes: config.agent_report.min_bytes,

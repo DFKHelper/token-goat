@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
+import { setTreeSitterCoreForTesting } from '../src/parser.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -53,6 +54,7 @@ describe('cli_doctor', () => {
     // close it before rmSync or Windows refuses to delete the locked .db/.db-wal files.
     clearModuleCaches()
     setTsModuleForTesting(undefined)
+    setTreeSitterCoreForTesting(undefined)
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }
@@ -875,6 +877,33 @@ describe('cli_doctor', () => {
       expect(result.name).toBe('TypeScript compiler')
       expect(result.status).toBe('warn')
       expect(result.message).toContain('unavailable')
+    })
+  })
+
+  describe('checkTreeSitter', () => {
+    // Provenance: CAPTURE. `tree-sitter` and its grammars are installed as devDependencies in
+    // this repo's own node_modules (see optionalDependencies in package.json), so the real
+    // predicate reports available with no override -- this exercises the actual production path.
+    it('returns ok with a per-grammar count when tree-sitter is available', () => {
+      const result = checkTreeSitter()
+      expect(result.name).toBe('Tree-sitter')
+      expect(result.status).toBe('ok')
+      expect(result.message).toMatch(/^available \(\d+\/\d+ grammars\)$/)
+    })
+
+    // Provenance: HAND-DERIVED. Forces the same predicate `isTreeSitterAvailable` uses
+    // (`loadParserCtor` via `setTreeSitterCoreForTesting`) to genuinely report unavailable,
+    // rather than asserting against a string this test also wrote.
+    it('returns warn (not fail) naming the disabled features and the likely cause when tree-sitter is unavailable', () => {
+      setTreeSitterCoreForTesting(null)
+      const result = checkTreeSitter()
+      expect(result.name).toBe('Tree-sitter')
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('unavailable')
+      expect(result.message).toContain('source skeleton fold')
+      expect(result.message).toContain('disk-parse fallback')
+      expect(result.message).toContain('tree-sitter indexing')
+      expect(result.message).toContain('optional native dependency')
     })
   })
 

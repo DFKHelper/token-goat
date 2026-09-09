@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 // Importing relay registers every hook module (including hooks_agent_spawn) for its side effects, so runHook dispatches through the real production registry -- same pattern as tests/hooks_agent_spawn.test.ts.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
@@ -33,6 +33,24 @@ function writeRoster(): void {
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'lean-coder.md'), RESTRICTED_DEF)
 }
+
+// The scan also reads the project's own .claude/agents, so sandboxing HOME alone leaves this repo's three shipped definitions in the roster and the pinned advisory text above names four agents instead of one. Every test here runs from an empty directory so the roster is entirely the test's.
+let prevTestCwd = ''
+let cwdSandbox = ''
+beforeEach(() => {
+  prevTestCwd = process.cwd()
+  cwdSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-copilot-')))
+  process.chdir(cwdSandbox)
+})
+afterEach(() => {
+  process.chdir(prevTestCwd)
+  // Best-effort: a still-exiting child process whose cwd is this sandbox makes Windows refuse the removal, which has nothing to do with the assertion under test. It lives inside the run's temp root and goes away with it.
+  try {
+    fs.rmSync(cwdSandbox, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+})
 
 let prevOverride: string | undefined
 

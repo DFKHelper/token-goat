@@ -26,8 +26,9 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
+import { normalizePath } from './paths.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -386,14 +387,18 @@ function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Ar
   return Array.from(byPath.entries())
 }
 
-/** Merge served-output indexes: union per path, newest-last, capped. Unlike {@link mergeLineRanges} the cap keeps the NEWEST ids rather than refusing new ones at the cap, because a later body is the more likely container of the next read and a stale id only costs a failed containment check. */
+// The generic served-output key as it appears in a serialized map, i.e. already folded the same way recordFileServedOutput folds it -- computed once so the merge below does not refold it on every entry.
+const GENERIC_SERVED_OUTPUT_FOLDED_KEY = foldPath(normalizePath(GENERIC_SERVED_OUTPUT_KEY))
+
+/** Merge served-output indexes: union per path, newest-last, capped. Unlike {@link mergeLineRanges} the cap keeps the NEWEST ids rather than refusing new ones at the cap, because a later body is the more likely container of the next read and a stale id only costs a failed containment check. The session-wide generic key uses its own, larger cap: see {@link MAX_GENERIC_SERVED_OUTPUTS}. */
 function mergeServedOutputs(disk: Array<[string, string[]]>, mem: Array<[string, string[]]>): Array<[string, string[]]> {
   const byPath = new Map<string, string[]>()
   for (const [filePath, ids] of disk) byPath.set(filePath, [...ids])
   for (const [filePath, ids] of mem) {
     const prev = byPath.get(filePath) ?? []
     const merged = [...prev.filter((id) => !ids.includes(id)), ...ids]
-    if (merged.length > MAX_SERVED_OUTPUTS_PER_FILE) merged.splice(0, merged.length - MAX_SERVED_OUTPUTS_PER_FILE)
+    const cap = filePath === GENERIC_SERVED_OUTPUT_FOLDED_KEY ? MAX_GENERIC_SERVED_OUTPUTS : MAX_SERVED_OUTPUTS_PER_FILE
+    if (merged.length > cap) merged.splice(0, merged.length - cap)
     byPath.set(filePath, merged)
   }
   return Array.from(byPath.entries())

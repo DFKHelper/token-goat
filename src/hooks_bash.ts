@@ -13,7 +13,7 @@ import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_s
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -1862,12 +1862,14 @@ function deliveredLineNumbers(cmd: string, lineCount: number): Array<number | nu
  *
  * The containment collapse this sits inside is all-or-nothing: it fires only when the whole output appears verbatim inside one earlier body. Measured over 201 session transcripts, that caught 0.49 MB across 211 of 3,848 shell range reads, while another 1.96 MB of already-served lines shipped again inside reads that merely overlapped rather than nested -- `sed -n '100,140p'` after `sed -n '120,160p'` is not contained in anything, yet half of it has been seen. This applies the per-stretch search the Read hook already uses, over the same per-file served store, differing only in that shell output carries no line-number gutter so a row's rendered form is the line itself.
  *
+ * `unknownLineNumbers` is for a caller that has no file to pin rows to at all (a generic command's stdout): it skips `deliveredLineNumbers` and numbers every row null, which `servedRunNotice` already renders as a line count instead of a range -- the same fallback the compound-read case below relies on.
+ *
  * Returns null when the numbering is unknowable, when nothing overlaps, or when no cut pays for the notice replacing it.
  */
-function elideServedShellLines(cmd: string, output: string, priorIds: readonly string[]): string | null {
+function elideServedShellLines(cmd: string, output: string, priorIds: readonly string[], unknownLineNumbers = false): string | null {
   if (priorIds.length === 0) return null
   const lines = output.split('\n')
-  const numbers = deliveredLineNumbers(cmd, lines.length)
+  const numbers = unknownLineNumbers ? Array.from({ length: lines.length }, () => null) : deliveredLineNumbers(cmd, lines.length)
   if (numbers === null) return null
   // `?? null` rather than `?? 0`: a row whose number the command does not determine has to stay unknown all the way to the notice, which then counts the lines instead of naming them. Coercing it to a number here would print `lines 0-0`, which reads exactly like a real answer.
   const rows: NumberedRow[] = lines.map((text, i) => ({ no: numbers[i] ?? null, text, raw: text }))
@@ -2097,6 +2099,44 @@ async function maybeCollapseIdenticalRead(
   // deliveredOutputBytes in src/delivery_cap.ts. The worthwhile gate above deliberately stays on the
   // uncapped bytes -- this is an accounting correction, not a change to which rewrites ship.
   return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes: deliveredOutputBytes(originalBytes) })
+}
+
+/**
+ * Withhold already-served stretches inside a generic (non-file-read) Bash result: `npm test`, `git log`, `rg`, build output, and the rest of the surface `maybeCollapseIdenticalRead` cannot reach because it requires a `pureFileReadPath`.
+ *
+ * Reuses the same per-stretch search and notice as the file-read path above, over a session-wide served-output list instead of a per-file one -- there is no file to key this content on, and the search only ever withholds a run that is genuinely contiguous inside one earlier delivered body, so mixing unrelated commands' output into one list cannot manufacture a false match.
+ *
+ * Always stores what was actually delivered (the rewrite when one fires, otherwise the original) as a future match target, the same discipline `maybeCollapseIdenticalRead` follows and for the same reason: matching a later read against what the command printed, rather than what the model was shown, would credit lines never delivered.
+ */
+async function maybeElideServedGenericOutput(
+  cmd: string,
+  output: string,
+  exitCode: number | null,
+  cwd: string | null,
+  cacheMinBytes: number,
+): Promise<HookOutput | null> {
+  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  if (!loadConfig().bash_compress.elide_served_shell_output) return null
+  // A failed command's output is an error message, not content a later run should be matched against or have withheld from it.
+  if (exitCode !== null && exitCode !== 0) return null
+  // storeBashOutput redacts before writing to the served-output list, so a later call's un-elided rows would be compared against a REDACTED prior body: a live secret in an unmatched row (the match starts after it, or never starts at all) would then ship raw inside a rewrite this function composed, same class of bug foldShellReadBodies/foldShellReadStructure above already decline for. Declining outright, rather than only skipping the parts that touch a secret, keeps this consistent with those: a plain, untouched command result is never less safe than one this function partially reassembles.
+  if (redactSecrets(output).count > 0) return null
+  const originalBytes = Buffer.byteLength(output, 'utf-8')
+  if (originalBytes < cacheMinBytes) return null
+
+  // Excludes a prior run of this SAME command: an identical rerun of, say, `npm test` is the finding, not redundancy -- collapsing it away deletes the one piece of information a rerun carries, that the result did not change. bash_identical_read_collapse.test.ts pins exactly this for maybeCollapseIdenticalRead's own file-read case; a same-command rerun reaching this generic path must not quietly reintroduce the same collapse through a different door. A stretch shared with a DIFFERENT command's earlier output carries no such signal, so it is still fair game.
+  const priorIds = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY).filter((id) => getBashOutput(id)?.command !== cmd)
+  let rewrittenText: string | null = null
+  if (priorIds.length > 0) {
+    const elided = elideServedShellLines(cmd, output, priorIds, true)
+    if (elided !== null && isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(elided, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) {
+      rewrittenText = elided
+    }
+  }
+  const storedId = await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, cwd)
+  recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, storedId)
+  if (rewrittenText === null) return null
+  return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
 async function maybeCompressCompoundOutput(
@@ -3256,6 +3296,11 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       // commands were already handled upstream and are skipped inside the helper.
       const compound = await maybeCompressCompoundOutput(cmd, output, exitCode, cwd, cacheMinBytes)
       if (compound !== null) return compound
+      // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.
+      if (!isFileRead && extractLineRangeReadsCompound(cmd) === null) {
+        const genericElision = await maybeElideServedGenericOutput(cmd, output, exitCode, cwd, cacheMinBytes)
+        if (genericElision !== null) return genericElision
+      }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
       return maybeStripAnsiOnly(output) ?? passOutput()
     }

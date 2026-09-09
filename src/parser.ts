@@ -112,16 +112,37 @@ type Grammar = unknown
 
 // Cache the Parser constructor and each resolved grammar across calls so the native binding is loaded at most once per process. `null` means "tried and unavailable"; `undefined` means "not yet attempted". Keyed by string, not just `Language`, because TypeScript has two grammar variants (plain `.ts` vs JSX-aware `.tsx`) sharing one `Language` value.
 let _parserCtor: TsParserCtor | null | undefined
+// Last error from loading the core `tree-sitter` binding, kept for `token-goat doctor` diagnostics.
+let _parserCtorError: Error | null = null
+// Test-only override for the core binding: `undefined` means "use the real lazy-loaded module", `null` or a constructor forces that value instead.
+let _parserCtorOverride: TsParserCtor | null | undefined = undefined
 const _grammarCache = new Map<string, Grammar | null>()
 
 function loadParserCtor(): TsParserCtor | null {
+  if (_parserCtorOverride !== undefined) return _parserCtorOverride
   if (_parserCtor !== undefined) return _parserCtor
   try {
     _parserCtor = _require('tree-sitter') as TsParserCtor
-  } catch {
+  } catch (e) {
     _parserCtor = null
+    _parserCtorError = e instanceof Error ? e : new Error(String(e))
   }
   return _parserCtor
+}
+
+/** True when the core `tree-sitter` native binding is installed and requires cleanly. Independent of any single grammar (see `isTreeSitterAvailable`), since a missing core binding disables every language at once. */
+export function treeSitterCoreAvailable(): boolean {
+  return loadParserCtor() !== null
+}
+
+/** Last error from loading the core `tree-sitter` binding, for diagnostics (`token-goat doctor` style callers). `null` when never attempted, attempted successfully, or overridden for testing. */
+export function treeSitterCoreLoadError(): Error | null {
+  return _parserCtorError
+}
+
+/** Test-only: force `loadParserCtor()` (and therefore `treeSitterCoreAvailable()`/`isTreeSitterAvailable()`) to use `mod` instead of the real lazy-loaded binding. Pass `undefined` to restore the real resolution. */
+export function setTreeSitterCoreForTesting(mod: TsParserCtor | null | undefined): void {
+  _parserCtorOverride = mod
 }
 
 // `.h` is inherently ambiguous between C and C++ (unlike `.hpp`, which is unambiguous cpp) -- the

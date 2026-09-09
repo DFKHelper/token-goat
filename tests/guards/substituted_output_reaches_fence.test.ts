@@ -120,6 +120,12 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'which is what makes escaping the retained lines the wrong trade here. Open, not settled.',
   ],
   [
+    'hooks_bash.ts::maybeElideServedGenericOutput',
+    'The generic-command sibling of elideServedShellLines above: a `[token-goat] N lines here ' +
+      'were already served` notice sits between rows of the command\'s own untouched output. Same ' +
+      'class as hooks_read.ts::elideAlreadyServedLines. Open, not settled.',
+  ],
+  [
     'hooks_browser_image.ts::postBrowserImageHandler',
     'Interleaved across blocks: our repeat-screenshot and tab-dedup notices are joined to blocks ' +
       'that passed through untouched, and to base64 data URLs a fence would corrupt. Open, not ' +

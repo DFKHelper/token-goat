@@ -40,6 +40,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'bash_compress.cache_max_file_count',
   'bash_compress.cache_min_bytes',
   'bash_compress.disabled_filters',
+  'bash_compress.elide_served_shell_output',
   'bash_compress.enabled',
   'bash_compress.max_bytes',
   'bash_compress.max_lines',

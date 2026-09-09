@@ -391,7 +391,8 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
  * make the answer flap with the directory the harness happened to launch the hook from.
  */
 export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
-  const scanRoots = roots ?? [path.join(os.homedir(), '.claude', 'agents')]
+  // The project roster is scanned alongside the home one because a repo's own .claude/agents holds exactly the definitions a spawn in that repo should be reaching for, and a home-only default made them invisible to the advisory: this repo carries three such definitions and the advisory named none of them. Duplicate roots are harmless, since the visited set below folds them.
+  const scanRoots = roots ?? [path.join(os.homedir(), '.claude', 'agents'), path.join(process.cwd(), '.claude', 'agents')]
   const names = new Set<string>()
   const visited = new Set<string>()
   let filesSeen = 0

@@ -12,7 +12,9 @@ import {
   getBashOutputId,
   getFileLineRanges,
   getFileServedOutputs,
+  GENERIC_SERVED_OUTPUT_KEY,
   markCompacted,
+  MAX_GENERIC_SERVED_OUTPUTS,
   MAX_SERVED_OUTPUTS_PER_FILE,
   getOutstandingAgentSpawns,
   getSessionFileEntry,
@@ -228,6 +230,37 @@ describe('served-output index invalidation', () => {
     recordFileServedOutput(p, 'blob-2')
     recordFileServedOutput(p, 'blob-1')
     expect(getFileServedOutputs(p)).toEqual(['blob-2', 'blob-1'])
+  })
+
+  it('a genuine file path can never fold to the reserved generic-served-output key', () => {
+    // recordFileServedOutput/getFileServedOutputs key everything on foldPath(normalizePath(...)),
+    // so the collision check must run on that folded form, not on the raw strings.
+    const realPaths = [makeTmpFile(), 'C:\\Projects\\token-goat\\src\\session.ts', '/home/user/project/file.ts']
+    for (const raw of realPaths) {
+      expect(normalizePath(raw)).not.toBe(GENERIC_SERVED_OUTPUT_KEY)
+    }
+  })
+
+  it('retains more than the per-file cap under the reserved generic key, and a match against the 9th-most-recent id is still found', () => {
+    // The bug this guards: MAX_SERVED_OUTPUTS_PER_FILE=8 was sized for one path per key. Reused
+    // unmodified for the single session-wide generic key, it means only the last 8 Bash outputs in
+    // the WHOLE session stay searchable. This must fail against the pre-fix code (cap shared with
+    // MAX_SERVED_OUTPUTS_PER_FILE=8) and pass once the generic key gets its own, larger cap.
+    expect(MAX_GENERIC_SERVED_OUTPUTS).toBeGreaterThan(MAX_SERVED_OUTPUTS_PER_FILE)
+    for (let i = 0; i < MAX_GENERIC_SERVED_OUTPUTS; i++) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, 'gblob-' + i)
+    const ids = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY)
+    expect(ids).toHaveLength(MAX_GENERIC_SERVED_OUTPUTS)
+    // The 9th-most-recent of MAX_GENERIC_SERVED_OUTPUTS ids -- past where the old per-file cap of 8
+    // would have already evicted it -- must still be present and findable.
+    const ninthMostRecent = 'gblob-' + (MAX_GENERIC_SERVED_OUTPUTS - 9)
+    expect(ids).toContain(ninthMostRecent)
+  })
+
+  it('recording under an ordinary file path still uses the small per-file cap, unaffected by the generic key change', () => {
+    const p = normalizePath(makeTmpFile())
+    for (let i = 0; i < MAX_GENERIC_SERVED_OUTPUTS; i++) recordFileServedOutput(p, 'fblob-' + i)
+    const ids = getFileServedOutputs(p)
+    expect(ids).toHaveLength(MAX_SERVED_OUTPUTS_PER_FILE)
   })
 })
 

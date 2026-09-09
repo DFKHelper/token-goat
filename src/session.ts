@@ -678,12 +678,27 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
  */
 export const MAX_SERVED_OUTPUTS_PER_FILE = 8
 
+// Reserved key for the session-wide served-output list a non-file-read Bash command's output is matched against and recorded into. `recordFileServedOutput`/`getFileServedOutputs` key on a path run through `foldPath(normalizePath(...))`, and no real filesystem path can begin with a NUL byte, so this can never collide with a genuine file key sharing the same store.
+export const GENERIC_SERVED_OUTPUT_KEY = '\u0000<bash-generic-served>'
+const GENERIC_SERVED_OUTPUT_FOLDED_KEY = foldPath(normalizePath(GENERIC_SERVED_OUTPUT_KEY))
+
+/**
+ * Cap on retained served-output ids under the single session-wide generic (non-file) key.
+ *
+ * Unlike MAX_SERVED_OUTPUTS_PER_FILE, this key is shared by every non-file-read Bash command in the
+ * session rather than split one-per-file, so 8 would mean "only the last 8 Bash outputs in the whole
+ * session are searchable." Sized larger than the per-file cap for that reason, while still bounding
+ * the read-and-index fan-out `elideServedShellLines` pays for every id in the list on each call.
+ */
+export const MAX_GENERIC_SERVED_OUTPUTS = 32
+
 /** Record that the body cached under `outputId` was served to this session as a read of `filePath`. */
 export function recordFileServedOutput(filePath: string, outputId: string): void {
   const key = foldPath(normalizePath(filePath))
+  const cap = key === GENERIC_SERVED_OUTPUT_FOLDED_KEY ? MAX_GENERIC_SERVED_OUTPUTS : MAX_SERVED_OUTPUTS_PER_FILE
   const ids = (_fileServedOutputs.get(key) ?? []).filter((id) => id !== outputId)
   ids.push(outputId)
-  if (ids.length > MAX_SERVED_OUTPUTS_PER_FILE) ids.splice(0, ids.length - MAX_SERVED_OUTPUTS_PER_FILE)
+  if (ids.length > cap) ids.splice(0, ids.length - cap)
   _fileServedOutputs.set(key, ids)
 }
 

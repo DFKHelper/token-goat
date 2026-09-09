@@ -10,10 +10,13 @@
  * (the same `numbered` helper tests/hooks_read_markdown_outline.test.ts and tests/code_fold.test.ts
  * use), which is the Read tool's own `cat -n` delivery shape, not this fold's output shape.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+
+import { BUNDLE } from './helpers/bundle.js'
 
 import { postReadHandler } from '../src/hooks_read.js'
 import { normalizePath } from '../src/util.js'
@@ -273,5 +276,92 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
 
     expect(JSON.stringify(postReadHandler(postEvent(file, body)))).toContain('structural skeleton')
     expect(countOf()).toBe(before + 1)
+  })
+})
+
+/*
+ * The shipping Read path for the same fold: the built bundle, driven the way the settings.json hook drives it, with NO environment override of the flag under test.
+ *
+ * Every case in the describe block above sets TOKEN_GOAT_SKELETON_LARGE_SOURCES=1 in its beforeEach, so for as long as they were the only coverage this fold had, they exercised a configuration no install has and the shipped default was covered by nothing: flipping `skeleton_large_sources` in src/config.ts changed no test result in either direction. That is the injected-seam trap CLAUDE.md names, in its exact shape, and it is the same repair tests/code_fold.test.ts made for the sibling body fold. They also all call postReadHandler from source in-process, where `tree-sitter` resolves off the repo's own node_modules; planSourceSkeleton needs a live tree-sitter parse and returns null at src/fold_structure.ts:227 without one, so a shipping artifact that cannot reach the native module folds nothing here while every source-level test stays green. Spawning the built bundle is what puts that resolution under test.
+ *
+ * The Bash sibling of this fold already had both halves (tests/bash_structural_fold.test.ts drives BUNDLE on a stock environment); the Read surface had neither, which is the gap this block closes.
+ *
+ * Fixture provenance: the TypeScript body is HAND-DERIVED, built by this file's own tsFile()/declLine() helpers from text written for this test and read off nothing in the implementation. The hook payload shape is FORMAT-DERIVED from the CAPTURE fixture in tests/rewrite_output_shape.test.ts:116, which records `tool_response` as `{type:'text',file:{filePath,content,numLines,startLine,totalLines}}` over 13,324 real results, and `content` is the file's own unnumbered text because that is the rendering the harness actually sends.
+ */
+describe('large-source structural skeleton through the built bundle on stock defaults', () => {
+  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skel-bundle-'))
+
+  afterAll(() => {
+    fs.rmSync(TMP, { recursive: true, force: true })
+  })
+
+  const IMPORT_LINES = ["import * as fs from 'node:fs'", "import * as path from 'node:path'", "import { createHash } from 'node:crypto'", "import { fileURLToPath } from 'node:url'"]
+  const BODY_FILLER = '  const padding = "this body line exists only to push the fixture past the byte floor, and a skeleton that keeps it is not a skeleton"'
+
+  function declLine(i: number): string {
+    return `export function bundleSymbol${i}(input: string, count: number): number {`
+  }
+
+  function tsFile(count: number, bodyLines: number): string {
+    const fns = Array.from({ length: count }, (_, i) => [declLine(i), ...Array.from({ length: bodyLines }, () => BODY_FILLER), '  return input.length + count', '}'].join('\n'))
+    return `${IMPORT_LINES.join('\n')}\n\n${fns.join('\n\n')}\n`
+  }
+
+  /** One `token-goat hook post_tool_use` run against the built bundle on its own TOKEN_GOAT_HOME, with the flag under test explicitly absent from the child environment. */
+  function deliveredViaBundle(session: string, file: string, body: string): string {
+    const env: NodeJS.ProcessEnv = { ...process.env, TOKEN_GOAT_HOME: path.join(TMP, `home-${session}`) }
+    // Deleted rather than set: the whole point of this block is that the shipped default fires on its own, and an inherited value from the developer's shell or from the describe block above would silently make that assertion vacuous.
+    delete env['TOKEN_GOAT_SKELETON_LARGE_SOURCES']
+    const lineCount = body.split('\n').length
+    const payload = {
+      session_id: session,
+      hook_event_name: 'PostToolUse',
+      cwd: TMP,
+      tool_name: 'Read',
+      tool_input: { file_path: file },
+      tool_response: { type: 'text', file: { filePath: file, content: body, numLines: lineCount, startLine: 1, totalLines: lineCount } },
+    }
+    const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env })
+    expect(res.status, `bundle hook exited ${String(res.status)}: ${res.stderr.slice(0, 400)}`).toBe(0)
+    const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { updatedToolOutput?: { file?: { content?: string } } } }
+    return parsed.hookSpecificOutput?.updatedToolOutput?.file?.content ?? ''
+  }
+
+  it('emits the skeleton notice for a large untargeted source read with no flag forced', () => {
+    const body = tsFile(16, 14)
+    const file = path.join(TMP, 'bundle_fixture.ts')
+    fs.writeFileSync(file, body)
+    // The floor is measured on the delivered text, which on this payload shape is the file's own unnumbered bytes.
+    expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(12_000)
+
+    const delivered = deliveredViaBundle('skel-bundle-default', file, body)
+
+    // The notice this whole investigation was about: its absence, with a body fold firing in its place, is exactly the symptom a tree-sitter-less shipping artifact produces.
+    expect(delivered).toContain('was replaced with its structural skeleton')
+    // Must-not-drop, named line by line rather than as a ratio: an over-collapse that dropped declarations would score BETTER on any size assertion while losing the exact thing the skeleton exists to keep.
+    for (const imp of IMPORT_LINES) expect(delivered).toContain(imp)
+    for (let i = 0; i < 16; i++) expect(delivered).toContain(declLine(i))
+    // And the bodies are gone, which is what makes it a skeleton rather than a pass-through.
+    expect(delivered).not.toContain(BODY_FILLER)
+    expect(Buffer.byteLength(delivered, 'utf-8')).toBeLessThan(Buffer.byteLength(body, 'utf-8') * 0.4)
+  })
+
+  it('does not fire through the bundle when the flag is off, the calibration for the case above', () => {
+    const body = tsFile(16, 14)
+    const file = path.join(TMP, 'bundle_fixture_off.ts')
+    fs.writeFileSync(file, body)
+    const env = { ...process.env, TOKEN_GOAT_HOME: path.join(TMP, 'home-off'), TOKEN_GOAT_SKELETON_LARGE_SOURCES: '0' }
+    const lineCount = body.split('\n').length
+    const payload = {
+      session_id: 'skel-bundle-off',
+      hook_event_name: 'PostToolUse',
+      cwd: TMP,
+      tool_name: 'Read',
+      tool_input: { file_path: file },
+      tool_response: { type: 'text', file: { filePath: file, content: body, numLines: lineCount, startLine: 1, totalLines: lineCount } },
+    }
+    const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env })
+    expect(res.status).toBe(0)
+    expect(res.stdout).not.toContain('was replaced with its structural skeleton')
   })
 })

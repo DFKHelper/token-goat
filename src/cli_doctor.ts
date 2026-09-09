@@ -25,6 +25,8 @@ import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cl
 import { findStrayClaudeMdBlocks } from './install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
+import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable } from './parser.js'
+import type { Language } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { readUnmappedTools } from './stats.js'
@@ -543,6 +545,42 @@ export function checkTsCompiler(): DoctorResult {
     name: 'TypeScript compiler',
     status: 'warn',
     message: err !== null ? `unavailable: ${extractErrorMessage(err)}` : 'unavailable (not attempted)',
+  }
+}
+
+// Every language `isTreeSitterAvailable` recognizes (see its own doc comment in parser.ts). Kept in sync manually rather than exported from parser.ts, since it exists only to drive this doctor line's per-grammar count.
+const TREE_SITTER_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'python', 'go', 'rust', 'ruby', 'java', 'c', 'cpp']
+
+/**
+ * Check whether tree-sitter (the core native binding plus its language grammars) is available.
+ * When it is not, the source skeleton fold, the code body fold's disk-parse fallback, and
+ * tree-sitter indexing are all silently disabled -- this is the single largest structural lever
+ * in the product, so a plain warn (not a fail, since the product is designed to still run degraded
+ * on the regex-based fallback) is the right severity, matching `checkTsCompiler` and
+ * `checkEmbeddings` above for the same "optional native dependency missing" shape.
+ */
+export function checkTreeSitter(): DoctorResult {
+  const name = 'Tree-sitter'
+  if (!treeSitterCoreAvailable()) {
+    const err = treeSitterCoreLoadError()
+    const cause = err !== null ? `: ${extractErrorMessage(err)}` : ' (not attempted)'
+    return {
+      name,
+      status: 'warn',
+      message:
+        'unavailable -- the source skeleton fold, the code body fold\'s disk-parse fallback, and tree-sitter indexing are all disabled; likely cause: the optional native dependency `tree-sitter` is not installed, or is not resolvable from the bundle\'s location' +
+        cause,
+    }
+  }
+  const available = TREE_SITTER_LANGUAGES.filter((lang) => isTreeSitterAvailable(lang))
+  if (available.length === TREE_SITTER_LANGUAGES.length) {
+    return { name, status: 'ok', message: `available (${available.length}/${TREE_SITTER_LANGUAGES.length} grammars)` }
+  }
+  const missing = TREE_SITTER_LANGUAGES.filter((lang) => !available.includes(lang))
+  return {
+    name,
+    status: 'warn',
+    message: `partially available (${available.length}/${TREE_SITTER_LANGUAGES.length} grammars); missing: ${missing.join(', ')}`,
   }
 }
 
@@ -1188,6 +1226,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   // Basic checks
   results.push(checkInstall())
   results.push(checkTsCompiler())
+  results.push(checkTreeSitter())
   results.push(checkStrayClaudeMdBlocks())
   results.push(checkWorkerRunning(actualDataDir) ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
 
