@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
 
-import { closeAllDbs } from '../src/db.js'
+import { closeAllDbs, getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
 import { indexFileSync } from '../src/parser.js'
 import { querySymbols } from '../src/index_reader.js'
@@ -148,5 +148,34 @@ describe('runSemantic enclosing-symbol resolution', () => {
 
     const textResult = await runSemantic('import helper', { json: false, projectRoot: TMP })
     expect(textResult.text).not.toContain('— inside')
+  })
+
+  // resolveEnclosingSymbol (read_commands.ts) queries querySymbols({filePath, limit}) with no other predicate, ordered by (file_path, line_start): a finite cap on that bare-filePath query silently drops every symbol past the cutoff, so a dense hit landing in the dropped tail resolves to "no enclosing symbol" instead of the real one. HAND-DERIVED fixture: 100,051 symbol rows inserted directly (not parsed) for speed, since only the row count and line ordering matter, not real TypeScript syntax.
+  it('resolves the enclosing symbol for a hit past a 100,000-symbol single-file scan cap, not null', async () => {
+    const hugeFile = path.join(TMP, 'huge.ts')
+    fs.writeFileSync(hugeFile, '// generated fixture, content unused by this test\n', 'utf8')
+    // file_path stored exactly as the mocked hit spells it (native separators): the WHERE clause folds case only (TG_LOWER), never separators, so a forward-slash insert against a backslash query would silently match zero rows regardless of this test's actual target (the 100,000-row cap).
+    const db = getDb(globalDbPath())
+    const insert = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    const insertMany = db.transaction((count: number) => {
+      for (let i = 1; i <= count; i++) {
+        const isLast = i === count
+        insert.run(hugeFile, isLast ? 'tail' : `sym${i}`, isLast ? 'function' : 'const', i, i, '', '')
+      }
+    })
+    insertMany(100_051)
+
+    const hits: SearchHit[] = [
+      { filePath: hugeFile, startLine: 100_051, endLine: 100_051, kind: 'window', distance: 0.1, text: 'return 1' },
+    ]
+    searchSemanticMock.mockResolvedValue(hits)
+
+    const { text, code } = await runSemantic('tail', { json: true, projectRoot: TMP })
+    expect(code).toBe(0)
+    const payload = JSON.parse(text) as { items: Array<{ name: unknown; kind: unknown }> }
+    expect(payload.items[0]?.name).toBe('tail')
+    expect(payload.items[0]?.kind).toBe('function')
   })
 })
