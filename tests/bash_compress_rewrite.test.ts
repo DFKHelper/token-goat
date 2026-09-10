@@ -202,6 +202,28 @@ describe('preBashHandler: compression rewrite', () => {
     const result = preBashHandler(preEvent({ command: 'npm test && echo done' }))
     expect(result.hookType).toBe('pass')
   })
+
+  // `rollup` matches BUILD_COMMAND_PATTERNS but has no specific ToolFilter registered, so it falls through detectFromCommand to the generic-filter gate (isCompressibleSingleCommand), which used to check `cmd.includes('|')`/`cmd.includes(';')` directly instead of the quote-aware hasUnquotedOperator every other single-command gate in this file uses (see detectFromCommand in tool_filters/dispatch.ts). A single command whose only `|`/`;` sits inside a quoted argument was wrongly treated as a pipeline/compound and left uncompressed.
+  it('wraps a single command whose only pipe character sits inside a quoted argument', () => {
+    const result = preBashHandler(preEvent({ command: "rollup -c rollup.config.js --environment PATTERN='foo|bar'" }))
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      expect(result.updatedInput['command']).toBe("token-goat compress -f generic --timeout 600 -c 'rollup -c rollup.config.js --environment PATTERN='\\''foo|bar'\\'''")
+    }
+  })
+
+  it('wraps a single command whose only semicolon sits inside a quoted argument', () => {
+    const result = preBashHandler(preEvent({ command: "rollup -c rollup.config.js --environment PATTERN='foo;bar'" }))
+    expect(result.hookType).toBe('rewriteInput')
+  })
+
+  it('wraps a single command whose only && sits inside a quoted argument', () => {
+    const result = preBashHandler(preEvent({ command: "rollup -c rollup.config.js --environment PATTERN='foo && bar'" }))
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      expect(result.updatedInput['command']).toContain('token-goat compress -f generic')
+    }
+  })
 })
 
 describe('stripTrailingStderrRedirect', () => {

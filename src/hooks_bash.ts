@@ -1806,9 +1806,9 @@ function shellQuoteSingle(s: string): string {
  */
 function isCompressibleSingleCommand(cmd: string): boolean {
   if (!cmd || cmd.length > 65536) return false
-  if (['&&', '||', '$(', '`'].some((op) => cmd.includes(op))) return false
-  if (cmd.includes('|') || cmd.includes(';')) return false
-  if (/[<>]/.test(cmd)) return false
+  if (['$(', '`'].some((op) => cmd.includes(op))) return false
+  // Quote-aware, matching detectFromCommand's own gate: a `&&`/`||`/`|`/`;`/`<`/`>` inside a quoted argument (e.g. an environment value like `--environment PATTERN='foo|bar'`) is literal text, not a control operator, and must not disqualify an otherwise-single command from the generic compression fallback. `$(`/backtick stay an unmasked substring check: double quotes do not suppress command substitution, so masking double-quoted spans would wave through `echo "$(rm -rf /)"` (see hasUnquotedOperator's own doc comment).
+  if (hasUnquotedOperator(cmd, ['&&', '||', '|', ';', '<', '>'])) return false
   if (hasBareBackgroundOrNewline(cmd)) return false
   return true
 }
