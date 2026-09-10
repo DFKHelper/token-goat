@@ -1317,13 +1317,12 @@ describe('preBashHandler — PowerShell read commands', () => {
     }
   })
 
-  it('Get-Content src/auth.ts -Tail 50 → suggests surgical read', () => {
+  it('Get-Content src/auth.ts -Tail 50 → suggests surgical read (regression: extractCatFile\'s trailing-flag catch-all matched this exact shape and ran before the Get-Content -Tail check, so a 50-line tail read was hard-denied as "loads the entire file into context" even though it never does)', () => {
     const event = makeBashEvent('Get-Content src/auth.ts -Tail 50')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Get-Content')
-      expect(result.message).toContain('token-goat')
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Get-Content -Tail')
     }
   })
 
@@ -1342,13 +1341,22 @@ describe('preBashHandler — PowerShell read commands', () => {
     expect(result.hookType).toBe('deny')
   })
 
-  it('Get-Content "src/auth.ts" -Tail 50 (double-quoted path) → suggests surgical read (regression: quotes were left on filePath, so the trailing " defeated the extension regex and the hint silently never fired)', () => {
+  it('Get-Content -Path src/auth.ts -Tail 50 (explicit -Path flag) → suggests surgical read on the real path, not "-Path src/auth.ts" (regression: extractGetContentTail split on the raw text after the command name without stripping a leading -Path flag, so the flag itself became part of the extracted filePath)', () => {
+    const event = makeBashEvent('Get-Content -Path src/auth.ts -Tail 50')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat read "src/auth.ts::SymbolName"')
+      expect(result.context).not.toContain('-Path')
+    }
+  })
+
+  it('Get-Content "src/auth.ts" -Tail 50 (double-quoted path) → suggests surgical read (regression: quotes were left on filePath, so the trailing " defeated the extension regex and the hint silently never fired; also affected by the extractCatFile ordering regression above)', () => {
     const event = makeBashEvent('Get-Content "src/auth.ts" -Tail 50')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Get-Content')
-      expect(result.message).toContain('token-goat')
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Get-Content -Tail')
     }
   })
 
@@ -1387,6 +1395,16 @@ describe('preBashHandler — PowerShell read commands', () => {
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('Select-Object -First')
+    }
+  })
+
+  it('Get-Content -Path src/auth.ts | Select-Object -First 50 (explicit -Path flag) → suggests surgical read on the real path, not "-Path src/auth.ts" (regression: extractGetContentSelectFirst captured everything before the pipe as filePath without stripping a leading -Path flag, so the flag itself became part of the extracted filePath)', () => {
+    const event = makeBashEvent('Get-Content -Path src/auth.ts | Select-Object -First 50')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat read "src/auth.ts::SymbolName"')
+      expect(result.context).not.toContain('-Path')
     }
   })
 

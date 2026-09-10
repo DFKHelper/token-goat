@@ -1235,8 +1235,8 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
   if (n <= 10) return null
   const getnMatch = /^(Get-Content|gc)\s+/i.exec(cmd)
   if (!getnMatch) return null
-  // Extract filePath: everything between command and -Tail, or between -Tail N and end
-  const afterCmd = cmd.slice(getnMatch[0].length)
+  // Extract filePath: everything between command and -Tail, or between -Tail N and end. A `-Path` flag is stripped wherever it falls (it names the very positional argument that follows it, e.g. `Get-Content -Path src/auth.ts -Tail 50` or `Get-Content -Tail 50 -Path src/auth.ts`), matching PS_GETCONTENT_INNER_RE and extractCatFile's own leading-flag skip -- without it, "-Path " itself became a permanent prefix of the extracted path.
+  const afterCmd = cmd.slice(getnMatch[0].length).replace(/-Path\s+/i, '')
   const beforeTail = afterCmd.split(/-Tail/i)[0]?.trim() ?? ''
   const afterTail = afterCmd.split(/-Tail\s+\d+/i)[1]?.trim() ?? ''
   const filePath = (beforeTail || afterTail).replace(/^["']|["']$/g, '')
@@ -1251,7 +1251,8 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
 function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; n: number } | null {
   const m = /^(Get-Content|gc)\s+([^|]+)\s*\|\s*(Select-Object|select)\s+(-First\s+(\d+))/i.exec(cmd)
   if (!m) return null
-  const filePath = (m[2]?.trim() ?? '').replace(/^["']|["']$/g, '')
+  // A `-Path` flag names the very positional argument that follows it (e.g. `Get-Content -Path src/auth.ts | ...`); left unstripped it became a permanent prefix of the extracted path, matching the same fix in extractGetContentTail.
+  const filePath = (m[2]?.trim() ?? '').replace(/^-Path\s+/i, '').replace(/^["']|["']$/g, '')
   const n = parseInt(m[5] ?? '0', 10)
   if (n <= 10) return null // already surgical -- matches extractGetContentTail's <=10 threshold
   if (!filePath) return null
@@ -2829,6 +2830,29 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return contextOutput(hints.join(' '))
   }
 
+  // These two must run before extractCatFile: a `-Tail`/`Select-Object -First`-flagged Get-Content command is a
+  // single path with a flag VALUE in the argument list (e.g. `Get-Content -Tail 50 src/auth.ts`, where `50` reads
+  // as a bare positional token), and extractCatFile's own trailing-flag catch-all matches that same shape. Left
+  // in its original position below, extractCatFile denied a `-Tail 50` read outright as a whole-file dump --
+  // "loads the entire file into context" -- when only 50 lines were ever going to be read, exactly the ordering
+  // hazard extractCatFilesMulti's own out.length >= 2 guard was written to avoid, and recordBashFileReadsForSessionCache
+  // already orders its own gcTail/tail/gcSelect/head checks ahead of extractCatFile for this identical reason.
+  const gcTailResult = extractGetContentTail(cmd)
+  if (gcTailResult !== null) {
+    const { filePath, isDoc, isConfig, isSql } = gcTailResult
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    recordStat('session_hint', 0, 0)
+    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
+  }
+
+  const gcSelectResult = extractGetContentSelectFirst(cmd)
+  if (gcSelectResult !== null) {
+    const { filePath, isDoc, isConfig, isSql, n } = gcSelectResult
+    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    recordStat('session_hint', 0, 0)
+    return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
+  }
+
   const catJsonPipe = extractCatJsonPipe(cmd)
   if (catJsonPipe !== null) {
     const { filePath } = catJsonPipe
@@ -2948,22 +2972,6 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     return contextOutput(leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
-  }
-
-  const gcTailResult = extractGetContentTail(cmd)
-  if (gcTailResult !== null) {
-    const { filePath, isDoc, isConfig, isSql } = gcTailResult
-    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    recordStat('session_hint', 0, 0)
-    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
-  }
-
-  const gcSelectResult = extractGetContentSelectFirst(cmd)
-  if (gcSelectResult !== null) {
-    const { filePath, isDoc, isConfig, isSql, n } = gcSelectResult
-    const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    recordStat('session_hint', 0, 0)
-    return contextOutput(leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, { isConfig, isDoc, isSql }, preHookCwd))
   }
 
   const nodeRead = extractNodeFileRead(cmd)
