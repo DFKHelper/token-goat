@@ -113,6 +113,42 @@ async function withPdfDocument<T>(pdfjs: PdfjsModule, data: Uint8Array, fn: (doc
   }
 }
 
+/** ISO 32000-1 12.3.3 places no bound on how deeply an outline (bookmark) tree may nest, and pdfjs-dist marshals the whole tree it builds through an in-process structuredClone (its LoopbackPort simulates postMessage even though there is no real worker thread), so a crafted PDF with a few hundred KB of single-child bookmark chaining (measured: ~800 levels) blows the JS call stack during that clone. That RangeError surfaces as an unhandled promise rejection from deep inside pdfjs's own internals rather than as a rejection of the promise this module is awaiting, so it is not caught by an ordinary try/catch around the await; under plain Node's default `--unhandled-rejections=throw` it also re-emits as `uncaughtException` and crashes the process outright. Listening for both events for the duration of the call is the only way to intercept it and turn it into a normal rejection instead. */
+function withCrashGuard<T>(fn: () => Promise<T>, wrapCrash: (err: unknown) => Error): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const cleanup = (): void => {
+      process.removeListener('uncaughtException', onCrash)
+      process.removeListener('unhandledRejection', onCrash)
+    }
+    const onCrash = (err: unknown): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(wrapCrash(err))
+    }
+    process.on('uncaughtException', onCrash)
+    process.on('unhandledRejection', onCrash)
+    fn().then(
+      (result) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(result)
+      },
+      (err: unknown) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(err instanceof Error ? err : new Error(String(err)))
+      },
+    )
+  })
+}
+
+/** Depth cap for the outline walk below: a defensive backstop independent of the crash-guard above, so a future pdfjs-dist build that raises or removes its own stack limit still can't make this walk itself unbounded. */
+const MAX_OUTLINE_DEPTH = 500
+
 export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layout = false): Promise<PdfExtractResult> {
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-extract')
@@ -234,27 +270,31 @@ export async function extractPdfOutline(data: Uint8Array): Promise<PdfOutlineEnt
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-outline')
 
-  return withPdfDocument(pdfjs, data, async (doc) => {
-    const outline = await doc.getOutline()
-    if (!outline) return []
+  return withCrashGuard(
+    () => withPdfDocument(pdfjs, data, async (doc) => {
+      const outline = await doc.getOutline()
+      if (!outline) return []
 
-    const entries: PdfOutlineEntry[] = []
-    interface OutlineNode {
-      title: string
-      dest: string | unknown[] | null
-      items: OutlineNode[]
-    }
-    async function walk(items: OutlineNode[], level: number): Promise<void> {
-
-      for (const item of items) {
-        const page = await resolveDestPage(doc, item.dest)
-        entries.push({ level, title: item.title.trim(), page })
-        if (item.items.length > 0) await walk(item.items, level + 1)
+      const entries: PdfOutlineEntry[] = []
+      interface OutlineNode {
+        title: string
+        dest: string | unknown[] | null
+        items: OutlineNode[]
       }
-    }
-    await walk(outline, 0)
-    return entries
-  })
+      async function walk(items: OutlineNode[], level: number): Promise<void> {
+        if (level >= MAX_OUTLINE_DEPTH) return
+
+        for (const item of items) {
+          const page = await resolveDestPage(doc, item.dest)
+          entries.push({ level, title: item.title.trim(), page })
+          if (item.items.length > 0) await walk(item.items, level + 1)
+        }
+      }
+      await walk(outline, 0)
+      return entries
+    }),
+    (err) => new Error(`PDF outline is too deeply nested to read safely (pdfjs-dist crashed marshaling it): ${err instanceof Error ? err.message : String(err)}`),
+  )
 }
 
 export interface PdfMeta {
