@@ -867,7 +867,7 @@ function formatCrossFileLead(command: string, name: string, excludeFilePath: str
 //
 // Among all containing candidates, innermost wins: the smallest range (fewest lines) is
 // preferred, e.g. a method chunk resolves to the method itself, not its enclosing class.
-function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { name: string; kind: string } | null {
+function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { name: string; kind: string; lineStart: number } | null {
   // No rootDir scope here: filePath alone already narrows to the exact file the hit came from
   // (an absolute path from the embeddings index), so an additional project-prefix filter is
   // redundant and, worse, can spuriously exclude the very row being looked up whenever the
@@ -883,7 +883,10 @@ function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { nam
       }
     }
   }
-  return best === null ? null : { name: best.name, kind: best.kind }
+  // lineStart is returned alongside name/kind because the fusion key below needs it: a bare name
+  // is not unique within a file (two classes can each define a same-named method), and keying on
+  // name alone silently collapses two genuinely different symbols into one Map entry, dropping one.
+  return best === null ? null : { name: best.name, kind: best.kind, lineStart: best.lineStart }
 }
 
 function trimBlankLines(lines: string[]): string[] {
@@ -6826,11 +6829,11 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
   const ftsRows = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
 
-  // Fuse both candidate lists with Reciprocal Rank Fusion -- a row is keyed by its enclosing symbol (filePath + name) when one is known, since that is the only identity both a dense chunk and a BM25 symbol row can genuinely share; a dense hit with no resolvable enclosing symbol falls back to filePath + start line, which an FTS row (always symbol-backed) can never collide with, so it simply stays its own row.
+  // Fuse both candidate lists with Reciprocal Rank Fusion -- a row is keyed by its enclosing symbol (filePath + name + the symbol's own lineStart) when one is known, since that is the only identity both a dense chunk and a BM25 symbol row can genuinely share; the lineStart component matters because name alone is not unique within a file (e.g. a same-named method on two different classes), and dropping it would silently collapse two distinct symbols into one fused row. A dense hit with no resolvable enclosing symbol falls back to filePath + start line, which an FTS row (always symbol-backed) can never collide with, so it simply stays its own row.
   const fused = new Map<string, FusedSemanticHit>()
   mergedHits.forEach((h, denseRank) => {
     const enclosing = resolveEnclosingSymbol(h.filePath, h.startLine)
-    const key = enclosing !== null ? `${h.filePath}::${enclosing.name}` : `${h.filePath}::L${h.startLine}`
+    const key = enclosing !== null ? `${h.filePath}::${enclosing.name}@${enclosing.lineStart}` : `${h.filePath}::L${h.startLine}`
     fused.set(key, {
       filePath: h.filePath,
       startLine: h.startLine,
@@ -6843,7 +6846,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     })
   })
   ftsRows.forEach((s, ftsRank) => {
-    const key = `${s.filePath}::${s.name}`
+    const key = `${s.filePath}::${s.name}@${s.lineStart}`
     const existing = fused.get(key)
     if (existing !== undefined) {
       // Already present from the dense pass -- keep its dense-sourced fields (distance, containment-derived name/kind) and just add this list's rank contribution to the score.
