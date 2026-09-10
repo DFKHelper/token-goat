@@ -19,6 +19,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "sbom": "npm sbom --sbom-format cyclonedx --omit=dev",
+    "deps:refresh": "node scripts/refresh-dependabot-lock.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",

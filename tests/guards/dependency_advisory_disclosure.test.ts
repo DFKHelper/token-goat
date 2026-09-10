@@ -128,7 +128,7 @@ describe('dependency advisory disclosure', () => {
     const measured = consumerPackageCount({ includeOptional: false })
     expect(
       statedInstallSize('an install without optional packages'),
-      'SECURITY.md states the size of --omit=optional; package-lock.json resolves to this. Re-measure and update the row.',
+      'SECURITY.md states the size of --omit=optional; package-lock.json resolves to this. On a Dependabot branch the lock file is usually the wrong half: it reclassifies an optional package as required, so re-resolve with `npm run deps:refresh` rather than editing the row. Update the row only when a genuine new dependency changed the real number.',
     ).toBe(measured)
     expect(Object.keys(pkg.dependencies ?? {})).toEqual(expect.arrayContaining(['jsonc-parser']))
   })
