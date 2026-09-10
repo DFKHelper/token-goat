@@ -1097,6 +1097,12 @@ function dataDirPermissionResult(dataDirPath: string): DoctorResult {
 /** How many recent compactions must all show zero surviving manifest paths before the channel is called broken. One is noise -- a summary can legitimately paraphrase every path away when the session barely touched any files. */
 const COMPACTION_CHANNEL_WINDOW = 5
 
+/** Rows fetched per page while hunting for COMPACTION_CHANNEL_WINDOW conclusive (sampled > 0) rows below. Small enough that a fresh install with only a handful of compactions never over-fetches, large enough that most real histories resolve in one page. */
+const COMPACTION_STATS_BATCH_SIZE = 50
+
+/** Hard ceiling on total compact_summary rows read across all pages in one doctor run. stats accumulates for the life of the install across every project with no size cap of its own, so an unbounded scan back to row 1 on a years-old global.db is the wrong trade for one diagnostic line; 2000 rows covers many hundreds of real compactions even if the great majority are sample.length === 0 (sessions that touched no files), and if the scan hits this ceiling without finding COMPACTION_CHANNEL_WINDOW conclusive rows the result is reported as inconclusive rather than as a false warn or false ok. */
+const COMPACTION_STATS_SCAN_CEILING = 2000
+
 /**
  * Is the manifest token-goat sends ahead of a compaction still reaching the summary?
  *
@@ -1127,17 +1133,27 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
     if (present === undefined) {
       return { name, status: 'ok', message: 'no compaction has been measured yet' }
     }
-    const rows = db
-      .prepare("SELECT detail FROM stats WHERE kind = 'compact_summary' ORDER BY rowid DESC LIMIT ?")
-      .all(COMPACTION_CHANNEL_WINDOW * 4) as Array<{ detail: string | null }>
+    // A fixed multiple of COMPACTION_CHANNEL_WINDOW as the fetch size was a cap applied before the sampled===0 predicate below, so a run of sessions that touched no files (sample.length is 0 for those, which is common for short, purely conversational sessions) could starve the window below COMPACTION_CHANNEL_WINDOW conclusive rows and silently disable the warn branch. Page through rowid-ordered batches instead, applying the predicate per batch, so the fetch size never determines how many conclusive rows survive it. COMPACTION_STATS_SCAN_CEILING bounds the total rows read per doctor run, since stats accumulates across every project for the life of the install and this table has no per-project scope in global.db.
     const conclusive: Array<{ survived: number; sampled: number }> = []
-    for (const row of rows) {
-      const m = /manifest_paths=(\d+)\/(\d+)/.exec(row.detail ?? '')
-      if (m === null) continue
-      const sampled = Number(m[2])
-      if (sampled === 0) continue
-      conclusive.push({ survived: Number(m[1]), sampled })
+    let offset = 0
+    let scanned = 0
+    for (;;) {
+      const batch = db
+        .prepare("SELECT detail FROM stats WHERE kind = 'compact_summary' ORDER BY rowid DESC LIMIT ? OFFSET ?")
+        .all(COMPACTION_STATS_BATCH_SIZE, offset) as Array<{ detail: string | null }>
+      if (batch.length === 0) break
+      offset += batch.length
+      scanned += batch.length
+      for (const row of batch) {
+        const m = /manifest_paths=(\d+)\/(\d+)/.exec(row.detail ?? '')
+        if (m === null) continue
+        const sampled = Number(m[2])
+        if (sampled === 0) continue
+        conclusive.push({ survived: Number(m[1]), sampled })
+        if (conclusive.length >= COMPACTION_CHANNEL_WINDOW) break
+      }
       if (conclusive.length >= COMPACTION_CHANNEL_WINDOW) break
+      if (scanned >= COMPACTION_STATS_SCAN_CEILING) break
     }
     if (conclusive.length === 0) {
       return { name, status: 'ok', message: 'no compaction has been measured yet' }

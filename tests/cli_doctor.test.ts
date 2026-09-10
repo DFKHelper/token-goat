@@ -571,6 +571,18 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('20/30 sampled paths survived')
     })
 
+    it('does not let a run of no-file sessions starve the fetch below a full window of conclusive rows', () => {
+      // FORMAT-DERIVED: the manifest_paths=X/Y token shape is taken from postCompactHandler's own recordStat call (src/hooks_compact.ts:519), not captured from a real run. 16 of the most recent rows are inconclusive (sampled=0, e.g. a short session that touched no files before compacting), and the 5 conclusive rows -- all dead -- sit further back in rowid order. The old fetch (COMPACTION_CHANNEL_WINDOW * 4 = 20 rows) only reached 4 of those 5 conclusive rows and reported ok; the fix pages past the inconclusive run instead of capping the fetch before the sampled===0 predicate runs.
+      const dbPath = path.join(tempDir, 'global.db')
+      seedDetails(dbPath, [
+        ...Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'),
+        ...Array.from({ length: 16 }, () => 'trigger=auto bytes=100 est_tokens=34 manifest_paths=0/0'),
+      ])
+      const result = checkCompactionChannel(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('PreCompact')
+    })
+
     it('is wired into runDoctor rather than only being callable', () => {
       const dbPath = path.join(tempDir, 'global.db')
       seedDetails(dbPath, Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'))
