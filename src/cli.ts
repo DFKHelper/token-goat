@@ -214,6 +214,7 @@ import { runHintStatsCommand } from './cli_hint_stats.js'
 import { isHintCategory } from './hint_stats.js'
 import { runStatuslineCommand } from './cli_statusline.js'
 import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
+import { clipLongMatchLine } from './tool_filters/helpers.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -1229,11 +1230,13 @@ function _applyFiltersAndPrint(
       content = content
         .split(/\r?\n/)
         .filter((line) => re.test(line))
+        .map((line) => clipLongMatchLine(line, pattern))
         .join('\n')
     } catch {
       content = content
         .split(/\r?\n/)
         .filter((line) => line.includes(pattern))
+        .map((line) => clipLongMatchLine(line, pattern))
         .join('\n')
     }
   }
