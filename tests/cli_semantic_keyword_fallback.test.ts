@@ -74,7 +74,16 @@ const TMP = canonicalize(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), '
 // posix form), so joining posix-style keeps the whole path in one spelling.
 const FIXTURE = path.posix.join(TMP, 'auth.ts')
 
+let prevEmbedEnv: string | undefined
+
 beforeAll(() => {
+  // This file's whole point is exercising isAvailable()-gated behavior (the runtime present/absent
+  // and model-files-obtainable/not distinction), never the indexing.embeddings_enabled config gate --
+  // isolate-home.ts defaults that flag to false for the suite, which would otherwise block runSemantic
+  // from ever reaching searchSemantic here regardless of the modelAvailable/searchFailure mocks below,
+  // making every case in this file read as "config disabled" instead of the scenario each describes.
+  prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+  process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   fs.writeFileSync(
     FIXTURE,
     'export function refreshCredential(id: string): string {\n' + "  return id + '-refreshed'\n" + '}\n',
@@ -95,6 +104,8 @@ beforeAll(() => {
 
 afterAll(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
+  if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+  else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
 })
 
 afterEach(() => {

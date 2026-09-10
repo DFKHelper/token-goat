@@ -6760,6 +6760,9 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   }
   const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
 
+  // Same flag that gates embedding at index time (parser.ts, worker.ts) must also gate it here at query time, or TOKEN_GOAT_EMBEDDINGS_ENABLED=0 -- read by every other embedding-adjacent path in this codebase, including memory_prune.ts's tryEmbeddingClusters -- does nothing for `semantic`: embeddingModelAvailable() below only checks whether the optional onnxruntime-node runtime is installed, not whether the user opted out, so a disabled-but-installed runtime would still call searchSemantic, which calls embedTexts, which downloads the ~34 MB model on a cold cache regardless of this setting. Checked once here so both the availability warning below and the searchSemantic call are skipped together.
+  const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+
   // Real embedding-vector similarity search: chunks/chunk_vectors are populated during indexing whenever indexing.embeddings_enabled is on and the optional onnxruntime-node and sqlite-vec dependencies are present -- searchSemantic degrades to an empty array rather than throwing when either is unavailable or nothing has been embedded yet, so this is always safe to try; BM25 (below) is now ALWAYS consulted too, never gated on this returning zero hits, since a single weak dense hit used to make an exact BM25 keyword match unreachable.
   // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits in the SAME file before truncation, instead of merging an already-capped set of `n` raw hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
   // Say what the user is actually getting when the embedding model is absent. This is the default
@@ -6769,10 +6772,14 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // still answers -- which is precisely the kind of quiet change nobody discovers. Stated here
   // rather than inside searchSemantic because only this function knows the keyword pass runs, and
   // the message there claimed the whole feature was off while printing above genuine keyword hits.
-  if (!embeddingModelAvailable()) {
+  if (embeddingsEnabled && !embeddingModelAvailable()) {
     console.warn(
       'Matching on meaning is off (onnxruntime-node is not installed); these results come from keyword search alone. ' +
         'Install it with: npm install -g onnxruntime-node (drop -g if token-goat is a project dependency)',
+    )
+  } else if (!embeddingsEnabled) {
+    console.warn(
+      'Matching on meaning is off (indexing.embeddings_enabled / TOKEN_GOAT_EMBEDDINGS_ENABLED is disabled); these results come from keyword search alone.',
     )
   }
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
@@ -6785,19 +6792,21 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // it was supposed to degrade to keyword search. Same treatment as the absent package: say what
   // is missing, then carry on with the BM25 pass below, which is the half that still works.
   let rawHits: SearchHit[] = []
-  try {
-    rawHits = await searchSemantic(
-      getDb(globalDbPath()),
-      query,
-      overFetchForMerge,
-      undefined,
-      undefined,
-      rootDir,
-    )
-  } catch (e) {
-    console.warn(
-      `Matching on meaning is off (${extractErrorMessage(e)}); these results come from keyword search alone.`,
-    )
+  if (embeddingsEnabled) {
+    try {
+      rawHits = await searchSemantic(
+        getDb(globalDbPath()),
+        query,
+        overFetchForMerge,
+        undefined,
+        undefined,
+        rootDir,
+      )
+    } catch (e) {
+      console.warn(
+        `Matching on meaning is off (${extractErrorMessage(e)}); these results come from keyword search alone.`,
+      )
+    }
   }
   // The dense half contributing nothing is the moment this search is most misleading, because the
   // BM25 pass below still answers and the output looks like a complete result. It is also the only

@@ -8,7 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
@@ -42,12 +42,23 @@ function hit(filePath: string, startLine: number, endLine: number, distance: num
 
 describe('runSemantic --grep (embeddings branch)', () => {
   let root: string
+  let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
+    // This describe's whole point is the --grep filter over mocked dense hits, not
+    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
     // runSemantic now always fuses in the BM25 list alongside the dense one (RRF), so every test in this describe block that doesn't care about FTS needs a default non-undefined return.
     searchSymbolsFtsMock.mockReturnValue([])
     root = mkdtempSync(join(tmpdir(), 'tg-sem-grep-emb-'))
+  })
+
+  afterEach(() => {
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
   })
 
   it('filters to hits whose RENDERED path matches an anchored regex, dropping non-matching hits', async () => {

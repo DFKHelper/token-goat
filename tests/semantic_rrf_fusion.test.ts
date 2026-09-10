@@ -37,14 +37,22 @@ const { runSemantic } = await import('../src/read_commands.js')
 
 describe('runSemantic: RRF fusion closes the dense-nonzero-blocks-fts gap', () => {
   let root: string
+  let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
+    // These assertions are about RRF fusion over mocked dense hits, not about
+    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
     root = mkdtempSync(join(tmpdir(), 'tg-sem-rrf-'))
   })
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
   })
 
   it('surfaces an exact BM25 keyword match even when a weak, unrelated dense hit already exists', async () => {
@@ -71,14 +79,22 @@ describe('runSemantic: RRF fusion closes the dense-nonzero-blocks-fts gap', () =
 
 describe('runSemantic: graceful single-sided degradation', () => {
   let root: string
+  let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
+    // Same reason as the describe above: this block forces the dense branch via a mocked
+    // searchSemantic, not via indexing.embeddings_enabled (which isolate-home.ts defaults to
+    // false for the suite).
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
     root = mkdtempSync(join(tmpdir(), 'tg-sem-rrf-degrade-'))
   })
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
   })
 
   it('returns pure-BM25 results, source "fts", when searchSemantic degrades to empty (no embeddings deps/vec0 table)', async () => {

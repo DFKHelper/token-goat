@@ -18,7 +18,7 @@
 // produced -- while using the real mergeNearbyHits and the real cli.ts::cmdSemantic (via the
 // exported run()), so it drives the actual `semantic` command call chain a user would hit, not
 // an isolated unit test of rerankHits alone.
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
@@ -64,6 +64,21 @@ async function runCli(argv: string[]): Promise<{ code: number | string | undefin
 }
 
 describe('semantic command: rerank order (verbatim boost / generated-path penalty) survives mergeNearbyHits', () => {
+  let prevEmbedEnv: string | undefined
+
+  beforeEach(() => {
+    // This test asserts on rerank-order composition over mocked dense hits, not on
+    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+  })
+
+  afterEach(() => {
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
+  })
+
   it('ranks a farther-but-verbatim/project-source hit above a closer-but-generated-path hit', async () => {
     // Chunk A: raw distance is the closest of the two, but it lives under dist/ (a generated
     // path), so a real rerankHits call would have pushed it down with the generated-path

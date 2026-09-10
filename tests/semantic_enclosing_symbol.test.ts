@@ -53,7 +53,14 @@ const FIXTURE_SOURCE = [
   '',
 ].join('\n')
 
+let prevEmbedEnv: string | undefined
+
 beforeEach(() => {
+  // These assertions are about enclosing-symbol resolution over mocked dense hits, not about
+  // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+  // otherwise stop runSemantic from ever reaching searchSemanticMock.
+  prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+  process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-semantic-enclosing-'))
   fixtureFile = path.join(TMP, 'fixture.ts')
   fs.writeFileSync(fixtureFile, FIXTURE_SOURCE, 'utf8')
@@ -64,6 +71,8 @@ beforeEach(() => {
 afterEach(() => {
   closeAllDbs()
   fs.rmSync(TMP, { recursive: true, force: true })
+  if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+  else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
 })
 
 describe('runSemantic enclosing-symbol resolution', () => {

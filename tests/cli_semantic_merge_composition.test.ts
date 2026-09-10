@@ -14,7 +14,7 @@
 // candidate set while using the real mergeNearbyHits/OVER_FETCH_FACTOR/MAX_OVER_FETCH and the
 // real cli.ts::cmdSemantic (via the exported run()) -- verifying the actual call-order fix,
 // not just mergeNearbyHits in isolation.
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
@@ -53,6 +53,21 @@ async function runCli(argv: string[]): Promise<{ code: number | string | undefin
 }
 
 describe('semantic command: over-fetch before merge, merge before truncate (regression)', () => {
+  let prevEmbedEnv: string | undefined
+
+  beforeEach(() => {
+    // This test asserts on mergeNearbyHits composition over dense (searchSemantic-mocked) hits, not
+    // on indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+    // otherwise block runSemantic from ever reaching the mocked searchSemantic below.
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+  })
+
+  afterEach(() => {
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
+  })
+
   it('over-fetches past --limit and merges a nearby pair that pre-fix truncation would have split apart', async () => {
     // Best-first (as rerankHits would return): chunk A (closest), chunk B (second-closest but far
     // away in the file), chunk C (third-closest but only 4 lines below chunk A -- within the
