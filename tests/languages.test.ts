@@ -4221,6 +4221,17 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(sym?.lineEnd).toBe(4)
   })
 
+  it('does not blank the rest of the file after an odd apostrophe inside a dollar-quoted value (regression: `$$It\'s a great day$$` is PostgreSQL\'s dollar-quoting syntax, documented in the PostgreSQL manual section 4.1.2.4 "Dollar-Quoted String Constants" as legal anywhere a string literal is, not just a function body; stripSqlStringLiterals had no dollar-quote awareness at all, so the un-doubled apostrophe inside it opened a phantom single-quoted string with no matching close for the rest of the file, silently dropping every later CREATE statement)', () => {
+    const content = `CREATE TABLE t1 (id int, description text DEFAULT $$It's a great day$$);
+
+CREATE TABLE t2 (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('t1')
+    expect(names).toContain('t2')
+  })
+
   it('does not let a /*/ opener close its own comment against its trailing asterisk (comment overlap off-by-one)', () => {
     const content = `/*/ CREATE TABLE ghost (id int); */ CREATE TABLE real_table (id int);`
     const symbols = extractSql(content, 'schema.sql')
