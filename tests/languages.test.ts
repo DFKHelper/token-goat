@@ -3240,6 +3240,32 @@ end
     expect(symbols.find((s) => s.name === 'after_fn')?.parent).toBe('Helpers')
   })
 
+  it('closes an inline fn block whose `end` is followed by a closing paren, not just whitespace (FORMAT-DERIVED: `Enum.map(list, fn x -> ... end)` is the documented style for passing an anonymous function as the last argument of a call, per Elixir\'s Enum/Kernel.SpecialForms docs)', () => {
+    // Regression: the old `end`-detection only matched `end` alone or `end` followed by
+    // whitespace, so a `fn ... end)` closer (no space before the paren) matched neither and its
+    // block frame was never popped. The NEXT real `end` in the file (closing the enclosing
+    // `process` def) was consumed to close that stray frame instead, so `process` itself never
+    // closed and its span ballooned to swallow `after_fn` below it, also misattributing
+    // `after_fn`'s parent.
+    const content = `defmodule Helpers do
+  def process(list) do
+    Enum.map(list, fn x ->
+      x + 1
+    end)
+  end
+
+  def after_fn(x) do
+    x + 1
+  end
+end
+`
+    const { symbols } = extractElixir(content, 'helpers.ex')
+    const process = symbols.find((s) => s.name === 'process')
+    expect(process?.lineEnd).toBe(6)
+    expect(process?.body).not.toContain('after_fn')
+    expect(symbols.find((s) => s.name === 'after_fn')?.parent).toBe('Helpers')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractElixir('', 'empty.ex')
     expect(symbols).toHaveLength(0)

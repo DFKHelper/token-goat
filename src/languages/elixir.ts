@@ -182,11 +182,18 @@ export function extractElixir(
       continue
     }
 
-    // Pop finished frames when we see `end` keyword. Widen the popped def/defmodule's
-    // placeholder span to its real body (its `end` line) so `read "mod.ex::fn"` returns the
-    // whole function, not just its signature line. Block frames carry no symbolIndex and are
-    // skipped. Guarded on lineNum so a malformed source cannot produce an inverted span.
-    if (stripped === 'end' || /^end\s/.test(stripped) || /^end$/.test(stripped)) {
+    // Pop finished frames when we see `end` keyword. `\b` after `end` (not just a following
+    // space or end-of-string) also matches the very common `end)`/`end,`/`end}` closers that
+    // appear when an anonymous fn or a nested block is itself the last argument of a call, e.g.
+    // `Enum.map(list, fn x -> x end)`: without the boundary check, that line matched none of the
+    // old three checks, so the fn block's frame was never popped and the NEXT real `end` in the
+    // file (the enclosing def's own) was consumed to close it instead, ballooning that def's span
+    // into everything after it and misattributing every following sibling's parent. Widen the
+    // popped def/defmodule's placeholder span to its real body (its `end` line) so `read
+    // "mod.ex::fn"` returns the whole function, not just its signature line. Block frames carry
+    // no symbolIndex and are skipped. Guarded on lineNum so a malformed source cannot produce an
+    // inverted span.
+    if (/^end\b/.test(stripped)) {
       if (moduleStack.length > 0) {
         const popped = moduleStack.pop()
         if (popped !== undefined && popped.symbolIndex !== undefined) {
