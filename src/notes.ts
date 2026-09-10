@@ -124,7 +124,8 @@ function bodyFromSource(entry: SymbolEntry): string {
 
 /** Every distinct symbol name currently indexed for `filePath`, sorted -- used to build a "did you mean" list when `--symbol` doesn't resolve to anything. */
 export function symbolNamesInFile(filePath: string, dbPath: string = globalDbPath()): string[] {
-  const symbols = querySymbols({ filePath, limit: 100_000 }, dbPath)
+  // Unbounded (-1), not a finite cap: querySymbols orders by (file_path, line_start) with no other predicate on a bare filePath query, so a finite limit silently drops the file's tail symbols from the "did you mean" list instead of bounding a real search. Same fix as ALL_SYMBOLS_IN_FILE_LIMIT in graph_commands.ts.
+  const symbols = querySymbols({ filePath, limit: -1 }, dbPath)
   return [...new Set(symbols.map((s) => s.name))].sort()
 }
 
@@ -137,7 +138,8 @@ export function symbolNamesInFile(filePath: string, dbPath: string = globalDbPat
  * against.
  */
 export function computeFileFingerprint(filePath: string, dbPath: string = globalDbPath()): string {
-  const symbols = querySymbols({ filePath, limit: 1_000_000 }, dbPath)
+  // Unbounded (-1), not a finite cap: same bare-filePath-query shape as symbolNamesInFile above, and a truncated manifest would make a symbol added or moved past the cutoff invisible to the fingerprint, so a genuinely-stale note would report as fresh.
+  const symbols = querySymbols({ filePath, limit: -1 }, dbPath)
   const manifest = symbols
     .map((s) => `${s.name}:${s.kind}:${s.lineStart}-${s.lineEnd}`)
     .sort()
