@@ -11,7 +11,7 @@ import dns from 'node:dns/promises'
 import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
-import { parseIpv6Groups, urlPolicyDenialReason } from './url_policy.js'
+import { isPrivateIpv4Octets, isPrivateIpv6Groups, parseIpv6Groups, urlPolicyDenialReason } from './url_policy.js'
 import { shrinkImage } from './image_shrink.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { atomicWriteBytes, redactUrlQuery, withExtension } from './util.js'
@@ -131,49 +131,20 @@ export function resolveBrowserExecutablePath(explicit?: string): string | null {
   return null
 }
 
-/** The single source of truth for which IPv4 space is off-limits, keyed on the first two
- * octets. Both the dotted-quad path and the IPv4-mapped/compatible IPv6 path below call this,
- * so the ranges can't drift into two copies. Decimal/octal/hex integer spellings of an IPv4
- * address (e.g. http://2130706433/) don't need handling here: `new URL` normalizes those to
- * dotted-quad before `hostname` is read. */
-function isBlockedIpv4Octets(a: number, b: number): boolean {
-  if (a === 127) return true // loopback
-  if (a === 169 && b === 254) return true // link-local, incl. cloud metadata 169.254.169.254
-  if (a === 10) return true // RFC1918
-  if (a === 172 && b >= 16 && b <= 31) return true // RFC1918
-  if (a === 192 && b === 168) return true // RFC1918
-  if (a === 0) return true // "this network"
-  return false
-}
-
-
-function isBlockedIpv6(groups: number[]): boolean {
-  if (groups.every((g) => g === 0)) return true // `::` unspecified -- connects to localhost
-  if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true // ::1 loopback
-  // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96): classify by the embedded IPv4 value, so [::ffff:169.254.169.254] is blocked for the same reason 169.254.169.254 is.
-  if (groups.slice(0, 5).every((g) => g === 0) && (groups[5] === 0xffff || groups[5] === 0)) {
-    const embedded = groups[6] as number
-    return isBlockedIpv4Octets(embedded >> 8, embedded & 0xff)
-  }
-  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): the low 32 bits are a real IPv4 address a NAT64 gateway will translate back out, so 64:ff9b::a9fe:a9fe reaches 169.254.169.254. Same "encoded IPv4 must be decoded before classifying" class as the mapped/compatible case above.
-  if (groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
-    const embedded = groups[6] as number
-    return isBlockedIpv4Octets(embedded >> 8, embedded & 0xff)
-  }
-  if (((groups[0] as number) & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
-  if (((groups[0] as number) & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
-  return false
-}
-
 /** Classifies one IP *address* (never a name). Split out of isBlockedLiteralIp so that addresses
  * coming back from a DNS answer -- which are always literals -- run through the exact same
- * ranges as a literal typed into the URL, instead of a second list that would drift. */
+ * ranges as a literal typed into the URL, instead of a second list that would drift. Delegates the
+ * actual range table to url_policy.ts's isPrivateIpv4Octets/isPrivateIpv6Groups, the same functions
+ * webfetch.ts's DNS-pinned fetch policy uses, so the headless-browser channel and the fetch channel
+ * can't silently diverge on what counts as internal. Decimal/octal/hex integer spellings of an IPv4
+ * address (e.g. http://2130706433/) don't need handling here: `new URL` normalizes those to
+ * dotted-quad before `hostname` is read. */
 export function isBlockedIpAddress(addr: string): boolean {
   const bare = addr.replace(/^\[/, '').replace(/\]$/, '')
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare)
-  if (v4) return isBlockedIpv4Octets(Number(v4[1]), Number(v4[2]))
+  if (v4) return isPrivateIpv4Octets(Number(v4[1]), Number(v4[2]), Number(v4[3]))
   const groups = parseIpv6Groups(bare)
-  return groups !== null && isBlockedIpv6(groups)
+  return groups !== null && isPrivateIpv6Groups(groups)
 }
 
 /** Returns the first blocked address in a resolution answer, or null when every address is
