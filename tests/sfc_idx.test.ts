@@ -181,6 +181,22 @@ describe('vue adapter', () => {
     expect(refs.some((r) => r.name === 'wrapper')).toBe(false)
   })
 
+  it('still indexes a declaration that follows a literal closing tag inside the script\'s own string content (regression: the lazy [\\s\\S]*? content regex used to stop at the first </script> substring, even one inside a JS string like document.write(\'</script>\'), silently dropping every declaration after it)', () => {
+    // HAND-DERIVED: `document.write('</script>')` is a real, unremarkable pattern in code that
+    // emits raw HTML, and the fixture is written to isolate exactly the failure mode (a literal
+    // tag-close substring inside a same-tag string), independent of the fix's own implementation.
+    const content = [
+      '<script setup lang="ts">',
+      "document.write('</script>')",
+      'function afterTruncation() { return 1 }',
+      '</script>',
+      '<template><div/></template>',
+      '',
+    ].join('\n')
+    const { symbols } = extractVue(content, 'Tricky.vue')
+    expect(symbols.some((s) => s.name === 'afterTruncation')).toBe(true)
+  })
+
   it('returns just the component symbol for an empty/minimal file', () => {
     const { symbols, refs } = extractVue('<template><div></div></template>\n', 'Empty.vue')
     expect(symbols).toHaveLength(1)
