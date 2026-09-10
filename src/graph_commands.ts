@@ -1350,7 +1350,8 @@ export interface TypesOptions {
 // only ever report the count of what survived -- it reported 2 of 9 as `totalCount: 2, truncated:
 // false`, a wrong number rather than a missing one -- and --grep could only ever match inside the
 // capped window, so a declaration ranked below the cap was unfindable by name.
-const TYPES_SCAN_LIMIT = 5000
+// Unbounded (-1), not a finite 5000-per-kind cap: that finite cap reintroduced the EXACT bug described above, just at a higher threshold -- confirmed with a 5001-file fixture (one interface per file), where `types --json` reported totalCount 5000 (not 5001) and `--grep` for the 5001st interface's exact name answered "filtered out" (a lie: the row was never fetched, not filtered). The per-kind DISPLAY cap this comment describes is `--limit` further down; this scan-time cap has no such honesty, since nothing downstream of it knows a row is missing rather than absent.
+const TYPES_SCAN_LIMIT = -1
 
 export function runTypes(opts: TypesOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0` on every kind-scan, always
