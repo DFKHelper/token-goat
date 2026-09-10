@@ -263,6 +263,47 @@ function parseIpv6Groups(text: string): number[] | null {
   return groups
 }
 
+/** The single source of truth for which IPv4 space is off-limits to a fetch this process performs on the operator's behalf, keyed on the first three octets: loopback (127.0.0.0/8), "this network" (0.0.0.0/8), the RFC1918 private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), link-local incl. cloud metadata at 169.254.169.254 (169.254.0.0/16, RFC 3927), carrier-grade NAT (100.64.0.0/10, RFC 6598), IETF protocol assignments (192.0.0.0/24, RFC 6890), benchmarking (198.18.0.0/15, RFC 2544), multicast (224.0.0.0/4) and reserved space incl. the 255.255.255.255 broadcast address (240.0.0.0/4). Shared by webfetch.ts's DNS-pinned fetch policy and screenshot.ts's headless-browser navigation policy so the two channels judge the same address the same way instead of drifting into two independently maintained range tables. */
+export function isPrivateIpv4Octets(a: number, b: number, c: number): boolean {
+  return (
+    a === 0 || // 0.0.0.0/8
+    a === 127 || // 127.0.0.0/8 loopback
+    a === 10 || // 10.0.0.0/8 RFC1918
+    (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10 carrier-grade NAT, RFC 6598
+    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 RFC1918
+    (a === 192 && b === 168) || // 192.168.0.0/16 RFC1918
+    (a === 169 && b === 254) || // 169.254.0.0/16 link-local, incl. cloud metadata 169.254.169.254
+    (a === 192 && b === 0 && c === 0) || // 192.0.0.0/24 IETF protocol assignments, RFC 6890
+    (a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15 benchmarking, RFC 2544
+    (a >= 224 && a <= 239) || // 224.0.0.0/4 multicast
+    a >= 240 // 240.0.0.0/4 reserved, incl. 255.255.255.255 broadcast
+  )
+}
+
+/** IPv6 counterpart of {@link isPrivateIpv4Octets}, operating on the eight 16-bit groups {@link parseIpv6Groups} returns. Covers the unspecified and loopback addresses, the IPv4-mapped/IPv4-translated/deprecated-IPv4-compatible forms and the 6to4/NAT64 transition prefixes (all four classified by decoding the embedded IPv4 address through isPrivateIpv4Octets so an attacker can't route around the v4 table by re-encoding the same address), unique-local (fc00::/7), link-local (fe80::/10), deprecated site-local (fec0::/10, RFC 3879) and multicast (ff00::/8). */
+export function isPrivateIpv6Groups(groups: readonly number[]): boolean {
+  const g = (i: number): number => groups[i] ?? 0
+  if (groups.every((v) => v === 0)) return true // :: unspecified -- connects to localhost
+  if (groups.slice(0, 7).every((v) => v === 0) && g(7) === 1) return true // ::1 loopback
+  // IPv4-mapped (::ffff:a.b.c.d) and deprecated IPv4-compatible (::a.b.c.d): decode the embedded address.
+  if (groups.slice(0, 5).every((v) => v === 0) && (g(5) === 0xffff || g(5) === 0)) {
+    return isPrivateIpv4Octets(g(6) >> 8, g(6) & 0xff, g(7) >> 8)
+  }
+  // IPv4-translated (::ffff:0:a.b.c.d): same embedded address, but the 0xffff marker sits one group earlier than the mapped form above, so it needs its own bit pattern rather than falling through as "not private".
+  if (groups.slice(0, 4).every((v) => v === 0) && g(4) === 0xffff && g(5) === 0) {
+    return isPrivateIpv4Octets(g(6) >> 8, g(6) & 0xff, g(7) >> 8)
+  }
+  if (g(0) === 0x2002) return isPrivateIpv4Octets(g(1) >> 8, g(1) & 0xff, g(2) >> 8) // 6to4, RFC 3056
+  if (g(0) === 0x0064 && g(1) === 0xff9b && groups.slice(2, 6).every((v) => v === 0)) {
+    return isPrivateIpv4Octets(g(6) >> 8, g(6) & 0xff, g(7) >> 8) // well-known NAT64 prefix, RFC 6052
+  }
+  if ((g(0) & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
+  if ((g(0) & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
+  if ((g(0) & 0xffc0) === 0xfec0) return true // fec0::/10 deprecated site-local, RFC 3879
+  if ((g(0) & 0xff00) === 0xff00) return true // ff00::/8 multicast
+  return false
+}
+
 const METADATA_HOSTNAMES: ReadonlySet<string> = new Set([
   'metadata.google.internal',
   'metadata.goog',

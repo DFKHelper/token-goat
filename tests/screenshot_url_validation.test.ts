@@ -94,6 +94,35 @@ describe('validateScreenshotUrl', () => {
     expect(() => validateScreenshotUrl('http://[2606:4700:4700::1111]/')).not.toThrow()
   })
 
+  // Regression: the webfetch.ts SSRF classifier (isPrivateIPv4/isPrivateIPv6) and this file's
+  // literal-IP classifier were two independently maintained range tables. webfetch.ts additionally
+  // blocked carrier-grade NAT (100.64.0.0/10, RFC 6598), IETF protocol assignments (192.0.0.0/24,
+  // RFC 6890), benchmarking (198.18.0.0/15, RFC 2544), multicast (224.0.0.0/4) and reserved space
+  // (240.0.0.0/4), none of which this screenshot policy rejected -- so a page redirect or
+  // sub-resource aimed at an internal service on any of those ranges (e.g. a cloud VPC routing
+  // internal traffic over CGNAT) reached the headless browser and had its rendered output OCR'd
+  // back into the model's context, a class of internal target the fetch channel already refused.
+  // FORMAT-DERIVED: ranges cited from RFC 6598 (100.64.0.0/10), RFC 6890 (192.0.0.0/24),
+  // RFC 2544 (198.18.0.0/15), RFC 1112 (224.0.0.0/4 multicast) and RFC 1112 (240.0.0.0/4 reserved).
+  it('rejects carrier-grade NAT, IETF protocol assignment, benchmarking, multicast and reserved ranges', () => {
+    expect(() => validateScreenshotUrl('http://100.64.0.1/')).toThrow(/private IP/)
+    expect(() => validateScreenshotUrl('http://192.0.0.170/')).toThrow(/private IP/)
+    expect(() => validateScreenshotUrl('http://198.18.0.1/')).toThrow(/private IP/)
+    expect(() => validateScreenshotUrl('http://224.0.0.1/')).toThrow(/private IP/)
+    expect(() => validateScreenshotUrl('http://240.0.0.1/')).toThrow(/private IP/)
+  })
+
+  it('rejects carrier-grade NAT and multicast written as IPv4-mapped IPv6', () => {
+    expect(() => validateScreenshotUrl('http://[::ffff:100.64.0.1]/')).toThrow(/private IP/)
+    expect(() => validateScreenshotUrl('http://[::ffff:224.0.0.1]/')).toThrow(/private IP/)
+  })
+
+  it('still allows the opt-out for a newly-covered range (screenshot.block_private_targets=false)', () => {
+    process.env['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS'] = 'false'
+    invalidateConfigCache()
+    expect(() => validateScreenshotUrl('http://100.64.0.1/')).not.toThrow()
+  })
+
   // Regression: error text interpolated the full `url`, so a signed screenshot URL rejected
   // for its scheme printed its own access token into stderr and from there model context.
   it('never echoes the query string when rejecting a scheme', () => {
