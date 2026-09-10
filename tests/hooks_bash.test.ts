@@ -4726,6 +4726,13 @@ describe('extractPowerShellFileMethodRead — detects [System.IO.File]::ReadAllT
     const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllText('schema.sql')`)
     expect(r?.isSql).toBe(true)
   })
+
+  // HAND-DERIVED: classifyFileExtensions (src/hooks_bash.ts) already returns isEnv for a .env-shaped basename; every sibling extractor (extractCatFile, extractCatFilesMulti, extractPowerShellWrappedGetContent, extractWslCatFile) carries that flag through and its return type declares it, so this asserts the same for extractPowerShellFileMethodRead.
+  it('classifies .env files as env, matching every other file-read extractor', () => {
+    const r = extractPowerShellFileMethodRead(`[IO.File]::ReadAllText('.env')`)
+    expect(r).not.toBeNull()
+    expect((r as unknown as { isEnv: boolean }).isEnv).toBe(true)
+  })
 })
 
 describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', () => {
@@ -4763,6 +4770,16 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map --compact')
+    }
+  })
+
+  // HAND-DERIVED: surgicalHintFor (src/hooks_bash.ts) points an isEnv read at `config-get ... KEY_NAME`, and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy.
+  it('denies a .NET .env file read with a config-get hint, not the generic symbol hint', () => {
+    const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('.env')`))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat config-get ".env" KEY_NAME')
+      expect(result.message).not.toContain('SymbolName')
     }
   })
 })
