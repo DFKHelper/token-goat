@@ -206,16 +206,19 @@ interface TagBlock {
  * `contentStartLine` lines up.
  */
 function extractTagBlocks(content: string, lineIndex: readonly number[], tag: string): TagBlock[] {
+  // Match against a string-blanked view so a literal closing tag inside a JS/TS string or template literal in the block's own body (e.g. `document.write('</script>')`) cannot end the match early; blanking preserves length and newlines, so every offset below still applies unchanged to the real `content`.
+  const masked = blankJsStringLiterals(content)
   const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}\\s*>`, 'gi')
   const blocks: TagBlock[] = []
-  for (const m of content.matchAll(re)) {
+  for (const m of masked.matchAll(re)) {
     const matchStart = m.index ?? 0
     const attrs = m[1] ?? ''
-    const inner = m[2] ?? ''
+    const innerLen = (m[2] ?? '').length
     const openTagLen = 1 + tag.length + attrs.length + 1
+    const innerStart = matchStart + openTagLen
     blocks.push({
-      content: inner,
-      contentStartLine: offsetToLine(lineIndex, matchStart + openTagLen),
+      content: content.slice(innerStart, innerStart + innerLen),
+      contentStartLine: offsetToLine(lineIndex, innerStart),
       matchStart,
       matchEnd: matchStart + m[0].length,
     })
