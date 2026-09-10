@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -1119,5 +1119,53 @@ describe('safeSlice', () => {
   it('is a no-op when endIndex is 0 or >= the string length', () => {
     expect(safeSlice('hello', 0)).toBe('')
     expect(safeSlice('hello', 100)).toBe('hello')
+  })
+})
+
+// Regression for the shell-injection lead in enterprise security loop 10: a script or entry path reaching hookCommandFor was wrapped in bare double quotes with no escaping, so an embedded literal double quote (a legal filename character on macOS and Linux, though illegal on Windows) could break out of the quoted argument once an external harness (Claude Code, Grok, Kimi, Gemini CLI, Qwen Code) parsed the generated command line through its own shell. Fixture provenance: HAND-DERIVED -- a synthetic path built to contain the dangerous character class, never captured from a real install and never executed against any real shell.
+describe('quoteShellPath / hookCommandFor path escaping', () => {
+  function withPlatform(value: string, fn: () => void): void {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value })
+    try {
+      fn()
+    } finally {
+      if (original) Object.defineProperty(process, 'platform', original)
+    }
+  }
+
+  it('escapes an embedded double quote, backslash, dollar sign, and backtick on POSIX', () => {
+    withPlatform('linux', () => {
+      const hostile = '/home/user/proj"ect/$(marker)/`marker`/shim.js'
+      expect(quoteShellPath(hostile)).toBe('"/home/user/proj\\"ect/\\$(marker)/\\`marker\\`/shim.js"')
+    })
+  })
+
+  it('does not escape on win32, where a double quote cannot appear in a real path', () => {
+    withPlatform('win32', () => {
+      const value = 'C:\\Users\\name with spaces\\shim.js'
+      expect(quoteShellPath(value)).toBe(`"${value}"`)
+    })
+  })
+
+  it('hookCommandFor escapes a literal double quote in scriptPath and entryPath on POSIX instead of letting it break out of the quoted argument', () => {
+    withPlatform('linux', () => {
+      const originalArgv1 = process.argv[1]
+      process.argv[1] = '/home/user/proj"ect/entry.mjs'
+      try {
+        const scriptPath = '/home/user/proj"ect/shim.js'
+        const command = hookCommandFor(scriptPath, 'pre_tool_use')
+        // The naive unescaped form must never appear: a raw `"` here would close the quoted
+        // argument early and hand the rest of the path to the shell as unquoted tokens.
+        expect(command).not.toContain('proj"ect')
+        expect(command).toContain('proj\\"ect/shim.js')
+        expect(command).toContain('proj\\"ect/entry.mjs')
+        expect(command).toBe(
+          `${quoteShellPath(process.execPath)} "/home/user/proj\\"ect/shim.js" pre_tool_use "/home/user/proj\\"ect/entry.mjs"`,
+        )
+      } finally {
+        process.argv[1] = originalArgv1
+      }
+    })
   })
 })
