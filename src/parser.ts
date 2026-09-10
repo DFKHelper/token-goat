@@ -2893,7 +2893,7 @@ export function indexFileSync(rawPath: string, dbPath: string = globalDbPath(), 
  * to its plain sliding window in that case, so this never needs to signal "no boundaries"
  * any differently than an empty array.
  */
-function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: string): ChunkBoundary[] {
+export function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: string): ChunkBoundary[] {
   if (detectLanguage(filePath) === 'markdown') {
     // Extract all headings (no cap) for embedding boundaries so sections remain heading-aligned
     // even for docs with >40 headings (large API references, changelogs, multi-section docs).
@@ -2906,7 +2906,8 @@ function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: str
     }))
   }
 
-  const symbols = querySymbols({ filePath, limit: 10000 }, dbPath)
+  // No cap here either, matching the markdown branch above: this query is already scoped to one file_path, so its row count is bounded by that file's own symbol count (already paid for by indexFileSync's parse moments earlier), not by anything this call adds. A fixed cap here previously silently dropped every symbol past the file's 10,000th (ordered by line_start, so a contiguous tail) from getting its own chunk boundary - chunkFile's trailing-gap fallback still folded that tail into one generic 'window' chunk rather than losing its content outright, but it lost symbol-precise chunking for large generated files (API clients, protobuf/OpenAPI output, big constants/fixtures files) with no documented reason for the number or the asymmetry with the uncapped markdown branch.
+  const symbols = querySymbols({ filePath, limit: Number.MAX_SAFE_INTEGER }, dbPath)
   return symbols.map((s) => ({ start: s.lineStart, end: s.lineEnd, kind: 'symbol' as const }))
 }
 
