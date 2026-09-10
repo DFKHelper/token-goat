@@ -29,7 +29,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { anchoredMarkerPattern } from '../install.js'
-import { stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
+import { quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
 // Qwen Code -> token-goat internal HookEventName (src/types.ts's HOOK_EVENTS).
 // Only these five have a token-goat handler; every other real Qwen Code
@@ -143,7 +143,7 @@ function groupHasTokenGoat(groups: QwenMatcherGroup[] | undefined, predicate: (c
 function qwenHookCommand(eventArg: string): string {
   const entryPath = process.argv[1]
   if (!entryPath) return `token-goat hook ${eventArg} --harness qwen`
-  return `"${process.execPath}" "${entryPath}" hook ${eventArg} --harness qwen`
+  return `${quoteShellPath(process.execPath)} ${quoteShellPath(entryPath)} hook ${eventArg} --harness qwen`
 }
 
 interface QwenInstallResult {

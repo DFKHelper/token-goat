@@ -1185,10 +1185,16 @@ export function isWithinQuietHours(spec: string, now: Date = new Date()): boolea
  * unavailable (should never happen under a real `node <script>` invocation) rather than
  * baking in something wrong; the shim's inner call falls back to its old PATH-based lookup.
  */
+// Wraps a path in double quotes for embedding in a generated hook command line that an external harness (Claude Code, Grok, Kimi, Gemini CLI, Qwen Code) later parses through its own shell, escaping the characters a POSIX shell treats as special inside a double-quoted string (backslash, dollar, backtick, double quote) so an embedded one of those cannot break out of the quoting or trigger command substitution or variable expansion; Windows paths cannot legally contain a double quote at all, so no escaping is applied on win32, since prefixing every backslash in an ordinary `C:\` path would corrupt it under cmd.exe and PowerShell, neither of which treats backslash as an escape character inside a double-quoted string.
+export function quoteShellPath(value: string): string {
+  if (process.platform === 'win32') return `"${value}"`
+  return `"${value.replace(/[\\$`"]/g, '\\$&')}"`
+}
+
 export function hookCommandFor(scriptPath: string, event: string): string {
   const entryPath = process.argv[1]
-  const entryArg = entryPath ? ` "${entryPath}"` : ''
-  return `"${process.execPath}" "${scriptPath}" ${event}${entryArg}`
+  const entryArg = entryPath ? ` ${quoteShellPath(entryPath)}` : ''
+  return `${quoteShellPath(process.execPath)} ${quoteShellPath(scriptPath)} ${event}${entryArg}`
 }
 
 // Capped Levenshtein distance, mirroring config_commands.ts's didYouMeanKeySuffix helper (same

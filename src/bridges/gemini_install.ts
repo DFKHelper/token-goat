@@ -69,7 +69,7 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { extractErrorMessage, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
+import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 import { groupHasTokenGoat } from './matcher_group.js'
 
 /**
@@ -253,7 +253,7 @@ function isCurrentGeminiTokenGoatCommand(command: string, desiredCommand: string
 function geminiHookCommand(eventArg: string): string {
   const entryPath = process.argv[1]
   if (!entryPath) return `token-goat hook ${eventArg}`
-  return `"${process.execPath}" "${entryPath}" hook ${eventArg}`
+  return `${quoteShellPath(process.execPath)} ${quoteShellPath(entryPath)} hook ${eventArg}`
 }
 
 /**
