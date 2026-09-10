@@ -46,6 +46,14 @@ import {
   serializeXmlNode,
   type XmlOutlineSummary,
 } from './xml_query.js'
+import {
+  outlineHtml,
+  formatHtmlOutline,
+  queryHtml,
+  serializeHtmlNode,
+  extractNodeText,
+  lintHtml,
+} from './html_query.js'
 import { loadAll as loadAllYaml } from 'js-yaml'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
 import {
@@ -3608,6 +3616,202 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
     emitErr(extractErrorMessage(e))
     return 1
   }
+}
+
+export interface HtmlOutlineCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat html-outline file``: structural summary of an HTML document. */
+export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  const summary = outlineHtml(text)
+  const fullSourceBytes = sumFileSizes([opts.file])
+  if (opts.json === true) {
+    const jsonText = JSON.stringify(summary, null, 2)
+    emit(jsonText)
+    recordReadStat('html_outline', fullSourceBytes, jsonText, opts.file)
+  } else {
+    const outlineText = formatHtmlOutline(summary)
+    emitGuarded(outlineText, 'html-outline')
+    recordReadStat('html_outline', fullSourceBytes, outlineText, opts.file)
+  }
+  return 0
+}
+
+export interface HtmlQueryCliOptions {
+  file: string
+  selector: string
+  head?: string
+  json?: boolean
+  text?: boolean
+  attr?: string
+}
+
+/** Handle ``token-goat html-query file selector``: extract elements, text, or attributes from HTML by CSS selector. */
+export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+
+  try {
+    const querySelector = opts.attr ? `${opts.selector}@${opts.attr}` : opts.selector
+    const result = queryHtml(text, querySelector)
+    const fullSourceBytes = sumFileSizes([opts.file])
+
+    if (result.attributeValues !== undefined) {
+      if (result.attributeValues.length === 0) {
+        if (opts.json === true) {
+          const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+          emit(jsonText)
+          recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+        } else {
+          emit(`No attributes matched selector: '${opts.selector}'`)
+        }
+        return 0
+      }
+
+      const totalCount = result.attributeValues.length
+      const limited = head !== undefined ? result.attributeValues.slice(0, head) : result.attributeValues
+      const headTruncated = limited.length < totalCount
+
+      if (opts.json === true) {
+        const capped = guardJsonRows(limited)
+        const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+        emit(jsonText)
+        recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        const lines = limited.map((item) => item)
+        if (headTruncated) {
+          lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+        }
+        const plainText = lines.join('\n')
+        emitGuarded(plainText, 'html-query')
+        recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
+      }
+      return 0
+    }
+
+    if (result.elements.length === 0) {
+      if (opts.json === true) {
+        const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+        emit(jsonText)
+        recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        emit(`No elements matched selector: '${opts.selector}'`)
+      }
+      return 0
+    }
+
+    const totalCount = result.elements.length
+    const limited = head !== undefined ? result.elements.slice(0, head) : result.elements
+    const headTruncated = limited.length < totalCount
+
+    if (opts.json === true) {
+      const jsonItems = limited.map((n) => ({
+        tag: n.tag,
+        attributes: n.attributes,
+        text: extractNodeText(n, text),
+        line: n.line,
+        endLine: n.endLine,
+      }))
+      const capped = guardJsonRows(jsonItems)
+      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, null, 2)
+      emit(jsonText)
+      recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+    } else if (opts.text === true) {
+      const textLines = limited.map((n) => extractNodeText(n, text)).filter(Boolean)
+      if (headTruncated) {
+        textLines.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+      }
+      const plainText = textLines.join('\n\n')
+      emitGuarded(plainText, 'html-query')
+      recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
+    } else {
+      const blocks = limited.map((node) => serializeHtmlNode(node, 0, text))
+      if (headTruncated) {
+        blocks.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+      }
+      const plainText = blocks.join('\n\n')
+      emitGuarded(plainText, 'html-query')
+      recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+export interface HtmlLintCliOptions {
+  file: string
+  json?: boolean
+  strict?: boolean
+}
+
+/** Handle ``token-goat html-lint file``: structural HTML validator and linter. */
+export function runHtmlLint(opts: HtmlLintCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  const report = lintHtml(text)
+  const isClean = opts.strict ? (report.errors.length === 0 && report.warnings.length === 0) : report.errors.length === 0
+
+  if (opts.json === true) {
+    emit(JSON.stringify(report, null, 2))
+    return isClean ? 0 : 1
+  }
+
+  if (report.errors.length === 0 && report.warnings.length === 0) {
+    emit(`✓ ${opts.file}: HTML structure is valid (all tags balanced, no duplicate IDs, void elements respected).`)
+    return 0
+  }
+
+  const lines: string[] = []
+  if (report.errors.length > 0) {
+    lines.push(`Errors found in ${opts.file} (${report.errors.length}):`)
+    for (const err of report.errors) {
+      lines.push(`  line ${err.line}: [${err.rule}] ${err.message}`)
+    }
+  }
+
+  if (report.warnings.length > 0) {
+    if (lines.length > 0) lines.push('')
+    lines.push(`Warnings in ${opts.file} (${report.warnings.length}):`)
+    for (const warn of report.warnings) {
+      lines.push(`  line ${warn.line}: [${warn.rule}] ${warn.message}`)
+    }
+  }
+
+  const unbalanced = Object.entries(report.tagCounts).filter(([, c]) => c.diff !== 0)
+  if (unbalanced.length > 0) {
+    lines.push('', 'Unbalanced tags:')
+    for (const [tag, counts] of unbalanced) {
+      lines.push(`  <${tag}>: open=${counts.open}, close=${counts.close}, diff=${counts.diff}`)
+    }
+  }
+
+  emit(lines.join('\n'))
+  return isClean ? 0 : 1
 }
 
 export interface OpenApiOutlineCliOptions {

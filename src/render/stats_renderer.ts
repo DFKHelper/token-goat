@@ -523,6 +523,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'xlsx_query',
       'xml_query',
       'xml_outline',
+      'html_query',
+      'html_outline',
       'yaml_query',
       'yaml_outline',
       'zip_list',
