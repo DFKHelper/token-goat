@@ -35,7 +35,7 @@ export const COMMENT_FOLD_KEEP_LINES = 2
  */
 export const COMMENT_FOLD_MIN_BLOCK = 12
 
-/** Symbols pulled per file. Matches ALL_SYMBOLS_IN_FILE_LIMIT without importing graph_commands. */
+/** Symbols pulled per file for body-fold candidates. Deliberately a real finite cap (unlike graph_commands.ts's ALL_SYMBOLS_IN_FILE_LIMIT, which had to become unbounded because a truncated fetch there fed a caller-attribution verdict): a file past this many symbols just gets fewer bodies folded on this hook path, never a wrong fold, so bounding the per-Read hook cost here is safe. */
 const BODY_FOLD_SYMBOL_LIMIT = 10000
 
 /**
