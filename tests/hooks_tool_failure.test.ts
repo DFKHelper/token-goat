@@ -1,4 +1,4 @@
-import { unlinkSync, writeFileSync } from 'node:fs'
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -12,6 +12,7 @@ import {
   postToolUseFailureHandler,
   repeatFailureNotice,
 } from '../src/hooks_tool_failure.js'
+import { sessionSidecarPath } from '../src/session_store.js'
 
 function failureEvent(sessionId: string, toolName: string, error: string): HookEvent {
   return {
@@ -138,6 +139,17 @@ describe('postToolUseFailureHandler', () => {
     }
     // The oldest entry has been evicted, so its next occurrence reads as a first occurrence again.
     expect(postToolUseFailureHandler(failureEvent(session, 'Read', 'oldest failure')).hookType).toBe('pass')
+  })
+
+  // PROVENANCE: HAND-DERIVED. AKIAIOSFODNN7EXAMPLE is the AWS-documented example access key id shape (docs.aws.amazon.com), matched by secret_redact.ts's aws_access_key pattern; not a real credential.
+  it('does not persist a credential-shaped error to the on-disk failure ledger', () => {
+    const session = uniqueSession()
+    const errorText = 'AuthenticationError: request failed using key AKIAIOSFODNN7EXAMPLE'
+    postToolUseFailureHandler(failureEvent(session, 'Bash', errorText))
+    const target = sessionSidecarPath(session, '.tool-failures.json')
+    expect(target).not.toBeNull()
+    const raw = readFileSync(target as string, 'utf8')
+    expect(raw).not.toContain('AKIAIOSFODNN7EXAMPLE')
   })
 })
 

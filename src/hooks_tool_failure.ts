@@ -28,6 +28,7 @@ import { dirname, relative } from 'node:path'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { contextOutput, getFilePath, getToolName, passOutput } from './hooks_common.js'
 import { displaySafeText, normalizePath } from './paths.js'
+import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import type { HookOutput } from './types.js'
 
@@ -230,7 +231,8 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     if (target === null) return passOutput()
 
     const toolName = getToolName(event)
-    const signature = failureSignature(toolName, errorText)
+    // Redact before the signature is derived, not after: this signature is the object the ledger persists to disk (writeLedger below), and a tool failure's error text is externally sourced (shell stderr, an MCP tool's own error, a fetch failure) and can carry a credential the failing call happened to echo back.
+    const signature = failureSignature(toolName, redactSecrets(errorText).text)
     const ledger = readLedger(target)
     const priorState = ledger.seen[signature]
 
