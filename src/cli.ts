@@ -25,6 +25,7 @@ import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANN
 import { formatLocalTimestamp, recordStat, savedTokensFromBytes, _useRichStats } from './stats.js'
 import { fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { fenceUntrusted, scanAndRecord, injectionFencingEnabled } from './untrusted_fence.js'
+import { redactSecrets } from './secret_redact.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1207,7 +1208,9 @@ function _applyFiltersAndPrint(
       out(text)
       return text
     }
-    const fenced = fenceUntrusted(text, fenceTag)
+    // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact before fencing so a credential pasted into a PDF, a leaked token in a recalled build log, or a signed URL in a doc does not reach the model raw. Idempotent on content already redacted at write time (bash/web/mcp caches), matching the defense-in-depth pass disk_cache.ts's storeBlob already applies on top of a caller's own redaction.
+    const redacted = redactSecrets(text).text
+    const fenced = fenceUntrusted(redacted, fenceTag)
     out(fenced)
     return fenced
   }
@@ -1315,7 +1318,8 @@ function _applyFiltersAndPrint(
  * is paid once per field and the arithmetic is not the same.
  */
 function fenceFileText(text: string): string {
-  return fenceUntrusted(text, UNTRUSTED_FILE_TAG)
+  // A local file the caller only named (a PDF, DOCX, PPTX, XLSX) is third-party content the same way a fetched page is -- redact before fencing so a credential embedded in the document does not reach the model raw, matching the fenceByProvenance branch of _applyFiltersAndPrint.
+  return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
 }
 
 /**
@@ -1334,9 +1338,10 @@ function fenceFileText(text: string): string {
  * instead of N wrappers), which is a breaking change for `--json` consumers and out of scope here.
  */
 function fenceFileFieldIfMatched(text: string): string {
-  const matches = scanAndRecord(text)
-  if (matches.length === 0) return text
-  return fenceUntrustedContent(text, matches, UNTRUSTED_FILE_TAG)
+  const redacted = redactSecrets(text).text
+  const matches = scanAndRecord(redacted)
+  if (matches.length === 0) return redacted
+  return fenceUntrustedContent(redacted, matches, UNTRUSTED_FILE_TAG)
 }
 
 /** Best-effort on-disk size of a file; 0 if it can't be stat'd (never blocks stat recording). */

@@ -30,6 +30,7 @@ import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { redactSecrets } from './secret_redact.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
@@ -3910,11 +3911,13 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
       }
       case 'diff': {
         const diffText = fetchPrDiff(opts.pr, repo)
-        const fileDiff = extractFileDiff(diffText, parsed.path)
-        if (fileDiff === null) {
+        const rawFileDiff = extractFileDiff(diffText, parsed.path)
+        if (rawFileDiff === null) {
           emitErr(`No diff found for '${parsed.path}' in PR #${opts.pr}`)
           return 1
         }
+        // A committed-then-reverted secret is a well known way one leaks: it survives in the diff even though the file on disk was cleaned up. Redact before fencing/formatting, mirroring hooks_websearch.ts's "redact once, reuse everywhere" discipline.
+        const fileDiff = redactSecrets(rawFileDiff).text
         // "Full source" is the whole multi-file PR diff fetched before slicing down to one
         // file's hunk -- see the `files` case above for the same recordStat rationale.
         const fullSourceBytes = Buffer.byteLength(diffText, 'utf8')
@@ -3929,9 +3932,15 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         return 0
       }
       case 'comments': {
-        const comments = fetchPrComments(opts.pr, repo)
+        const rawComments = fetchPrComments(opts.pr, repo)
         // See the `files` case above for the same recordStat rationale.
-        const fullSourceBytes = Buffer.byteLength(JSON.stringify(comments), 'utf8')
+        const fullSourceBytes = Buffer.byteLength(JSON.stringify(rawComments), 'utf8')
+        // Review comments are authored by anyone with review access; redact body/diffHunk before formatting or fencing, same reasoning as the diff case above.
+        const comments = rawComments.map((c) => ({
+          ...c,
+          body: redactSecrets(c.body).text,
+          ...(c.diffHunk !== undefined ? { diffHunk: redactSecrets(c.diffHunk).text } : {}),
+        }))
         if (opts.json === true) {
           const fencedComments = comments.map((c) => ({ ...c, body: fenceGithubFieldIfMatched(c.body) }))
           const capped = guardJsonRows(fencedComments)
@@ -3946,9 +3955,15 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         return 0
       }
       case 'description': {
-        const desc = fetchPrDescription(opts.pr, repo)
+        const rawDesc = fetchPrDescription(opts.pr, repo)
         // See the `files` case above for the same recordStat rationale.
-        const fullSourceBytes = Buffer.byteLength(JSON.stringify(desc), 'utf8')
+        const fullSourceBytes = Buffer.byteLength(JSON.stringify(rawDesc), 'utf8')
+        // Title/body are PR-author-controlled; redact before formatting or fencing, same reasoning as the diff and comments cases above.
+        const desc = {
+          ...rawDesc,
+          title: redactSecrets(rawDesc.title).text,
+          body: rawDesc.body !== null ? redactSecrets(rawDesc.body).text : null,
+        }
         if (opts.json === true) {
           const fencedDesc = {
             ...desc,

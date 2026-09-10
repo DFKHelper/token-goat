@@ -55,7 +55,7 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
  * as opposed to text token-goat generates itself or reads from a file the user named locally.
  * See this file's header comment for what anchoring here does and does not catch.
  */
-const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
+export const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
   // pr_slice.ts -- a GitHub PR's files/diff/comments/description, authorable by anyone who opens a PR.
   'fetchPrFiles',
   'fetchPrDiff',
@@ -170,7 +170,7 @@ function callsFence(body: string): boolean {
   return false
 }
 
-function srcFiles(): string[] {
+export function srcFiles(): string[] {
   // Pinned: this guard's whole job is to find every consumer of third-party content, so an empty
   // or hollowed-out file list is the one failure it must never report as a clean sweep. The anchors
   // are the modules that fetch or render that content today.
@@ -195,7 +195,7 @@ function srcFiles(): string[] {
  * population is what keeps this guard pointed at *consumers*, matching the real bug shape (three
  * command handlers, not the fetch modules they called).
  */
-const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set([
+export const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set([
   'pr_slice.ts',
   'gdrive.ts',
   'recall_index.ts',
