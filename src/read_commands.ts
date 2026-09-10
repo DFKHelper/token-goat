@@ -2860,7 +2860,7 @@ function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefi
 function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
+): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined; totalLines: number } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   // Same reason as resolveSymbolSpec's check: the listing below comes out of the shared index.
   const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
@@ -2905,7 +2905,10 @@ function prepareSymbolListing(
 
   const fullSourceBytes = sumFileSizes([resolved])
 
-  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
+  // Computed from the unfiltered (pre --min-lines/--grep) symbol set, not `filtered`: a narrowing filter can drop the very symbol that reaches furthest down the file, and reporting the total from what's left would then understate the file's real size instead of just the shown symbol count.
+  const totalLines = symbols.length > 0 ? Math.max(...symbols.map((s) => s.lineEnd)) : 0
+
+  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines }
 }
 
 /**
@@ -2997,7 +3000,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   if (prep.kind === 'confined' || prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
+  const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines } = prep
 
   if (opts.json === true) {
     // filePath appears when, and only when, the payload can hold more than one file. It identifies which file a row came from -- without it two merged rows both reading lineStart 3 are indistinguishable while meaning different files -- but a single-file caller already knows the file it named, and every field costs rows: guardJsonRows caps by BYTES, so an unconditional path per row pushes real symbols out of a large file listing (the same lever that removing `body` pulled in the other direction). Rendered through toDisplayPath so it is root-relative and reproducible rather than absolute and specific to this machine and drive-letter casing.
@@ -3026,7 +3029,6 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
     return { text, code: 0 }
   }
 
-  const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
   const lines: string[] = [`# Skeleton: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)}, ${countNoun(totalLines, 'line')})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {

@@ -2134,6 +2134,19 @@ describe('read_commands', () => {
       expect(text).not.toContain('unrelatedThing')
     })
 
+    // CAPTURE: reproduced against the real src/read_commands.ts (7086 real lines) via `node dist/token-goat.mjs skeleton src/read_commands.ts --grep fileExists`, which printed "128 lines" pre-fix. The header's line count must describe the whole file, not just the symbols --grep happened to keep -- a filter narrowing to one small early symbol must not make the file read as tiny.
+    it('reports the total line count of the whole file, not just the grep-narrowed symbols', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runSkeleton({ file: 'a.ts', grep: 'Config' })
+      expect(text).toContain('40 lines')
+      expect(text).not.toContain('10 lines')
+    })
+
     // The pattern is matched against the symbol NAME only. Anchors have to work for that to be usable at all -- a caller narrowing to constructors or a naming prefix needs ^ to mean the start of the name.
     it('treats the pattern as a regex against the symbol name', () => {
       mockQuerySymbols.mockReturnValue(
