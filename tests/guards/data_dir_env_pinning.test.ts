@@ -22,6 +22,34 @@ const ASSIGN_LOCALAPPDATA = /process\.env\[['"]LOCALAPPDATA['"]\]\s*=/
 const ASSIGN_XDG = /process\.env\[['"]XDG_DATA_HOME['"]\]\s*=/
 
 /**
+ * A per-line assignment to `varName`, excluding the restore half of the save/restore idiom every
+ * pinning test uses: a saved-value variable captured up front, then written back in an `else`
+ * branch once the real pin is no longer needed. That restore write matches the bare ASSIGN_*
+ * regex just as well as the real pinning write does, so removing only the real pin from a test
+ * file while leaving its own untouched cleanup block still read, to the bare regex, as "this file
+ * pins both variables" -- confirmed by mutating bash_runner.test.ts's real pin away and watching
+ * this guard stay green on the strength of its own restore line alone. Excluded here: any line
+ * whose trimmed text starts with `else ` (the idiom's restore branch), and any assignment whose
+ * right-hand side is itself a saved-value identifier (the same idiom without the keyword on its
+ * own line, e.g. a one-line ternary restore). Deliberately worded above without spelling out the
+ * literal assignment shape on one line, since this file is itself part of the scanned population
+ * and a docstring quoting that shape verbatim would satisfy the very regex it documents.
+ */
+function realAssignments(source: string, varName: string): string[] {
+  const re = new RegExp(`process\\.env\\[['"]${varName}['"]\\]\\s*=\\s*([^;\\n]+)`, 'g')
+  const out: string[] = []
+  for (const line of source.split('\n')) {
+    if (/^\s*else\b/.test(line)) continue
+    re.lastIndex = 0
+    const m = re.exec(line)
+    if (m === null) continue
+    if (/^_saved/i.test(m[1]!.trim())) continue
+    out.push(line)
+  }
+  return out
+}
+
+/**
  * Files that legitimately pin one variable alone because the behavior under test is that
  * variable itself, not the data directory it feeds. Keep this list short and justified.
  */
@@ -86,8 +114,8 @@ describe('data-dir environment pinning is platform-complete', () => {
     const offenders: string[] = []
     for (const file of files) {
       const source = fs.readFileSync(file, 'utf8')
-      if (!ASSIGN_LOCALAPPDATA.test(source)) continue
-      if (ASSIGN_XDG.test(source)) continue
+      if (realAssignments(source, 'LOCALAPPDATA').length === 0) continue
+      if (realAssignments(source, 'XDG_DATA_HOME').length > 0) continue
       if (SINGLE_VAR_EXEMPT.has(path.basename(file))) continue
       offenders.push(path.relative(TESTS_DIR, file))
     }
@@ -101,8 +129,8 @@ describe('data-dir environment pinning is platform-complete', () => {
     const offenders: string[] = []
     for (const file of files) {
       const source = fs.readFileSync(file, 'utf8')
-      if (!ASSIGN_XDG.test(source)) continue
-      if (ASSIGN_LOCALAPPDATA.test(source)) continue
+      if (realAssignments(source, 'XDG_DATA_HOME').length === 0) continue
+      if (realAssignments(source, 'LOCALAPPDATA').length > 0) continue
       if (SINGLE_VAR_EXEMPT.has(path.basename(file))) continue
       offenders.push(path.relative(TESTS_DIR, file))
     }
