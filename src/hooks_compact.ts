@@ -295,7 +295,7 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
   for (const f of files) {
     if (f.readCount > 1 || f.wasEdited) {
       const reason = f.wasEdited ? 'edited after being read' : ('re-read ' + f.readCount + 'x')
-      supersededReadRows.push('- ' + f.path + ' (' + reason + ' — only the latest content already in context is current)')
+      supersededReadRows.push('- ' + displaySafePath(f.path) + ' (' + reason + ' — only the latest content already in context is current)')
     }
   }
 
