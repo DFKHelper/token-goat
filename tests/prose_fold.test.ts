@@ -95,9 +95,9 @@ describe('prose fold', () => {
     expect(planProseFolds(rows(paragraph), new Set([0]))).toHaveLength(0)
   })
 
-  it('prints a pointer that works exactly as written', () => {
-    // Both assertions come from running the built binary against this repository's own changelog, where the first draft of this notice failed them. It named `token-goat section "CHANGELOG.md::<heading>"`, a placeholder the reader is left to resolve on their own, and it opened with a `[token-goat]` marker that the untrusted-output fence escaped to `&#91;token-goat]` in the text actually delivered.
-    const notice = proseFoldNotice('A shell read now withholds only what was already shown.', 42, 'CHANGELOG.md')
+  it('falls back to a ranged Read when no enclosing section can be resolved, and carries no stray marker', () => {
+    // Both assertions come from running the built binary against this repository's own changelog, where the first draft of this notice failed them. It named `token-goat section "CHANGELOG.md::<heading>"`, a placeholder the reader is left to resolve on their own, and it opened with a `[token-goat]` marker that the untrusted-output fence escaped to `&#91;token-goat]` in the text actually delivered. A nonexistent normalizedPath here means findContainingSection cannot resolve a heading, exercising that fallback branch specifically; tests/fold_pointer_round_trip.test.ts drives the real, resolvable case end to end through the hook pair and proves the section pointer it prints actually round-trips.
+    const notice = proseFoldNotice('A shell read now withholds only what was already shown.', 42, 'CHANGELOG.md', 'c:/nonexistent/CHANGELOG.md')
     expect(notice).toBe('A shell read now withholds only what was already shown. ... rest of paragraph folded (line 42) -- Read "CHANGELOG.md" with offset=42, limit=1')
     expect(notice).not.toContain('<')
     expect(notice).not.toContain('[')

@@ -65,7 +65,7 @@ function srcFiles(): string[] {
  * `hookType: 'rewriteInput'` is invisible to it -- the exact "stripping hides the very thing being
  * scanned for" trap this repo's own guard notes warn about, just one layer further than usual.
  */
-function reachesRaw(fn: FnInfo, byName: Map<string, string>, predicate: (body: string) => boolean): boolean {
+export function reachesRaw(fn: FnInfo, byName: Map<string, string>, predicate: (body: string) => boolean): boolean {
   const visited = new Set<string>()
   const stack: string[] = [fn.name]
   while (stack.length > 0) {

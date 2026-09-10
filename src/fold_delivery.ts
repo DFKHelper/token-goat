@@ -13,6 +13,7 @@ import { getFileEntry, querySymbols } from './index_reader.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { detectLanguage } from './parser_types.js'
+import { findContainingSection } from './section_reader.js'
 
 /** Lines kept at the head of each folded body: the declaration plus enough to judge the rest. */
 export const BODY_FOLD_KEEP_LINES = 8
@@ -71,10 +72,15 @@ export function isProseFoldablePath(normalizedPath: string): boolean {
 /**
  * The opening sentence of a folded paragraph, followed by the pointer that returns the rest.
  *
- * Worded to match {@link commentFoldNotice} rather than inventing a third shape, for two reasons found by running it. A pointer has to be actionable exactly as printed: an earlier draft named `token-goat section "file::<heading>"`, and a placeholder standing in for a heading the reader is expected to work out themselves is not a pointer at all. The paragraph is a single line, so a one-line ranged Read names it precisely. And the notice must carry no `[token-goat]` marker: the delivered body is fenced as untrusted output, which escapes an opening bracket to `&#91;`, so a marker inside the text a reader sees arrives mangled.
+ * Named a real, resolved heading via {@link findContainingSection} rather than a placeholder the reader has to work out themselves, which an earlier draft did and which this repo's own test suite caught as unactionable. A one-line ranged Read (`Read "file" with offset=N, limit=1`) looks more precise, and is the fallback below when no enclosing section can be resolved, but it is not safe as the default: prose folding only ever applies to a markdown/mdx document, and hooks_read.ts's large-markdown intercept hard-denies every re-read of a markdown file with 3+ headings regardless of how narrow the offset/limit window is (the branch's own comment says so: "regardless of size"). `token-goat section` is a CLI command, not a Read the intercept ever sees, so it is the one route guaranteed to round-trip for exactly the class of document this fold exists to shrink.
  */
-export function proseFoldNotice(keep: string, line: number, shownPath: string): string {
-  return `${keep} ... rest of paragraph folded (line ${line}) -- Read "${shownPath}" with offset=${line}, limit=1`
+export function proseFoldNotice(keep: string, line: number, shownPath: string, normalizedPath: string): string {
+  const section = findContainingSection(normalizedPath, line, line)
+  const pointer =
+    section !== null
+      ? `token-goat section "${shownPath}::${section.heading}"`
+      : `Read "${shownPath}" with offset=${line}, limit=1`
+  return `${keep} ... rest of paragraph folded (line ${line}) -- ${pointer}`
 }
 
 export function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {
@@ -199,7 +205,7 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
         notice = commentFoldNotice(fold.firstLine, fold.lastLine, shownPath)
         break
       case 'prose':
-        notice = proseFoldNotice(fold.keep ?? '', fold.firstLine, shownPath)
+        notice = proseFoldNotice(fold.keep ?? '', fold.firstLine, shownPath, normalizedPath)
         break
       case 'body':
         notice = bodyFoldNotice(fold.name, fold.firstLine, fold.lastLine, shownPath, fold.declLine)
