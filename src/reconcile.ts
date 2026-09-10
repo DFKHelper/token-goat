@@ -29,6 +29,8 @@
  */
 import * as fs from 'node:fs'
 
+import { globalDbPath } from './constants.js'
+import { getDb } from './db.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
@@ -51,6 +53,44 @@ export interface ReconcileOptions {
   budgetMs?: number
   /** Compute the drift set without enqueueing it. */
   dryRun?: boolean
+  /** Index database to read/write. Defaults to {@link globalDbPath}; overridable for tests so a sweep can be run against an isolated database instead of the process-memoized default. */
+  dbPath?: string
+}
+
+/**
+ * Reads the resume point left by a previous budget-truncated sweep of `root`, or null when there
+ * is none (fresh project, a completed lap already cleared it, or the row cannot be read). Never
+ * throws: a corrupt or unreadable cursor degrades to "start from the beginning", not a crash.
+ */
+function readReconcileCursor(dbPath: string, root: string): string | null {
+  try {
+    const row = getDb(dbPath).prepare('SELECT last_scanned_path FROM reconcile_cursor WHERE root = ?').get(root) as { last_scanned_path: string } | undefined
+    return row?.last_scanned_path ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Persists the last file this sweep finished examining before its budget ran out, so the next sweep resumes right after it. Best-effort: a write failure just means the next sweep starts from the beginning again, never a thrown error. */
+function writeReconcileCursor(dbPath: string, root: string, lastScannedPath: string): void {
+  try {
+    getDb(dbPath)
+      .prepare(
+        'INSERT INTO reconcile_cursor (root, last_scanned_path, updated_at) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET last_scanned_path = excluded.last_scanned_path, updated_at = excluded.updated_at',
+      )
+      .run(root, lastScannedPath, Date.now())
+  } catch {
+    // Best-effort persistence: see the doc comment above.
+  }
+}
+
+/** Clears the resume point once a sweep completes a full lap without running out of budget, so the next sweep naturally starts from the beginning of a fresh lap rather than an offset that no longer means anything. */
+function clearReconcileCursor(dbPath: string, root: string): void {
+  try {
+    getDb(dbPath).prepare('DELETE FROM reconcile_cursor WHERE root = ?').run(root)
+  } catch {
+    // Best-effort persistence: see readReconcileCursor's doc comment.
+  }
 }
 
 export interface ReconcileResult {
@@ -168,6 +208,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const cwd = opts.cwd ?? process.cwd()
   const budgetMs = opts.budgetMs ?? DEFAULT_RECONCILE_BUDGET_MS
   const startedAt = Date.now()
+  const dbPath = opts.dbPath ?? globalDbPath()
 
   const tracked = getTrackedFiles(cwd)
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds
@@ -176,7 +217,26 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   // matches no stored row, so every tracked file would look unindexed and the sweep would enqueue
   // the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
-  const indexed = getProjectFileEntries(projectRoot)
+  const indexed = getProjectFileEntries(projectRoot, dbPath)
+
+  // Resume where the previous budget-truncated sweep of this project left off, instead of
+  // rescanning the same deterministic `git ls-files` prefix every session forever and never
+  // reaching whatever comes after it. Matched by folded/normalized path rather than by array
+  // index, because the tracked-file list can change shape between sessions (a file added, removed,
+  // or renamed shifts every index after it); a cursor that no longer matches anything just is not
+  // found, and the sweep falls back to starting from the beginning -- never an out-of-bounds read,
+  // never a crash. `scanOrder` is always a full permutation of `tracked` (same elements, same
+  // count, only reordered), so a lap that completes without exhausting the budget still visits
+  // every tracked file exactly once, which is what the deletion logic below depends on.
+  let scanOrder = tracked
+  const cursorPath = tracked.length > 0 ? readReconcileCursor(dbPath, projectRoot) : null
+  if (cursorPath !== null) {
+    const cursorFolded = foldPath(normalizePath(cursorPath))
+    const cursorIdx = tracked.findIndex((f) => foldPath(normalizePath(f)) === cursorFolded)
+    if (cursorIdx !== -1) {
+      scanOrder = [...tracked.slice(cursorIdx + 1), ...tracked.slice(0, cursorIdx + 1)]
+    }
+  }
 
   const changed: string[] = []
   const added: string[] = []
@@ -184,8 +244,9 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   let mtimeOnly = 0
   let scanned = 0
   let budgetExhausted = false
+  let lastScanned: string | null = null
 
-  for (const file of tracked) {
+  for (const file of scanOrder) {
     // Checked before the work rather than after, so the budget bounds what this function does
     // rather than merely reporting that it overran. The check itself is a clock read, and
     // hoisting it out of the loop would be the optimization that removes the bound.
@@ -194,6 +255,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       break
     }
     scanned++
+    lastScanned = file
     const folded = foldPath(normalizePath(file))
     seenOnDisk.add(folded)
     const entry = indexed.get(folded)
@@ -265,6 +327,18 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       // resolving them is a no-op.
       enqueueDirtyPathSafe(resolveIndexPath(p, cwd), { alreadyResolved: true })
       enqueued++
+    }
+    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any
+    // side effect, and persisting a resume point is a side effect. A truncated sweep that scanned
+    // at least one file saves where it stopped, so the next sweep resumes there; a sweep with
+    // nothing scanned (budget already gone before the first file) leaves whatever cursor already
+    // exists untouched rather than clobbering it with nothing. A sweep that completed a full lap
+    // clears the cursor, since the next sweep should start a fresh lap from the beginning rather
+    // than carry forward an offset a completed lap has made meaningless.
+    if (budgetExhausted) {
+      if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
+    } else if (tracked.length > 0) {
+      clearReconcileCursor(dbPath, projectRoot)
     }
   }
 

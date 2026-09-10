@@ -51,6 +51,9 @@ const DISCLOSED_TABLES = [
   'hint_suppression_probes',
   'known_roots',
   'notes',
+  // Holds a file path (the resume point for a budget-truncated reconcile sweep) and a timestamp --
+  // no file content -- same judgement as known_roots just above, which is the same shape of table.
+  'reconcile_cursor',
   'refs',
   'skill_version_snapshots',
   'symbols',
