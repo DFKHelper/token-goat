@@ -493,7 +493,7 @@ function buildSectionResult(
     kind === 'table-toml'
       ? tableSectionEndIndex(headers, headerPos, lines.length)
       : sectionEndIndex(headers, headerPos, lines.length)
-  // Trim a single trailing blank line so adjacent sections don't accrue the separator line into the earlier section's body.
+  // Trim every trailing blank line (not just one -- the loop below keeps going while the line is blank/CR-only) so adjacent sections don't accrue the separator line(s) into the earlier section's body, regardless of how many blank lines the document places before the next heading.
   let endExclusive = endIndex
   while (
     endExclusive > header.index + 1 &&
@@ -626,7 +626,20 @@ export function findContainingSection(
   }
 
   if (bestPos === -1) return null
-  return buildSectionResult(headers, kind, lines, bestPos, null)
+  const result = buildSectionResult(headers, kind, lines, bestPos, null)
+  if (result === null) return null
+  const bestHeader = headers[bestPos]
+  if (bestHeader === undefined) return result
+  // A heading string alone is ambiguous when the document repeats it (e.g. two "## Fixed" entries under different releases): readSection/resolveHeaderPos always resolves a plain, ordinal-less spec to the FIRST such occurrence, so a pointer built from just header.heading here would silently name the wrong section whenever the containing one is not that first occurrence. Append the same `#<ordinal>` disambiguator resolveHeaderPos already understands, counted case-insensitively over exact matches in document order, exactly how it counts them.
+  const target = bestHeader.heading.toLowerCase()
+  const matches: number[] = []
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i]
+    if (h !== undefined && h.heading.toLowerCase() === target) matches.push(i)
+  }
+  if (matches.length <= 1) return result
+  const ordinal = matches.indexOf(bestPos) + 1
+  return { ...result, heading: `${bestHeader.heading}#${ordinal}` }
 }
 
 /**

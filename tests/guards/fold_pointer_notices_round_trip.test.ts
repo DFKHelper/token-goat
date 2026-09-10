@@ -273,4 +273,55 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
     expect(rewritten).toContain(marker)
     expect(rewritten).not.toMatch(/lead-in line.*cut at the/)
   })
+
+  it('SHAPE token-goat section, duplicate heading text: the pointer resolves to the occurrence that actually contains the withheld line, not the first one sharing its heading text', () => {
+    clearModuleCaches()
+    const marker = 'the unique sentence living only in the second Fixed section of this duplicate-heading document'
+    const filler = 'It then continues for a good while longer, restating the point in more detail than a reader scanning the document has any use for, which is exactly the text this fold exists to remove from the delivered output. '
+    const paragraph = `This opening sentence stays visible. ${filler.repeat(3)}${marker}.`
+    const pad = '```\n' + 'filler line to push the file size past the markdown size threshold\n'.repeat(160) + '```'
+    const firstOccurrenceBody = 'first-occurrence tail text, distinct from the withheld paragraph and never the intended recall target.'
+    // Two headings sharing the exact same text, exactly the shape resolveHeaderPos disambiguates by ordinal but findContainingSection's plain `header.heading` pointer does not carry.
+    const body = [
+      '# Fixture',
+      '',
+      pad,
+      '',
+      '## Fixed',
+      '',
+      firstOccurrenceBody,
+      '',
+      '## Unrelated',
+      '',
+      'unrelated tail',
+      '',
+      '## Fixed',
+      '',
+      paragraph,
+      '',
+      '## Trailing',
+      '',
+      'trailing tail',
+      '',
+    ].join('\n')
+    const file = normalizePath(path.join(os.tmpdir(), `tg-guard-dup-heading-ptr-${process.pid}-${Math.random().toString(36).slice(2)}.md`))
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+
+    expect(preReadHandler(readEvent(file)).hookType).not.toBe('deny')
+    const post = postReadHandler(postEvent(file, body))
+    expect(post.hookType).toBe('rewriteOutput')
+    const rewritten = post.hookType === 'rewriteOutput' ? post.updatedOutput : ''
+    const noticeLine = rewritten.split('\n').find((l) => l.includes('rest of paragraph folded'))
+    expect(noticeLine).toBeDefined()
+
+    const sectionPointer = /token-goat section "(.+)::([^":]+)"/.exec(noticeLine ?? '')
+    expect(sectionPointer, `expected a section pointer, got: ${noticeLine}`).not.toBeNull()
+    const [, , heading] = sectionPointer!
+    const section = readSection(file, heading ?? '')
+    expect(section).not.toBeNull()
+    // The withheld bytes, not merely a section that happens to share the pointer's heading text.
+    expect(section?.content).toContain(marker)
+    expect(section?.content).not.toContain(firstOccurrenceBody)
+  })
 })
