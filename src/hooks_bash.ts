@@ -613,7 +613,7 @@ export function extractPowerShellWrappedGetContent(cmd: string): { filePath: str
  * `[System.IO.File]::ReadAllText(...)`, `[IO.File]::ReadAllLines(...)`,
  * `[IO.File]::ReadAllBytes(...)`, `[IO.File]::ReadLines(...)`, etc.
  */
-export function extractPowerShellFileMethodRead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractPowerShellFileMethodRead(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
   let inner = cmd.trim()
   const w = POWERSHELL_WRAP_RE.exec(inner)
   if (w) {
@@ -627,9 +627,9 @@ export function extractPowerShellFileMethodRead(cmd: string): { filePath: string
   const flags = classifyFileExtensions(filePath)
   if (flags === null) {
     const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-    return { filePath, isDoc, isConfig, isSql }
+    return { filePath, isDoc, isEnv: false, isConfig, isSql }
   }
-  return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isSql: flags.isSql }
+  return { filePath, isDoc: flags.isDoc, isEnv: flags.isEnv, isConfig: flags.isConfig, isSql: flags.isSql }
 }
 
 /**
@@ -2997,18 +2997,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const psMethodRead = extractPowerShellFileMethodRead(cmd)
   if (psMethodRead !== null) {
-    const { filePath, isDoc, isConfig, isSql } = psMethodRead
+    const { filePath, isDoc, isEnv, isConfig, isSql } = psMethodRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     const lead = 'PowerShell `[IO.File]::ReadAllText()` bypasses read hooks. '
     if (isSql) {
       recordStat('session_hint', 0, 0)
       return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = isDoc
-      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-      : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
     recordStat('session_hint', 0, 0)
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
