@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -1091,6 +1091,27 @@ describe('stripOwnHooksFromMap', () => {
     }
     stripOwnHooksFromMap(hooks, (c) => c.includes('token-goat'))
     expect(hooks['PreToolUse']).toBeUndefined()
+  })
+})
+
+describe('stripStaleGroupHooks', () => {
+  it('strips a stale token-goat entry out of a normal matcher-group array', () => {
+    const groups = [
+      { matcher: 'Read', hooks: [{ type: 'command', command: 'token-goat hook pre_tool_use --old' }, { type: 'command', command: 'other' }] },
+    ]
+    const next = stripStaleGroupHooks(groups, (c) => c.includes('token-goat'), { matcher: 'Read' })
+    expect(next).toEqual([{ matcher: 'Read', hooks: [{ type: 'command', command: 'other' }] }])
+  })
+
+  // HAND-DERIVED: every current caller (installCodex, installGemini, installQwen) already guards with
+  // `Array.isArray(hooks[event]) ? [...hooks[event]] : []` before this call, per src/bridges/codex_install.ts,
+  // src/bridges/gemini_install.ts and src/bridges/qwen_install.ts. This drives an unguarded scalar straight
+  // into the function itself to prove the defensive check inside stripStaleGroupHooks (not just at the four
+  // existing call sites) is what stops the corruption class described in project_codex_install_scalar_hooks_field_spread_into_chars.
+  it('does not iterate a bare string character by character when a future caller forgets to shape-check its input', () => {
+    const scalarGroups = 'ab' as unknown as Array<{ matcher?: string; hooks?: Array<{ command: string }> }>
+    const next = stripStaleGroupHooks(scalarGroups, (c) => c.includes('token-goat'))
+    expect(next).toEqual([])
   })
 })
 
