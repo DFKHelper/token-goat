@@ -754,6 +754,30 @@ describe('built bundle exposes exports / imports / find / web-output', () => {
     expect(res.stdout).not.toContain('privateFn')
   }, 30000)
 
+  it('exports keeps the real kind and line range for an export past the old 500-symbol cap (HAND-DERIVED: 600 generated exported functions, one per line, well past the removed limit)', () => {
+    const bigRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-repo-big-'))
+    let lines = ''
+    for (let i = 0; i < 600; i++) lines += `export function bigFn${String(i).padStart(4, '0')}(): number { return ${i} }\n`
+    fs.writeFileSync(path.join(bigRepo, 'big.ts'), lines)
+    execFileSync('git', ['init'], { cwd: bigRepo, stdio: 'ignore' })
+    execFileSync('git', ['add', '.'], { cwd: bigRepo, stdio: 'ignore' })
+    const idx = spawnSync(process.execPath, [BUNDLE, 'index', '.'], {
+      cwd: bigRepo,
+      env: { ...process.env, HOME: cmdData, USERPROFILE: cmdData, LOCALAPPDATA: cmdData, XDG_DATA_HOME: cmdData },
+      encoding: 'utf8',
+    })
+    expect(idx.status).toBe(0)
+    const res = spawnSync(process.execPath, [BUNDLE, 'exports', 'big.ts'], {
+      cwd: bigRepo,
+      env: { ...process.env, HOME: cmdData, USERPROFILE: cmdData, LOCALAPPDATA: cmdData, XDG_DATA_HOME: cmdData },
+      encoding: 'utf8',
+    })
+    expect(res.status).toBe(0)
+    // bigFn0500 is the 501st symbol in the file (0-indexed), past the old 500-symbol cap.
+    expect(res.stdout).toContain('function   bigFn0500 (501-501)')
+    fs.rmSync(bigRepo, { recursive: true, force: true })
+  }, 30000)
+
   it('imports lists the modules a file imports', () => {
     const res = run(['imports', 'mod.ts'])
     expect(res.status).toBe(0)

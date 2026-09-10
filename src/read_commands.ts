@@ -5988,7 +5988,8 @@ export function runExports(opts: ImportsExportsOptions): number {
   }
 
   const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
-  const symbols = querySymbols({ filePath: resolveIndexPath(diskPath), limit: 500 })
+  // Unbounded (-1), not a finite cap: bare filePath query with no other predicate, same shape as line 878's ALL_SYMBOLS_IN_FILE_LIMIT fix. A file with more than the old 500-symbol cap lost the index-side kind/location annotation for its tail exports (confirmed with a 600-export fixture): the name still surfaced via the source-text scan below, but rendered with a generic 'export' kind and no line range instead of its real kind and location.
+  const symbols = querySymbols({ filePath: resolveIndexPath(diskPath), limit: -1 })
   const kindOf = (name: string): string => symbols.find((s) => s.name === name)?.kind ?? 'export'
   // Unlike kindOf's loose `?? 'export'` fallback, an unmatched name (one that only came from the
   // source-text scan, with no corresponding index row) must report no location at all -- never a
