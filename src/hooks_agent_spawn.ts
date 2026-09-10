@@ -185,7 +185,7 @@ function preAgentHandler(event: HookEvent): HookOutput {
 
     const briefing = buildSubagentBriefing()
     const advisory = duplicateOf
-      ? `\n\n[token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: "${truncateForWarning(duplicateOf, 80)}"). This is advisory only -- proceeding is fine if intentional.`
+      ? `\n\n&#91;token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: "${neutralizeSpokenMarkers(truncateForWarning(duplicateOf, 80))}"). This is advisory only -- proceeding is fine if intentional.`
       : ''
 
     // If there is nothing to add (briefing failed to build and no duplicate warning), pass through unchanged

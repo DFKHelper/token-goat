@@ -281,13 +281,14 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
   const bashOutputs = getSessionBashOutputs()
   const rerunHashSet = new Set(rerunHashes)
 
+  // entry.command only ever passes through redactSecrets (bash_output_cache.ts), never marker neutralization, so a command string containing `[tg]`/`[token-goat: ...]` reached this unfenced manifest row raw; neutralizeSpokenMarkers below closes that the same way the web-fetch URL row already does above.
   const rerunRows: string[] = []
   for (const hash of rerunHashes) {
     const id = bashOutputs.find(([h]) => h === hash)?.[1]
     if (id === undefined) continue
     const entry = getBashOutput(id)
     if (entry === null) continue
-    const flatCommand = entry.command.replace(/[\t\r\n]+/g, ' ')
+    const flatCommand = neutralizeSpokenMarkers(entry.command.replace(/[\t\r\n]+/g, ' '))
     rerunRows.push('- `' + flatCommand + '` — an older run of this exact command was superseded; recall the surviving copy with `bash-output ' + id + ' --full`')
   }
 
@@ -304,7 +305,7 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
     if (rerunHashSet.has(hash)) continue
     const entry = getBashOutput(id)
     if (entry === null) continue
-    const flatCommand = entry.command.replace(/[\t\r\n]+/g, ' ')
+    const flatCommand = neutralizeSpokenMarkers(entry.command.replace(/[\t\r\n]+/g, ' '))
     cachedOutputRows.push('- `' + flatCommand + '` — recallable via `bash-output ' + id + ' --full`')
   }
 
