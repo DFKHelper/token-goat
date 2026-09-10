@@ -645,8 +645,10 @@ export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherG
   isOurs: (command: string) => boolean,
   matcherFilter?: { readonly matcher: string | undefined },
 ): G[] {
+  // Defensive against a caller that forgot to shape-check its own foreign-config-derived value: a bare string here would otherwise be iterated character by character (for..of on a string yields its chars) and those characters re-pushed as if they were matcher-group objects, which is exactly the corruption class this function exists to prevent. Every current caller already guards with Array.isArray before calling in, so this is redundant for them today; it exists so a future caller that skips that guard fails safe (empty result) instead of corrupting the write.
+  const list: readonly G[] = Array.isArray(groups) ? groups : []
   const next: G[] = []
-  for (const group of groups) {
+  for (const group of list) {
     if (matcherFilter !== undefined && group.matcher !== matcherFilter.matcher) {
       next.push(group)
       continue
