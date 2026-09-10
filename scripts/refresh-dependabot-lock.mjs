@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
-import { packageNamesFromBody } from './dependabot-body.mjs'
+import { isValidPackageName, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -57,15 +57,26 @@ function cutoffDate(days) {
   return cutoff.toISOString().slice(0, 10)
 }
 
-/** The pull request body lists one markdown table row per package, which is the only place the batch's membership is written down. */
+/**
+ * The pull request body lists one markdown table row per package, which is the only place the batch's
+ * membership is written down.
+ *
+ * Which pull request counts as Dependabot's is an identity question, and a branch name is not an
+ * identity. This repository is public, so anyone may open a pull request from a fork on a branch
+ * called `dependabot/npm_and_yarn/anything` and write whatever table they like in the body; if theirs
+ * is the only open one matching, this script would read it as Dependabot's. So the author has to be
+ * the Dependabot app and the branch has to live in this repository rather than a fork. `--limit` is
+ * explicit because `gh pr list` stops at thirty by default, and the real batch sitting on page two
+ * would read here as no batch at all.
+ */
 function packagesFromOpenPullRequest() {
   let listing
   try {
-    listing = run('gh', ['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName'])
+    listing = run('gh', ['pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,headRefName,author,isCrossRepository'])
   } catch {
     fail('could not reach `gh`; pass --packages instead')
   }
-  const candidates = JSON.parse(listing).filter((pr) => pr.headRefName.startsWith('dependabot/npm_and_yarn/'))
+  const candidates = JSON.parse(listing).filter((pr) => pr.headRefName.startsWith('dependabot/npm_and_yarn/') && pr.author?.login === 'app/dependabot' && pr.isCrossRepository === false)
   if (candidates.length === 0) fail('no open Dependabot npm pull request; pass --packages to resolve a set by hand')
   if (candidates.length > 1) fail(`several open Dependabot npm pull requests (${candidates.map((pr) => `#${pr.number}`).join(', ')}); pass --packages`)
   const pr = candidates[0]
@@ -99,7 +110,7 @@ function guardPasses() {
     run('npx', ['vitest', 'run', 'tests/guards/dependency_advisory_disclosure.test.ts'], { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' })
     return null
   } catch (error) {
-    return `${error.stdout ?? ''}${error.stderr ?? ''}`.split('\n').filter((line) => /AssertionError|FAIL|expected/.test(line)).slice(0, 6).join('\n')
+    return summarizeGuardFailure(error)
   }
 }
 
@@ -127,6 +138,12 @@ if (packagesArg) {
   names = found.names
 }
 
+// Before anything is measured or run, because these names reach `npm update` through a shell and a pull request body is chosen by whoever opened it. Checked for both sources: an operator typing --packages is trusted, but one code path that validates and one that does not is how the untrusted one eventually gets missed.
+const rejected = names.filter((name) => !isValidPackageName(name))
+if (rejected.length > 0) {
+  fail(`not npm package names, refusing to put them on a command line: ${rejected.map((name) => JSON.stringify(name)).join(', ')}`)
+}
+
 const days = cooldownDays()
 const cutoff = cutoffDate(days)
 const before = lockVersions(names)
@@ -138,7 +155,13 @@ if (check) {
   process.exit(0)
 }
 
-run('npm', ['update', `--before=${cutoff}`, ...names], { stdio: ['ignore', 'inherit', 'inherit'], shell: process.platform === 'win32' })
+// npm rewrites package-lock.json as it goes, so a failure here is not a no-op: it leaves a lock file that is neither the old one nor a resolved one, and the guard below never runs to say so. An uncaught throw would print a stack trace that says nothing about the file it just changed.
+try {
+  // `--` before the operands, so that even a name the check above let through cannot be read as a flag. Belt and braces: the check is the defense, this is what stops a future widening of it from becoming a cooldown bypass again.
+  run('npm', ['update', `--before=${cutoff}`, '--', ...names], { stdio: ['ignore', 'inherit', 'inherit'], shell: process.platform === 'win32' })
+} catch (error) {
+  fail(`\`npm update\` exited ${error.status ?? 'abnormally'}. package-lock.json may be half-resolved: restore it with \`git checkout -- package-lock.json\` before running anything else.`)
+}
 
 const after = lockVersions(names)
 let moved = 0
