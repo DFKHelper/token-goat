@@ -874,7 +874,8 @@ function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { nam
   // stored/queried root strings don't normalize identically (e.g. a symlinked or 8.3-short
   // temp path) -- the same file_path equality check every other exact-file lookup in this
   // file already relies on without a rootDir filter (see the `resolved` lookups above).
-  const symbols = querySymbols({ filePath, limit: 100_000 }, globalDbPath())
+  // Unbounded (-1), not a finite cap: querySymbols orders by (file_path, line_start), so a per-file cap on a bare filePath query has no predicate left to combine against and silently drops every symbol past the cutoff -- a generated/data-shaped file with more flat top-level declarations than the old 100,000 cap lost its tail (confirmed with a 100,051-symbol fixture), so a hit landing in the last symbol resolved to no enclosing symbol instead of the real one. Same fix and reasoning as ALL_SYMBOLS_IN_FILE_LIMIT in graph_commands.ts.
+  const symbols = querySymbols({ filePath, limit: -1 }, globalDbPath())
   let best: SymbolEntry | null = null
   for (const s of symbols) {
     if (s.lineStart <= chunkStartLine && chunkStartLine <= s.lineEnd) {
