@@ -28,7 +28,7 @@
  * alongside it, which is exactly how this class of defect survives a green suite.
  */
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -325,6 +325,36 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     // Built from char codes rather than written as a regex literal: eslint's no-control-regex bans the literal form, and the point here is to detect exactly those characters in shipped output.
     const control = [...text].some((ch) => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13 })
     expect(control, `control character in: ${JSON.stringify(text)}`).toBe(false)
+  })
+})
+
+describe('refs: the all-or-nothing ref-blind probe must not sample a truncated prefix', () => {
+  // REF_BLIND_DEF_PROBE_LIMIT feeds querySymbols({name, rootDir, limit}), which orders rows by (file_path, line_start): a finite cap returns a deterministic ALPHABETICAL PREFIX of a name's definitions, not a representative sample. HAND-DERIVED fixture: 50 PowerShell (ref-blind) definitions under directories that sort before the one genuinely ref-indexed TypeScript definition, so a 50-row cap sees only the blind half and wrongly concludes "every definition is ref-blind" for a symbol that WAS fully searched and genuinely has zero real callers.
+  let probeProject: string
+
+  beforeAll(() => {
+    probeProject = mkdtempSync(join(tmpdir(), 'tg-refblind-probe-'))
+    for (let i = 0; i < 50; i++) {
+      const dir = join(probeProject, `aaa${String(i).padStart(2, '0')}`)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'f.ps1'), ['function zzzProbeSym {', '  Write-Host "def"', '}', ''].join('\n'))
+    }
+    writeFileSync(join(probeProject, 'zzz_real.ts'), ['export function zzzProbeSym() {', '  return 1', '}', ''].join('\n'))
+    const indexed = spawnSync(process.execPath, [BUNDLE, 'index', '--walk'], { cwd: probeProject, encoding: 'utf8' })
+    expect(indexed.status, `indexing the probe fixture must succeed or every assertion below is vacuous: ${indexed.stdout}${indexed.stderr}`).toBe(0)
+    const outlineCheck = spawnSync(process.execPath, [BUNDLE, 'outline', 'zzz_real.ts'], { cwd: probeProject, encoding: 'utf8' })
+    expect(outlineCheck.stdout, 'the real TypeScript definition must be in the index, or this test proves nothing').toContain('zzzProbeSym')
+  })
+
+  afterAll(() => {
+    if (probeProject !== undefined) rmSync(probeProject, { recursive: true, force: true })
+  })
+
+  it('reports the plain "No references found", not a ref-blind-language refusal, when a truncated prefix would look all-blind', () => {
+    const r = spawnSync(process.execPath, [BUNDLE, 'refs', 'zzzProbeSym'], { cwd: probeProject, encoding: 'utf8' })
+    const text = `${r.stdout}\n${r.stderr}`
+    expect(text, 'the real TypeScript definition WAS searched and genuinely has zero callers, so the honest verdict is a plain empty answer').toContain("No references found for 'zzzProbeSym'")
+    expect(text, 'the pre-fix 50-row probe never saw the TypeScript definition and wrongly claimed the language is unindexed').not.toContain('call sites are not indexed')
   })
 })
 

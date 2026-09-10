@@ -83,8 +83,8 @@ export function refBlindLanguageNotice(symbolName: string, language: Language, d
 export const REF_BLIND_KIND_REASON =
   'the index records value-position references only (calls, `new`, macro invocations), never type annotations, so a type declaration has no ref rows however widely it is used'
 
-// How many definitions of one name a single-symbol reference lookup fetches when deciding whether every one of them sits in a ref-blind language. The verdict is all-or-nothing, and a handful of rows settles it; nothing here needs the full definition list.
-export const REF_BLIND_DEF_PROBE_LIMIT = 50
+// How many definitions of one name a single-symbol reference lookup fetches when deciding whether every one of them sits in a ref-blind language. Unbounded (-1), not a finite cap: querySymbols orders by (file_path, line_start), so a name-scoped probe with no other predicate returns a deterministic alphabetical PREFIX of the definitions, not a representative sample -- a name defined 50+ times where the alphabetically-first definitions happen to share a ref-blind language (e.g. many .ps1 files in a directory that sorts before the one real TypeScript definition) truncates the genuinely ref-indexed definition clean off the probe, so the all-or-nothing verdict wrongly reports "every definition is ref-blind" for a symbol that WAS fully searched and genuinely has zero real references (confirmed with a 51-definition fixture: 50 PowerShell defs sorting before one TypeScript def). The verdict is still all-or-nothing, but only an unbounded probe can honestly answer it.
+export const REF_BLIND_DEF_PROBE_LIMIT = -1
 
 // Renders one kind id with its indefinite article, so a message reads "is an interface" / "is a struct" rather than naming the id bare. Vowel test only: every kind id in REF_BLIND_KINDS is an ordinary lowercase word or an underscore-joined pair of them, none of them a silent-h or long-u word where the vowel rule misfires.
 function kindWithArticle(kind: string): string {
