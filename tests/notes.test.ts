@@ -49,6 +49,20 @@ function seedSymbol(
     .run(filePath, name, kind, lineStart, lineEnd, body, '')
 }
 
+// Bulk-insert `count` distinct one-line symbols for `filePath` in a single transaction, ordered by line so the Nth symbol (0-indexed) lands at line N + 1 -- used to build over-the-cap fixtures fast.
+function seedManySymbols(dbPath: string, filePath: string, count: number): void {
+  const db = getDb(dbPath)
+  const insert = db.prepare(
+    'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  )
+  const insertMany = db.transaction((n: number) => {
+    for (let i = 0; i < n; i++) {
+      insert.run(filePath, `sym${String(i).padStart(7, '0')}`, 'function', i + 1, i + 1, '', '')
+    }
+  })
+  insertMany(count)
+}
+
 beforeEach(() => {
   clearModuleCaches()
 })
@@ -99,6 +113,13 @@ describe('resolveSymbolMatch / symbolNamesInFile', () => {
     seedSymbol(dbPath, 'b.ts', 'other', 'function', 1, 2, '')
     expect(symbolNamesInFile('a.ts', dbPath)).toEqual(['alpha', 'zeta'])
   })
+
+  it('includes a symbol past the old 100,000-name cap (HAND-DERIVED: 100,001 generated symbols, one per line, one past the removed limit)', () => {
+    const dbPath = tmpDbPath()
+    seedManySymbols(dbPath, 'a.ts', 100_001)
+    // sym0100000 is the 100,001st symbol (0-indexed), past the old 100,000-row cap.
+    expect(symbolNamesInFile('a.ts', dbPath)).toContain('sym0100000')
+  })
 })
 
 describe('computeFileFingerprint / computeSymbolFingerprint', () => {
@@ -138,6 +159,16 @@ describe('computeFileFingerprint / computeSymbolFingerprint', () => {
 
     expect(computeFileFingerprint('a.ts', dbPathA)).toBe(computeFileFingerprint('a.ts', dbPathB))
   })
+
+  it('changes when a symbol past the old 1,000,000-row cap is removed (HAND-DERIVED: 1,000,001 generated symbols, one past the removed limit)', () => {
+    const dbPath = tmpDbPath()
+    seedManySymbols(dbPath, 'a.ts', 1_000_001)
+    const fp1 = computeFileFingerprint('a.ts', dbPath)
+    // sym1000000 is the 1,000,001st symbol (0-indexed), past the old 1,000,000-row cap: if the
+    // manifest silently dropped it, removing it would leave the fingerprint unchanged.
+    getDb(dbPath).prepare('DELETE FROM symbols WHERE name = ?').run('sym1000000')
+    expect(computeFileFingerprint('a.ts', dbPath)).not.toBe(fp1)
+  }, 300000)
 })
 
 describe('upsertNote / getNote / listNotes', () => {
