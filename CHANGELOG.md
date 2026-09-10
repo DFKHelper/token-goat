@@ -4,6 +4,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **HTML processing suite: `html-outline`, `html-query`, and `html-lint`.** High-performance, zero-dependency streaming HTML5 parser and CSS selector engine (`src/html_query.ts`) for navigating web documents, reports, and templates without blowing context budgets or requiring heavy headless browsers:
+  - `html-outline`: Generates hierarchical element maps with tag names, IDs, CSS classes, element counts, landmarks, tables, forms, and depth visualization, supporting `--json`.
+  - `html-query`: Extracts targeted HTML element fragments or stripped text (`--text`) using standard CSS selectors (`#id`, `.class`, tags, combinators `>`, attribute operators `[attr]`, `[attr=val]`, `[attr*=val]`, `[attr^=val]`, `[attr$=val]`), with `--head` truncation and `--json` export.
+  - `html-lint`: Fast structural linting diagnosing unclosed elements, void element violations, duplicate DOM IDs, missing viewport/charset, missing alt text on images, and excessive inline script bloat.
+- **Enterprise Architecture & Technical Q&A document expanded to 31 comprehensive topics.** Replaced the partial 14-question report in `docs/architecture-qa.html` with the full 31-question suite, thoroughly sanitized of organization-specific identities, systems, and tracker identifiers. Adds in-depth technical analysis for PreToolUse rewriting semantics, task success rate / benchmark methodology, skill compact caching, SQLite data classification, air-gapped cache pre-seeding, PolyForm licensing, supply chain provenance, standalone packaging, and token economics.
+
 ## [2.9.10] - 2026-09-09
 
 ### Security

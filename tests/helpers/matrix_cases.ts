@@ -816,6 +816,42 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Alice')
     expect(r.stdout).not.toContain('Bob')
   },
+  'html-outline': () => {
+    const dir = mkIsolated('tg-matrix-htmloutline-')
+    const htmlPath = path.join(dir, 'test.html')
+    fs.writeFileSync(
+      htmlPath,
+      '<!DOCTYPE html><html><head><title>Test Title</title></head><body><h1>Main Heading</h1><nav id="nav"><ul><li>Link</li></ul></nav><main><article class="card">Content</article></main></body></html>',
+    )
+    const r = run(['html-outline', htmlPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Test Title')
+    expect(r.stdout).toContain('Main Heading')
+    expect(r.stdout).toContain('nav')
+  },
+  'html-query': () => {
+    const dir = mkIsolated('tg-matrix-htmlquery-')
+    const htmlPath = path.join(dir, 'test.html')
+    fs.writeFileSync(
+      htmlPath,
+      '<html><body><div id="c1" class="card"><span class="title">First Card</span></div><div id="c2" class="card"><span class="title">Second Card</span></div></body></html>',
+    )
+    const r = run(['html-query', htmlPath, '#c1 .title'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('First Card')
+    expect(r.stdout).not.toContain('Second Card')
+  },
+  'html-lint': () => {
+    const dir = mkIsolated('tg-matrix-htmllint-')
+    const htmlPath = path.join(dir, 'test.html')
+    fs.writeFileSync(
+      htmlPath,
+      '<!DOCTYPE html><html><head><title>Clean</title></head><body><div><p>Clean markup</p></div></body></html>',
+    )
+    const r = run(['html-lint', htmlPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('HTML structure is valid')
+  },
   'openapi-outline': () => {
     const dir = mkIsolated('tg-matrix-openapioutline-')
     const specPath = path.join(dir, 'openapi.json')
