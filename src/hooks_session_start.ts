@@ -94,7 +94,14 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
   try {
     const budgetMs = envInt(ENV_KEYS.RECONCILE_BUDGET_MS, DEFAULT_RECONCILE_BUDGET_MS, 0, 60_000)
     const result = reconcileProject({ cwd, budgetMs })
-    if (isReconcileClean(result)) return null
+    // isReconcileClean only looks at changed/added/removed, all three of which come back empty
+    // when the sweep never reached the files that would have populated them -- a budget-exhausted
+    // pass over a large project can find zero drift purely because it ran out of time before it
+    // got past the first few tracked files, not because the rest of the project agrees with the
+    // index. Gating the early return on isReconcileClean alone reported that as silence, the same
+    // "confident wrong answer over a partial scan" runReconcile's CLI text output already refuses
+    // to give (see its own "clean or not" comment) -- this note must refuse it too.
+    if (isReconcileClean(result) && !result.budgetExhausted) return null
     // The breakdown is only worth its bytes when there is more than one kind of drift: with a
     // single kind it restates the total it sits beside, and this line is paid for on every session
     // start that finds anything.
@@ -110,6 +117,10 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
       ? ` (sweep stopped at its time budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more)`
       : ''
     const total = result.changed.length + result.added.length + result.removed.length
+    if (total === 0) {
+      // budgetExhausted with nothing found yet: say the sweep was incomplete instead of nothing at all.
+      return `token-goat: index drift check${truncated} found nothing in the part it had time to scan. Symbol lookups may be briefly stale.`
+    }
     return `token-goat: reindexing ${countNoun(total, 'file')} that changed outside this session${breakdown}${truncated}. Symbol lookups may be briefly stale.`
   } catch {
     return null

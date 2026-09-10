@@ -104,4 +104,22 @@ describe('session_start reconciliation', () => {
     // Still a working hook, not a silenced one: the reminder it exists to deliver is intact.
     expect(withoutSweep).toContain('token-goat:')
   })
+
+  it('discloses a budget-exhausted sweep instead of reading as a clean index', () => {
+    // Bring the index up to date first, then add a brand-new tracked file the index has never
+    // seen. A 0ms budget makes reconcileProject break out of its scan loop before it ever reaches
+    // this file (see reconcileProject's per-iteration clock check), so `added` comes back empty
+    // -- not because the file is unindexed-but-known, but because the sweep never got that far.
+    // isReconcileClean() only looks at changed/added/removed, so a note gated on it alone reads
+    // this exact case as "nothing to report" even though budgetExhausted is true.
+    expect(cli(['index', '.']).code, 'bringing the fixture index up to date failed').toBe(0)
+    writeFileSync(join(projectDir, 'zzz_never_indexed.ts'), 'export function neverIndexed(): number {\n  return 7\n}\n')
+    const git = (...args: string[]): void => {
+      spawnSync('git', args, { cwd: projectDir, encoding: 'utf-8' })
+    }
+    git('add', '-A')
+
+    const context = sessionStartContext({ TOKEN_GOAT_RECONCILE_BUDGET_MS: '0' })
+    expect(context, 'a budget-exhausted sweep must say so, not read as a clean/complete one').toMatch(/budget|unchecked/i)
+  })
 })
