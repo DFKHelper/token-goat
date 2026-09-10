@@ -36,12 +36,31 @@ export function isValidPackageName(name) {
   return /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name)
 }
 
-/** A grouped body carries one markdown row per package: `| [name](url) | `from` | `to` |`. The link target is skipped rather than parsed, since only the name is wanted. The two backticked version cells are what distinguish a package row from the header and the `| --- |` separator, so no separate header check is needed and none is kept: an explicit `!== 'Package'` test was here and survived being deleted, which is how it was found to be doing nothing. */
+/**
+ * A grouped body carries one markdown row per package, the name cell optionally a link.
+ *
+ * The link target is skipped rather than parsed, since only the name is wanted. The two backticked
+ * version cells are what distinguish a package row from the header and the separator rule, so no
+ * separate header check is needed and none is kept: an explicit `!== 'Package'` test was here and
+ * survived being deleted, which is how it was found to be doing nothing.
+ *
+ * Only the first contiguous run of rows is taken, and that bound is the security-relevant part. A
+ * Dependabot body does not stop at its summary table: it goes on to embed each dependency's release
+ * notes and changelog, which are written by whoever owns that dependency. Dependabot renders that
+ * upstream markdown to HTML, so an upstream table becomes `<table>` and cannot match here -- but a
+ * fenced code block becomes `<pre><code>`, and the lines inside it keep their leading pipe. Measured:
+ * a body whose summary table named only `zod`, followed by a release note carrying a code block with
+ * two table-shaped lines, parsed as `['zod', 'evil-package', 'another-one']`. That would hand
+ * `npm update` packages no maintainer reviewed and Dependabot never proposed, on the say-so of a
+ * dependency's release notes. The summary table is contiguous and comes first, so stopping at the
+ * first gap is both the shape of the real document and the whole of the fix.
+ */
 export function packageNamesFromBody(body) {
   const names = []
   for (const line of String(body ?? '').split('\n')) {
     const match = /^\|\s*\[?([^\]|[]+?)\]?(?:\([^)]*\))?\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|/.exec(line.trim())
     if (match) names.push(match[1].trim())
+    else if (names.length > 0) break
   }
   return names
 }

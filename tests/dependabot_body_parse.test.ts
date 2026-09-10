@@ -47,6 +47,49 @@ describe('dependabot pull request body', () => {
   })
 })
 
+describe('rows the body carries but Dependabot did not propose', () => {
+  // HAND-DERIVED: a summary table naming one package, then a release note carrying a fenced code
+  // block whose lines are table-shaped. Written from Dependabot's rendering behaviour, which is
+  // CAPTURE-confirmed by the real body: `grep -c '|' ` over everything below the summary table of
+  // tests/fixtures/dependabot/grouped-npm-pr-body.md returns 0, because Dependabot converts embedded
+  // upstream markdown to HTML -- an upstream table becomes <table>. A <pre><code> block is the
+  // exception: its lines survive verbatim, pipes and all.
+  const smuggled = [
+    '| Package | From | To |',
+    '| --- | --- | --- |',
+    '| [zod](https://github.com/colinhacks/zod) | `1.0.0` | `1.0.1` |',
+    '',
+    'Updates `zod` from 1.0.0 to 1.0.1',
+    '<details>',
+    '<summary>Release notes</summary>',
+    '<blockquote>',
+    '<pre><code>Example table from our changelog:',
+    '| evil-package | `9.9.9` | `9.9.9` |',
+    '| another-one | `1` | `2` |',
+    '</code></pre>',
+    '</blockquote>',
+    '</details>',
+  ].join('\n')
+
+  it('takes only the summary table, not a table-shaped code block in an upstream release note', () => {
+    // Before the contiguity bound this returned ['zod', 'evil-package', 'another-one'], which would
+    // have put two packages on the `npm update` command line on the authority of a dependency's own
+    // release notes -- packages no maintainer reviewed and Dependabot never proposed.
+    expect(packageNamesFromBody(smuggled)).toEqual(['zod'])
+  })
+
+  it('still reads the whole of a real grouped batch, so the bound is not just refusing everything', () => {
+    expect(packageNamesFromBody(body)).toHaveLength(7)
+  })
+
+  it('confirms the real body puts nothing pipe-shaped below its summary table', () => {
+    // The positive control for the claim above: if Dependabot ever stops rendering embedded markdown
+    // to HTML, this fails and the reasoning behind the bound needs revisiting.
+    const belowTable = body.split('\n').slice(12)
+    expect(belowTable.filter((line) => line.includes('|'))).toEqual([])
+  })
+})
+
 describe('package names reaching the command line', () => {
   // HAND-DERIVED from npm's package-name grammar: these are the shapes npm itself publishes under,
   // written independently of the regex so the test is not the implementation restated.
