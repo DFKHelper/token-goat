@@ -38,7 +38,6 @@ import {
   runDead,
   runDeps,
   runImpact,
-  ALL_SYMBOLS_IN_FILE_LIMIT,
   runScope,
   runSimilar,
   runTestFor,
@@ -519,12 +518,17 @@ describe('runScope integration', () => {
     }
   })
   // Regression: the enclosing-symbol predicate ran in JS *after* querySymbols had already applied
-  // ORDER BY file_path, line_start LIMIT ALL_SYMBOLS_IN_FILE_LIMIT, so in a file with more indexed
+  // ORDER BY file_path, line_start LIMIT <the per-file symbol cap>, so in a file with more indexed
   // symbols than the cap, every symbol past the cap was dropped before the filter ever saw it. A
   // line wrapped only by one of those printed "No symbols enclosing line N" -- byte-identical to
-  // the honest answer for a line nothing wraps, with no truncation notice on either channel. The
-  // row count is derived from the constant, so raising the cap keeps this test honest rather than
-  // quietly turning it into a no-op.
+  // the honest answer for a line nothing wraps, with no truncation notice on either channel.
+  // ALL_SYMBOLS_IN_FILE_LIMIT is now the unbounded sentinel (-1, not a real cap size) after a
+  // sibling fix removed the finite cap from the other "every symbol in this file" call sites
+  // (buildFileSymCache, runTestFor) that had no query-side predicate to protect them the way this
+  // command's enclosingLine WHERE clause already does. This fixture size is a fixed historical
+  // value (the former cap) kept literal so it stays a real regression check on that WHERE-clause
+  // fix regardless of what any cap constant is set to.
+  const FORMER_PER_FILE_SYMBOL_CAP = 10000
   it('finds an enclosing symbol that sorts past the per-file symbol cap', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-scope-cap-'))
     try {
@@ -536,11 +540,11 @@ describe('runScope integration', () => {
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) ' +
           'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      // One filler symbol per line for the whole cap, then the target one line past it. Ordered by
+      // One filler symbol per line for the whole former cap, then the target one line past it. Ordered by
       // line_start the target is the very last row, so a cap applied before the filter loses it.
-      const overCap = ALL_SYMBOLS_IN_FILE_LIMIT + 1
+      const overCap = FORMER_PER_FILE_SYMBOL_CAP + 1
       db.transaction(() => {
-        for (let i = 1; i <= ALL_SYMBOLS_IN_FILE_LIMIT; i++) {
+        for (let i = 1; i <= FORMER_PER_FILE_SYMBOL_CAP; i++) {
           insert.run(indexed, 'filler' + String(i), 'const', i, i, '', '', '')
         }
         insert.run(indexed, 'pastTheCap', 'function', overCap, overCap + 10, 'body', '', '')
@@ -554,6 +558,44 @@ describe('runScope integration', () => {
         expect(out).toContain('pastTheCap')
       } finally {
         db.prepare('DELETE FROM symbols WHERE file_path = ?').run(indexed)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: buildFileSymCache (graph_commands.ts) fetched a file's symbols with
+  // `querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })`, and until this fix that limit
+  // was the finite 10000 with no other predicate protecting it (unlike runScope's enclosingLine
+  // query above, which narrows in SQL). runCallers then looked up the enclosing symbol of each
+  // caller by scanning that capped list: a caller whose own definition sorted past the cap was
+  // invisible to the lookup, so it was reported as `(module scope)` instead of its real name,
+  // silently misattributing a real caller rather than erroring or noting the truncation.
+  it('attributes a caller whose own definition sorts past the per-file symbol cap, not "(module scope)"', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-callers-cap-'))
+    try {
+      const file = join(dir, 'Huge.ts')
+      const lines: string[] = []
+      for (let i = 0; i < FORMER_PER_FILE_SYMBOL_CAP + 4; i++) {
+        lines.push(`export function fn${i}() { return ${i} }`)
+      }
+      // The caller is the LAST function, so its own definition line sorts past the former cap --
+      // exactly the row a `LIMIT FORMER_PER_FILE_SYMBOL_CAP` ordered by line_start would drop.
+      lines.push('export function fnCallsFn0() { fn0(); return 0 }')
+      writeFileSync(file, lines.join('\n') + '\n')
+      indexFileSync(normalizePath(file))
+
+      try {
+        const out = captureStdout(() => {
+          const code = runCallers({ symbol: 'fn0' })
+          expect(code).toBe(0)
+        })
+        expect(out).toContain('fnCallsFn0')
+        expect(out).not.toContain('(module scope)')
+      } finally {
+        const db = getDb(globalDbPath())
+        db.prepare('DELETE FROM symbols WHERE file_path = ?').run(normalizePath(file))
+        db.prepare('DELETE FROM refs WHERE file_path = ?').run(normalizePath(file))
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })
