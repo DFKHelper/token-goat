@@ -8,7 +8,7 @@
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
@@ -26,6 +26,21 @@ vi.mock('../src/embeddings.js', async (importOriginal) => {
 const { runSemantic } = await import('../src/read_commands.js')
 
 describe('runSemantic --json: embeddings source', () => {
+  let prevEmbedEnv: string | undefined
+
+  beforeEach(() => {
+    // This file forces the embeddings branch via a mocked searchSemantic, not via
+    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+    // otherwise stop runSemantic from ever reaching searchSemanticMock.
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+  })
+
+  afterEach(() => {
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
+  })
+
   it('returns a {source, items, truncated, totalCount} envelope with name/kind null on an embeddings hit', async () => {
     const hits: SearchHit[] = [
       { filePath: 'src/auth.ts', startLine: 1, endLine: 10, kind: 'window', distance: 0.12, text: 'export function authenticate(token: string) {}' },

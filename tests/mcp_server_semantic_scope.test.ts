@@ -22,7 +22,7 @@ import * as path from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
@@ -59,9 +59,21 @@ async function connectedClient(): Promise<{ client: Client; close: () => Promise
 }
 
 describe('mcp semantic tool projectRoot scoping', () => {
+  let prevEmbedEnv: string | undefined
+
   beforeEach(() => {
+    // These assertions are about which rootDir reaches the mocked searchSemantic, not about
+    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
+    // otherwise stop runSemantic from calling searchSemantic at all.
+    prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
     searchSemanticMock.mockResolvedValue([fakeHit()])
+  })
+
+  afterEach(() => {
+    if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
   })
 
   it('passes an explicit projectRoot argument through to searchSemantic as rootDir, not process.cwd()', async () => {
