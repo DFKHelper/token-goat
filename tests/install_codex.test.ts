@@ -105,6 +105,25 @@ describe('computeCodexHookHash', () => {
   })
 })
 
+describe('installCodex with a malformed pre-existing config.toml', () => {
+  // CAPTURE: reproduces smol-toml's real parse of `[hooks]\nPreToolUse = "oops"` (verified directly against the smol-toml package this file already imports) -- a hand-edited or foreign-tool-written config.toml can hold a bare string under a key installCodex expects to be an array of hook-matcher tables.
+  it('does not corrupt a hooks.<Event> field that holds a scalar string instead of an array into a garbled array of characters', () => {
+    fs.mkdirSync(path.dirname(codexConfigPath()), { recursive: true })
+    fs.writeFileSync(codexConfigPath(), '[hooks]\nPreToolUse = "oops"\n', 'utf8')
+
+    installCodex()
+
+    const config = readConfig()
+    const preToolUse = config.hooks?.['PreToolUse']
+    expect(Array.isArray(preToolUse)).toBe(true)
+    // Every entry must be a real matcher-group object (has a `hooks` array); none may be a stray single character spread out of the original scalar string.
+    for (const entry of preToolUse ?? []) {
+      expect(typeof entry).toBe('object')
+      expect(Array.isArray((entry as CodexMatcherGroup).hooks)).toBe(true)
+    }
+  })
+})
+
 describe('installCodex', () => {
   it('writes the config.toml hooks block and the AGENTS.md delimited block on a fresh install', () => {
     const result = installCodex()

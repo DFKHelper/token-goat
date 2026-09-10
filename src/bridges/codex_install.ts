@@ -299,7 +299,8 @@ export function installCodex(): CodexInstallResult {
   for (const event of CODEX_HOOK_EVENTS) {
     const eventArg = CODEX_EVENT_ARG[event]
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
-    const groups = [...(hooks[event] ?? [])]
+    // A hand-edited or foreign-tool-written config.toml can hold a scalar (e.g. a bare string) under a key that Codex CLI's own hooks schema requires to be an array of matcher-group tables; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
+    const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
     for (const matcher of CODEX_MATCHERS) {
       if (groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) continue
 
@@ -321,7 +322,8 @@ export function installCodex(): CodexInstallResult {
   for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
     const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
-    const groups = [...(hooks[event] ?? [])]
+    // Same non-array-scalar guard as the matcher-scoped loop above: a foreign or hand-edited config.toml can hold a bare scalar under this key.
+    const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
 
     if (anyGroupHasTokenGoat(groups, (c) => c === expectedCommand)) {
       hooks[event] = groups
