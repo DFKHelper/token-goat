@@ -1,0 +1,11 @@
+{% comment %} HAND-DERIVED: standard Liquid syntax written from language knowledge, not from any adapter regex. {% endcomment %}
+<h1>Inventory summary</h1>
+
+{% assign total_quantity = 0 %}
+{% for item in collection.items %}
+  {% assign total_quantity = total_quantity | plus: item.quantity %}
+{% endfor %}
+
+<p>In stock: {{ total_quantity }}</p>
+
+{% render 'item-card', item: collection.items.first %}

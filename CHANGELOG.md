@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **A local generator function nested inside another function leaked into the symbol index.** The TS/JS extractor excludes a local `function` declaration nested inside a function body from the top-level index, but only checked `node.type === 'function_declaration'`; the sibling node type tree-sitter gives a local `function* gen() {}` (`generator_function_declaration`) was never scope-gated, so it was indexed and surfaced through `symbol`/`outline`/`skeleton` exactly like a real top-level export. Changed in [src/parser.ts](src/parser.ts). Upgrading reindexes: this changes what `parseContent` extracts from TS/JS files, so the parser fingerprint moved and already-indexed files self-heal on next touch.
+
 ## [2.9.10] - 2026-09-09
 
 ### Security
