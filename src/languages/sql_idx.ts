@@ -91,6 +91,26 @@ function stripSqlStringLiterals(text: string): string {
   let i = 0
   while (i < text.length) {
     const ch = text[i]
+    if (ch === '$') {
+      // PostgreSQL dollar-quoted string constant (`$$...$$` or `$tag$...$tag$`), legal anywhere a string literal is, not just a function body -- e.g. `DEFAULT $$It's a great day$$` is a common way to embed a value containing an apostrophe without doubling it. Without this branch that un-doubled apostrophe fell through to the `'` branch below as a phantom string opener with no matching close anywhere else in the file, blanking every DDL statement after it through EOF, exactly the failure mode the double-quote/backtick/bracket branches already guard against for their own delimiters. The tag (identifier chars only, may be empty) must be bounded by a `$` on each side to avoid misreading a bare `$` inside an ordinary `$`-bearing bare identifier (Oracle/legacy dialects permit `$` in unquoted names) as an opener.
+      const tagMatch = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(text.slice(i))
+      if (tagMatch) {
+        const delim = tagMatch[0]
+        out += delim
+        i += delim.length
+        const closeIdx = text.indexOf(delim, i)
+        const end = closeIdx === -1 ? text.length : closeIdx
+        while (i < end) {
+          out += text[i] === '\n' ? '\n' : ' '
+          i++
+        }
+        if (closeIdx !== -1) {
+          out += delim
+          i += delim.length
+        }
+        continue
+      }
+    }
     if (ch === "'") {
       // Double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string
       // literals - blanking them would destroy legitimate delimited names. Dynamic-SQL DDL
