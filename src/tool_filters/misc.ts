@@ -1208,10 +1208,6 @@ export class JsonArrayFilter extends ToolFilter {
     return this.binaries.has(pathStem(argv[0]!).toLowerCase())
   }
 
-  override detectFromCommand(_cmd: string): boolean {
-    return false // content-based only
-  }
-
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const text = stdout.trim() ? stdout : stdout + stderr
     const stripped = text.trim()
@@ -1342,7 +1338,6 @@ export class SeverityLogFilter extends ToolFilter {
     return keywordCount / lines.length >= 0.3
   }
 
-  override detectFromCommand(_cmd: string): boolean { return false }
   override matches(_argv: string[]): boolean { return false }
 
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {

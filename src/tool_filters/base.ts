@@ -24,9 +24,7 @@ import {
   positionalArgs,
   preserveStderrOnError,
   safeDecode,
-  shlexSplit,
   squeezeBlankLines,
-  stripPrefixes,
   truncateMiddleSmart,
 } from './helpers.js'
 import { redactSecrets } from '../secret_redact.js'
@@ -218,18 +216,6 @@ export abstract class ToolFilter {
   readonly subcommands: ReadonlySet<string> = new Set()
   /** When true, pass raw error output through on non-zero exit. */
   readonly errorPassthrough: boolean = false
-
-  /** Detect whether this filter applies to the raw command string. */
-  detectFromCommand(cmd: string): boolean {
-    try {
-      if (!cmd || cmd.length > 65536) return false
-      const resolved = stripPrefixes(shlexSplit(cmd))
-      if (resolved.length === 0) return false
-      return this.matches(resolved)
-    } catch {
-      return false
-    }
-  }
 
   /**
    * Return true when this filter should run for `argv`. Checks `binaries`

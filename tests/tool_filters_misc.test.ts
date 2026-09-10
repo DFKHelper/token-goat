@@ -38,7 +38,7 @@ import {
   MISC_FILTERS,
   BunFilter,
 } from '../src/tool_filters/index.js'
-import { selectFilter, TOOL_FILTERS } from '../src/tool_filters/dispatch.js'
+import { detectFromCommand, selectFilter, TOOL_FILTERS } from '../src/tool_filters/dispatch.js'
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -1002,9 +1002,9 @@ describe('JsonArrayFilter dispatch', () => {
     expect(f.matches(['json', '--filter', 'name'])).toBe(true)
   })
 
-  it('detectFromCommand returns false (content-based only)', () => {
-    const f = new JsonArrayFilter()
-    expect(f.detectFromCommand('json')).toBe(false)
+  it('the dispatch.ts detectFromCommand free function selects json_array via matches(), never a per-filter detectFromCommand method (there is no such method to consult)', () => {
+    const result = detectFromCommand('json --filter name')
+    expect(result?.filter.name).toBe('json_array')
   })
 })
 
