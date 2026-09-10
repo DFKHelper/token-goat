@@ -658,7 +658,7 @@ function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly stri
     const kind = TSJS_KIND_BY_TYPE.get(node.type)
     // A local `function` declaration nested inside a function body is a local, exactly like a
     // local const/let/var below -- exclude it from the top-level index the same way.
-    const isLocalFunction = insideFunction && node.type === 'function_declaration'
+    const isLocalFunction = insideFunction && (node.type === 'function_declaration' || node.type === 'generator_function_declaration')
     // A member of an inline type literal is not a definition either -- see isNamedTypeMember.
     const isAnonymousTypeMember = TSJS_TYPE_MEMBER_TYPES.has(node.type) && !isNamedTypeMember(node)
     if (kind !== undefined && !isLocalFunction && !isAnonymousTypeMember) {

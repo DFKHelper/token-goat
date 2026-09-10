@@ -1,0 +1,11 @@
+# HAND-DERIVED: standard Dockerfile syntax written from language knowledge, not from any adapter regex.
+FROM node:22-slim
+ARG BUILD_ENV=production
+LABEL maintainer="ops@example.com"
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+ENV NODE_ENV=$BUILD_ENV
+EXPOSE 3000
+USER node
+ENTRYPOINT ["node", "server.js"]

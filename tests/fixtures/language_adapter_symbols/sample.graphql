@@ -1,0 +1,15 @@
+# HAND-DERIVED: standard GraphQL syntax written from language knowledge, not from any adapter regex.
+type Item {
+  id: ID!
+  name: String!
+  quantity: Int!
+}
+
+type Query {
+  items: [Item!]!
+}
+
+input ItemInput {
+  name: String!
+  quantity: Int!
+}

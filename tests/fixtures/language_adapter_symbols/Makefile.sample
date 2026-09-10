@@ -1,0 +1,13 @@
+# HAND-DERIVED: standard Makefile syntax written from language knowledge, not from any adapter regex.
+CC = gcc
+CFLAGS = -Wall -O2
+
+.PHONY: all clean
+
+all: build
+
+build:
+	$(CC) $(CFLAGS) -o app main.c
+
+clean:
+	rm -f app *.o

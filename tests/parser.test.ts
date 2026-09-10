@@ -5,7 +5,9 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
+import { querySymbols } from '../src/index_reader.js'
 import {
+  indexFileSync,
   isParseSkipEligible,
   isTreeSitterAvailable,
   isUnderSkipDir,
@@ -154,6 +156,48 @@ describe('parseFile', () => {
     const names = result.symbols.filter((s) => s.kind === 'function').map((s) => s.name)
     expect(names).toContain('outer')
     expect(names).not.toContain('localHelper')
+  })
+
+  it('excludes a local generator function declaration nested inside a function body from the symbol index (regression: isLocalFunction only checked node.type === function_declaration, so its sibling node type generator_function_declaration was never scope-gated and a local `function* gen() {}` leaked into the top-level index exactly like the plain function case this file already guards)', async () => {
+    const file = write(
+      'nested_generator.ts',
+      [
+        'export function outer(): number {',
+        '  function* localGen() {',
+        '    yield 1',
+        '  }',
+        '  return localGen().next().value',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.filter((s) => s.kind === 'function').map((s) => s.name)
+    expect(names).toContain('outer')
+    expect(names).not.toContain('localGen')
+  })
+
+  it('excludes a local generator function from the real indexFileSync -> symbols table path, while the real top-level generator still resolves (drives the REAL default worker/CLI entry point, not an injected callback)', () => {
+    const dbPath = path.join(TMP, 'index.db')
+    const file = write(
+      'gen_e2e.ts',
+      [
+        'export function* topLevelGen() {',
+        '  yield 1',
+        '}',
+        'export function outerE2e(): number {',
+        '  function* localGenE2e() {',
+        '    yield 2',
+        '  }',
+        '  return localGenE2e().next().value',
+        '}',
+      ].join('\n'),
+    )
+    indexFileSync(file, dbPath)
+    const hits = querySymbols({ filePath: file }, dbPath)
+    const names = hits.map((s) => s.name)
+    expect(names).toContain('topLevelGen')
+    expect(names).toContain('outerE2e')
+    expect(names).not.toContain('localGenE2e')
   })
 
   it('indexes TS/JS class fields initialized with arrow functions, not data fields', async () => {

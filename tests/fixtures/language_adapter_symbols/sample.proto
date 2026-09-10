@@ -1,0 +1,13 @@
+// HAND-DERIVED: standard Protocol Buffers syntax written from language knowledge, not from any adapter regex.
+syntax = "proto3";
+
+package inventory;
+
+message Item {
+  string name = 1;
+  int32 quantity = 2;
+}
+
+service Warehouse {
+  rpc AddItem(Item) returns (Item);
+}
