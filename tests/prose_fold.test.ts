@@ -95,12 +95,10 @@ describe('prose fold', () => {
     expect(planProseFolds(rows(paragraph), new Set([0]))).toHaveLength(0)
   })
 
-  it('falls back to a ranged Read when no enclosing section can be resolved, and carries no stray marker', () => {
-    // Both assertions come from running the built binary against this repository's own changelog, where the first draft of this notice failed them. It named `token-goat section "CHANGELOG.md::<heading>"`, a placeholder the reader is left to resolve on their own, and it opened with a `[token-goat]` marker that the untrusted-output fence escaped to `&#91;token-goat]` in the text actually delivered. A nonexistent normalizedPath here means findContainingSection cannot resolve a heading, exercising that fallback branch specifically; tests/fold_pointer_round_trip.test.ts drives the real, resolvable case end to end through the hook pair and proves the section pointer it prints actually round-trips.
+  it('returns null (do not fold) when no enclosing section can be resolved, rather than naming a dead ranged-Read pointer', () => {
+    // Used to fall back to `Read "file" with offset=N, limit=1` here, which named a re-read of the same markdown file the fold only ever applies to. hooks_read.ts's large-markdown intercept hard-denies a 2nd+ Read of a .md/.mdx/.markdown file with 3+ headings unconditionally, regardless of the requested offset/limit window, so that pointer could withhold bytes behind a route the reader could never use. A nonexistent normalizedPath here means findContainingSection cannot resolve a heading, exercising that no-section branch specifically; tests/guards/fold_pointer_notices_round_trip.test.ts drives the real, resolvable case end to end through the hook pair and proves the section pointer it prints actually round-trips, and drives the real, unresolvable case to prove the paragraph is delivered whole instead of folded.
     const notice = proseFoldNotice('A shell read now withholds only what was already shown.', 42, 'CHANGELOG.md', 'c:/nonexistent/CHANGELOG.md')
-    expect(notice).toBe('A shell read now withholds only what was already shown. ... rest of paragraph folded (line 42) -- Read "CHANGELOG.md" with offset=42, limit=1')
-    expect(notice).not.toContain('<')
-    expect(notice).not.toContain('[')
+    expect(notice).toBeNull()
   })
 
   it('keeps the paragraph out of the ledger, recording only its line', () => {

@@ -70,17 +70,14 @@ export function isProseFoldablePath(normalizedPath: string): boolean {
 }
 
 /**
- * The opening sentence of a folded paragraph, followed by the pointer that returns the rest.
+ * The opening sentence of a folded paragraph, followed by the pointer that returns the rest -- or `null` when no such pointer exists, in which case the caller must not fold the paragraph at all.
  *
- * Named a real, resolved heading via {@link findContainingSection} rather than a placeholder the reader has to work out themselves, which an earlier draft did and which this repo's own test suite caught as unactionable. A one-line ranged Read (`Read "file" with offset=N, limit=1`) looks more precise, and is the fallback below when no enclosing section can be resolved, but it is not safe as the default: prose folding only ever applies to a markdown/mdx document, and hooks_read.ts's large-markdown intercept hard-denies every re-read of a markdown file with 3+ headings regardless of how narrow the offset/limit window is (the branch's own comment says so: "regardless of size"). `token-goat section` is a CLI command, not a Read the intercept ever sees, so it is the one route guaranteed to round-trip for exactly the class of document this fold exists to shrink.
+ * Named a real, resolved heading via {@link findContainingSection} rather than a placeholder the reader has to work out themselves, which an earlier draft did and which this repo's own test suite caught as unactionable. A one-line ranged Read (`Read "file" with offset=N, limit=1`) looks more precise, but naming it as a fallback when no enclosing section resolves used to withhold bytes behind a route that never actually worked: prose folding only ever applies to a markdown/mdx document, and hooks_read.ts's large-markdown intercept hard-denies every re-read of a markdown file with 3+ headings regardless of how narrow the offset/limit window is (the branch's own comment says so: "regardless of size"), while the paragraph most likely to have no enclosing section is one that sits before the document's first heading at all, which is exactly the shape that intercept guards. `token-goat section` is a CLI command, not a Read the intercept ever sees, so it is the one route guaranteed to round-trip; when it cannot resolve, the honest choice is to deliver the paragraph whole rather than name a pointer that may be refused.
  */
-export function proseFoldNotice(keep: string, line: number, shownPath: string, normalizedPath: string): string {
+export function proseFoldNotice(keep: string, line: number, shownPath: string, normalizedPath: string): string | null {
   const section = findContainingSection(normalizedPath, line, line)
-  const pointer =
-    section !== null
-      ? `token-goat section "${shownPath}::${section.heading}"`
-      : `Read "${shownPath}" with offset=${line}, limit=1`
-  return `${keep} ... rest of paragraph folded (line ${line}) -- ${pointer}`
+  if (section === null) return null
+  return `${keep} ... rest of paragraph folded (line ${line}) -- token-goat section "${shownPath}::${section.heading}"`
 }
 
 export function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {
@@ -186,7 +183,10 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
   for (const fold of commentFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   // Prose folding is the only thing that reaches a document, which has no symbol spans for the body planner and no comment syntax for the comment planner. It carries its own setting because the trade differs from code's: a folded body is recovered by naming its symbol, while a folded paragraph is recovered from the cached original.
   // Admitted on a window through {@link strictlyInteriorOnWindow} rather than declined outright. The decline this replaces was justified on the grounds that both notices point at a ranged Read of their own span, so a recall would re-fold and hand back less than was promised. That holds for the PROSE fold, whose pointer is `limit=1` on the very row it folded, which the planner would fold again to the same opening sentence. It does NOT hold for the comment fold, and the old comment here was wrong to claim it did: the recall range starts after the kept `/**` and summary line, and planCommentFolds needs an opening marker to enter a block, so the recalled rows are not a comment run and fold to nothing. Measured, not reasoned -- the test's positive control failed when it asserted otherwise. The edge filter is kept for both anyway, since it costs one predicate and makes the property structural rather than dependent on where a planner happens to place its kept lines. A body fold is never filtered, its pointer being a `token-goat read "file::symbol"` that does not re-enter this path.
-  const proseFolds = isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs ? strictlyInteriorOnWindow(planProseFolds(rows, claimed), rows.length, windowed) : []
+  // A candidate prose fold whose line has no enclosing section is dropped here, before it ever reaches `folds`, rather than surviving into the merged list and only being caught when its notice is built: `folds` is what {@link isRewriteWorthwhile}/`isStructuralRewriteAccepted` price as bytes withheld, and a fold entry that ends up delivering its span raw (see the null-notice branch below) is not actually withholding anything, so it must never count as one.
+  const proseFolds = isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs
+    ? strictlyInteriorOnWindow(planProseFolds(rows, claimed), rows.length, windowed).filter((f) => findContainingSection(normalizedPath, f.firstLine, f.firstLine) !== null)
+    : []
   const folds = mergeFolds(mergeFolds(bodyFolds, commentFolds), proseFolds)
   if (folds.length === 0) return null
 
@@ -199,7 +199,7 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
       raw.push(rows[i]?.text ?? '')
     }
     // Written as an exhaustive switch rather than a ternary chain: a new fold kind added to `BodyFold` must fail to compile here instead of silently rendering as a body fold and naming a symbol that does not exist.
-    let notice: string
+    let notice: string | null
     switch (fold.kind) {
       case 'comment':
         notice = commentFoldNotice(fold.firstLine, fold.lastLine, shownPath)
@@ -214,6 +214,15 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
         const unreachable: never = fold.kind
         throw new Error(`unhandled fold kind: ${String(unreachable)}`)
       }
+    }
+    if (notice === null) {
+      // No working recall route for this span (proseFoldNotice found no enclosing section, which is the paragraph-before-the-first-heading case a Read offset/limit pointer would name a re-read the markdown intercept can refuse outright): deliver it whole instead of withholding it behind a pointer that may not work.
+      for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) {
+        numbered.push(rows[i]?.raw ?? '')
+        raw.push(rows[i]?.text ?? '')
+      }
+      at = fold.startIdx + fold.len
+      continue
     }
     numbered.push(notice)
     at = fold.startIdx + fold.len

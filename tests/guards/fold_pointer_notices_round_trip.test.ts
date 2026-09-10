@@ -17,21 +17,19 @@
  * identical reason) walks the unblanked body text directly.
  *
  * Scope: this guard covers the two pointer shapes fixed/verified this cycle -- the prose-fold
- * paragraph pointer (fold_delivery.ts::proseFoldNotice, now routed through `token-goat section`
- * when an enclosing heading resolves) and the comment-fold pointer (fold_delivery.ts::commentFoldNotice,
+ * paragraph pointer (fold_delivery.ts::proseFoldNotice, routed through `token-goat section`
+ * when an enclosing heading resolves, and folding NOTHING at all when it does not, rather than
+ * naming a `Read offset=/limit=` fallback the markdown large-file intercept in hooks_read.ts
+ * could refuse unconditionally) and the comment-fold pointer (fold_delivery.ts::commentFoldNotice,
  * a `Read offset=/limit=` pointer verified to round-trip for a source file via the
- * protect_recent_reads exemption). It deliberately excludes fold_structure.ts::capLeadIn's
- * lead-in-cut pointer, which this same session's investigation found is ALSO broken by the same
- * root cause (the markdown large-file intercept in hooks_read.ts denies every re-read of a
- * markdown file with 3+ headings unconditionally, regardless of how narrow the offset/limit
- * window is) but has no safe fix under the current CLI surface: the withheld lead-in text sits
- * before the document's first heading, so no `token-goat section` target names it without
- * returning different bytes than were withheld. Fixing it needs new CLI surface, which is out of
- * this cycle's scope; it is left as a known, reported defect rather than force-adjudicated safe
- * here. bodyFoldNotice (`token-goat read "file::symbol"`) and the skeleton-gap notice's
- * whole-file `Read offset=1, limit=<rows.length>` fallback are CLI-route or honestly-scoped-to-
- * the-whole-file pointers respectively, outside this guard's per-paragraph/per-comment-block
- * round-trip shape.
+ * protect_recent_reads exemption). fold_structure.ts::capLeadIn's former lead-in-cut pointer had
+ * the identical root cause and no safe fix under the current CLI surface (the withheld lead-in
+ * text sits before the document's first heading, so no `token-goat section` target names it), so
+ * it no longer cuts or names a pointer at all: the full lead-in is delivered uncapped, and the
+ * whole-replacement ratio floor in isStructuralRewriteAccepted is what rejects an oversized one.
+ * bodyFoldNotice (`token-goat read "file::symbol"`) and the skeleton-gap notice's whole-file
+ * `Read offset=1, limit=<rows.length>` fallback are CLI-route or honestly-scoped-to-the-whole-file
+ * pointers respectively, outside this guard's per-paragraph/per-comment-block round-trip shape.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -101,7 +99,7 @@ function definitionSitesForMarker(marker: string): string[] {
 /** Round-trip coverage claimed for each pointer-constructing function this guard's population finds. Symmetric: checked both ways below, so an entry cannot outlive the site it names and a found site cannot go uncovered. */
 const ADJUDICATED: Readonly<Record<string, string>> = {
   'fold_delivery.ts::proseFoldNotice':
-    "Routes through findContainingSection to a `token-goat section \"file::Heading\"` pointer when an enclosing heading resolves (the common case for a markdown document large enough to trip the markdown re-read intercept, which is the scenario this fold exists for), falling back to the pre-existing `Read offset=/limit=` form only when no section wraps the withheld line. Executed below by driving preReadHandler/postReadHandler against a real markdown fixture and following whichever pointer form the real notice printed.",
+    "Routes through findContainingSection to a `token-goat section \"file::Heading\"` pointer when an enclosing heading resolves (the common case for a markdown document large enough to trip the markdown re-read intercept, which is the scenario this fold exists for), and returns null (the caller must not fold, and delivers the paragraph whole) when no section wraps the withheld line, rather than naming the old `Read offset=/limit=` fallback that named a re-read the same intercept could refuse unconditionally. Both outcomes executed below by driving preReadHandler/postReadHandler against real markdown fixtures.",
   'fold_delivery.ts::commentFoldNotice':
     "Prints a `Read offset=/limit=` pointer for a folded comment block in a source file. Verified by driving the real handler pair: a source-file re-read is not gated by the markdown-specific unconditional deny (that gate only fires for .md/.mdx/.markdown/.rst), and the immediate follow-up read this pointer names ranks as the most recently read file, which protect_recent_reads (default 4) exempts from every reread-deny branch that would otherwise fire.",
   'fold_structure.ts::skeletonGapNotice':
@@ -128,7 +126,7 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
       what: 'functions in src/*.ts constructing a `Read "..." with offset=` recall pointer',
       items: sitesForMarker(READ_OFFSET_MARKER),
       floor: 3,
-      mustInclude: ['fold_delivery.ts::commentFoldNotice', 'fold_structure.ts::capLeadIn', 'fold_structure.ts::skeletonGapNotice'],
+      mustInclude: ['fold_delivery.ts::commentFoldNotice', 'fold_structure.ts::skeletonGapNotice'],
     })
     pinnedPopulation({
       what: 'functions in src/*.ts constructing a `-- token-goat section "..."` recall pointer',
@@ -140,15 +138,14 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
 
   it('has an adjudication for every direct definition site this guard covers, and no stale one', () => {
     const covered = [...definitionSitesForMarker(READ_OFFSET_MARKER), ...definitionSitesForMarker(SECTION_MARKER)]
-    // capLeadIn is a known site this guard's scope explicitly excludes (see the file header) --
-    // named here, not silently dropped, so a reader of the population sees why it is missing from
-    // ADJUDICATED without the guard treating its absence as a defect in the guard itself.
+    // capLeadIn no longer constructs any pointer at all (it delivers the full lead-in uncapped
+    // instead of cutting it), so it no longer appears in `covered` and needs no entry here.
     // planMarkdownOutline's `token-goat section "path::<Heading>"` also matches SECTION_MARKER, but
     // it is not this bug's shape: `<Heading>` is a usage-form placeholder in a notice that also
     // prints the document's real heading list right beside it (guidance + sectionsList, both in
     // the same numbered[] this notice sits in), unlike proseFoldNotice's old bug, which named a
     // placeholder heading with no list anywhere in the delivery for a reader to resolve it against.
-    const KNOWN_UNCOVERED = new Set(['fold_structure.ts::capLeadIn', 'fold_structure.ts::planMarkdownOutline'])
+    const KNOWN_UNCOVERED = new Set(['fold_structure.ts::planMarkdownOutline'])
     const needsAdjudication = covered.filter((k) => !KNOWN_UNCOVERED.has(k))
     const missing = needsAdjudication.filter((k) => ADJUDICATED[k] === undefined)
     expect(missing, `These construct a recall pointer with no round-trip coverage:\n  ${missing.join('\n  ')}`).toEqual([])
@@ -232,5 +229,48 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
     const decision = preReadHandler(readEvent(pointerPath ?? file, { offset: Number(offsetStr), limit: Number(limitStr) }))
     // The route only round-trips if this second read is actually let through.
     expect(decision.hookType).not.toBe('deny')
+  })
+
+  it('SHAPE no pointer: a paragraph before the first heading is delivered whole, not folded behind a dead pointer', () => {
+    clearModuleCaches()
+    const marker = 'the unique sentence proving an unsectioned lead-in paragraph now survives whole'
+    const filler = 'It then continues for a good while longer, restating the point in more detail than a reader scanning the document has any use for, which is exactly the text this fold would otherwise remove from the delivered output. '
+    const paragraph = `This opening sentence stays visible. ${filler.repeat(3)}${marker}.`
+    // Sits on the very first line, before any heading, so findContainingSection has nothing to resolve -- the case this fix targets.
+    const body = [paragraph, '', '## Only Section', '', 'tail content after the only heading.', ''].join('\n')
+    const file = normalizePath(path.join(os.tmpdir(), `tg-guard-lead-in-para-${process.pid}-${Math.random().toString(36).slice(2)}.md`))
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+
+    expect(preReadHandler(readEvent(file)).hookType).not.toBe('deny')
+    const post = postReadHandler(postEvent(file, body))
+    const delivered = post.hookType === 'rewriteOutput' ? post.updatedOutput : numbered(body)
+    expect(delivered).not.toMatch(/rest of paragraph folded/)
+    expect(delivered).toContain(marker)
+  })
+
+  it('SHAPE no pointer: an oversized markdown lead-in is delivered uncapped, not cut behind a dead pointer', () => {
+    clearModuleCaches()
+    const leadInLines = Array.from({ length: 55 }, (_, i) => `Lead-in filler line ${i} padded to add bulk to this introduction before the first heading.`)
+    const marker = 'MARKER_LEADIN_TAIL sits at the very end of the lead-in, past where the old byte cap used to cut it.'
+    const sectionBody = 'Section body text repeated to carry this document past the byte floor the heading tree requires before it will replace anything. '.repeat(12)
+    const headings = ['Introduction', 'Installation', 'Configuration', 'Commands', 'Troubleshooting', 'Contributing', 'Licence']
+    const body = ['# Fixture Title', '', ...leadInLines, marker, '', ...headings.map((h) => `## ${h}\n\n${sectionBody}\n`)].join('\n')
+
+    // Comfortably past OUTLINE_LEADIN_MAX_BYTES (4,225) -- the cap this used to trip -- and past the outline replacement's own 8,000 B / 6-heading floors, which together are the gate this case exists to reach.
+    expect(Buffer.byteLength([...leadInLines, marker].join('\n'), 'utf-8')).toBeGreaterThan(4_225)
+    expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(8_000)
+
+    const file = normalizePath(path.join(os.tmpdir(), `tg-guard-leadin-cap-${process.pid}-${Math.random().toString(36).slice(2)}.md`))
+    fs.writeFileSync(file, body)
+    tmpFiles.push(file)
+
+    expect(preReadHandler(readEvent(file)).hookType).not.toBe('deny')
+    const post = postReadHandler(postEvent(file, body))
+    expect(post.hookType).toBe('rewriteOutput')
+    const rewritten = post.hookType === 'rewriteOutput' ? post.updatedOutput : ''
+    // Must-not-drop: the marker sits well past the old cap, so finding it proves the lead-in survived uncapped.
+    expect(rewritten).toContain(marker)
+    expect(rewritten).not.toMatch(/lead-in line.*cut at the/)
   })
 })

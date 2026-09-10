@@ -58,27 +58,10 @@ function outlineLeadInRows(rows: readonly FoldRow[], headings: readonly Markdown
 }
 
 /**
- * Cap `rows` to `OUTLINE_LEADIN_MAX_BYTES`, cutting at a row boundary rather than mid-line, and returning a notice disclosing the cut in place -- never a silent trim. Rows past the cap are dropped from the return value entirely, so they cannot leak into `foldDelivery`'s prose fold or the served-output record below.
+ * Historically capped `rows` to `OUTLINE_LEADIN_MAX_BYTES` and named a `Read "file" with offset=/limit=` pointer at the cut portion. That pointer never actually worked: the lead-in is by definition everything before the document's first heading, so `findContainingSection` never resolves a heading for any line inside it, and the outline replacement this feeds only fires once the document also clears OUTLINE_MIN_HEADINGS (6) and OUTLINE_MIN_BODY_BYTES (8,000, equal to MARKDOWN_SIZE_THRESHOLD) -- exactly the size and heading count hooks_read.ts's large-markdown intercept uses to hard-deny every re-read of a .md/.mdx/.markdown file regardless of how narrow the requested offset/limit window is. So every real trigger of this cap named a pointer the very next Read of the same file would refuse. Delivers the full lead-in uncapped instead; the whole-replacement ratio floor in {@link isStructuralRewriteAccepted} still rejects the outline plan (and the file falls through to a normal delivery) if an oversized lead-in makes the replacement not worth showing, so no byte is ever silently lost behind a dead pointer.
  */
-function capLeadIn(rows: readonly FoldRow[], shownPath: string): { rows: FoldRow[]; notice: string | null } {
-  let bytes = 0
-  let cutAt = rows.length
-  for (let i = 0; i < rows.length; i++) {
-    bytes += Buffer.byteLength(rows[i]!.text, 'utf-8') + 1
-    if (bytes > OUTLINE_LEADIN_MAX_BYTES) {
-      cutAt = i
-      break
-    }
-  }
-  if (cutAt >= rows.length) return { rows: [...rows], notice: null }
-  const kept = rows.slice(0, cutAt)
-  const cutFrom = rows[cutAt]!.no
-  const cutTo = rows[rows.length - 1]!.no
-  const n = cutTo - cutFrom + 1
-  return {
-    rows: kept,
-    notice: `... ${n} more lead-in line${n === 1 ? '' : 's'} (${cutFrom}-${cutTo}) cut at the ${OUTLINE_LEADIN_MAX_BYTES} B lead-in cap -- Read "${shownPath}" with offset=${cutFrom}, limit=${n}`,
-  }
+function capLeadIn(rows: readonly FoldRow[]): { rows: FoldRow[]; notice: string | null } {
+  return { rows: [...rows], notice: null }
 }
 
 /**
@@ -100,7 +83,7 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   const { guidance, sectionsList } = formatHeadingTreeParts(headings, shownPath)
 
   const leadInRows = outlineLeadInRows(rows, headings)
-  const { rows: cappedLeadIn, notice: capNotice } = capLeadIn(leadInRows, shownPath)
+  const { rows: cappedLeadIn, notice: capNotice } = capLeadIn(leadInRows)
   // Fed through the same prose fold every other document read gets, rather than exempting the lead-in from it: a long-but-under-cap lead-in still gets its over-long paragraphs folded to their opening sentence. `windowed=false` is correct here regardless of the outer read's own range (already declined by the caller) -- this is a fold of the lead-in slice itself, not of the file at large.
   const leadInFolded = foldDelivery(cappedLeadIn, normalizedPath, shownPath, false)
   const leadInNumbered = leadInFolded !== null ? leadInFolded.numbered : cappedLeadIn.map((r) => r.raw)
