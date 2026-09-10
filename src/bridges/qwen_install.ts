@@ -31,6 +31,8 @@ import * as path from 'node:path'
 import { anchoredMarkerPattern } from '../install.js'
 import { quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
+import { groupHasTokenGoat } from './matcher_group.js'
+
 // Qwen Code -> token-goat internal HookEventName (src/types.ts's HOOK_EVENTS).
 // Only these five have a token-goat handler; every other real Qwen Code
 // event (Notification, SessionEnd, PostToolUseFailure, StopFailure,
@@ -119,16 +121,6 @@ function isCurrentQwenTokenGoatCommand(command: string, desiredCommand: string):
   return command === desiredCommand
 }
 
-function groupHasTokenGoat(groups: QwenMatcherGroup[] | undefined, predicate: (command: string) => boolean = isQwenTokenGoatCommand): boolean {
-  if (groups === undefined) return false
-  for (const group of groups) {
-    for (const h of group.hooks ?? []) {
-      if (predicate(h.command)) return true
-    }
-  }
-  return false
-}
-
 /**
  * Bakes the absolute node/entry-script path, same robustness rationale as gemini_install.ts's
  * geminiHookCommand: no assumption that `token-goat` resolves on Qwen Code's subprocess PATH.
@@ -161,9 +153,10 @@ export function installQwen(): QwenInstallResult {
   let changed = false
   for (const event of QWEN_HOOK_EVENTS) {
     const command = qwenHookCommand(QWEN_EVENT_ARG[event])
-    const existingGroups = hooks[event] ?? []
+    // A hand-edited or foreign-tool-written settings.json can hold a scalar (e.g. a bare string) under a key this bridge's own hooks schema requires to be an array of matcher-group objects; passing a scalar through here would reach stripStaleGroupHooks below, which iterates it character by character and re-pushes each character back as if it were a group, silently corrupting the write, so treat any non-array shape as absent instead.
+    const existingGroups = Array.isArray(hooks[event]) ? hooks[event] : []
 
-    if (groupHasTokenGoat(existingGroups, (c) => isCurrentQwenTokenGoatCommand(c, command))) {
+    if (groupHasTokenGoat(existingGroups, '', (c) => isCurrentQwenTokenGoatCommand(c, command))) {
       hooks[event] = existingGroups
       continue
     }
@@ -210,7 +203,7 @@ export function isQwenInstalled(): boolean {
   if (hooks === undefined) return false
   for (const event of QWEN_HOOK_EVENTS) {
     const command = qwenHookCommand(QWEN_EVENT_ARG[event])
-    if (!groupHasTokenGoat(hooks[event], (c) => isCurrentQwenTokenGoatCommand(c, command))) return false
+    if (!groupHasTokenGoat(hooks[event], '', (c) => isCurrentQwenTokenGoatCommand(c, command))) return false
   }
   return true
 }

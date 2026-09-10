@@ -321,7 +321,8 @@ export function installGemini(): GeminiInstallResult {
   let changed = false
   for (const event of GEMINI_HOOK_EVENTS) {
     const command = geminiHookCommand(GEMINI_EVENT_ARG[event])
-    const groups = [...(hooks[event] ?? [])]
+    // A hand-edited or foreign-tool-written settings.json can hold a scalar (e.g. a bare string) under a key this bridge's own hooks schema requires to be an array of matcher-group objects; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
+    const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
     for (const matcher of desiredMatchersFor(event)) {
       if (groupHasTokenGoat(groups, matcher, (c) => isCurrentGeminiTokenGoatCommand(c, command))) continue
 

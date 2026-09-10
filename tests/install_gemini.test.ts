@@ -252,6 +252,24 @@ describe('installGemini', () => {
     expect(fs.readFileSync(p, 'utf8')).toBe(nonObject)
   })
 
+  // FORMAT-DERIVED: settings.json is user-editable JSON with no schema enforcement at parse time (readGeminiSettings casts `parsed as GeminiSettings` without validating hooks[event]'s shape, per src/bridges/gemini_install.ts::readGeminiSettings), so a hand-edited file can hold a bare string under a key installGemini expects to be an array of matcher-group objects.
+  it('does not corrupt a hooks.<Event> field that holds a scalar string instead of an array into a garbled array of characters', () => {
+    const p = geminiSettingsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ hooks: { BeforeTool: 'oops' } }))
+
+    installGemini()
+
+    const settings = readSettings()
+    const beforeTool = settings.hooks?.['BeforeTool']
+    expect(Array.isArray(beforeTool)).toBe(true)
+    // Every entry must be a real matcher-group object (has a `hooks` array); none may be a stray single character spread out of the original scalar string.
+    for (const entry of beforeTool ?? []) {
+      expect(typeof entry).toBe('object')
+      expect(Array.isArray((entry as GeminiMatcherGroup).hooks)).toBe(true)
+    }
+  })
+
   it('upgrades a legacy bare "token-goat hook <event>" command to the current exec-path-hardened form on re-install, instead of treating it as already installed (regression: installGemini used to gate on isGeminiTokenGoatCommand, which also matches the legacy form, so a pre-hardening install never got upgraded)', () => {
     const p = geminiSettingsPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
