@@ -1175,4 +1175,56 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
       fs.rmSync(proj, { recursive: true, force: true })
     }
   })
+
+  // HAND-DERIVED: constructs the exact escape shape cli_bootstrap_audit.ts's own scanMetadataRoot
+  // already refuses for its roster walk (see tests/cli_bootstrap_audit.test.ts's "rejects nested
+  // escaping links" and "rejects an external agents root link" cases) -- a nested symlink inside
+  // a repository-authored .claude/agents pointing at a directory elsewhere on the machine.
+  it('does not follow a nested symlink out of the project roster into the rest of the filesystem', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-escape-')))
+    const proj = path.join(root, 'proj')
+    const outside = path.join(root, 'outside')
+    const prevCwd = process.cwd()
+    try {
+      fs.mkdirSync(path.join(proj, '.claude', 'agents'), { recursive: true })
+      fs.mkdirSync(outside, { recursive: true })
+      fs.writeFileSync(path.join(outside, 'leaked.md'), '---\nname: leaked-outside-agent\ntools: Read\n---\nb')
+      try {
+        fs.symlinkSync(outside, path.join(proj, '.claude', 'agents', 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
+      } catch {
+        // No symlink privilege on this machine (common on Windows without dev mode/admin) --
+        // nothing to prove without one, so skip rather than fail on an environment limitation.
+        return
+      }
+      process.chdir(proj)
+      const names = findRestrictedAgentNames()
+      expect(names).not.toContain('leaked-outside-agent')
+    } finally {
+      process.chdir(prevCwd)
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not follow the project roster itself when .claude/agents is a symlink out of the project', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-root-escape-')))
+    const proj = path.join(root, 'proj')
+    const outside = path.join(root, 'outside-agents')
+    const prevCwd = process.cwd()
+    try {
+      fs.mkdirSync(proj, { recursive: true })
+      fs.mkdirSync(outside, { recursive: true })
+      fs.writeFileSync(path.join(outside, 'leaked.md'), '---\nname: leaked-root-agent\ntools: Read\n---\nb')
+      try {
+        fs.symlinkSync(outside, path.join(proj, '.claude', 'agents'), process.platform === 'win32' ? 'junction' : 'dir')
+      } catch {
+        return
+      }
+      process.chdir(proj)
+      const names = findRestrictedAgentNames()
+      expect(names).not.toContain('leaked-root-agent')
+    } finally {
+      process.chdir(prevCwd)
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

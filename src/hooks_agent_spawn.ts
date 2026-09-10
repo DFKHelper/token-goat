@@ -29,6 +29,7 @@ import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { getHarnessName } from './bridges/registry.js'
+import { isInsideRoot } from './project.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder + report
@@ -401,11 +402,21 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
  */
 export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   // The project roster is scanned alongside the home one because a repo's own .claude/agents holds exactly the definitions a spawn in that repo should be reaching for, and a home-only default made them invisible to the advisory: this repo carries three such definitions and the advisory named none of them. Duplicate roots are harmless, since the visited set below folds them.
-  const scanRoots = roots ?? [path.join(os.homedir(), '.claude', 'agents'), path.join(process.cwd(), '.claude', 'agents')]
+  const projectAgentsRoot = path.join(process.cwd(), '.claude', 'agents')
+  const scanRoots = roots ?? [path.join(os.homedir(), '.claude', 'agents'), projectAgentsRoot]
   const names = new Set<string>()
   const visited = new Set<string>()
   let filesSeen = 0
-  const walk = (dir: string, depth: number): void => {
+  // confineTo bounds a walk to a resolved directory: null for the home roster (the user controls
+  // it directly and may legitimately symlink it, or an entry inside it, to a personal collection
+  // elsewhere on their own machine -- the whole point of following symlinked collection
+  // directories below), non-null for the project roster, whose content is repository-authored.
+  // Without this, a checked-in `.claude/agents/x -> /` (or any other absolute target) let a
+  // cloned repository's own roster walk follow the link and read arbitrary `.md` files anywhere
+  // else reachable on the machine, surfacing their frontmatter `name:` in a model-facing advisory
+  // -- the same escape-via-nested-symlink shape cli_bootstrap_audit.ts's scanMetadataRoot already
+  // refuses for its own roster walk.
+  const walk = (dir: string, depth: number, confineTo: string | null): void => {
     if (depth > ROSTER_WALK_MAX_DEPTH || filesSeen >= ROSTER_WALK_MAX_FILES) return
     let real: string
     try {
@@ -413,6 +424,7 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
     } catch {
       return
     }
+    if (confineTo !== null && !isInsideRoot(real, confineTo)) return
     const key = process.platform === 'win32' ? real.toLocaleLowerCase() : real
     if (visited.has(key)) return
     visited.add(key)
@@ -433,7 +445,7 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
         continue
       }
       if (stat.isDirectory()) {
-        walk(full, depth + 1)
+        walk(full, depth + 1, confineTo)
         continue
       }
       if (!stat.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue
@@ -448,7 +460,29 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
       if (parsed !== null && parsed.restricted) names.add(parsed.name)
     }
   }
-  for (const root of scanRoots) walk(root, 0)
+  for (const root of scanRoots) {
+    const isProjectRoot = roots === undefined && path.resolve(root) === path.resolve(projectAgentsRoot)
+    if (!isProjectRoot) {
+      walk(root, 0, null)
+      continue
+    }
+    // The root itself may not be a symlink either: a repo replacing its own `.claude/agents`
+    // entry with a link is the same escape with one fewer step than a nested link.
+    let rootIsLink: boolean
+    try {
+      rootIsLink = fs.lstatSync(root).isSymbolicLink()
+    } catch {
+      continue
+    }
+    if (rootIsLink) continue
+    let confineTo: string | null
+    try {
+      confineTo = fs.realpathSync(root)
+    } catch {
+      continue
+    }
+    walk(root, 0, confineTo)
+  }
   return Array.from(names).sort()
 }
 
