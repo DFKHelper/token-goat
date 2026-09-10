@@ -292,6 +292,21 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('bash-output --file --grep clips an over-long matching line to a window centred on the match instead of shipping it whole (HAND-DERIVED: a matching line built by string repetition, independent of the clip implementation)', async () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-grep-longline-${Date.now()}.txt`)
+    const longLine = 'X'.repeat(6000) + ' MATCH_TARGET'
+    fs.writeFileSync(tmpFile, `short line\n${longLine}\nanother short\n`, 'utf8')
+    try {
+      const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH_TARGET'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('MATCH_TARGET')
+      expect(r.stdout.length).toBeLessThan(longLine.length)
+      expect(r.stdout).toMatch(/chars elided/)
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
   it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-grep-only-elide-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `MATCH line ${i + 1}`).join('\n')
