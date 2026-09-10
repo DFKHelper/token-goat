@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- a maintainer script in plain JavaScript, deliberately outside the typed source tree.
-import { isValidPackageName, packageNamesFromBody, summarizeGuardFailure } from '../scripts/dependabot-body.mjs'
+import { isDependabotPullRequest, isValidPackageName, packageNamesFromBody, summarizeGuardFailure } from '../scripts/dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -175,9 +175,32 @@ describe("choosing which open pull request is Dependabot's", () => {
     expect(source).toContain('number,title,headRefName,author,isCrossRepository')
   })
 
-  it('requires the Dependabot app as author and a branch in this repository, not just the branch prefix', () => {
-    expect(source).toContain("pr.author?.login === 'app/dependabot'")
-    expect(source).toContain('pr.isCrossRepository === false')
+  it('accepts every real Dependabot pull request this repository has had', () => {
+    // CAPTURE: `gh pr list --state all --limit 6 --json number,title,headRefName,author,isCrossRepository`
+    // on 2026-09-10. Running the predicate against real gh output, because the source-grep tests around
+    // it would pass just as happily if the field name were wrong.
+    const listing = JSON.parse(fs.readFileSync(path.join(repoRoot, 'tests', 'fixtures', 'dependabot', 'gh-pr-list.json'), 'utf8'))
+    // That every entry is Dependabot's is a property of this capture, not of `gh pr list`, so it is
+    // asserted on `is_bot` -- a field the predicate never reads -- rather than assumed. Regenerating
+    // the fixture over a range containing a human pull request fails here, which is the honest place
+    // to fail rather than inside the predicate's own test.
+    expect(listing.length).toBeGreaterThan(0)
+    expect(listing.every((pr: { author?: { is_bot?: boolean } }) => pr.author?.is_bot === true)).toBe(true)
+    for (const pr of listing) {
+      expect(isDependabotPullRequest(pr), `#${pr.number} ${pr.headRefName}`).toBe(true)
+    }
+  })
+
+  it('rejects a fork wearing the branch name, which is the shape a public repository invites', () => {
+    const real = JSON.parse(fs.readFileSync(path.join(repoRoot, 'tests', 'fixtures', 'dependabot', 'gh-pr-list.json'), 'utf8'))[0]
+    // HAND-DERIVED: each variant flips exactly one field of a genuine entry, so a passing case cannot
+    // be explained by the other two fields carrying the decision.
+    expect(isDependabotPullRequest({ ...real, author: { login: 'someone-else' } })).toBe(false)
+    expect(isDependabotPullRequest({ ...real, isCrossRepository: true })).toBe(false)
+    expect(isDependabotPullRequest({ ...real, headRefName: 'feature/looks-innocent' })).toBe(false)
+    expect(isDependabotPullRequest({ ...real, author: undefined })).toBe(false)
+    expect(isDependabotPullRequest(null)).toBe(false)
+    expect(isDependabotPullRequest({})).toBe(false)
   })
 
   it('names a limit, because gh pr list stops at thirty and page two would read as no batch at all', () => {

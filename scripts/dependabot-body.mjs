@@ -62,3 +62,18 @@ export function summarizeGuardFailure(error) {
   const tail = output.split('\n').filter((line) => line.trim()).slice(-6).join('\n')
   return `the guard did not report a result; it exited ${error?.status ?? 'abnormally'}${tail ? `:\n${tail}` : ' with no output'}`
 }
+
+/**
+ * True when an entry from `gh pr list --json number,title,headRefName,author,isCrossRepository` is
+ * genuinely Dependabot's.
+ *
+ * A branch name is not an identity. This repository is public, so anyone may open a pull request from
+ * a fork on a branch called `dependabot/npm_and_yarn/anything` and write whatever package table they
+ * like in the body -- and the body is what decides which packages get resolved. So the author has to
+ * be the Dependabot app and the head branch has to live in this repository. Exported rather than left
+ * inline so a test can run it against real `gh` output: a check that only reads the script's source
+ * for the right field names passes just as happily when the field names are wrong.
+ */
+export function isDependabotPullRequest(pr) {
+  return Boolean(pr) && typeof pr.headRefName === 'string' && pr.headRefName.startsWith('dependabot/npm_and_yarn/') && pr.author?.login === 'app/dependabot' && pr.isCrossRepository === false
+}

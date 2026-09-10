@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
-import { isValidPackageName, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
+import { isDependabotPullRequest, isValidPackageName, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -76,7 +76,7 @@ function packagesFromOpenPullRequest() {
   } catch {
     fail('could not reach `gh`; pass --packages instead')
   }
-  const candidates = JSON.parse(listing).filter((pr) => pr.headRefName.startsWith('dependabot/npm_and_yarn/') && pr.author?.login === 'app/dependabot' && pr.isCrossRepository === false)
+  const candidates = JSON.parse(listing).filter(isDependabotPullRequest)
   if (candidates.length === 0) fail('no open Dependabot npm pull request; pass --packages to resolve a set by hand')
   if (candidates.length > 1) fail(`several open Dependabot npm pull requests (${candidates.map((pr) => `#${pr.number}`).join(', ')}); pass --packages`)
   const pr = candidates[0]
