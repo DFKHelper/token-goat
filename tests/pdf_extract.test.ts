@@ -204,9 +204,52 @@ describe('extractPdfText', () => {
   });
 });
 
+// HAND-DERIVED: object/xref/trailer syntax and the /Outlines, /First, /Last, /Parent, /Count
+// outline-dictionary keys are per ISO 32000-1 sections 7.5 (file structure) and 12.3.3 (document
+// outline), computed independently of src/pdf_extract.ts rather than read off its own parser.
+// Builds a single-page PDF whose outline is a chain of `depth` nested items (item i's /First
+// points to item i+1, one bookmark per level), so opening the outline recurses `depth` levels.
+function deepOutlinePdfBytes(depth: number): Uint8Array {
+  const objs: string[] = [];
+  objs[1] = '<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>';
+  objs[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>';
+  objs[3] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> >>';
+  const firstItem = 5;
+  const lastItem = 5 + depth - 1;
+  objs[4] = `<< /Type /Outlines /First ${firstItem} 0 R /Last ${lastItem} 0 R /Count ${depth} >>`;
+  for (let i = 0; i < depth; i++) {
+    const objNum = firstItem + i;
+    const parent = i === 0 ? 4 : objNum - 1;
+    const child = i < depth - 1 ? objNum + 1 : null;
+    const parts = [`/Title (Bookmark ${i})`, `/Parent ${parent} 0 R`];
+    if (child !== null) parts.push(`/First ${child} 0 R`, `/Last ${child} 0 R`, `/Count 1`);
+    objs[objNum] = `<< ${parts.join(' ')} >>`;
+  }
+  let body = '%PDF-1.4\n';
+  const offsets: number[] = [0];
+  for (let i = 1; i < objs.length; i++) {
+    offsets[i] = Buffer.byteLength(body, 'latin1');
+    body += `${i} 0 obj\n${objs[i]}\nendobj\n`;
+  }
+  const xrefStart = Buffer.byteLength(body, 'latin1');
+  const total = objs.length;
+  body += `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) body += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  body += `trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return new Uint8Array(Buffer.from(body, 'latin1'));
+}
+
 describe('extractPdfOutline', () => {
   it('returns an empty array for a PDF with no bookmarks', async () => {
     expect(await extractPdfOutline(pdfBytes())).toEqual([]);
+  });
+
+  // pdfjs-dist marshals the outline tree through an in-process structuredClone even with no real
+  // worker thread; a chain of ~800 single-child bookmarks blows the JS call stack during that
+  // clone, which throws outside the promise chain and crashes the whole process unless guarded.
+  // 2000 levels leaves comfortable margin over the measured ~800-level crash threshold.
+  it('rejects instead of crashing the process on a pathologically deep outline', async () => {
+    await expect(extractPdfOutline(deepOutlinePdfBytes(2000))).rejects.toThrow();
   });
 });
 
