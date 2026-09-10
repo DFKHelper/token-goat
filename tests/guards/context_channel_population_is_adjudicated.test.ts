@@ -77,7 +77,7 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_write.ts::preWriteRewriteHandler':
     'Interpolates only a line count and a percentage. The path and both file contents are read for arithmetic and never echoed.',
   'hooks_compact.ts::preCompactHandler':
-    'Emits the manifest, every row of which routes its file-derived text through displaySafePath or displaySafeText, the web-fetch row included since 2.9.7.',
+    'Emits the manifest, every row of which routes its file-derived text through displaySafePath or displaySafeText, the web-fetch row included since 2.9.7, and the SAFE_TO_DISCARD bash-command rows (entry.command only ever passes through redactSecrets, never marker neutralization) run through neutralizeSpokenMarkers as of the security-loop fix that closed this same gap.',
   'hooks_session.ts::pendingContextHandler':
     'Forwards a payload another handler already composed and adjudicated; interpolates nothing of its own.',
   'hooks_read.ts::quietContextOutput':
