@@ -185,6 +185,24 @@ describe('installQwen', () => {
     expect(fs.readFileSync(p, 'utf8')).toBe(nonObject)
   })
 
+  // FORMAT-DERIVED: settings.json is user-editable JSON with no schema enforcement at parse time (readQwenSettings casts `parsed as QwenSettings` without validating hooks[event]'s shape, per src/bridges/qwen_install.ts::readQwenSettings), so a hand-edited file can hold a bare string under a key installQwen expects to be an array of matcher-group objects; the scalar reaches stripStaleGroupHooks, which iterates a string character by character and re-pushes each character back into the output array as if it were a group.
+  it('does not corrupt a hooks.<Event> field that holds a scalar string instead of an array into a garbled array of characters', () => {
+    const p = qwenSettingsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: 'oops' } }))
+
+    installQwen()
+
+    const settings = readSettings()
+    const preToolUse = settings.hooks?.['PreToolUse']
+    expect(Array.isArray(preToolUse)).toBe(true)
+    // Every entry must be a real matcher-group object (has a `hooks` array); none may be a stray single character spread out of the original scalar string.
+    for (const entry of preToolUse ?? []) {
+      expect(typeof entry).toBe('object')
+      expect(Array.isArray((entry as QwenMatcherGroup).hooks)).toBe(true)
+    }
+  })
+
   it('upgrades a legacy bare "token-goat hook <event>" command to the current exec-path-hardened form on re-install, instead of treating it as already installed', () => {
     const p = qwenSettingsPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })

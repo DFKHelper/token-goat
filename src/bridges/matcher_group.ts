@@ -13,11 +13,7 @@ export interface HookMatcherGroup {
 
 /**
  * True when `groups` already has a hook entry matching `predicate` under the exact `matcher`
- * value (`undefined` matches a no-matcher lifecycle group). Shared by codex_install.ts and
- * gemini_install.ts, whose matcher-group formats are structurally identical; qwen_install.ts's
- * own `groupHasTokenGoat` is deliberately NOT unified here -- Qwen's settings.json has no
- * per-matcher grouping at all, so its version has no `matcher` parameter or comparison, a real
- * shape difference rather than incidental duplication.
+ * value (`undefined` matches a no-matcher lifecycle group). Shared by codex_install.ts, gemini_install.ts, and qwen_install.ts, whose matcher-group formats are structurally identical; qwen_install.ts always installs under the catch-all `''` matcher, but its settings.json format does support per-matcher groups (it mirrors Claude Code's own scheme), so a locally duplicated matcher-blind version would have silently matched a stale command under the wrong matcher the moment qwen ever grew per-tool matcher install.
  */
 export function groupHasTokenGoat(
   groups: HookMatcherGroup[] | undefined,
