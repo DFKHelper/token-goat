@@ -1,12 +1,18 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 // Fixture provenance: HAND-DERIVED. The rows are synthetic files written to satisfy the documented
 // thresholds (a block of at least COMMENT_FOLD_MIN_BLOCK comment lines; a paragraph past the prose
 // planner's character floor whose opening sentence ends early enough to keep). That is the right
 // strength here because what is under test is a gating decision plus an arithmetic property of row
-// positions, not a wire format. The recall RANGE is not hand-written: it is parsed out of the notice
-// the planner itself emitted, so the second window is exactly what a reader following that notice
-// would ask for rather than a range this test believes the notice contains.
+// positions, not a wire format. The comment fold's recall RANGE is not hand-written: it is parsed
+// out of the notice the planner itself emitted, so the second window is exactly what a reader
+// following that notice would ask for rather than a range this test believes the notice contains.
+// The prose fold's recall is not a range at all -- it names a `token-goat section` heading, resolved
+// via readSection against the real fixture file written to disk for that purpose.
 //
 // Which fold carries the fixed point was established by measurement, not by reading the old comment.
 // `foldDelivery` used to decline every window on the stated grounds that both notices point at a
@@ -28,6 +34,7 @@ vi.mock('../src/index_reader.js', () => ({ getFileEntry, querySymbols, DEFAULT_Q
 vi.mock('../src/fingerprint.js', async (actual) => ({ ...(await actual<Record<string, unknown>>()), fingerprintFile }))
 
 const { foldDelivery, COMMENT_FOLD_MIN_BLOCK } = await import('../src/fold_delivery.js')
+const { readSection } = await import('../src/section_reader.js')
 
 interface Row { no: number, text: string, raw: string }
 
@@ -56,16 +63,17 @@ function windowOf(all: string[], from: number, to: number): Row[] {
   return out
 }
 
-/** The `offset=N, limit=M` a notice tells the reader to use, read out of the notice rather than assumed. */
-function recallRange(notice: string): { offset: number, limit: number } {
-  const m = /offset=(\d+), limit=(\d+)/.exec(notice)
-  if (m === null) throw new Error('no recall range in notice: ' + notice)
-  return { offset: Number(m[1]), limit: Number(m[2]) }
+/** A prose fold now folds a paragraph only when findContainingSection can resolve an enclosing heading for it, and that lookup reads the real file off disk rather than the in-memory `rows` a test hands `foldDelivery` -- a synthetic, never-written path (as the doc.md fixtures below used to pass) always resolves to no section and so never folds. Writes `lines` to a real temp file and returns its path so the two doc.md prose-fold cases below exercise a real, resolvable heading the same way a live Read of an actual document would. */
+function writeMarkdownFixture(lines: readonly string[]): string {
+  const file = path.join(os.tmpdir(), `tg-window-edge-doc-${process.pid}-${Math.random().toString(36).slice(2)}.md`)
+  fs.writeFileSync(file, lines.join('\n'))
+  return file
 }
 
 describe('a windowed read folds interior blocks, and a recall of such a fold is not a fixed point', () => {
   const saved: Record<string, string | undefined> = {}
   const keys = ['TOKEN_GOAT_FOLD_CODE_BODIES', 'TOKEN_GOAT_FOLD_COMMENT_BLOCKS', 'TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS']
+  const tmpFiles: string[] = []
 
   beforeEach(() => {
     for (const k of keys) saved[k] = process.env[k]
@@ -78,6 +86,13 @@ describe('a windowed read folds interior blocks, and a recall of such a fold is 
     for (const k of keys) {
       if (saved[k] === undefined) delete process.env[k]
       else process.env[k] = saved[k] as string
+    }
+    for (const f of tmpFiles.splice(0)) {
+      try {
+        fs.unlinkSync(f)
+      } catch {
+        // best effort
+      }
     }
   })
 
@@ -93,7 +108,9 @@ describe('a windowed read folds interior blocks, and a recall of such a fold is 
 
   it('folds an over-long paragraph that sits strictly inside the window', () => {
     const all = docLines()
-    const folded = foldDelivery(windowOf(all, 1, all.length), 'C:/proj/doc.md', 'doc.md', true)
+    const file = writeMarkdownFixture(all)
+    tmpFiles.push(file)
+    const folded = foldDelivery(windowOf(all, 1, all.length), file, 'doc.md', true)
 
     expect(folded).not.toBeNull()
     expect(folded?.folds.map((f) => f.kind)).toEqual(['prose'])
@@ -102,21 +119,25 @@ describe('a windowed read folds interior blocks, and a recall of such a fold is 
 
   it('folds nothing when handed exactly the single row its own prose notice pointed at, so following the notice returns the paragraph', () => {
     const all = docLines()
-    const wide = foldDelivery(windowOf(all, 1, all.length), 'C:/proj/doc.md', 'doc.md', true)
+    const file = writeMarkdownFixture(all)
+    tmpFiles.push(file)
+    const wide = foldDelivery(windowOf(all, 1, all.length), file, 'doc.md', true)
     const notice = wide?.numbered.find((l) => l.includes('rest of paragraph folded'))
     expect(notice).toBeDefined()
 
-    const { offset, limit } = recallRange(notice as string)
-    const recalled = windowOf(all, offset, offset + limit - 1)
-    expect(recalled).toHaveLength(limit)
-    expect(recalled[0]?.text).toBe(PARAGRAPH)
+    // The notice now points at `token-goat section "doc.md::Title"` rather than a ranged Read: the paragraph resolves to the `# Title` heading above it in the real file just written. Recall via readSection instead of a synthetic offset/limit window.
+    expect(notice).toContain('token-goat section "doc.md::Title"')
+    const section = readSection(file, 'Title')
+    expect(section?.content).toContain(PARAGRAPH)
 
     // POSITIVE CONTROL, and the reason this test is not vacuous. This exact row DOES fold when it is not a window, so the null below is the edge filter refusing to re-fold a recall, never "there was nothing foldable here anyway". Without this, deleting the prose planner outright would leave the assertion green.
-    const asWholeFile = foldDelivery(recalled, 'C:/proj/doc.md', 'doc.md', false)
+    const paragraphLine = all.findIndex((l) => l === PARAGRAPH) + 1
+    const singleRow = windowOf(all, paragraphLine, paragraphLine)
+    const asWholeFile = foldDelivery(singleRow, file, 'doc.md', false)
     expect(asWholeFile).not.toBeNull()
     expect(asWholeFile?.folds.map((f) => f.kind)).toEqual(['prose'])
 
-    expect(foldDelivery(recalled, 'C:/proj/doc.md', 'doc.md', true)).toBeNull()
+    expect(foldDelivery(singleRow, file, 'doc.md', true)).toBeNull()
   })
 
   it('leaves a fold touching the last delivered row alone, since a window ending mid-block cannot promise what follows it', () => {

@@ -66,13 +66,10 @@ describe('a fold notice points at something it can actually return', () => {
     else process.env['TOKEN_GOAT_FOLD_PROSE_PARAGRAPHS'] = prevProse
   })
 
-  it('declines to fold a delivery its own paragraph pointer would ask for', () => {
-    // The whole-file read folds, which is the value this feature exists for.
+  it('declines to fold a paragraph at all when its own path resolves no section to point at', () => {
+    // 'c:/p/doc.md' is never written to disk, so findContainingSection (which reads the real file, not these in-memory rows) can never resolve a heading for it -- the same shape a genuine unindexed or pre-first-heading paragraph hits in production. A fold used to name a `Read offset=/limit=` pointer here anyway; that pointer named a re-read hooks_read.ts's large-markdown intercept can refuse unconditionally once the real document also clears its own size/heading gates, so the honest behaviour is not to fold at all -- the paragraph is delivered whole.
     const whole = foldDelivery(deliveryRows(['# Title', '', paragraph, '', 'tail']), 'c:/p/doc.md', 'doc.md')
-    expect(whole).not.toBeNull()
-    expect(whole?.numbered.some((l) => l.includes('rest of paragraph folded'))).toBe(true)
-    // Running the pointer that notice printed (`offset=3, limit=1`) delivers that one row as a window, and folding it again would print the same notice instead of the paragraph.
-    expect(foldDelivery(deliveryRows([paragraph], 3), 'c:/p/doc.md', 'doc.md', true)).toBeNull()
+    expect(whole).toBeNull()
   })
 
   it('leaves a ranged read alone rather than comment-folding it a second time', () => {
