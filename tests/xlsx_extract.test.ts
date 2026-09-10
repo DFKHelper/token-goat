@@ -251,3 +251,36 @@ describe('querySheet', () => {
     ])
   })
 })
+
+describe('a sheet whose declared used range reaches the format\'s own far corner', () => {
+  // ws.rowCount/ws.columnCount come straight from the highest row/column number declared in any
+  // populated cell's `r="..."` attribute (xlsx_reader.ts's parseSheet). ECMA-376 Part 1 section
+  // 18.3.1.73 allows up to 2^20 rows by 2^14 columns (row XFD1048576), and a single cell placed
+  // there is enough to declare it -- a real, if usually accidental, Excel shape (a formatting or
+  // paste operation that reaches the sheet's edge inflates the "used range" even though only one
+  // cell holds data). listSheets/headSheet/querySheet each used to scan from row/column 1 up to
+  // those declared numbers, which is quadratic in numbers the file merely states rather than in
+  // anything it actually contains, and takes on the order of minutes for this one-cell file.
+  let farCornerFile: string
+
+  beforeAll(async () => {
+    farCornerFile = path.join(dir, 'far-corner.xlsx')
+    const ExcelJS = (await import('exceljs')).default ?? (await import('exceljs'))
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('FarCorner')
+    ws.getCell('XFD1048576').value = 'x'
+    await wb.xlsx.writeFile(farCornerFile)
+  })
+
+  it('rejects listSheets with a clear scan-limit error instead of scanning the full declared range', async () => {
+    await expect(listSheets(farCornerFile)).rejects.toThrow(/scan limit/)
+  })
+
+  it('rejects headSheet with a clear scan-limit error instead of scanning the full declared range', async () => {
+    await expect(headSheet(farCornerFile, 'FarCorner', 10)).rejects.toThrow(/scan limit/)
+  })
+
+  it('rejects querySheet with a clear scan-limit error instead of scanning the full declared range', async () => {
+    await expect(querySheet(farCornerFile, 'FarCorner', {})).rejects.toThrow(/scan limit/)
+  })
+})

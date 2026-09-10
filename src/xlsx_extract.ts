@@ -18,6 +18,16 @@ function requireSheet(wb: ExcelWorkbook, sheetName: string): ExcelWorksheet {
   return ws
 }
 
+// ws.rowCount and ws.columnCount come straight from the highest row/column number declared in any populated cell's `r="..."` attribute in the sheet XML (xlsx_reader.ts's parseSheet); OOXML allows up to 2^20 rows by 2^14 columns, and a single cell placed at that far corner is enough to declare it, cheaply, in an otherwise tiny file. A full scan of the declared range (as usedRange/headSheet/sheetToCsv all do) is then quadratic in numbers the file merely states, not in anything it actually contains. This ceiling rejects that before the scan starts rather than after it has spent seconds to minutes finding almost nothing there.
+const MAX_XLSX_SCAN_CELLS = 20_000_000
+
+function assertScannableExtent(ws: ExcelWorksheet): void {
+  const cells = (ws.rowCount || 0) * (ws.columnCount || 0)
+  if (cells > MAX_XLSX_SCAN_CELLS) {
+    throw new Error(`sheet "${ws.name}" declares a used range of ${ws.rowCount} rows x ${ws.columnCount} cols (${cells.toLocaleString()} cells), over the ${MAX_XLSX_SCAN_CELLS.toLocaleString()}-cell scan limit; narrow with xlsx-range instead`)
+  }
+}
+
 // --- A1-notation helpers (hand-rolled: ExcelJS exposes no public decode_range/encode_cell util) ---
 
 function colLettersToIndex(letters: string): number {
@@ -100,6 +110,7 @@ function cellFormula(cell: ExcelCell): string | undefined {
 
 /** Compute the used range of a worksheet as {rows, cols} plus an A1:X#-style ref string. */
 function usedRange(ws: ExcelWorksheet): { ref: string; rows: number; cols: number } {
+  assertScannableExtent(ws)
   let maxCol = 0
   const rowCount = ws.rowCount || 0
   for (let r = 1; r <= rowCount; r++) {
@@ -136,6 +147,7 @@ export async function listSheets(filePath: string): Promise<SheetInfo[]> {
 export async function headSheet(filePath: string, sheetName: string, rows: number): Promise<string> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
+  assertScannableExtent(ws)
   const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
   // Track the sheet-wide max column inline during this row scan instead of calling usedRange(ws) afterward, which would redo an identical full eachCell pass over every row just to recompute the same maximum this loop already sees one row at a time.
