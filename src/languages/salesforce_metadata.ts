@@ -3,8 +3,8 @@ import * as path from 'node:path'
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import { buildLineIndex, offsetToLine, stripXmlComments, type AdapterSpan, makeSpanSymbol } from './common.js'
 
-const MAX_SYMBOLS = 1000
-const MAX_REFS = 1000
+const MAX_SYMBOLS = 10_000 // raised from 1000: matches every sibling language adapter's cap, see makeSymbolEmitter's own comment in common.ts for the measurement; a large org's CustomLabels.labels-meta.xml or a complex Flow can hold well over 1000 entries
+const MAX_REFS = 10_000 // raised from 1000: see MAX_SYMBOLS above
 
 const FLOW_TAG_KIND: Readonly<Record<string, string>> = {
   actionCalls: 'sf_flow_action',

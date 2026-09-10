@@ -209,16 +209,20 @@ describe('Salesforce metadata XML adapter', () => {
       extractSalesforceMetadata('<CustomLabels><labels><fullName>Broken', 'Broken.labels-meta.xml'),
     ).toEqual({ symbols: [], refs: [] })
 
+    // MAX_SYMBOLS is 10,000 (raised from 1000: matches every sibling language adapter's cap, see
+    // languages.test.ts's own html.ts cap test for the same convention) - a large org's
+    // CustomLabels.labels-meta.xml can hold well over 1000 entries, so 10,100 unique labels plus
+    // one exact duplicate proves both the cap and the dedup still apply at the new ceiling.
     const repeated = Array.from(
-      { length: 1100 },
+      { length: 10_100 },
       (_, index) => `<labels><fullName>Label_${index}</fullName></labels>`,
     ).join('')
     const result = extractSalesforceMetadata(
       `<CustomLabels>${repeated}<labels><fullName>Label_0</fullName></labels></CustomLabels>`,
       'CustomLabels.labels-meta.xml',
     )
-    expect(result.symbols).toHaveLength(1000)
-    expect(new Set(result.symbols.map((symbol) => symbol.name)).size).toBe(1000)
+    expect(result.symbols).toHaveLength(10_000)
+    expect(new Set(result.symbols.map((symbol) => symbol.name)).size).toBe(10_000)
   })
 
   it('indexes a metadata file whose root element is self-closing (regression: rootElement required a separate close tag, so a self-closing root indexed as zero symbols)', () => {
@@ -233,13 +237,13 @@ describe('Salesforce metadata XML adapter', () => {
 
   it('caps ref emission at MAX_REFS instead of growing unbounded (regression: emitRef had no cap, unlike emit’s MAX_SYMBOLS)', () => {
     const repeated = Array.from(
-      { length: 1100 },
+      { length: 10_100 },
       (_, index) => `<flexiPageRegion><componentInstance><componentName>cmp_${index}</componentName></componentInstance></flexiPageRegion>`,
     ).join('')
     const result = extractSalesforceMetadata(
       `<FlexiPage>${repeated}</FlexiPage>`,
       'Test.flexipage-meta.xml',
     )
-    expect(result.refs.length).toBeLessThanOrEqual(1000)
+    expect(result.refs).toHaveLength(10_000)
   })
 })
