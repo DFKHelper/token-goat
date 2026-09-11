@@ -5476,6 +5476,26 @@ function MyFunction {
     expect(names).toContain('AddItem')
   })
 
+  it('indexes a class declared inside a function body (regression: CLASS_RE was gated on braceDepth === 0, silently dropping the common `if (-not ([PSTypeName]\'Foo\').Type) { class Foo { } }` re-import guard idiom, even though PowerShell resolves class definitions at parse time regardless of the runtime control flow they are textually nested in)', () => {
+    const content = `function Import-Types {
+  if (-not ([System.Management.Automation.PSTypeName]'Widget').Type) {
+    class Widget {
+      [string] $Name
+      Greet() {
+        Write-Host "hi"
+      }
+    }
+  }
+}
+`
+    const { symbols } = extractPowershell(content, 'nested_class.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Widget')
+    expect(symbols.find((s) => s.name === 'Widget')?.kind).toBe('class')
+    expect(names).toContain('Greet')
+    expect(symbols.find((s) => s.name === 'Greet')?.kind).toBe('method')
+  })
+
   it('detects .ps1 and .psm1 languages via parseFile', async () => {
     const result1 = await parseFixture('script.ps1', 'function Get-Test { }')
     expect(result1.language).toBe('powershell')
