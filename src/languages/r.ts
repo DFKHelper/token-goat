@@ -16,7 +16,9 @@ import {
   findMatchingBraceEndLine,
   offsetToLine,
   stripLineComment,
+  stripMultilineStringSpan,
   type AdapterImport,
+  type MultilineStringState,
   makeSpanSymbol,
 } from './common.js'
 import { countContentLines } from '../util.js'
@@ -147,12 +149,18 @@ export function extractR(
   const spanBody = (startLine: number, endLine: number): string =>
     lines.slice(startLine - 1, endLine).join('\n')
 
+  // R character constants span lines, both the ordinary `"..."`/`'...'` form and the raw `r"(...)"` form, so a line inside one is string content and not code. Without this state a declaration-shaped line in a string body became a symbol for a function that does not exist.
+  let stringState: MultilineStringState | null = null
+
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Strip a trailing `#` line comment (R uses `#` for line comments).
-    const line = stripLineComment(rawLine, ['#']).trimEnd()
+    const masked = stripMultilineStringSpan(rawLine, stringState, 'r')
+    stringState = masked.state
+
+    // Strip a trailing `#` line comment (R uses `#` for line comments; R has no block comment).
+    const line = stripLineComment(masked.code, ['#']).trimEnd()
     const stripped = line.trim()
 
     if (!stripped) {

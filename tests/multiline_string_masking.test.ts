@@ -4,6 +4,7 @@ import { extractPhp } from '../src/languages/php.js'
 import { extractKotlin } from '../src/languages/kotlin.js'
 import { extractScala } from '../src/languages/scala.js'
 import { extractDart } from '../src/languages/dart.js'
+import { extractR } from '../src/languages/r.js'
 import { extractPowershell } from '../src/languages/powershell_idx.js'
 import { stripMultilineStringSpan, type MultilineStringState } from '../src/languages/common.js'
 
@@ -752,5 +753,121 @@ void fabricatedDoubleFn() {}
     const { symbols } = extractDart(content, 'ordinary.dart')
     expect(symbols.find((s) => s.name === 'Ordinary')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'stillHere')?.parent).toBe('Ordinary')
+  })
+})
+
+// Fixture provenance: FORMAT-DERIVED. Every R literal form below is spelled from the R Language
+// Definition, section 10.3.1 "Literal constants" (ordinary character constants and their backslash
+// escapes) and section 10.3.2 "Identifiers" (backtick-quoted non-syntactic names), plus the R base
+// help page `?Quotes`, section "Raw character constants" (the `r"(...)"` family, its `[`/`{`
+// delimiter variants and its dash-padded forms). R has no block comment, so `#` to end of line is
+// the only comment form exercised.
+describe('R multi-line character constant masking', () => {
+  it('does not extract declaration-shaped content inside a raw string as real symbols', () => {
+    const content = `realBefore <- function(x) {
+  x + 1
+}
+
+tpl <- r"(
+fabricatedRawFn <- function(a, b) {
+  a + b
+}
+)"
+
+realAfter <- function(y) {
+  y * 2
+}
+`
+    const { symbols } = extractR(content, 'raw.R')
+    const names = symbols.map((s) => s.name)
+    expect(names, 'a function body inside an r"(...)" raw string produced a symbol for a function that does not exist').not.toContain('fabricatedRawFn')
+    expect(symbols.find((s) => s.name === 'realBefore')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'realAfter')?.kind).toBe('function')
+  })
+
+  it('does not extract declaration-shaped content inside an ordinary multi-line string', () => {
+    const content = `msg <- "
+fabricatedPlainFn <- function(a) {
+  a
+}
+"
+
+afterPlain <- function(y) y
+`
+    const { symbols } = extractR(content, 'plain.R')
+    expect(symbols.map((s) => s.name)).not.toContain('fabricatedPlainFn')
+    expect(symbols.find((s) => s.name === 'afterPlain')?.kind).toBe('function')
+  })
+
+  it('handles the single-quoted, dash-padded and bracket-delimited raw forms', () => {
+    const content = `a <- r'---[
+fabricatedDashFn <- function(x) x
+]---'
+
+b <- r"{
+fabricatedBraceFn <- function(x) x
+}"
+
+afterRawVariants <- function(y) y
+`
+    const { symbols } = extractR(content, 'variants.R')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('fabricatedDashFn')
+    expect(names).not.toContain('fabricatedBraceFn')
+    expect(symbols.find((s) => s.name === 'afterRawVariants')?.kind).toBe('function')
+  })
+
+  it('keeps the string open across an escaped quote rather than closing on it', () => {
+    const content = `note <- "one \\" two
+fabricatedEscFn <- function(x) x
+"
+
+afterEscape <- function(y) y
+`
+    const { symbols } = extractR(content, 'escape.R')
+    expect(symbols.map((s) => s.name)).not.toContain('fabricatedEscFn')
+    expect(symbols.find((s) => s.name === 'afterEscape')?.kind).toBe('function')
+  })
+
+  it('still reads an S4 class name out of a single-line string argument (masking must not swallow it)', () => {
+    const content = `setClass("Point", representation(x = "numeric"))
+Assigned <- setClass("Assigned", representation(y = "numeric"))
+setMethod("show", "Point", function(object) invisible(object))
+
+afterS4 <- function(z) z
+`
+    const { symbols } = extractR(content, 's4.R')
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Assigned')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'show')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'afterS4')?.kind).toBe('function')
+  })
+
+  it('does not let a quote inside a comment or a backtick-quoted name open a string', () => {
+    const content = `#' Roxygen prose that isn't closed
+afterComment <- function(x) x
+
+\`say"hi\` <- function(a) a
+
+afterBacktick <- function(y) y
+`
+    const { symbols } = extractR(content, 'quotes.R')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('afterComment')
+    expect(names).toContain('say"hi')
+    expect(names).toContain('afterBacktick')
+  })
+
+  it('keeps a definition that follows a string closing on the same line it opened', () => {
+    const content = `sep <- "a ) brace { and a # hash"
+inline <- r"(one line raw)"
+
+afterInline <- function(x) {
+  x
+}
+`
+    const { symbols } = extractR(content, 'inline.R')
+    expect(symbols.find((s) => s.name === 'afterInline')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'afterInline')?.lineEnd).toBe(6)
   })
 })
