@@ -190,7 +190,7 @@ describe('cli_context_stats', () => {
   // ---- runContextStats ----------------------------------------------------
 
   describe('runContextStats', () => {
-    it('emits JSON when json flag is set', () => {
+    it('emits JSON when json flag is set', async () => {
       const project = path.join(tempDir, 'proj')
       fs.mkdirSync(project)
 
@@ -199,7 +199,7 @@ describe('cli_context_stats', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(process.stdout as any).write = (s: string) => { output += s; return true }
       try {
-        runContextStats({ project, json: true })
+        await runContextStats({ project, json: true })
       } finally {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(process.stdout as any).write = orig
@@ -209,7 +209,7 @@ describe('cli_context_stats', () => {
       expect(typeof parsed.total_tokens).toBe('number')
     })
 
-    it('includes project CLAUDE.md in JSON output', () => {
+    it('includes project CLAUDE.md in JSON output', async () => {
       const project = path.join(tempDir, 'proj2')
       fs.mkdirSync(project)
       fs.writeFileSync(path.join(project, 'CLAUDE.md'), 'x'.repeat(400))
@@ -227,7 +227,7 @@ describe('cli_context_stats', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(process.stdout as any).write = (s: string) => { output += s; return true }
       try {
-        runContextStats({ project, json: true })
+        await runContextStats({ project, json: true })
       } finally {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(process.stdout as any).write = orig
@@ -332,7 +332,7 @@ describe('cli_context_stats', () => {
       expect(output).toContain('[--fix] No MEMORY.md found; nothing to prune.')
     })
 
-    it('prints human-readable output by default', () => {
+    it('prints human-readable output by default', async () => {
       const project = path.join(tempDir, 'proj3')
       fs.mkdirSync(project)
 
@@ -341,7 +341,7 @@ describe('cli_context_stats', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(process.stdout as any).write = (s: string) => { output += s; return true }
       try {
-        runContextStats({ project })
+        await runContextStats({ project })
       } finally {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(process.stdout as any).write = orig

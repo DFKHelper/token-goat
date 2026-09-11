@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
 import { DEFAULT_MODEL, PINNED_MODEL_REVISION, ensureModelFiles, modelDir } from '../src/embed_model.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -198,21 +199,8 @@ describe('the shared model cache is verified, not trusted', () => {
  * ordinary Windows: the code path it guards is the same on every platform.
  */
 describe('the shared model cache does not trust the directory it writes into', () => {
-  /** Windows refuses symlink creation without Developer Mode or elevation; the assertion is not meaningful there. */
-  function canSymlink(): boolean {
-    const probe = path.join(tmp, 'symlink-probe')
-    try {
-      fs.symlinkSync(path.join(tmp, 'nothing'), probe)
-      fs.unlinkSync(probe)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  it('refuses to publish through a symlink planted at its temp name', async () => {
+  it.skipIf(!CAN_SYMLINK)('refuses to publish through a symlink planted at its temp name', async () => {
     enableSharedCache()
-    if (!canSymlink()) return
 
     const victim = path.join(tmp, 'victim.txt')
     fs.writeFileSync(victim, 'PRECIOUS')
@@ -270,9 +258,8 @@ describe('the shared model cache does not trust the directory it writes into', (
     ).toBe(true)
   })
 
-  it('will not copy a cached entry that is a symlink, however good its target looks', async () => {
+  it.skipIf(!CAN_SYMLINK)('will not copy a cached entry that is a symlink, however good its target looks', async () => {
     enableSharedCache()
-    if (!canSymlink()) return
 
     const real = path.join(tmp, 'real-tokenizer.json')
     fs.writeFileSync(real, REAL_TOKENIZER)
