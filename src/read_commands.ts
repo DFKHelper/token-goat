@@ -27,6 +27,13 @@ import { extractPli } from './languages/pli.js'
 import { extractRpg } from './languages/rpg.js'
 import { extractSas } from './languages/sas.js'
 import type { StatementAdapterResult } from './languages/span_collector.js'
+import type { AdapterImport } from './languages/common.js'
+import { extractGroovy } from './languages/groovy.js'
+import { extractObjc, isObjcHeader, isObjcSource } from './languages/objc.js'
+import { extractPerl, isPerlSource, isPrologSource } from './languages/perl.js'
+import { extractCShader } from './languages/shader.js'
+import { extractSolidity } from './languages/solidity.js'
+import { extractThrift } from './languages/thrift.js'
 
 /** The statement-scanning adapters whose import targets `imports` reads, by lowercase extension. */
 const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath: string) => StatementAdapterResult> = new Map([
@@ -38,6 +45,27 @@ const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath:
   ['.sqlrpgle', extractRpg],
   ['.jcl', extractJcl],
 ])
+
+/** The brace-language and Perl adapters whose import targets `imports` reads, by lowercase extension. `.m`, `.h`, `.pl` and `.t` are here only when their content says so (see braceAdapterImportsFor). */
+const BRACE_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath: string) => { imports: readonly AdapterImport[] }> = new Map([
+  ['.mm', extractObjc],
+  ['.groovy', extractGroovy],
+  ['.gvy', extractGroovy],
+  ['.gradle', extractGroovy],
+  ['.pm', extractPerl],
+  ['.sol', extractSolidity],
+  ['.thrift', extractThrift],
+  ...['.glsl', '.vert', '.frag', '.comp', '.geom', '.tesc', '.tese', '.hlsl', '.hlsli', '.metal'].map((e): [string, typeof extractCShader] => [e, extractCShader]),
+])
+
+/** The adapter `imports` reads a file with extension `e` through, or undefined; the shared extensions go to it only when their content is that language, so a MATLAB `.m`, a C header, a Prolog `.pl` or a non-Perl `.t` reads as before. */
+function braceAdapterImportsFor(e: string, text: string): ((content: string, filePath: string) => { imports: readonly AdapterImport[] }) | undefined {
+  if (e === '.m') return isObjcSource(text) ? extractObjc : undefined
+  if (e === '.h') return isObjcHeader(text) ? extractObjc : undefined
+  if (e === '.pl') return isPrologSource(text) ? undefined : extractPerl
+  if (e === '.t') return isPerlSource(text) ? extractPerl : undefined
+  return BRACE_ADAPTER_IMPORTS.get(e)
+}
 import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
@@ -6447,6 +6475,9 @@ export function extractImports(text: string, ext: string): string[] {
   } else if (STATEMENT_ADAPTER_IMPORTS.has(e)) {
     // ABAP INCLUDE, SAS %INCLUDE, PL/I %INCLUDE, RPG /COPY and /INCLUDE, and JCL INCLUDE MEMBER=, read by each adapter so comments and strings agree with the index.
     for (const imp of STATEMENT_ADAPTER_IMPORTS.get(e)!(text, `imports${e}`).imports) push(imp.target)
+  } else if (braceAdapterImportsFor(e, text) !== undefined) {
+    // Objective-C `#import`/`@import`, Groovy `import`, Perl `use`/`require` modules, Solidity and Thrift quoted paths, and shader `#include`, read by each adapter so comments and strings agree with the index.
+    for (const imp of braceAdapterImportsFor(e, text)!(text, `imports${e}`).imports) push(imp.target)
   } else if ((e === '.p' || e === '.w' || e === '.cls') && isAblSource(text)) {
     // OpenEdge ABL `{file.i}` include references and USING types; a Pascal `.p` or an Apex `.cls` falls through unchanged.
     for (const imp of extractAbl(text, `imports${e}`).imports) push(imp.target)

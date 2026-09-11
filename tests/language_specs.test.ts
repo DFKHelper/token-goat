@@ -88,6 +88,10 @@ const PLSQL = ['.pks', '.pkb', '.pls', '.plsql', '.pck', '.prc', '.fnc', '.trg',
 // The enterprise batch: ABAP, SAS, PL/I, RPG and JCL by extension; OpenEdge ABL has none of its own and is found by content.
 const BATCH_C = ['.abap', '.sas', '.pli', '.pl1', '.rpgle', '.sqlrpgle', '.jcl']
 const BATCH_C_IDS = ['abap', 'sas', 'pli', 'rpg', 'jcl', 'abl']
+// The brace batch: Objective-C (`.m` and `.h` only by content), Groovy, Perl, Solidity, Thrift and four shader languages.
+const BATCH_A_CODE = ['.mm', '.groovy', '.gvy', '.gradle', '.pl', '.pm', '.sol', '.glsl', '.vert', '.frag', '.comp', '.geom', '.tesc', '.tese', '.hlsl', '.hlsli', '.wgsl', '.metal']
+const BATCH_A = [...BATCH_A_CODE, '.thrift']
+const BATCH_A_IDS = ['objc', 'groovy', 'perl', 'solidity', 'thrift', 'glsl', 'hlsl', 'wgsl', 'metal']
 const SF_MARKUP = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens', '.page', '.component', '.email']
 
 // Every extension either side knows about, so a dropped extension shows up as a removal.
@@ -109,16 +113,17 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('extension map: only the new mappings were added, nothing moved or dropped', () => {
     for (const [ext, lang] of Object.entries(OLD_EXTENSION_LANGUAGE)) expect(EXTENSION_LANGUAGE.get(ext), ext).toBe(lang)
     const added = [...EXTENSION_LANGUAGE.keys()].filter((e) => !(e in OLD_EXTENSION_LANGUAGE))
-    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C]))
+    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A]))
     for (const e of ['.zsh', '.ksh', '.bats']) expect(detectLanguage(`a${e}`), e).toBe('bash')
     for (const e of ['.bzl', '.star']) expect(detectLanguage(`a${e}`), e).toBe('python')
     for (const e of PLSQL) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('sql')
     for (const e of ['.jsonc', '.avsc']) expect(detectLanguage(`a${e}`), e).toBe('json')
   })
 
-  it('basename maps: only the Bazel files were added; BUILD and WORKSPACE match exact case only', () => {
+  it('basename maps: only the Bazel files and Jenkinsfile were added; BUILD and WORKSPACE match exact case only', () => {
     for (const [base, lang] of Object.entries(OLD_FILENAME_LANGUAGE)) expect(FILENAME_LANGUAGE.get(base), base).toBe(lang)
-    expect(sorted([...FILENAME_LANGUAGE.keys()].filter((b) => !(b in OLD_FILENAME_LANGUAGE)))).toEqual(['build.bazel', 'module.bazel', 'workspace.bazel'])
+    expect(sorted([...FILENAME_LANGUAGE.keys()].filter((b) => !(b in OLD_FILENAME_LANGUAGE)))).toEqual(['build.bazel', 'jenkinsfile', 'module.bazel', 'workspace.bazel'])
+    for (const b of ['Jenkinsfile', 'ci/jenkinsfile']) expect(detectLanguage(b), b).toBe('groovy')
     expect(sorted([...EXACT_FILENAME_LANGUAGE.keys()])).toEqual(['BUILD', 'WORKSPACE'])
     for (const b of ['BUILD', 'pkg/BUILD', 'WORKSPACE', 'BUILD.bazel', 'WORKSPACE.bazel', 'MODULE.bazel', 'Build.Bazel']) expect(detectLanguage(b), b).toBe('python')
     // A lowercase `build` or `workspace` is usually a shell script or a folder, not Bazel.
@@ -127,16 +132,16 @@ describe('language table: derived lists match the pre-refactor lists except the 
 
   it('bash hook symbol-bearing set is unchanged', () => {
     const now = LANGUAGE_SPECS.filter((s) => s.symbolBearing).map((s) => s.id)
-    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS]))
+    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS, ...BATCH_A_IDS]))
   })
 
   it('read hook source-hint set: adds the other Ruby extensions and Starlark only', () => {
-    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...BATCH_C]), removed: [] })
+    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...BATCH_C, ...BATCH_A_CODE]), removed: [] })
   })
 
   it('diff-on-reread set: adds extensions of languages already covered, and the new mappings', () => {
     expect(diff((e) => OLD_DIFFABLE_SOURCE_RE.test(`x${e}`), 'diffable')).toEqual({
-      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C]),
+      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C, ...BATCH_A_CODE]),
       removed: [],
     })
   })
@@ -145,7 +150,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
     const missed18 = ['.mts', '.cts', '.mjs', '.cjs', '.pyi', '.kts', '.hxx', '.ps1', '.psm1', '.cls', '.trigger', '.sc', '.lua', '.ex', '.exs', '.dart', '.zig', '.r']
     expect(missed18).toHaveLength(18)
     expect(diff((e) => OLD_GREP_SOURCE_EXT_RE.test(`x${e}`), 'grepSource')).toEqual({
-      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...SF_MARKUP, ...BATCH_C]),
+      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...SF_MARKUP, ...BATCH_C, ...BATCH_A_CODE]),
       removed: ['.clj'],
     })
   })
@@ -163,7 +168,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('labels: unchanged except Apex, which used to print as the bare id', () => {
     const ids: Language[] = [...LANGUAGE_SPECS.map((s) => s.id), 'unknown']
     const changed = ids.filter((id) => languageLabel(id) !== (OLD_LABELS[id] ?? id))
-    expect(changed).toEqual([...BATCH_C_IDS, 'apex'])
+    expect(changed).toEqual(['abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, 'abl', 'apex'])
     expect(languageLabel('apex')).toBe('Apex')
   })
 })

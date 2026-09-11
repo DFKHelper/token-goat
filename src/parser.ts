@@ -54,6 +54,12 @@ import { extractJcl } from './languages/jcl.js'
 import { extractPli } from './languages/pli.js'
 import { extractRpg } from './languages/rpg.js'
 import { extractSas } from './languages/sas.js'
+import { extractGroovy } from './languages/groovy.js'
+import { extractObjc } from './languages/objc.js'
+import { extractPerl } from './languages/perl.js'
+import { extractCShader, extractWgsl } from './languages/shader.js'
+import { extractSolidity } from './languages/solidity.js'
+import { extractThrift } from './languages/thrift.js'
 import { extractElixir } from './languages/elixir.js'
 import { extractDart } from './languages/dart.js'
 import { extractZig } from './languages/zig.js'
@@ -2750,6 +2756,15 @@ const NO_TREE_SITTER_EXTRACTORS: Record<RegexLanguage, SymbolExtractor> = {
   rpg: (content, filePath) => extractRpg(content, filePath).symbols,
   jcl: (content, filePath) => extractJcl(content, filePath).symbols,
   abl: (content, filePath) => extractAbl(content, filePath).symbols,
+  objc: (content, filePath) => extractObjc(content, filePath).symbols,
+  groovy: (content, filePath) => extractGroovy(content, filePath).symbols,
+  perl: (content, filePath) => extractPerl(content, filePath).symbols,
+  solidity: (content, filePath) => extractSolidity(content, filePath).symbols,
+  thrift: (content, filePath) => extractThrift(content, filePath).symbols,
+  glsl: (content, filePath) => extractCShader(content, filePath).symbols,
+  hlsl: (content, filePath) => extractCShader(content, filePath).symbols,
+  metal: (content, filePath) => extractCShader(content, filePath).symbols,
+  wgsl: (content, filePath) => extractWgsl(content, filePath).symbols,
 }
 
 function extractNoTreeSitter(

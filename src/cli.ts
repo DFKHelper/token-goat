@@ -37,7 +37,7 @@ import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { fingerprintFile, fingerprintContent } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
-import { detectLanguage } from './parser_types.js'
+import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { resolveIndexPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
@@ -412,8 +412,8 @@ export async function cmdIndex(
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
-    // PDF/DOCX/PPTX/XLSX have no Language entry (no code symbols) so detectLanguage reports 'unknown', but they must still reach indexFileEmbeddings below for extracted-text embedding.
-    if (detectLanguage(key) === 'unknown' && !isEmbeddableDocument(key)) continue
+    // PDF/DOCX/PPTX/XLSX have no Language entry (no code symbols) so they report 'unknown', but they must still reach indexFileEmbeddings below for extracted-text embedding. The language is read from the file's head, as the walk that listed it did: a path-only check skipped every `.p`, `.w`, `.m` and `.t` a content sniff admits, so it was never indexed or counted.
+    if (detectLanguageOfFile(key) === 'unknown' && !isEmbeddableDocument(key)) continue
     // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below. Without this pre-filter, indexFileSync's internal purge would run and then the unconditional indexFileEmbeddings call below would immediately re-embed a file meant to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
     if (isParseSkipEligible(key, ixCfg)) {
       removeFileFromIndex(getDb(dbPath), key)

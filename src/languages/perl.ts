@@ -1,0 +1,169 @@
+/**
+ * Perl symbol extractor: packages and named subs, a sub taking its package as parent. Brace matching is unreliable in Perl
+ * (`q{}`, `s{}{}`, heredocs, POD), so a span ends where the next sub or package starts, trimmed back to that body's last `}`.
+ * POD, heredoc bodies, multi-line `q`/`qq`/`qw` bracket strings, comments, and everything after `__END__` or `__DATA__` are skipped.
+ */
+
+import type { SymbolEntry } from '../parser_types.js'
+import { precedingDocComment } from '../doc_comment.js'
+import type { AdapterImport } from './common.js'
+
+export interface PerlResult {
+  readonly symbols: SymbolEntry[]
+  readonly imports: AdapterImport[]
+}
+
+// How far into a `.pl` or `.t` the markers are looked for, matching the head detectLanguageOfFile reads.
+const SNIFF_CHARS = 8192
+const MAX_SYMBOLS = 10_000
+const PERL_MARKER_RE = /^(?:#!.*\bperl\b|[ \t]*use[ \t]+(?:strict|warnings|Test::More|Test2::V0|Test::Simple)\b|[ \t]*package[ \t]+[\w:]+[ \t]*;|[ \t]*my[ \t]+[$@%]|[ \t]*sub[ \t]+\w+[ \t]*\{)/m
+
+/** True when a `.t` file is a Perl test script: a perl shebang, `use strict`, `use warnings` or a Test module, and no Raku `use v6`. */
+export function isPerlSource(content: string): boolean {
+  const head = content.slice(0, SNIFF_CHARS)
+  return PERL_MARKER_RE.test(head) && !/^[ \t]*use[ \t]+v6\b/m.test(head)
+}
+
+/** True when a `.pl` file is Prolog: a `:-` directive or clause and no Perl marker. */
+export function isPrologSource(content: string): boolean {
+  const head = content.slice(0, SNIFF_CHARS)
+  if (PERL_MARKER_RE.test(head)) return false
+  return /^:-/m.test(head) || /^[a-z]\w*(?:\([^()\n]*\))?[ \t]*:-/m.test(head)
+}
+
+type LineClass = 'code' | 'blank' | 'comment' | 'skip'
+
+const SUB_RE = /^\s*sub\s+([A-Za-z_][\w:']*)/
+const PACKAGE_RE = /^\s*package\s+([A-Za-z_][\w:]*)/
+const HEREDOC_RE = /<<(~?)(?:"([^"\n]*)"|'([^'\n]*)'|([A-Za-z_]\w*))/g
+const Q_OPEN_RE = /(?<![\w$@%&])q[qwrx]?\s*([{([<])/g
+const CLOSER: Readonly<Record<string, string>> = { '{': '}', '(': ')', '[': ']', '<': '>' }
+
+/** `line` up to its `#` comment, ignoring a `#` inside a quote or after `$` (`$#array`). */
+function stripComment(line: string): string {
+  let quote = ''
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!
+    if (quote !== '') {
+      if (c === '\\') i++
+      else if (c === quote) quote = ''
+    } else if (c === '"' || c === "'") {
+      quote = c
+    } else if (c === '#' && line[i - 1] !== '$') {
+      return line.slice(0, i)
+    }
+  }
+  return line
+}
+
+/** Net open count of `open` in `s` (openers minus closers). */
+function balance(s: string, open: string): number {
+  const close = CLOSER[open]!
+  let n = 0
+  for (const c of s) {
+    if (c === open) n++
+    else if (c === close) n--
+  }
+  return n
+}
+
+export function extractPerl(content: string, filePath: string): PerlResult {
+  const lines = content.split(/\r?\n/)
+  const cls: LineClass[] = new Array<LineClass>(lines.length).fill('skip')
+  const decls: Array<{ name: string; kind: 'sub' | 'package'; line: number; parent: string }> = []
+  const imports: AdapterImport[] = []
+  let pod = false
+  let heredocs: Array<{ term: string; indented: boolean }> = []
+  let qOpen: { open: string; depth: number } | null = null
+  let pkg = ''
+  let last = lines.length
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (heredocs.length > 0) {
+      const h = heredocs[0]!
+      if ((h.indented ? line.trim() : line) === h.term) heredocs = heredocs.slice(1)
+      continue
+    }
+    if (pod) {
+      if (/^=cut\b/.test(line)) pod = false
+      continue
+    }
+    if (qOpen !== null) {
+      qOpen.depth += balance(line, qOpen.open)
+      if (qOpen.depth <= 0) qOpen = null
+      continue
+    }
+    if (/^=[A-Za-z]/.test(line)) {
+      pod = !/^=cut\b/.test(line)
+      continue
+    }
+    if (/^__(?:END|DATA)__\s*$/.test(line)) {
+      last = i
+      break
+    }
+    const code = stripComment(line)
+    cls[i] = code.trim() === '' ? (line.trim() === '' ? 'blank' : 'comment') : 'code'
+    if (cls[i] !== 'code') continue
+
+    const sub = SUB_RE.exec(code)
+    const p = sub === null ? PACKAGE_RE.exec(code) : null
+    if (sub !== null && decls.length < MAX_SYMBOLS) {
+      // `sub name;` and `sub name($);` are forward declarations.
+      const rest = code.slice(sub[0].length).replace(/^\s*\([^)]*\)/, '').trimStart()
+      if (!rest.startsWith(';')) {
+        const full = sub[1]!.replace(/'/g, '::')
+        const cut = full.lastIndexOf('::')
+        const name = cut < 0 ? full : full.slice(cut + 2)
+        const parent = cut < 0 ? (pkg === 'main' ? '' : pkg) : full.slice(0, cut)
+        if (name !== '') decls.push({ name, kind: 'sub', line: i, parent })
+      }
+    } else if (p !== null && decls.length < MAX_SYMBOLS) {
+      pkg = p[1]!
+      decls.push({ name: pkg, kind: 'package', line: i, parent: '' })
+    } else {
+      const u = /^\s*(?:use|require)\s+([A-Za-z_][\w:]*)/.exec(code)
+      // Pragmas (`strict`, `warnings`, `lib`) are lowercase by convention; a module name has a capital or a `::`.
+      if (u !== null && /[A-Z]|::/.test(u[1]!)) imports.push({ kind: 'import', target: u[1]!, line: i + 1 })
+    }
+
+    HEREDOC_RE.lastIndex = 0
+    for (let m = HEREDOC_RE.exec(code); m !== null; m = HEREDOC_RE.exec(code)) {
+      heredocs.push({ term: m[2] ?? m[3] ?? m[4] ?? '', indented: m[1] === '~' })
+    }
+    Q_OPEN_RE.lastIndex = 0
+    for (let m = Q_OPEN_RE.exec(code); m !== null; m = Q_OPEN_RE.exec(code)) {
+      const open = m[1]!
+      const depth = balance(code.slice(m.index + m[0].length - 1), open)
+      if (depth > 0) {
+        qOpen = { open, depth }
+        break
+      }
+    }
+  }
+
+  const symbols: SymbolEntry[] = decls.map((d, k) => {
+    // A sub stops at the next sub or package; a package holds its subs and stops at the next package.
+    let next = k + 1
+    while (d.kind === 'package' && next < decls.length && decls[next]!.kind !== 'package') next++
+    let end = next < decls.length ? decls[next]!.line - 1 : last - 1
+    // A sub ends at its body's last `}`; a package at its last line of code. POD, comments and blank lines after either are not part of it.
+    if (d.kind === 'sub') {
+      let e = end
+      while (e > d.line && !(cls[e] === 'code' && stripComment(lines[e]!).trimEnd().endsWith('}'))) e--
+      end = e > d.line ? e : d.line
+    }
+    while (end > d.line && cls[end] !== 'code') end--
+    return {
+      filePath,
+      name: d.name,
+      kind: d.kind,
+      lineStart: d.line + 1,
+      lineEnd: end + 1,
+      body: lines.slice(d.line, end + 1).join('\n'),
+      docstring: precedingDocComment(lines, d.line + 1, 'hash'),
+      parent: d.kind === 'sub' ? d.parent : '',
+    }
+  })
+  return { symbols, imports }
+}
