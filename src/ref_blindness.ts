@@ -20,6 +20,7 @@
  */
 import { detectLanguage } from './parser_types.js'
 import type { Language } from './parser_types.js'
+import { languageLabel, partialRefsReason } from './language_specs.js'
 
 // Mirror of `REF_LANGUAGES` in src/parser.ts (the set gating `extractRefs`). Deliberately duplicated rather than imported: src/parser.ts is hashed into PARSER_FINGERPRINT (scripts/parser-fingerprint.mjs digests src/parser.ts plus src/languages/**), so adding an `export` keyword there would change the stamp and force every existing user to fully reindex on upgrade, for a change that alters nothing about extraction. tests/ref_blindness.test.ts parses the literal out of src/parser.ts and asserts set equality, so the two cannot drift apart silently.
 export const REF_INDEXED_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
@@ -44,39 +45,17 @@ export function isRefIndexedFile(filePath: string): boolean {
   return isRefIndexedLanguage(detectLanguage(filePath))
 }
 
-// Display spellings for the language ids that are not already their own proper name. Anything absent renders as its id, which is already the conventional spelling ('python', 'go', 'rust').
-const LANGUAGE_LABELS: ReadonlyMap<Language, string> = new Map<Language, string>([
-  ['csharp', 'C#'],
-  ['cpp', 'C++'],
-  ['c', 'C'],
-  ['php', 'PHP'],
-  ['powershell', 'PowerShell'],
-  ['vb', 'Visual Basic'],
-  ['cobol', 'COBOL'],
-  ['natural', 'Natural'],
-  ['sql', 'SQL'],
-  ['graphql', 'GraphQL'],
-  ['proto', 'Protocol Buffers'],
-  ['html', 'HTML'],
-  ['css', 'CSS'],
-  ['toml', 'TOML'],
-  ['json', 'JSON'],
-  ['yaml', 'YAML'],
-  ['ini', 'INI'],
-  ['env_file', 'env file'],
-  ['ipynb', 'Jupyter notebook'],
-  ['salesforce_metadata', 'Salesforce metadata'],
-  ['salesforce_markup', 'Salesforce markup'],
-  ['unknown', 'this file type'],
-])
-
-/** Human spelling of a language id, for a message a person reads. */
-export function languageLabel(language: Language): string {
-  return LANGUAGE_LABELS.get(language) ?? language
-}
+// Display spellings live in the `label` column of src/language_specs.ts; re-exported for the callers that import them from here.
+export { languageLabel }
 
 /** The message a single-symbol reference lookup emits instead of a bare empty result, when the symbol's own defining file is in a language the reference index never records call sites for. Names the language and says the absence is the index's, so it cannot be read as "this symbol is unused". */
 export function refBlindLanguageNotice(symbolName: string, language: Language, displayPath: string): string {
+  // COBOL and Natural record some references, so "not indexed" would be false there; say which references exist and why none found still proves nothing.
+  const partial = partialRefsReason(language)
+  if (partial !== undefined) {
+    return `No recorded references to '${symbolName}' (${displayPath}). ${partial}, so an empty result is not evidence the name is unused. ` +
+      `Search the source directly as well, e.g. \`rg -n -w ${symbolName}\`.`
+  }
   return `Cannot determine references for '${symbolName}': ${languageLabel(language)} call sites are not indexed (${displayPath}). ` +
     'This is a gap in token-goat\'s index, not evidence the symbol is unreferenced. ' +
     `Search the source directly instead, e.g. \`rg -n -w ${symbolName}\`.`

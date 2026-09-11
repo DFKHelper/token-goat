@@ -32,6 +32,7 @@ import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
+import type { RegexLanguage } from './language_specs.js'
 import { precedingDocComment } from './doc_comment.js'
 import type { DocCommentStyle } from './doc_comment.js'
 import { querySymbols } from './index_reader.js'
@@ -1940,8 +1941,55 @@ function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[
   return out
 }
 
-function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
+// Blank `//` and `/* */` comments outside strings, keeping every offset and newline, so a JSONC comment neither opens a phantom string nor shifts the depth count. A no-op on strict JSON, which has no comments.
+function blankJsonComments(raw: string): string {
+  const out: string[] = []
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i] ?? ''
+    if (inStr) {
+      out.push(ch)
+      if (esc) esc = false
+      else if (ch === '\\') esc = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') {
+      inStr = true
+      out.push(ch)
+      continue
+    }
+    if (ch === '/' && raw[i + 1] === '/') {
+      while (i < raw.length && raw[i] !== '\n') {
+        out.push(' ')
+        i++
+      }
+      if (i < raw.length) out.push('\n')
+      continue
+    }
+    if (ch === '/' && raw[i + 1] === '*') {
+      out.push('  ')
+      i += 2
+      while (i < raw.length && !(raw[i] === '*' && raw[i + 1] === '/')) {
+        out.push(raw[i] === '\n' ? '\n' : ' ')
+        i++
+      }
+      if (i < raw.length) {
+        out.push('  ')
+        i++
+      }
+      continue
+    }
+    out.push(ch)
+  }
+  return out.join('')
+}
+
+function extractJsonSymbols(raw: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
+  // Scanned with comments blanked; bodies are cut from the raw text at the same offsets.
+  const content = raw.includes('/') ? blankJsonComments(raw) : raw
 
   try {
     let depth = 0
@@ -2004,7 +2052,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
               v++
             }
             const valueEnd = scanJsonValueEnd(content, v)
-            const body = content.slice(strStartOffset, valueEnd)
+            const body = raw.slice(strStartOffset, valueEnd)
             const lineEnd = strStartLine + countNewlines(body)
             out.push({
               filePath,
@@ -2652,9 +2700,8 @@ function sectionsToHeadingSymbols(
 
 type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
 
-// One entry per non-tree-sitter Language. Adding a new adapter is one map entry rather than
-// a new `if` branch; html/liquid keep their extra sectionsToHeadingSymbols composition inline.
-const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
+// One entry per `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
+const NO_TREE_SITTER_EXTRACTORS: Record<RegexLanguage, SymbolExtractor> = {
   markdown: extractMarkdownSymbols,
   json: extractJsonSymbols,
   yaml: extractYamlSymbols,
@@ -2701,7 +2748,7 @@ function extractNoTreeSitter(
   if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath)
   if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
   if (language === 'html' && isLwcFile(filePath, '.html')) {
-    const base: ParseContentResult = { symbols: NO_TREE_SITTER_EXTRACTORS.html!(content, filePath), refs: [] }
+    const base: ParseContentResult = { symbols: NO_TREE_SITTER_EXTRACTORS.html(content, filePath), refs: [] }
     return mergeParseResults(base, extractLwcTemplate(content, filePath))
   }
   // Vue/Svelte/Astro adapters emit both symbols and refs (template component-tag references),
@@ -2739,7 +2786,8 @@ function extractSymbolsNoTreeSitter(
   language: Language,
 ): SymbolEntry[] {
   if (language === 'unknown') return []
-  return (NO_TREE_SITTER_EXTRACTORS[language] ?? extractWithRegex)(content, filePath)
+  // A tree-sitter language whose grammar did not load has no entry and falls back to the coarse regex scan.
+  return ((NO_TREE_SITTER_EXTRACTORS as Partial<Record<Language, SymbolExtractor>>)[language] ?? extractWithRegex)(content, filePath)
 }
 
 /**

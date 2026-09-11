@@ -287,36 +287,25 @@ Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`. The framework is independent
 
 ## Adding a New Language
 
-Two adapter styles exist:
+Every language is one row of `LANGUAGE_SPECS` in [`src/language_specs.ts`](src/language_specs.ts). The row's `id` joins the `Language` union, and its columns feed every place that keys on a language: `detectLanguage` (`extensions`, `basenames`, `exactBasenames`), the read hook's diff and source hints (`diffable`, `sourceHints`), the grep hook's hint (`grepSource`), the bash hook's `symbol`/`read` suggestions (`symbolBearing`), `pack`'s code fence (`fence`, `fenceByExtension`), the display name in ref-blind messages (`label`), the `imports` fallback for basename-only files (`basenameImportsExtension`), and the notice for languages whose references are only partly recorded (`partialRefsReason`). The module imports nothing, so any file can depend on it.
 
-**Tree-sitter adapters (inline in `src/parser.ts`)** — for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++. These require a `tree-sitter-<lang>` npm package.
+The `extraction` column says how symbols are found:
 
-**Regex adapters** — no tree-sitter dependency. Two locations:
-- Inline in `src/parser.ts` (Markdown, JSON, YAML, TOML, CSS, Dockerfile)
-- Separate files in `src/languages/` (C#, PHP, HTML, Liquid, Kotlin, GraphQL, SQL, INI, Makefile, Proto, `.env`, Visual Basic)
+- `tree-sitter`: inline in `src/parser.ts` (TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, C/C++). These need a `tree-sitter-<lang>` npm package, a grammar branch in `loadGrammar()` and a branch in `parseContent()`.
+- `regex`: a `SymbolExtractor` in `NO_TREE_SITTER_EXTRACTORS` in `src/parser.ts`. That map is typed `Record<RegexLanguage, SymbolExtractor>`, so a `regex` row with no extractor fails `npm run typecheck`.
+- `own-result`: the language returns its own `ParseContentResult` (symbols plus refs) from a `language === '<id>'` branch in `src/parser.ts` (Vue, Svelte, Astro, Salesforce markup, COBOL, Natural, notebooks). `tests/language_specs.test.ts` fails when a row has no branch.
 
-Prefer a separate file in `src/languages/` for any new language. Use `src/languages/kotlin.ts` as a template for class/function extraction, or `src/languages/ini_idx.ts` for flat key-value formats.
+Prefer a separate file in `src/languages/` for a new extractor. Use `src/languages/kotlin.ts` as a template for class/function extraction, or `src/languages/ini_idx.ts` for flat key-value formats.
 
 Steps:
 
-1. **Add the language name** to the `Language` union in [`src/parser_types.ts`](src/parser_types.ts).
-2. **Map file extensions** — add entries to `EXTENSION_LANGUAGE` in `parser_types.ts`, or `FILENAME_LANGUAGE` for files identified by basename (e.g. `Makefile`, `.env`).
-3. **Write the adapter** — create `src/languages/{lang}.ts`. Implement a function `extractXxx(content: string, filePath: string): { symbols: SymbolEntry[]; ... }`. Use `makeSymbolEmitter` from `src/languages/common.ts` to deduplicate symbols. Export the function from [`src/languages/index.ts`](src/languages/index.ts).
-4. **Wire into the dispatcher** — add a branch to `extractSymbolsNoTreeSitter()` in `src/parser.ts`:
-   ```ts
-   if (language === 'yourlang') return extractYourlang(content, filePath).symbols
-   ```
-   For a tree-sitter language, add a grammar load branch in `loadGrammar()` and a symbol-extraction branch in `parseContent()`.
-5. **Register the extensions everywhere else that keys on them.** None of these checks the others, so each needs its own edit:
-   - `src/hooks_read.ts`: `DIFFABLE_SOURCE_RE` and `SOURCE_EXT_RE`.
-   - `src/hooks_grep.ts`: `SOURCE_EXT_RE`.
-   - `src/hooks_bash.ts`: `SYMBOL_BEARING_LANGUAGES`, when `symbol`/`read "file::Symbol"` resolve definitions in the language.
-   - `src/pack.ts`: `LANG_MAP` (the code-fence name), plus `CSTYLE_EXTS`/`HASH_COMMENT_EXTS` only if the language uses `//` or `#` comments.
-   - `src/read_commands.ts`: a per-extension branch in `extractImports` when the language's import statement is not caught by the generic `import|require|use|#include` fallback.
-   - `src/ref_blindness.ts`: a `LANGUAGE_LABELS` entry when the display name differs from the id.
-   - An extension shared with another language (`.cls` is Apex and VB6) cannot be told apart by `detectLanguage`, which is path-only: add a content check to `refineLanguageByContent` in `parser_types.ts`, which `indexFileSync`, `parseFile` and `section_reader.ts` apply after reading the file. A consumer holding only a path calls `detectLanguageOfFile`, which reads the head of an ambiguous file and refines it the same way.
-6. **Regenerate the parser fingerprint** — `npm run parser:fingerprint` rewrites `src/parser_fingerprint.ts`; `tests/parser_fingerprint_gate.test.ts` fails until you do. The changelog entry must say that upgrading reindexes.
-7. **Add tests on the real path** — a `CASES` entry in `tests/guards/language_adapter_produces_symbols.test.ts` with a fixture in `tests/fixtures/language_adapter_symbols/` that carries a provenance line, `detectLanguage` assertions in `tests/parser_types.test.ts`, and a built-bundle check: either a case in [`tests/helpers/matrix_cases.ts`](tests/helpers/matrix_cases.ts) (the four `tests/command_matrix_e2e.N.test.ts` shards each run an interleaved quarter of that table) or a standalone test that spawns `dist/token-goat.mjs`, as `tests/vb_bundle_e2e.test.ts` does.
+1. **Add the row** to `LANGUAGE_SPECS`. Spread `CODE` for a programming language or `DATA` for a config format and override single flags. A new extension on an existing language is just an `extensions` entry. `.h` stays C: telling C++ headers apart needs file contents.
+2. **Write the extractor**: create `src/languages/{lang}.ts` exporting `extractXxx(content: string, filePath: string)`. Use `makeSymbolEmitter` from `src/languages/common.ts` to deduplicate symbols, and export the function from [`src/languages/index.ts`](src/languages/index.ts).
+3. **Wire it in**: add the extractor to `NO_TREE_SITTER_EXTRACTORS` (a `regex` row), or add the `language === '<id>'` branch (an `own-result` row).
+4. **Only if needed, outside the table**: an `extractImports` branch in `src/read_commands.ts` when the import statement is not caught by the generic `import|require|use|#include` fallback, and `CSTYLE_EXTS`/`HASH_COMMENT_EXTS` in `src/pack.ts` when the language uses `//` or `#` comments. An extension shared with another language (`.cls` is Apex and VB6) cannot be told apart by `detectLanguage`, which is path-only: add a content check to `refineLanguageByContent` in `parser_types.ts`, which `indexFileSync`, `parseFile` and `section_reader.ts` apply after reading the file. A consumer holding only a path calls `detectLanguageOfFile`, which reads the head of an ambiguous file and refines it the same way. A language whose call sites the indexer records also needs `REF_LANGUAGES` in `src/parser.ts` and its mirror in `src/ref_blindness.ts`.
+5. **Update the pinned lists**: `tests/language_specs.test.ts` compares every derived list with the list it replaced, so a new row shows up there as a named difference to add, and the non-tree-sitter count in `docs/C4_RUNTIME_ARCHITECTURE.md` has to match `nonTreeSitterLanguageCount()`.
+6. **Regenerate the parser fingerprint**: `npm run parser:fingerprint` rewrites `src/parser_fingerprint.ts`; `tests/parser_fingerprint_gate.test.ts` fails until you do. The changelog entry must say that upgrading reindexes.
+7. **Add tests on the real path**: a `CASES` entry in `tests/guards/language_adapter_produces_symbols.test.ts` (it fails for any table row without one) with a fixture in `tests/fixtures/language_adapter_symbols/` that carries a provenance line, `detectLanguage` assertions in `tests/parser_types.test.ts`, and a built-bundle check: either a case in [`tests/helpers/matrix_cases.ts`](tests/helpers/matrix_cases.ts) (the four `tests/command_matrix_e2e.N.test.ts` shards each run an interleaved quarter of that table) or a standalone test that spawns `dist/token-goat.mjs`, as `tests/vb_bundle_e2e.test.ts` does.
 
 ## Adding a New Hook Event
 

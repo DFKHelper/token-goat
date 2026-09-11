@@ -13,6 +13,8 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
+
 /** One extracted definition: function, class, method, type, variable, etc. */
 export interface SymbolEntry {
   readonly filePath: string
@@ -59,229 +61,12 @@ export interface FileIndexEntry {
   readonly parserSha: string
 }
 
-/** Languages token-goat can recognise. `unknown` is the catch-all fallback. */
-export type Language =
-  | 'python'
-  | 'typescript'
-  | 'javascript'
-  | 'rust'
-  | 'go'
-  | 'c'
-  | 'cpp'
-  | 'ruby'
-  | 'java'
-  | 'bash'
-  | 'markdown'
-  | 'toml'
-  | 'json'
-  | 'yaml'
-  | 'css'
-  | 'dockerfile'
-  | 'csharp'
-  | 'php'
-  | 'html'
-  | 'liquid'
-  | 'kotlin'
-  | 'swift'
-  | 'scala'
-  | 'lua'
-  | 'elixir'
-  | 'dart'
-  | 'zig'
-  | 'r'
-  | 'graphql'
-  | 'sql'
-  | 'ini'
-  | 'makefile'
-  | 'proto'
-  | 'terraform'
-  | 'env_file'
-  | 'powershell'
-  | 'vb'
-  | 'cobol'
-  | 'natural'
-  | 'apex'
-  | 'salesforce_metadata'
-  | 'salesforce_markup'
-  | 'vue'
-  | 'svelte'
-  | 'astro'
-  | 'ipynb'
-  | 'unknown'
-
-/**
- * Map of lowercase file extension (with leading dot) to {@link Language}.
- *
- * Multiple extensions can map to one language (`.mjs`/`.cjs` → javascript,
- * `.cc`/`.cxx`/`.hpp` → cpp). Anything not present falls through to `unknown`.
- */
-const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
-  ['.py', 'python'],
-  ['.pyi', 'python'],
-  ['.ts', 'typescript'],
-  ['.tsx', 'typescript'],
-  ['.mts', 'typescript'],
-  ['.cts', 'typescript'],
-  ['.js', 'javascript'],
-  ['.jsx', 'javascript'],
-  ['.mjs', 'javascript'],
-  ['.cjs', 'javascript'],
-  ['.rs', 'rust'],
-  ['.go', 'go'],
-  ['.c', 'c'],
-  ['.h', 'c'],
-  ['.cpp', 'cpp'],
-  ['.cc', 'cpp'],
-  ['.cxx', 'cpp'],
-  ['.hpp', 'cpp'],
-  ['.hxx', 'cpp'],
-  ['.rb', 'ruby'],
-  ['.ruby', 'ruby'],
-  // Rake task files (lib/tasks/foo.rake) are plain Ruby syntax (`task :foo do ... end`),
-  // parsed identically by the ruby tree-sitter grammar. Without this entry a `.rake` file
-  // fell through to 'unknown' and indexed zero symbols despite the grammar handling its
-  // content exactly like any other .rb file -- the same has-extractor-but-no-extension gap
-  // previously fixed for `.mk` (Makefile fragments).
-  ['.rake', 'ruby'],
-  ['.java', 'java'],
-  ['.sh', 'bash'],
-  ['.bash', 'bash'],
-  ['.md', 'markdown'],
-  ['.markdown', 'markdown'],
-  // MDX heading syntax is plain ATX and works with the existing markdown extractor as-is,
-  // unlike .rst which genuinely needs an underline-style heading parser this extractor doesn't
-  // implement (left as 'unknown' deliberately).
-  ['.mdx', 'markdown'],
-  ['.toml', 'toml'],
-  ['.json', 'json'],
-  ['.yaml', 'yaml'],
-  ['.yml', 'yaml'],
-  ['.css', 'css'],
-  ['.scss', 'css'],
-  ['.sass', 'css'],
-  ['.less', 'css'],
-  ['.cs', 'csharp'],
-  ['.php', 'php'],
-  ['.html', 'html'],
-  ['.htm', 'html'],
-  ['.liquid', 'liquid'],
-  ['.kt', 'kotlin'],
-  ['.kts', 'kotlin'],
-  ['.swift', 'swift'],
-  ['.scala', 'scala'],
-  ['.sc', 'scala'],
-  ['.lua', 'lua'],
-  ['.ex', 'elixir'],
-  ['.exs', 'elixir'],
-  ['.dart', 'dart'],
-  ['.zig', 'zig'],
-  ['.r', 'r'],
-  ['.graphql', 'graphql'],
-  ['.gql', 'graphql'],
-  ['.sql', 'sql'],
-  ['.ini', 'ini'],
-  ['.cfg', 'ini'],
-  ['.conf', 'ini'],
-  ['.proto', 'proto'],
-  // `.mk` is the idiomatic extension for included Makefile fragments (config.mk, rules.mk,
-  // common.mk); their syntax is identical to a bare `Makefile`, which FILENAME_LANGUAGE already
-  // maps. Without this entry a `.mk` fragment fell through to 'unknown' and was indexed with zero
-  // symbols despite extractMakefile handling its content fine -- the same has-extractor-but-no-
-  // extension gap previously seen for other adapters. (importsExtensionFor already treats bare
-  // Makefile basenames as `.mk` for the imports command, so extractImports' `.mk` branch was
-  // reachable while symbol indexing was not.)
-  ['.mk', 'makefile'],
-  ['.tf', 'terraform'],
-  ['.tfvars', 'terraform'],
-  ['.hcl', 'terraform'],
-  ['.ps1', 'powershell'],
-  ['.psm1', 'powershell'],
-  ['.env', 'env_file'],
-  // Visual Basic: VB.NET, VB6/VBA standard modules, VBScript, and VB6 forms. A VB6 class module shares `.cls` with Apex, so it is told apart by content in refineLanguageByContent below, never here.
-  ['.vb', 'vb'],
-  ['.bas', 'vb'],
-  ['.vbs', 'vb'],
-  ['.frm', 'vb'],
-  // COBOL source (`.cbl`, `.cob`, `.cobol`) and copybooks (`.cpy`).
-  ['.cbl', 'cobol'],
-  ['.cob', 'cobol'],
-  ['.cobol', 'cobol'],
-  ['.cpy', 'cobol'],
-  // Natural object sources as NaturalONE and SYSOBJH export them: program, subprogram, subroutine, parameter/local/global data area, copycode, helproutine. Maps (.nsm) and DDMs (.nsd) are layouts, not code, and stay unmapped.
-  ['.nsp', 'natural'],
-  ['.nsn', 'natural'],
-  ['.nss', 'natural'],
-  ['.nsa', 'natural'],
-  ['.nsl', 'natural'],
-  ['.nsg', 'natural'],
-  ['.nsc', 'natural'],
-  ['.nsh', 'natural'],
-  ['.cls', 'apex'],
-  ['.trigger', 'apex'],
-  ['.cmp', 'salesforce_markup'],
-  ['.app', 'salesforce_markup'],
-  ['.evt', 'salesforce_markup'],
-  ['.intf', 'salesforce_markup'],
-  ['.design', 'salesforce_markup'],
-  ['.auradoc', 'salesforce_markup'],
-  ['.tokens', 'salesforce_markup'],
-  ['.page', 'salesforce_markup'],
-  ['.component', 'salesforce_markup'],
-  ['.email', 'salesforce_markup'],
-  ['.vue', 'vue'],
-  ['.svelte', 'svelte'],
-  ['.astro', 'astro'],
-  ['.ipynb', 'ipynb'],
-])
-
-/**
- * Filenames (no extension or special name) that map directly to a language.
- *
- * Dockerfiles and lockfiles get classified by name; everything else relies on
- * the extension table. Compared case-insensitively against the basename.
- */
-const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
-  ['dockerfile', 'dockerfile'],
-  ['makefile', 'makefile'],
-  ['gnumakefile', 'makefile'],
-  ['bsdmakefile', 'makefile'],
-  ['cargo.toml', 'toml'],
-  ['pyproject.toml', 'toml'],
-  ['package.json', 'json'],
-  ['tsconfig.json', 'json'],
-  ['.envrc', 'env_file'],
-  // Gemfile and Rakefile are plain Ruby syntax with no extension -- the dominant, idiomatic
-  // dependency-manifest and task-runner files in virtually every real Ruby project (analogous to
-  // package.json for Node or a bare Makefile). Without these entries both fell through to
-  // 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling their
-  // content exactly like any other .rb file -- the same has-extractor-but-no-dispatch-entry gap
-  // already fixed for bare `Makefile` / `.mk` fragments above.
-  ['gemfile', 'ruby'],
-  ['rakefile', 'ruby'],
-  // Vagrantfile, Guardfile, Podfile, Capfile, Fastfile: same idiomatic extensionless-Ruby-DSL
-  // pattern as Gemfile/Rakefile above -- `Vagrant.configure(...) do ... end`, Guard's `guard
-  // 'rspec' do ... end`, CocoaPods' `Pod::Spec.new do |s| ... end`, Capistrano's `set :application`,
-  // and fastlane's `lane :build do ... end` are all plain Ruby, parsed identically by the ruby
-  // tree-sitter grammar. Without these entries each fell through to 'unknown' and indexed zero
-  // symbols despite the grammar handling their content exactly like any other .rb file.
-  ['vagrantfile', 'ruby'],
-  ['guardfile', 'ruby'],
-  ['podfile', 'ruby'],
-  ['capfile', 'ruby'],
-  ['fastfile', 'ruby'],
-  // Brewfile: Homebrew Bundle's dependency manifest (`brew "wget"`, `cask "..."`, `tap "..."`)
-  // is ordinary Ruby method-call syntax, evaluated by Homebrew's own Ruby DSL -- the extensionless
-  // macOS-dev-environment analogue of Gemfile/package.json, and near-universal in dotfiles repos
-  // that use `brew bundle dump`/`brew bundle install`. Same has-extractor-but-no-dispatch-entry
-  // gap as the other extensionless Ruby DSL files above: without this entry it fell through to
-  // 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling its content
-  // exactly like any other .rb file.
-  ['brewfile', 'ruby'],
-])
+export type { Language } from './language_specs.js'
+export { TREE_SITTER_LANGUAGES } from './language_specs.js'
 
 // Matches ".env" itself and any ".env.<suffix>" variant (.local, .example, .sample, .test,
 // .production, plus anything a project invents -- .development, .staging, .ci, .docker, ...).
-// A fixed enumeration in FILENAME_LANGUAGE above could only ever cover the variants someone
+// A fixed enumeration in FILENAME_LANGUAGE (src/language_specs.ts) could only ever cover the variants someone
 // remembered to list, silently falling through to 'unknown' for every other suffix. Does not
 // match ".envrc" (no dot after "env"), which FILENAME_LANGUAGE already handles separately.
 const DOTENV_VARIANT_RE = /^\.env(\..+)?$/
@@ -332,15 +117,16 @@ export function detectLanguageOfFile(filePath: string): Language {
 /**
  * Detect the {@link Language} of a file from its path.
  *
- * Checks the basename against {@link FILENAME_LANGUAGE} first (so `Dockerfile`
+ * Checks the exact-case basename against {@link EXACT_FILENAME_LANGUAGE} and the lowercased one against {@link FILENAME_LANGUAGE} first (so `Dockerfile`
  * and named config files win), then falls back to the lowercased extension via
  * {@link EXTENSION_LANGUAGE}. Returns `'unknown'` when neither matches.
  */
 export function detectLanguage(filePath: string): Language {
-  const base = path.basename(filePath).toLowerCase()
+  const exactBase = path.basename(filePath)
+  const base = exactBase.toLowerCase()
   if (DOTENV_VARIANT_RE.test(base)) return 'env_file'
 
-  const byName = FILENAME_LANGUAGE.get(base)
+  const byName = EXACT_FILENAME_LANGUAGE.get(exactBase) ?? FILENAME_LANGUAGE.get(base)
   if (byName !== undefined) return byName
 
   if (base.endsWith('-meta.xml')) {
@@ -378,14 +164,10 @@ export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new 
   ['.nsd', 'Natural DDM'],
 ])
 
-/** The languages indexed through a tree-sitter grammar when the optional `tree-sitter` package loads; without it they fall back to a coarse regex scan with no references. */
-export const TREE_SITTER_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'python', 'go', 'rust', 'ruby', 'java', 'c', 'cpp']
 
 /** How many languages index without tree-sitter: every mapped language except the grammar ones and notebooks, which parse as Python. */
 export function nonTreeSitterLanguageCount(): number {
-  const all = new Set<Language>([...EXTENSION_LANGUAGE.values(), ...FILENAME_LANGUAGE.values()])
-  for (const lang of [...TREE_SITTER_LANGUAGES, 'ipynb', 'unknown'] as const) all.delete(lang)
-  return all.size
+  return LANGUAGE_SPECS.filter((s) => s.extraction !== 'tree-sitter' && s.id !== 'ipynb').length
 }
 
 /**

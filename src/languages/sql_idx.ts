@@ -39,16 +39,23 @@ const PERSISTENCE = '(?:(?:(?:GLOBAL|LOCAL)\\s+)?TEMP(?:ORARY)?\\s+|UNLOGGED\\s+
 const TABLE_RE = makeCreateRe('TABLE', `(?:OR\\s+REPLACE\\s+)?${PERSISTENCE}`)
 const VIEW_RE = makeCreateRe('VIEW', `${OR_REPLACE}(?:TEMP(?:ORARY)?\\s+)?`)
 const MATERIALIZED_VIEW_RE = makeCreateRe('MATERIALIZED\\s+VIEW', '(?:OR\\s+REPLACE\\s+)?(?:TEMP(?:ORARY)?\\s+)?')
-const FUNCTION_RE = makeCreateRe('FUNCTION', OR_REPLACE)
+// Oracle's editioning keyword sits between `OR REPLACE` and the object keyword on a PL/SQL unit: `CREATE [OR REPLACE] [EDITIONABLE | NONEDITIONABLE] PACKAGE` (https://docs.oracle.com/en/database/oracle/oracle-database/23/lnpls/CREATE-PACKAGE-statement.html).
+const EDITIONING = '(?:(?:EDITIONABLE|NONEDITIONABLE)\\s+)?'
+const FUNCTION_RE = makeCreateRe('FUNCTION', `${OR_REPLACE}${EDITIONING}`)
 // T-SQL accepts `PROC` as the short spelling of `PROCEDURE` (SQL Server docs, CREATE PROCEDURE: `CREATE [ OR ALTER ] { PROC | PROCEDURE }`) and it is the common one in real T-SQL.
-const PROCEDURE_RE = makeCreateRe('PROC(?:EDURE)?', OR_REPLACE)
+const PROCEDURE_RE = makeCreateRe('PROC(?:EDURE)?', `${OR_REPLACE}${EDITIONING}`)
 const SEQUENCE_RE = makeCreateRe('SEQUENCE', PERSISTENCE)
 const INDEX_RE = new RegExp(
   `(?<!\\w)CREATE\\s+(?:UNIQUE\\s+)?INDEX(?:\\s+CONCURRENTLY)?\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${NAME_PAT})`,
   'gi',
 )
-const TRIGGER_RE = makeCreateRe('TRIGGER', `${OR_REPLACE}(?:CONSTRAINT\\s+)?`)
-const TYPE_RE = makeCreateRe('TYPE', '(?:OR\\s+REPLACE\\s+)?')
+const TRIGGER_RE = makeCreateRe('TRIGGER', `${OR_REPLACE}${EDITIONING}(?:CONSTRAINT\\s+)?`)
+// `TYPE BODY` is its own object; without the lookahead `CREATE TYPE BODY t` was indexed as a type named `BODY`.
+const TYPE_RE = makeCreateRe('TYPE(?!\\s+BODY\\b)', `(?:OR\\s+REPLACE\\s+)?${EDITIONING}`)
+const TYPE_BODY_RE = makeCreateRe('TYPE\\s+BODY', `(?:OR\\s+REPLACE\\s+)?${EDITIONING}`)
+// PL/SQL package spec and body (https://docs.oracle.com/en/database/oracle/oracle-database/23/lnpls/CREATE-PACKAGE-BODY-statement.html).
+const PACKAGE_RE = makeCreateRe('PACKAGE(?!\\s+BODY\\b)', `(?:OR\\s+REPLACE\\s+)?${EDITIONING}`)
+const PACKAGE_BODY_RE = makeCreateRe('PACKAGE\\s+BODY', `(?:OR\\s+REPLACE\\s+)?${EDITIONING}`)
 const SCHEMA_RE = makeCreateRe('SCHEMA')
 
 const PATTERNS: ReadonlyArray<[RegExp, string]> = [
@@ -60,9 +67,18 @@ const PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [INDEX_RE, 'sql_index'],
   [TRIGGER_RE, 'sql_trigger'],
   [TYPE_RE, 'sql_type'],
+  [TYPE_BODY_RE, 'sql_type_body'],
+  [PACKAGE_RE, 'sql_package'],
+  [PACKAGE_BODY_RE, 'sql_package_body'],
   [SCHEMA_RE, 'sql_schema'],
   [SEQUENCE_RE, 'sql_sequence'],
 ]
+
+// PL/SQL units that close with `END name;`, and the ones among them whose subprograms are indexed as children.
+const PLSQL_UNIT_KINDS: ReadonlySet<string> = new Set(['sql_package', 'sql_package_body', 'sql_type_body', 'sql_procedure', 'sql_function', 'sql_trigger'])
+const PLSQL_CONTAINER_KINDS: ReadonlySet<string> = new Set(['sql_package', 'sql_package_body', 'sql_type_body'])
+// A subprogram declared or defined inside a package or type body, with the member modifiers an object type body allows.
+const MEMBER_RE = new RegExp(`^[ \\t]*(?:(?:MAP|ORDER|MEMBER|STATIC|CONSTRUCTOR|FINAL|INSTANTIABLE|OVERRIDING|NOT)\\s+)*(PROCEDURE|FUNCTION)\\s+(${QUOTED}|${BARE})`, 'gim')
 
 /**
  * Blank the contents of SQL single-quoted string literals, `--` line comments, and `/* *\/` block
@@ -371,6 +387,87 @@ function findStatementTerminator(noStrings: string, fromIndex: number): number {
   return -1
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** `END name;` for a unit or subprogram named `name` (last segment of a qualified name), bare or double-quoted. */
+function endNameRe(name: string): RegExp {
+  const segments = name.split('.')
+  const simple = escapeRegExp(segments[segments.length - 1] ?? name)
+  return new RegExp(`(?<![\\w$])END\\s+(?:"${simple}"|${simple})\\s*;`, 'i')
+}
+
+const BARE_END_RE = /(?<![\w$])END\s*;/gi
+
+interface PlsqlUnit {
+  readonly name: string
+  readonly kind: string
+  readonly index: number
+  readonly matchEnd: number
+  readonly line: number
+}
+
+/**
+ * PL/SQL spans and children: a named unit ends at its `END name;` when one appears before the next CREATE statement, and each PROCEDURE/FUNCTION inside a package spec, package body or type body becomes a child symbol. A declaration in a spec ends at its `;`; a definition in a body ends at its own `END name;`, or else just before the next sibling. Returns the unit end lines keyed like `singleLineEndLines`, and the children.
+ */
+function plsqlStructure(
+  noStrings: string,
+  lineIndex: number[],
+  units: readonly PlsqlUnit[],
+  createStarts: readonly number[],
+  filePath: string,
+  room: number,
+): { ends: Map<string, number>; children: SymbolEntry[] } {
+  const ends = new Map<string, number>()
+  const children: SymbolEntry[] = []
+  for (const u of units) {
+    const nextCreate = createStarts.find((s) => s > u.index) ?? noStrings.length
+    const tail = noStrings.slice(u.matchEnd, nextCreate)
+    const named = endNameRe(u.name).exec(tail)
+    // The name after END is optional in PL/SQL, so without `END name;` the unit ends at the last bare `END;` before the next CREATE.
+    const bare = named === null ? [...tail.matchAll(BARE_END_RE)].pop() : undefined
+    const endIndex = named?.index ?? bare?.index
+    if (endIndex === undefined) continue
+    const endOffset = u.matchEnd + endIndex
+    const endLine = offsetToLine(lineIndex, endOffset)
+    ends.set(`${u.name}\0${u.kind}\0${u.line}`, endLine)
+    if (!PLSQL_CONTAINER_KINDS.has(u.kind)) continue
+
+    const parent = u.name.split('.').pop() ?? u.name
+    const found: Array<{ name: string; kind: string; line: number; end: number | undefined }> = []
+    MEMBER_RE.lastIndex = 0
+    const region = noStrings.slice(u.matchEnd, endOffset)
+    for (const m of region.matchAll(MEMBER_RE)) {
+      const start = u.matchEnd + (m.index ?? 0)
+      const line = offsetToLine(lineIndex, start + m[0].length - (m[2]?.length ?? 0))
+      if (line === u.line) continue
+      const name = unquote(m[2] ?? '').trim()
+      if (name === '') continue
+      const afterName = start + m[0].length
+      const semi = findStatementTerminator(noStrings, afterName)
+      const stop = semi === -1 || semi > endOffset ? endOffset : semi
+      const isDefinition = /\b(?:IS|AS)\b/i.test(noStrings.slice(afterName, stop)) || semi === -1 || semi > endOffset
+      let end: number | undefined
+      if (!isDefinition) {
+        end = offsetToLine(lineIndex, semi)
+      } else {
+        const own = endNameRe(name).exec(noStrings.slice(afterName, endOffset))
+        if (own !== null) end = offsetToLine(lineIndex, afterName + own.index)
+      }
+      found.push({ name, kind: m[1]?.toUpperCase() === 'PROCEDURE' ? 'sql_procedure' : 'sql_function', line, end })
+    }
+    for (let k = 0; k < found.length && children.length < room; k++) {
+      const f = found[k]!
+      const next = found[k + 1]
+      const fallback = next !== undefined ? next.line - 1 : endLine - 1
+      const lineEnd = Math.max(f.line, f.end ?? fallback)
+      children.push({ filePath, name: f.name, kind: f.kind, lineStart: f.line, lineEnd, body: '', docstring: '', parent })
+    }
+  }
+  return { ends, children }
+}
+
 export function extractSql(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const sections: MiniSection[] = []
@@ -398,9 +495,10 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   // keyword is unambiguous regardless of sort order, so it can be pinned to a single-line span
   // directly instead of trusting the flat model's guess. Left untouched (flat-model behavior
   // unchanged) whenever the terminator isn't on the start line -- e.g. a real multi-line
-  // function/procedure body -- since this file has no brace/END-matching scan to compute those
-  // real end lines precisely.
+  // function/procedure body -- unless it is a PL/SQL unit closed by `END name;` (plsqlStructure).
   const singleLineEndLines = new Map<string, number>()
+  const units: PlsqlUnit[] = []
+  const createStarts: number[] = []
 
   for (const [pattern, kind] of PATTERNS) {
     // Reset lastIndex since these are global regexes
@@ -411,6 +509,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
         const name = unquote(rawName).trim()
         if (name) {
           const line = offsetToLine(lineIndex, m.index ?? 0)
+          createStarts.push(m.index ?? 0)
           const semiIdx = findStatementTerminator(noStrings, m.index ?? 0)
           if (semiIdx !== -1 && offsetToLine(lineIndex, semiIdx) === line) {
             // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen`
@@ -419,6 +518,8 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
             // only key would let one kind's single-line pin leak onto a different kind sharing
             // that same name and line.
             singleLineEndLines.set(`${name}\0${kind}\0${line}`, line)
+          } else if (PLSQL_UNIT_KINDS.has(kind)) {
+            units.push({ name, kind, index: m.index ?? 0, matchEnd: (m.index ?? 0) + m[0].length, line })
           }
           emit(name, kind, line)
         }
@@ -426,13 +527,21 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
     }
   }
 
+  createStarts.sort((a, b) => a - b)
+  const plsql = units.length > 0
+    ? plsqlStructure(noStrings, lineIndex, units, createStarts, filePath, MAX_SYMBOLS - symbols.length)
+    : { ends: new Map<string, number>(), children: [] }
+
   sections.sort((a, b) => a.line - b.line)
   symbols.sort((a, b) => a.lineStart - b.lineStart)
   assignFlatEndLines(sections, totalLines)
-  return propagateEndLinesToSymbols(symbols, sections).map((sym) => {
-    const pinnedEndLine = singleLineEndLines.get(`${sym.name}\0${sym.kind}\0${sym.lineStart}`)
+  const pinned = propagateEndLinesToSymbols(symbols, sections).map((sym) => {
+    const key = `${sym.name}\0${sym.kind}\0${sym.lineStart}`
+    const pinnedEndLine = singleLineEndLines.get(key) ?? plsql.ends.get(key)
     return pinnedEndLine !== undefined && pinnedEndLine !== sym.lineEnd
       ? { ...sym, lineEnd: pinnedEndLine }
       : sym
   })
+  if (plsql.children.length === 0) return pinned
+  return [...pinned, ...plsql.children].sort((a, b) => a.lineStart - b.lineStart)
 }
