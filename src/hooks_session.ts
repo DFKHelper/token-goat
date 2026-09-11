@@ -242,6 +242,23 @@ const CLAIMED_CHANGE_VERBS_RE =
 // presence must suppress the hallucination warning rather than trigger it.
 const CLAIMED_COMMIT_VERBS_RE = /\b(commit(?:ted|s|ting)?|push(?:ed|es|ing)?)\b/i;
 
+// A bare verb alternation cannot tell "fixed the bug" from "did not fix anything", so a negation cue anywhere before the matched verb within its own clause voids the claim.
+const NEGATION_RE = /\b(no|not|n't|never|none|nothing|without)\b/i;
+
+// Returns true only if lastAssistantMessage contains an un-negated claimed-change verb: splits on sentence boundaries so a negation earlier in the same message does not suppress a genuine claim in a later, unrelated clause, and only looks at the 4 words immediately before the matched verb so an unrelated negation earlier in the same clause does not falsely suppress a real claim later in it.
+function claimsUnnegatedChange(message: string): boolean {
+  const clauses = message.split(/[.;\n]+/);
+  return clauses.some((clause) => {
+    const match = CLAIMED_CHANGE_VERBS_RE.exec(clause);
+    if (!match) {
+      return false;
+    }
+    const wordsBefore = clause.slice(0, match.index).trim().split(/\s+/).filter(Boolean);
+    const nearbyWords = wordsBefore.slice(-4).join(' ');
+    return !NEGATION_RE.test(nearbyWords);
+  });
+}
+
 function subagentStopHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId) {
@@ -263,7 +280,7 @@ function subagentStopHandler(event: HookEvent): HookOutput {
           // (fixed/committed/implemented/...) while git shows none, not
           // whether the assigned task merely asked for changes.
           const lastAssistantMessage = (event.raw['last_assistant_message'] as string) || '';
-          const claimsChanges = CLAIMED_CHANGE_VERBS_RE.test(lastAssistantMessage);
+          const claimsChanges = claimsUnnegatedChange(lastAssistantMessage);
           const claimsCommitted = CLAIMED_COMMIT_VERBS_RE.test(lastAssistantMessage);
           if (claimsChanges && !claimsCommitted) {
             console.warn(
