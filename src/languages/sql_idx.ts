@@ -32,16 +32,22 @@ function makeCreateRe(objectKw: string, optPrefix = ''): RegExp {
   )
 }
 
-const TABLE_RE = makeCreateRe('TABLE', '(?:TEMP(?:ORARY)?\\s+)?')
-const VIEW_RE = makeCreateRe('VIEW', '(?:OR\\s+REPLACE\\s+)?(?:TEMP(?:ORARY)?\\s+)?')
+// `OR REPLACE` (PostgreSQL, Oracle, MySQL views) and T-SQL's `OR ALTER` (SQL Server 2016 SP1, CREATE PROCEDURE/FUNCTION/VIEW/TRIGGER) are the same slot; only the first was accepted, so every `CREATE OR ALTER` object in a SQL Server file was missing.
+const OR_REPLACE = '(?:OR\\s+(?:REPLACE|ALTER)\\s+)?'
+// PostgreSQL CREATE TABLE and CREATE SEQUENCE: `CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE`; only a bare TEMP/TEMPORARY was accepted, so UNLOGGED and GLOBAL/LOCAL TEMPORARY tables were missing.
+const PERSISTENCE = '(?:(?:(?:GLOBAL|LOCAL)\\s+)?TEMP(?:ORARY)?\\s+|UNLOGGED\\s+)?'
+const TABLE_RE = makeCreateRe('TABLE', `(?:OR\\s+REPLACE\\s+)?${PERSISTENCE}`)
+const VIEW_RE = makeCreateRe('VIEW', `${OR_REPLACE}(?:TEMP(?:ORARY)?\\s+)?`)
 const MATERIALIZED_VIEW_RE = makeCreateRe('MATERIALIZED\\s+VIEW', '(?:OR\\s+REPLACE\\s+)?(?:TEMP(?:ORARY)?\\s+)?')
-const FUNCTION_RE = makeCreateRe('FUNCTION', '(?:OR\\s+REPLACE\\s+)?')
-const PROCEDURE_RE = makeCreateRe('PROCEDURE', '(?:OR\\s+REPLACE\\s+)?')
+const FUNCTION_RE = makeCreateRe('FUNCTION', OR_REPLACE)
+// T-SQL accepts `PROC` as the short spelling of `PROCEDURE` (SQL Server docs, CREATE PROCEDURE: `CREATE [ OR ALTER ] { PROC | PROCEDURE }`) and it is the common one in real T-SQL.
+const PROCEDURE_RE = makeCreateRe('PROC(?:EDURE)?', OR_REPLACE)
+const SEQUENCE_RE = makeCreateRe('SEQUENCE', PERSISTENCE)
 const INDEX_RE = new RegExp(
   `(?<!\\w)CREATE\\s+(?:UNIQUE\\s+)?INDEX(?:\\s+CONCURRENTLY)?\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${NAME_PAT})`,
   'gi',
 )
-const TRIGGER_RE = makeCreateRe('TRIGGER', '(?:OR\\s+REPLACE\\s+)?(?:CONSTRAINT\\s+)?')
+const TRIGGER_RE = makeCreateRe('TRIGGER', `${OR_REPLACE}(?:CONSTRAINT\\s+)?`)
 const TYPE_RE = makeCreateRe('TYPE', '(?:OR\\s+REPLACE\\s+)?')
 const SCHEMA_RE = makeCreateRe('SCHEMA')
 
@@ -55,6 +61,7 @@ const PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [TRIGGER_RE, 'sql_trigger'],
   [TYPE_RE, 'sql_type'],
   [SCHEMA_RE, 'sql_schema'],
+  [SEQUENCE_RE, 'sql_sequence'],
 ]
 
 /**

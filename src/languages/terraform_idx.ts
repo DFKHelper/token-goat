@@ -88,6 +88,11 @@ const VARIABLE_RE = /^[ \t]*variable\s+"([^"]*)"\s*\{/gm
 const OUTPUT_RE = /^[ \t]*output\s+"([^"]*)"\s*\{/gm
 const MODULE_RE = /^[ \t]*module\s+"([^"]*)"\s*\{/gm
 const PROVIDER_RE = /^[ \t]*provider\s+"([^"]*)"\s*\{/gm
+// `check "name" {` (Terraform 1.5, Checks) and `ephemeral "type" "name" {` (Terraform 1.10, Ephemeral resources) are top-level labeled blocks that Terraform addresses as `check.name` and `ephemeral.type.name`; neither was matched, so both were absent from the index.
+const CHECK_RE = /^[ \t]*check\s+"([^"]*)"\s*\{/gm
+const EPHEMERAL_RE = /^[ \t]*ephemeral\s+"([^"]*)"\s+"([^"]*)"\s*\{/gm
+// `import {` (1.5), `moved {` (1.1) and `removed {` (1.7) are top-level refactoring blocks with no label, indexed one symbol per block the same way as locals below.
+const UNLABELED_REFACTOR_RE = /^[ \t]*(import|moved|removed)\s*\{/gm
 
 // locals { } -- unlabeled; extracted as a single `locals` symbol per block rather than one
 // symbol per assignment inside it (simpler MVP scope, still enough for symbol/read/outline).
@@ -174,7 +179,19 @@ export function extractTerraform(content: string, filePath: string): SymbolEntry
     ...collectOneLabel(OUTPUT_RE, stripped, 'tf_output', (label) => `output.${label}`),
     ...collectOneLabel(MODULE_RE, stripped, 'tf_module', (label) => `module.${label}`),
     ...collectOneLabel(PROVIDER_RE, stripped, 'tf_provider', (label) => `provider.${label}`),
+    ...collectOneLabel(CHECK_RE, stripped, 'tf_check', (label) => `check.${label}`),
+    ...collectTwoLabel(EPHEMERAL_RE, stripped, 'tf_ephemeral', (type, label) => `ephemeral.${type}.${label}`),
   ]
+
+  for (const m of stripped.matchAll(UNLABELED_REFACTOR_RE)) {
+    const keyword = m[1] ?? ''
+    matches.push({
+      name: keyword,
+      kind: `tf_${keyword}`,
+      matchIndex: m.index ?? 0,
+      openBraceOffsetFromMatchStart: m[0].length - 1,
+    })
+  }
 
   for (const m of stripped.matchAll(LOCALS_RE)) {
     matches.push({
