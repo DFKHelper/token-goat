@@ -661,6 +661,21 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
 /** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
 export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw' | 'swiftExtended'
 
+/** Which quotes of a run longer than the delimiter itself close a quote-delimited literal. Languages disagree, so the rule is always named rather than assumed. `'last'`: the run's LAST `len` quotes are the delimiter, so `"""a""""` is the string `a"` -- Kotlin (Kotlin language specification, "Expressions", section "String literals", multiline string literals) and Scala (Scala language specification, section 1.3.5 "Character Literals and String Literals", which states that a multi-line literal is terminated by the last three of a run of three or more) both read it that way, and C# 11 raw string literals likewise consume the whole closing run, with `len` taken from the opening run rather than fixed at three (C# language reference, "Raw string literals"). `'first'`: the run's FIRST `len` quotes are the delimiter and the rest of the run is ordinary code, which is what Dart's grammar gives -- its multi-line string production is a delimiter, then a repetition of a content production that excludes the delimiter, then the delimiter (Dart Programming Language Specification, section "Strings"), so the literal ends at the first complete run, and the same section's rule that adjacent string literals concatenate makes `'''a''''''b'''` two literals in a row, which only the first-run reading parses correctly. */
+export type QuoteRunClose = 'first' | 'last'
+
+/** Exclusive end offset of the closing delimiter for a literal opened with `len` copies of `quote`, searching `text` from `from`, or -1 when no run that long follows. The one place the run-length rule lives: both halves of the brace walk and the line-by-line masker call this instead of an `indexOf` of the delimiter, which finds the first `len` quotes of a longer run and leaves the remainder behind to desync everything after it. */
+export function closingQuoteRunEnd(text: string, from: number, quote: string, len: number, runClose: QuoteRunClose): number {
+  for (let i = from; i < text.length; i++) {
+    if (text[i] !== quote) continue
+    let run = 0
+    while (text[i + run] === quote) run++
+    if (run >= len) return runClose === 'last' ? i + run : i + len
+    i += run - 1
+  }
+  return -1
+}
+
 /**
  * Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state
  * `stripBlockCommentSpan` threads across line-by-line calls. `null` means "not currently inside
@@ -687,10 +702,28 @@ export interface MultilineStringState {
    * non-interpolated `@"..."` verbatim string.
    */
   interpolated?: boolean
+  /** Which quotes of an over-long closing run form this literal's delimiter, carried from the opener because `findMultilineCloser` sees only the state and not the language. Set for `tripleQuote`/`tripleSingleQuote`; unused for every other kind. */
+  runClose?: QuoteRunClose
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
 export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir' | 'scala' | 'dart' | 'r'
+
+/** Per-language run-close rule for the triple-quoted families. A `Record` rather than a lookup with a fallback, so adding a language to {@link MultilineStringLang} is a compile error until its rule is decided. */
+const TRIPLE_QUOTE_RUN_CLOSE: Record<MultilineStringLang, QuoteRunClose> = {
+  kotlin: 'last',
+  scala: 'last',
+  // Swift's closing delimiter has to stand alone on its own line (The Swift Programming Language, "Strings and Characters", section "Multiline String Literals"), so no run longer than three ever terminates a valid Swift literal; it is grouped with Kotlin and Scala so that the same-line and cross-line paths agree, not to assert a rule Swift itself defines.
+  swift: 'last',
+  csharp: 'last',
+  // An Elixir heredoc cannot open and close on one line, because its opening `"""` must be followed by a newline, so only the cross-line closer is reachable for valid Elixir and that path has always consumed the whole run.
+  elixir: 'last',
+  dart: 'first',
+  // No triple-quoted literal at all: PHP uses heredoc/nowdoc, PowerShell `@"`/`@'` here-strings, R ordinary and raw character constants. Present only because the Record is exhaustive; the value is never read for these three.
+  php: 'last',
+  powershell: 'last',
+  r: 'last',
+}
 
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
@@ -708,17 +741,15 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       return m ? { maskEnd: m[0].length } : null
     }
     case 'tripleSingleQuote': {
-      // Elixir's charlist heredoc (`'''`), closed by its own delimiter rather than `"""`.
-      const m = /'{3,}/.exec(line.slice(from))
-      return m === null ? null : { maskEnd: from + m.index + m[0].length }
+      // Elixir's charlist heredoc and Dart's `'''` string, closed by their own delimiter rather than `"""`. The `runClose` rule is the opener's: Dart ends at the first three of a longer run, Elixir takes the whole run.
+      const end = closingQuoteRunEnd(line, from, "'", 3, state.runClose ?? 'last')
+      return end === -1 ? null : { maskEnd: end }
     }
     case 'tripleQuote': {
-      // Closer must match the opener's quote-run length (or a longer run) — see the
-      // `identifier` field doc on `MultilineStringState` for why a fixed `"""` can't be used.
+      // Closer length comes from the opener's quote-run length -- see the `identifier` field doc on `MultilineStringState` for why a fixed `"""` can't be used -- and `runClose` decides which quotes of a longer run form it.
       const n = state.identifier !== '' ? parseInt(state.identifier, 10) : 3
-      const re = new RegExp(`"{${n},}`)
-      const m = re.exec(line.slice(from))
-      return m === null ? null : { maskEnd: from + m.index + m[0].length }
+      const end = closingQuoteRunEnd(line, from, '"', n, state.runClose ?? 'last')
+      return end === -1 ? null : { maskEnd: end }
     }
     case 'rRaw':
     case 'swiftExtended': {
@@ -1071,11 +1102,13 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
     // already-open single-line string literal is not a real raw-string opener.
     if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
-    const closeIdx = line.indexOf('"""', idx + 3)
-    if (closeIdx !== -1) {
-      return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
+    const runClose = TRIPLE_QUOTE_RUN_CLOSE[lang]
+    const tripleState: MultilineStringState = { kind: 'tripleQuote', identifier: '3', runClose }
+    const closeEnd = closingQuoteRunEnd(line, idx + 3, '"', 3, runClose)
+    if (closeEnd !== -1) {
+      return { openStart: idx, closesSameLine: closeEnd, state: tripleState }
     }
-    return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '3' } }
+    return { openStart: idx, closesSameLine: null, state: tripleState }
   }
 
   if (lang === 'elixir' || lang === 'dart') {
@@ -1095,9 +1128,10 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     if (first === undefined) return null
     const [idx, kind, delim] = first
     if (isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
-    const closeIdx = line.indexOf(delim, idx + 3)
-    const state = { kind, identifier: '3' }
-    if (closeIdx !== -1) return { openStart: idx, closesSameLine: closeIdx + 3, state }
+    const runClose = TRIPLE_QUOTE_RUN_CLOSE[lang]
+    const state: MultilineStringState = { kind, identifier: '3', runClose }
+    const closeEnd = closingQuoteRunEnd(line, idx + 3, delim[0] ?? '"', 3, runClose)
+    if (closeEnd !== -1) return { openStart: idx, closesSameLine: closeEnd, state }
     return { openStart: idx, closesSameLine: null, state }
   }
 
@@ -1159,13 +1193,12 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
 
     if (useTriple) {
-      const closeRe = new RegExp(`"{${tripleLen},}`)
-      const closeM = closeRe.exec(line.slice(tripleIdx + tripleLen))
-      if (closeM !== null) {
-        const closeIdx = tripleIdx + tripleLen + closeM.index
-        return { openStart: tripleIdx, closesSameLine: closeIdx + closeM[0].length, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
+      const rawState: MultilineStringState = { kind: 'tripleQuote', identifier: String(tripleLen), runClose: TRIPLE_QUOTE_RUN_CLOSE.csharp }
+      const closeEnd = closingQuoteRunEnd(line, tripleIdx + tripleLen, '"', tripleLen, rawState.runClose ?? 'last')
+      if (closeEnd !== -1) {
+        return { openStart: tripleIdx, closesSameLine: closeEnd, state: rawState }
       }
-      return { openStart: tripleIdx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
+      return { openStart: tripleIdx, closesSameLine: null, state: rawState }
     }
 
     // Verbatim: content starts right after the opening `"`. `$@"..."` / `@$"..."` marks an
@@ -1492,6 +1525,8 @@ export interface BraceSpanOpts {
   tripleQuote?: boolean
   /** See {@link BraceScanOpts.tripleSingleQuote}. */
   tripleSingleQuote?: boolean
+  /** See {@link BraceScanOpts.tripleQuoteRunClose}. */
+  tripleQuoteRunClose?: QuoteRunClose
   /** See {@link BraceScanOpts.rawStringQuotes}. */
   rawStringQuotes?: boolean
   /** See {@link BraceScanOpts.rRawStrings}. */
@@ -1536,6 +1571,8 @@ export interface BraceScanOpts {
   rRawStrings?: boolean
   /** Whether ''' opens a triple-quoted string on the same terms as {@link tripleQuote}. Dart has both spellings; Kotlin, Scala and Swift have only the double-quoted one, and there ''' is something else. Without this a Dart literal holding an odd number of single quotes, such as '''a ' } b''', re-pairs them so the brace between them is read as code and the enclosing method ends on it. */
   tripleSingleQuote?: boolean
+  /** Which quotes of a closing run longer than three end a {@link tripleQuote}/{@link tripleSingleQuote} literal: see {@link QuoteRunClose} for each language's rule and its citation. Defaults to `'last'`, which is Kotlin's, Scala's and Swift's; Dart must pass `'first'`. */
+  tripleQuoteRunClose?: QuoteRunClose
 }
 
 /** The triple-quote delimiters in play for a scan. A language may have one spelling, both, or neither. */
@@ -1555,13 +1592,7 @@ function quoteRunLength(content: string, i: number): number {
 
 /** Index just past the first run of at least `min` quotes at or after `from`, or -1 if there is none. A C# raw string closes on a quote run at least as long as the one that opened it, so a shorter run inside the literal is content rather than the closer. */
 function skipRawStringQuotes(content: string, from: number, min: number): number {
-  for (let i = from; i < content.length; i++) {
-    if (content[i] !== '"') continue
-    const run = quoteRunLength(content, i)
-    if (run >= min) return i + run
-    i += run - 1
-  }
-  return -1
+  return closingQuoteRunEnd(content, from, '"', min, 'last')
 }
 
 /** One step through a PowerShell string literal: inside a double-quoted string a backtick escapes the next character, and a backslash escapes nothing in either kind. Returns the index the caller should resume from and whether the string is still open. PowerShell's other escape, a doubled delimiter, needs no rule here: it adds two quotes, so it cannot change which side of a string a later brace falls on. */
@@ -1688,8 +1719,8 @@ export function findMatchingBraceEndLine(
     // A triple-quoted literal is opaque: no escapes apply inside it, so jump straight past its closer rather than letting the single-quote rules below misread its contents.
     const tripleAt = tripleDelims.find((t) => content.startsWith(t, i))
     if (tripleAt !== undefined) {
-      const end = content.indexOf(tripleAt, i + 3)
-      i = end === -1 ? content.length : end + 2
+      const end = closingQuoteRunEnd(content, i + 3, tripleAt[0] ?? '"', 3, opts?.tripleQuoteRunClose ?? 'last')
+      i = end === -1 ? content.length : end - 1
       continue
     }
     if (ch === '"' || ch === "'" || (backtick && ch === '`')) {
@@ -1767,6 +1798,7 @@ export function assignBraceBlockSpans(
     tripleQuote,
     rawStringQuotes: opts.rawStringQuotes ?? false,
     tripleSingleQuote: opts.tripleSingleQuote ?? false,
+    tripleQuoteRunClose: opts.tripleQuoteRunClose ?? 'last',
     ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }),
     ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }),
     ...(opts.lineCommentExceptions === undefined ? {} : { lineCommentExceptions: opts.lineCommentExceptions }),
@@ -1917,9 +1949,9 @@ function findBlockOpenBrace(
     // Mirrors findMatchingBraceEndLine's triple-quote skip, so both halves of the span walk agree on where a `"""` literal ends.
     const tripleAt = tripleDelims.find((t) => content.startsWith(t, i))
     if (tripleAt !== undefined) {
-      const end = content.indexOf(tripleAt, i + 3)
+      const end = closingQuoteRunEnd(content, i + 3, tripleAt[0] ?? '"', 3, opts?.tripleQuoteRunClose ?? 'last')
       if (end === -1) return null
-      i = end + 2
+      i = end - 1
       continue
     }
     if (ch === '"' || ch === "'") {
