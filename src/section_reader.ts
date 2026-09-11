@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
-import { detectLanguage } from './parser_types.js'
+import { detectLanguage, refineLanguageByContent } from './parser_types.js'
 import { decodeSource } from './util.js'
 import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta, stripTomlComment } from './parser.js'
 import { _detectOpenQuote as envDetectOpenQuote, _lineClosesQuote as envLineClosesQuote } from './languages/ini_idx.js'
@@ -46,11 +46,14 @@ interface SectionHeader {
   readonly level: number
   /** 0-based index of the header line. */
   readonly index: number
+  /** 0-based exclusive end, for a header whose section closes with an explicit end line (a Visual Basic `#End Region`) rather than at the next header. */
+  readonly endIndex?: number
 }
 
 /** Kind of header finder that produced the headers. */
 // 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap.
-type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python'
+// 'region' is Visual Basic `#Region "name"` ... `#End Region`, nestable, each header carrying its own endIndex.
+type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python' | 'region'
 
 /**
  * Split a heading spec into its base text and optional 1-based ordinal.
@@ -219,6 +222,39 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
  * before comparison so a file mixing tabs and spaces at the same nesting depth still resolves
  * consistently.
  */
+const VB_REGION_RE = /^\s*#\s*Region\s+"((?:[^"]|"")*)"/i
+const VB_END_REGION_RE = /^\s*#\s*End\s+Region\b/i
+
+/**
+ * Visual Basic `#Region "name"` blocks as sections (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive): nestable, each ending at its own `#End Region` line (included), or at end of file when it never closes. A stray `#End Region` with nothing open is ignored.
+ */
+function findVbRegionHeaders(lines: readonly string[]): SectionHeader[] {
+  const headers: SectionHeader[] = []
+  const open: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    const m = VB_REGION_RE.exec(line)
+    if (m !== null) {
+      open.push(headers.length)
+      headers.push({ heading: (m[1] ?? '').replace(/""/g, '"'), level: open.length, index: i })
+      continue
+    }
+    if (VB_END_REGION_RE.test(line)) {
+      const pos = open.pop()
+      const h = pos === undefined ? undefined : headers[pos]
+      if (pos !== undefined && h !== undefined) headers[pos] = { ...h, endIndex: i + 1 }
+    }
+  }
+  return headers
+}
+
+/** A section's 0-based exclusive end: its own explicit end when it has one, otherwise the kind's next-header rule. */
+function headerEndIndex(headers: readonly SectionHeader[], kind: HeaderKind, headerPos: number, totalLines: number): number {
+  const explicit = headers[headerPos]?.endIndex
+  if (explicit !== undefined) return explicit
+  return kind === 'table-toml' ? tableSectionEndIndex(headers, headerPos, totalLines) : sectionEndIndex(headers, headerPos, totalLines)
+}
+
 function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
   const indentStack: number[] = []
@@ -320,6 +356,8 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(text), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines, true), kind: 'table-toml' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
+  // Visual Basic source: only `#Region` blocks are sections; the markdown/table/key-value sniff below would read code lines as headings.
+  if (language === 'vb') return { headers: findVbRegionHeaders(lines), kind: 'region' }
   // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading. Unlike TOML, a `.` in an INI section name is never a nesting operator (see the HeaderKind doc comment above), so this is 'table-flat', not 'table-toml'.
   if (language === 'ini') return { headers: findTableHeaders(lines, false), kind: 'table-flat' }
   // YAML and .env are key/value; their `#` comment lines must not be sniffed as markdown headings (which would hide every real key), so route explicitly.
@@ -489,10 +527,7 @@ function buildSectionResult(
 ): SectionResult | null {
   const header = headers[headerPos]
   if (header === undefined) return null
-  const endIndex =
-    kind === 'table-toml'
-      ? tableSectionEndIndex(headers, headerPos, lines.length)
-      : sectionEndIndex(headers, headerPos, lines.length)
+  const endIndex = headerEndIndex(headers, kind, headerPos, lines.length)
   // Trim every trailing blank line (not just one -- the loop below keeps going while the line is blank/CR-only) so adjacent sections don't accrue the separator line(s) into the earlier section's body, regardless of how many blank lines the document places before the next heading.
   let endExclusive = endIndex
   while (
@@ -590,7 +625,7 @@ export function readSection(
   const text = readTextForSections(filePath, readFn)
   if (text === null) return null
 
-  return resolveSectionFromText(text, headingSpec, detectLanguage(filePath))
+  return resolveSectionFromText(text, headingSpec, refineLanguageByContent(filePath, detectLanguage(filePath), text))
 }
 
 // Finds the tightest (innermost) heading section whose line range contains a symbol's [lineStart, lineEnd] (1-based, inclusive) -- mirrors enclosingSymbol's containment/tie-break approach in graph_commands.ts, but over heading ranges instead of symbol ranges. Returns null when the file has no heading structure enclosing the symbol, which is the common case for source files without markdown-style doc comments.
@@ -603,7 +638,7 @@ export function findContainingSection(
   const text = readTextForSections(filePath, readFn)
   if (text === null) return null
 
-  const language = detectLanguage(filePath)
+  const language = refineLanguageByContent(filePath, detectLanguage(filePath), text)
   const { headers, kind } = findHeaders(text, language)
   if (headers.length === 0) return null
 
@@ -614,8 +649,7 @@ export function findContainingSection(
   for (let i = 0; i < headers.length; i++) {
     const header = headers[i]
     if (header === undefined) continue
-    const endIndex =
-      kind === 'table-toml' ? tableSectionEndIndex(headers, i, lines.length) : sectionEndIndex(headers, i, lines.length)
+    const endIndex = headerEndIndex(headers, kind, i, lines.length)
     const sectionLineStart = header.index + 1
     if (sectionLineStart <= lineStart && lineEnd <= endIndex) {
       if (header.index > bestHeaderLine) {
@@ -652,7 +686,7 @@ export function listSections(filePath: string, readFn?: (p: string) => string | 
   const text = readTextForSections(filePath, readFn)
   if (text === null) return []
 
-  const language = detectLanguage(filePath)
+  const language = refineLanguageByContent(filePath, detectLanguage(filePath), text)
   const { headers } = findHeaders(text, language)
   return headers.map((h) => h.heading)
 }

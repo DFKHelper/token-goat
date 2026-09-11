@@ -34,7 +34,7 @@ import { redactSecrets } from './secret_redact.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
-import { detectLanguage } from './parser_types.js'
+import { detectLanguageOfFile } from './parser_types.js'
 import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT, refBlindKindVerdict } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
@@ -2623,7 +2623,7 @@ function runRefsSingle(opts: RefsOptions): number {
     const defPaths = defFileHint !== undefined ? [defFileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(symName, detectLanguage(firstDefPath), refsDisplayPath(firstDefPath)))
+      emitErr(refBlindLanguageNotice(symName, detectLanguageOfFile(firstDefPath), refsDisplayPath(firstDefPath)))
       return 1
     }
     // The kind half of the same gate, and the one that fires in TypeScript, where the language half correctly never does: `refs` on an interface returns "No references found" today no matter how many files annotate with it, because extractRefs walks value positions only. Checked after the language half so a symbol blind both ways gets the language message, which names a file and is the more actionable of the two. All-or-nothing, and exit 1, matching both the language gate and the ordinary empty result beside it.

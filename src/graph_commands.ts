@@ -19,7 +19,7 @@ import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinct
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote } from './ref_blindness.js'
-import { detectLanguage } from './parser_types.js'
+import { detectLanguageOfFile } from './parser_types.js'
 import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
@@ -368,7 +368,7 @@ export function runCallers(opts: CallersOptions): number {
     const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(name, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      emitErr(refBlindLanguageNotice(name, detectLanguageOfFile(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
       return 1
     }
     // The kind half of the same gate, checked after the language half so a symbol blind both ways gets the language message: that one names a file and a language and is the more actionable of the two. Fires only when EVERY definition is of a ref-blind kind, the same all-or-nothing rule the language gate uses and for the same reason. Exit 1, matching the language gate and the ordinary empty result beside it, so nothing scripting on the exit code has to learn a third case.
@@ -567,7 +567,7 @@ export function runCallChain(opts: CallChainOptions): number {
     const refBlindKinds = noCallers ? refBlindRootKinds().blindKinds : []
     // The language half of the very disclosure the line above exists to make. Text mode's noCallers branch names it on stderr and the envelope carried no counterpart at all, so a --json consumer reading `chains: [[name]]` could not tell a language whose call sites are never indexed from a genuine root entry point: the same gap refBlindKinds closes, left open on the half that fires for whole languages rather than for one symbol kind. dead-code --json already discloses both halves side by side. Emitted alongside the kind field rather than instead of it, unlike text mode's precedence, because an envelope can carry two facts where a single stderr line has to pick one. Omitted when absent, so every other answer stays byte-identical.
     const blindRootPath = noCallers ? refBlindRootPath() : undefined
-    const refBlindLanguage = blindRootPath !== undefined ? { language: detectLanguage(blindRootPath), definedIn: toDisplayPath(rootDir, blindRootPath) } : undefined
+    const refBlindLanguage = blindRootPath !== undefined ? { language: detectLanguageOfFile(blindRootPath), definedIn: toDisplayPath(rootDir, blindRootPath) } : undefined
     emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}), ...(refBlindKinds.length > 0 ? { refBlindKinds } : {}), ...(refBlindLanguage !== undefined ? { refBlindLanguage } : {}) }, null, 2))
     return 0
   }
@@ -584,7 +584,7 @@ export function runCallChain(opts: CallChainOptions): number {
     // Same honesty gate as callers/impact/refs, on the one sibling whose empty answer is rendered as a SUCCESS ("(no callers)", exit 0) rather than an error -- which makes it the easiest of the four to misread as a settled verdict. Emitted on stderr so the chain rendering on stdout keeps its shape for anything parsing it.
     const blindRoot = refBlindRootPath()
     if (blindRoot !== undefined) {
-      emitErr(refBlindLanguageNotice(name, detectLanguage(blindRoot), toDisplayPath(rootDir, blindRoot)))
+      emitErr(refBlindLanguageNotice(name, detectLanguageOfFile(blindRoot), toDisplayPath(rootDir, blindRoot)))
       emit(`${name}  (no callers recorded)`)
       return 0
     }
@@ -786,7 +786,7 @@ export function runImpact(opts: ImpactOptions): number {
     const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(rootName, detectLanguage(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      emitErr(refBlindLanguageNotice(rootName, detectLanguageOfFile(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
       return 1
     }
     // Same kind gate as runCallers', on the command that BFSes the same ref rows: for a type declaration the frontier is empty by construction, so "no impact" describes the index and not the blast radius of changing it. Language gate first, all-or-nothing, exit 1, for the reasons given there.

@@ -1396,7 +1396,7 @@ export interface AdapterSpan {
  * container/object name here, e.g. apex.ts's trigger `objectName`) now lives in its own
  * `parent` column, separate from `docstring`. `lines`/`style`, when both given, recover a real
  * doc comment immediately above the span's start line via {@link precedingDocComment}; omitted
- * (or a language whose comment syntax doesn't fit `'c'`/`'hash'`), `docstring` stays `''`.
+ * (or a language whose comment syntax doesn't fit `'c'`/`'hash'`/`'vb'`), `docstring` stays `''`.
  */
 export function makeSpanSymbol(
   filePath: string,

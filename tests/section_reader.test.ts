@@ -11,6 +11,7 @@ import {
   readSection,
   findContainingSection,
 } from '../src/section_reader.js'
+import { detectLanguageOfFile } from '../src/parser_types.js'
 
 const tmpDirs: string[] = []
 
@@ -248,6 +249,62 @@ describe('extractSection — key-value fallback does not mistake a bare URL for 
     const result = extractSection(text, 'docs_url')
     expect(result).not.toBeNull()
     expect(result?.content).toBe('docs_url = https://example.com/path\nmore text below')
+  })
+})
+
+describe('Visual Basic #Region sections', () => {
+  // HAND-DERIVED: `#Region "name"` ... `#End Region`, nestable, keywords case-insensitive, per https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive ; expected line ranges are read off this text.
+  const VB = [
+    'Public Class Widget',
+    '#Region "Fields"',
+    '    Private _count As Integer',
+    '    #region "Nested ""Quoted"""',
+    '    Private _inner As String',
+    '    #end region',
+    '#End Region',
+    '',
+    '    Public Sub Run()',
+    '        Dim total = 5',
+    '    End Sub',
+    '#End Region',
+    '#Region "Unclosed"',
+    '    Private _tail As Integer',
+  ].join('\n')
+
+  it('lists every region at every depth, unquoting the name', () => {
+    expect(listSections(tmpFile('Widget.vb', VB))).toEqual(['Fields', 'Nested "Quoted"', 'Unclosed'])
+  })
+
+  it('ends a region at its own #End Region, not at the next region, and runs an unclosed one to end of file', () => {
+    const file = tmpFile('Widget.vb', VB)
+    const fields = readSection(file, 'Fields')
+    expect([fields?.lineStart, fields?.lineEnd]).toEqual([2, 7])
+    expect(fields?.content).not.toContain('Public Sub Run')
+    const nested = readSection(file, 'Nested "Quoted"')
+    expect([nested?.lineStart, nested?.lineEnd]).toEqual([4, 6])
+    const unclosed = readSection(file, 'Unclosed')
+    expect([unclosed?.lineStart, unclosed?.lineEnd]).toEqual([13, 14])
+  })
+
+  it('findContainingSection picks the innermost region and nothing outside every region', () => {
+    const file = tmpFile('Widget.vb', VB)
+    expect(findContainingSection(file, 3, 3)?.heading).toBe('Fields')
+    expect(findContainingSection(file, 5, 5)?.heading).toBe('Nested "Quoted"')
+    expect(findContainingSection(file, 9, 11)).toBeNull()
+  })
+
+  it('a VB file with no regions has no sections, rather than code lines sniffed as headings', () => {
+    expect(listSections(tmpFile('Plain.vb', 'Module M\n    Dim total = 5\n    Const Limit = 10\nEnd Module\n'))).toEqual([])
+  })
+
+  it('a VB6 .cls is read as Visual Basic from its content, so its header lines are not sniffed as sections', () => {
+    // CAPTURE: header lines verbatim from https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls
+    const cls = 'VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  \'True\nEND\nAttribute VB_Name = "CFileInfo"\nOption Explicit\n'
+    const file = tmpFile('CFileInfo.cls', cls)
+    expect(listSections(file)).toEqual([])
+    expect(detectLanguageOfFile(file)).toBe('vb')
+    expect(detectLanguageOfFile(tmpFile('Svc.cls', 'public with sharing class Svc {\n}\n'))).toBe('apex')
+    expect(detectLanguageOfFile(path.join(tmpdir(), 'tg-no-such-dir', 'Gone.cls'))).toBe('apex')
   })
 })
 
