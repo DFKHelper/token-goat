@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { buildBootstrapAudit, runBootstrapAudit } from '../src/cli_bootstrap_audit.js'
+import { CAN_JUNCTION, CAN_SYMLINK } from './helpers/can-symlink.js'
 
 describe('bootstrap-audit', () => {
   it('audits frontmatter only, sorts largest entries, and applies budgets', async () => {
@@ -51,7 +52,7 @@ describe('bootstrap-audit', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it('deduplicates canonical files reached through a directory link', async () => {
+  it.skipIf(!CAN_JUNCTION)('deduplicates canonical files reached through a directory link', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-dedupe-'))
     const home = path.join(root, 'home')
     const agents = path.join(home, '.claude', 'agents')
@@ -59,19 +60,15 @@ describe('bootstrap-audit', () => {
     const aliasDir = path.join(agents, 'alias')
     fs.mkdirSync(realDir, { recursive: true })
     fs.writeFileSync(path.join(realDir, 'data-engineer.md'), '---\ndescription: one canonical entry\n---\nPRIVATE PROMPT BODY\n')
-    try {
-      fs.symlinkSync(realDir, aliasDir, process.platform === 'win32' ? 'junction' : 'dir')
-    } catch {
-      fs.rmSync(root, { recursive: true, force: true })
-      return
-    }
+    fs.symlinkSync(realDir, aliasDir, process.platform === 'win32' ? 'junction' : 'dir')
     const result = await buildBootstrapAudit({ project: root, home })
     expect(result.counts.metadata_files).toBe(1)
     expect(result.largest).toHaveLength(1)
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it('accepts top-level linked agent roots but rejects nested escaping links', async () => {
+  // Plants both a directory link and two file links, so it needs the symlink privilege, not just the junction one.
+  it.skipIf(!CAN_SYMLINK || !CAN_JUNCTION)('accepts top-level linked agent roots but rejects nested escaping links', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-boundary-'))
     const home = path.join(root, 'home')
     const agents = path.join(home, '.claude', 'agents')
@@ -86,14 +83,9 @@ describe('bootstrap-audit', () => {
     fs.writeFileSync(path.join(linkedDir, 'legitimate.md'), '---\ndescription: legitimate linked directory entry\n---\nPRIVATE PROMPT BODY\n')
     fs.writeFileSync(path.join(escaped, 'escape.md'), '---\ndescription: escaped entry\n---\nPRIVATE PROMPT BODY\n')
     fs.writeFileSync(directFile, '---\ndescription: legitimate linked file entry\n---\nPRIVATE PROMPT BODY\n')
-    try {
-      fs.symlinkSync(linkedDir, path.join(agents, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir')
-      fs.symlinkSync(directFile, path.join(agents, 'direct.md'), 'file')
-      fs.symlinkSync(path.join(escaped, 'escape.md'), path.join(linkedDir, 'nested-escape.md'), 'file')
-    } catch {
-      fs.rmSync(root, { recursive: true, force: true })
-      return
-    }
+    fs.symlinkSync(linkedDir, path.join(agents, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir')
+    fs.symlinkSync(directFile, path.join(agents, 'direct.md'), 'file')
+    fs.symlinkSync(path.join(escaped, 'escape.md'), path.join(linkedDir, 'nested-escape.md'), 'file')
     const skipped = await buildBootstrapAudit({ project: root, home })
     expect(skipped.counts.agents).toBe(0)
     expect(skipped.diagnostics.some((d) => d.reason.includes('external link skipped'))).toBe(true)
@@ -102,19 +94,14 @@ describe('bootstrap-audit', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it('rejects an external agents root link by default and follows it with opt-in', async () => {
+  it.skipIf(!CAN_JUNCTION)('rejects an external agents root link by default and follows it with opt-in', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-root-link-'))
     const home = path.join(root, 'home')
     const externalAgents = path.join(root, 'external-agents')
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
     fs.mkdirSync(externalAgents, { recursive: true })
     fs.writeFileSync(path.join(externalAgents, 'linked.md'), '---\ndescription: linked root entry\n---\nPRIVATE PROMPT BODY\n')
-    try {
-      fs.symlinkSync(externalAgents, path.join(home, '.claude', 'agents'), process.platform === 'win32' ? 'junction' : 'dir')
-    } catch {
-      fs.rmSync(root, { recursive: true, force: true })
-      return
-    }
+    fs.symlinkSync(externalAgents, path.join(home, '.claude', 'agents'), process.platform === 'win32' ? 'junction' : 'dir')
     const skipped = await buildBootstrapAudit({ project: root, home })
     expect(skipped.counts.agents).toBe(0)
     expect(skipped.diagnostics.some((d) => d.reason.includes('external root link skipped'))).toBe(true)

@@ -30,6 +30,7 @@ import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs } from '../src/db.js'
 import { querySymbols } from '../src/index_reader.js'
 import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
+import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 let TMP: string
 let dbPath: string
@@ -125,18 +126,14 @@ describe('canonicalizeIndexPath', () => {
     expect(path.basename(canonicalizeIndexPath(path.join(TMP, 'canonname.ts')))).toBe('CanonName.ts')
   })
 
-  it.skipIf(!hostFsIsCaseInsensitive())('refuses a resolved name that lives in another directory', () => {
+  it.skipIf(!hostFsIsCaseInsensitive() || !CAN_SYMLINK)('refuses a resolved name that lives in another directory', () => {
     // fs.realpathSync.native follows symlinks and Windows junctions, so a link can resolve to a
     // fold-equal basename belonging to a completely different file. Adopting it would put a name
     // in the row that has no directory entry where the row says it does.
     fs.mkdirSync(path.join(TMP, 'real'))
     fs.writeFileSync(path.join(TMP, 'real', 'Alias.ts'), 'export const z = 1\n')
     const link = path.join(TMP, 'alias.ts')
-    try {
-      fs.symlinkSync(path.join(TMP, 'real', 'Alias.ts'), link, 'file')
-    } catch {
-      return // unprivileged Windows cannot create symlinks; nothing to assert
-    }
+    fs.symlinkSync(path.join(TMP, 'real', 'Alias.ts'), link, 'file')
     expect(canonicalizeIndexPath(link), 'a symlink target renamed the link').toBe(link)
   })
 

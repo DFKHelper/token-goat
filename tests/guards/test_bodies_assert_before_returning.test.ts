@@ -53,24 +53,6 @@ type Exemption = { file: string; title: string; sites: number; reason: string }
  */
 const EXEMPT: readonly Exemption[] = [
   {
-    file: 'tests/cli_bootstrap_audit.test.ts',
-    title: 'deduplicates canonical files reached through a directory link',
-    sites: 1,
-    reason: 'Creating the directory link is the fixture. Windows refuses a symlink or junction to an unprivileged process without developer mode, so the scenario cannot be built at all on such a machine.',
-  },
-  {
-    file: 'tests/cli_bootstrap_audit.test.ts',
-    title: 'accepts top-level linked agent roots but rejects nested escaping links',
-    sites: 1,
-    reason: 'Same symlink privilege: the three links this plants are the whole fixture.',
-  },
-  {
-    file: 'tests/cli_bootstrap_audit.test.ts',
-    title: 'rejects an external agents root link by default and follows it with opt-in',
-    sites: 1,
-    reason: 'Same symlink privilege: the external agents-root link is the whole fixture.',
-  },
-  {
     file: 'tests/cli.test.ts',
     title: 'bash-output --file rejects a FIFO (special file)',
     sites: 1,
@@ -81,30 +63,6 @@ const EXEMPT: readonly Exemption[] = [
     title: 'discovers servers from ~/.claude.json even when its key uses a different drive-letter case than the (canonicalized) project root',
     sites: 1,
     reason: 'Drive letters exist only on Windows, and only when the temp directory actually carries one, so there is no differently-cased key to build anywhere else.',
-  },
-  {
-    file: 'tests/cmdindex_case_only_rename_converges.test.ts',
-    title: 'refuses a resolved name that lives in another directory',
-    sites: 1,
-    reason: 'Same symlink privilege: the link whose target carries a fold-equal basename in a different directory is the whole fixture.',
-  },
-  {
-    file: 'tests/codex_review_regressions.test.ts',
-    title: 'rejects a directory symlink pointing out of the root (finding 1: canonicalize does not call realpath, so <root>/link -> /elsewhere satisfied a plain string-prefix test while naming a confined-away file)',
-    sites: 1,
-    reason: 'Same symlink privilege: the escaping directory link is the whole fixture, and the realpath resolution under test is platform-independent.',
-  },
-  {
-    file: 'tests/embed_model_shared_cache.test.ts',
-    title: 'refuses to publish through a symlink planted at its temp name',
-    sites: 1,
-    reason: 'Same symlink privilege: without one there is no planted link to refuse.',
-  },
-  {
-    file: 'tests/embed_model_shared_cache.test.ts',
-    title: 'will not copy a cached entry that is a symlink, however good its target looks',
-    sites: 1,
-    reason: 'Same symlink privilege: without one there is no symlinked cache entry to reject.',
   },
   {
     file: 'tests/embed_vec_module_unloaded.test.ts',
@@ -125,18 +83,6 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'Vacuous by design, and correctly so: the rule is "no allowScripts allowlist without the tool that reads it", so a manifest that declares no allowlist has nothing to check. Neither manifest declares one today.',
   },
   {
-    file: 'tests/hooks_agent_spawn.test.ts',
-    title: 'does not follow a nested symlink out of the project roster into the rest of the filesystem',
-    sites: 1,
-    reason: 'Same symlink privilege: the escaping link is the whole fixture.',
-  },
-  {
-    file: 'tests/hooks_agent_spawn.test.ts',
-    title: 'does not follow the project roster itself when .claude/agents is a symlink out of the project',
-    sites: 1,
-    reason: 'Same symlink privilege: the escaping roster link is the whole fixture.',
-  },
-  {
     file: 'tests/index_prune.test.ts',
     title: 'clears the vector as well as the chunk row',
     sites: 1,
@@ -153,30 +99,6 @@ const EXEMPT: readonly Exemption[] = [
     title: 'searchSymbolsFts still finds a match when the query contains a literal double-quote character',
     sites: 1,
     reason: 'Same missing FTS5 table. The escaping itself is pinned unconditionally by the sanitizeFtsQuery unit test alongside it.',
-  },
-  {
-    file: 'tests/read_commands.test.ts',
-    title: 'runGrep still follows a legitimate symlink when unconfined (activePins is null)',
-    sites: 1,
-    reason: 'Same symlink privilege, reported by the fixture helper as canSymlink rather than thrown.',
-  },
-  {
-    file: 'tests/read_commands.test.ts',
-    title: 'runGrep finds a file reachable only through a legitimate in-root symlink when confined',
-    sites: 1,
-    reason: 'Same symlink privilege, reported by the fixture helper as canSymlink rather than thrown.',
-  },
-  {
-    file: 'tests/read_commands.test.ts',
-    title: 'runGrep terminates on a symlink cycle when confined',
-    sites: 1,
-    reason: 'Same symlink privilege: without one there is no cycle to terminate on.',
-  },
-  {
-    file: 'tests/read_commands.test.ts',
-    title: 'runGrep does not report the same file twice via a symlink to an already-walked directory when confined',
-    sites: 1,
-    reason: 'Same symlink privilege: without one there is no second path to the same directory.',
   },
 ] as const
 
@@ -320,5 +242,101 @@ describe('a test body cannot finish having asserted nothing', () => {
       expect(e.reason.length, `${key(e)} needs a reason`).toBeGreaterThan(40)
       expect(FILES.some((f) => f.rel === e.file), `${e.file} is not a scanned test file`).toBe(true)
     }
+  })
+})
+
+/**
+ * Companion sweep 1: a `beforeEach`/`beforeAll` body that bails.
+ *
+ * The damage here is per-file rather than per-case. A test body that returns early silences one
+ * case; a setup hook that returns early leaves every test in its scope running against state
+ * nobody established, and all of them still report PASSED. `afterEach`/`afterAll` are scanned too,
+ * because a teardown that bails leaks state into the next case rather than into its own.
+ *
+ * Not scanned: a `try { unlink } catch {}` around an optional cleanup step. That swallows a
+ * failure, but it is scoped to one statement whose failure genuinely carries no information (the
+ * file was already absent), and 26 of them exist in this suite with a reason comment on each. A
+ * bare `return` is different in kind: it abandons everything after it in the hook.
+ */
+function scanHookSource(source: string, rel: string): { hookBodies: number; hookSites: Site[] } {
+  const sf = ts.createSourceFile(rel, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const hookSites: Site[] = []
+  let hookBodies = 0
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      HOOK_NAMES.has(node.expression.text)
+    ) {
+      const body = node.arguments[0]
+      if (body !== undefined && (ts.isArrowFunction(body) || ts.isFunctionExpression(body)) && ts.isBlock(body.body)) {
+        hookBodies++
+        let bare = 0
+        const walk = (n: ts.Node, insideNestedFn: boolean): void => {
+          const isNestedFn =
+            n !== body.body && (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n))
+          if (!insideNestedFn && ts.isReturnStatement(n) && n.expression === undefined) bare++
+          n.forEachChild((child) => walk(child, insideNestedFn || isNestedFn))
+        }
+        walk(body.body, false)
+        if (bare > 0) {
+          hookSites.push({
+            file: rel,
+            title: node.expression.text,
+            line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
+            sites: bare,
+          })
+        }
+      }
+    }
+    node.forEachChild(visit)
+  }
+  visit(sf)
+  return { hookBodies, hookSites }
+}
+
+const HOOK_NAMES = new Set(['beforeEach', 'beforeAll', 'afterEach', 'afterAll'])
+
+/** Floor on hook bodies walked: an AST change that stops matching the hook call shape would otherwise empty this sweep silently, which is the exact failure mode the sweep exists to catch. */
+const MIN_HOOK_BODIES = 800
+
+let TOTAL_HOOK_BODIES = 0
+const HOOK_FOUND: Site[] = []
+for (const f of FILES) {
+  const { hookBodies, hookSites } = scanHookSource(readFileSync(f.abs, 'utf8'), f.rel)
+  TOTAL_HOOK_BODIES += hookBodies
+  HOOK_FOUND.push(...hookSites)
+}
+
+// Provenance: HAND-DERIVED. Two minimal TypeScript sources written here to exercise the detector in both directions, computed from the rule ("a bare return at statement position in a hook body, not inside a nested function") rather than read off scanHookSource. They are not fixtures of any producer's wire format.
+const HOOK_POSITIVE = `
+beforeEach(() => {
+  if (!ready) return
+  setUp()
+})
+`
+const HOOK_NEGATIVE = `
+beforeEach(() => {
+  setUp(() => { return })
+  cleanup.push(() => { if (x) return })
+})
+`
+
+describe('a setup or teardown hook cannot bail and leave its whole file running on state nobody built', () => {
+  it('walks a real population of hook bodies, and the detector finds a planted bail and only a planted bail', () => {
+    expect(TOTAL_HOOK_BODIES).toBeGreaterThanOrEqual(MIN_HOOK_BODIES)
+    // The live population is currently empty, so a plain "found nothing" would be indistinguishable from a detector that matches nothing at all. These two synthetic sources supply the proof in both directions instead.
+    expect(scanHookSource(HOOK_POSITIVE, 'synthetic-positive.ts').hookSites.map((s) => s.sites)).toEqual([1])
+    // A `return` inside a callback passed to something the hook calls belongs to that callback, not to the hook, and must not be reported.
+    const negative = scanHookSource(HOOK_NEGATIVE, 'synthetic-negative.ts')
+    expect(negative.hookBodies).toBe(1)
+    expect(negative.hookSites).toEqual([])
+  })
+
+  it('flags no hook body that can return before doing its work', () => {
+    expect(
+      HOOK_FOUND.map((s) => `${s.file}:${s.line} :: ${s.title}`),
+      'A setup or teardown hook that returns early abandons every statement after it, and every test in its scope then runs against state that was never built while still reporting PASSED. Move the condition to it.skipIf(...) on the affected cases, or make the hook establish its state unconditionally.',
+    ).toEqual([])
   })
 })

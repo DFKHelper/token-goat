@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { isInsideRoot } from '../src/project.js'
+import { CAN_SYMLINK } from './helpers/can-symlink.js'
 import { fenceUntrustedContent } from '../src/injection_scan.js'
 import { redactSecrets } from '../src/secret_redact.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -31,19 +32,14 @@ describe('isInsideRoot containment', () => {
     fs.rmSync(tmp, { recursive: true, force: true })
   })
 
-  it('rejects a directory symlink pointing out of the root (finding 1: canonicalize does not call realpath, so <root>/link -> /elsewhere satisfied a plain string-prefix test while naming a confined-away file)', () => {
+  it.skipIf(!CAN_SYMLINK)('rejects a directory symlink pointing out of the root (finding 1: canonicalize does not call realpath, so <root>/link -> /elsewhere satisfied a plain string-prefix test while naming a confined-away file)', () => {
     const root = path.join(tmp, 'project')
     const outside = path.join(tmp, 'other-project')
     fs.mkdirSync(root)
     fs.mkdirSync(outside)
     fs.writeFileSync(path.join(outside, 'secret.ts'), 'export const x = 1\n')
     const link = path.join(root, 'link')
-    try {
-      fs.symlinkSync(outside, link, 'dir')
-    } catch {
-      // Windows refuses a symlink to an unprivileged process without developer mode; the realpath resolution under test is platform-independent, so skip rather than fail the run.
-      return
-    }
+    fs.symlinkSync(outside, link, 'dir')
 
     expect(isInsideRoot(path.join(link, 'secret.ts'), root)).toBe(false)
   })

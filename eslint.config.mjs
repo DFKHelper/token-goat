@@ -25,6 +25,8 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports', fixStyle: 'inline-type-imports' }],
+      // An un-awaited promise in a test body is a silent pass, not a slow test: `expect(p).rejects.toThrow()` without `await` schedules the assertion and the case ends green before it ever runs, and the same is true of any bare async call whose rejection lands after the body returns. Type-aware parsing is already on for this directory (`project` above), so the rule costs no new dependency and no new parse. `ignoreVoid` stays at its default, so a deliberately fire-and-forget call must say `void` at the call site rather than being indistinguishable from a forgotten `await`.
+      '@typescript-eslint/no-floating-promises': 'error',
     },
   },
   /**

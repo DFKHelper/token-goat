@@ -11,6 +11,7 @@ import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences, parseAgentDefinition, findRestrictedAgentNames } from '../src/hooks_agent_spawn.js'
+import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact project map is far too small to trip BRIEFING_TARGET_TOKENS on its own. Fixed-size project maps (not derived from this repo's own live index) so both the over-budget path and the cache-ids-block regression path are exercised deterministically, regardless of the host machine's index state or repo size -- see cycle 121: a test that reads buildProjectMap()'s live output for this repo passes or fails depending on ambient index staleness, not on the actual budget-vs-reminder-size coupling being tested.
 let _hugeProjectMapOverride = false
@@ -1180,7 +1181,7 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
   // already refuses for its roster walk (see tests/cli_bootstrap_audit.test.ts's "rejects nested
   // escaping links" and "rejects an external agents root link" cases) -- a nested symlink inside
   // a repository-authored .claude/agents pointing at a directory elsewhere on the machine.
-  it('does not follow a nested symlink out of the project roster into the rest of the filesystem', () => {
+  it.skipIf(!CAN_JUNCTION)('does not follow a nested symlink out of the project roster into the rest of the filesystem', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-escape-')))
     const proj = path.join(root, 'proj')
     const outside = path.join(root, 'outside')
@@ -1189,13 +1190,7 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
       fs.mkdirSync(path.join(proj, '.claude', 'agents'), { recursive: true })
       fs.mkdirSync(outside, { recursive: true })
       fs.writeFileSync(path.join(outside, 'leaked.md'), '---\nname: leaked-outside-agent\ntools: Read\n---\nb')
-      try {
-        fs.symlinkSync(outside, path.join(proj, '.claude', 'agents', 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
-      } catch {
-        // No symlink privilege on this machine (common on Windows without dev mode/admin) --
-        // nothing to prove without one, so skip rather than fail on an environment limitation.
-        return
-      }
+      fs.symlinkSync(outside, path.join(proj, '.claude', 'agents', 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
       process.chdir(proj)
       const names = findRestrictedAgentNames()
       expect(names).not.toContain('leaked-outside-agent')
@@ -1205,20 +1200,17 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
     }
   })
 
-  it('does not follow the project roster itself when .claude/agents is a symlink out of the project', () => {
+  it.skipIf(!CAN_JUNCTION)('does not follow the project roster itself when .claude/agents is a symlink out of the project', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-root-escape-')))
     const proj = path.join(root, 'proj')
     const outside = path.join(root, 'outside-agents')
     const prevCwd = process.cwd()
     try {
-      fs.mkdirSync(proj, { recursive: true })
+      // `.claude` has to exist before the link can be planted inside it. Without this the symlink call threw ENOENT on every platform, and the bare `catch { return }` this site used to carry reported the case PASSED without ever building the fixture or reaching the assertion below.
+      fs.mkdirSync(path.join(proj, '.claude'), { recursive: true })
       fs.mkdirSync(outside, { recursive: true })
       fs.writeFileSync(path.join(outside, 'leaked.md'), '---\nname: leaked-root-agent\ntools: Read\n---\nb')
-      try {
-        fs.symlinkSync(outside, path.join(proj, '.claude', 'agents'), process.platform === 'win32' ? 'junction' : 'dir')
-      } catch {
-        return
-      }
+      fs.symlinkSync(outside, path.join(proj, '.claude', 'agents'), process.platform === 'win32' ? 'junction' : 'dir')
       process.chdir(proj)
       const names = findRestrictedAgentNames()
       expect(names).not.toContain('leaked-root-agent')

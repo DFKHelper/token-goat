@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import Database from '../src/sqlite_driver.js'
+import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 // Stub the DB-layer imports so tests don't need a real SQLite DB
 vi.mock('../src/index_reader.js', () => ({
@@ -3962,21 +3963,15 @@ describe('read_commands', () => {
     // direct recursion -- so the content is reachable ONLY via the `alias` symlink, isolating
     // whether the symlink itself was traversed from whether the real directory would have been
     // found anyway by ordinary recursion (it would not, dot-prefixed or not, if placed directly).
-    function makeSymlinkOnlyReachableFixture(): { canSymlink: boolean } {
+    function makeSymlinkOnlyReachableFixture(): void {
       const real = path.join(tempDir, '.hidden-target')
       fs.mkdirSync(real)
       fs.writeFileSync(path.join(real, 'target.txt'), 'FINDME reachable only via symlink\n')
-      try {
-        fs.symlinkSync(real, path.join(tempDir, 'alias'), 'dir')
-        return { canSymlink: true }
-      } catch {
-        return { canSymlink: false }
-      }
+      fs.symlinkSync(real, path.join(tempDir, 'alias'), 'dir')
     }
 
-    it('runGrep still follows a legitimate symlink when unconfined (activePins is null)', () => {
-      const { canSymlink } = makeSymlinkOnlyReachableFixture()
-      if (!canSymlink) return
+    it.skipIf(!CAN_SYMLINK)('runGrep still follows a legitimate symlink when unconfined (activePins is null)', () => {
+      makeSymlinkOnlyReachableFixture()
       const { stdout } = capture(() => { runGrep({ pattern: 'FINDME', path: tempDir }) })
       expect(stdout).toContain('reachable only via symlink')
     })
@@ -3987,9 +3982,8 @@ describe('read_commands', () => {
     // legitimate in-root symlink became invisible to confined MCP grep. Resolving the entry once
     // and traversing the realpath closes the same window without the capability loss, so the
     // expectation is inverted deliberately.
-    it('runGrep finds a file reachable only through a legitimate in-root symlink when confined', () => {
-      const { canSymlink } = makeSymlinkOnlyReachableFixture()
-      if (!canSymlink) return
+    it.skipIf(!CAN_SYMLINK)('runGrep finds a file reachable only through a legitimate in-root symlink when confined', () => {
+      makeSymlinkOnlyReachableFixture()
       let code = 1
       const { stdout } = capture(() => {
         code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
@@ -4001,15 +3995,11 @@ describe('read_commands', () => {
     // A symlink cycle (`loop` -> tempDir itself) makes a naive walk recurse forever. The visited-
     // realpath set must terminate it. Built with fs.symlinkSync, never Git Bash `ln -s`, which on
     // Windows produces a junction that lstatSync().isSymbolicLink() reports as false.
-    it('runGrep terminates on a symlink cycle when confined', () => {
+    it.skipIf(!CAN_SYMLINK)('runGrep terminates on a symlink cycle when confined', () => {
       fs.writeFileSync(path.join(tempDir, 'plain.txt'), 'FINDME cycle fixture\n')
       const sub = path.join(tempDir, 'sub')
       fs.mkdirSync(sub)
-      try {
-        fs.symlinkSync(tempDir, path.join(sub, 'loop'), 'dir')
-      } catch {
-        return
-      }
+      fs.symlinkSync(tempDir, path.join(sub, 'loop'), 'dir')
       let code = 1
       const { stdout } = capture(() => {
         code = withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
@@ -4022,15 +4012,11 @@ describe('read_commands', () => {
       expect(stdout.split('cycle fixture').length - 1).toBe(1)
     })
 
-    it('runGrep does not report the same file twice via a symlink to an already-walked directory when confined', () => {
+    it.skipIf(!CAN_SYMLINK)('runGrep does not report the same file twice via a symlink to an already-walked directory when confined', () => {
       const sub = path.join(tempDir, 'sub')
       fs.mkdirSync(sub)
       fs.writeFileSync(path.join(sub, 'dup.txt'), 'FINDME duplicate-check marker\n')
-      try {
-        fs.symlinkSync(sub, path.join(tempDir, 'alias'), 'dir')
-      } catch {
-        return
-      }
+      fs.symlinkSync(sub, path.join(tempDir, 'alias'), 'dir')
       const { stdout } = capture(() => {
         withPinnedReads(new Map(), () => runGrep({ pattern: 'FINDME', path: tempDir }))
       })
