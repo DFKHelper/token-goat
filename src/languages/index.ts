@@ -4,7 +4,7 @@
  * Adapters for TypeScript/JS, Python, Go, Rust, Ruby, Java, C++, Markdown,
  * JSON, YAML, TOML, CSS, and Dockerfile remain inlined in `parser.ts`.
  * This barrel exports the newer adapters: C#, PHP, HTML, Liquid, Kotlin, Swift,
- * GraphQL, SQL, INI, Makefile, Proto, .env, Apex, and Salesforce metadata.
+ * GraphQL, SQL, INI, Makefile, Proto, .env, Visual Basic, Apex, and Salesforce metadata.
  */
 
 export * from './common.js'
@@ -16,6 +16,7 @@ export * from './kotlin.js'
 export * from './swift.js'
 export * from './scala.js'
 export * from './lua.js'
+export * from './vb.js'
 export * from './elixir.js'
 export * from './dart.js'
 export * from './zig.js'

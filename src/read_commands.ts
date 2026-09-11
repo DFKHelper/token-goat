@@ -6387,6 +6387,18 @@ export function extractImports(text: string, ext: string): string[] {
       let m: RegExpExecArray | null
       while ((m = re.exec(line)) !== null) push(m[1])
     }
+  } else if (e === '.vb' || e === '.bas' || e === '.vbs') {
+    // Visual Basic's `Imports` directive falls through the generic fallback below, since "Imports" is not one of its keywords. One statement can list several namespaces separated by commas, and an alias clause (`Imports Alias = Target`) pushes its target, the real dependency, as the C# alias branch above does. An XML namespace import (`Imports <xmlns:ns="...">`) names no code dependency and is skipped.
+    for (const line of lines) {
+      const m = /^\s*Imports\s+([^'<][^']*)/i.exec(line)
+      if (!m) continue
+      for (const clause of m[1]!.split(',')) {
+        const c = clause.trim()
+        if (c === '' || c.startsWith('<')) continue
+        const alias = /^[A-Za-z_]\w*\s*=\s*([\w.]+(?:\(Of[^)]*\))?)/i.exec(c)
+        push(alias ? alias[1] : (/^[\w.]+/.exec(c) ?? [undefined])[0])
+      }
+    }
   } else if (e === '.lua') {
     // Lua's idiomatic module load is `require("mod")` -- the parenthesized, quoted form. The
     // generic `import|require|use|#include` fallback only matches the paren-LESS `require "mod"`

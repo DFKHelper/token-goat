@@ -30,7 +30,7 @@ import { fingerprintContent } from './fingerprint.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
-import { detectLanguage } from './parser_types.js'
+import { detectLanguage, refineLanguageByContent } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
 import { precedingDocComment } from './doc_comment.js'
 import type { DocCommentStyle } from './doc_comment.js'
@@ -44,6 +44,7 @@ import { extractKotlin } from './languages/kotlin.js'
 import { extractSwift } from './languages/swift.js'
 import { extractScala } from './languages/scala.js'
 import { extractLua } from './languages/lua.js'
+import { extractVb } from './languages/vb.js'
 import { extractElixir } from './languages/elixir.js'
 import { extractDart } from './languages/dart.js'
 import { extractZig } from './languages/zig.js'
@@ -2484,15 +2485,16 @@ export function extractWithRegex(content: string, filePath: string): SymbolEntry
  */
 export async function parseFile(filePath: string): Promise<ParseResult> {
   const start = Date.now()
-  const language = detectLanguage(filePath)
+  const pathLanguage = detectLanguage(filePath)
 
   let content: string
   try {
     content = decodeSource(await fs.promises.readFile(filePath))
   } catch {
-    return { symbols: [], refs: [], language, duration: Date.now() - start }
+    return { symbols: [], refs: [], language: pathLanguage, duration: Date.now() - start }
   }
 
+  const language = refineLanguageByContent(filePath, pathLanguage, content)
   const { symbols, refs } = parseContent(content, filePath, language)
   return { symbols, refs, language, duration: Date.now() - start }
 }
@@ -2655,6 +2657,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift' }),
   scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last' }),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
+  vb: (content, filePath) => extractVb(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
   dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleSingleQuote: true, tripleQuoteRunClose: 'first' }),
   zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, { lineComment: '//', blockComment: null, lineStringPrefix: '\\\\' }),
@@ -2864,7 +2867,7 @@ export function indexFileSync(rawPath: string, dbPath: string = globalDbPath(), 
     deleteFileEmbeddings(db, filePath)
     return
   }
-  const language = detectLanguage(filePath)
+  const pathLanguage = detectLanguage(filePath)
   let raw: Buffer
   if (preReadBytes !== undefined) {
     raw = preReadBytes
@@ -2877,6 +2880,7 @@ export function indexFileSync(rawPath: string, dbPath: string = globalDbPath(), 
     }
   }
   const content = decodeSource(raw)
+  const language = refineLanguageByContent(filePath, pathLanguage, content)
   const { symbols, refs } = parseContent(content, filePath, language)
   writeParseResult(filePath, raw, { symbols, refs, language, duration: 0 }, dbPath)
 }

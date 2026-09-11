@@ -92,6 +92,7 @@ const CASES: readonly AdapterCase[] = [
   { language: 'proto', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.proto'), targetBasename: 'sample.proto' },
   { language: 'terraform', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.tf'), targetBasename: 'sample.tf' },
   { language: 'powershell', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.ps1'), targetBasename: 'sample.ps1' },
+  { language: 'vb', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.vb'), targetBasename: 'Sample.vb' },
   {
     language: 'apex',
     kind: 'regex',
