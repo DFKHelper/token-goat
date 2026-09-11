@@ -6,6 +6,6 @@
     "noUncheckedIndexedAccess": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["tests/**/*", "src/html-to-text.d.ts"],
+  "include": ["tests/**/*", "scripts/**/*.ts", "src/html-to-text.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
