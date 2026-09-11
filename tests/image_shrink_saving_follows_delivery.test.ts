@@ -32,7 +32,10 @@ beforeAll(async () => {
   fs.writeFileSync(imgPath, await sharp(noise, { raw: { width: side, height: side, channels: 3 } }).jpeg({ quality: 100 }).toBuffer())
 })
 
+const savedCwd = process.cwd()
+
 afterEach(() => {
+  process.chdir(savedCwd)
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k]
     else process.env[k] = savedEnv[k]
@@ -50,6 +53,8 @@ function shrinkRow(): { events: number; bytes: number } {
 
 async function viewImage(): Promise<Record<string, unknown>> {
   const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'vs-delivery', tool_name: 'view_image', tool_input: { filePath: imgPath }, tool_use_id: 'tu-1' }
+  // VS Code sends no cwd and runs the hook in the workspace, which the normalizer fills from process.cwd(); the image has to be inside it to be shrunk.
+  process.chdir(dir)
   const event = buildEvent('pre_tool_use', normalizePayload(payload, 'vscode'))
   return JSON.parse(serializeOutput(await runHook(event), 'pre_tool_use', 'vscode', event)) as Record<string, unknown>
 }

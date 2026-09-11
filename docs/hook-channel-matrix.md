@@ -42,7 +42,7 @@ paper over.
 | pre deny | M (d) | M (w)¹ | M (w)²⁸ | ? (doc, BE-06) | M (doc)² | ? (doc)³ | ? (doc)⁴ | M (w)⁵ | M (w)⁶ | M (doc) | M (w) |
 | pre context (hints) | M (c) | D (w)⁷ | M (w)²⁸ | ? (u, BE-06) | D (b)⁸ | ? (u) | ? (doc) | ? (u)⁹ | D (b)¹⁰ | D (b)¹⁰ | D (b)¹⁰ |
 | pre context (image shrink) | M (c) | M (w)¹¹ | M (w)²⁹ | ? (u) | D (b) | ? (u) | ? (doc) | D (w) | M (b)¹² | M (w)¹¹ | M (b)¹² |
-| pre rewriteInput | M (d) | M (w)¹³ | M (w)²⁸ | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (w)¹¹ | M (w) |
+| pre rewriteInput | M (d) | M (w)¹³ | M (w)²⁸ ³² | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (w)¹¹ | M (w) |
 | post rewriteOutput | M (d) | M (w)¹⁴ | D (w)³⁰ | ? (doc, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁵ | D (w)¹⁶ | M (w)¹⁶ |
 | post context | M (d) | D (w)¹⁷ | M (w)²⁸ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁸ | D (w)¹⁶ | D (w)¹⁶ |
 | failure context | X | M (w)¹⁹ | X³¹ | X | X | X | X | X | X | X | X |
@@ -78,9 +78,10 @@ paper over.
 26. Demonstrated once on 1.0.80 (marker in `transformedContent` plus the billing delta); one of two turns delivered and the rate is unknown. Copilot's own docs say the output is dropped — the docs are wrong for additionalContext.
 27. Kimi's `userPromptHookMessage` fallback reads it, per kimi-code source.
 28. VS Code 1.136.0, `resources/app/extensions/copilot/dist/extension.js`: `ChatHookService.executePreToolUseHook` reads `hookSpecificOutput.permissionDecision`/`permissionDecisionReason`/`updatedInput`/`additionalContext`, and the PostToolUse and SessionStart paths read `hookSpecificOutput.additionalContext`. A top-level `decision:"block"` is not read on PreToolUse, so `serializeVscodeOutput` (`src/bridges/vscode_hooks.ts`) sends the deny inside `hookSpecificOutput`, and `updatedInput` goes back under VS Code's own key names (`filePath`, `oldString`, ...). No live VS Code run is recorded.
-29. `view_image` only: the shrunk copy is written to a temp file and `updatedInput.filePath` points at it. `read_file` on an image passes untouched, since its result is text and the base64 payload would only cost tokens. Whether VS Code asks for approval before reading a file outside the workspace is unverified.
+29. `view_image` only: the shrunk copy is written to a temp file and `updatedInput.filePath` points at it. `read_file` on an image passes untouched, since its result is text and the base64 payload would only cost tokens. Whether VS Code asks for approval before reading a file outside the workspace is unverified, so token-goat declines a UNC or device path, and any path outside the workspace, before touching it.
 30. VS Code has no field that replaces a tool result, so a rewriteOutput is answered with `{}`, and `emitRewrite` books no saving for it.
 31. VS Code's hook-type table lists `preCompact` and `postToolUseFailure` nowhere; the shared hooks file carries both keys for Copilot CLI and VS Code never fires them.
+32. The channel works (see 29), but `run_in_terminal` never gets an `updatedInput`: it maps to Bash for hints only, so terminal output is not compressed in VS Code. VS Code does not tell the hook which shell will run the command, so rewriting it safely is not possible. The Bash rewrite on the other harnesses is unchanged.
 
 ## What this table exposed, and what was done
 

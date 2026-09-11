@@ -1826,6 +1826,8 @@ function isCompressibleSingleCommand(cmd: string): boolean {
  */
 function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): HookOutput | null {
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  // VS Code's run_in_terminal runs the command in whatever shell the user's terminal uses, and its payload does not say which one, so no quoting of the wrapped command is safe in every one of them: the command is never rewritten there.
+  if (event.raw['_tg_harness'] === 'vscode') return null
   let cfg: { enabled: boolean; disabled_filters: string[]; timeout_seconds: number }
   try {
     cfg = loadConfig().bash_compress
@@ -1848,8 +1850,6 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
     return null
   }
   if (cfg.disabled_filters.includes(filterName)) return null
-  // VS Code's run_in_terminal hands the rewritten command to the user's own terminal shell, PowerShell by default on Windows, which does not read bash's '\'' escape inside a single-quoted string; a command with no single quote quotes identically in both.
-  if (event.raw['_tg_harness'] === 'vscode' && rawCmd.includes("'")) return null
 
   const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds} -c ${shellQuoteSingle(rawCmd)}`
   return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }

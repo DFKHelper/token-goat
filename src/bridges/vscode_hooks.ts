@@ -68,7 +68,8 @@ export function materializeShrunkImageFile(context: string): string | undefined 
   try {
     pruneMaterialized()
     const file = path.join(os.tmpdir(), `${SHRINK_PREFIX}${process.pid}-${Date.now()}-${crypto.randomUUID()}.${match[1]!}`)
-    fs.writeFileSync(file, Buffer.from(match[2]!, 'base64'))
+    // Owner-only: the copy is of a workspace image and sits in the shared temp dir.
+    fs.writeFileSync(file, Buffer.from(match[2]!, 'base64'), { mode: 0o600 })
     return file
   } catch {
     return undefined
