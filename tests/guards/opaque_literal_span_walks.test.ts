@@ -15,14 +15,18 @@
  *
  * Fixture provenance: FORMAT-DERIVED. R raw character constant syntax (quote, optional dash run,
  * mirrored bracket) is from the R base help page `?Quotes`, section "Raw character constants",
- * added in R 4.0.0. PHP heredoc syntax is from the PHP Manual, "Strings", section "Heredoc". The
- * expected line numbers are HAND-DERIVED: counted off the fixture text, not read from any output.
+ * added in R 4.0.0. PHP heredoc syntax is from the PHP Manual, "Strings", section "Heredoc". Swift
+ * extended string delimiter syntax (any matching number of `#`, combining with `"""` for the
+ * multi-line form, and `\` losing its escaping meaning inside) is from The Swift Programming
+ * Language, "Strings and Characters", section "Extended String Delimiters". The expected line
+ * numbers are HAND-DERIVED: counted off the fixture text, not read from any output.
  */
 import { describe, expect, it } from 'vitest'
 
 import { assignBraceBlockSpans } from '../../src/languages/common.js'
 import { extractPhp } from '../../src/languages/php.js'
 import { extractR } from '../../src/languages/r.js'
+import { extractSwift } from '../../src/languages/swift.js'
 
 /** Every symbol as `name lineStart-lineEnd`, so a failure names the span that was wrong. */
 function spans(symbols: readonly { name: string; lineStart: number; lineEnd: number }[]): string[] {
@@ -39,6 +43,16 @@ function phpSpans(source: string): string[] {
     lineComment: ['//', '#'],
     lineCommentExceptions: ['#['],
     multilineLang: 'php',
+  }))
+}
+
+/** Mirrors the `swift` entry of parser.ts's adapter table, which is what supplies a Swift declaration's span. */
+function swiftSpans(source: string): string[] {
+  return spans(assignBraceBlockSpans(extractSwift(source, 'x.swift').symbols, source, {
+    lineComment: '//',
+    nestedBlockComments: true,
+    tripleQuote: true,
+    multilineLang: 'swift',
   }))
 }
 
@@ -120,5 +134,127 @@ describe('span walks and opaque literals', () => {
       '',
     ].join('\n')
     expect(phpSpans(source)).toEqual(['A 2-12', 'f 3-8', 'g 9-11'])
+  })
+
+  it('does not end a Swift method at a brace inside a single-hash extended string', () => {
+    const source = [
+      'class A {',
+      '    func f() {',
+      '        let s = #"a"b } c"#',
+      '        print(s)',
+      '    }',
+      '',
+      '    func g() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['A 1-10', 'f 2-5', 'g 7-9'])
+  })
+
+  it('requires a Swift extended string closer to carry the opener\'s own hash count', () => {
+    const source = [
+      'class B {',
+      '    func f() {',
+      '        let s = ##"a"# still inside } c"##',
+      '        print(s)',
+      '    }',
+      '',
+      '    func g() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['B 1-10', 'f 2-5', 'g 7-9'])
+  })
+
+  it('does not let a bare triple quote close a multi-line Swift extended string', () => {
+    const source = [
+      'class C {',
+      '    func f() {',
+      '        let s = #"""',
+      '        a """ } not the end',
+      '        """#',
+      '        print(s)',
+      '    }',
+      '',
+      '    func g() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['C 1-12', 'f 2-7', 'g 9-11'])
+  })
+
+  it('honours the hash count of a multi-line Swift extended string too', () => {
+    const source = [
+      'class D {',
+      '    func f() {',
+      '        let s = ##"""',
+      '        a """# } not the end',
+      '        """##',
+      '        print(s)',
+      '    }',
+      '',
+      '    func g() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['D 1-12', 'f 2-7', 'g 9-11'])
+  })
+
+  it('does not let a backslash inside a Swift extended string hide its closer', () => {
+    const source = [
+      'class E {',
+      '    func f() {',
+      '        let s = #"a\\"# + "}"',
+      '        print(s)',
+      '    }',
+      '',
+      '    func g() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['E 1-10', 'f 2-5', 'g 7-9'])
+  })
+
+  it('does not read Swift\'s other hash spellings as a string opener', () => {
+    const source = [
+      'class F {',
+      '    func f() {',
+      '        if #available(iOS 15, *) {',
+      '            print(#file)',
+      '        }',
+      '        _ = #selector(f)',
+      '    }',
+      '',
+      '    func g() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['F 1-12', 'f 2-7', 'g 9-11'])
+  })
+
+  it('keeps the name of a Swift property whose value is an extended string', () => {
+    const source = [
+      'class G {',
+      '    let title = #"struct Fake { func nope() {} }"#',
+      '',
+      '    func real() {',
+      '        return',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    expect(swiftSpans(source)).toEqual(['G 1-7', 'title 2-2', 'real 4-6'])
   })
 })
