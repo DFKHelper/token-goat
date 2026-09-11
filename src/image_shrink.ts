@@ -41,6 +41,9 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { contextOutput, passOutput } from './hooks_common.js'
+import { materializeShrunkImageFile } from './bridges/vscode_hooks.js'
+import { detectHarness } from './bridges/registry.js'
+import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
@@ -555,7 +558,10 @@ function pruneShrinkCache(): void {
  * either way; only the (unmeasured) re-encode CPU cost differs, and this function has no
  * visibility into that.
  */
-async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Promise<HookOutput> {
+/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. opencode and OpenClaw pin no harness when they call the hook, so they are recognized only when their session variable is set. */
+const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['copilot_cli', 'pi', 'opencode', 'openclaw'])
+
+async function finalizeShrinkResult(result: ShrinkResult, filePath: string, event: HookEvent): Promise<HookOutput> {
   // The image's own file name, so a cloned repository chooses it, and both summaries below reach the model on the context channel, which neither fences nor escapes the markers token-goat speaks in. The OCR body text beside it was already fenced; the name it was announced under was not. Sanitized once here rather than at each use, which also keeps the stats label it feeds from carrying a forged field.
   const basename = displaySafePath(path.basename(filePath))
 
@@ -580,7 +586,24 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
   // credited at the capped cost rather than at its full pixel count.
   const shrinkSaved = result.originalBytes - result.shrunkBytes
   const tier = loadConfig().image_shrink.vision_tier
-  recordStat('image_shrink', shrinkSaved, visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier), undefined, basename)
+  const shrinkTokens = visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier)
+
+  // A saving is booked only for a shrunk copy that reaches the model. The context channel below delivers it with this hook's own response; the two branches here do not.
+  const harness = detectHarness()
+  if (harness === 'vscode') {
+    // VS Code takes the copy only as a rewritten view_image path, so the file is written here, in the process that books the saving, and a failed write passes and books nothing. OCR is skipped: text cannot replace the image on this channel.
+    const file = materializeShrunkImageFile(formatShrinkSummary(result, basename).dataUrl)
+    if (file === undefined) return passOutput()
+    recordStat('image_shrink', shrinkSaved, shrinkTokens, undefined, basename)
+    return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, file_path: file } }
+  }
+  if (HOST_MATERIALIZED_HARNESSES.has(harness)) {
+    // The host writes the copy in its own process after this one has answered, and falls back to the original image if that write fails, so this process can never see the delivery and books nothing. OCR is skipped for the same reason as on VS Code: the host finds no data URL in OCR text and would send the original image.
+    const { summary, dataUrl } = formatShrinkSummary(result, basename)
+    return contextOutput(`${summary}\n${dataUrl}`)
+  }
+
+  recordStat('image_shrink', shrinkSaved, shrinkTokens, undefined, basename)
 
   // OCR runs on the already-shrunk bytes, not the raw file: it is resized to Claude Vision's
   // optimal edge already (plenty of resolution for legible screenshot text) and is much
@@ -691,7 +714,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
         height: meta.height,
         format: cached.format,
       }
-      return finalizeShrinkResult(result, filePath)
+      return finalizeShrinkResult(result, filePath, event)
     }
     try {
       fs.unlinkSync(cached.filePath)
@@ -727,7 +750,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
 
   writeCachedShrink(filePath, result, stat.mtimeMs, quality)
 
-  return finalizeShrinkResult(result, filePath)
+  return finalizeShrinkResult(result, filePath, event)
 }
 
 registerHook('pre_tool_use', preReadImageHandler, { toolName: 'Read' })

@@ -83,8 +83,7 @@ const NESTED_DECISION_EVENTS = new Set<HookEventName>(['stop', 'subagent_stop'])
  *
  * `hookEventName` is the PascalCase event name VS Code expects to see echoed back (the same names
  * Claude Code uses). Anything VS Code has no channel for becomes `{}` rather than a field it would
- * silently ignore: a result rewrite, a stop-event context note, or a base64 image payload on a tool
- * whose input cannot be pointed at the shrunk copy.
+ * silently ignore: a result rewrite, a stop-event context note, or a base64 image payload.
  */
 export function serializeVscodeOutput(
   output: HookOutput,
@@ -107,9 +106,8 @@ export function serializeVscodeOutput(
       if (NESTED_DECISION_EVENTS.has(eventName)) return '{}'
       // Same systemMessage form serializeOutput gives these two everywhere else; VS Code never fires either through the Copilot hooks file, so this only keeps the contract uniform.
       if (eventName === 'pre_compact' || eventName === 'notification') return JSON.stringify({ systemMessage: output.context })
-      if (eventName === 'pre_tool_use' && output.context.includes('data:image/')) {
-        return JSON.stringify(shrunkImageRedirect(output.context, event))
-      }
+      // preReadImageHandler writes the shrunk copy itself on VS Code and answers view_image with a rewriteInput, so a base64 payload reaching here has no channel and would only cost tokens as context text.
+      if (eventName === 'pre_tool_use' && output.context.includes('data:image/')) return '{}'
       return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: output.context } })
     }
     case 'rewriteInput': {
@@ -123,13 +121,4 @@ export function serializeVscodeOutput(
     case 'pass':
       return '{}'
   }
-}
-
-/** Point view_image at the shrunk temp copy; any other tool gets no response, since the base64 payload is never useful as context text. */
-function shrunkImageRedirect(context: string, event: HookEvent | undefined): Record<string, unknown> {
-  if (vscodeToolName(event) !== 'view_image' || event === undefined) return {}
-  const file = materializeShrunkImageFile(context)
-  if (file === undefined) return {}
-  const updatedInput = vscodeNativeToolInput('view_image', { ...event.toolInput, file_path: file })
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput } }
 }

@@ -32,6 +32,7 @@ import { OPENCLAW_PLUGIN_SCRIPT } from '../../src/bridges/openclaw.js'
 import { OPENCODE_PLUGIN_SCRIPT } from '../../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
 import { expandShortPath } from '../../src/paths.js'
+import { summarize } from '../../src/stats.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
@@ -647,6 +648,37 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
     // Copilot's modifiedArgs REPLACES the tool call's arguments wholesale (ESr in the 1.0.80 bundle), so the rewrite must carry every original arg, not a bare path object.
     expect(parsed.modifiedArgs?.['viewRange']).toEqual([1, 40])
+    expect(existsSync(markerPath)).toBe(false)
+  })
+
+  it('copilot shim: books no image_shrink saving, since the shim writes the copy after the hook has answered and a failed write sends the original image', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    const scriptPath = join(cwd, 'copilot-shim.js')
+    writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+    const imgPath = await makeLargeJpegFixture(cwd)
+    // A regular file with a path below it: os.tmpdir() in the shim then names a directory that cannot exist, so its temp write really fails.
+    const blocker = join(cwd, 'blocker')
+    writeFileSync(blocker, 'x')
+    const unwritable = join(blocker, 'tmp')
+
+    const run = (tmp: string): { modifiedArgs?: Record<string, unknown> } => {
+      const payload = JSON.stringify({ sessionId: 'inprocess-copilot-nobook-' + Math.random().toString(36).slice(2), workingDirectory: cwd, toolName: 'view', toolArgs: { path: imgPath } })
+      const res = spawnSync(process.execPath, [scriptPath, 'preToolUse', entryPath], { cwd, input: payload, encoding: 'utf8', timeout: 30000, env: { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp } })
+      expect(res.status).toBe(0)
+      return JSON.parse(res.stdout || '{}') as { modifiedArgs?: Record<string, unknown> }
+    }
+    const shrinkEvents = (): number => summarize(30).by_kind['image_shrink']?.events ?? 0
+
+    const before = shrinkEvents()
+    expect(run(unwritable).modifiedArgs, 'the failed write leaves the original path in place').toBeUndefined()
+    expect(shrinkEvents(), 'no saving may be booked for a copy that was never written').toBe(before)
+
+    // The survival half: a successful write still delivers the shrunk copy, and still books nothing, because this process cannot tell the two apart.
+    const rewritten = run(tmpdir()).modifiedArgs?.['path'] as string
+    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
+    expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
+    expect(shrinkEvents()).toBe(before)
     expect(existsSync(markerPath)).toBe(false)
   })
 

@@ -39,6 +39,9 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Rewrites the Bash tool_input to wrap the command in `token-goat compress`, quoted with shellQuoteSingle. This is an executed shell command, not prose spoken in token-goat\'s voice, and contains no `[token-goat]`/`[tg]` marker literal for a caller-supplied bracket to forge.',
   'hooks_bash.ts::preBashHandlerInner': 'Reaches maybeCompressRewrite, adjudicated above. Interpolates nothing of its own on this channel.',
   'hooks_bash.ts::preBashHandler': 'Wrapper over preBashHandlerInner. Interpolates nothing of its own.',
+  'image_shrink.ts::finalizeShrinkResult':
+    'VS Code only: points view_image at the shrunk temp copy. The one new value is a path token-goat built from pid, time and a random UUID, with a suffix whose character class admits no separator or bracket; the rest is the tool\'s own original input passed back unchanged. It is a tool argument, not prose in token-goat\'s voice, and carries no `[token-goat]`/`[tg]` marker for a caller-supplied bracket to forge.',
+  'image_shrink.ts::preReadImageHandler': 'Reaches finalizeShrinkResult, adjudicated above. Interpolates nothing of its own on this channel.',
 }
 
 /**

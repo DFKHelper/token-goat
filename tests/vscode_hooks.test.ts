@@ -9,8 +9,6 @@
  * executePreToolUseHook builds there, with tool names and input keys from the ToolName enum in the
  * same file and the languageModelTools schemas in resources/app/extensions/copilot/package.json.
  */
-import * as fs from 'node:fs'
-
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../src/stats.js', async (importOriginal) => {
@@ -141,17 +139,13 @@ describe('serializeOutput (vscode): context', () => {
     expect(out).toBe('{}')
   })
 
-  it('an image-shrink payload on view_image points filePath at a temp file holding the shrunk bytes', () => {
-    const out = serialize({ hookType: 'context', context: 'shrunk\ndata:image/png;base64,iVBORw0KGgo=' }, 'pre_tool_use', vscodeEvent('view_image', NATIVE_INPUTS['view_image']!))
-    const updated = (out['hookSpecificOutput'] as Record<string, unknown>)['updatedInput'] as Record<string, unknown>
-    const file = updated['filePath'] as string
-    try {
-      expect(Object.keys(updated)).toEqual(['filePath'])
-      expect(fs.readFileSync(file)).toEqual(Buffer.from('iVBORw0KGgo=', 'base64'))
-      expect(JSON.stringify(out)).not.toContain('base64')
-    } finally {
-      fs.rmSync(file, { force: true })
-    }
+  it('an image-shrink payload on view_image is {} too: the handler writes the copy itself, so the serializer never writes one', () => {
+    expect(serializeOutput({ hookType: 'context', context: 'shrunk\ndata:image/png;base64,iVBORw0KGgo=' }, 'pre_tool_use', 'vscode', vscodeEvent('view_image', NATIVE_INPUTS['view_image']!))).toBe('{}')
+  })
+
+  it('a rewriteInput pointing view_image at a shrunk copy reaches VS Code under its own filePath key', () => {
+    const out = serialize({ hookType: 'rewriteInput', updatedInput: { file_path: '/tmp/token-goat-shrink-1-2-x.jpeg' } }, 'pre_tool_use', vscodeEvent('view_image', NATIVE_INPUTS['view_image']!))
+    expect(out).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { filePath: '/tmp/token-goat-shrink-1-2-x.jpeg' } } })
   })
 })
 
