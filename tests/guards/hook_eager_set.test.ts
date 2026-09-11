@@ -36,6 +36,14 @@ describe('hook eager set', () => {
     expect(probe).not.toContain("from './parser.js'")
   })
 
+  it('parser_types.ts reads the content sniffs from sniff.ts, not from the adapters', () => {
+    // detectLanguage runs on every hook call. Importing isPascalSource from pascal.ts (and so on) put five adapters and
+    // the brace engine back on the hook path, which is the cost languages/registry.ts exists to remove.
+    const types = src('parser_types.ts')
+    expect(types).toContain("from './languages/sniff.js'")
+    expect([...types.matchAll(/from '\.\/languages\/([\w.]+)\.js'/g)].map((m) => m[1])).toEqual(['sniff'])
+  })
+
   it('walk_mode.ts pulls in nothing but node builtins and project.ts', () => {
     const imports = [...src('walk_mode.ts').matchAll(/^import .*? from '(.+?)'/gm)].map((m) => m[1])
     expect(imports.sort()).toEqual(['./project.js', 'fs', 'path'])

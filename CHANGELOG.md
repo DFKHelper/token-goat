@@ -61,6 +61,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
   A `.m` is read as MATLAB when it is not Objective-C and has a `function` or `classdef` line, so a Mathematica or Mercury file, or a MATLAB script with no functions, is left alone. A `.pp` is read as Pascal only when it starts with a `unit`, `program`, or `library` line, so a Puppet manifest is left alone. `.inc` and `.fpp` are not indexed, because they are used in more than one way. The new readers are in [src/languages](src/languages). Upgrading reindexes your projects once.
 
+### Changed
+
+- **Hooks start faster.** The language adapters that read symbols out of Fortran, COBOL, Pascal, PowerShell and the other 50-odd file types without a tree-sitter grammar now load only where files are indexed, instead of on every tool call. That takes 263 KB off what a hook compiles before it runs, 2.430 MB down to 2.167 MB, and about 5 ms off loading it. Nothing about what gets indexed changes, but the first `token-goat index` after this version reparses every file once, because the extraction code moved.
+
 ### Fixed
 
 - **`token-goat index` now indexes and counts every file it finds.** Some files only get a language after token-goat reads their contents, such as an OpenEdge ABL `.p` or an Objective-C `.m`. The walk listed them, but the index step then skipped them. So `index . --walk` reported one file fewer than it found for each such file, and those files were only indexed the first time another command looked them up.

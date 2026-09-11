@@ -13,23 +13,10 @@ export interface PerlResult {
   readonly imports: AdapterImport[]
 }
 
-// How far into a `.pl` or `.t` the markers are looked for, matching the head detectLanguageOfFile reads.
-const SNIFF_CHARS = 8192
 const MAX_SYMBOLS = 10_000
-const PERL_MARKER_RE = /^(?:#!.*\bperl\b|[ \t]*use[ \t]+(?:strict|warnings|Test::More|Test2::V0|Test::Simple)\b|[ \t]*package[ \t]+[\w:]+[ \t]*;|[ \t]*my[ \t]+[$@%]|[ \t]*sub[ \t]+\w+[ \t]*\{)/m
 
-/** True when a `.t` file is a Perl test script: a perl shebang, `use strict`, `use warnings` or a Test module, and no Raku `use v6`. */
-export function isPerlSource(content: string): boolean {
-  const head = content.slice(0, SNIFF_CHARS)
-  return PERL_MARKER_RE.test(head) && !/^[ \t]*use[ \t]+v6\b/m.test(head)
-}
-
-/** True when a `.pl` file is Prolog: a `:-` directive or clause and no Perl marker. */
-export function isPrologSource(content: string): boolean {
-  const head = content.slice(0, SNIFF_CHARS)
-  if (PERL_MARKER_RE.test(head)) return false
-  return /^:-/m.test(head) || /^[a-z]\w*(?:\([^()\n]*\))?[ \t]*:-/m.test(head)
-}
+// The Perl and Prolog sniffs live in sniff.ts so language detection on the hook path does not load this adapter.
+export { isPerlSource, isPrologSource } from './sniff.js'
 
 type LineClass = 'code' | 'blank' | 'comment' | 'skip'
 

@@ -7,7 +7,7 @@ import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
 
 export default defineConfig({
   test: {
-    setupFiles: ['./tests/setup/isolate-home.ts', './tests/setup/reset-hint-stats.ts'],
+    setupFiles: ['./tests/setup/isolate-home.ts', './tests/setup/reset-hint-stats.ts', './tests/setup/load-regex-extractors.ts'],
     globalSetup: ['./tests/setup/build-bundle.ts'],
     // Never pick up test copies inside agent worktrees (.claude/worktrees/...).
     exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],

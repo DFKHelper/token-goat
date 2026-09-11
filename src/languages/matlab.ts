@@ -16,14 +16,8 @@ interface Statement {
   readonly endLine: number
 }
 
-// How far into a `.m` detectLanguageOfFile looks, matching the Objective-C check beside it.
-const SNIFF_CHARS = 8192
-
 const FUNCTION_RE = /^function\b\s*(?:(?:\[[^\]]*\]|[A-Za-z]\w*)\s*=\s*)?([A-Za-z]\w*(?:\.[A-Za-z]\w*)*)/
 const CLASSDEF_RE = /^classdef\b\s*(?:\([^)]*\)\s*)?([A-Za-z]\w*)/
-// A header the sniff accepts: the name must be followed by its parameter list, a comment, a separator or nothing.
-const SNIFF_FUNCTION_RE = /^function\b\s*(?:(?:\[[\w\s,~]*\]|[A-Za-z]\w*)\s*=\s*)?[A-Za-z]\w*(?:\.[A-Za-z]\w*)?\s*(?:\(|[%#;,]|$)/
-const SNIFF_CLASSDEF_RE = /^classdef\b\s*(?:\([^)]*\)\s*)?[A-Za-z]\w*\s*(?:<|[%#]|$)/
 const BLOCK_RE = /^(properties|methods|events|enumeration)\s*(?:\(.*\))?$/
 const ARGUMENTS_RE = /^arguments\s*(?:\(.*\))?$/
 const IMPORT_RE = /^import\s+([A-Za-z]\w*(?:\.(?:[A-Za-z]\w*|\*))*)/
@@ -34,14 +28,8 @@ const CLOSERS: ReadonlySet<string> = new Set([
   'endclassdef', 'endproperties', 'endmethods', 'endevents', 'endenumeration', 'endspmd', 'until',
 ])
 
-/** True when a `.m` file that is not Objective-C has a MATLAB or Octave `function` or `classdef` header line. */
-export function isMatlabSource(content: string): boolean {
-  for (const raw of content.slice(0, SNIFF_CHARS).split('\n')) {
-    const line = raw.trim()
-    if (SNIFF_FUNCTION_RE.test(line) || SNIFF_CLASSDEF_RE.test(line)) return true
-  }
-  return false
-}
+// The MATLAB sniff lives in sniff.ts so language detection on the hook path does not load this adapter.
+export { isMatlabSource } from './sniff.js'
 
 function isNameChar(ch: string | undefined): boolean {
   return ch !== undefined && /[\w.)\]}']/.test(ch)

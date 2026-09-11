@@ -6,18 +6,8 @@
 
 import { cFunctionHeader, quotedTarget, scanBraceLanguage, trailingIdentifier, withoutTrailingBrace, type BraceAdapterResult, type BraceLanguage, type Decl, type DeclContext } from './brace_engine.js'
 
-// How far into a `.m` or `.h` the markers are looked for, matching the head detectLanguageOfFile reads.
-const SNIFF_CHARS = 8192
-
-/** True when a `.m` file is Objective-C rather than MATLAB: a line starts with `#import <...>` or `#import "..."`, `@interface`, `@implementation` or `@protocol`. The target is required so an Octave comment such as `# import the data` does not count. */
-export function isObjcSource(content: string): boolean {
-  return /^[ \t]*(?:#[ \t]*import[ \t]*[<"]|@(?:interface|implementation|protocol)\b)/m.test(content.slice(0, SNIFF_CHARS))
-}
-
-/** True when a `.h` header declares an Objective-C class or protocol, so it is not a plain C header. */
-export function isObjcHeader(content: string): boolean {
-  return /^[ \t]*@(?:interface|protocol)\b/m.test(content.slice(0, SNIFF_CHARS))
-}
+// The Objective-C sniffs live in sniff.ts so language detection on the hook path does not load this adapter.
+export { isObjcHeader, isObjcSource } from './sniff.js'
 
 // Matchers see trimmed code, and a trailing `{` is removed before TYPEDEF_TAG_RE and TYPE_RE run, so none needs a trailing `\s*$`.
 const CONTAINER_RE = /^@(interface|implementation|protocol)\s+([A-Za-z_]\w*)[ \t]*(\([ \t]*(?:([A-Za-z_]\w*)[ \t]*)?\))?/

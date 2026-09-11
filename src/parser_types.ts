@@ -13,11 +13,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { isAblSource } from './languages/abl.js'
-import { isMatlabSource } from './languages/matlab.js'
-import { isObjcHeader, isObjcSource } from './languages/objc.js'
-import { isPascalSource } from './languages/pascal.js'
-import { isPerlSource, isPrologSource } from './languages/perl.js'
+import { isAblSource, isMatlabSource, isObjcHeader, isObjcSource, isPascalSource, isPerlSource, isPrologSource } from './languages/sniff.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
@@ -177,8 +173,8 @@ export function detectLanguage(filePath: string): Language {
 
 /**
  * Extensions for languages token-goat recognizes by name but has neither a tree-sitter
- * grammar nor a regex-fallback extractor for (see {@link NO_TREE_SITTER_EXTRACTORS} in
- * parser.ts). These are not part of the {@link Language} union -- detectLanguage() maps them
+ * grammar nor a regex-fallback extractor for (see `ADAPTER_EXTRACTORS` in
+ * languages/registry.ts). These are not part of the {@link Language} union -- detectLanguage() maps them
  * to `'unknown'` -- so a file in one of these languages indexes to zero symbols exactly like
  * a genuinely empty or unrecognized file, with nothing to tell the two apart. This map exists
  * purely to make that distinction visible in diagnostics (index/outline/skeleton), not to
