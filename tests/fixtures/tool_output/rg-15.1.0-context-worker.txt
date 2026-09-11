@@ -1,0 +1,85 @@
+24-import { getFileEntry } from './index_reader.js'
+25-import { normalizePath } from './paths.js'
+26-import { ensureDirSync, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
+27:import { loadConfig } from './config.js'
+28-import { getDb } from './db.js'
+29-import { pathEqClause } from './sql_path.js'
+30-import { removeFileFromIndex, pruneDeletedFiles, sweepExpiredKnownRootMarkers, sweepKnownRoots } from './index_prune.js'
+--
+71- * How many {@link drainOnce} cycles to skip between opportunistic
+72- * {@link pruneDeletedFiles} sweeps. A `git mv`, directory rename, `git checkout <branch>`,
+73- * or `git clean` never fires an Edit hook for the paths it touches, so a plain dirty-queue
+74: * drain (which only reconciles a deletion when the exact old path was enqueued) never
+75- * notices those rows are gone and they orphan in the index forever. `pruneDeletedFiles`
+76- * walks every indexed path under a project root and stats each one to catch this — too
+77- * expensive to repeat on every ~2s poll tick, so it only runs every Nth cycle (mirrors
+--
+475-}
+476-
+477-/**
+478: * Global concurrency gate for embedding pipelines across ALL files, honoring
+479- * `config.worker.max_pool_workers`. {@link inFlightEmbeddings} only serializes duplicate work on
+480- * the SAME file -- a dirty batch of N distinct changed files previously fired N concurrent
+481: * `indexFileEmbeddings` transformer-inference pipelines with no cap at all, which can spike
+482: * CPU/memory proportionally to batch size. `activeEmbedSlots` tracks how many pipelines are
+483- * currently running; `embedSlotWaiters` holds resolvers for callers queued behind the cap, woken
+484- * one at a time (FIFO) as slots free up in {@link makeReleaseEmbedSlot}.
+485- */
+--
+536-    const message = extractErrorMessage(err)
+537-    appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileEmbeddings failed for ${absPath}: ${message}\n`)
+538-  }
+539:  // Defensive fallback (matches config.ts's own default of 4): several existing tests in this file mock loadConfig() with only a partial `{ worker: { blocked_roots: [...] } }` shape (see makeIndexer's embeddingsEnabled comment above for the same pattern), so a bare `.max_pool_workers` here would be `undefined` for those and silently block every embed call forever (0 < undefined is false, so nothing would ever dispatch or queue). loadConfig() always returns a fully-populated, schema-validated config object in production.
+540:  const limit = loadConfig().worker.max_pool_workers ?? 4
+541-  // Dispatches the actual embed call once a global slot is available, releasing it as soon as that call settles (success or failure) so it frees up for the next queued file regardless of outcome. Release is attached as a sibling `.then(release, release)` on the SAME promise `indexFileEmbeddings` returns (rather than wrapped via `.finally()` into a new promise that `runEmbed` then returns) so it costs no extra microtask hop on the chain the rest of this function builds on top of `runEmbed()`'s return value -- preserving indexFileEmbeddings' previous direct-call timing (including for tests that assert on it without awaiting extra ticks) for the common case where a slot is immediately free. Only when the global cap is already saturated does this queue in embedSlotWaiters, deferring dispatch until a running embed elsewhere finishes and calls its release closure.
+542-  const dispatchEmbed = (): Promise<unknown> => {
+543-    const result = indexFileEmbeddings(absPath, dbPath, sha, onEmbedError)
+--
+660-  const dir = path.dirname(dbPath)
+661-  return (absPath, sha) => {
+662-    try {
+663:      // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
+664:      const ixCfgForSkip = loadConfig().indexing
+665-      if (ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) {
+666-        // Purging stale rows is real work: unlike the `false` sha-gate skip below, this must
+667-        // count as "indexed" in processDirtyBatch's tally.
+--
+669-        return true
+670-      }
+671-      // Same reason as the identical call in cli.ts's cmdIndex: files.embed_sha encodes the content but not the embedding stack that produced the vectors, so the gate below reads a file embedded by a previous model or inference runtime as fresh and returns "nothing to do". ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision. It has to run before getFileEntry below, not beside the gate that consults the result: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so this costs one Set lookup per drained file after the first. embeddingsEnabled/depsAvailable are hoisted here from beside the gate for the same ordering reason; see their comments there.
+672:      const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+673-      const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
+674-      if (depsAvailable) ensureEmbeddingProvenance(getDb(dbPath))
+675-      const entry = getFileEntry(absPath, dbPath)
+--
+686-      if (!parseUnchanged) {
+687-        indexFileSync(absPath, dbPath)
+688-      }
+689:      // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts). If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha gate above would otherwise mask that forever: identical content would keep skipping the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check embed_sha against the current sha every time, even when the parse gate above skipped. While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged file -- but a bare-sha match must never satisfy the gate while disabled, or a file that was only ever marker-stamped (never actually embedded) would look "unchanged" the instant embeddings are re-enabled, permanently skipping its real first embed. Optional chaining/fallback here is a defensive test-mock safety net, not a real production path: loadConfig() always returns a fully-populated, schema-validated config object in production. Several existing tests in this file mock loadConfig() with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled (true), matching config.ts's own default, so this new gate check is a no-op for tests that never cared about embeddings.
+690-      // embeddingsEnabled and depsAvailable are computed above, before getFileEntry. depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable.
+691-      const embedUnchanged =
+692-        parseUnchanged &&
+--
+696-          embeddingsEnabled,
+697-          depsAvailable,
+698-          // Same partial-config defensiveness as embeddingsEnabled above: 0 matches no stamped oversize marker (config floors this key at 1), so a mocked config re-examines the file rather than assuming it current. See isEmbedFresh.
+699:          loadConfig().indexing?.large_file_symbol_only_kb ?? 0,
+700-        )
+701-      if (embedUnchanged) {
+702-        // Nothing to do at all: parse and embeddings are both already current for this content.
+--
+745-  dir: string = dataDir(),
+746-  requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
+747-): number {
+748:  const blockedRoots = loadConfig().worker.blocked_roots
+749-  // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker probe (9 markers x existsSync/lstat per level) plus isRepoContainer's readdirSync on every call, and a batch routinely contains many dirty paths under the same directory (or same project tree) that would otherwise repeat that walk once per path for a result (lastKnownProjectRoots) that is only consulted once per PRUNE_EVERY_N_DRAINS drains. Scoped to this function call (not module-level) since a project root learned from one batch's traffic can legitimately go stale by the next batch (e.g. after a project is deleted).
+750-  const projectRootCache = new Map<string, string | null>()
+751-  let indexed = 0
+--
+950-    // and will be retried on the next poll cycle.
+951-  }
+952-
+953:  // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above, on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not this cycle's already-completed dirty-queue work.
+954-  const cycle = (drainCycleCounts.get(dir) ?? 0) + 1
+955-  drainCycleCounts.set(dir, cycle)
+956-  if (cycle % PRUNE_EVERY_N_DRAINS === 0) {

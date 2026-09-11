@@ -28,7 +28,7 @@ import {
   SemgrepFilter,
   CI_FILTERS,
 } from '../src/tool_filters/ci.js'
-import { detectFromCommand, selectFilter } from '../src/tool_filters/dispatch.js'
+import { TOOL_FILTERS, compressOutput, detectFromCommand, selectFilter } from '../src/tool_filters/dispatch.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -723,6 +723,48 @@ describe('GenericCIFilter dispatch', () => {
 
   it('does not preempt GhRunLogFilter for gh run view --log', () => {
     expect(selectFilter(['gh', 'run', 'view', '123', '--log'])).toBeInstanceOf(GhRunLogFilter)
+  })
+
+  it('is registered last in the whole registry, not only last in its own family', () => {
+    // Its matcher is keyword-only rather than binary-gated, so it is a catch-all for every family and not just for Batch H. Spread in Batch H's position it preempted SHELL_FILE_FILTERS, LANGUAGE_FILTERS and MISC_FILTERS for any command that merely mentioned one of its keywords.
+    // "Last" means last among the entries that can claim a command: TailTruncFilter sits behind it and always answers false from matches(), so it can never intercept anything.
+    const claimable = TOOL_FILTERS.filter((x) => x.matches(['some-ci-tool', 'run', '--log-level', 'debug']))
+    expect(claimable[claimable.length - 1]).toBeInstanceOf(GenericCIFilter)
+    const ciIndex = TOOL_FILTERS.findIndex((x) => x instanceof GenericCIFilter)
+    expect(ciIndex).toBeGreaterThan(-1)
+    const probes = [['rg', '-n', 'x', 'src'], ['grep', '-rn', 'x', 'src'], ['ls', '-la'], ['wc', '-l', 'a.txt'], ['psql', '-c', 'select 1'], ['node', 'a.js']]
+    for (const later of TOOL_FILTERS.slice(ciIndex + 1)) {
+      for (const argv of probes) {
+        expect(later.matches(argv), `${later.name} is registered behind the keyword catch-all, so it can never be reached for \`${argv.join(' ')}\``).toBe(false)
+      }
+    }
+    expect(TOOL_FILTERS.filter((x) => x instanceof GenericCIFilter)).toHaveLength(1)
+  })
+
+  it('does not take a code search off the filter named for the search binary', () => {
+    expect(selectFilter(['rg', '-n', '-C', '8', 'pipeline\\(|from_pretrained', 'src'])?.name).toBe('rg')
+    expect(selectFilter(['grep', '-n', 'workflow\\|PERSIST_PATHS', 'notes.md'])?.name).toBe('grep')
+    expect(selectFilter(['ls', '-la', 'logs'])?.name).toBe('ls')
+    // Still the fallback for a CI command no binary-gated filter claims, which is the whole point of keeping it registered.
+    expect(selectFilter(['some-ci-tool', 'run', '--log-level', 'debug'])).toBeInstanceOf(GenericCIFilter)
+  })
+
+  it('leaves a ripgrep context search with the recovery pointer its own filter writes', () => {
+    // Fixture provenance: CAPTURE -- stdout of `rg -n -C 3 "loadConfig|enqueue|pipeline" src/worker.ts` run against this repository with ripgrep 15.1.0 (rev af60c2de9d), saved verbatim.
+    const raw = readFileSync(join(__dirname, 'fixtures', 'tool_output', 'rg-15.1.0-context-worker.txt'), 'utf8')
+    const argv = ['rg', '-n', '-C', '3', 'loadConfig|enqueue|pipeline', 'src/worker.ts']
+    // Exactly what maybeCompressRewrite resolves, through the same entry point it uses, so the line budget is the shipped `balanced` profile rather than the looser default of a bare apply() call.
+    const chosen = selectFilter(argv)
+    expect(chosen?.name).toBe('rg')
+    const viaChosen = compressOutput(chosen!, raw, '', 0, argv)
+    const viaCi = compressOutput(f, raw, '', 0, argv)
+    // Must-not-drop: both bodies are shorter than the input, so size alone cannot tell them apart. What the CI filter cannot produce is the line that says what it removed and how to get it back, because it does not know it is looking at a search. Pinned by name so a future change that trims harder still has to keep it.
+    expect(viaChosen.text).toMatch(/context lines suppressed/)
+    expect(viaCi.text).not.toMatch(/context lines suppressed/)
+    // And the first match the search found is still there under its own line number.
+    const firstMatch = raw.split('\n').find((l) => /^\d+:/.test(l))
+    expect(firstMatch).toBeDefined()
+    expect(viaChosen.text, 'the first match line must survive').toContain(firstMatch!)
   })
 })
 
