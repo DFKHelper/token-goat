@@ -126,7 +126,7 @@ const CONSTRUCTOR_RE = new RegExp(
   `(${IDENT})\\s*\\(`,
 )
 const CLASS_HEADER_RE = new RegExp(
-  '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial|readonly|ref|unsafe|file)\\s+)*' +
+  '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial|readonly|ref|unsafe|file|new)\\s+)*' +
   `(class|struct|interface|enum|record)(?:\\s+(?:class|struct))?\\s+(${IDENT})`,
 )
 // Methods may have no access modifier (implicitly private) or only a return type (e.g. `void Run()`), so the modifier group is zero-or-more. The leading negative-lookahead rejects statement-starting keywords in the return-type slot so a no-modifier match cannot mistake `return Helper();`-style lines for a method; `new` is omitted from the guard because it is also a valid method modifier (`new void Foo()`). Method detection only runs at one brace level inside a class body, where bare statements cannot legally appear, so this stays safe.

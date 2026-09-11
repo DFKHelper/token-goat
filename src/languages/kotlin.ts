@@ -65,7 +65,7 @@ const FUN_RE = new RegExp(
 
 const CONST_RE = new RegExp(
   '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
-  'final|actual|expect|const|lateinit|companion)\\s+)*' +
+  'final|actual|expect|const|lateinit|companion|external|inline)\\s+)*' +
   '(?:const\\s+)?val\\s+([A-Z_][A-Z0-9_]*)\\s*(?::|=)',
 )
 
