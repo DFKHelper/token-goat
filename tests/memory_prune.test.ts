@@ -619,9 +619,9 @@ line 0
     const reports = auditClaudeMd([file1, file2])
 
     const file1Report = reports.find((r) => r.path === file1)
-    if (file1Report?.crossFileOverlaps.length ?? 0 > 0) {
-      const overlap = file1Report?.crossFileOverlaps[0]
-      expect(overlap).toContain('…')
-    }
+    // Floor first: the assertion below used to sit behind `if (file1Report?.crossFileOverlaps.length ?? 0 > 0)`, which binds as `length ?? (0 > 0)` and, more to the point, let a report with no cross-file overlap at all report passed while checking no truncation.
+    expect(file1Report).toBeDefined()
+    expect(file1Report!.crossFileOverlaps.length).toBeGreaterThan(0)
+    expect(file1Report!.crossFileOverlaps[0]).toContain('…')
   })
 })

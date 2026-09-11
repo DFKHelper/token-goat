@@ -508,11 +508,13 @@ describe('embeddings module', () => {
 
       const chunks = embeddings.chunkFile('overlapclamp.ts', content, 100, 200, boundaries)
 
-      for (const c of chunks) {
-        if (c.kind === 'section') {
-          expect(c.startLine).toBeGreaterThanOrEqual(6) // never dips back into the 'symbol' boundary's lines (1-5)
-          expect(c.text).not.toContain('AAAA')
-        }
+      // Population floor: the per-item loop below asserts nothing at all if the sub-split stops producing 'section' chunks, so an empty (or all-'symbol') result would report passed while covering the clamp not at all.
+      const sectionChunks = chunks.filter((c) => c.kind === 'section')
+      expect(sectionChunks.length).toBeGreaterThan(0)
+
+      for (const c of sectionChunks) {
+        expect(c.startLine).toBeGreaterThanOrEqual(6) // never dips back into the 'symbol' boundary's lines (1-5)
+        expect(c.text).not.toContain('AAAA')
       }
     })
   })
@@ -924,21 +926,17 @@ describe('embeddings module', () => {
     })
 
     it('should return empty array for empty query', async () => {
-      if (!embeddings.isAvailable()) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const db = {} as any
-        const result = await embeddings.searchSemantic(db, '   ')
-        expect(result).toEqual([])
-      }
+      // Unconditional: searchSemantic's blank-query guard (`query.trim().length === 0`) sits after the isAvailable() check and touches neither the model nor the database, so it answers the same on a machine with the transformer present. Guarding this body on `!isAvailable()` made it assert nothing at all wherever the deps resolve, which is every machine that has run the model warm step.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const db = {} as any
+      const result = await embeddings.searchSemantic(db, '   ')
+      expect(result).toEqual([])
     })
   })
 
   describe('searchSemantic() SQL vector matching', () => {
-    it('should pass query vector via MATCH clause (not omit it)', async () => {
-      // Needs a real embed of the query string. isAvailable() only proves the onnxruntime require succeeded; without the weights already on this machine this line fetched 33 MB from huggingface.co, which is the suite's one remaining network dependency. See modelFilesPresent.
-      if (!embeddings.isAvailable() || !modelFilesPresent()) {
-        return
-      }
+    // Needs a real embed of the query string. isAvailable() only proves the onnxruntime require succeeded; without the weights already on this machine this line fetched 33 MB from huggingface.co, which is the suite's one remaining network dependency. See modelFilesPresent. This is skipIf rather than an early `return` inside the body so that an environment without the weights moves the skip counter instead of reporting a pass for a case that asserted nothing.
+    it.skipIf(!embeddings.isAvailable() || !modelFilesPresent())('should pass query vector via MATCH clause (not omit it)', async () => {
       // Verify the query issued to sqlite uses the embedded vector (MATCH ?) rather than a bare ORDER BY with no WHERE clause.
       const preparedStatements: string[] = []
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

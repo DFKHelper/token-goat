@@ -180,8 +180,7 @@ describe('checkSecurityPosture', () => {
     expect(find(checkSecurityPosture(closed, root), 'Security fetch policy').message).toContain('2 allowed host patterns')
   })
 
-  it('warns when the data directory is readable by other local users', () => {
-    if (process.platform === 'win32') return
+  it.skipIf(process.platform === 'win32')('warns when the data directory is readable by other local users', () => {
     fs.chmodSync(root, 0o755)
 
     const line = find(checkSecurityPosture(baseConfig(), root), 'Security data dir')
@@ -190,8 +189,7 @@ describe('checkSecurityPosture', () => {
     expect(line.message).toContain('755')
   })
 
-  it('reports a directory it cannot stat as unknown rather than as fine', () => {
-    if (process.platform === 'win32') return
+  it.skipIf(process.platform === 'win32')('reports a directory it cannot stat as unknown rather than as fine', () => {
     const line = find(checkSecurityPosture(baseConfig(), path.join(root, 'gone')), 'Security data dir')
 
     expect(line.status).toBe('warn')
@@ -200,8 +198,7 @@ describe('checkSecurityPosture', () => {
 
   // Windows has no POSIX mode to read, so the line says what does govern access there rather than
   // reporting a mode it made up or staying silent about the directory altogether.
-  it('says the directory follows the parent ACL on Windows', () => {
-    if (process.platform !== 'win32') return
+  it.skipIf(process.platform !== 'win32')('says the directory follows the parent ACL on Windows', () => {
     const line = find(checkSecurityPosture(baseConfig(), root), 'Security data dir')
 
     expect(line.status).toBe('ok')
