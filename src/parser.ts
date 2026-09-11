@@ -60,6 +60,10 @@ import { extractPerl } from './languages/perl.js'
 import { extractCShader, extractWgsl } from './languages/shader.js'
 import { extractSolidity } from './languages/solidity.js'
 import { extractThrift } from './languages/thrift.js'
+import { extractFortran } from './languages/fortran.js'
+import { extractPascal } from './languages/pascal.js'
+import { extractMatlab } from './languages/matlab.js'
+import { extractCmake } from './languages/cmake.js'
 import { extractElixir } from './languages/elixir.js'
 import { extractDart } from './languages/dart.js'
 import { extractZig } from './languages/zig.js'
@@ -2765,6 +2769,10 @@ const NO_TREE_SITTER_EXTRACTORS: Record<RegexLanguage, SymbolExtractor> = {
   hlsl: (content, filePath) => extractCShader(content, filePath).symbols,
   metal: (content, filePath) => extractCShader(content, filePath).symbols,
   wgsl: (content, filePath) => extractWgsl(content, filePath).symbols,
+  fortran: (content, filePath) => extractFortran(content, filePath).symbols,
+  pascal: (content, filePath) => extractPascal(content, filePath).symbols,
+  matlab: (content, filePath) => extractMatlab(content, filePath).symbols,
+  cmake: (content, filePath) => extractCmake(content, filePath).symbols,
 }
 
 function extractNoTreeSitter(

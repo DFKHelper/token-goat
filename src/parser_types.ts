@@ -14,7 +14,9 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { isAblSource } from './languages/abl.js'
+import { isMatlabSource } from './languages/matlab.js'
 import { isObjcHeader, isObjcSource } from './languages/objc.js'
+import { isPascalSource } from './languages/pascal.js'
 import { isPerlSource, isPrologSource } from './languages/perl.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
 
@@ -111,15 +113,17 @@ const ablOrUnknown = (c: string): Language | undefined => (isAblSource(c) ? 'abl
 /**
  * Each extension whose path language a content check can change: the path language the check applies to, and what it returns
  * instead (undefined keeps the path language). A `.cls` is VB6, then ABL, else Apex. A `.p` or `.w` is ABL only on an ABL marker;
- * a Pascal or CWEB file stays unknown, as before ABL was indexed. A `.m` is Objective-C only on an Objective-C marker, so a MATLAB
- * file stays unknown; a `.h` is Objective-C only on `@interface` or `@protocol`, so a C header is unchanged. A `.pl` that reads as
+ * a Pascal or CWEB file stays unknown, as before ABL was indexed. A `.m` is Objective-C on an Objective-C marker, else MATLAB on a
+ * `function` or `classdef` header, else unknown (Mathematica, Mercury); a `.pp` is Pascal only on a unit, program or library
+ * header, so a Puppet manifest stays unknown; a `.h` is Objective-C only on `@interface` or `@protocol`, so a C header is unchanged. A `.pl` that reads as
  * Prolog is left unknown, and a `.t` is Perl only on a Perl marker.
  */
 const CONTENT_SNIFFS: ReadonlyMap<string, { readonly from: Language; readonly refine: (content: string) => Language | undefined }> = new Map([
   ['.cls', { from: 'apex', refine: (c: string) => (isVb6ClassModule(c) ? 'vb' : ablOrUnknown(c)) }],
   ['.p', { from: 'unknown', refine: ablOrUnknown }],
   ['.w', { from: 'unknown', refine: ablOrUnknown }],
-  ['.m', { from: 'unknown', refine: (c: string) => (isObjcSource(sniffHead(c)) ? 'objc' : undefined) }],
+  ['.m', { from: 'unknown', refine: (c: string) => (isObjcSource(sniffHead(c)) ? 'objc' : isMatlabSource(sniffHead(c)) ? 'matlab' : undefined) }],
+  ['.pp', { from: 'unknown', refine: (c: string) => (isPascalSource(sniffHead(c)) ? 'pascal' : undefined) }],
   ['.h', { from: 'c', refine: (c: string) => (isObjcHeader(sniffHead(c)) ? 'objc' : undefined) }],
   ['.pl', { from: 'perl', refine: (c: string) => (isPrologSource(sniffHead(c)) ? 'unknown' : undefined) }],
   ['.t', { from: 'unknown', refine: (c: string) => (isPerlSource(sniffHead(c)) ? 'perl' : undefined) }],
@@ -181,13 +185,6 @@ export function detectLanguage(filePath: string): Language {
  * change indexing behavior.
  */
 export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([
-  ['.f', 'Fortran'],
-  ['.for', 'Fortran'],
-  ['.f77', 'Fortran'],
-  ['.f90', 'Fortran'],
-  ['.f95', 'Fortran'],
-  ['.f03', 'Fortran'],
-  ['.f08', 'Fortran'],
   ['.rpg', 'RPG II or RPG III'],
   ['.nsm', 'Natural map'],
   ['.nsd', 'Natural DDM'],

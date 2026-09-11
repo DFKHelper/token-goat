@@ -491,7 +491,7 @@ describe('extension mapping and imports', () => {
     expect(extractImports(fixture('Sample.thrift'), '.thrift')).toEqual(['shared.thrift'])
     expect(extractImports('use strict;\nuse List::Util qw(max);\n', '.pm')).toEqual(['List::Util'])
     // The other language's file keeps the generic fallback it had before these rows existed; each value was read off HEAD's extractImports.
-    expect(extractImports(fixture('matlab_isolate_axes.m'), '.m')).toEqual([])
+    expect(extractImports(fixture('mathematica_package.m'), '.m')).toEqual([])
     expect(extractImports(fixture('prolog_pairs.pl'), '.pl')).toEqual(['in source and binary forms, with or without'])
     expect(extractImports(fixture('sample.c'), '.h')).toEqual(['stdio.h'])
   })
@@ -510,13 +510,18 @@ describe('collision routing through the real entry points', () => {
     return file
   }
 
-  it('indexes an Objective-C .m as objc, and leaves a MATLAB .m unknown with no symbols', async () => {
+  it('indexes an Objective-C .m as objc, a MATLAB .m as matlab, and leaves a Mathematica .m unknown with no symbols', async () => {
     const objc = await parseFile(tmpFile('AFSecurityPolicy.m', fixture('Sample.m')))
     expect(objc.language).toBe('objc')
     expect(objc.symbols.map((s) => s.name)).toContain('evaluateServerTrust:forDomain:')
     const matlab = fixture('matlab_isolate_axes.m')
     expect(isObjcSource(matlab)).toBe(false)
-    const file = tmpFile('isolate_axes.m', matlab)
+    const matlabFile = tmpFile('isolate_axes.m', matlab)
+    expect(detectLanguageOfFile(matlabFile)).toBe('matlab')
+    const matlabParsed = await parseFile(matlabFile)
+    expect(matlabParsed.language).toBe('matlab')
+    expect(matlabParsed.symbols.map((s) => s.name)).toEqual(['isolate_axes', 'allchildren', 'allancestors'])
+    const file = tmpFile('Collatz.m', fixture('mathematica_package.m'))
     expect(detectLanguageOfFile(file)).toBe('unknown')
     const parsed = await parseFile(file)
     expect(parsed.language).toBe('unknown')

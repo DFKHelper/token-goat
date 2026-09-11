@@ -41,9 +41,10 @@ const ENTRY_FILES = new Set(['token-goat.mjs', 'token-goat.core.mjs', 'token-goa
  * core_bundle_stays_split.test.ts. A bridge `import()`s this bundle on nearly every tool call and
  * V8 parses every byte of the eager set before running any of it. Measured at 1.837 MB across 7
  * chunks both before and after the two builds were merged; the headroom is a regression trip-wire,
- * not a budget to re-tune on every dependency change.
+ * not a budget to re-tune on every dependency change. Raised from 2.4 MB to 2.6 MB when the Fortran, Pascal, MATLAB
+ * and CMake adapters (41 KB, eager like every other adapter) took the set from 2.507 MB to 2.548 MB.
  */
-const MAX_HOOK_EAGER_BYTES = 2.4 * 1024 * 1024
+const MAX_HOOK_EAGER_BYTES = 2.6 * 1024 * 1024
 
 /** Chunk filenames `file` imports with a static `import ... from "./..."`, not a deferred one. */
 function staticChunkImports(file: string): string[] {

@@ -49,8 +49,8 @@ beforeAll(() => {
   writeFileSync(join(projectDir, 'blank.ts'), '\n')
   // A real file with no markdown headings: the "exists but no sections" control for `section --list`.
   writeFileSync(join(projectDir, 'blank.md'), 'plain text, no headings\n')
-  // HAND-DERIVED: a fixed-form Fortran program (a named unsupported language) and a file with an extension nothing maps.
-  writeFileSync(join(projectDir, 'legacy.f90'), '      PROGRAM HELLO\n      PRINT *, "hi"\n      END\n')
+  // A file in a named unsupported language (only its `.rpg` extension matters; the content is never parsed) and a file with an extension nothing maps.
+  writeFileSync(join(projectDir, 'legacy.rpg'), 'placeholder, never parsed\n')
   writeFileSync(join(projectDir, 'notes.xyz'), 'Foo bar\n')
   run(['index', '.', '--walk'])
 })
@@ -101,8 +101,8 @@ describe('missing path vs empty result', () => {
 
   // A file type with no extractor says so, with the one-line invitation, instead of implying an empty or stale index.
   for (const [cmd, file, what] of [
-    ['outline', 'legacy.f90', 'Fortran, .f90'],
-    ['skeleton', 'legacy.f90', 'Fortran, .f90'],
+    ['outline', 'legacy.rpg', 'RPG II or RPG III, .rpg'],
+    ['skeleton', 'legacy.rpg', 'RPG II or RPG III, .rpg'],
     ['outline', 'notes.xyz', '.xyz'],
   ] as const) {
     it(`${cmd} ${file} names the missing extractor and how to ask for one`, () => {

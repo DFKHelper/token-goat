@@ -2718,10 +2718,10 @@ describe('read_commands', () => {
 
     it('says a named unsupported language has no extractor and how to ask for it', () => {
       mockQuerySymbols.mockReturnValue([])
-      const { text, code } = runSkeleton({ file: emptyFixture('.f90') })
+      const { text, code } = runSkeleton({ file: emptyFixture('.rpg') })
       expect(code).toBe(1)
-      expect(text).toContain('token-goat has no symbol extractor for this file type (Fortran, .f90)')
-      expect(text).toContain(`To ask for Fortran support, open an issue at ${ISSUES_URL} or email ${SUPPORT_EMAIL}.`)
+      expect(text).toContain('token-goat has no symbol extractor for this file type (RPG II or RPG III, .rpg)')
+      expect(text).toContain(`To ask for RPG II or RPG III support, open an issue at ${ISSUES_URL} or email ${SUPPORT_EMAIL}.`)
       expect(text).not.toContain('No indexed symbols found')
     })
 
