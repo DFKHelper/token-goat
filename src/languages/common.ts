@@ -904,6 +904,73 @@ export function matchSwiftExtendedOpener(text: string, index: number): SwiftExte
   return { openerEnd: index + m[0].length, multiline, closer: `${multiline ? '"""' : '"'}${hashes}` }
 }
 
+// Characters that end an unquoted here-document delimiter word: shell metacharacters and whitespace (GNU Bash Reference Manual, section 2 "Definitions", "metacharacter").
+const BASH_WORD_TERMINATORS = new Set([' ', '\t', '\n', '|', '&', ';', '(', ')', '<', '>'])
+
+/** A bash here-document redirection opening at some offset: where its opening punctuation and delimiter word end, and the terminator line that closes it. */
+export interface BashHeredocOpener {
+  /** Offset just past the delimiter word, where the rest of the command line continues. */
+  openerEnd: number
+  /** The delimiter after quote removal, which is the exact text the closing line must equal. */
+  terminator: string
+}
+
+/**
+ * Match a bash here-document redirection opening at `index` in `text`, or null when none does.
+ *
+ * The delimiter is an ordinary shell word, so it may be quoted in whole or in part and the
+ * terminator is that word after quote removal: `<<\EOF`, `<<'END-OF-FILE'` and `<<"E"OF` close on
+ * `EOF`, `END-OF-FILE` and `EOF` respectively (GNU Bash Reference Manual, section 3.6.6 "Here
+ * Documents"). Quoting only decides whether the body is expanded, which no index cares about, so
+ * every form returns the same shape. A preceding `<` or a following `<` rules the match out, which
+ * is what keeps the `<<<` here-string (section 3.6.7 "Here Strings") and the `<<` left-shift
+ * operator (section 6.5 "Shell Arithmetic") from being read as here-document openers.
+ */
+export function matchBashHeredocOpener(text: string, index: number): BashHeredocOpener | null {
+  if (text[index] !== '<' || text[index + 1] !== '<') return null
+  if (text[index - 1] === '<' || text[index + 2] === '<') return null
+  let i = index + 2
+  if (text[i] === '-') i++
+  while (text[i] === ' ' || text[i] === '\t') i++
+  let terminator = ''
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === "'") {
+      const close = text.indexOf("'", i + 1)
+      if (close === -1) return null
+      terminator += text.slice(i + 1, close)
+      i = close + 1
+      continue
+    }
+    if (ch === '"') {
+      let j = i + 1
+      for (; j < text.length; j++) {
+        if (text[j] === '\\') {
+          terminator += text[j + 1] ?? ''
+          j++
+          continue
+        }
+        if (text[j] === '"') break
+        terminator += text[j]
+      }
+      if (j >= text.length) return null
+      i = j + 1
+      continue
+    }
+    if (ch === '\\') {
+      if (i + 1 >= text.length) break
+      terminator += text[i + 1]
+      i += 2
+      continue
+    }
+    if (ch === undefined || BASH_WORD_TERMINATORS.has(ch)) break
+    terminator += ch
+    i++
+  }
+  if (terminator === '') return null
+  return { openerEnd: i, terminator }
+}
+
 /** Index of the `quote` that ends an ordinary R character constant started before `start`, or -1 when the line ends with it still open. Backslash escapes a quote inside one (R Language Definition, section 10.3.1 "Literal constants"). */
 function findRQuoteEnd(line: string, start: number, quote: string): number {
   for (let j = start; j < line.length; j++) {
