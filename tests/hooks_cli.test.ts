@@ -53,6 +53,16 @@ describe('normalizePayload', () => {
     expect(result['_tg_harness']).toBe('codex')
   })
 
+  it('remaps Codex view_image to Read (the matcher CODEX_MATCHERS wires as \'view_image|Bash\' in codex_install.ts)', () => {
+    const payload: HookPayload = {
+      tool_name: 'view_image',
+      tool_input: { file_path: '/tmp/screenshot.png' },
+    }
+    const result = normalizePayload(payload, 'codex')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['_tg_harness']).toBe('codex')
+  })
+
   it('leaves Gemini read_file input keys untouched (file_path is already token-goat\'s own canonical key)', () => {
     // Confirmed against gemini-cli's own ReadFileToolParams interface: Gemini's
     // real read_file tool sends `file_path`, identical to token-goat's internal
