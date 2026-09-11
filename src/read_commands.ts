@@ -13,7 +13,8 @@ import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
-import { indexFileSync } from './parser.js'
+import { indexFileSync, isTreeSitterAvailable } from './parser.js'
+import { supportRequestLine } from './version.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
 import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
@@ -27,7 +28,7 @@ import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, f
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
-import { unsupportedLanguageName } from './parser_types.js'
+import { unsupportedLanguageName, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
@@ -1856,6 +1857,10 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // No candidate resembled the query -- point at the command that lists the file's real
     // symbols instead of leaving the miss with no next step.
     else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
+    else if (fs.existsSync(resolved)) {
+      const gap = symbolExtractorGap(file, resolved)
+      if (gap !== undefined) messages.push(gap)
+    }
     return { text: messages.join('\n'), code: 1 }
   }
 
@@ -2785,22 +2790,35 @@ export interface SkeletonOptions {
 }
 
 /**
- * "No indexed symbols" is ambiguous on its own: a genuinely empty file, an unrecognized
- * extension, and a recognized-but-unsupported language (Scala, Lua, Elixir, Dart, Zig, R --
- * see {@link unsupportedLanguageName}) all currently produce zero symbol rows and
- * look identical from the CLI's perspective. Callers get a clearer diagnostic distinguishing
- * "token-goat can't parse this language at all yet" from a plain empty-index result.
+ * Why an existing file has no symbol rows when the cause is token-goat rather than the file:
+ * no extractor for its type (a named entry in {@link unsupportedLanguageName}, or an
+ * unrecognized extension), or a tree-sitter language whose grammar did not load, so only the
+ * coarse regex fallback ran. `undefined` otherwise, where "no symbols" is the honest answer.
  */
+export function symbolExtractorGap(displayPath: string, resolvedPath: string): string | undefined {
+  const ext = path.extname(resolvedPath).toLowerCase()
+  const named = unsupportedLanguageName(resolvedPath)
+  const language = detectLanguageOfFile(resolvedPath)
+  if (named !== undefined || language === 'unknown') {
+    const what = named !== undefined ? `${named}, ${ext}` : ext !== '' ? ext : 'no extension'
+    return (
+      `'${displayPath}': token-goat has no symbol extractor for this file type (${what}), so there are no symbols to list; grep, plain reads and \`token-goat tokens\` still work on it.\n` +
+      supportRequestLine(named ?? (ext !== '' ? `${ext} file` : 'this file type'))
+    )
+  }
+  if (TREE_SITTER_LANGUAGES.includes(language) && !isTreeSitterAvailable(language)) {
+    return `No symbols found in '${displayPath}', but tree-sitter parsing for this file type (${ext}) is unavailable, so only a coarse regex fallback ran. Run \`token-goat doctor\` for the cause and the fix.`
+  }
+  return undefined
+}
+
+/** The empty-result line for `outline`/`skeleton`: a missing path, a gap in token-goat's extraction, or a file that genuinely declares nothing. */
 function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
   // A path that does not exist reads as "this file has no symbols", so a typo or a stale path guess looks like a definitive answer about a real file and the caller stops looking instead of fixing the path. Checked before the language branch: a missing `foo.scala` is a wrong path, not an unsupported extractor. Wording is `exports`/`imports`/`deps`/`test-for`' verbatim, which already close this same gap.
   if (!fs.existsSync(resolvedPath)) {
     return `Could not read: ${displayPath}`
   }
-  const lang = unsupportedLanguageName(resolvedPath)
-  if (lang !== undefined) {
-    return `No indexed symbols found in '${displayPath}' -- ${lang} has no symbol extractor yet, so this file always indexes to 0 symbols regardless of its contents`
-  }
-  return `No indexed symbols found in '${displayPath}'`
+  return symbolExtractorGap(displayPath, resolvedPath) ?? `No indexed symbols found in '${displayPath}'`
 }
 
 /**

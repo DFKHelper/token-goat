@@ -344,7 +344,31 @@ export function detectLanguage(filePath: string): Language {
  * purely to make that distinction visible in diagnostics (index/outline/skeleton), not to
  * change indexing behavior.
  */
-export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([])
+export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ['.f', 'Fortran'],
+  ['.for', 'Fortran'],
+  ['.f77', 'Fortran'],
+  ['.f90', 'Fortran'],
+  ['.f95', 'Fortran'],
+  ['.f03', 'Fortran'],
+  ['.f08', 'Fortran'],
+  ['.pli', 'PL/I'],
+  ['.pl1', 'PL/I'],
+  ['.rpg', 'RPG'],
+  ['.rpgle', 'RPG'],
+  ['.sqlrpgle', 'RPG'],
+  ['.jcl', 'JCL'],
+])
+
+/** The languages indexed through a tree-sitter grammar when the optional `tree-sitter` package loads; without it they fall back to a coarse regex scan with no references. */
+export const TREE_SITTER_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'python', 'go', 'rust', 'ruby', 'java', 'c', 'cpp']
+
+/** How many languages index without tree-sitter: every mapped language except the grammar ones and notebooks, which parse as Python. */
+export function nonTreeSitterLanguageCount(): number {
+  const all = new Set<Language>([...EXTENSION_LANGUAGE.values(), ...FILENAME_LANGUAGE.values()])
+  for (const lang of [...TREE_SITTER_LANGUAGES, 'ipynb', 'unknown'] as const) all.delete(lang)
+  return all.size
+}
 
 /**
  * Returns a human-readable language name (e.g. `'Swift'`) if `filePath` is a recognized but

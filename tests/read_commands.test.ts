@@ -120,7 +120,8 @@ import { runGit } from '../src/util.js'
 import { resolveIndexPath, toDisplayPath } from '../src/paths.js'
 import { readSection, listSections, findContainingSection } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
-import { indexFileSync } from '../src/parser.js'
+import { indexFileSync, setTreeSitterCoreForTesting } from '../src/parser.js'
+import { ISSUES_URL, SUPPORT_EMAIL } from '../src/version.js'
 import { resolveCallers } from '../src/graph_commands.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { fingerprintContent } from '../src/fingerprint.js'
@@ -2709,8 +2710,43 @@ describe('read_commands', () => {
       // Existing file again -- this assertion is a not-contains, so an unreadable-path message
       // would satisfy it vacuously and stop pinning the language branch at all.
       const { text } = runSkeleton({ file: emptyFixture('.ts') })
-      expect(text).not.toContain('no symbol extractor yet')
+      expect(text).not.toContain('no symbol extractor')
+      expect(text).not.toContain(ISSUES_URL)
+      expect(text).not.toContain(SUPPORT_EMAIL)
       expect(text).toContain('No indexed symbols found')
+    })
+
+    it('says a named unsupported language has no extractor and how to ask for it', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text, code } = runSkeleton({ file: emptyFixture('.f90') })
+      expect(code).toBe(1)
+      expect(text).toContain('token-goat has no symbol extractor for this file type (Fortran, .f90)')
+      expect(text).toContain(`To ask for Fortran support, open an issue at ${ISSUES_URL} or email ${SUPPORT_EMAIL}.`)
+      expect(text).not.toContain('No indexed symbols found')
+    })
+
+    it('says an unrecognized extension has no extractor instead of implying an empty index', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text } = runSkeleton({ file: emptyFixture('.xyz') })
+      expect(text).toContain('token-goat has no symbol extractor for this file type (.xyz)')
+      expect(text).toContain(ISSUES_URL)
+      expect(text).toContain(SUPPORT_EMAIL)
+      expect(text).not.toContain('No indexed symbols found')
+    })
+
+    it('points at doctor when a tree-sitter language has no symbols because tree-sitter is down', () => {
+      mockQuerySymbols.mockReturnValue([])
+      setTreeSitterCoreForTesting(null)
+      try {
+        const { text } = runSkeleton({ file: emptyFixture('.py') })
+        expect(text).toContain('tree-sitter parsing for this file type (.py) is unavailable')
+        expect(text).toContain('token-goat doctor')
+        expect(text).not.toContain('No indexed symbols found')
+      } finally {
+        setTreeSitterCoreForTesting(undefined)
+      }
+      // Control: with tree-sitter loaded the same empty .py is an honest empty result.
+      expect(runSkeleton({ file: emptyFixture('.py') }).text).not.toContain('token-goat doctor')
     })
 
     it('prints skeleton header with symbol count', () => {

@@ -27,8 +27,8 @@ import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_in
 import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
-import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable } from './parser.js'
-import type { Language } from './parser_types.js'
+import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
+import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { readUnmappedTools } from './stats.js'
@@ -550,8 +550,24 @@ export function checkTsCompiler(): DoctorResult {
   }
 }
 
-// Every language `isTreeSitterAvailable` recognizes (see its own doc comment in parser.ts). Kept in sync manually rather than exported from parser.ts, since it exists only to drive this doctor line's per-grammar count.
-const TREE_SITTER_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'python', 'go', 'rust', 'ruby', 'java', 'c', 'cpp']
+/** Why the core `tree-sitter` binding failed to load, as far as the error says. */
+export type TreeSitterFailure = 'absent' | 'no-prebuild' | 'dlopen' | 'other'
+
+/**
+ * Classify a `tree-sitter` load error. `absent`: Node's resolver found no `tree-sitter` package
+ * (a nested dependency missing inside it names that dependency instead, so it is `other`).
+ * `no-prebuild`: the package is there but node-gyp-build found neither a shipped prebuild for this
+ * platform/ABI nor a local compile (node-gyp-build.js throws "No native build was found for ...").
+ * `dlopen`: a binary was found but the OS loader refused it (Node's ERR_DLOPEN_FAILED).
+ */
+export function classifyTreeSitterLoadError(err: Error | null): TreeSitterFailure {
+  if (err === null) return 'other'
+  const code = (err as NodeJS.ErrnoException).code
+  if ((code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') && /Cannot find (?:module|package) 'tree-sitter'/.test(err.message)) return 'absent'
+  if (err.message.startsWith('No native build was found')) return 'no-prebuild'
+  if (code === 'ERR_DLOPEN_FAILED') return 'dlopen'
+  return 'other'
+}
 
 /**
  * Check whether tree-sitter (the core native binding plus its language grammars) is available.
@@ -565,14 +581,34 @@ export function checkTreeSitter(): DoctorResult {
   const name = 'Tree-sitter'
   if (!treeSitterCoreAvailable()) {
     const err = treeSitterCoreLoadError()
-    const cause = err !== null ? `: ${extractErrorMessage(err)}` : ' (not attempted)'
-    return {
-      name,
-      status: 'warn',
-      message:
-        'unavailable -- the source skeleton fold, the code body fold\'s disk-parse fallback, and tree-sitter indexing are all disabled; likely cause: the optional native dependency `tree-sitter` is not installed, or is not resolvable from the bundle\'s location' +
-        cause,
+    const firstLine = err !== null ? extractErrorMessage(err).split('\n')[0]!.trim() : 'not attempted'
+    const impact =
+      `${TREE_SITTER_LANGUAGES.join(', ')} fall back to a coarse regex scan with no references, and the skeleton fold is off; ` +
+      `the other ${nonTreeSitterLanguageCount()} languages index normally`
+    const missing = missingTreeSitterGrammarPackages()
+    const grammars = missing.length > 0 ? `; grammar packages not installed: ${missing.join(', ')}` : ''
+    let message: string
+    switch (classifyTreeSitterLoadError(err)) {
+      case 'absent':
+        message =
+          `not installed (${firstLine}): ${impact}. Fix: npm install -g ${PACKAGE_NAME} --include=optional ` +
+          '(on npm 12+, if doctor then reports no native build, add --allow-scripts=tree-sitter)'
+        break
+      case 'no-prebuild':
+        message =
+          `installed, but has no native build for ${process.platform}-${process.arch} on Node ${process.versions.node}: ${impact}. ` +
+          'The package ships prebuilt binaries and its install script (node-gyp-build) compiles one only when none matches; ' +
+          `npm 12+ skips dependency install scripts, so reinstall with them allowed (needs a C++ toolchain): npm install -g ${PACKAGE_NAME} --allow-scripts=tree-sitter`
+        break
+      case 'dlopen':
+        message =
+          `installed, but its native binary will not load (${firstLine}): ${impact}. ` +
+          `It was built for another Node version or CPU architecture; reinstall under the Node that runs token-goat: npm install -g ${PACKAGE_NAME}`
+        break
+      default:
+        message = `failed to load (${firstLine}): ${impact}. Fix: npm install -g ${PACKAGE_NAME} --include=optional`
     }
+    return { name, status: 'warn', message: message + grammars }
   }
   const available = TREE_SITTER_LANGUAGES.filter((lang) => isTreeSitterAvailable(lang))
   if (available.length === TREE_SITTER_LANGUAGES.length) {

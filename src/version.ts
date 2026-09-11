@@ -45,3 +45,25 @@ function resolvePackageName(): string {
 }
 
 export const PACKAGE_NAME: string = resolvePackageName()
+
+/** Where users file an issue, read from the manifest's `bugs.url`; fail-soft like resolvePackageName, for the same bundled-without-a-manifest reason. */
+function resolveIssuesUrl(): string {
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { bugs?: { url?: string } }
+    if (typeof pkg.bugs?.url === 'string' && pkg.bugs.url !== '') return pkg.bugs.url
+  } catch {
+    /* bundled somewhere with no manifest beside it */
+  }
+  return 'https://github.com/DFKHelper/token-goat/issues'
+}
+
+export const ISSUES_URL: string = resolveIssuesUrl()
+
+/** The contact address README.md publishes for requests that should not go through a public issue. */
+export const SUPPORT_EMAIL = 'token-goat@dfkhelper.com'
+
+/** One line inviting a request for support of a file type token-goat cannot extract symbols from. */
+export function supportRequestLine(what: string): string {
+  return `To ask for ${what} support, open an issue at ${ISSUES_URL} or email ${SUPPORT_EMAIL}.`
+}

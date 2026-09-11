@@ -20,7 +20,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote } from './ref_blindness.js'
 import { detectLanguageOfFile } from './parser_types.js'
-import { extractImports, importsExtensionFor, fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
+import { symbolExtractorGap, extractImports, importsExtensionFor,fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -1578,7 +1578,8 @@ export function runScope(opts: ScopeOptions): number {
         return 1
       }
       emitErr(
-        `No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`,
+        symbolExtractorGap(file, filePath) ??
+          `No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`,
       )
       return 1
     }

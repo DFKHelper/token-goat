@@ -3,7 +3,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkGlobalMcpConfig, checkMcpProcessHealth, checkSymbolCount, checkEmbeddingCoverage, checkParserFreshness, checkSymbolBodySize, checkCompactionChannel, checkDirtyQueueHealth, checkTsCompiler, checkTreeSitter, readWindowsProcesses, runDoctor, runDoctorAndExit, type ProcessInfo } from '../src/cli_doctor.js'
-import { setTreeSitterCoreForTesting } from '../src/parser.js'
+import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
+import { missingTreeSitterGrammarPackages, setTreeSitterCoreForTesting } from '../src/parser.js'
+import { createRequire } from 'node:module'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -903,19 +905,74 @@ describe('cli_doctor', () => {
       expect(result.message).toMatch(/^available \(\d+\/\d+ grammars\)$/)
     })
 
-    // Provenance: HAND-DERIVED. Forces the same predicate `isTreeSitterAvailable` uses
-    // (`loadParserCtor` via `setTreeSitterCoreForTesting`) to genuinely report unavailable,
-    // rather than asserting against a string this test also wrote.
-    it('returns warn (not fail) naming the disabled features and the likely cause when tree-sitter is unavailable', () => {
-      setTreeSitterCoreForTesting(null)
+    // Provenance: CAPTURE. Each error is thrown live by its real producer on the running platform:
+    // Node's resolver asked for `tree-sitter` from a directory with none beside it, node-gyp-build
+    // (node_modules/node-gyp-build/node-gyp-build.js, the "No native build was found for" throw)
+    // pointed at a package directory with no prebuilds/ and no build/, and Node's dlopen handed a
+    // file that is not a native module. Nothing here is a string this test wrote.
+    function thrown(fn: () => unknown): Error {
+      try {
+        fn()
+      } catch (e) {
+        return e as Error
+      }
+      throw new Error('expected a throw')
+    }
+    function scratch(): string {
+      return fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ts-err-'))
+    }
+    const absentError = (): Error => thrown(() => createRequire(path.join(scratch(), 'x.js'))('tree-sitter'))
+    const noPrebuildError = (): Error => thrown(() => (createRequire(import.meta.url)('node-gyp-build') as (dir: string) => unknown)(scratch()))
+    const dlopenError = (): Error =>
+      thrown(() => {
+        const file = path.join(scratch(), 'bad.node')
+        fs.writeFileSync(file, 'not a native module')
+        return createRequire(import.meta.url)(file)
+      })
+
+    it('classifies each real load failure by its cause', () => {
+      expect(classifyTreeSitterLoadError(absentError())).toBe('absent')
+      expect(classifyTreeSitterLoadError(noPrebuildError())).toBe('no-prebuild')
+      expect(classifyTreeSitterLoadError(dlopenError())).toBe('dlopen')
+      // A dependency missing inside tree-sitter is not tree-sitter itself missing.
+      expect(classifyTreeSitterLoadError(thrown(() => createRequire(path.join(scratch(), 'x.js'))('node-gyp-build')))).toBe('other')
+      expect(classifyTreeSitterLoadError(null)).toBe('other')
+    })
+
+    const IMPACT = /typescript, javascript, python, go, rust, ruby, java, c, cpp fall back to a coarse regex scan with no references, and the skeleton fold is off; the other (\d+) languages index normally/
+
+    it('says tree-sitter is not installed and gives the --include=optional reinstall', () => {
+      setTreeSitterCoreForTesting(null, absentError())
       const result = checkTreeSitter()
-      expect(result.name).toBe('Tree-sitter')
       expect(result.status).toBe('warn')
-      expect(result.message).toContain('unavailable')
-      expect(result.message).toContain('source skeleton fold')
-      expect(result.message).toContain('disk-parse fallback')
-      expect(result.message).toContain('tree-sitter indexing')
-      expect(result.message).toContain('optional native dependency')
+      expect(result.message).toContain("not installed (Cannot find module 'tree-sitter')")
+      expect(result.message).toContain(`npm install -g ${PACKAGE_NAME} --include=optional`)
+      expect(result.message).toMatch(IMPACT)
+      expect(Number(IMPACT.exec(result.message)![1])).toBeGreaterThan(30)
+      expect(result.message).not.toContain('optional native dependency')
+    })
+
+    it('names the install-script gate when no native build matches', () => {
+      setTreeSitterCoreForTesting(null, noPrebuildError())
+      const result = checkTreeSitter()
+      expect(result.message).toContain(`has no native build for ${process.platform}-${process.arch}`)
+      expect(result.message).toContain('node-gyp-build')
+      expect(result.message).toContain(`npm install -g ${PACKAGE_NAME} --allow-scripts=tree-sitter`)
+      expect(result.message).toMatch(IMPACT)
+    })
+
+    it('says the binary will not load and to reinstall on a dlopen failure', () => {
+      setTreeSitterCoreForTesting(null, dlopenError())
+      const result = checkTreeSitter()
+      expect(result.message).toContain('native binary will not load')
+      expect(result.message).toContain(`reinstall under the Node that runs token-goat: npm install -g ${PACKAGE_NAME}`)
+      expect(result.message).not.toContain('--allow-scripts')
+      expect(result.message).toMatch(IMPACT)
+    })
+
+    // Provenance: CAPTURE. All nine grammar packages are installed in this repo's node_modules.
+    it('reports no missing grammar packages when all resolve', () => {
+      expect(missingTreeSitterGrammarPackages()).toEqual([])
     })
   })
 
