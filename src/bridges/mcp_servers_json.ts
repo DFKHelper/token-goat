@@ -98,11 +98,32 @@ export function setTokenGoatServer(text: string, value: unknown): string {
 
 /** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
 export function dropEmptyServers(text: string): string {
-  const parsed: unknown = jsonc().parse(text, [], { allowTrailingComma: true, disallowComments: false })
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return text
-  const servers = (parsed as Record<string, unknown>)['servers']
+  const parsed = parseObject(text)
+  if (parsed === null) return text
+  const servers = parsed['servers']
   if (servers === null || typeof servers !== 'object' || Array.isArray(servers) || Object.keys(servers).length > 0) return text
   return editAt(text, ['servers'], undefined)
+}
+
+function parseObject(text: string): Record<string, unknown> | null {
+  const parsed: unknown = jsonc().parse(text, [], { allowTrailingComma: true, disallowComments: false })
+  return parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) ? null : (parsed as Record<string, unknown>)
+}
+
+/** Adds `"mcpServers": {}` when `text` has no `mcpServers` key: Claude Code reads every `.mcp.json` from the cwd up to the drive root and rejects one without that key as a fatal config error. */
+export function ensureMcpServersKey(text: string): string {
+  const parsed = parseObject(text)
+  if (parsed === null || 'mcpServers' in parsed) return text
+  return editAt(text, ['mcpServers'], {})
+}
+
+/** Removes an empty `mcpServers` only when it is the file's last key, so the caller can delete a file that then holds nothing; otherwise `text` comes back unchanged, since a kept `.mcp.json` needs the key for Claude Code. */
+export function dropLoneEmptyMcpServers(text: string): string {
+  const parsed = parseObject(text)
+  if (parsed === null || Object.keys(parsed).length !== 1) return text
+  const mcpServers = parsed['mcpServers']
+  if (mcpServers === null || typeof mcpServers !== 'object' || Array.isArray(mcpServers) || Object.keys(mcpServers).length > 0) return text
+  return editAt(text, ['mcpServers'], undefined)
 }
 
 /** Whether `filePath` holds a token-goat-managed `servers` entry; a missing, unreadable or malformed file reads as false. */

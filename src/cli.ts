@@ -63,7 +63,7 @@ import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridg
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
-import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
+import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
 import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
 import {
   isWorkerRunning,
@@ -796,6 +796,12 @@ async function cmdInstall(opts: {
     for (const line of visualStudioManualSteps(vsResult.scope)) out(line)
   }
 
+  // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so -p installs for the two hosts overlap there.
+  if (opts.project === true && (opts.vscode === true || opts.visualstudio === true)) {
+    const duplicateNote = visualStudioDuplicateNote()
+    if (duplicateNote !== null) out(duplicateNote)
+  }
+
   // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
   if (opts.hermes === true) {
     out(
@@ -846,12 +852,13 @@ async function cmdInstall(opts: {
 // resolver (vscodeDecoderConfigured) and can never drift on where mcp.json lives or what
 // key name it looks for. --project checks the workspace `.vscode/mcp.json` too (via
 // process.cwd(), set by --cwd above), matching install/uninstall's --project convention.
-function cmdMcpStatus(opts: { vscode?: boolean; project?: boolean }): void {
-  if (opts.vscode !== true) {
-    throw new Error('mcp-status currently only supports --vscode')
+// --visualstudio answers the same question for the Visual Studio `.mcp.json` files.
+function cmdMcpStatus(opts: { vscode?: boolean; visualstudio?: boolean; project?: boolean }): void {
+  if ((opts.vscode === true) === (opts.visualstudio === true)) {
+    throw new Error('mcp-status needs exactly one of --vscode or --visualstudio')
   }
-  const status = vscodeDecoderConfigured(opts.project === true ? { projectRoot: process.cwd() } : {})
-  out(JSON.stringify(status))
+  const scope = opts.project === true ? { projectRoot: process.cwd() } : {}
+  out(JSON.stringify(opts.vscode === true ? vscodeDecoderConfigured(scope) : visualStudioMcpStatus(scope)))
 }
 
 function cmdUninstall(opts: {
@@ -3972,7 +3979,8 @@ export function buildProgram(): Command {
     .command('mcp-status')
     .description('check whether an MCP integration is already configured (used by the VS Code extension)')
     .option('--vscode', 'check VS Code mcp.json (user scope, plus workspace scope with --project)')
-    .option('-p, --project', 'also check the workspace .vscode/mcp.json (relative to --cwd or the real cwd)')
+    .option('--visualstudio', 'check the Visual Studio %USERPROFILE%\\.mcp.json (plus the project .mcp.json with --project)')
+    .option('-p, --project', 'also check the project file: .vscode/mcp.json for --vscode, .mcp.json for --visualstudio (relative to --cwd or the real cwd)')
     .action(guard(cmdMcpStatus))
 
   const worker = program.command('worker').description('background indexer lifecycle')

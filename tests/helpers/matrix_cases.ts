@@ -1928,6 +1928,14 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const after = run(['mcp-status', '--vscode', '--project'], { cwd: proj })
     expect(after.status, after.stderr).toBe(0)
     expect((JSON.parse(after.stdout) as { configured: boolean }).configured).toBe(true)
+    const vsBefore = run(['mcp-status', '--visualstudio', '--project'], { cwd: proj })
+    expect(vsBefore.status, vsBefore.stderr).toBe(0)
+    expect((JSON.parse(vsBefore.stdout) as { configured: boolean }).configured).toBe(false)
+    const vsInstalled = run(['install', '--project', '--visualstudio'], { cwd: proj })
+    expect(vsInstalled.status, vsInstalled.stderr).toBe(0)
+    const vsAfter = run(['mcp-status', '--visualstudio', '--project'], { cwd: proj })
+    expect(vsAfter.status, vsAfter.stderr).toBe(0)
+    expect((JSON.parse(vsAfter.stdout) as { configured: boolean }).configured).toBe(true)
   },
   uninstall: () => {
     // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.
