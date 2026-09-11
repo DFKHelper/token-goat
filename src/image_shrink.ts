@@ -35,9 +35,9 @@ import {
   resizeRgba,
   calculateFitInside,
 } from './image_engine.js'
-import { ensureDirSync, atomicWriteBytes, foldPath, toKB } from './util.js'
-import { getCwd, getFilePath } from './hooks_common.js'
-import { isInsideRoot } from './project.js'
+import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
+import { getFilePath } from './hooks_common.js'
+import { vscodePathDeclined } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
@@ -660,27 +660,6 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
  * small file/dimensions, unreadable, no net saving) is a
  * pass — the hook never blocks a Read.
  */
-/**
- * Whether a VS Code view_image path may be opened by this hook at all.
- *
- * The hook runs before VS Code's own approval of the call, so a path the model chose must not make
- * token-goat touch anything the user has not been asked about. A UNC or device path (`\\server\share`,
- * `//server/share`, `\\?\`, `\\.\`) is declined outright: on Windows even a stat of a UNC path opens an
- * SMB connection to that host. Anything else must sit inside the workspace folder VS Code runs the
- * hook in. The lexical check runs first and touches no file; only a path already inside the workspace
- * by name is then resolved through symlinks by isInsideRoot, so a link cannot lead out of it.
- */
-function vscodeImagePathAllowed(filePath: string, workspace: string | undefined): boolean {
-  if (/^[\\/]{2}/.test(filePath)) return false
-  if (workspace === undefined || /^[\\/]{2}/.test(workspace)) return false
-  const resolvedRoot = path.resolve(workspace)
-  const resolvedTarget = path.resolve(workspace, filePath)
-  const root = foldPath(resolvedRoot.replace(/\\/g, '/'))
-  const target = foldPath(resolvedTarget.replace(/\\/g, '/'))
-  if (target !== root && !target.startsWith(root.endsWith('/') ? root : root + '/')) return false
-  return isInsideRoot(resolvedTarget, resolvedRoot)
-}
-
 export async function preReadImageHandler(event: HookEvent): Promise<HookOutput> {
   if (loadConfig().image_shrink.enabled === false) return passOutput()
   // On VS Code only view_image can take the shrunk copy (its path is rewritten to it); read_file and list_dir also map to Read, and a shrink recorded for them would never reach the model.
@@ -690,8 +669,8 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   if (!isImagePath(filePath)) return passOutput()
-  // Before any stat or read of the path: see vscodeImagePathAllowed.
-  if (vscodeTool !== undefined && !vscodeImagePathAllowed(filePath, getCwd(event))) return passOutput()
+  // Before any stat or read of the path: see vscodePathDeclined.
+  if (vscodePathDeclined(event, filePath)) return passOutput()
 
   pruneShrinkCache()
 

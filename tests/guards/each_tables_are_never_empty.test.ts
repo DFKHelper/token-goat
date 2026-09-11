@@ -94,6 +94,11 @@ const EXEMPT: readonly Exemption[] = [
     table: 'PROJECT_LOCKED_SECTIONS.map((s) => [s])',
     reason: 'Imported from src/config.ts. This same file asserts [...PROJECT_LOCKED_SECTIONS].sort() equals a hardcoded list of section names, so an emptied export fails that equality first.',
   },
+  {
+    file: 'tests/vscode_pre_handler_path_gate.test.ts',
+    table: 'TOOLS',
+    reason: 'Derived from VSCODE_TOOL_NAME_MAP in src/hooks_cli.ts. This same file asserts TOOLS equals the hardcoded list of the six canonical tool names, so an emptied or drifted map fails that equality first.',
+  },
 ] as const
 
 /** Floors: a sweep that found no files, or implausibly few parameterized blocks, must fail rather than pass empty. */

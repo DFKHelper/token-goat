@@ -140,7 +140,8 @@ describe('wire-format contract matrix: pre_tool_use `context` hint -> hookSpecif
       const filePath = path.join(dataBase, `${sessionId}.txt`)
       fs.writeFileSync(filePath, 'hello from the wire-format contract matrix\n')
       const env = tgEnv(harness, dataBase, homeBase)
-      const payload = { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId }
+      // cwd is the workspace the file sits in, as every harness here sends it; VS Code's hooks decline any path outside it.
+      const payload = { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId, cwd: dataBase }
       const first = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
       expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
 
@@ -322,7 +323,7 @@ describe('wire-format contract matrix: pre_compact `context` -> raw stdout on Cl
 })
 
 describe('wire-format contract matrix: VS Code agent hooks through the built bundle (`hook pre_tool_use --harness vscode`)', () => {
-  // PROVENANCE: FORMAT-DERIVED. Payload envelope and tool schema from VS Code 1.136.0: ChatHookService.executePreToolUseHook in resources/app/extensions/copilot/dist/extension.js, copilot_readFile's inputSchema in resources/app/extensions/copilot/package.json.
+  // PROVENANCE: FORMAT-DERIVED. Payload envelope and tool schema from VS Code 1.136.0: ChatHookService.executePreToolUseHook in resources/app/extensions/copilot/dist/extension.js, copilot_readFile's inputSchema in resources/app/extensions/copilot/package.json; cwd is the workspace root the hook-config parser in out/vs/workbench/workbench.desktop.main.js defaults a hook's cwd to.
   it('a read_file re-read is denied as hookSpecificOutput.permissionDecision with the flag alone, and post_tool_use never carries updatedToolOutput', () => {
     const dataBase = mkIsolated('tg-wireformat-vscode-data-')
     const homeBase = mkIsolated('tg-wireformat-vscode-home-')
@@ -330,7 +331,7 @@ describe('wire-format contract matrix: VS Code agent hooks through the built bun
     delete env['TOKEN_GOAT_HARNESS_OVERRIDE']
     const filePath = path.join(dataBase, 'large.bin')
     fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
-    const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'wireformat-vscode', tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 2000 }, tool_use_id: 'tu-1' }
+    const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'wireformat-vscode', cwd: dataBase, tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 2000 }, tool_use_id: 'tu-1' }
     const first = run(['hook', 'pre_tool_use', '--harness', 'vscode'], env, JSON.stringify(payload))
     expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
     const post = run(['hook', 'post_tool_use', '--harness', 'vscode'], env, JSON.stringify({ ...payload, hook_event_name: 'PostToolUse', tool_response: 'x'.repeat(60 * 1024) }))

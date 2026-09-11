@@ -19,6 +19,7 @@ import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
+import { vscodePathDeclined } from './vscode_path_gate.js'
 import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
 
@@ -1462,6 +1463,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
 /** Public wrapper: intercepts every `context` (hint) output from {@link preReadHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment. */
 export function preReadHandler(event: HookEvent): HookOutput {
+  // Before anything below stats or reads the path: on VS Code this runs ahead of the user's approval, see vscodePathDeclined.
+  const rawGrepPath = event.toolName === 'Grep' ? event.toolInput['path'] : undefined
+  if (vscodePathDeclined(event, getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? rawGrepPath : undefined))) return passOutput()
   return applyHintTracking(event, preReadHandlerInner(event), classifyReadHint)
 }
 

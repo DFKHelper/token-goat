@@ -146,6 +146,11 @@ export function registerHook(
   })
 }
 
+/** The handlers runHook would try for `toolName` on `eventName`, in registration order; lets a test sweep every handler a tool reaches instead of a hand-kept list. */
+export function handlersFor(eventName: HookEventName, toolName: string): HookHandler[] {
+  return (_handlers.get(eventName) ?? []).filter((r) => r.toolName === undefined || r.toolName === toolName).map((r) => r.handler)
+}
+
 /**
  * Build the Claude Code `matcher` string listing every tool `eventName` can fire for,
  * or `null` when the event cannot safely be narrowed.

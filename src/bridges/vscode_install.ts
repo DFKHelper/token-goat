@@ -110,9 +110,19 @@ function otherScopeMcpPath(opts: VscodeScopeOptions): string {
   return opts.project === true ? vscodeUserMcpPath() : vscodeProjectMcpPath(opts.projectRoot)
 }
 
-export function vscodeInstructionsPath(projectRoot = process.cwd()): string {
-  return path.join(path.resolve(projectRoot), '.github', 'copilot-instructions.md')
+/**
+ * Where the VS Code routing guidance goes for this scope; user scope never touches the current directory.
+ *
+ * Project scope is the workspace's `.github/copilot-instructions.md`. User scope is a personal instructions file: VS Code 1.136.0's instructions-location list in workbench.desktop.main.js has `{path:"~/.copilot/instructions",source:"copilot-personal",storage:"user"}`, which the default `chat.instructionsFilesLocations` turns on, and a file there counts as instructions when its name ends in `.instructions.md`. Like the hooks directory, VS Code expands that `~/` against the home directory, not COPILOT_HOME.
+ */
+export function vscodeInstructionsPath(opts: VscodeScopeOptions = {}): string {
+  return opts.project === true
+    ? path.join(path.resolve(opts.projectRoot ?? process.cwd()), '.github', 'copilot-instructions.md')
+    : path.join(os.homedir(), '.copilot', 'instructions', 'token-goat.instructions.md')
 }
+
+// applyTo '**' is what makes VS Code attach the personal file to every request: its instructions matcher (_matches in workbench.desktop.main.js) treats '**', '**/*' and '*' as matching everything, while a file with no applyTo is only offered for the model to load on demand by its description.
+const USER_INSTRUCTIONS_FRONTMATTER = "---\ndescription: 'token-goat: when to use its MCP tools and CLI instead of reading whole files'\napplyTo: '**'\n---\n"
 
 /**
  * The Copilot-format event keys VS Code maps out of a hooks file; any other key is skipped.
@@ -265,7 +275,14 @@ export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): Vs
   return { configured: false, checkedPaths }
 }
 
-function writeGuidance(filePath: string): boolean {
+function writeGuidance(filePath: string, userScope: boolean): boolean {
+  // A new personal instructions file needs its frontmatter ahead of the block; an existing one keeps whatever the user gave it.
+  let created = false
+  if (userScope && !fs.existsSync(filePath)) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    atomicWriteText(filePath, USER_INSTRUCTIONS_FRONTMATTER)
+    created = true
+  }
   const body = [
     BEGIN,
     buildGuidanceBody('VS Code’s supported MCP integration and its built-in file-read tools', { gdrive: loadConfig().gdrive.enabled }),
@@ -275,13 +292,13 @@ function writeGuidance(filePath: string): boolean {
     'VS Code support: token-goat install --vscode configures a stdio MCP server under the servers root key in your user-profile mcp.json by default (add --project for the workspace .vscode/mcp.json instead), and agent hooks that see VS Code’s built-in tool calls. The hooks can deny a repeated read, add a hint, and shrink an image before view_image loads it; they cannot fold or trim what a built-in read returns, and they leave terminal commands unchanged.',
     END,
   ].join('\n')
-  return upsertDelimitedBlock(filePath, BEGIN, END, body)
+  return upsertDelimitedBlock(filePath, BEGIN, END, body) || created
 }
 
 export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResult {
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = vscodeMcpPath(opts)
-  const instructionsPath = vscodeInstructionsPath(opts.projectRoot)
+  const instructionsPath = vscodeInstructionsPath(opts)
   if (otherScopeHasManagedServer(opts)) {
     const otherScope = scope === 'project' ? 'user' : 'project'
     const otherPath = otherScopeMcpPath(opts)
@@ -302,7 +319,7 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   const next = updateConfig(config.text, managedServer())
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
   if (config.text !== next) atomicWriteText(mcpPath, next)
-  const guidanceChanged = writeGuidance(instructionsPath)
+  const guidanceChanged = writeGuidance(instructionsPath, scope === 'user')
   const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
   return {
     mcpPath,
@@ -327,7 +344,12 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
       removed = true
     }
   }
-  if (stripDelimitedBlock(vscodeInstructionsPath(opts.projectRoot), BEGIN, END)) removed = true
+  const instructionsPath = vscodeInstructionsPath(opts)
+  if (stripDelimitedBlock(instructionsPath, BEGIN, END)) {
+    removed = true
+    // The personal file is one install created: once its block is gone and only the frontmatter install wrote is left, it goes too.
+    if (opts.project !== true && fs.readFileSync(instructionsPath, 'utf8').trim() === USER_INSTRUCTIONS_FRONTMATTER.trim()) fs.rmSync(instructionsPath, { force: true })
+  }
   // Leaves the hooks file in place while `install --copilot` still relies on it.
   if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode')) removed = true
   return removed

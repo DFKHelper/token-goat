@@ -409,8 +409,8 @@ function toolPayload(harness: HarnessName, sessionId: string, filePath: string):
     }
   }
   if (harness === 'vscode') {
-    // FORMAT-DERIVED: the envelope ChatHookService.executePreToolUseHook builds in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js, with read_file's schema (filePath, startLine, endLine) from resources/app/extensions/copilot/package.json.
-    return { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: sessionId, tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 1 }, tool_use_id: 'tu-matrix' }
+    // FORMAT-DERIVED: the envelope ChatHookService.executePreToolUseHook builds in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js, with read_file's schema (filePath, startLine, endLine) from resources/app/extensions/copilot/package.json; cwd is the workspace root, which the hook-config parser in out/vs/workbench/workbench.desktop.main.js defaults a hook's cwd to and executeHook copies into the input.
+    return { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: sessionId, cwd: path.dirname(filePath), tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 1 }, tool_use_id: 'tu-matrix' }
   }
   return { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId }
 }
