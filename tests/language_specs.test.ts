@@ -85,6 +85,9 @@ const OLD_LABELS: Record<string, string> = {
 }
 
 const PLSQL = ['.pks', '.pkb', '.pls', '.plsql', '.pck', '.prc', '.fnc', '.trg', '.tps', '.tpb']
+// The enterprise batch: ABAP, SAS, PL/I, RPG and JCL by extension; OpenEdge ABL has none of its own and is found by content.
+const BATCH_C = ['.abap', '.sas', '.pli', '.pl1', '.rpgle', '.sqlrpgle', '.jcl']
+const BATCH_C_IDS = ['abap', 'sas', 'pli', 'rpg', 'jcl', 'abl']
 const SF_MARKUP = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens', '.page', '.component', '.email']
 
 // Every extension either side knows about, so a dropped extension shows up as a removal.
@@ -106,7 +109,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('extension map: only the new mappings were added, nothing moved or dropped', () => {
     for (const [ext, lang] of Object.entries(OLD_EXTENSION_LANGUAGE)) expect(EXTENSION_LANGUAGE.get(ext), ext).toBe(lang)
     const added = [...EXTENSION_LANGUAGE.keys()].filter((e) => !(e in OLD_EXTENSION_LANGUAGE))
-    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc']))
+    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C]))
     for (const e of ['.zsh', '.ksh', '.bats']) expect(detectLanguage(`a${e}`), e).toBe('bash')
     for (const e of ['.bzl', '.star']) expect(detectLanguage(`a${e}`), e).toBe('python')
     for (const e of PLSQL) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('sql')
@@ -124,16 +127,16 @@ describe('language table: derived lists match the pre-refactor lists except the 
 
   it('bash hook symbol-bearing set is unchanged', () => {
     const now = LANGUAGE_SPECS.filter((s) => s.symbolBearing).map((s) => s.id)
-    expect(sorted(now)).toEqual(sorted(OLD_SYMBOL_BEARING))
+    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS]))
   })
 
   it('read hook source-hint set: adds the other Ruby extensions and Starlark only', () => {
-    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: ['.bzl', '.rake', '.ruby', '.star'], removed: [] })
+    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...BATCH_C]), removed: [] })
   })
 
   it('diff-on-reread set: adds extensions of languages already covered, and the new mappings', () => {
     expect(diff((e) => OLD_DIFFABLE_SOURCE_RE.test(`x${e}`), 'diffable')).toEqual({
-      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL]),
+      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C]),
       removed: [],
     })
   })
@@ -142,7 +145,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
     const missed18 = ['.mts', '.cts', '.mjs', '.cjs', '.pyi', '.kts', '.hxx', '.ps1', '.psm1', '.cls', '.trigger', '.sc', '.lua', '.ex', '.exs', '.dart', '.zig', '.r']
     expect(missed18).toHaveLength(18)
     expect(diff((e) => OLD_GREP_SOURCE_EXT_RE.test(`x${e}`), 'grepSource')).toEqual({
-      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...SF_MARKUP]),
+      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...SF_MARKUP, ...BATCH_C]),
       removed: ['.clj'],
     })
   })
@@ -160,7 +163,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('labels: unchanged except Apex, which used to print as the bare id', () => {
     const ids: Language[] = [...LANGUAGE_SPECS.map((s) => s.id), 'unknown']
     const changed = ids.filter((id) => languageLabel(id) !== (OLD_LABELS[id] ?? id))
-    expect(changed).toEqual(['apex'])
+    expect(changed).toEqual([...BATCH_C_IDS, 'apex'])
     expect(languageLabel('apex')).toBe('Apex')
   })
 })
@@ -185,5 +188,18 @@ describe('language table: every row reaches an extractor', () => {
     const m = /\((\d+) non-tree-sitter languages\)/.exec(doc)
     expect(m, 'docs/C4_RUNTIME_ARCHITECTURE.md must still state the adapter language count').not.toBeNull()
     expect(Number(m?.[1])).toBe(nonTreeSitterLanguageCount())
+  })
+
+  it('the component diagram states the table row count, and its generator derives it from the table', () => {
+    const svg = fs.readFileSync(path.join(REPO_ROOT, 'demo', 'diagrams', 'c4_level3_components.svg'), 'utf8')
+    const m = /\((\d+) languages \+ formats\)/.exec(svg)
+    expect(m, 'demo/diagrams/c4_level3_components.svg must still state the language count').not.toBeNull()
+    expect(Number(m?.[1])).toBe(LANGUAGE_SPECS.length)
+    // The generator's count is the number of `id: '` rows in this file, so it must match the table too.
+    const specsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src', 'language_specs.ts'), 'utf8')
+    expect(specsSrc.match(/\bid: '/g)?.length).toBe(LANGUAGE_SPECS.length)
+    const script = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'generate-architecture-diagrams.py'), 'utf8')
+    expect(script).toContain('(__LANGUAGE_COUNT__ languages + formats)')
+    expect(script).not.toMatch(/\(\d+ languages \+ formats\)/)
   })
 })

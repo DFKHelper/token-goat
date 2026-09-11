@@ -34,7 +34,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeAllDbs } from '../../src/db.js'
 import { querySymbols } from '../../src/index_reader.js'
 import { LANGUAGE_SPECS } from '../../src/language_specs.js'
-import { detectLanguage, type Language } from '../../src/parser_types.js'
+import { detectLanguage, refineLanguageByContent, type Language } from '../../src/parser_types.js'
 import { indexFileSync, isTreeSitterAvailable } from '../../src/parser.js'
 import { pinnedPopulation } from './population.js'
 
@@ -96,6 +96,13 @@ const CASES: readonly AdapterCase[] = [
   { language: 'vb', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.vb'), targetBasename: 'Sample.vb' },
   { language: 'cobol', kind: 'special', source: path.join(HAND_FIXTURES, 'Sample.cbl'), targetBasename: 'Sample.cbl' },
   { language: 'natural', kind: 'special', source: path.join(HAND_FIXTURES, 'Sample.nsp'), targetBasename: 'Sample.nsp' },
+  { language: 'abap', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.abap'), targetBasename: 'Sample.abap' },
+  { language: 'sas', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.sas'), targetBasename: 'Sample.sas' },
+  { language: 'pli', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.pli'), targetBasename: 'Sample.pli' },
+  { language: 'rpg', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.rpgle'), targetBasename: 'Sample.rpgle' },
+  { language: 'jcl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.jcl'), targetBasename: 'Sample.jcl' },
+  // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
+  { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
   {
     language: 'apex',
     kind: 'regex',
@@ -132,7 +139,8 @@ const CASES: readonly AdapterCase[] = [
 /** True when `c.source` exists on disk and `detectLanguage(c.targetBasename)` still resolves to `c.language` -- the symmetric stale-key check: a case naming a language the dispatcher no longer routes to that extension/filename, or a fixture that vanished, cannot silently keep passing. */
 function caseIsLive(c: AdapterCase): boolean {
   if (!fs.existsSync(c.source)) return false
-  return detectLanguage(c.targetBasename) === c.language
+  // Refined by content exactly as indexFileSync does, so an extension shared by two languages (`.cls`, `.p`) routes as it will in the index.
+  return refineLanguageByContent(c.targetBasename, detectLanguage(c.targetBasename), fs.readFileSync(c.source, 'utf8')) === c.language
 }
 
 describe('every registered language adapter produces symbols on a real file, through the real indexFileSync path', () => {
