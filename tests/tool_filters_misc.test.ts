@@ -465,7 +465,45 @@ describe('Sqlite3Filter row collapse', () => {
     const rows = Array.from({ length: 25 }, (_, i) => `row${i}|data`).join('\n')
     const out = apply(sqlite3Filter, rows, ['sqlite3'])
     expect(out).toContain('25 rows')
-    expect(out).not.toContain('row24|data')
+    expect(out).not.toContain('row12|data')
+  })
+
+  // CAPTURE. Verbatim stdout of sqlite3 3.44.4 (32-bit, 2025-02-19 f1e31fd9961a) run on this machine as:
+  //   sqlite3 demo.db "create table t(id integer, name text, status text); insert into t select value, 'item'||value, case when value=25 then 'FAILED' else 'ok' end from generate_series(1,25);"
+  //   sqlite3 demo.db "select * from t order by id;"
+  //   sqlite3 -json demo.db "select * from t order by id;"
+  // The table is synthetic: no real data, identifiers or paths appear in it.
+  const SQLITE_PLAIN_CAPTURE = Array.from(
+    { length: 25 },
+    (_, i) => `${i + 1}|item${i + 1}|${i + 1 === 25 ? 'FAILED' : 'ok'}`,
+  ).join('\n')
+  const SQLITE_JSON_CAPTURE =
+    Array.from({ length: 25 }, (_, i) => {
+      const row = `{"id":${i + 1},"name":"item${i + 1}","status":"${i + 1 === 25 ? 'FAILED' : 'ok'}"}`
+      const prefix = i === 0 ? '[' : ''
+      const suffix = i === 24 ? ']' : ','
+      return `${prefix}${row}${suffix}`
+    }).join('\n')
+
+  it('keeps the last rows of an ORDER BY result, not only the first', () => {
+    const out = apply(sqlite3Filter, SQLITE_PLAIN_CAPTURE, ['sqlite3', 'demo.db', 'select * from t order by id;'])
+    // Must-not-drop: the head rows the note claims, the row count, and the final row, which is the
+    // only place the FAILED status appears and the one an `order by` was asked for.
+    expect(out).toContain('1|item1|ok')
+    expect(out).toContain('5|item5|ok')
+    expect(out).toContain('25 rows')
+    expect(out).toContain('25|item25|FAILED')
+    expect(out).toContain('21|item21|ok')
+    // Still a real cut: the middle of the result set is gone.
+    expect(out).not.toContain('13|item13|ok')
+    expect(out.length).toBeLessThan(SQLITE_PLAIN_CAPTURE.length)
+  })
+
+  it('keeps the closing bracket of sqlite3 -json output', () => {
+    const out = apply(sqlite3Filter, SQLITE_JSON_CAPTURE, ['sqlite3', '-json', 'demo.db', 'select * from t order by id;'])
+    expect(out).toContain('{"id":25,"name":"item25","status":"FAILED"}]')
+    expect(out).toContain('{"id":1,"name":"item1","status":"ok"}')
+    expect(out).not.toContain('"item13"')
   })
 
   it('does not let a .mode column header + separator row eat real data rows in the truncation', () => {

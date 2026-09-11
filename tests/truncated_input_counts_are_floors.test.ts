@@ -45,8 +45,8 @@ afterEach(() => {
 // The shape the defect printed: "[token-goat: <n> rows (showing first 5)]" with nothing marking it
 // as partial. Anchored on the digit right after the colon so the honest "at least <n>" form cannot
 // satisfy it.
-const SQLITE_FLAT_COUNT = /\[token-goat: \d+ rows \(showing first \d+\)\]/
-const SQLITE_FLOOR_COUNT = /\[token-goat: at least \d+ rows \(counted over a truncated input; showing first \d+\)\]/
+const SQLITE_FLAT_COUNT = /\[token-goat: \d+ rows \(showing first \d+, last \d+\)\]/
+const SQLITE_FLOOR_COUNT = /\[token-goat: at least \d+ rows \(counted over a truncated input; showing first \d+, last \d+\)\]/
 
 const GIT_FLAT_COUNT = /\[token-goat: \+\d+ more commits\]/
 const GIT_FLOOR_COUNT = /\[token-goat: at least \d+ more commits \(counted over a truncated input\)\]/
@@ -56,7 +56,7 @@ describe('sqlite3 filter row count', () => {
     const out = sqlite3Filter.compress(SQLITE_ROWS, '', 0, ['sqlite3', 'tgrows.db'])
     // 40 rows counted by hand off the capture: the fixture is a header row, a dash separator, then
     // ids 1..40. Nothing was dropped upstream, so the exact figure is the honest one here.
-    expect(out).toContain('[token-goat: 40 rows (showing first 5)]')
+    expect(out).toContain('[token-goat: 40 rows (showing first 5, last 5)]')
     expect(out).not.toContain('at least')
   })
 
