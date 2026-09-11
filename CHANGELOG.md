@@ -28,6 +28,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
   If `--vscode` or `--copilot` already put the gate in the same instructions file, the Visual Studio section is a short note pointing at it instead of a second copy, and uninstalling one leaves the gate the others still need.
 
+- **token-goat now indexes Visual Basic.** `symbol`, `read "file::Name"`, `outline`, `skeleton`, and the other narrow reads now work on VB.NET (`.vb`), VB6 and VBA modules (`.bas`), VBScript (`.vbs`), VB6 forms (`.frm`), and VB6 class modules (`.cls`). token-goat finds namespaces, modules, classes, structures, interfaces, enums and their members, subs, functions, properties, events, delegates, `Declare` statements, operators, constants, and fields, each with its full body. A `.cls` file is read as VB6 only when it starts with the VB6 class header (`VERSION 1.0 CLASS` or an `Attribute VB_Name` line); every other `.cls` is still read as Apex, exactly as before. A VB6 form's designer block is skipped, and a `.frm` that is not a VB6 form, such as a MySQL table file, gets no symbols. The new reader is [src/languages/vb.ts](src/languages/vb.ts). Upgrading reindexes your projects once, because the parser changed.
+
 ### Fixed
 
 - **`token-goat mcp-audit` no longer reads a `.mcp.json` that holds only a `servers` list as one server named "servers".** Such a file, the format Visual Studio uses, now reads as having no Claude Code servers.

@@ -293,7 +293,7 @@ Two adapter styles exist:
 
 **Regex adapters** — no tree-sitter dependency. Two locations:
 - Inline in `src/parser.ts` (Markdown, JSON, YAML, TOML, CSS, Dockerfile)
-- Separate files in `src/languages/` (C#, PHP, HTML, Liquid, Kotlin, GraphQL, SQL, INI, Makefile, Proto, `.env`)
+- Separate files in `src/languages/` (C#, PHP, HTML, Liquid, Kotlin, GraphQL, SQL, INI, Makefile, Proto, `.env`, Visual Basic)
 
 Prefer a separate file in `src/languages/` for any new language. Use `src/languages/kotlin.ts` as a template for class/function extraction, or `src/languages/ini_idx.ts` for flat key-value formats.
 
@@ -307,7 +307,16 @@ Steps:
    if (language === 'yourlang') return extractYourlang(content, filePath).symbols
    ```
    For a tree-sitter language, add a grammar load branch in `loadGrammar()` and a symbol-extraction branch in `parseContent()`.
-5. **Add a matrix case** — add at least one assertion to the shared case table in [`tests/helpers/matrix_cases.ts`](tests/helpers/matrix_cases.ts) to prove the new extractor works in the shipped bundle; the four `tests/command_matrix_e2e.N.test.ts` shards each run an interleaved quarter of that table, so a new case is picked up automatically.
+5. **Register the extensions everywhere else that keys on them.** None of these checks the others, so each needs its own edit:
+   - `src/hooks_read.ts`: `DIFFABLE_SOURCE_RE` and `SOURCE_EXT_RE`.
+   - `src/hooks_grep.ts`: `SOURCE_EXT_RE`.
+   - `src/hooks_bash.ts`: `SYMBOL_BEARING_LANGUAGES`, when `symbol`/`read "file::Symbol"` resolve definitions in the language.
+   - `src/pack.ts`: `LANG_MAP` (the code-fence name), plus `CSTYLE_EXTS`/`HASH_COMMENT_EXTS` only if the language uses `//` or `#` comments.
+   - `src/read_commands.ts`: a per-extension branch in `extractImports` when the language's import statement is not caught by the generic `import|require|use|#include` fallback.
+   - `src/ref_blindness.ts`: a `LANGUAGE_LABELS` entry when the display name differs from the id.
+   - An extension shared with another language (`.cls` is Apex and VB6) cannot be told apart by `detectLanguage`, which is path-only: add a content check to `refineLanguageByContent` in `parser_types.ts`, which `indexFileSync` and `parseFile` apply after reading the file.
+6. **Regenerate the parser fingerprint** — `npm run parser:fingerprint` rewrites `src/parser_fingerprint.ts`; `tests/parser_fingerprint_gate.test.ts` fails until you do. The changelog entry must say that upgrading reindexes.
+7. **Add tests on the real path** — a `CASES` entry in `tests/guards/language_adapter_produces_symbols.test.ts` with a fixture in `tests/fixtures/language_adapter_symbols/` that carries a provenance line, `detectLanguage` assertions in `tests/parser_types.test.ts`, and a built-bundle check: either a case in [`tests/helpers/matrix_cases.ts`](tests/helpers/matrix_cases.ts) (the four `tests/command_matrix_e2e.N.test.ts` shards each run an interleaved quarter of that table) or a standalone test that spawns `dist/token-goat.mjs`, as `tests/vb_bundle_e2e.test.ts` does.
 
 ## Adding a New Hook Event
 

@@ -96,6 +96,7 @@ export type Language =
   | 'terraform'
   | 'env_file'
   | 'powershell'
+  | 'vb'
   | 'apex'
   | 'salesforce_metadata'
   | 'salesforce_markup'
@@ -193,6 +194,11 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.ps1', 'powershell'],
   ['.psm1', 'powershell'],
   ['.env', 'env_file'],
+  // Visual Basic: VB.NET, VB6/VBA standard modules, VBScript, and VB6 forms. A VB6 class module shares `.cls` with Apex, so it is told apart by content in refineLanguageByContent below, never here.
+  ['.vb', 'vb'],
+  ['.bas', 'vb'],
+  ['.vbs', 'vb'],
+  ['.frm', 'vb'],
   ['.cls', 'apex'],
   ['.trigger', 'apex'],
   ['.cmp', 'salesforce_markup'],
@@ -262,6 +268,28 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
 // remembered to list, silently falling through to 'unknown' for every other suffix. Does not
 // match ".envrc" (no dot after "env"), which FILENAME_LANGUAGE already handles separately.
 const DOTENV_VARIANT_RE = /^\.env(\..+)?$/
+
+// How far into a `.cls` the VB6 class-module header is looked for: the `VERSION 1.0 CLASS` / `BEGIN ... END` block plus its `Attribute VB_*` lines is under a dozen lines in every VB6 class module, so this bound is generous without scanning an Apex class body.
+const VB6_HEADER_SCAN_LINES = 40
+
+/**
+ * True when `content` is a VB6 class module: after an optional BOM and blank lines it opens with `VERSION 1.0 CLASS`, or its header carries an `Attribute VB_Name = "..."` line. Neither form is valid Apex, so an Apex class never matches.
+ */
+export function isVb6ClassModule(content: string): boolean {
+  if (content.includes('\0')) return false
+  const lines = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).split(/\r?\n/, VB6_HEADER_SCAN_LINES)
+  const first = lines.find((l) => l.trim() !== '')
+  if (first !== undefined && /^VERSION\s+1\.0\s+CLASS\b/i.test(first.trim())) return true
+  return lines.some((l) => /^Attribute\s+VB_Name\s*=\s*"/i.test(l.trim()))
+}
+
+/**
+ * The language of a file once its content is known. {@link detectLanguage} is path-only, and `.cls` is both an Apex class and a VB6 class module, so the indexer's two entry points (indexFileSync, parseFile) call this after reading the file and store the refined language. Every other language passes through unchanged. Consumers that only have a path (hooks, section_reader, ref-blindness notices) still see `apex` for a VB6 `.cls`; none of them treats the two differently, since neither language has a tree-sitter grammar or a reference index.
+ */
+export function refineLanguageByContent(filePath: string, language: Language, content: string): Language {
+  if (language === 'apex' && path.extname(filePath).toLowerCase() === '.cls' && isVb6ClassModule(content)) return 'vb'
+  return language
+}
 
 /**
  * Detect the {@link Language} of a file from its path.

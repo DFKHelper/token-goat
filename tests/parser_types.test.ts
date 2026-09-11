@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectLanguage, unsupportedLanguageName } from '../src/parser_types.js'
+import { detectLanguage, isVb6ClassModule, refineLanguageByContent, unsupportedLanguageName } from '../src/parser_types.js'
+
+describe('Visual Basic language routing', () => {
+  it('maps every VB extension, in any case, to vb, and leaves .cls on Apex by path', () => {
+    for (const p of ['src/Module1.vb', 'legacy/Main.BAS', 'scripts/deploy.vbs', 'forms/Form1.frm', 'X.VB']) {
+      expect(detectLanguage(p)).toBe('vb')
+    }
+    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls')).toBe('apex')
+  })
+
+  it('refines a VB6 class module .cls to vb by content, and leaves every other .cls on apex', () => {
+    // CAPTURE: header lines 1-5 of https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls.
+    const vb6 = 'VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  \'True\nEND\nAttribute VB_Name = "CFileInfo"\nOption Explicit\n'
+    expect(isVb6ClassModule(vb6)).toBe(true)
+    expect(isVb6ClassModule('\uFEFF\r\n\r\n' + vb6.replace(/\n/g, '\r\n'))).toBe(true)
+    // HAND-DERIVED: a VBA-exported class (no VERSION block) still carries its Attribute VB_Name line.
+    expect(isVb6ClassModule('Attribute VB_Name = "Sheet1"\nPublic Sub A()\nEnd Sub\n')).toBe(true)
+    expect(refineLanguageByContent('C:/p/CFileInfo.cls', 'apex', vb6)).toBe('vb')
+    // HAND-DERIVED: ordinary Apex, including a comment that mentions the header text, stays Apex.
+    const apex = 'public with sharing class Foo {\n  // VERSION 1.0 CLASS\n  // Attribute VB_Name = "x"\n  public void bar() {}\n}\n'
+    expect(isVb6ClassModule(apex)).toBe(false)
+    expect(refineLanguageByContent('force-app/classes/Foo.cls', 'apex', apex)).toBe('apex')
+    // Only .cls is refined: VB6 header text inside another language's file changes nothing.
+    expect(refineLanguageByContent('notes.md', 'markdown', vb6)).toBe('markdown')
+    expect(isVb6ClassModule('VERSION 1.0 CLASS\0')).toBe(false)
+  })
+})
 
 describe('detectLanguage', () => {
   it('returns typescript for .ts files', () => {

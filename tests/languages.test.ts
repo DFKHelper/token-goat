@@ -16,6 +16,7 @@ import { extractPowershell } from '../src/languages/powershell_idx.js'
 import { extractBash } from '../src/languages/bash_idx.js'
 import { extractScala } from '../src/languages/scala.js'
 import { extractLua } from '../src/languages/lua.js'
+import { extractVb } from '../src/languages/vb.js'
 import { extractElixir } from '../src/languages/elixir.js'
 import { extractDart } from '../src/languages/dart.js'
 import { extractZig } from '../src/languages/zig.js'
@@ -6585,5 +6586,324 @@ AFTER_HEREDOC=ok
     const bashResult = await parseFixture('deploy.bash', 'log() {\n  echo hi\n}\n')
     expect(bashResult.language).toBe('bash')
     expect(bashResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
+  })
+})
+
+describe('Visual Basic adapter', () => {
+  const rows = (content: string, file = 'x.vb'): string[] =>
+    extractVb(content, file).symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd} ${s.parent}`.trimEnd())
+
+  it('extracts every VB.NET declaration form in mixed case, with exact spans and parents', () => {
+    // HAND-DERIVED: written from the Visual Basic language reference (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/statements/), and the expected rows are read off this source text by line number, not off the adapter's regexes. Keywords are deliberately mixed case (`END CLASS`, `public sub`), which VB accepts.
+    const content = `Imports System.Text
+Namespace Acme.Tools
+    <Serializable>
+    Public Class Widget(Of T)
+        Private _count As Integer, _name As String
+        Public Property Name As String = "x"
+        public readonly property Count() As Integer
+            Get
+                Return _count
+            End Get
+        End Property
+        public sub New()
+        End Sub
+        Public MustOverride Function Compute() As Integer
+        Private Declare Auto Function GetTick Lib "kernel32" () As Integer
+        Public Delegate Sub Notify(ByVal msg As String)
+        Public Event Changed As EventHandler
+        Public Custom Event Clicked As EventHandler
+            AddHandler(ByVal value As EventHandler)
+            End AddHandler
+            RemoveHandler(ByVal value As EventHandler)
+            End RemoveHandler
+            RaiseEvent(ByVal sender As Object, ByVal e As EventArgs)
+            End RaiseEvent
+        End Event
+        Public Shared Operator +(a As Widget(Of T), b As Widget(Of T)) As Widget(Of T)
+            Return a
+        End Operator
+        Public Const Limit As Integer = 3
+        Friend Enum Color
+            Red = 1
+            Green
+        End Enum
+        Structure Point
+            Public X As Integer
+        End Structure
+    END CLASS
+    Public Interface IShape
+        Function Area() As Double
+        ReadOnly Property Size As Integer
+        Event Resized As EventHandler
+    End Interface
+    Module Program
+        Sub Main()
+        End Sub
+    End Module
+End Namespace
+`
+    expect(rows(content)).toEqual([
+      'namespace Acme.Tools 2-47',
+      'class Widget 4-37 Acme.Tools',
+      'field _count 5-5 Widget',
+      'field _name 5-5 Widget',
+      'property Name 6-6 Widget',
+      'property Count 7-11 Widget',
+      'method New 12-13 Widget',
+      'method Compute 14-14 Widget',
+      'function GetTick 15-15 Widget',
+      'type Notify 16-16 Widget',
+      'event Changed 17-17 Widget',
+      'event Clicked 18-25 Widget',
+      'method + 26-28 Widget',
+      'const Limit 29-29 Widget',
+      'enum Color 30-33 Widget',
+      'const Red 31-31 Color',
+      'const Green 32-32 Color',
+      'struct Point 34-36 Widget',
+      'field X 35-35 Point',
+      'interface IShape 38-42 Acme.Tools',
+      'method Area 39-39 IShape',
+      'property Size 40-40 IShape',
+      'event Resized 41-41 IShape',
+      'module Program 43-46 Acme.Tools',
+      'method Main 44-45 Program',
+    ])
+  })
+
+  it('never closes a declaration on End If, End Select, End With, End Try, End Using, End While, Exit, or a bare End', () => {
+    // HAND-DERIVED: each of these block terminators is a separate statement in the Visual Basic reference; none of them ends a Sub. The Sub must span to its own `End Sub`, and the Function after it must be a sibling, not a child.
+    const content = `Module M
+    Sub Work(ByVal x As Integer)
+        If x > 0 Then
+            Exit Sub
+        End If
+        Select Case x
+            Case 1 : x = 2
+        End Select
+        With Console.Out
+        End With
+        Try
+        Catch ex As Exception
+        End Try
+        Using r As New IO.StringReader("")
+        End Using
+        While x < 3
+            x += 1
+        End While
+        If x = 99 Then End
+        end
+    End Sub
+    Function Next1() As Integer
+        Exit Function
+    End Function
+End Module
+`
+    expect(rows(content)).toEqual([
+      'module M 1-25',
+      'method Work 2-21 M',
+      'method Next1 22-24 M',
+    ])
+  })
+
+  it('keeps a multi-line lambda from closing the procedure that contains it', () => {
+    // HAND-DERIVED: a multi-line lambda (`Function(x)` ... `End Function`, `Sub()` ... `End Sub)`) is an expression inside a procedure body; its End line belongs to the lambda.
+    const content = `Class C
+    Sub Run()
+        Dim f = Function(x As Integer)
+                    Return x + 1
+                End Function
+        Task.Run(Sub()
+                     Console.WriteLine(1)
+                 End Sub)
+        Dim g = Function(y As Integer) y * 2
+    End Sub
+    Sub After()
+    End Sub
+End Class
+`
+    expect(rows(content)).toEqual([
+      'class C 1-13',
+      'method Run 2-10 C',
+      'method After 11-12 C',
+    ])
+  })
+
+  it('joins explicit and implicit line continuations, and splits colon-separated statements', () => {
+    // FORMAT-DERIVED: https://learn.microsoft.com/en-us/dotnet/visual-basic/programming-guide/program-structure/how-to-break-and-combine-statements-in-code says the underscore "must be immediately preceded by a space and immediately followed by a line terminator (carriage return) or (starting with version 16.0) a comment", and a colon places multiple statements on one line.
+    const content = `Public Module Text
+    Public Function Join(ByVal a As String, _ ' first part
+                         ByVal b As String) _
+                         As String
+        Return a & b
+    End Function
+    Public Function Pair(a As Integer,
+                         b As Integer) As Integer
+        Return a + b
+    End Function
+    Sub One() : End Sub
+    Sub Two() : Dim x = 1 : End Sub
+End Module
+`
+    expect(rows(content)).toEqual([
+      'module Text 1-13',
+      'method Join 2-6 Text',
+      'method Pair 7-10 Text',
+      'method One 11-11 Text',
+      'method Two 12-12 Text',
+    ])
+  })
+
+  it('reads nothing from comments, REM lines, or string contents', () => {
+    // HAND-DERIVED: `'` and REM start comments, the typographic quote U+2019 is accepted as a comment starter too, and `""` is an escaped quote inside a string, so none of the declaration-shaped text below is code.
+    const content = `Module M
+    ' Sub InComment()
+    REM Function InRem()
+    Sub Real()
+        Dim s = "End Sub"" : Sub InString()"
+        Dim t = "x" ' End Sub
+    End Sub
+    ${String.fromCharCode(0x2019)} Sub SmartQuoteComment()
+End Module
+`
+    expect(rows(content)).toEqual(['module M 1-9', 'method Real 4-7 M'])
+  })
+
+  it('skips attributes, #Region directives, and Option/Imports/Inherits statements', () => {
+    // FORMAT-DERIVED: https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive gives `#Region string_literal` ... `#End Region`, nestable. Attribute syntax `<Name(args)>` and the assembly target `<Assembly: Name>` are from the Visual Basic attribute-list reference.
+    const content = `Option Strict On
+<Assembly: CLSCompliant(True)>
+Imports Col = System.Collections.Generic
+Public Class Form1
+    Inherits Form
+    #Region "Designer"
+    #Region "Nested"
+    <DebuggerStepThrough()> _
+    Private Sub InitializeComponent()
+    End Sub
+    #End Region
+    #End Region
+End Class
+`
+    const result = extractVb(content, 'Form1.vb')
+    expect(result.symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd} ${s.parent}`.trimEnd())).toEqual([
+      'class Form1 4-13',
+      'method InitializeComponent 8-10 Form1',
+    ])
+    expect(result.imports).toEqual([{ kind: 'import', target: 'System.Collections.Generic', line: 3 }])
+  })
+
+  it('indexes a VB6 class module past its header, with Property Get/Let, Type, Declare, and a continued signature', () => {
+    // CAPTURE: the header lines and the Property Let/Get FullPathName declarations are verbatim from a real VB6 class module, https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls; the bodies are shortened. The `Private Type` block and the continued FormatFileSize signature are HAND-DERIVED from the VBA reference, https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/property-let-statement.
+    const content = `VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "CFileInfo"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Option Explicit
+Private Declare Function FindClose Lib "kernel32" (ByVal hFindFile As Long) As Long
+Private Type FILETIME
+   dwLowDateTime As Long
+   dwHighDateTime As Long
+End Type
+Private m_Path As String
+Public Property Let FullPathName(ByVal NewVal As String)
+   m_Path = NewVal
+End Property
+Public Property Get FullPathName() As String
+Attribute FullPathName.VB_UserMemId = 0
+   FullPathName = m_Path
+End Property
+Public Function FormatFileSize(ByVal Size As Long, _
+      Optional ByVal Unit As String = "KB") As String
+   FormatFileSize = "x"
+End Function
+`
+    expect(rows(content, 'CFileInfo.cls')).toEqual([
+      'function FindClose 11-11',
+      'struct FILETIME 12-15',
+      'field dwLowDateTime 13-13 FILETIME',
+      'field dwHighDateTime 14-14 FILETIME',
+      'field m_Path 16-16',
+      'property FullPathName 17-19',
+      'property FullPathName 20-23',
+      'function FormatFileSize 24-27',
+    ])
+  })
+
+  it('skips a VB6 form designer block and indexes the code after it', () => {
+    // HAND-DERIVED: a VB6 .frm opens with `VERSION 5.00`, then a `Begin VB.Form` ... `End` designer block (nested `Begin`/`End` per control), then the Attribute lines and the code.
+    const content = `VERSION 5.00
+Begin VB.Form Form1
+   Caption         =   "Sub NotCode()"
+   Begin VB.CommandButton Command1
+      Caption         =   "Go"
+   End
+End
+Attribute VB_Name = "Form1"
+Private Sub Form_Load()
+   Dim i As Integer
+End Sub
+Private Sub Command1_Click() : MsgBox "End Sub" : End Sub
+`
+    expect(rows(content, 'Form1.frm')).toEqual(['function Form_Load 9-11', 'function Command1_Click 12-12'])
+  })
+
+  it('produces nothing, without throwing, for a .frm that is not a VB6 form or holds binary content', () => {
+    // HAND-DERIVED: MySQL writes binary table definitions as `.frm` files; they carry NUL bytes and no VB6 header.
+    expect(extractVb('\xfe\x01\x09\x09\0\0\x30\0Sub X()', 'mysql_table.frm').symbols).toEqual([])
+    expect(extractVb('Sub X()\nEnd Sub\n', 'not_a_form.frm').symbols).toEqual([])
+    expect(extractVb('Sub X()\0\nEnd Sub\n', 'weird.vb').symbols).toEqual([])
+  })
+
+  it('indexes VBScript classes, script-level Dim and Const lists, and a Default function', () => {
+    // HAND-DERIVED: VBScript's Class, Dim, Const (comma lists), and `Public Default Function` forms from the VBScript language reference.
+    const content = `Option Explicit
+Dim gCount, gName
+Const MAX = 10, MIN = 1
+Class Greeter
+  Private m_name
+  Public Default Function Hello(n)
+    Hello = "hi " & n
+  End Function
+End Class
+Sub Main
+  gCount = 1
+End Sub
+`
+    expect(rows(content, 'script.vbs')).toEqual([
+      'field gCount 2-2',
+      'field gName 2-2',
+      'const MAX 3-3',
+      'const MIN 3-3',
+      'class Greeter 4-9',
+      'field m_name 5-5 Greeter',
+      'method Hello 6-8 Greeter',
+      'function Main 10-12',
+    ])
+  })
+
+  it('carries the declaration body into the symbol so read returns it whole', () => {
+    // HAND-DERIVED: the body is the source lines from the declaration through its End line.
+    const content = `Module M
+    Function Twice(x As Integer) As Integer
+        Return x * 2
+    End Function
+End Module
+`
+    const twice = extractVb(content, 'm.vb').symbols.find((s) => s.name === 'Twice')
+    expect(twice?.body).toBe('    Function Twice(x As Integer) As Integer\n        Return x * 2\n    End Function')
+  })
+
+  it('routes a .bas module through parseContent as vb', async () => {
+    // HAND-DERIVED: a VBA-exported standard module opens with its Attribute VB_Name line.
+    const result = await parseFixture('module1.bas', 'Attribute VB_Name = "Module1"\nPublic Sub Go()\nEnd Sub\n')
+    expect(result.language).toBe('vb')
+    expect(result.symbols.map((s) => s.name)).toEqual(['Go'])
   })
 })
