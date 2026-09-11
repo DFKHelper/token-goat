@@ -435,6 +435,23 @@ export class GradleFilter extends ToolFilter {
     const kept: string[] = []
     let stackFrameCount = 0
     const MAX_STACK_FRAMES = 10
+    let suppressedInTrace = 0
+    let droppedTaskProgress = 0
+    let droppedDownloads = 0
+    let droppedDaemon = 0
+    let droppedBuildScan = 0
+    let droppedDeprecation = 0
+    // PASSED and SKIPPED are separate outcomes and are counted separately: a run where tests were skipped must not read as a run where they passed, since `BUILD SUCCESSFUL` is kept either way.
+    let droppedTestPassed = 0
+    let droppedTestSkipped = 0
+
+    // A stack trace truncated at MAX_STACK_FRAMES with no marker reads as a trace that genuinely ended there, so record how many frames the cap ate and say so where they were cut.
+    const flushSuppressedFrames = () => {
+      if (suppressedInTrace > 0) {
+        kept.push(`[token-goat: …and ${suppressedInTrace} more stack frames]`)
+        suppressedInTrace = 0
+      }
+    }
 
     for (const line of lines) {
       // Always keep: build result, failure block headers, exception class lines, error lines
@@ -444,6 +461,7 @@ export class GradleFilter extends ToolFilter {
         GRADLE_EXCEPTION_CLASS_RE.test(line) ||
         GRADLE_ERROR_LINE_RE.test(line)
       ) {
+        flushSuppressedFrames()
         kept.push(line)
         stackFrameCount = 0
         continue
@@ -463,24 +481,52 @@ export class GradleFilter extends ToolFilter {
         if (stackFrameCount < MAX_STACK_FRAMES) {
           kept.push(line)
           stackFrameCount++
+        } else {
+          suppressedInTrace++
         }
         continue
       }
       // Drop: task-progress lines without FAILED, downloads, daemon messages, build scan, deprecation
-      if (
-        GRADLE_TASK_PROGRESS_RE.test(line) ||
-        GRADLE_DOWNLOAD_RE.test(line) ||
-        GRADLE_DAEMON_RE.test(line) ||
-        GRADLE_BUILD_SCAN_RE.test(line) ||
-        GRADLE_DEPRECATION_RE.test(line) ||
-        GRADLE_TEST_METHOD_RE.test(line)
-      ) {
+      if (GRADLE_TEST_METHOD_RE.test(line)) {
+        if (line.endsWith('SKIPPED')) droppedTestSkipped++
+        else droppedTestPassed++
         continue
       }
+      if (GRADLE_TASK_PROGRESS_RE.test(line)) {
+        droppedTaskProgress++
+        continue
+      }
+      if (GRADLE_DOWNLOAD_RE.test(line)) {
+        droppedDownloads++
+        continue
+      }
+      if (GRADLE_DAEMON_RE.test(line)) {
+        droppedDaemon++
+        continue
+      }
+      if (GRADLE_BUILD_SCAN_RE.test(line)) {
+        droppedBuildScan++
+        continue
+      }
+      if (GRADLE_DEPRECATION_RE.test(line)) {
+        droppedDeprecation++
+        continue
+      }
+      flushSuppressedFrames()
       kept.push(line)
       stackFrameCount = 0
     }
+    flushSuppressedFrames()
 
+    const notes: string[] = []
+    maybeNote(notes, droppedTaskProgress, `collapsed ${droppedTaskProgress} '> Task :' progress lines`)
+    maybeNote(notes, droppedDownloads, `dropped ${droppedDownloads} download lines`)
+    maybeNote(notes, droppedDaemon, `dropped ${droppedDaemon} Gradle daemon lines`)
+    maybeNote(notes, droppedBuildScan, `dropped ${droppedBuildScan} build-scan lines`)
+    maybeNote(notes, droppedDeprecation, `dropped ${droppedDeprecation} deprecation-warning lines`)
+    maybeNote(notes, droppedTestPassed, `collapsed ${droppedTestPassed} PASSED test lines`)
+    maybeNote(notes, droppedTestSkipped, `collapsed ${droppedTestSkipped} SKIPPED test lines`)
+    this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 }
