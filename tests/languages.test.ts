@@ -851,6 +851,48 @@ public int Count { get; set; }
 // ---------------------------------------------------------------------------
 
 describe('php adapter', () => {
+  // FORMAT-DERIVED: enum body syntax from the PHP Manual, "Language Reference" > "Enumerations" > "Basics" (pure `case Hearts;`) and "Backed Enumerations" (`case Hearts = 'H';`); the `case <expr>;` switch arm from "Language Reference" > "Control Structures" > "switch", which documents `;` as an accepted alternative to `:` after a case expression. Not written from this repo's own regex.
+  it('indexes enum cases and never mistakes a switch arm for one (regression: only the enum type itself was indexed, so every case was missing from symbol/read/outline)', () => {
+    const content = `<?php
+enum Suit: string {
+    case Hearts = 'H';
+    case Spades = 'S';
+    public function color(): string {
+        switch ($this) {
+            case Suit::Hearts:
+                return 'Red';
+            case Bogus;
+                return 'B';
+        }
+        return 'Black';
+    }
+}
+
+class Router {
+    public function route($x) {
+        switch ($x) {
+            case Nope;
+                return 1;
+        }
+    }
+}
+`
+    const { symbols } = extractPhp(content, 'Suit.php')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Hearts')
+    expect(names).toContain('Spades')
+    expect(symbols.find((s) => s.name === 'Hearts')?.parent).toBe('Suit')
+    expect(symbols.find((s) => s.name === 'Spades')?.kind).toBe('const')
+    // Must-not-appear: a switch arm is not an enum case, in the enum's own method or in an unrelated class.
+    expect(names).not.toContain('Bogus')
+    expect(names).not.toContain('Nope')
+    // Loss direction: everything this fixture used to yield before enum cases were added must still be here.
+    expect(names).toContain('Suit')
+    expect(names).toContain('color')
+    expect(names).toContain('Router')
+    expect(names).toContain('route')
+  })
+
   it('extracts class, method, function, and use import', () => {
     const content = `<?php
 use App\\Models\\User;
@@ -2604,6 +2646,48 @@ prefix func ~~~(x: Int) -> Int { x }
 // ---------------------------------------------------------------------------
 
 describe('scala adapter', () => {
+  // FORMAT-DERIVED: brace-free bodies introduced by a trailing `:` come from the Scala 3 Reference, "Other New Features" > "Optional Braces" (the `indent` / `end marker` rules); `"""..."""` multi-line string literals from the Scala 3 Reference, "Changed Features" > "String Interpolation" and the Scala Language Specification 1.3.2 "Character Literals and String Literals". Not written from this repo's own regex.
+  it('indexes the members of a Scala 3 indentation-syntax body without inventing any (regression: an `object Foo:` body yielded the type name and nothing else)', () => {
+    const content = `object Doc:
+  val template: String = """
+object Fake:
+  val ghost: Int = 1
+"""
+  var count: Int = 0
+  def render(x: Int): String =
+    val local = x + 1
+    template
+
+  class Nested:
+    def inner(): Int = 2
+
+trait Shape:
+  def area: Double
+
+class Braced {
+  def kept(): Int = 1
+}
+`
+    const { symbols } = extractScala(content, 'Doc.scala')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('template')
+    expect(names).toContain('count')
+    expect(names).toContain('render')
+    expect(symbols.find((s) => s.name === 'render')?.parent).toBe('Doc')
+    expect(symbols.find((s) => s.name === 'inner')?.parent).toBe('Nested')
+    expect(symbols.find((s) => s.name === 'area')?.parent).toBe('Shape')
+    // Must-not-appear: declaration-shaped text inside a `"""` literal is data, and a line indented past the body column is a continuation of the member above it, not a member of its own.
+    expect(names).not.toContain('Fake')
+    expect(names).not.toContain('ghost')
+    expect(names).not.toContain('local')
+    // Loss direction: a brace-delimited sibling after the indentation-syntax body keeps both its own name and its members.
+    expect(names).toContain('Doc')
+    expect(names).toContain('Nested')
+    expect(names).toContain('Shape')
+    expect(names).toContain('Braced')
+    expect(symbols.find((s) => s.name === 'kept')?.parent).toBe('Braced')
+  })
+
   it('extracts class, object, and trait declarations', () => {
     const content = `import scala.util.Random
 
