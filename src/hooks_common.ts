@@ -14,6 +14,7 @@ import { countRedactionPlaceholders } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { neutralizeOutsideFences } from './injection_scan.js'
 import { displaySafeText } from './paths.js'
+import { detectHarness } from './bridges/registry.js'
 
 /** Return the event's tool name, or `undefined` for non-tool events. */
 export function getToolName(event: HookEvent): string | undefined {
@@ -313,6 +314,8 @@ export function emitRewrite(
   savings?: RewriteSavings,
   redaction: RedactionAccounting = 'count-here',
 ): HookOutput {
+  // VS Code's PostToolUse has no field that replaces a tool result (see bridges/vscode_hooks.ts), so a rewrite there never reaches the model: pass instead, and book no saving or redaction for bytes that were delivered unchanged.
+  if (detectHarness() === 'vscode') return passOutput()
   if (redaction === 'count-here') {
     const count = countRedactionPlaceholders(updatedOutput)
     if (count > 0) recordStat('secret_redacted', 0, count, undefined, detail)

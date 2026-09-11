@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizePayload, type HookPayload } from '../src/hooks_cli.js'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { normalizePayload, type HookPayload, VSCODE_INPUT_KEY_MAP, VSCODE_TOOL_NAME_MAP, vscodeNativeToolInput } from '../src/hooks_cli.js'
 import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from '../src/hooks_common.js'
 
 describe('normalizePayload', () => {
@@ -487,6 +491,87 @@ describe('normalizePayload', () => {
       const agent = normalizePayload({ tool_name: 'agent', tool_input: { goal: 'x' } }, 'qwen')
       expect(agent['tool_name']).toBe('agent')
       expect(agent['tool_input']).toEqual({ goal: 'x' })
+    })
+  })
+
+  describe('vscode harness', () => {
+    // PROVENANCE: FORMAT-DERIVED. Tool names come from VS Code 1.136.0's bundle, not token-goat's map: the ToolName enum in resources/app/extensions/copilot/dist/extension.js (ReadFile="read_file", ViewImage="view_image", ListDirectory="list_dir", CreateFile="create_file", ReplaceString="replace_string_in_file", EditFile="insert_edit_into_file", EditNotebook="edit_notebook_file", plus grep_search and file_search) and run_in_terminal from resources/app/out/vs/workbench/workbench.desktop.main.js. Input keys come from the languageModelTools inputSchema entries in resources/app/extensions/copilot/package.json (copilot_readFile, copilot_viewImage, copilot_listDirectory, copilot_findTextInFiles, copilot_findFiles, copilot_createFile, copilot_replaceString, copilot_insertEdit, copilot_editNotebook) and run_in_terminal's schema in the workbench bundle. The envelope (hook_event_name, tool_name, tool_input, tool_use_id) is ChatHookService.executePreToolUseHook's in extension.js.
+    const NATIVE_INPUTS: Record<string, Record<string, unknown>> = {
+      read_file: { filePath: '/w/src/a.ts', startLine: 1, endLine: 40 },
+      view_image: { filePath: '/w/shot.png' },
+      list_dir: { path: '/w/src' },
+      grep_search: { query: 'needle', isRegexp: false, includePattern: 'src/**', maxResults: 20 },
+      file_search: { query: '**/*.ts', maxResults: 10 },
+      create_file: { filePath: '/w/new.ts', content: 'export const x = 1\n' },
+      replace_string_in_file: { filePath: '/w/a.ts', oldString: 'a', newString: 'b' },
+      insert_edit_into_file: { explanation: 'add a line', filePath: '/w/a.ts', code: 'const y = 2' },
+      edit_notebook_file: { filePath: '/w/n.ipynb', editType: 'insert', cellId: 'c1', newCode: 'x = 1', language: 'python' },
+      run_in_terminal: { command: 'npm test', explanation: 'run tests', goal: 'test', mode: 'sync' },
+    }
+
+    function vscodePayload(tool: string, input: Record<string, unknown>): HookPayload {
+      return { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'vs-sess', tool_name: tool, tool_input: input, tool_use_id: 'tu-1' }
+    }
+
+    it('remaps read_file to Read and filePath to file_path, leaving startLine/endLine for readRequestedSliceWindow', () => {
+      const result = normalizePayload(vscodePayload('read_file', NATIVE_INPUTS['read_file']!), 'vscode')
+      expect(result['tool_name']).toBe('Read')
+      expect(result['tool_input']).toEqual({ file_path: '/w/src/a.ts', startLine: 1, endLine: 40 })
+      expect(result['_tg_vscode_tool_name']).toBe('read_file')
+      expect(result['_tg_harness']).toBe('vscode')
+    })
+
+    it('maps grep_search query/includePattern to Grep pattern/glob and replace_string_in_file to Edit with snake_case keys', () => {
+      const grep = normalizePayload(vscodePayload('grep_search', NATIVE_INPUTS['grep_search']!), 'vscode')
+      expect(grep['tool_name']).toBe('Grep')
+      expect(grep['tool_input']).toEqual({ pattern: 'needle', isRegexp: false, glob: 'src/**', maxResults: 20 })
+      const edit = normalizePayload(vscodePayload('replace_string_in_file', NATIVE_INPUTS['replace_string_in_file']!), 'vscode')
+      expect(edit['tool_name']).toBe('Edit')
+      expect(edit['tool_input']).toEqual({ file_path: '/w/a.ts', old_string: 'a', new_string: 'b' })
+      const notebook = normalizePayload(vscodePayload('edit_notebook_file', NATIVE_INPUTS['edit_notebook_file']!), 'vscode')
+      expect(notebook['tool_name']).toBe('NotebookEdit')
+      expect((notebook['tool_input'] as Record<string, unknown>)['notebook_path']).toBe('/w/n.ipynb')
+    })
+
+    it('every mapped tool has a fixture here, and each native input comes back unchanged through vscodeNativeToolInput', () => {
+      expect(Object.keys(NATIVE_INPUTS).sort()).toEqual(Object.keys(VSCODE_TOOL_NAME_MAP).sort())
+      expect(Object.keys(VSCODE_INPUT_KEY_MAP).sort()).toEqual(Object.keys(VSCODE_TOOL_NAME_MAP).sort())
+      for (const [tool, input] of Object.entries(NATIVE_INPUTS)) {
+        const normalized = normalizePayload(vscodePayload(tool, input), 'vscode')
+        expect(normalized['tool_name'], tool).toBe(VSCODE_TOOL_NAME_MAP[tool])
+        expect(vscodeNativeToolInput(tool, normalized['tool_input'] as Record<string, unknown>), tool).toEqual(input)
+      }
+    })
+
+    it('population floor: the map is non-empty and every mapped name is one a pre/post_tool_use handler registers for', () => {
+      const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src')
+      const registered = new Set<string>()
+      for (const rel of fs.readdirSync(srcDir, { recursive: true }) as string[]) {
+        if (!rel.endsWith('.ts')) continue
+        const text = fs.readFileSync(path.join(srcDir, rel), 'utf8')
+        for (const m of text.matchAll(/registerHook\(\s*'(?:pre|post)_tool_use',[^)]*?toolName:\s*'(\w+)'/g)) registered.add(m[1]!)
+      }
+      expect(registered.size).toBeGreaterThan(0)
+      const mapped = Object.values(VSCODE_TOOL_NAME_MAP)
+      expect(mapped.length).toBeGreaterThan(0)
+      for (const name of mapped) expect(registered.has(name), `${name} has no registered tool-scoped handler`).toBe(true)
+    })
+
+    it('fills in cwd from the process working directory, since VS Code sends none and runs the hook in the workspace folder', () => {
+      expect(normalizePayload(vscodePayload('run_in_terminal', NATIVE_INPUTS['run_in_terminal']!), 'vscode')['cwd']).toBe(process.cwd())
+      expect(normalizePayload({ ...vscodePayload('read_file', NATIVE_INPUTS['read_file']!), cwd: '/given' }, 'vscode')['cwd']).toBe('/given')
+    })
+
+    it('leaves unmapped tools (multi_replace_string_in_file, apply_patch, fetch_webpage) and their inputs untouched', () => {
+      for (const [tool, input] of [
+        ['multi_replace_string_in_file', { explanation: 'e', replacements: [{ filePath: '/w/a.ts', oldString: 'a', newString: 'b' }] }],
+        ['apply_patch', { input: '*** Begin Patch', explanation: 'e' }],
+        ['fetch_webpage', { urls: ['https://example.com'], query: 'q' }],
+      ] as const) {
+        const result = normalizePayload(vscodePayload(tool, input), 'vscode')
+        expect(result['tool_name']).toBe(tool)
+        expect(result['tool_input']).toEqual(input)
+      }
     })
   })
 

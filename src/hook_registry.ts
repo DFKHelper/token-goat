@@ -22,6 +22,7 @@ import { registerReset } from './reset.js'
 import { recordUnmappedTool } from './stats.js'
 import type { HookEventName, HookOutput } from './types.js'
 import { replaceToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { serializeVscodeOutput } from './bridges/vscode_hooks.js'
 
 /**
  * The event object passed to every {@link HookHandler}.
@@ -426,6 +427,8 @@ export function serializeOutput(
   harness: HarnessName,
   event?: HookEvent,
 ): string {
+  // VS Code reads a strict subset of this shape (no top-level deny on PreToolUse, no result rewrite at all), so it has its own serializer; see bridges/vscode_hooks.ts.
+  if (harness === 'vscode') return serializeVscodeOutput(output, eventName, CLAUDE_CODE_EVENT_NAMES[eventName], event)
   switch (output.hookType) {
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })

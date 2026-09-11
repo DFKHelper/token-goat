@@ -278,6 +278,27 @@ describe('preReadImageHandler', () => {
     }
   })
 
+  // PROVENANCE: FORMAT-DERIVED. read_file and view_image are VS Code 1.136.0's model-facing tool names (ToolName enum in resources/app/extensions/copilot/dist/extension.js); normalizePayload's vscode branch maps both to Read and keeps the original under _tg_vscode_tool_name.
+  it('on VS Code shrinks only for view_image: read_file of the same large image passes, since only view_image can be pointed at the shrunk copy', async () => {
+    const big = await sharp({
+      create: { width: 2400, height: 1800, channels: 3, background: { r: 30, g: 140, b: 90 } },
+    })
+      .png()
+      .toBuffer()
+    const filePath = path.join(TMP, 'vscode-large.png')
+    fs.writeFileSync(filePath, big)
+    try {
+      const asReadFile = makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { _tg_vscode_tool_name: 'read_file' } })
+      expect((await preReadImageHandler(asReadFile)).hookType).toBe('pass')
+      const asViewImage = makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { _tg_vscode_tool_name: 'view_image' } })
+      const out = await preReadImageHandler(asViewImage)
+      expect(out.hookType).toBe('context')
+      if (out.hookType === 'context') expect(out.context).toContain('data:image/')
+    } finally {
+      fs.rmSync(filePath, { force: true })
+    }
+  })
+
   it('passes for a missing image file', async () => {
     const out = await preReadImageHandler(makeEvent(path.join(TMP, 'nope.png')))
     expect(out.hookType).toBe('pass')

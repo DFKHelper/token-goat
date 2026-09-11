@@ -25,6 +25,7 @@ function jsonc(): typeof JsoncParser {
 import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
+import { installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 
 const BEGIN = '<!-- token-goat-vscode-begin -->'
 const END = '<!-- token-goat-vscode-end -->'
@@ -113,6 +114,65 @@ export function vscodeInstructionsPath(projectRoot = process.cwd()): string {
   return path.join(path.resolve(projectRoot), '.github', 'copilot-instructions.md')
 }
 
+/**
+ * The Copilot-format event keys VS Code maps out of a hooks file; any other key is skipped.
+ *
+ * Read from the camelCase-to-hook-type table in workbench.desktop.main.js (VS Code 1.136.0), where
+ * `userPromptSubmitted` becomes UserPromptSubmit and `agentStop` becomes Stop. The shared hooks file
+ * also carries `preCompact` and `postToolUseFailure` for Copilot CLI; VS Code never runs those two.
+ */
+export const VSCODE_HOOK_FILE_EVENT_KEYS: readonly string[] = [
+  'sessionStart',
+  'sessionEnd',
+  'userPromptSubmitted',
+  'preToolUse',
+  'postToolUse',
+  'agentStop',
+  'subagentStop',
+  'errorOccurred',
+]
+
+/**
+ * The hooks directory VS Code's agent reads for this scope.
+ *
+ * Both entries are on VS Code's own hook-source list in workbench.desktop.main.js (1.136.0):
+ * `.github/hooks` in the workspace and `~/.copilot/hooks` for the user. VS Code expands that `~/`
+ * against the user's home directory, not COPILOT_HOME, so the user scope ignores COPILOT_HOME here
+ * even though Copilot CLI honors it; when COPILOT_HOME is unset the two are the same directory and
+ * share one hooks file.
+ */
+export function vscodeHooksDir(opts: VscodeScopeOptions = {}): string {
+  return opts.project === true
+    ? path.join(path.resolve(opts.projectRoot ?? process.cwd()), '.github', 'hooks')
+    : path.join(os.homedir(), '.copilot', 'hooks')
+}
+
+/** Whether `install --vscode` has put its hooks in this scope's hooks directory. */
+export function vscodeHooksInstalled(opts: VscodeScopeOptions = {}): boolean {
+  return readCopilotHooksOwners(vscodeHooksDir(opts)).has('vscode')
+}
+
+export function vscodeUserSettingsPath(): string {
+  return path.join(vscodeUserConfigDir(), 'settings.json')
+}
+
+/**
+ * True when VS Code's user settings turn on `chat.useClaudeHooks`, which makes VS Code also run
+ * the hooks in `~/.claude/settings.json`. It defaults to false (its configuration entry in
+ * workbench.desktop.main.js, 1.136.0). Read only; an unreadable or malformed file reads as false.
+ */
+export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
+  let text: string
+  try {
+    text = fs.readFileSync(settingsPath, 'utf8')
+  } catch {
+    return false
+  }
+  const parsed: unknown = jsonc().parse(text, [], { allowTrailingComma: true, disallowComments: false })
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
+}
+
 interface VscodeConfig {
   text: string
   value: Record<string, unknown>
@@ -143,6 +203,8 @@ function updateConfig(text: string, value: unknown): string {
 export interface VscodeInstallResult {
   mcpPath: string
   instructionsPath: string
+  /** The shared hooks file VS Code's agent runs (also Copilot CLI's; see CopilotHooksOwner). */
+  hooksConfigPath: string
   alreadyInstalled: boolean
   /** Which scope was actually written: 'project' (`--project`) or 'user' (default). */
   scope: 'project' | 'user'
@@ -210,7 +272,7 @@ function writeGuidance(filePath: string): boolean {
     '',
     '**Compressed payloads:** a message containing a token-goat payload block (recognizable by a `recovery: token-goat retrieve <id>` line) is compressed text, not an answer. Call the MCP tool `retrieve_text` with that id to recover the original text, then answer the question the message asks using the recovered text. Never present the raw payload to the user as the response; if the `retrieve_text` tool is unavailable (the MCP server is not running, or the chat is not in Agent mode), say so plainly and ask the user to switch to Agent mode or run `token-goat install --vscode`.',
     '',
-    'VS Code support: token-goat install --vscode configures a stdio MCP server under the servers root key in your user-profile mcp.json by default (add --project for the workspace .vscode/mcp.json instead). VS Code may call these MCP tools when selected; MCP does not intercept VS Code’s built-in file reads.',
+    'VS Code support: token-goat install --vscode configures a stdio MCP server under the servers root key in your user-profile mcp.json by default (add --project for the workspace .vscode/mcp.json instead), and agent hooks that see VS Code’s built-in tool calls. The hooks can deny a repeated read, add a hint, shrink an image before view_image loads it, and compress a terminal command’s output; they cannot fold or trim what a built-in read returns.',
     END,
   ].join('\n')
   return upsertDelimitedBlock(filePath, BEGIN, END, body)
@@ -241,7 +303,14 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
   if (config.text !== next) atomicWriteText(mcpPath, next)
   const guidanceChanged = writeGuidance(instructionsPath)
-  return { mcpPath, instructionsPath, alreadyInstalled: config.text === next && !guidanceChanged, scope }
+  const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
+  return {
+    mcpPath,
+    instructionsPath,
+    hooksConfigPath: hooks.configPath,
+    alreadyInstalled: config.text === next && !guidanceChanged && !hooks.changed,
+    scope,
+  }
 }
 
 export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
@@ -259,5 +328,7 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
     }
   }
   if (stripDelimitedBlock(vscodeInstructionsPath(opts.projectRoot), BEGIN, END)) removed = true
+  // Leaves the hooks file in place while `install --copilot` still relies on it.
+  if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode')) removed = true
   return removed
 }

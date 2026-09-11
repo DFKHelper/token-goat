@@ -117,9 +117,13 @@ afterAll(() => {
  * Harnesses whose default install path wires `token-goat hook <event>` straight
  * into their own settings file with no reshaping shim, so the raw bundle
  * response IS their wire contract -- same set tests/hook_event_harness_matrix.test.ts
- * uses for its RAW_PASSTHROUGH_HARNESSES deny-shape assertions.
+ * uses for its RAW_PASSTHROUGH_HARNESSES deny-shape assertions. vscode joins
+ * here for context shapes only: its shim passes the bundle's response through
+ * untouched, and VS Code reads hookSpecificOutput.additionalContext for
+ * PreToolUse/PostToolUse (ChatHookService in VS Code 1.136.0's extension.js).
+ * Its deny shape differs and is asserted in the harness matrix.
  */
-const RAW_PASSTHROUGH_HARNESSES: HarnessName[] = ['claudecode', 'grok', 'hermes', 'gemini', 'qwen', 'generic']
+const RAW_PASSTHROUGH_HARNESSES: HarnessName[] = ['claudecode', 'grok', 'hermes', 'gemini', 'qwen', 'vscode', 'generic']
 
 describe('wire-format contract matrix: pre_tool_use `context` hint -> hookSpecificOutput.additionalContext (real bundle, real preReadHandler)', () => {
   let dataBase: string
@@ -314,5 +318,35 @@ describe('wire-format contract matrix: pre_compact `context` -> raw stdout on Cl
     const r = runShim(COPILOT_CLI_HOOK_SCRIPT, cwd, 'preCompact', payload, env)
     expect(r.status, `stderr: ${r.stderr}`).toBe(0)
     expect(JSON.parse(r.stdout)).toEqual({})
+  })
+})
+
+describe('wire-format contract matrix: VS Code agent hooks through the built bundle (`hook pre_tool_use --harness vscode`)', () => {
+  // PROVENANCE: FORMAT-DERIVED. Payload envelope and tool schema from VS Code 1.136.0: ChatHookService.executePreToolUseHook in resources/app/extensions/copilot/dist/extension.js, copilot_readFile's inputSchema in resources/app/extensions/copilot/package.json.
+  it('a read_file re-read is denied as hookSpecificOutput.permissionDecision with the flag alone, and post_tool_use never carries updatedToolOutput', () => {
+    const dataBase = mkIsolated('tg-wireformat-vscode-data-')
+    const homeBase = mkIsolated('tg-wireformat-vscode-home-')
+    const env = tgEnv('vscode', dataBase, homeBase)
+    delete env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    const filePath = path.join(dataBase, 'large.bin')
+    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'wireformat-vscode', tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 2000 }, tool_use_id: 'tu-1' }
+    const first = run(['hook', 'pre_tool_use', '--harness', 'vscode'], env, JSON.stringify(payload))
+    expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
+    const post = run(['hook', 'post_tool_use', '--harness', 'vscode'], env, JSON.stringify({ ...payload, hook_event_name: 'PostToolUse', tool_response: 'x'.repeat(60 * 1024) }))
+    expect(post.status, `post, stderr: ${post.stderr}`).toBe(0)
+    expect(() => JSON.parse(post.stdout)).not.toThrow()
+    expect(post.stdout).not.toContain('updatedToolOutput')
+    expect(post.stdout).not.toContain('modifiedResult')
+    const second = run(['hook', 'pre_tool_use', '--harness', 'vscode'], env, JSON.stringify(payload))
+    expect(second.status, `second read, stderr: ${second.stderr}`).toBe(0)
+    const parsed = JSON.parse(second.stdout) as Record<string, unknown> & {
+      hookSpecificOutput?: { hookEventName?: string; permissionDecision?: string; permissionDecisionReason?: string }
+    }
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny')
+    // The post_tool_use step stored the result VS Code delivered, so the deny names the served copy rather than the plain re-read.
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('was already served in this session')
+    for (const key of ['decision', 'modifiedArgs', 'modifiedResult']) expect(key in parsed, key).toBe(false)
   })
 })

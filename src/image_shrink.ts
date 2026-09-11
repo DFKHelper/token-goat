@@ -39,6 +39,7 @@ import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
+import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import { displaySafePath } from './paths.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -637,6 +638,9 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string): Pro
  */
 export async function preReadImageHandler(event: HookEvent): Promise<HookOutput> {
   if (loadConfig().image_shrink.enabled === false) return passOutput()
+  // On VS Code only view_image can take the shrunk copy (its path is rewritten to it); read_file and list_dir also map to Read, and a shrink recorded for them would never reach the model.
+  const vscodeTool = event.raw[VSCODE_TOOL_NAME_KEY]
+  if (vscodeTool !== undefined && vscodeTool !== 'view_image') return passOutput()
 
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()

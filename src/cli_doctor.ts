@@ -22,7 +22,8 @@ import type { Config } from './config.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
-import { findStrayClaudeMdBlocks } from './install.js'
+import { findStrayClaudeMdBlocks, isInstalled } from './install.js'
+import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable } from './parser.js'
@@ -751,6 +752,29 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
  * opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is
  * correct for users who have never touched `--copilot`.
  */
+/** One-line note `install --vscode` prints when VS Code will also run the Claude Code hooks. */
+export const VSCODE_DOUBLE_FIRE_NOTE =
+  'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. Turn chat.useClaudeHooks off in VS Code settings to keep only the --vscode hooks.'
+
+/**
+ * Warn when VS Code will run token-goat's Claude Code hooks as well as its own.
+ *
+ * With `chat.useClaudeHooks` on, VS Code reads `~/.claude/settings.json` and the workspace
+ * `.claude/settings*.json` next to the Copilot hooks directories (its hook-source list in
+ * workbench.desktop.main.js, 1.136.0), so a machine with both installs runs every token-goat hook
+ * twice per tool call, once under the wrong wire format. Returns null when either half is missing.
+ */
+export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInstalled: boolean, vscodeHooksInstalled: boolean): DoctorResult | null {
+  if (!useClaudeHooks || !claudeHooksInstalled) return null
+  return {
+    name: 'VS Code hooks',
+    status: 'warn',
+    message: vscodeHooksInstalled
+      ? 'VS Code has chat.useClaudeHooks on and token-goat hooks are in both ~/.claude/settings.json and the Copilot hooks file, so each hook fires twice in VS Code. Turn chat.useClaudeHooks off in VS Code settings.'
+      : 'VS Code has chat.useClaudeHooks on, so it runs the token-goat hooks from ~/.claude/settings.json in Claude Code wire format, which VS Code reads only in part. Run "token-goat install --vscode" and turn chat.useClaudeHooks off in VS Code settings.',
+  }
+}
+
 export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
   if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
     return null
@@ -1268,6 +1292,12 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
   if (copilotResult) results.push(copilotResult)
+  const vscodeHooksResult = checkVscodeClaudeHooks(
+    vscodeUsesClaudeHooks(),
+    isInstalled('user') || isInstalled('project'),
+    vscodeHooksInstalled() || vscodeHooksInstalled({ project: true }),
+  )
+  if (vscodeHooksResult) results.push(vscodeHooksResult)
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 

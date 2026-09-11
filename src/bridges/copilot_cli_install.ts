@@ -134,11 +134,11 @@ function copilotCliHooksDir(opts: CopilotCliScopeOptions = {}): string {
 }
 
 export function copilotCliConfigPath(opts: CopilotCliScopeOptions = {}): string {
-  return path.join(copilotCliHooksDir(opts), 'token-goat.json')
+  return path.join(copilotCliHooksDir(opts), HOOKS_CONFIG_FILE)
 }
 
 export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string {
-  return path.join(copilotCliHooksDir(opts), 'token-goat-shim.js')
+  return path.join(copilotCliHooksDir(opts), HOOKS_SCRIPT_FILE)
 }
 
 // Copilot CLI reads custom instructions from `~/.copilot/copilot-instructions.md`
@@ -280,50 +280,116 @@ export interface CopilotCliInstallResult {
   readonly alreadyInstalled: boolean
 }
 
-export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCliInstallResult {
-  const configPath = copilotCliConfigPath(opts)
-  const scriptPath = copilotCliScriptPath(opts)
-  const instructionsPath = copilotCliInstructionsPath(opts)
+/**
+ * Which token-goat installs rely on the hooks file in one hooks directory.
+ *
+ * VS Code's agent reads the same `~/.copilot/hooks` and `.github/hooks` directories Copilot CLI
+ * does, so `install --copilot` and `install --vscode` share one `token-goat.json` and one shim
+ * there. Removing the file for one of them must not take it away from the other, so each install
+ * records itself in a sidecar and the files go only when the last owner leaves. The sidecar's name
+ * must not end in `.json`: VS Code treats every `.json` file in a hooks directory as a hooks file.
+ */
+export type CopilotHooksOwner = 'copilot' | 'vscode'
 
-  // The shim is a generated, never-user-edited file: keep it in sync with the
-  // running token-goat version on every install call, independent of whether
-  // the hook config itself needs any change (mirrors installCodex()).
+const HOOKS_CONFIG_FILE = 'token-goat.json'
+const HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
+const HOOKS_OWNERS_FILE = 'token-goat.owners'
+
+export function copilotHooksOwnersPath(hooksDir: string): string {
+  return path.join(hooksDir, HOOKS_OWNERS_FILE)
+}
+
+/** Owners recorded for `hooksDir`. A hooks file with no sidecar predates the sidecar, when only `install --copilot` wrote it, so it counts as Copilot's. */
+export function readCopilotHooksOwners(hooksDir: string): Set<CopilotHooksOwner> {
+  const owners = new Set<CopilotHooksOwner>()
+  let text: string
+  try {
+    text = fs.readFileSync(copilotHooksOwnersPath(hooksDir), 'utf8')
+  } catch {
+    if (fs.existsSync(path.join(hooksDir, HOOKS_CONFIG_FILE))) owners.add('copilot')
+    return owners
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const name = line.trim()
+    if (name === 'copilot' || name === 'vscode') owners.add(name)
+  }
+  return owners
+}
+
+export interface CopilotHooksFileResult {
+  readonly configPath: string
+  readonly scriptPath: string
+  /** True when the shim, the config, or the owner record had to be written. */
+  readonly changed: boolean
+}
+
+/** Write the shared hooks config and shim into `hooksDir` and record `owner` as relying on them. */
+export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
+  const configPath = path.join(hooksDir, HOOKS_CONFIG_FILE)
+  const scriptPath = path.join(hooksDir, HOOKS_SCRIPT_FILE)
+  // Read before the config is written, so a legacy file with no sidecar is still credited to Copilot.
+  const owners = readCopilotHooksOwners(hooksDir)
+
+  // The shim is a generated, never-user-edited file: keep it in sync with the running token-goat version on every install call, independent of whether the hook config itself needs any change (mirrors installCodex()).
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
-
   const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
   const configChanged = writeIfDifferent(configPath, desiredText, true)
 
+  owners.add(owner)
+  const ownersChanged = writeIfDifferent(copilotHooksOwnersPath(hooksDir), [...owners].sort().join('\n') + '\n')
+  return { configPath, scriptPath, changed: scriptChanged || configChanged || ownersChanged }
+}
+
+function unlinkIfPresent(p: string): boolean {
+  try {
+    fs.unlinkSync(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Drop `owner` from `hooksDir`, deleting the config and shim once no owner is left.
+ *
+ * Returns true when anything changed. A Copilot uninstall with no sidecar and no owner on record
+ * still removes a stray config or shim, which is what uninstall did before owners were tracked.
+ */
+export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): boolean {
+  const ownersPath = copilotHooksOwnersPath(hooksDir)
+  const hadSidecar = fs.existsSync(ownersPath)
+  const owners = readCopilotHooksOwners(hooksDir)
+  if (!owners.has(owner) && (hadSidecar || owner !== 'copilot')) return false
+  owners.delete(owner)
+  if (owners.size > 0) {
+    writeIfDifferent(ownersPath, [...owners].sort().join('\n') + '\n')
+    return true
+  }
+  const configRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_CONFIG_FILE))
+  const scriptRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_SCRIPT_FILE))
+  const ownersRemoved = unlinkIfPresent(ownersPath)
+  return configRemoved || scriptRemoved || ownersRemoved
+}
+
+export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCliInstallResult {
+  const instructionsPath = copilotCliInstructionsPath(opts)
+  const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
 
   return {
-    configPath,
-    scriptPath,
+    configPath: hooks.configPath,
+    scriptPath: hooks.scriptPath,
     instructionsPath,
-    alreadyInstalled: !scriptChanged && !configChanged && !instructionsChanged,
+    alreadyInstalled: !hooks.changed && !instructionsChanged,
   }
 }
 
 function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
-  const configPath = copilotCliConfigPath(opts)
-  const scriptPath = copilotCliScriptPath(opts)
-  const instructionsPath = copilotCliInstructionsPath(opts)
-
-  let removedAny = false
-  try {
-    fs.unlinkSync(configPath)
-    removedAny = true
-  } catch {
-    // Already absent; nothing to remove.
-  }
-  try {
-    fs.unlinkSync(scriptPath)
-    removedAny = true
-  } catch {
-    // Already absent; nothing to remove.
-  }
+  // The hooks file stays while `install --vscode` still relies on it; see CopilotHooksOwner.
+  let removedAny = releaseCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   // The instructions file is user-owned: strip only the delimited block and
   // preserve everything else, never unlink the whole file (mirrors codex uninstall).
-  if (stripCopilotInstructionsBlock(instructionsPath)) {
+  if (stripCopilotInstructionsBlock(copilotCliInstructionsPath(opts))) {
     removedAny = true
   }
   return removedAny
@@ -348,6 +414,8 @@ export function isCopilotCliInstalled(opts: CopilotCliScopeOptions = {}): boolea
   if (!fs.existsSync(copilotCliConfigPath(opts)) || !fs.existsSync(copilotCliScriptPath(opts))) {
     return false
   }
+  // A hooks file only `install --vscode` put there is not a Copilot CLI install.
+  if (!readCopilotHooksOwners(copilotCliHooksDir(opts)).has('copilot')) return false
   let instructions: string
   try {
     instructions = fs.readFileSync(copilotCliInstructionsPath(opts), 'utf8')

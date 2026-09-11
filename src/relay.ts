@@ -141,6 +141,8 @@ function harnessForNormalization(): Harness {
   // Copilot's `<server>-<tool>` MCP tool names into the `mcp__<server>__<tool>` spelling the MCP
   // handlers gate on; the shim has already canonicalised every built-in name, so nothing else changes.
   if (detected === 'copilot_cli') return 'copilot_cli'
+  // VS Code's agent hooks run through the shared Copilot shim, which sets TOKEN_GOAT_HARNESS_OVERRIDE=vscode when the payload carries VS Code's `hook_event_name`; its model-facing tool names (read_file, run_in_terminal, ...) need VSCODE_TOOL_NAME_MAP.
+  if (detected === 'vscode') return 'vscode'
   return 'claude'
 }
 

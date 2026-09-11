@@ -21,7 +21,7 @@ permalink: /
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
-Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
+Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command:**
 
@@ -370,8 +370,12 @@ a delimited block to `.github/copilot-instructions.md`, preserving unrelated
 JSON and user text. It fails clearly on malformed JSON, and refuses to
 install into one scope if the other scope already has a token-goat-managed
 entry (registering it twice would duplicate its tool schemas in that
-workspace). `token-goat uninstall --vscode` (add `-p`/`--project` for the
-project scope) removes only token-goat's server entry and guidance block.
+workspace). It also installs agent hooks in `~/.copilot/hooks/` (or
+`.github/hooks/` with `-p`), the folder VS Code's Copilot agent reads hooks
+from, so token-goat sees the agent's built-in reads, edits, and terminal
+commands. `token-goat uninstall --vscode` (add `-p`/`--project` for the
+project scope) removes only token-goat's server entry, guidance block, and
+hooks, and keeps the hooks if `--copilot` still uses them.
 
 The optional source-controlled extension lives in `vscode-extension/`. Build
 and install its VSIX manually; `--vscode` intentionally does not copy or
@@ -417,7 +421,7 @@ never drift on where `mcp.json` lives or what key name it looks for.
 }
 ```
 
-**Caveat.** Registering the server does not force any harness to prefer it. Unlike the hook-based bridges elsewhere in this project — which intercept a `Read`/`Grep`/`Glob` call before it reaches the model and can redirect or deny it outright — an MCP tool is just one more option in the harness's own tool-selection decision. Copilot (or any other MCP-aware client) decides for itself whether to call token-goat's `read` tool or fall back to its own built-in file-read tool; there is no interception mechanism for MCP the way there is for hooks.
+**Caveat.** Registering the server does not force any harness to prefer it. Unlike the hook-based bridges elsewhere in this project — which intercept a `Read`/`Grep`/`Glob` call before it reaches the model and can redirect or deny it outright — an MCP tool is just one more option in the harness's own tool-selection decision. Copilot (or any other MCP-aware client) decides for itself whether to call token-goat's `read` tool or fall back to its own built-in file-read tool; there is no interception mechanism for MCP the way there is for hooks. In VS Code the agent hooks from `install --vscode` do see the built-in reads: they can deny a repeated read, add a hint, and shrink an image before `view_image` loads it. VS Code gives hooks no way to change a tool's result, though, so there is no folding of what a read returns and no compression of a tool's output after it runs; terminal output is compressed only because the command itself is rewritten before it runs.
 
 ## What gets installed?
 

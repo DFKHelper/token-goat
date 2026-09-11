@@ -37,18 +37,18 @@ bundle/source/schema read directly, **(doc)** the harness's published docs only,
 repo's bridge code (which itself cites its sources), **(u)** unverified — a finding, not a gap to
 paper over.
 
-| event / channel | claudecode | copilot_cli | codex | grok | gemini | qwen | kimi | opencode | openclaw | pi |
-|---|---|---|---|---|---|---|---|---|---|---|
-| pre deny | M (d) | M (w)¹ | ? (doc, BE-06) | M (doc)² | ? (doc)³ | ? (doc)⁴ | M (w)⁵ | M (w)⁶ | M (doc) | M (w) |
-| pre context (hints) | M (c) | D (w)⁷ | ? (u, BE-06) | D (b)⁸ | ? (u) | ? (doc) | ? (u)⁹ | D (b)¹⁰ | D (b)¹⁰ | D (b)¹⁰ |
-| pre context (image shrink) | M (c) | M (w)¹¹ | ? (u) | D (b) | ? (u) | ? (doc) | D (w) | M (b)¹² | M (w)¹¹ | M (b)¹² |
-| pre rewriteInput | M (d) | M (w)¹³ | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (w)¹¹ | M (w) |
-| post rewriteOutput | M (d) | M (w)¹⁴ | ? (doc, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁵ | D (w)¹⁶ | M (w)¹⁶ |
-| post context | M (d) | D (w)¹⁷ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁸ | D (w)¹⁶ | D (w)¹⁶ |
-| failure context | X | M (w)¹⁹ | X | X | X | X | X | X | X | X |
-| pre_compact context (manifest) | M (c)²⁰ | D (w)²¹ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | ? (u) | M (w)²² | D (b)²³ | M (w)²⁴ |
-| session_start context | M (d) | M (c)²⁵ | X | X | X | X | ? (u) | X | X | X |
-| user_prompt_submit context | M (d) | M (c)²⁶ | ? (u, BE-06) | D (doc)² | X | ? (doc) | M (w)²⁷ | X | X | X |
+| event / channel | claudecode | copilot_cli | vscode | codex | grok | gemini | qwen | kimi | opencode | openclaw | pi |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pre deny | M (d) | M (w)¹ | M (w)²⁸ | ? (doc, BE-06) | M (doc)² | ? (doc)³ | ? (doc)⁴ | M (w)⁵ | M (w)⁶ | M (doc) | M (w) |
+| pre context (hints) | M (c) | D (w)⁷ | M (w)²⁸ | ? (u, BE-06) | D (b)⁸ | ? (u) | ? (doc) | ? (u)⁹ | D (b)¹⁰ | D (b)¹⁰ | D (b)¹⁰ |
+| pre context (image shrink) | M (c) | M (w)¹¹ | M (w)²⁹ | ? (u) | D (b) | ? (u) | ? (doc) | D (w) | M (b)¹² | M (w)¹¹ | M (b)¹² |
+| pre rewriteInput | M (d) | M (w)¹³ | M (w)²⁸ | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (w)¹¹ | M (w) |
+| post rewriteOutput | M (d) | M (w)¹⁴ | D (w)³⁰ | ? (doc, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁵ | D (w)¹⁶ | M (w)¹⁶ |
+| post context | M (d) | D (w)¹⁷ | M (w)²⁸ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁸ | D (w)¹⁶ | D (w)¹⁶ |
+| failure context | X | M (w)¹⁹ | X³¹ | X | X | X | X | X | X | X | X |
+| pre_compact context (manifest) | M (c)²⁰ | D (w)²¹ | X³¹ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | ? (u) | M (w)²² | D (b)²³ | M (w)²⁴ |
+| session_start context | M (d) | M (c)²⁵ | M (w)²⁸ | X | X | X | X | ? (u) | X | X | X |
+| user_prompt_submit context | M (d) | M (c)²⁶ | ? (u) | ? (u, BE-06) | D (doc)² | X | ? (doc) | M (w)²⁷ | X | X | X |
 
 1. Bundle-verified 1.0.80: native string table carries `permissionDecision`/`permissionDecisionReason`; app.js sets `{textResultForLlm: reason, resultType: "denied"}` per denial (`src/bridges_status.ts` copilot docblock).
 2. Grok's hooks doc: only `pre_tool_use` is blocking; every other event's stdout is ignored. The shim forwards passive-event responses verbatim anyway, which is harmless. Wiring (hooks fire, env set) was observed live on grok 0.2.93; the deny path itself is doc-based.
@@ -77,6 +77,10 @@ paper over.
 25. Verified live on Copilot 1.0.77; caveat: sessionStart completes after the first `user.message` in one-shot `-p` mode.
 26. Demonstrated once on 1.0.80 (marker in `transformedContent` plus the billing delta); one of two turns delivered and the rate is unknown. Copilot's own docs say the output is dropped — the docs are wrong for additionalContext.
 27. Kimi's `userPromptHookMessage` fallback reads it, per kimi-code source.
+28. VS Code 1.136.0, `resources/app/extensions/copilot/dist/extension.js`: `ChatHookService.executePreToolUseHook` reads `hookSpecificOutput.permissionDecision`/`permissionDecisionReason`/`updatedInput`/`additionalContext`, and the PostToolUse and SessionStart paths read `hookSpecificOutput.additionalContext`. A top-level `decision:"block"` is not read on PreToolUse, so `serializeVscodeOutput` (`src/bridges/vscode_hooks.ts`) sends the deny inside `hookSpecificOutput`, and `updatedInput` goes back under VS Code's own key names (`filePath`, `oldString`, ...). No live VS Code run is recorded.
+29. `view_image` only: the shrunk copy is written to a temp file and `updatedInput.filePath` points at it. `read_file` on an image passes untouched, since its result is text and the base64 payload would only cost tokens. Whether VS Code asks for approval before reading a file outside the workspace is unverified.
+30. VS Code has no field that replaces a tool result, so a rewriteOutput is answered with `{}`, and `emitRewrite` books no saving for it.
+31. VS Code's hook-type table lists `preCompact` and `postToolUseFailure` nowhere; the shared hooks file carries both keys for Copilot CLI and VS Code never fires them.
 
 ## What this table exposed, and what was done
 

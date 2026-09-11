@@ -27,6 +27,8 @@ let project: string
 let appData: string
 let originalCwd: string
 let savedAppData: string | undefined
+let savedHome: string | undefined
+let savedUserProfile: string | undefined
 let stdout: string[]
 let stdoutSpy: WriteSpy
 let stderrSpy: WriteSpy
@@ -37,6 +39,11 @@ beforeEach(() => {
   appData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-uninstall-appdata-'))
   savedAppData = process.env['APPDATA']
   process.env['APPDATA'] = appData
+  // uninstall --vscode also releases the agent hooks under ~/.copilot/hooks, so the home directory is isolated too.
+  savedHome = process.env['HOME']
+  savedUserProfile = process.env['USERPROFILE']
+  process.env['HOME'] = appData
+  process.env['USERPROFILE'] = appData
   stdout = []
   stdoutSpy = spyOnWrite(process.stdout, stdout)
   stderrSpy = spyOnWrite(process.stderr, [])
@@ -48,6 +55,10 @@ afterEach(() => {
   process.chdir(originalCwd)
   if (savedAppData === undefined) delete process.env['APPDATA']
   else process.env['APPDATA'] = savedAppData
+  if (savedHome === undefined) delete process.env['HOME']
+  else process.env['HOME'] = savedHome
+  if (savedUserProfile === undefined) delete process.env['USERPROFILE']
+  else process.env['USERPROFILE'] = savedUserProfile
   fs.rmSync(project, { recursive: true, force: true })
   fs.rmSync(appData, { recursive: true, force: true })
 })

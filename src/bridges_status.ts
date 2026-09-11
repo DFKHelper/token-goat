@@ -306,6 +306,24 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ],
   },
   {
+    harness: 'vscode',
+    label: 'VS Code (Copilot agent)',
+    sourceFile: 'src/bridges/vscode_install.ts (vscodeHooksDir), src/bridges/copilot_cli.ts (isVscodePayload), src/bridges/vscode_hooks.ts',
+    verification: 'sourced',
+    verificationNote:
+      "Hook-file parsing, payload keys, tool names and response fields read from the VS Code 1.136.0 bundle (workbench.desktop.main.js, extensions/copilot/dist/extension.js, extensions/copilot/package.json); the installed shim is driven with VS Code-shaped payloads, but no run inside a live VS Code is recorded here.",
+    implemented: new Set(['session_start', 'pre_tool_use', 'post_tool_use', 'user_prompt_submit', 'subagent_stop']),
+    reasons: [
+      {
+        events: ['pre_compact', 'post_tool_use_failure'],
+        reason:
+          "VS Code reads the shared Copilot hooks file but maps only sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, agentStop, subagentStop and errorOccurred out of it, so the file's preCompact and postToolUseFailure entries never fire there",
+      },
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
+      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+    ],
+  },
+  {
     harness: 'kimi',
     label: 'Kimi Code CLI',
     sourceFile: 'src/bridges/kimi_install.ts (KIMI_EVENT_ARG), src/bridges/kimi.ts (KIMI_HOOK_SCRIPT)',

@@ -62,7 +62,8 @@ import { installOpencode, isOpencodeInstalled, uninstallOpencode } from './bridg
 import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
-import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured } from './bridges/vscode_install.js'
+import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -759,8 +760,9 @@ async function cmdInstall(opts: {
     out(
       vscodeResult.alreadyInstalled
         ? `VS Code MCP integration (${vscodeResult.scope} scope) already installed → ${vscodeResult.mcpPath}`
-        : `Installed token-goat VS Code MCP integration (${vscodeResult.scope} scope) → ${vscodeResult.mcpPath}, ${vscodeResult.instructionsPath}`,
+        : `Installed token-goat VS Code MCP integration and agent hooks (${vscodeResult.scope} scope) → ${vscodeResult.mcpPath}, ${vscodeResult.hooksConfigPath}, ${vscodeResult.instructionsPath}`,
     )
+    if (vscodeUsesClaudeHooks()) out(VSCODE_DOUBLE_FIRE_NOTE)
   }
 
   // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.

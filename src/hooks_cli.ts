@@ -27,7 +27,7 @@ const _LOG = {
  * Harness identifier: the Claude Code harness variant token-goat is running under.
  * Determines payload/response shape translation.
  */
-export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi' | 'qwen'
+export type Harness = 'claude' | 'codex' | 'copilot_cli' | 'gemini' | 'grok' | 'kimi' | 'qwen' | 'vscode'
 
 /**
  * Hook payload: unstructured dict from harness stdin.
@@ -243,6 +243,93 @@ const QWEN_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
 }
 
 /**
+ * VS Code (the built-in Copilot agent, 1.136+) model-facing tool name -> internal PascalCase tool name.
+ *
+ * VS Code's agent hooks send `tool_name: toolCall.name`, the name the model called, not the
+ * `copilot_*` id its package.json registers. Every name below was read out of the VS Code 1.136.0
+ * bundle rather than guessed: the ToolName enum in resources/app/extensions/copilot/dist/extension.js
+ * (`ReadFile="read_file"`, `ViewImage="view_image"`, `ListDirectory="list_dir"`,
+ * `CreateFile="create_file"`, `ReplaceString="replace_string_in_file"`,
+ * `EditFile="insert_edit_into_file"`, `EditNotebook="edit_notebook_file"`, plus `grep_search` and
+ * `file_search`), and `run_in_terminal` from resources/app/out/vs/workbench/workbench.desktop.main.js.
+ *
+ * Without this map VS Code's hooks fired and did nothing, the same failure Qwen had: `read_file`
+ * matched no registered handler, so re-read denial, image shrinking, Bash wrapping and post-edit
+ * indexing were all silently dead.
+ *
+ * Unmapped on purpose, each because no handler can use what the tool sends:
+ * `multi_replace_string_in_file` carries a `replacements[]` array whose entries each name their own
+ * file, while postEditHandler reads exactly one path; `apply_patch` carries patch text and no path
+ * key; `fetch_webpage` carries a `urls[]` array, while preFetchHandler/postFetchHandler read one
+ * `url` string; `get_terminal_output` would reach postBashOutputHandler, whose only output is a
+ * result rewrite that VS Code has no channel for; `semantic_search`, `create_directory` and the rest
+ * have no token-goat equivalent. `list_dir` is `Read`, the same considered choice as Gemini's and
+ * Qwen's directory listers (see GEMINI_TOOL_NAME_MAP).
+ */
+export const VSCODE_TOOL_NAME_MAP: Record<string, string> = {
+  read_file: 'Read',
+  view_image: 'Read',
+  list_dir: 'Read',
+  grep_search: 'Grep',
+  file_search: 'Glob',
+  create_file: 'Write',
+  replace_string_in_file: 'Edit',
+  insert_edit_into_file: 'Edit',
+  edit_notebook_file: 'NotebookEdit',
+  run_in_terminal: 'Bash',
+}
+
+/**
+ * VS Code tool_input key -> internal key, keyed by the VS Code tool name (not the mapped one).
+ *
+ * Keyed by the VS Code name because two tools that share a mapped name disagree on their keys
+ * (`read_file` sends `filePath`, `list_dir` sends `path`), and the reverse direction in
+ * {@link vscodeNativeToolInput} has to know which one it is undoing. Input schemas are from the
+ * `languageModelTools` entries in resources/app/extensions/copilot/package.json (VS Code 1.136.0):
+ * copilot_readFile `{filePath, startLine, endLine}`, copilot_viewImage `{filePath}`,
+ * copilot_listDirectory `{path}`, copilot_findTextInFiles `{query, isRegexp, includePattern,
+ * maxResults, includeIgnoredFiles}`, copilot_findFiles `{query, maxResults}`, copilot_createFile
+ * `{filePath, content}`, copilot_replaceString `{filePath, oldString, newString}`,
+ * copilot_insertEdit `{explanation, filePath, code}`, copilot_editNotebook `{filePath, cellId,
+ * newCode, language, editType}`; run_in_terminal `{command, explanation, goal, mode}` from the
+ * workbench bundle. `command` is already the key hooks_bash.ts reads, so run_in_terminal needs no
+ * rename. read_file's `startLine`/`endLine` (1-based, end inclusive) are left alone:
+ * readRequestedSliceWindow in hooks_read.ts reads that exact pair already.
+ */
+export const VSCODE_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
+  read_file: { filePath: 'file_path' },
+  view_image: { filePath: 'file_path' },
+  list_dir: { path: 'file_path' },
+  grep_search: { query: 'pattern', includePattern: 'glob' },
+  file_search: { query: 'pattern' },
+  create_file: { filePath: 'file_path' },
+  replace_string_in_file: { filePath: 'file_path', oldString: 'old_string', newString: 'new_string' },
+  insert_edit_into_file: { filePath: 'file_path' },
+  edit_notebook_file: { filePath: 'notebook_path' },
+  run_in_terminal: {},
+}
+
+/** Payload key normalizePayload stores the original VS Code tool name under, so the response side can undo the key rename. */
+export const VSCODE_TOOL_NAME_KEY = '_tg_vscode_tool_name'
+
+/**
+ * Rename canonical keys in a rewritten tool input back to the VS Code tool's own keys.
+ *
+ * VS Code replaces the tool input wholesale with a hook's `updatedInput` and then validates it
+ * against the tool's schema, discarding it on failure ("Discarding updatedInput for tool ...:
+ * schema validation failed" in extension.js). A rewrite built on the canonical input would carry
+ * `file_path` where view_image requires `filePath`, so every rewrite is mapped back through the
+ * inverse of that tool's {@link VSCODE_INPUT_KEY_MAP} entry before it is emitted.
+ */
+export function vscodeNativeToolInput(vscodeToolName: string, canonicalInput: Record<string, unknown>): Record<string, unknown> {
+  const inverse: Record<string, string> = {}
+  for (const [nativeKey, canonicalKey] of Object.entries(VSCODE_INPUT_KEY_MAP[vscodeToolName] ?? {})) {
+    inverse[canonicalKey] = nativeKey
+  }
+  return remapInputKeys(canonicalInput, inverse)
+}
+
+/**
  * Translate grok's camelCase wire keys (toolName/toolInput/sessionId) to the
  * snake_case shape the rest of normalizePayload expects, and unwrap
  * post_tool_use's tagged `toolResult` object into the `tool_response` shape
@@ -416,6 +503,21 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     const result = { ...obj }
     result['tool_name'] = canonicalizeCopilotMcpToolName(toolName)
     result['_tg_harness'] = harness
+    return result
+  }
+
+  if (harness === 'vscode') {
+    const result = { ...obj }
+    result['tool_name'] = VSCODE_TOOL_NAME_MAP[toolName] ?? toolName
+    const keyMap = VSCODE_INPUT_KEY_MAP[toolName]
+    const rawInput = obj['tool_input']
+    if (keyMap && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
+      result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
+    }
+    result[VSCODE_TOOL_NAME_KEY] = toolName
+    result['_tg_harness'] = harness
+    // VS Code's payload carries no cwd (ChatHookService in extension.js sends only timestamp/hook_event_name/session_id/transcript_path plus the tool fields), but it spawns every hook in the workspace folder, so that is the cwd.
+    if (typeof result['cwd'] !== 'string' || result['cwd'] === '') result['cwd'] = process.cwd()
     return result
   }
 
