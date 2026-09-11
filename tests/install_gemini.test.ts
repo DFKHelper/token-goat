@@ -88,12 +88,13 @@ describe('installGemini', () => {
 
     const settings = readSettings()
 
-    // BeforeTool: Bash/Read/Grep/WebFetch all have a pre_tool_use handler; Write/Edit don't; Glob has none at all.
+    // BeforeTool: Bash/Read/Grep/WebFetch/Glob all have a pre_tool_use handler; Write/Edit don't.
     const beforeMatchers = matchersFor(settings, 'BeforeTool')
     expect(beforeMatchers).toContain('^(run_shell_command)$')
     expect(beforeMatchers).toContain('^(read_file|read_many_files|list_directory)$')
     expect(beforeMatchers).toContain('^(grep_search|search_file_content)$')
     expect(beforeMatchers).toContain('^(google_web_search|web_fetch)$')
+    expect(beforeMatchers).toContain('^(glob)$')
     expect(process.argv[1]).toBeDefined()
     for (const command of commandsFor(settings, 'BeforeTool')) {
       expect(command).toContain(`"${process.execPath}"`)
@@ -102,13 +103,14 @@ describe('installGemini', () => {
       expect(command.endsWith('hook pre_tool_use')).toBe(true)
     }
 
-    // AfterTool: Bash/Read/Write/Edit/WebFetch have a post_tool_use handler; Grep doesn't.
+    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob have a post_tool_use handler; Grep doesn't.
     const afterMatchers = matchersFor(settings, 'AfterTool')
     expect(afterMatchers).toContain('^(run_shell_command)$')
     expect(afterMatchers).toContain('^(read_file|read_many_files|list_directory)$')
     expect(afterMatchers).toContain('^(write_file)$')
     expect(afterMatchers).toContain('^(replace)$')
     expect(afterMatchers).toContain('^(google_web_search|web_fetch)$')
+    expect(afterMatchers).toContain('^(glob)$')
     expect(afterMatchers.some((m) => m?.includes('grep_search'))).toBe(false)
     for (const command of commandsFor(settings, 'AfterTool')) {
       expect(command).toContain(`"${process.execPath}"`)
@@ -116,10 +118,6 @@ describe('installGemini', () => {
       expect(command).toContain(`"${process.argv[1]}"`)
       expect(command.endsWith('hook post_tool_use')).toBe(true)
     }
-
-    // Glob ('glob') has no registered pre/post handler at all -- never wired.
-    expect(beforeMatchers.some((m) => m?.includes('glob'))).toBe(false)
-    expect(afterMatchers.some((m) => m?.includes('glob'))).toBe(false)
 
     // Lifecycle event: single no-matcher group, fires on every occurrence.
     const preCompressGroups = settings.hooks?.['PreCompress']
