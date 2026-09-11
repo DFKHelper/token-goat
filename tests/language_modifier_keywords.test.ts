@@ -25,7 +25,10 @@ import { extractPhp } from '../src/languages/php.js'
  *   - Swift: "Declaration Modifiers" in The Swift Programming Language, plus
  *     `nonisolated` on a type declaration (Swift 6 actor-isolation opt-out).
  *   - Dart: the Dart 3 class-modifiers feature specification.
- *   - PHP: the PHP manual's class, method, property and constant modifier lists.
+ *   - PHP: the PHP manual's class, method, property and constant modifier lists,
+ *     plus the versioned declaration forms those lists sit alongside -- typed class
+ *     constants (PHP 8.3), asymmetric visibility and property hooks (PHP 8.4), and
+ *     return-by-reference functions.
  *
  * The point of the shape is the PER-KEYWORD assertion. A union assertion -- "some
  * modifier form produces some symbol" -- is what let a missing alternative hide
@@ -44,6 +47,16 @@ interface ModifierCase {
   source: string
   /** The symbol name that must appear in the extractor's output for this fixture. */
   expect: string
+  /**
+   * Names that must NOT appear in the extractor's output for this fixture. A dropped symbol
+   * fails the `expect` assertion above, but a FABRICATED one passes it whenever the real name
+   * also survives, and passes every count- or truthiness-based check outright, because the
+   * extractor did emit something: it emitted the wrong thing. Any fixture whose declaration
+   * puts an extra token (a type, a set-scope declarator, a by-ref `&`) between the keyword and
+   * the name names that token here, so a matcher that captures the token instead of the name
+   * fails loudly rather than quietly inventing a symbol.
+   */
+  reject?: string[]
 }
 
 interface AdapterCases {
@@ -196,6 +209,12 @@ const PHP_MODIFIERS: ModifierCase[] = [
   { keyword: 'final (method)', source: '<?php\nclass Outer {\n  final function alpha() { }\n}', expect: 'alpha' },
   { keyword: 'readonly (property)', source: '<?php\nclass Outer {\n  public readonly string $alpha;\n}', expect: 'alpha' },
   { keyword: 'var (property)', source: '<?php\nclass Outer {\n  var $alpha;\n}', expect: 'alpha' },
+  { keyword: 'typed class constant', source: '<?php\nclass Outer {\n  final public const int ALPHA = 5;\n}', expect: 'ALPHA', reject: ['int'] },
+  { keyword: 'nullable-typed class constant', source: '<?php\nclass Outer {\n  const ?string ALPHA = null;\n}', expect: 'ALPHA', reject: ['string'] },
+  { keyword: 'private(set) (property)', source: '<?php\nclass Outer {\n  public private(set) string $alpha;\n}', expect: 'alpha', reject: ['set', 'string'] },
+  { keyword: 'abstract (property)', source: '<?php\nabstract class Outer {\n  abstract public string $alpha { get; }\n}', expect: 'alpha', reject: ['string'] },
+  { keyword: 'final (property)', source: '<?php\nclass Outer {\n  final public string $alpha = "x";\n}', expect: 'alpha', reject: ['string'] },
+  { keyword: '& (by-reference function)', source: '<?php\nclass Outer {\n  public function &alpha() { }\n}', expect: 'alpha' },
 ]
 
 const ADAPTERS: AdapterCases[] = [
@@ -216,7 +235,10 @@ describe('language adapters: every declaration modifier keeps its declaration in
     for (const adapter of ADAPTERS) {
       expect(adapter.cases.length, `${adapter.label} has no cases`).toBeGreaterThan(5)
     }
-    expect(ADAPTERS.reduce((n, a) => n + a.cases.length, 0)).toBeGreaterThanOrEqual(110)
+    expect(ADAPTERS.reduce((n, a) => n + a.cases.length, 0)).toBeGreaterThanOrEqual(116)
+    // At least one case must carry a `reject` list, otherwise the fabrication half of the guard
+    // is silently switched off and every case degrades to a presence-only check.
+    expect(ADAPTERS.reduce((n, a) => n + a.cases.filter((c) => (c.reject?.length ?? 0) > 0).length, 0)).toBeGreaterThanOrEqual(5)
   })
 
   for (const adapter of ADAPTERS) {
@@ -225,6 +247,9 @@ describe('language adapters: every declaration modifier keeps its declaration in
         it(`\`${c.keyword}\` does not hide \`${c.expect}\` from the index`, () => {
           const names = adapter.extract(c.source, adapter.file).symbols.map((s) => s.name)
           expect(names, `${adapter.label} / ${c.keyword}: ${JSON.stringify(c.source)}`).toContain(c.expect)
+          for (const bogus of c.reject ?? []) {
+            expect(names, `${adapter.label} / ${c.keyword} fabricated \`${bogus}\`: ${JSON.stringify(c.source)}`).not.toContain(bogus)
+          }
         })
       }
     })
@@ -286,5 +311,27 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     const source = 'public class Outer\n{\n    public void Run()\n    {\n        var x = new record(1);\n        var y = new List<int>();\n    }\n}\n'
     const names = extractCsharp(source, 'Outer.cs').symbols.map((s) => s.name)
     expect(names).toEqual(['Outer', 'Run'])
+  })
+
+  /**
+   * Fixture provenance: HAND-DERIVED. Each line is a legal declaration composed from the PHP
+   * language's own versioned feature set -- typed class constants (PHP 8.3), asymmetric
+   * visibility and property hooks (PHP 8.4) -- not read off this repo's matchers.
+   */
+  it('php type slots and set-scope declarators never fabricate a symbol named after the token', () => {
+    const source = [
+      '<?php',
+      'class Repo {',
+      '    final public const int LIMIT = 5;',
+      '    public const ?string TAG = null;',
+      '    const int|string KEY = 1;',
+      '    public private(set) string $name = "x";',
+      '    private Countable&Iterator $items;',
+      '    public function run() { }',
+      '}',
+      '',
+    ].join('\n')
+    const names = extractPhp(source, 'Repo.php').symbols.map((s) => s.name)
+    expect(names).toEqual(['Repo', 'LIMIT', 'TAG', 'KEY', 'name', 'items', 'run'])
   })
 })
