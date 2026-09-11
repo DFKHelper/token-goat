@@ -162,7 +162,8 @@ function stripLeadingAttributes(text: string): string {
   }
 }
 
-const FUNC_RE = new RegExp(`^(?:function|filter)\\s+(?:(?:global|local|script|private):)?(${FUNC_IDENT})`, 'i')
+// `workflow` (Windows PowerShell 3.0-5.1, about_Workflows) and `configuration` (DSC, about_Configurations) declare a named command with the same `keyword Name {` head as function and filter; neither was accepted, so a DSC configuration script's one named entry point was absent from the index.
+const FUNC_RE = new RegExp(`^(?:function|filter|workflow|configuration)\\s+(?:(?:global|local|script|private):)?(${FUNC_IDENT})`, 'i')
 const CLASS_RE = new RegExp(`^(class|enum)\\s+(${IDENT})`, 'i')
 const METHOD_NAME_RE = new RegExp(
   `^(?!(?:if|elseif|else|while|for|foreach|do|switch|return|throw|try|catch|finally|param|begin|process|end)\\b)(${IDENT})\\s*\\(`,

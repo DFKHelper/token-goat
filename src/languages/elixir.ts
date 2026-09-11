@@ -1,9 +1,10 @@
 /**
  * Elixir symbol extractor — regex-based (no tree-sitter grammar needed).
  *
- * Extracts: modules (defmodule), protocols (defprotocol), functions (def/defp),
- * macros (defmacro), and structs (defstruct). Private functions (defp) are
- * extracted with a 'function' kind (no separate private variant).
+ * Extracts: modules (defmodule), protocols (defprotocol), protocol implementations
+ * (defimpl), functions (def/defp/defdelegate), macros (defmacro/defmacrop), guards
+ * (defguard/defguardp), and structs (defstruct/defexception). Private and macro
+ * forms are extracted with a 'function' kind (no separate private variant).
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -52,13 +53,17 @@ const PROTOCOL_RE = /^defprotocol\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z
 // `def name(...)`, `def name do`, `defmacro name(...)`, operator functions like `def +(...)`
 // (Elixir allows operator overloads). This also matches `defmacro` -- there is no separate
 // macro regex, since `def(?:macro)?` already covers both and both are indexed as 'function'.
-const FUNC_RE = /^def(?:macro)?\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
+// The Kernel module defines four more named-callable forms with the same `keyword name(...)` head (Elixir Kernel docs: defmacrop/2, defguard/1, defguardp/1, defdelegate/2); none matched before, because `def(?:macro)?\s+` needs whitespace right after `defmacro`, so a private macro, every guard, and every delegated function was absent from the index.
+const FUNC_RE = /^def(?:macrop?|guardp?|delegate)?\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
+
+// `defimpl Size, for: Map do` (Elixir Kernel docs: defimpl/3) defines the module `Size.Map`, so that is the name it is indexed under; with no `for:` the implementation is for the enclosing module. It used to push only an anonymous block frame, so each `def` in the body was reported with no parent and read as a stray top-level function.
+const IMPL_RE = /^defimpl\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\s*,\s*for:\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))?/
 
 // `defp name(...)` — private function (same pattern as def but with defp keyword)
 const PRIVATE_FUNC_RE = /^defp\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
 
-// `defstruct field1: type, field2: type` — struct definition
-const STRUCT_RE = /^defstruct/
+// `defstruct field1: type, field2: type` — struct definition; `defexception` defines the module's struct as well (Elixir Kernel docs: defexception/1), so it is indexed the same way.
+const STRUCT_RE = /^def(?:struct|exception)\b/
 
 export function extractElixir(
   content: string,
@@ -124,6 +129,19 @@ export function extractElixir(
       const protoName = protoM[1] ?? ''
       symbols.push(makeLineSymbol(filePath, protoName, 'protocol', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       moduleStack.push({ name: protoName, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
+      continue
+    }
+
+    // defimpl Proto, for: Type -- indexed as the module it compiles to, with a real frame so its defs are parented to it. A list target (`for: [A, B]`) names no single module, so the protocol name alone is used.
+    const implM = IMPL_RE.exec(stripped)
+    if (implM) {
+      const protoName = implM[1] ?? ''
+      const target = implM[2] ?? (/\bfor:/.test(stripped) ? undefined : nearestDefName(moduleStack))
+      const implName = target !== undefined ? `${protoName}.${target}` : protoName
+      symbols.push(makeLineSymbol(filePath, implName, 'impl', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
+      if (opensDoBlock) {
+        moduleStack.push({ name: implName, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
+      }
       continue
     }
 

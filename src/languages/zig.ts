@@ -2,7 +2,8 @@
  * Zig symbol extractor — regex-based (no tree-sitter grammar needed).
  *
  * Extracts: `fn`/`pub fn` (functions), named container types bound to a `const`
- * (`struct`/`enum`/`union`/`opaque`), and `const`/`var` declarations.
+ * (`struct`/`enum`/`union`/`opaque`), `const`/`var` declarations, and named
+ * `test` declarations.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -41,6 +42,9 @@ const FUNC_RE = new RegExp(String.raw`(?:^|[\s(])${FN_PREFIX}fn\s+${NAME}`)
 
 // `const foo = ...`, `var bar: i32 = ...`, and their `pub` forms. The optional `pub` prefix mirrors CONTAINER_RE and FUNC_RE above, both of which already accept it: without it here, `pub const max_len = 4096;` and `pub var counter: u32 = 0;` matched nothing at all and were dropped from the index outright, even though a `pub const Point = struct {...}` on the next line still resolved. A Zig root module is largely public re-exports (`pub const io = @import("io.zig");`), so this silently emptied the most looked-up part of the file.
 const CONST_RE = new RegExp(String.raw`^${VAR_PREFIX}const\s+${NAME}`)
+
+// `test "adds numbers" {` and the doctest form `test namedTest {` (Zig Language Reference, "Zig Test" and "Doctests"; Parse.zig `TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block`). A test is a container member like fn and const, and neither of those regexes matches it, so every named test in a file was absent from the index. The anonymous `test {` form has no name and is left out.
+const TEST_RE = /^test\s+(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_][A-Za-z0-9_]*))\s*\{/
 const VAR_RE = new RegExp(String.raw`^${VAR_PREFIX}var\s+${NAME}`)
 
 export function extractZig(
@@ -128,6 +132,16 @@ export function extractZig(
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
+      }
+    }
+
+    // test declarations: top-level, or a direct member of a container body (the same === 1 gate as methods above)
+    if (!matched && ((!isIndented && frame === null) || (frame !== null && braceDepth - frame.startDepth === 1))) {
+      const tm = TEST_RE.exec(stripped)
+      if (tm) {
+        const parent = frame !== null ? frame.name : undefined
+        symbols.push(makeLineSymbol(filePath, tm[1] ?? tm[2] ?? '', 'test', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
+        matched = true
       }
     }
 

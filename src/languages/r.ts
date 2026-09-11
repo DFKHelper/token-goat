@@ -2,8 +2,10 @@
  * R symbol extractor — regex-based (no tree-sitter grammar needed).
  *
  * Extracts: function definitions assigned to variables (`foo <- function(...)`,
- * `bar = function(...)`, and R 4.1's `baz <- \(...)` lambda shorthand), and S4
- * class definitions via `setClass`.
+ * `bar = function(...)`, `qux <<- function(...)`, and R 4.1's `baz <- \(...)`
+ * lambda shorthand), S4 and Reference classes via `setClass`/`setRefClass`, R6
+ * classes bound by assignment, and S4 generics and methods via
+ * `setGeneric`/`setMethod`.
  *
  * R's symbol surface is thin compared to other languages — most "definitions"
  * are just variable assignments, so we focus on the most salient patterns:
@@ -35,7 +37,11 @@ import { countContentLines } from '../util.js'
 // dropped all of them from the index. A leading dot is likewise a legal R name start, and it is
 // what every package's own load hooks are called (`.onLoad`, `.onAttach`, `.onUnload`), so those
 // went unindexed too.
-const FUNC_ASSIGN_RE = /^(?:`([^`]+)`|([A-Za-z._][A-Za-z0-9_.]*))\s*(?:<-|=)\s*(?:function|\\)\s*\(/
+// `<<-` is the third leftward spelling (R Language Definition, "Assignment": `<-`, `=` and the superassignment `<<-`), used at top level to define into the global environment; it was not accepted, so such a definition was absent from the index.
+const FUNC_ASSIGN_RE = /^(?:`([^`]+)`|([A-Za-z._][A-Za-z0-9_.]*))\s*(?:<<?-|=)\s*(?:function|\\)\s*\(/
+
+// `Account <- R6Class(...)` / `Account <- R6::R6Class("Account", ...)` (R6 package docs, R6Class): the class is the object bound by the assignment, since R6Class's own `classname` argument is optional and code calls `Account$new()`, so the bound name is the one indexed.
+const R6CLASS_RE = /^(?:`([^`]+)`|([A-Za-z._][A-Za-z0-9_.]*))\s*(?:<<?-|=)\s*(?:R6::)?R6Class\s*\(/
 
 // A definition is the whole statement, so both patterns are anchored to the start of the line,
 // optionally through an assignment (`Point <- setClass("Point", ...)` is idiomatic). Unanchored,
@@ -43,10 +49,11 @@ const FUNC_ASSIGN_RE = /^(?:`([^`]+)`|([A-Za-z._][A-Za-z0-9_.]*))\s*(?:<-|=)\s*(
 // produced a symbol for a class that does not exist.
 
 // `setClass("MyClass", ...)` — S4 class definition (first arg is the class name as a string)
-const SETCLASS_RE = /^(?:[A-Za-z_][A-Za-z0-9_.]*\s*(?:<-|=)\s*)?setClass\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/
+// `setRefClass("Name", ...)` (methods package, ReferenceClasses) takes the class name in the same first-argument slot and is matched by the same pattern.
+const SETCLASS_RE = /^(?:[A-Za-z_][A-Za-z0-9_.]*\s*(?:<-|=)\s*)?set(?:Ref)?Class\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/
 
-// `setMethod("methodName", ...)` — S4 method definition
-const SETMETHOD_RE = /^(?:[A-Za-z_][A-Za-z0-9_.]*\s*(?:<-|=)\s*)?setMethod\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/
+// `setMethod("methodName", ...)` — S4 method definition; `setGeneric("name", ...)` (methods package, setGeneric) declares the generic those methods attach to, and had no pattern, so a file defining only generics indexed nothing.
+const SETMETHOD_RE = /^(?:[A-Za-z_][A-Za-z0-9_.]*\s*(?:<-|=)\s*)?set(?:Method|Generic)\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/
 
 /**
  * Offset of the `)` closing the parenthesis that opens at `openIndex`, or null if it never closes.
@@ -189,6 +196,14 @@ export function extractR(
         const endLine = bracedBodyEndLine(content, lineIndex, parenIndex, totalLines, lineNum)
         // Group 1 is the backtick-quoted spelling, group 2 the plain one; only one ever matches. The stored name drops the backticks so `token-goat symbol '%+%'` resolves it by the name R code actually calls it by.
         symbols.push(makeSpanSymbol(filePath, fm[1] ?? fm[2] ?? '', 'function', { startLine: lineNum, endLine, body: spanBody(lineNum, endLine) }, undefined, lines, 'hash'))
+        continue
+      }
+
+      // R6 class bound to a name
+      const r6 = R6CLASS_RE.exec(stripped)
+      if (r6) {
+        const endLine = callEndLine(content, lineIndex, (lineIndex[i] ?? 0) + r6[0].length - 1, lineNum)
+        symbols.push(makeSpanSymbol(filePath, r6[1] ?? r6[2] ?? '', 'class', { startLine: lineNum, endLine, body: spanBody(lineNum, endLine) }, undefined, lines, 'hash'))
         continue
       }
 
