@@ -168,6 +168,7 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
           timeout: 3000,
           killSignal: "SIGKILL",
           windowsHide: true,
+          maxBuffer: 32 * 1024 * 1024,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
         })
       : spawnSync('token-goat hook ' + event, {
@@ -177,6 +178,7 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
           killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
+          maxBuffer: 32 * 1024 * 1024,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
         });
     if (r.error) return null;

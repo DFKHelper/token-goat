@@ -53,7 +53,7 @@
  * so a hook failure fails open rather than denying every tool call -- matching
  * every other bridge shim's fail-open convention.
  */
-import { SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS } from './shim_common.js'
+import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS } from './shim_common.js'
 
 export const GROK_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Grok CLI hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then -- for pre_tool_use only -- translates token-goat's {"decision":"block",...} deny shape into Grok's documented {"decision":"deny",...} shape and sets exit code 2.
@@ -76,6 +76,8 @@ function allowResponse(eventName) {
 }
 
 ${SHIM_TRY_IN_PROCESS}
+
+${SHIM_MAX_BUFFER_CONST}
 
 async function main() {
   const eventName = process.argv[2] || ''
@@ -110,6 +112,7 @@ ${SHIM_SPAWN_LADDER}
           shell: true,
           timeout: 3000,
           killSignal: 'SIGKILL',
+          maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })
     if (res.status !== 0 || !res.stdout) {
       process.stdout.write(allowResponse(eventName))

@@ -441,6 +441,7 @@ async function main() {
           windowsHide: true,
           timeout: 3000,
           killSignal: 'SIGKILL',
+          maxBuffer: 32 * 1024 * 1024,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
         })
       : spawnSync('token-goat hook ' + tgEvent, {
@@ -450,6 +451,7 @@ async function main() {
           windowsHide: true,
           timeout: 3000,
           killSignal: 'SIGKILL',
+          maxBuffer: 32 * 1024 * 1024,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
         })
     if (res.status !== 0 || !res.stdout) {
