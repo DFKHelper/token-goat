@@ -769,6 +769,7 @@ export class MesonFilter extends ToolFilter {
     let compileCount = 0
     let probeCount = 0
     let detailCount = 0
+    let foundToolCount = 0
 
     for (const line of lines) {
       if (ERROR_SIGNAL_RE.test(line)) {
@@ -796,6 +797,7 @@ export class MesonFilter extends ToolFilter {
         continue
       }
       if (MESON_FOUND_TOOL_RE.test(line)) {
+        foundToolCount++
         continue
       }
       kept.push(line)
@@ -805,6 +807,7 @@ export class MesonFilter extends ToolFilter {
     maybeNote(notes, compileCount, `collapsed ${compileCount} [N/M] Compiling progress lines`)
     maybeNote(notes, probeCount, `collapsed ${probeCount} dependency/probe check lines`)
     maybeNote(notes, detailCount, `suppressed ${detailCount} compiler toolchain detail lines`)
+    maybeNote(notes, foundToolCount, `suppressed ${foundToolCount} "Found <tool>" discovery lines`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -963,9 +966,7 @@ export class DotnetFilter extends ToolFilter {
   }
 
   override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
-    if (this.errorPassthrough) {
-      // handled structurally per subcommand below
-    }
+    // No errorPassthrough here on purpose: the base class's passthrough returns the whole raw combined output on any non-zero exit, which for `dotnet build` is exactly the multi-thousand-line MSBuild log this filter exists to cut down. Each `_compress*` below drops only lines its own noise patterns match and keeps everything else, so error and warning text survives a failing run without the raw log being shipped whole.
     const posArgs = positionalArgs(argv.slice(1))
     const sub = posArgs[0]?.toLowerCase() ?? ''
 
@@ -1531,6 +1532,7 @@ export class NxFilter extends ToolFilter {
     const FAIL_TASK_SAMPLE = 5
     let failTaskKept = 0
     let cacheHits = 0
+    let taskHeadersDropped = 0
 
     for (const line of lines) {
       if (ERROR_SIGNAL_RE.test(line)) {
@@ -1550,6 +1552,9 @@ export class NxFilter extends ToolFilter {
         if (_exitCode !== 0 && failTaskKept < FAIL_TASK_SAMPLE) {
           kept.push(line)
           failTaskKept++
+        } else {
+          // A task header names the target that ran, so dropping it loses real information: on a green run every one goes, and on a red run every one past the sample cap does. Counting them says so rather than leaving the reader to assume the run did less work than it did.
+          taskHeadersDropped++
         }
         continue
       }
@@ -1565,6 +1570,7 @@ export class NxFilter extends ToolFilter {
 
     const notes: string[] = []
     maybeNote(notes, cacheHits, `collapsed ${cacheHits} cache-hit task lines`)
+    maybeNote(notes, taskHeadersDropped, `dropped ${taskHeadersDropped} task header lines`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
