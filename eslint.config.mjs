@@ -27,6 +27,49 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports', fixStyle: 'inline-type-imports' }],
     },
   },
+  /**
+   * Repository tooling under `scripts/`: the fingerprint checker, the git-hook installer, the
+   * Dependabot lock refresher, the harness-schema extractor, the model warm step, and the demo
+   * generators. These run under Node with no bundler and no DOM, and every one of the 41 `no-undef`
+   * errors this directory reported before it came under lint was a correct use of a Node runtime
+   * global (`process` 39 times, `Buffer` once, `console` once) against a config that declared no
+   * environment at all. Declaring the environment is the fix; switching `no-undef` off for the
+   * directory would be the suppression, and would also stop catching a genuine typo.
+   */
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: {
+        AbortController: 'readonly',
+        Buffer: 'readonly',
+        TextDecoder: 'readonly',
+        TextEncoder: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        clearInterval: 'readonly',
+        clearTimeout: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        performance: 'readonly',
+        process: 'readonly',
+        setInterval: 'readonly',
+        setTimeout: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['scripts/**/*.ts'],
+    languageOptions: {
+      parserOptions: { project: './tsconfig.tests.json' },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports', fixStyle: 'inline-type-imports' }],
+    },
+  },
   {
     files: ['vscode-extension/src/**/*.ts'],
     languageOptions: {
