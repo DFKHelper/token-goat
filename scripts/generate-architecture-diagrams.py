@@ -4,6 +4,7 @@ Generates production-grade SVGs and PlantUML (.puml) models for C4 Levels 1-4.
 """
 
 import os
+import re
 from pathlib import Path
 
 DIAGRAMS_DIR = Path("demo/diagrams")
@@ -349,7 +350,7 @@ L3_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 850" width
     <!-- Language Adapters -->
     <g transform="translate(20, 215)">
       <rect width="520" height="150" rx="6" fill="#ecfdf5" stroke="#10b981"/>
-      <text x="16" y="24" font-size="12" font-weight="700" fill="#065f46">Parser Language Adapters (28 languages + formats)</text>
+      <text x="16" y="24" font-size="12" font-weight="700" fill="#065f46">Parser Language Adapters (__LANGUAGE_COUNT__ languages + formats)</text>
 
       <rect x="16" y="38" width="488" height="45" rx="4" fill="#10b981"/>
       <text x="260" y="58" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">Tree-Sitter Inline Extractors</text>
@@ -570,10 +571,16 @@ Rel(mcp, blobs, "Retrieves cached text", "File read")
 @enduml
 """
 
+def language_count():
+    """Rows in LANGUAGE_SPECS (src/language_specs.ts), one per indexed language or format."""
+    specs = Path(__file__).resolve().parent.parent / "src" / "language_specs.ts"
+    return len(re.findall(r"\bid: '", specs.read_text(encoding="utf-8")))
+
+
 def main():
     (DIAGRAMS_DIR / "c4_level1_system_context.svg").write_text(L1_SVG, encoding="utf-8")
     (DIAGRAMS_DIR / "c4_level2_containers.svg").write_text(L2_SVG, encoding="utf-8")
-    (DIAGRAMS_DIR / "c4_level3_components.svg").write_text(L3_SVG, encoding="utf-8")
+    (DIAGRAMS_DIR / "c4_level3_components.svg").write_text(L3_SVG.replace("__LANGUAGE_COUNT__", str(language_count())), encoding="utf-8")
     (DIAGRAMS_DIR / "c4_level4_dynamic_flow.svg").write_text(L4_SVG, encoding="utf-8")
 
     (DIAGRAMS_DIR / "c4_system_context.puml").write_text(PUML_L1, encoding="utf-8")

@@ -103,6 +103,14 @@ export const LANGUAGE_SPECS = [
     id: 'natural', extraction: 'own-result', extensions: ['.nsp', '.nsn', '.nss', '.nsa', '.nsl', '.nsg', '.nsc', '.nsh'], label: 'Natural', ...CODE, fence: 'natural',
     partialRefsReason: "PERFORM, CALLNAT 'literal' and FETCH 'literal' are recorded as references, but an object can also be called through a variable holding its name, so `dead` skips Natural",
   },
+  { id: 'abap', extraction: 'regex', extensions: ['.abap'], label: 'ABAP', ...CODE, fence: 'abap' },
+  { id: 'sas', extraction: 'regex', extensions: ['.sas'], label: 'SAS', ...CODE, fence: 'sas' },
+  { id: 'pli', extraction: 'regex', extensions: ['.pli', '.pl1'], label: 'PL/I', ...CODE, fence: 'pli' },
+  // `.rpg` stays unmapped: RPG II and RPG III sources use it, and their fixed layout predates the ILE RPG forms this adapter reads.
+  { id: 'rpg', extraction: 'regex', extensions: ['.rpgle', '.sqlrpgle'], label: 'RPG', ...CODE, fence: 'rpgle' },
+  { id: 'jcl', extraction: 'regex', extensions: ['.jcl'], label: 'JCL', ...CODE, fence: 'jcl' },
+  // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
+  { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },
   // Matched by the `-meta.xml` suffix in detectLanguage, not by an extension.
   { id: 'salesforce_metadata', extraction: 'regex', extensions: [], label: 'Salesforce metadata', ...DATA, symbolBearing: true, sourceHints: true, grepSource: true, fence: 'xml' },

@@ -48,6 +48,12 @@ import { extractLua } from './languages/lua.js'
 import { extractVb } from './languages/vb.js'
 import { extractCobol } from './languages/cobol.js'
 import { extractNatural } from './languages/natural.js'
+import { extractAbap } from './languages/abap.js'
+import { extractAbl } from './languages/abl.js'
+import { extractJcl } from './languages/jcl.js'
+import { extractPli } from './languages/pli.js'
+import { extractRpg } from './languages/rpg.js'
+import { extractSas } from './languages/sas.js'
 import { extractElixir } from './languages/elixir.js'
 import { extractDart } from './languages/dart.js'
 import { extractZig } from './languages/zig.js'
@@ -2738,6 +2744,12 @@ const NO_TREE_SITTER_EXTRACTORS: Record<RegexLanguage, SymbolExtractor> = {
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
   bash: extractBash,
+  abap: (content, filePath) => extractAbap(content, filePath).symbols,
+  sas: (content, filePath) => extractSas(content, filePath).symbols,
+  pli: (content, filePath) => extractPli(content, filePath).symbols,
+  rpg: (content, filePath) => extractRpg(content, filePath).symbols,
+  jcl: (content, filePath) => extractJcl(content, filePath).symbols,
+  abl: (content, filePath) => extractAbl(content, filePath).symbols,
 }
 
 function extractNoTreeSitter(

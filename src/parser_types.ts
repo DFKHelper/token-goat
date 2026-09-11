@@ -13,6 +13,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { isAblSource } from './languages/abl.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
@@ -86,20 +87,36 @@ export function isVb6ClassModule(content: string): boolean {
 }
 
 /**
- * The language of a file once its content is known. {@link detectLanguage} is path-only, and `.cls` is both an Apex class and a VB6 class module, so the indexer's two entry points (indexFileSync, parseFile) call this after reading the file and store the refined language. Every other language passes through unchanged. A consumer that prints the language or picks a reader by it (section_reader, the ref-blindness notices, the `map` language tally) refines too, through this or {@link detectLanguageOfFile}; the path-only ones left (the read/grep/bash hooks, the fold gates) treat `apex` and `vb` identically, since neither has a tree-sitter grammar or a reference index.
+ * The language of a file once its content is known. {@link detectLanguage} is path-only, and `.cls` is an Apex class, a VB6 class module or an OpenEdge ABL class, while `.p` and `.w` are ABL only on an ABL marker (Pascal and CWEB use them too), so the indexer's two entry points (indexFileSync, parseFile) call this after reading the file and store the refined language. Every other language passes through unchanged. A consumer that prints the language or picks a reader by it (section_reader, the ref-blindness notices, the `map` language tally) refines too, through this or {@link detectLanguageOfFile}; the path-only ones left (the read/grep/bash hooks, the fold gates) treat `apex` and `vb` identically, since neither has a tree-sitter grammar or a reference index.
  */
 export function refineLanguageByContent(filePath: string, language: Language, content: string): Language {
-  if (language === 'apex' && path.extname(filePath).toLowerCase() === '.cls' && isVb6ClassModule(content)) return 'vb'
+  const ext = path.extname(filePath).toLowerCase()
+  if (language === 'apex' && ext === '.cls') {
+    if (isVb6ClassModule(content)) return 'vb'
+    if (isAblSource(content)) return 'abl'
+    return language
+  }
+  // A `.p` or `.w` is ABL only on an ABL marker; a Pascal program or a CWEB file stays unknown, as it was before ABL was indexed.
+  if (language === 'unknown' && ABL_SNIFFED_EXTENSIONS.has(ext) && isAblSource(content)) return 'abl'
   return language
+}
+
+/** Extensions {@link detectLanguage} leaves unknown that are OpenEdge ABL when {@link isAblSource} says so. */
+const ABL_SNIFFED_EXTENSIONS: ReadonlySet<string> = new Set(['.p', '.w'])
+
+/** True when {@link refineLanguageByContent} could change the path language of `filePath`, so its head is worth reading. */
+function needsContentSniff(filePath: string, language: Language): boolean {
+  const ext = path.extname(filePath).toLowerCase()
+  return (language === 'apex' && ext === '.cls') || (language === 'unknown' && ABL_SNIFFED_EXTENSIONS.has(ext))
 }
 
 /** How many leading bytes {@link detectLanguageOfFile} reads from a `.cls`: comfortably more than the {@link VB6_HEADER_SCAN_LINES} lines the sniff looks at. */
 const LANGUAGE_SNIFF_BYTES = 8192
 
-/** {@link detectLanguage} for a file that exists on disk, for a consumer that has no content in hand but reports or branches on the language: a `.cls` has its first few KB read so a VB6 class module is not reported as Apex; every other path reads nothing. */
+/** {@link detectLanguage} for a file that exists on disk, for a consumer that has no content in hand but reports or branches on the language: a `.cls` has its first few KB read so a VB6 or ABL class is not reported as Apex, and a `.p` or `.w` so an ABL source is not reported as unknown; every other path reads nothing. */
 export function detectLanguageOfFile(filePath: string): Language {
   const language = detectLanguage(filePath)
-  if (language !== 'apex' || path.extname(filePath).toLowerCase() !== '.cls') return language
+  if (!needsContentSniff(filePath, language)) return language
   try {
     const fd = fs.openSync(filePath, 'r')
     try {
@@ -154,12 +171,7 @@ export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new 
   ['.f95', 'Fortran'],
   ['.f03', 'Fortran'],
   ['.f08', 'Fortran'],
-  ['.pli', 'PL/I'],
-  ['.pl1', 'PL/I'],
-  ['.rpg', 'RPG'],
-  ['.rpgle', 'RPG'],
-  ['.sqlrpgle', 'RPG'],
-  ['.jcl', 'JCL'],
+  ['.rpg', 'RPG II or RPG III'],
   ['.nsm', 'Natural map'],
   ['.nsd', 'Natural DDM'],
 ])

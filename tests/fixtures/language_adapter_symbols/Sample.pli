@@ -1,0 +1,20 @@
+ /* FORMAT-DERIVED: IBM Enterprise PL/I language reference: PROCEDURE https://www.ibm.com/docs/en/epfz/6.2.0?topic=procedures-procedure-statement , PACKAGE https://www.ibm.com/docs/en/epfz/5.3.0?topic=organization-packages , BEGIN https://www.ibm.com/docs/en/epfz/5.3?topic=organization-begin-blocks , DO https://www.ibm.com/docs/en/epfz/5.3.0?topic=directives-do-statement , END https://www.ibm.com/docs/en/epfz/5.3.0?topic=directives-end-statement , %INCLUDE https://www.ibm.com/docs/en/epfz/5.3.0?topic=facilities-using-include-statement */
+ %INCLUDE SYSLIB(PAYDCL);
+ Payroll: PACKAGE EXPORTS(*);
+ Main: PROC OPTIONS(MAIN);
+   DCL Total FIXED BIN(31) INIT(0);
+   DO I = 1 TO 10;
+     Total = Total + I;
+   END;
+   IF Total > 0 THEN DO;
+     PUT SKIP LIST('END; PROC fake;');
+   END;
+   CALL Report(Total);
+   Report: PROCEDURE(N);
+     DCL N FIXED BIN(31);
+     B1: BEGIN;
+       PUT LIST(N);
+     END B1;
+   END Report;
+ END Main;
+ END Payroll;

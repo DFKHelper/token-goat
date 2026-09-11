@@ -20,6 +20,24 @@ import { globalDbPath } from './constants.js'
 import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
 import { extractCobol } from './languages/cobol.js'
 import { extractNatural } from './languages/natural.js'
+import { extractAbap } from './languages/abap.js'
+import { extractAbl, isAblSource } from './languages/abl.js'
+import { extractJcl } from './languages/jcl.js'
+import { extractPli } from './languages/pli.js'
+import { extractRpg } from './languages/rpg.js'
+import { extractSas } from './languages/sas.js'
+import type { StatementAdapterResult } from './languages/span_collector.js'
+
+/** The statement-scanning adapters whose import targets `imports` reads, by lowercase extension. */
+const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath: string) => StatementAdapterResult> = new Map([
+  ['.abap', extractAbap],
+  ['.sas', extractSas],
+  ['.pli', extractPli],
+  ['.pl1', extractPli],
+  ['.rpgle', extractRpg],
+  ['.sqlrpgle', extractRpg],
+  ['.jcl', extractJcl],
+])
 import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
@@ -6426,6 +6444,12 @@ export function extractImports(text: string, ext: string): string[] {
   } else if (/^\.ns[pnsalgch]$/i.test(e)) {
     // Natural `LOCAL|PARAMETER|GLOBAL USING area` and `INCLUDE copycode`, read by the adapter for the same reason.
     for (const imp of extractNatural(text, `imports${e}`).imports) push(imp.target)
+  } else if (STATEMENT_ADAPTER_IMPORTS.has(e)) {
+    // ABAP INCLUDE, SAS %INCLUDE, PL/I %INCLUDE, RPG /COPY and /INCLUDE, and JCL INCLUDE MEMBER=, read by each adapter so comments and strings agree with the index.
+    for (const imp of STATEMENT_ADAPTER_IMPORTS.get(e)!(text, `imports${e}`).imports) push(imp.target)
+  } else if ((e === '.p' || e === '.w' || e === '.cls') && isAblSource(text)) {
+    // OpenEdge ABL `{file.i}` include references and USING types; a Pascal `.p` or an Apex `.cls` falls through unchanged.
+    for (const imp of extractAbl(text, `imports${e}`).imports) push(imp.target)
   } else if (e === '.lua') {
     // Lua's idiomatic module load is `require("mod")` -- the parenthesized, quoted form. The
     // generic `import|require|use|#include` fallback only matches the paren-LESS `require "mod"`
