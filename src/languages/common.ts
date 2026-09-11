@@ -659,7 +659,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
 // ---------------------------------------------------------------------------
 
 /** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
-export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle'
+export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw'
 
 /**
  * Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state
@@ -690,7 +690,7 @@ export interface MultilineStringState {
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
-export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir' | 'scala' | 'dart'
+export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir' | 'scala' | 'dart' | 'r'
 
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
@@ -719,6 +719,15 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       const re = new RegExp(`"{${n},}`)
       const m = re.exec(line.slice(from))
       return m === null ? null : { maskEnd: from + m.index + m[0].length }
+    }
+    case 'rRaw': {
+      // An R raw character constant has no escape sequences at all, so its closing run is a plain search (R base help page `?Quotes`, "Raw character constants").
+      const idx = line.indexOf(state.identifier, from)
+      return idx === -1 ? null : { maskEnd: idx + state.identifier.length }
+    }
+    case 'rString': {
+      const idx = findRQuoteEnd(line, from, state.identifier)
+      return idx === -1 ? null : { maskEnd: idx + 1 }
     }
     case 'verbatim': {
       if (!state.interpolated) {
@@ -815,6 +824,7 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
   elixir: ['#'],
   scala: ['//'],
   dart: ['//'],
+  r: ['#'],
 }
 
 // Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
@@ -823,6 +833,26 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
 // the line-comment guard above incidentally already treats everything from `<#` onward as
 // commented -- an equivalent check here would be redundant.
 const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp', 'swift', 'scala', 'dart'])
+
+// Opening punctuation of an R raw character constant, anchored at the `r`/`R` prefix: quote, an optional dash run, then one of the three bracket openers (R base help page `?Quotes`, "Raw character constants").
+const R_RAW_OPENER_RE = /^[rR](["'])(-*)([([{])/
+// The bracket the closing sequence mirrors, per the same reference.
+const R_RAW_CLOSE_BRACKET: Record<string, string> = { '(': ')', '[': ']', '{': '}' }
+// Characters R allows inside a name (R Language Definition, section 10.3.2 "Identifiers"), used only to tell a standalone `r` prefix from the last letter of a longer name.
+const R_IDENT_CHAR_RE = /[A-Za-z0-9._]/
+
+/** Index of the `quote` that ends an ordinary R character constant started before `start`, or -1 when the line ends with it still open. Backslash escapes a quote inside one (R Language Definition, section 10.3.1 "Literal constants"). */
+function findRQuoteEnd(line: string, start: number, quote: string): number {
+  for (let j = start; j < line.length; j++) {
+    const c = line[j]
+    if (c === '\\') {
+      j++
+      continue
+    }
+    if (c === quote) return j
+  }
+  return -1
+}
 
 /**
  * True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at
@@ -918,6 +948,42 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const state = { kind, identifier: '3' }
     if (closeIdx !== -1) return { openStart: idx, closesSameLine: closeIdx + 3, state }
     return { openStart: idx, closesSameLine: null, state }
+  }
+
+  if (lang === 'r') {
+    // R has no fixed-delimiter multi-line form. An ordinary `"..."`/`'...'` character constant may itself run across lines (R Language Definition, section 10.3.1 "Literal constants"), and a raw constant opens with `r"(`, `R'['`, `r"{` and so on, with optional dash padding (`r"---(`), closing on the mirrored bracket, the same dash run, and the same quote (R base help page `?Quotes`, "Raw character constants", added in R 4.0.0).
+    // Only a constant left OPEN at end of line is reported as an opener: one that closes on the same line is skipped over rather than masked, because masking it would blank the class name out of `setClass("Point", ...)`, which is exactly where the R extractor reads that symbol's name from.
+    const limit = commentIdx === -1 ? line.length : commentIdx
+    let i = from
+    while (i < limit) {
+      const ch = line[i] ?? ''
+      if (ch === '`') {
+        // A backtick-quoted non-syntactic name (R Language Definition, section 10.3.2 "Identifiers") is an identifier, not a character constant, and may legally contain a quote character, so it is skipped whole rather than scanned for quotes.
+        const end = line.indexOf('`', i + 1)
+        if (end === -1 || end >= limit) return null
+        i = end + 1
+        continue
+      }
+      if (ch === 'r' || ch === 'R') {
+        // The prefix only makes a raw constant when it is a token of its own: a preceding identifier character means this `r` is the tail of some longer name.
+        const rawM = R_RAW_OPENER_RE.exec(line.slice(i))
+        if (rawM !== null && !R_IDENT_CHAR_RE.test(line[i - 1] ?? '')) {
+          const closer = `${R_RAW_CLOSE_BRACKET[rawM[3] ?? ''] ?? ''}${rawM[2] ?? ''}${rawM[1] ?? ''}`
+          const closeIdx = line.indexOf(closer, i + rawM[0].length)
+          if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rRaw', identifier: closer } }
+          i = closeIdx + closer.length
+          continue
+        }
+      }
+      if (ch === '"' || ch === "'") {
+        const closeIdx = findRQuoteEnd(line, i + 1, ch)
+        if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rString', identifier: ch } }
+        i = closeIdx + 1
+        continue
+      }
+      i++
+    }
+    return null
   }
 
   if (lang === 'csharp') {
