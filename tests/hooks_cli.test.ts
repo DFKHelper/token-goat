@@ -43,6 +43,17 @@ describe('normalizePayload', () => {
     expect(result['_tg_harness']).toBe('codex')
   })
 
+  // FORMAT-DERIVED: 'shell' is the tool name codex_install.ts's own buildAgentsBlock fallbackToolClause names as "Codex's native `shell`... tool" (src/bridges/codex_install.ts, the AGENTS.md guidance block written for real Codex users), which CODEX_TOOL_NAME_MAP's pre-existing 'bash'-only key contradicted; not independently verified against a captured Codex payload.
+  it('remaps Codex shell tool name to Bash', () => {
+    const payload: HookPayload = {
+      tool_name: 'shell',
+      tool_input: { command: 'ls -la' },
+    }
+    const result = normalizePayload(payload, 'codex')
+    expect(result['tool_name']).toBe('Bash')
+    expect(result['_tg_harness']).toBe('codex')
+  })
+
   it('remaps Codex apply_patch to Edit', () => {
     const payload: HookPayload = {
       tool_name: 'apply_patch',

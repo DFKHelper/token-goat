@@ -43,6 +43,8 @@ export type HookPayload = Record<string, unknown>
  */
 const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   bash: 'Bash',
+  // Codex's actual shell tool is named 'shell', per this repo's own Codex user-facing guidance text (codex_install.ts's buildAgentsBlock fallbackToolClause: "Codex's native `shell`, `apply_patch`, and `view_image` tools") -- the pre-existing 'bash' key above was never matched by a real Codex payload, so every real Codex shell call fell through unmapped and never reached hooks_bash.ts's Bash-only handlers; kept 'bash' too in case some Codex version or fork still sends it.
+  shell: 'Bash',
   edit_file: 'Edit',
   edit: 'Edit',
   apply_patch: 'Edit',
