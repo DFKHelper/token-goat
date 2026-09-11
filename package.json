@@ -19,6 +19,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "sbom": "npm sbom --sbom-format cyclonedx --omit=dev",
+    "notices": "node scripts/generate-third-party-notices.mjs",
+    "notices:check": "node scripts/generate-third-party-notices.mjs --check",
     "deps:refresh": "node scripts/refresh-dependabot-lock.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
@@ -62,6 +64,7 @@
     "docs/security.md",
     "docs/C4_RUNTIME_ARCHITECTURE.md",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "scripts/install-git-hooks.mjs"
   ],
   "license": "PolyForm-Noncommercial-1.0.0",

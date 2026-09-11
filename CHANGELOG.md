@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **The package now ships a third-party notices file.** Building `dist/` copies about two dozen small npm packages into the files you install, and their licenses ask for their copyright notices to come along. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) now reproduces each one in full and is part of the published package. Run `npm run notices` to rebuild it: it reads the list from the build itself, so it names exactly what the bundle contains, and never a package that only sits in `package.json`. A new test, [tests/guards/third_party_notices.test.ts](tests/guards/third_party_notices.test.ts), fails if the file falls behind the build, if a bundled package is missing from it, or if a package that is not permissively licensed reaches the bundle at all. This needs no reindex.
+
 ## [2.9.11] - 2026-09-11
 
 ### Added

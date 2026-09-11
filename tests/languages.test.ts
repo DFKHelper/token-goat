@@ -6829,44 +6829,44 @@ End Class
   })
 
   it('indexes a VB6 class module past its header, with Property Get/Let, Type, Declare, and a continued signature', () => {
-    // CAPTURE: the header lines and the Property Let/Get FullPathName declarations are verbatim from a real VB6 class module, https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls; the bodies are shortened. The `Private Type` block and the continued FormatFileSize signature are HAND-DERIVED from the VBA reference, https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/property-let-statement.
+    // HAND-DERIVED: an invented class module. The header is the one the VB6 IDE writes above every .cls; the `Private Type` block, the Property Let/Get pair and the continued FormatAssetSize signature are written from the VBA reference, https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/property-let-statement.
     const content = `VERSION 1.0 CLASS
 BEGIN
   MultiUse = -1  'True
 END
-Attribute VB_Name = "CFileInfo"
+Attribute VB_Name = "CAssetInfo"
 Attribute VB_GlobalNameSpace = False
 Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 Option Explicit
-Private Declare Function FindClose Lib "kernel32" (ByVal hFindFile As Long) As Long
-Private Type FILETIME
-   dwLowDateTime As Long
-   dwHighDateTime As Long
+Private Declare Function CloseAssetHandle Lib "assetapi" (ByVal hAsset As Long) As Long
+Private Type ASSETSTAMP
+   lowStamp As Long
+   highStamp As Long
 End Type
-Private m_Path As String
-Public Property Let FullPathName(ByVal NewVal As String)
-   m_Path = NewVal
+Private m_Label As String
+Public Property Let Label(ByVal NewVal As String)
+   m_Label = NewVal
 End Property
-Public Property Get FullPathName() As String
-Attribute FullPathName.VB_UserMemId = 0
-   FullPathName = m_Path
+Public Property Get Label() As String
+Attribute Label.VB_UserMemId = 0
+   Label = m_Label
 End Property
-Public Function FormatFileSize(ByVal Size As Long, _
+Public Function FormatAssetSize(ByVal Size As Long, _
       Optional ByVal Unit As String = "KB") As String
-   FormatFileSize = "x"
+   FormatAssetSize = "x"
 End Function
 `
-    expect(rows(content, 'CFileInfo.cls')).toEqual([
-      'function FindClose 11-11',
-      'struct FILETIME 12-15',
-      'field dwLowDateTime 13-13 FILETIME',
-      'field dwHighDateTime 14-14 FILETIME',
-      'field m_Path 16-16',
-      'property FullPathName 17-19',
-      'property FullPathName 20-23',
-      'function FormatFileSize 24-27',
+    expect(rows(content, 'CAssetInfo.cls')).toEqual([
+      'function CloseAssetHandle 11-11',
+      'struct ASSETSTAMP 12-15',
+      'field lowStamp 13-13 ASSETSTAMP',
+      'field highStamp 14-14 ASSETSTAMP',
+      'field m_Label 16-16',
+      'property Label 17-19',
+      'property Label 20-23',
+      'function FormatAssetSize 24-27',
     ])
   })
 

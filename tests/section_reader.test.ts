@@ -298,9 +298,9 @@ describe('Visual Basic #Region sections', () => {
   })
 
   it('a VB6 .cls is read as Visual Basic from its content, so its header lines are not sniffed as sections', () => {
-    // CAPTURE: header lines verbatim from https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls
-    const cls = 'VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  \'True\nEND\nAttribute VB_Name = "CFileInfo"\nOption Explicit\n'
-    const file = tmpFile('CFileInfo.cls', cls)
+    // HAND-DERIVED: an invented class module carrying the header the VB6 IDE writes above every .cls (VERSION 1.0 CLASS, the BEGIN/MultiUse/END block, then the Attribute lines).
+    const cls = 'VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  \'True\nEND\nAttribute VB_Name = "CAssetInfo"\nOption Explicit\n'
+    const file = tmpFile('CAssetInfo.cls', cls)
     expect(listSections(file)).toEqual([])
     expect(detectLanguageOfFile(file)).toBe('vb')
     expect(detectLanguageOfFile(tmpFile('Svc.cls', 'public with sharing class Svc {\n}\n'))).toBe('apex')

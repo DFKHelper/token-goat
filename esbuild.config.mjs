@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild'
 import { readFileSync, writeFileSync } from 'node:fs'
 
+import { ENTRY_POINTS, EXTERNAL_NATIVE_DEPS } from './scripts/build-options.mjs'
 import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
 
 // Both entry points share this prefix because they share the chunks themselves -- see the single
@@ -14,30 +15,9 @@ const LEGACY_HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
-// See the build's own external comment below for why these must stay external rather than bundled.
-const EXTERNAL_NATIVE_DEPS = [
-  'sqlite-vec',
-  'tree-sitter',
-  'tree-sitter-*',
-  'sharp',
-  'puppeteer-core',
-  'pdfjs-dist',
-  'pdfjs-dist/*',
-  'fflate',
-  'onnxruntime-node',
-  // Not a native addon either, but tesseract.js's Node entrypoint resolves its worker
-  // script and tesseract.js-core's WASM binary via on-disk paths relative to its own
-  // package directory at runtime -- bundling it into token-goat.mjs would break those
-  // relative lookups, and per the comment above would also defeat graceful degradation
-  // on installs that skip optional deps (see image_ocr.ts's loadTesseract).
-  'tesseract.js',
-  // Not a native addon, but the same "optionalDependencies entry must not get statically
-  // inlined" reasoning applies: the full TypeScript compiler (ts_refs.ts's lazily-`require`d
-  // type-resolved `refs` tier) is multiple MB of pure JS. Bundling it would both bloat
-  // dist/token-goat.mjs for every install and, per the comment above, defeat graceful
-  // degradation on installs that skip optional deps.
-  'typescript',
-]
+// The entry points and the external list live in scripts/build-options.mjs: the notices generator
+// and its guard have to bundle the same graph this build does, and a second copy of either would
+// drift silently. See that file's own comment for why each package stays external.
 
 // One build, two entry points, and the reason they are one build rather than two:
 //
@@ -77,10 +57,7 @@ const EXTERNAL_NATIVE_DEPS = [
 // tests/guards/core_bundle_stays_split.test.ts and dist_chunks_deduped.test.ts pin both eager sets.
 const result = await esbuild.build({
   metafile: true,
-  entryPoints: {
-    'token-goat.core': 'src/main.ts',
-    'token-goat-hook': 'src/hook_lib.ts',
-  },
+  entryPoints: ENTRY_POINTS,
   bundle: true,
   splitting: true,
   platform: 'node',

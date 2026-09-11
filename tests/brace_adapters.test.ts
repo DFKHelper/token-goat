@@ -234,15 +234,15 @@ describe('Groovy adapter', () => {
 })
 
 describe('Perl adapter', () => {
-  it('reads the File::Basename fixture: the package to its end and each sub to its closing brace, past the POD between them', () => {
+  it('reads the Demo::Paths fixture: the package to its end and each sub to its closing brace, past the POD between them', () => {
     const r = extractPerl(fixture('Sample.pm'), 'Sample.pm')
     expect(shape(r)).toEqual([
-      'package File::Basename 39-398',
-      'sub fileparse 105-178 File::Basename',
-      'sub basename 215-238 File::Basename',
-      'sub dirname 284-328 File::Basename',
-      'sub _strip_trailing_sep 332-344 File::Basename',
-      'sub fileparse_set_fstype 377-395 File::Basename',
+      'package Demo::Paths 22-138',
+      'sub split_path 48-66 Demo::Paths',
+      'sub base_name 77-81 Demo::Paths',
+      'sub dir_name 91-99 Demo::Paths',
+      'sub normalize_sep 107-114 Demo::Paths',
+      'sub set_separator 122-132 Demo::Paths',
     ])
   })
 
@@ -251,15 +251,15 @@ describe('Perl adapter', () => {
     const src = [
       'package Counter;',
       'use strict;',
-      'use List::Util qw(max);',
+      'use List::Util qw(sum);',
       'require Carp;',
       'sub NAME;',
-      'sub max {',
-      '    my $max = shift(@_);',
-      '    foreach $foo (@_) {',
-      '        $max = $foo if $max < $foo;',
+      'sub tally {',
+      '    my $total = 0;',
+      '    foreach my $item (@_) {',
+      '        $total += $item;',
       '    }',
-      '    return $max;',
+      '    return $total;',
       '}',
       '# sub ghost { }',
       'my $s = "sub fake { }";',
@@ -280,7 +280,7 @@ describe('Perl adapter', () => {
     const r = extractPerl(src, 'Counter.pm')
     expect(shape(r)).toEqual([
       'package Counter 1-23',
-      'sub max 6-12 Counter',
+      'sub tally 6-12 Counter',
       'sub foo 23-23 Some_package',
       'package Counter::Inner 24-25',
       'sub inner 25-25 Counter::Inner',
@@ -315,26 +315,26 @@ describe('Solidity adapter', () => {
   })
 
   it('reads every declaration form, and nothing from comments or strings', () => {
-    // FORMAT-DERIVED: https://docs.soliditylang.org/en/latest/structure-of-a-contract.html , https://docs.soliditylang.org/en/latest/layout-of-source-files.html , https://docs.soliditylang.org/en/latest/contracts.html (interface Token, library Set, receive, fallback), https://docs.soliditylang.org/en/latest/types.html (type UFixed256x18 is uint256)
+    // FORMAT-DERIVED: https://docs.soliditylang.org/en/latest/structure-of-a-contract.html , https://docs.soliditylang.org/en/latest/layout-of-source-files.html , https://docs.soliditylang.org/en/latest/contracts.html (interface, library, receive, fallback), https://docs.soliditylang.org/en/latest/types.html (user-defined value type). Identifiers are invented: only the declaration forms come from the docs.
     const src = [
       'pragma solidity >=0.4.0 <0.9.0;',
       'import "filename";',
       'import * as symbolName from "filename";',
       'import {symbol1 as alias, symbol2} from "filename";',
-      'type UFixed256x18 is uint256;',
-      'error NotEnoughFunds(uint requested, uint available);',
-      'function helper(uint x) pure returns (uint) {',
+      'type Fixed128x9 is uint256;',
+      'error InsufficientBalance(uint requested, uint available);',
+      'function doubled(uint x) pure returns (uint) {',
       '    return x * 2;',
       '}',
-      'contract Purchase {',
-      '    enum State { Created, Locked, Inactive }',
-      '    struct Voter {',
+      'contract Escrow {',
+      '    enum Stage { Opened, Held, Closed }',
+      '    struct Ballot {',
       '        uint weight;',
       '    }',
-      '    event HighestBidIncreased(address bidder, uint amount);',
+      '    event BidRaised(address bidder, uint amount);',
       '    // function ghost() public {',
       '    string s = "contract Fake {";',
-      '    modifier onlySeller() {',
+      '    modifier onlyVendor() {',
       '        _;',
       '    }',
       '    receive() external payable {',
@@ -342,27 +342,27 @@ describe('Solidity adapter', () => {
       '    fallback() external {',
       '    }',
       '}',
-      'interface Token {',
+      'interface Coupon {',
       '    function transfer(address recipient, uint amount) external;',
       '}',
-      'library Set {',
+      'library Bag {',
       '}',
     ].join('\n')
-    const r = extractSolidity(src, 'Purchase.sol')
+    const r = extractSolidity(src, 'Escrow.sol')
     expect(shape(r)).toEqual([
-      'type UFixed256x18 5-5',
-      'error NotEnoughFunds 6-6',
-      'function helper 7-9',
-      'contract Purchase 10-25',
-      'enum State 11-11 Purchase',
-      'struct Voter 12-14 Purchase',
-      'event HighestBidIncreased 15-15 Purchase',
-      'modifier onlySeller 18-20 Purchase',
-      'function receive 21-22 Purchase',
-      'function fallback 23-24 Purchase',
-      'interface Token 26-28',
-      'function transfer 27-27 Token',
-      'library Set 29-30',
+      'type Fixed128x9 5-5',
+      'error InsufficientBalance 6-6',
+      'function doubled 7-9',
+      'contract Escrow 10-25',
+      'enum Stage 11-11 Escrow',
+      'struct Ballot 12-14 Escrow',
+      'event BidRaised 15-15 Escrow',
+      'modifier onlyVendor 18-20 Escrow',
+      'function receive 21-22 Escrow',
+      'function fallback 23-24 Escrow',
+      'interface Coupon 26-28',
+      'function transfer 27-27 Coupon',
+      'library Bag 29-30',
     ])
     expect(imports(r)).toEqual(['filename', 'filename', 'filename'])
   })
@@ -409,14 +409,14 @@ describe('Thrift adapter', () => {
 describe('shader adapters', () => {
   it('reads the GLSL fixture: structs and each function once, skipping the prototypes above main', () => {
     expect(shape(extractCShader(fixture('Sample.frag'), 'Sample.frag'))).toEqual([
-      'struct Material 5-9',
-      'struct DirLight 11-17',
-      'struct PointLight 19-29',
-      'struct SpotLight 31-44',
-      'function main 63-84',
-      'function CalcDirLight 87-100',
-      'function CalcPointLight 103-122',
-      'function CalcSpotLight 125-148',
+      'struct SurfaceProps 5-9',
+      'struct BeamSource 11-16',
+      'struct GlowSource 18-26',
+      'struct ConeSource 28-39',
+      'function main 58-69',
+      'function ShadeBeam 72-82',
+      'function ShadeGlow 85-97',
+      'function ShadeCone 100-115',
     ])
   })
 
@@ -566,12 +566,12 @@ describe('collision routing through the real entry points', () => {
     expect(parsed.symbols).toEqual([])
     const perl = fixture('Sample.pm')
     expect(isPrologSource(perl)).toBe(false)
-    const plFile = tmpFile('Basename.pl', perl)
+    const plFile = tmpFile('Paths.pl', perl)
     expect(detectLanguageOfFile(plFile)).toBe('perl')
     const pl = await parseFile(plFile)
     expect(pl.language).toBe('perl')
     expect(pl.symbols.map((s) => s.name)).toEqual(extractPerl(perl, plFile).symbols.map((s) => s.name))
-    expect(pl.symbols.map((s) => s.name)).toContain('fileparse')
+    expect(pl.symbols.map((s) => s.name)).toContain('split_path')
   })
 
   it('takes a .t for perl only on a Perl marker', () => {

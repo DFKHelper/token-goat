@@ -1231,7 +1231,7 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('passes through wsl bash -c "cat /mnt/c/.../Temp/foo.ts"', () => {
-    const event = makeBashEvent('wsl bash -c "cat /mnt/c/Users/zelys/AppData/Local/Temp/foo.ts"')
+    const event = makeBashEvent('wsl bash -c "cat /mnt/c/Users/me/AppData/Local/Temp/foo.ts"')
     const result = preBashHandler(event)
     expect(result.hookType).toBe('pass')
   })

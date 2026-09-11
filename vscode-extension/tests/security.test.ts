@@ -285,8 +285,8 @@ describe('parseShimScriptPath', () => {
       'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\token-goat\\dist\\token-goat.mjs" %*',
       '',
     ].join('\r\n')
-    const result = parseShimScriptPath(shimText, 'C:\\Users\\zelys\\AppData\\Roaming\\npm')
-    expect(result).toBe('C:\\Users\\zelys\\AppData\\Roaming\\npm\\node_modules\\token-goat\\dist\\token-goat.mjs')
+    const result = parseShimScriptPath(shimText, 'C:\\Users\\me\\AppData\\Roaming\\npm')
+    expect(result).toBe('C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\token-goat\\dist\\token-goat.mjs')
   })
 
   it('returns null for an unrecognized shim format instead of guessing', () => {

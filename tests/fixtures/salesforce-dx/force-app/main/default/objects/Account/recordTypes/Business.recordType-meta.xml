@@ -4,3 +4,4 @@
   <label>Business</label>
   <active>true</active>
 </RecordType>
+<!-- HAND-DERIVED: standard Salesforce DX metadata written from the documented element names, not from any adapter regex. -->
