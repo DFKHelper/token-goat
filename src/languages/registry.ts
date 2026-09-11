@@ -36,6 +36,9 @@ import { extractFortran } from './fortran.js'
 import { extractPascal } from './pascal.js'
 import { extractMatlab } from './matlab.js'
 import { extractCmake } from './cmake.js'
+import { extractAsm } from './asm.js'
+import { extractBatch } from './batch.js'
+import { extractErlang } from './erlang.js'
 import { extractElixir } from './elixir.js'
 import { extractDart } from './dart.js'
 import { extractZig } from './zig.js'
@@ -133,4 +136,7 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   pascal: (content, filePath) => extractPascal(content, filePath).symbols,
   matlab: (content, filePath) => extractMatlab(content, filePath).symbols,
   cmake: (content, filePath) => extractCmake(content, filePath).symbols,
+  asm: (content, filePath) => extractAsm(content, filePath).symbols,
+  batch: (content, filePath) => extractBatch(content, filePath).symbols,
+  erlang: (content, filePath) => extractErlang(content, filePath).symbols,
 }

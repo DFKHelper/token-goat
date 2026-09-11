@@ -2046,3 +2046,10 @@ function startsWithBlockKeyword(content: string, i: number, to: number): boolean
   while (j < to && /[A-Za-z0-9_]/.test(content[j]!)) j++
   return BLOCK_OPENING_KEYWORDS.has(content.slice(i, j))
 }
+
+/** The last line of `rawLines` that has content: the end line for a block that runs to the end of the file. */
+export function lastContentLine(rawLines: readonly string[]): number {
+  let n = rawLines.length
+  while (n > 0 && rawLines[n - 1]!.trim() === '') n--
+  return Math.max(1, n)
+}

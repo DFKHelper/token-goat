@@ -116,6 +116,10 @@ const CASES: readonly AdapterCase[] = [
   { language: 'matlab', kind: 'regex', source: path.join(HAND_FIXTURES, 'matlab_isolate_axes.m'), targetBasename: 'isolate_axes.m' },
   // CMake is found by the CMakeLists.txt basename here, not the `.cmake` extension.
   { language: 'cmake', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.cmake'), targetBasename: 'CMakeLists.txt' },
+  // One `asm` adapter covers three dialects; the HLASM fixture is routed by content, not by a separate extension.
+  { language: 'asm', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.s'), targetBasename: 'Sample.s' },
+  { language: 'batch', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.bat'), targetBasename: 'Sample.bat' },
+  { language: 'erlang', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.erl'), targetBasename: 'Sample.erl' },
   // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
   { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
   {

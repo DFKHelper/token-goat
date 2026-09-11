@@ -38,6 +38,9 @@ import { extractFortran } from './languages/fortran.js'
 import { extractPascal, isPascalSource } from './languages/pascal.js'
 import { extractMatlab, isMatlabSource } from './languages/matlab.js'
 import { extractCmake } from './languages/cmake.js'
+import { extractAsm } from './languages/asm.js'
+import { extractBatch } from './languages/batch.js'
+import { extractErlang } from './languages/erlang.js'
 
 /** The statement-scanning adapters whose import targets `imports` reads, by lowercase extension. */
 const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath: string) => StatementAdapterResult> = new Map([
@@ -51,6 +54,9 @@ const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath:
   ...['.f', '.for', '.f77', '.f90', '.f95', '.f03', '.f08'].map((e): [string, typeof extractFortran] => [e, extractFortran]),
   ...['.pas', '.dpr', '.dpk', '.lpr'].map((e): [string, typeof extractPascal] => [e, extractPascal]),
   ['.cmake', extractCmake],
+  ...['.s', '.asm', '.nasm'].map((e): [string, typeof extractAsm] => [e, extractAsm]),
+  ...['.bat', '.cmd'].map((e): [string, typeof extractBatch] => [e, extractBatch]),
+  ...['.erl', '.hrl'].map((e): [string, typeof extractErlang] => [e, extractErlang]),
 ])
 
 /** The brace-language and Perl adapters whose import targets `imports` reads, by lowercase extension. `.m`, `.h`, `.pl` and `.t` are here only when their content says so (see braceAdapterImportsFor). */
