@@ -716,17 +716,9 @@ function _compressHelmInstall(text: string): string {
   return kept.join('\n')
 }
 
+// `helm list` is a resource table like `kubectl get` and `aws ... --output table`, so it goes through the same row budget those two use. This was its own head-only copy of that logic, which meant a release whose STATUS is failed or pending-upgrade was dropped whenever it sorted past the tenth row: helm sorts by name, so which releases survive had nothing to do with which ones the reader was looking for.
 function _compressHelmList(text: string): string {
-  const lines = text.split('\n').filter((l) => l.trim())
-  const MAX_ROWS = 10
-  if (lines.length <= MAX_ROWS + 1) return text
-  const header = lines[0]!
-  const data = lines.slice(1)
-  const kept = [header, ...data.slice(0, MAX_ROWS)]
-  kept.push(
-    `[token-goat: ${data.length - MAX_ROWS} more helm releases elided; use --filter or --namespace to narrow]`,
-  )
-  return kept.join('\n')
+  return truncateTableRows(text, 10, 'use --filter or --namespace to narrow')
 }
 
 function _compressHelmTemplate(lines: string[]): string {
