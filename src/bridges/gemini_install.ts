@@ -47,14 +47,11 @@
  * has a registered `pre_tool_use`/`post_tool_use` handler -- see
  * {@link GEMINI_PRE_TOOLS}/{@link GEMINI_POST_TOOLS} below for the exact
  * evidence (registerHook call sites in hooks_bash.ts/hooks_read.ts/hooks_edit.ts/
- * hooks_fetch.ts). Gemini's `glob` tool name maps to token-goat's `Glob`
- * canonical tool, but `Glob` currently has no registered hook handler at all
- * (a pre-existing, separately-tracked gap, despite `hooks_read.ts`'s own doc
- * comments claiming Read/Grep/Glob coverage) -- wiring a matcher for it here
- * would just be an inert subprocess spawn per Gemini `glob` call, so it is
- * intentionally left out of both `BeforeTool` and `AfterTool`, mirroring how
- * `installCodex`'s own `CODEX_MATCHERS` excludes Codex's glob-equivalent tool
- * names for the same reason.
+ * hooks_fetch.ts/hooks_glob.ts). Gemini's `glob` tool name maps to token-goat's
+ * `Glob` canonical tool, which now has registered pre/post handlers
+ * (hooks_glob.ts, added 2026-07-18, after this module's original claim that
+ * Glob had no handler at all was written and had gone stale) -- both sets
+ * below include it so Gemini's real `glob` calls actually reach them.
  *
  * A corrupt-but-recoverable `settings.json` (exists but fails to parse) must
  * never be silently clobbered -- {@link installGemini} throws
@@ -96,17 +93,19 @@ const GEMINI_EVENT_ARG: Record<GeminiHookEvent, string> = {
  * preBashHandler), Read (hooks_read.ts preReadHandler + image_shrink.ts
  * preReadImageHandler), Grep (hooks_read.ts preReadHandler, registered
  * separately for the 'Grep' tool name), WebFetch (hooks_fetch.ts
- * preFetchHandler). Write/Edit have no pre-hook; Glob has none at all.
+ * preFetchHandler), Glob (hooks_glob.ts preGlobHandler, added 2026-07-18
+ * after this set was first written). Write/Edit have no pre-hook.
  */
-const GEMINI_PRE_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Grep', 'WebFetch'])
+const GEMINI_PRE_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Grep', 'WebFetch', 'Glob'])
 
 /**
  * Internal tools with a registered `post_tool_use` handler: Bash
  * (hooks_bash.ts postBashHandler), Read (hooks_read.ts postReadHandler),
  * Write/Edit (hooks_edit.ts postEditHandler), WebFetch (hooks_fetch.ts
- * postFetchHandler). Grep has no post-hook registered; Glob has none at all.
+ * postFetchHandler), Glob (hooks_glob.ts postGlobHandler, added 2026-07-18
+ * after this set was first written). Grep has no post-hook registered.
  */
-const GEMINI_POST_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Write', 'Edit', 'WebFetch'])
+const GEMINI_POST_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Write', 'Edit', 'WebFetch', 'Glob'])
 
 /** One `type: "command"` hook entry as Gemini's settings.json stores it. */
 interface GeminiHookEntry {
