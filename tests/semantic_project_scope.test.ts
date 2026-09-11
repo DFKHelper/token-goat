@@ -35,6 +35,7 @@ import {
   DEFAULT_DIM,
   QUERY_INSTRUCTION_PREFIX,
 } from '../src/embeddings.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 import { clearModuleCaches } from '../src/reset.js'
 import Database from '../src/sqlite_driver.js'
 
@@ -147,7 +148,7 @@ describe.skipIf(!canExerciseVec0)('fetchScopedHits (project scoping SQL)', () =>
 // (BGE's asymmetric retrieval convention -- see embeddings.ts), so the seed vectors below must
 // be embedded from the *prefixed* string too, or they'd sit at a nonzero distance from what
 // searchSemantic actually embeds internally and the maxDistance assertion below would flake.
-const canExerciseRealEmbeddings = canExerciseVec0 && isAvailable()
+const canExerciseRealEmbeddings = canExerciseVec0 && isAvailable() && modelFilesPresent()
 const SEED_QUERY = 'a fixed seed string for deterministic distance-zero test vectors'
 
 describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic project scoping + backfill', () => {

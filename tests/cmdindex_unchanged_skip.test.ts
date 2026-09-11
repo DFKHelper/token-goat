@@ -22,6 +22,7 @@ import * as parserModule from '../src/parser.js'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { getFileEntry, querySymbols } from '../src/index_reader.js'
 import { isAvailable } from '../src/embeddings.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
 
@@ -125,7 +126,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
   // tracked independently. With embeddings left at the tests/setup default (disabled), embed_sha
   // never gets stamped, so this needs the same real pipeline as that test to observe the full
   // "skipped" (not just "indexed with a no-op reparse") outcome.
-  it.skipIf(!isAvailable())(
+  it.skipIf(!isAvailable() || !modelFilesPresent())(
     'prints a skipped count in the summary once a file is fully unchanged (parse + embed)',
     async () => {
       process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
@@ -151,7 +152,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
   // Embeddings require the real onnxruntime-node + sqlite-vec pipeline to actually stamp
   // files.embed_sha, so this test is skipped when that pipeline isn't usable in this environment
   // (mirrors the skipIf gating already used in tests/embeddings_index_wiring.test.ts).
-  it.skipIf(!isAvailable())(
+  it.skipIf(!isAvailable() || !modelFilesPresent())(
     'also skips indexFileEmbeddings once a file has been successfully embedded and content is unchanged',
     async () => {
       process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
@@ -182,7 +183,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
 // all four formats already work. Drives the real `token-goat index` bulk-walk path (not just the
 // gate's boolean logic in isolation) against a real .docx fixture on disk.
 describe('cmdIndex indexes embeddable document formats (task #337)', () => {
-  it.skipIf(!isAvailable())(
+  it.skipIf(!isAvailable() || !modelFilesPresent())(
     'no longer skips a .docx file over the detectLanguage-unknown gate -- it reaches indexFileEmbeddings and gets embedded',
     async () => {
       process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'

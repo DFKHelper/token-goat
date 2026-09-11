@@ -23,6 +23,7 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { isAvailable } from '../src/embeddings.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 
 import { BUNDLE } from './helpers/bundle.js'
 import Database from '../src/sqlite_driver.js'
@@ -56,7 +57,7 @@ const vec0State = classifyVec0()
 // real inference run will succeed offline (a first-ever run may still need to fetch the model
 // from the hub) - real availability here mirrors embeddings_vec_insert.test.ts's own
 // canExerciseRealUpsert gate: both the model and a genuinely loaded vec0 table.
-const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable()
+const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 let repo: string
 let dataBase: string

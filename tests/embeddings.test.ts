@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import * as embeddings from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
 import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 
 describe('embeddings module', () => {
   describe('isAvailable()', () => {
@@ -934,7 +935,8 @@ describe('embeddings module', () => {
 
   describe('searchSemantic() SQL vector matching', () => {
     it('should pass query vector via MATCH clause (not omit it)', async () => {
-      if (!embeddings.isAvailable()) {
+      // Needs a real embed of the query string. isAvailable() only proves the onnxruntime require succeeded; without the weights already on this machine this line fetched 33 MB from huggingface.co, which is the suite's one remaining network dependency. See modelFilesPresent.
+      if (!embeddings.isAvailable() || !modelFilesPresent()) {
         return
       }
       // Verify the query issued to sqlite uses the embedded vector (MATCH ?) rather than a bare ORDER BY with no WHERE clause.
