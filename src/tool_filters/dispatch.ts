@@ -10,11 +10,11 @@ import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, combineStreams, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
 import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
-import { CI_FILTERS } from './ci.js'
+import { CI_FILTERS, genericCIFilter } from './ci.js'
 import { CLOUD_FILTERS } from './cloud.js'
 import { SHELL_FILE_FILTERS } from './shell_file.js'
 import { LANGUAGE_FILTERS, bunFilter } from './languages.js'
-import { MISC_FILTERS, playwrightFilter, cypressFilter } from './misc.js'
+import { MISC_FILTERS, playwrightFilter, cypressFilter, tailTruncFilter } from './misc.js'
 import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
@@ -53,12 +53,16 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // Batch I — AI-CLI streaming assistants. GhCopilotFilter must precede GhRunLogFilter and GhFilter (all match `gh`; GhCopilotFilter only fires for `gh copilot explain/suggest`). AI_CLI_FILTERS is therefore spread BEFORE CI_FILTERS, not after — despite the general "append" convention.
   ...AI_CLI_FILTERS,
   // Batch H — CI runners, security scanners, and the keyword-based generic CI log filter. GhRunLogFilter precedes GhFilter (both match `gh`); GenericCIFilter is last (keyword-only, not binary-gated).
-  ...CI_FILTERS,
+  ...CI_FILTERS.filter((f) => f !== genericCIFilter),
   ...SHELL_FILE_FILTERS,
   // Batch K1 — language runtimes and compilers.
   ...LANGUAGE_FILTERS,
   // Batch K2 — db clients, runners, CSS-preprocessors, system-package managers, and generic catch-alls (env dump, JSON array, severity-log, tail-trunc). PlaywrightFilter and CypressFilter from this family are registered above (before BunFilter) — they are NOT included in MISC_FILTERS. TailTruncFilter (content-based, matches() always false, applied explicitly rather than auto-dispatched) should remain last in MISC_FILTERS as a matter of convention.
-  ...MISC_FILTERS,
+  ...MISC_FILTERS.filter((f) => f !== tailTruncFilter),
+  // GenericCIFilter is keyword-only rather than binary-gated, so it is a catch-all for the whole registry and not just for its own family: it claims any command whose text mentions `logs`, `pipeline`, `workflow` or `--log` anywhere, including inside a path or a search pattern. Spread in Batch H's position it therefore sat ahead of SHELL_FILE_FILTERS, LANGUAGE_FILTERS and MISC_FILTERS, and took commands off the binary-gated filter that understood them: `rg -n -C 8 'pipeline\(|from_pretrained' src` and `grep -n 'workflow\|PERSIST_PATHS' ...` both arrived at a CI log compressor rather than at the search filter that groups by `file:line:`. Registered after every filter that can claim a command, for the same reason its own family list keeps it last, one scope up. Everything ahead of it is binary-gated, so nothing that used to reach it stops reaching it unless a filter named for the actual binary claims it first.
+  genericCIFilter,
+  // TailTruncFilter keeps the final slot it has always held. It is content-based and applied explicitly rather than auto-dispatched, and its matches() always returns false, so no ordering around it can change which command reaches which filter: it is spread out of MISC_FILTERS and re-appended purely so the keyword catch-all above can sit after every filter that does match.
+  tailTruncFilter,
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
