@@ -1205,8 +1205,9 @@ const _PHPSTAN_FILE_HEADER_RE = /^\s+Line\s+(\S.*\.php)\s*$/
 const _PHPSTAN_ROW_RE = /^\s+(\d+)\s+(.+)$/
 const _PHPSTAN_SUMMARY_RE = /^\s*\[(ERROR|OK|WARNING|NOTE)\]/i
 const _PSALM_ERROR_RE = /^(ERROR|INFO|FATAL): \w+ - .+\.php:\d+/i
+// Progress chatter only. `No errors` and `Found N errors` are deliberately absent: those are the verdict of the run, the one line the reader invoked psalm to see, and routing them here discarded a clean result entirely and replaced a failing one with an anonymous "dropped N progress/info lines" note. `INFO:` is absent for the same reason from the other direction: `_PSALM_ERROR_RE` below lists INFO as a diagnostic severity alongside ERROR and FATAL, so matching a leading `INFO:` here shadowed every INFO diagnostic before the diagnostic branch could dedupe it, and made that branch's INFO alternative unreachable. A genuinely non-diagnostic `INFO:` line fails `_PSALM_ERROR_RE` and falls through to the keep-verbatim branch, which is the safe direction.
 const _PSALM_PROGRESS_RE =
-  /^(Scanning|Analyzing|Checking|Parsing|Caching|Target PHP|Psalm|PHP version|Running Psalm|No errors|Checked \d|INFO:|Found \d+ error)/i
+  /^(Scanning|Analyzing|Checking|Parsing|Caching|Target PHP|Psalm|PHP version|Running Psalm|Checked \d)/i
 const _PHPSTAN_INFO_RE =
   /^(Note: |Loading config|Found cached|Autoload|Bootstrapping|PHPStan - PHP Static|Psalm is running)/i
 

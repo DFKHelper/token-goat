@@ -1245,3 +1245,51 @@ describe('ClangTidyFilter diagnostic matcher covers every translation unit clang
     expect(out).not.toContain('redundant source-context/caret lines')
   })
 })
+
+// ---------------------------------------------------------------------------
+// PhpStanFilter / psalm: the verdict line and INFO diagnostics
+// ---------------------------------------------------------------------------
+
+describe('PhpStanFilter psalm verdict', () => {
+  // HAND-DERIVED. CAPTURE was impossible: psalm and PHP are not installed on this machine and this
+  // loop is forbidden from making network requests to install either. The input is not copied from
+  // psalm and it is not written from the matcher it exercises. It is written from the *other*
+  // regex in the same function: `_PSALM_PROGRESS_RE` enumerates `No errors` and `Found \d+ error`
+  // by name as shapes it expects psalm to print, and then routes both into the dropped-as-progress
+  // branch. So whatever psalm's exact wording is, the filter's own stated recognition of a verdict
+  // line is what discards it, and that is what these cases pin. The severity case is the same
+  // shape: `_PSALM_ERROR_RE` lists INFO as a diagnostic severity alongside ERROR and FATAL, while
+  // `_PSALM_PROGRESS_RE` matched a leading `INFO:` first and dropped it, so the two regexes in one
+  // function disagreed about what an INFO line is.
+  it('psalm: keeps the "No errors found!" verdict of a clean run', () => {
+    const input = ['Scanning files...', 'Analyzing files...', 'No errors found!'].join('\n')
+    const result = phpstanFilter.apply(input, '', 0, ['psalm'])
+    // Must-not-drop: the one line the reader ran psalm to see.
+    expect(result.text).toContain('No errors found!')
+    expect(result.text).not.toContain('Scanning files')
+  })
+
+  it('psalm: keeps a "Found N errors" verdict line', () => {
+    const input = ['Scanning files...', 'ERROR: UndefinedVariable - src/foo.php:10', 'Found 1 error'].join('\n')
+    const result = phpstanFilter.apply(input, '', 2, ['psalm'])
+    // Must-not-drop: the count, and the diagnostic it counts.
+    expect(result.text).toContain('Found 1 error')
+    expect(result.text).toContain('UndefinedVariable')
+  })
+
+  it('psalm: keeps INFO-severity diagnostics instead of dropping them as progress noise', () => {
+    const input = [
+      'Scanning files...',
+      'ERROR: UndefinedVariable - src/foo.php:10',
+      'INFO: MissingReturnType - src/foo.php:12',
+      'INFO: PossiblyUndefinedVariable - src/bar.php:3',
+      'No errors found!',
+    ].join('\n')
+    const result = phpstanFilter.apply(input, '', 2, ['psalm'])
+    // Must-not-drop: both INFO diagnostics and the error, each naming its own issue type.
+    expect(result.text).toContain('MissingReturnType')
+    expect(result.text).toContain('PossiblyUndefinedVariable')
+    expect(result.text).toContain('UndefinedVariable')
+    expect(result.text).not.toContain('Scanning files')
+  })
+})
