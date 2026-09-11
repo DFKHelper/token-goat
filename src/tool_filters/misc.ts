@@ -512,6 +512,10 @@ export const sqlite3Filter = new Sqlite3Filter()
 const REDIS_ERROR_RE = /^(\(error\)|ERR |WRONGTYPE |NOAUTH |NOSCRIPT |BUSYKEY |MISCONF )/i
 const REDIS_OK_RE = /^OK$/
 const REDIS_LIST_ITEM_RE = /^\s*\d+\)\s+/
+// A SCAN reply is a two-element array whose first element is the cursor. The Redis command reference for SCAN says that element is "a string representing an unsigned 64 bit number", so redis-cli renders it quoted (`1) "17"`), never as `1) (integer) 0`: keying detection on the integer form meant this path never fired on a real reply.
+const REDIS_SCAN_CURSOR_RE = /^\s*1\)\s+"\d+"\s*$/
+// redis-cli prints the first key of the nested second element on the same line as that element's own `2)` index (`2)  1) "key:12"`) and indents the rest (`    2) "key:8"`), so the outer index has to be optional or the first key is dropped.
+const REDIS_SCAN_KEY_RE = /^\s*(?:\d+\)\s+)?\d+\)\s+"(.*)"\s*$/
 
 export class RedisCLIFilter extends ToolFilter {
   readonly name = 'redis-cli'
@@ -532,24 +536,40 @@ export class RedisCLIFilter extends ToolFilter {
   }
 
   private _isScanOutput(lines: string[]): boolean {
-    return lines.some((ln) => /^\d+\) \(integer\) \d+/.test(ln))
+    const first = lines.findIndex((ln) => ln.trim() !== '')
+    if (first < 0) return false
+    if (!REDIS_SCAN_CURSOR_RE.test(lines[first]!)) return false
+    return lines.slice(first + 1).some((ln) => REDIS_SCAN_KEY_RE.test(ln))
   }
 
   private _compressScan(lines: string[]): string {
     const allKeys: string[] = []
     const errors: string[] = []
+    let cursorLine: string | null = null
+    let unrecognised = 0
     for (const line of lines) {
+      if (!line.trim()) continue
       if (REDIS_ERROR_RE.test(line)) { errors.push(line); continue }
-      const m = /^\s*\d+\)\s+"(.+)"/.exec(line)
-      if (m) allKeys.push(m[1]!)
+      if (cursorLine === null && REDIS_SCAN_CURSOR_RE.test(line)) { cursorLine = line; continue }
+      const m = REDIS_SCAN_KEY_RE.exec(line)
+      if (m) { allKeys.push(m[1]!); continue }
+      unrecognised++
     }
     const kept: string[] = [...errors]
+    // The cursor is the half of a SCAN reply the caller cannot reconstruct: a non-zero value means the keyspace was only partially walked and the next call must pass this value back. Emitting it verbatim keeps that resumable, and pulling it out of the key stream stops it being printed and counted as if it were a key.
+    if (cursorLine !== null) kept.push(cursorLine)
     const total = allKeys.length
     if (total > RedisCLIFilter.LIST_KEEP) {
       kept.push(...allKeys.slice(0, RedisCLIFilter.LIST_KEEP).map((k) => `"${k}"`))
       kept.push(`[token-goat: ${total} keys total (showing first ${RedisCLIFilter.LIST_KEEP})]`)
     } else {
       kept.push(...allKeys.map((k) => `"${k}"`))
+    }
+    // This branch is a whitelist: anything that is neither an error, the cursor, nor an indexed key is discarded. Saying how many lines that was keeps a silent drop from reading as an empty keyspace.
+    if (unrecognised) {
+      kept.push(
+        `[token-goat: dropped ${unrecognised} unrecognised line${unrecognised === 1 ? '' : 's'}; disable via TOKEN_GOAT_BASH_COMPRESS for the raw reply]`,
+      )
     }
     return this.finalize(kept)
   }
@@ -593,7 +613,10 @@ export const redisCLIFilter = new RedisCLIFilter()
 
 const APT_GET_RE = /^Get:\d+\s+http/i
 const APT_FETCHED_RE = /^Fetched\s+\d/
-const APT_BOILERPLATE_RE = /^(?:Reading package lists|Building dependency tree|Reading state information|Calculating upgrade|Correcting dependencies|Hit:\d+\s)/
+// `Hit:\d+\s` used to be in this list. It is apt's "this index is already current" per-URI outcome, the sibling of the `Get:` line APT_GET_RE collapses, and keeping it verbatim while collapsing `Get:` meant the filter collapsed the minority: against an up-to-date sources list every acquire line is a Hit. apt's other two per-URI outcomes, `Ign:` and `Err:`, are the diagnostic ones and still reach the reader whole through the keep-verbatim fallback.
+const APT_HIT_RE = /^Hit:\d+\s/i
+// Every alternative below is also kept by the loop's final fallback, so this branch changes no output: it is here to state which banner lines are kept on purpose rather than by accident.
+const APT_BOILERPLATE_RE = /^(?:Reading package lists|Building dependency tree|Reading state information|Calculating upgrade|Correcting dependencies)/
 const APT_INSTALL_PROGRESS_RE = /^(?:Unpacking |Setting up |Preparing to unpack |Selecting previously unselected)/
 const APT_TRIGGERS_RE = /^Processing triggers for /i
 const APT_PKG_LIST_HDR_RE = /^The following (?:NEW|extra|additional) packages|^The following packages will be (?:upgraded|removed|installed|REMOVED)|^NEW packages the following|^\d+ upgraded,\s+\d+ newly installed/i
@@ -619,10 +642,11 @@ export class SysPackageFilter extends ToolFilter {
     const merged = this.combineOutput(stdout, stderr)
     const lines = merged.split('\n')
     const kept: string[] = []
-    let dlCount = 0, installProgress = 0, triggerCount = 0
+    let dlCount = 0, hitCount = 0, installProgress = 0, triggerCount = 0
     for (const line of lines) {
       if (ERROR_SIGNAL_RE.test(line)) { kept.push(line); continue }
       if (APT_GET_RE.test(line)) { dlCount++; continue }
+      if (APT_HIT_RE.test(line)) { hitCount++; continue }
       if (APT_BOILERPLATE_RE.test(line)) { kept.push(line); continue }
       if (APT_PKG_LIST_HDR_RE.test(line)) { kept.push(line); continue }
       if (APT_FETCHED_RE.test(line)) { kept.push(line); continue }
@@ -632,6 +656,7 @@ export class SysPackageFilter extends ToolFilter {
     }
     const notes: string[] = []
     maybeNote(notes, dlCount, `collapsed ${dlCount} 'Get:N' download lines`)
+    maybeNote(notes, hitCount, `collapsed ${hitCount} 'Hit:N' up-to-date index lines`)
     maybeNote(notes, installProgress, `collapsed ${installProgress} 'Unpacking/Setting up' lines`)
     maybeNote(notes, triggerCount, `collapsed ${triggerCount} 'Processing triggers' lines`)
     this.emitNotes(kept, notes)

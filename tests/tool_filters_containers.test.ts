@@ -701,10 +701,31 @@ describe('HelmFilter', () => {
     const rows = ['NAME\tNAMESPACE\tREVISION\tSTATUS\tCHART']
     for (let i = 0; i < 25; i++) rows.push(`release-${i}\tdefault\t1\tdeployed\tmy-chart-1.0.0`)
     const result = apply(f, rows.join('\n'), '', 0, ['helm', 'list'])
-    expect(result).toContain('more helm releases elided')
+    expect(result).toContain('15 more rows')
+    expect(result).toContain('use --filter or --namespace to narrow')
     expect(result).toContain('release-0')
     expect(result).toContain('release-9')
     expect(result).not.toContain('release-10')
+  })
+
+  // HAND-DERIVED status values, from helm 3's release.Status constants, which helm list prints
+  // verbatim in its STATUS column: deployed, failed, superseded, uninstalling, uninstalled,
+  // unknown, pending-install, pending-upgrade, pending-rollback. CAPTURE was impossible: helm is
+  // not installed here and this loop may not install it. All lowercase, which is why the shared
+  // TABLE_ROW_ANOMALY_RE, whose kubectl and CloudFormation entries are capitalised, saw nothing
+  // wrong with any of them.
+  it('list keeps a failed release that sorts past the row cap', () => {
+    const rows = ['NAME\tNAMESPACE\tREVISION\tSTATUS\tCHART']
+    for (let i = 0; i < 25; i++) {
+      const status = i === 22 ? 'failed' : i === 23 ? 'pending-upgrade' : 'deployed'
+      rows.push(`release-${i}\tdefault\t1\t${status}\tmy-chart-1.0.0`)
+    }
+    const result = apply(f, rows.join('\n'), '', 0, ['helm', 'list'])
+    // Must-not-drop: the two releases that are not healthy, and the header that names the columns.
+    expect(result).toContain('release-22\tdefault\t1\tfailed')
+    expect(result).toContain('release-23\tdefault\t1\tpending-upgrade')
+    expect(result).toContain('NAME\tNAMESPACE\tREVISION\tSTATUS\tCHART')
+    expect(result).toContain('2 row(s) kept for a not-ready status')
   })
 
   it('list keeps short output unchanged', () => {

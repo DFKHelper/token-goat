@@ -535,16 +535,40 @@ describe('RedisCLIFilter dispatch', () => {
 })
 
 describe('RedisCLIFilter SCAN compression', () => {
+  // FORMAT-DERIVED, not CAPTURE: redis is not installed on this machine and this loop may not make
+  // a network request to install it. Source: the Redis command reference for SCAN. Its "Return
+  // value" section states that the reply's first element is a string representing an unsigned 64
+  // bit number (the cursor), and its "SCAN basic usage" section shows redis-cli rendering exactly
+  // that: a quoted cursor followed by a nested indexed key list whose first entry shares a line
+  // with the outer `2)` index, as in `1) "17"` then `2)  1) "key:12"` then `    2) "key:8"`.
+  // The shape this fixture used to carry, `1) (integer) 0`, is not something redis emits for SCAN:
+  // it was written from the detector's own regex, so the detector and the fixture agreed with each
+  // other while the filter never fired on a real reply.
+  function scanReply(keys: string[], cursor = '17'): string {
+    const nested = keys.map((k, i) => (i === 0 ? `2)  1) "${k}"` : `    ${i + 1}) "${k}"`))
+    return [`1) "${cursor}"`, ...nested].join('\n')
+  }
+
   it('collapses SCAN key list to first 10', () => {
-    // Real redis-cli SCAN output: first line is cursor, then nested list of keys
-    const scanOutput = [
-      '1) (integer) 0',
-      ...Array.from({ length: 20 }, (_, i) => `   ${i + 1}) "key:${i}"`),
-    ].join('\n')
-    const out = apply(redisCLIFilter, scanOutput, ['redis-cli'])
+    const out = apply(redisCLIFilter, scanReply(Array.from({ length: 20 }, (_, i) => `key:${i}`)), ['redis-cli'])
     expect(out).toContain('20 keys total')
     expect(out).not.toContain('"key:19"')
+    // Must-not-drop: the first key, which shares its line with the outer `2)` index, and the
+    // cursor, without which the caller cannot resume the scan.
     expect(out).toContain('"key:0"')
+    expect(out).toContain('1) "17"')
+  })
+
+  it('keeps a non-zero cursor verbatim and never counts it as a key', () => {
+    const out = apply(redisCLIFilter, scanReply(Array.from({ length: 30 }, (_, i) => `k${i}`), '3072'), ['redis-cli'])
+    expect(out).toContain('1) "3072"')
+    expect(out).toContain('30 keys total')
+  })
+
+  it('reports lines it did not recognise instead of dropping them silently', () => {
+    const reply = `${scanReply(['a', 'b'])}\nsomething the whitelist does not match`
+    const out = apply(redisCLIFilter, reply, ['redis-cli'])
+    expect(out).toMatch(/1 unrecognised line/)
   })
 })
 
@@ -573,6 +597,33 @@ describe('SysPackageFilter apt compression', () => {
       ['apt-get', 'install', 'curl'])
     expect(out).toContain("collapsed 5 'Get:N' download lines")
     expect(out).not.toContain('Get:1')
+  })
+
+  // HAND-DERIVED. CAPTURE was impossible: reproducing `apt-get update` needs a Debian host and a
+  // network fetch, and this loop may make neither. The shapes come from apt's acquire status
+  // reporter, which prefixes every per-URI outcome with one of `Hit:`, `Get:`, `Ign:` or `Err:`.
+  // `Hit:` and `Get:` are the two success outcomes and carry the same kind of information, so
+  // collapsing one to a count while printing the other verbatim was an asymmetry with nothing
+  // behind it, and it collapsed the minority: on an already-current sources list every line is a
+  // `Hit:`. `Ign:` and `Err:` are the diagnostic outcomes and must still arrive whole.
+  it('collapses Hit:N index lines the same way it collapses Get:N, and keeps Ign:/Err:', () => {
+    const out = apply(sysPackageFilter,
+      [
+        ...Array.from({ length: 6 }, (_, i) => `Hit:${i + 1} http://archive.ubuntu.com/ubuntu jammy InRelease`),
+        'Get:7 http://security.ubuntu.com/ubuntu jammy-security InRelease [110 kB]',
+        'Ign:8 http://ppa.example.invalid/ubuntu jammy InRelease',
+        'Err:9 http://ppa.example.invalid/ubuntu jammy Release',
+        '  404  Not Found',
+        'Fetched 110 kB in 1s (110 kB/s)',
+      ].join('\n'),
+      ['apt-get', 'update'])
+    expect(out).toContain("collapsed 6 'Hit:N' up-to-date index lines")
+    expect(out).not.toContain('Hit:1')
+    // Must-not-drop: both diagnostic outcomes, the reason line under Err:, and the fetch summary.
+    expect(out).toContain('Ign:8 http://ppa.example.invalid/ubuntu jammy InRelease')
+    expect(out).toContain('Err:9 http://ppa.example.invalid/ubuntu jammy Release')
+    expect(out).toContain('404  Not Found')
+    expect(out).toContain('Fetched 110 kB in 1s (110 kB/s)')
   })
 
   it('collapses Unpacking/Setting up lines', () => {
