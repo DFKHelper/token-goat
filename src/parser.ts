@@ -2642,7 +2642,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   css: extractCssSymbols,
   dockerfile: extractDockerfileSymbols,
   csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true }),
-  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: ['//', '#'], lineCommentExceptions: ['#['] }),
+  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' }),
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
@@ -2652,7 +2652,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
   kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
-  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
+  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, multilineLang: 'swift' }),
   scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true }),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
