@@ -58,7 +58,7 @@ import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { loadConfig } from '../config.js'
-import { groupHasTokenGoat } from './matcher_group.js'
+import { groupHasTokenGoat, findTokenGoatEntryPosition } from './matcher_group.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
 const CODEX_COMMAND_MARKER = 'token-goat-shim'
@@ -293,11 +293,31 @@ export function installCodex(): CodexInstallResult {
   const hooks: NonNullable<CodexConfig['hooks']> = config.hooks ?? {}
 
   let hooksChanged = false
+  // State keys carrying a group's own real array position (see the write loop near the end of this function) go stale the moment that position changes; the migration cleanup below records the exact key of every token-goat entry it strips so the stale-key purge further down can drop it instead of leaving orphaned trust hashes behind.
+  const staleStateKeysToRemove: string[] = []
   for (const event of CODEX_HOOK_EVENTS) {
     const eventArg = CODEX_EVENT_ARG[event]
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     // A hand-edited or foreign-tool-written config.toml can hold a scalar (e.g. a bare string) under a key that Codex CLI's own hooks schema requires to be an array of matcher-group tables; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
     const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
+    // Migrate a group left behind by a previous token-goat version whose matcher string has since changed (e.g. CODEX_MATCHERS[0] widening from "view_image|Bash" to "view_image|shell|bash"): stripStaleGroupHooks below only ever compares against the *current* matcher being installed, so a group under an old, no-longer-current matcher would otherwise survive untouched forever and permanently desync every later group's array position from what isCodexInstalled expects.
+    for (let idx = 0; idx < groups.length; idx++) {
+      const g = groups[idx]!
+      if (g.matcher === undefined || (CODEX_MATCHERS as readonly string[]).includes(g.matcher)) continue
+      const hookList = g.hooks ?? []
+      const keptHooks = hookList.filter((h) => !isCodexTokenGoatCommand(h.command))
+      if (keptHooks.length === hookList.length) continue
+      hookList.forEach((h, hi) => {
+        if (isCodexTokenGoatCommand(h.command)) staleStateKeysToRemove.push(`${configPath}:${eventArg}:${idx}:${hi}`)
+      })
+      hooksChanged = true
+      if (keptHooks.length > 0) {
+        groups[idx] = { ...g, hooks: keptHooks }
+      } else {
+        groups.splice(idx, 1)
+        idx--
+      }
+    }
     for (const matcher of CODEX_MATCHERS) {
       if (groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) continue
 
@@ -340,6 +360,13 @@ export function installCodex(): CodexInstallResult {
   // Ensure [hooks.state] in config.toml carries the valid trusted_hash for each
   // installed token-goat hook so Codex CLI never prompts or silently skips the hooks as untrusted.
   const hooksState = (hooks['state'] as Record<string, { trusted_hash?: string }> | undefined) ?? {}
+  // Drop the trust hashes of exactly the entries the migration cleanup above stripped, so a stale group's old array position never leaves an orphaned key behind for a later, unrelated group to collide with.
+  for (const key of staleStateKeysToRemove) {
+    if (key in hooksState) {
+      delete hooksState[key]
+      hooksChanged = true
+    }
+  }
   for (const event of CODEX_HOOK_EVENTS) {
     const eventArg = CODEX_EVENT_ARG[event]
     const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
@@ -483,10 +510,11 @@ export function isCodexInstalled(): boolean {
     const eventArg = CODEX_EVENT_ARG[event]
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
-    for (let i = 0; i < CODEX_MATCHERS.length; i++) {
-      const matcher = CODEX_MATCHERS[i]!
-      if (!groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) return false
-      const stateKey = `${configPath}:${eventArg}:${i}:0`
+    for (const matcher of CODEX_MATCHERS) {
+      // Locate the entry's real position rather than assuming it sits at CODEX_MATCHERS's own index: a foreign or previous-version group ahead of ours in the array shifts every position, and a state key built from the wrong index never matches what installCodex actually wrote.
+      const position = findTokenGoatEntryPosition(groups, matcher, (c) => c === expectedCommand)
+      if (position === undefined) return false
+      const stateKey = `${configPath}:${eventArg}:${position.groupIndex}:${position.hookIndex}`
       const expectedHash = computeCodexHookHash(eventArg, expectedCommand, matcher)
       if (hooksState[stateKey]?.trusted_hash !== expectedHash) return false
     }
@@ -495,8 +523,10 @@ export function isCodexInstalled(): boolean {
     const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
-    if (!anyGroupHasTokenGoat(groups, (c) => c === expectedCommand)) return false
-    const stateKey = `${configPath}:${eventArg}:0:0`
+    // Same real-position lookup as above: a global (matcher-less) event can also have a foreign group ahead of ours, so the hardcoded ":0:0" state key was wrong under the same conditions.
+    const position = findTokenGoatEntryPosition(groups, undefined, (c) => c === expectedCommand)
+    if (position === undefined) return false
+    const stateKey = `${configPath}:${eventArg}:${position.groupIndex}:${position.hookIndex}`
     const expectedHash = computeCodexHookHash(eventArg, expectedCommand)
     if (hooksState[stateKey]?.trusted_hash !== expectedHash) return false
   }

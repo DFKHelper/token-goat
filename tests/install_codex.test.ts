@@ -26,6 +26,7 @@ import {
   codexAgentsPath,
   codexConfigPath,
   codexHookCommandFor,
+  codexHookScriptPath,
   computeCodexHookHash,
   installCodex,
   isCodexInstalled,
@@ -441,5 +442,65 @@ describe('isCodexInstalled / uninstallCodex', () => {
     const config = readConfig()
     const preCommands = commandsFor(config, 'PreToolUse')
     expect(preCommands).toContain('bash /opt/scripts/definitely-not-token-goat-shim-related.sh')
+  })
+
+  // Regression: re-installing over a real pre-upgrade config left a dead 'view_image|Bash' group at array position 0 (CODEX_MATCHERS[0] changed to 'view_image|shell|bash' in a prior change; stripStaleGroupHooks only compares against the *current* matcher being installed, so the old-matcher group survives untouched and every later group's real array position shifts). The old matcher string and the '${configPath}:${eventArg}:${groupIndex}:${hookIndex}' state-key format below are FORMAT-DERIVED: read directly off codex_install.ts as of commit 2be706dd^ ('git show 2be706dd^:src/bridges/codex_install.ts'), not reconstructed from this version's own code, so the fixture does not agree with the fix by construction.
+  it('migrates a real pre-upgrade config (old view_image|Bash group at position 0) so isCodexInstalled reports true and no dead group or orphaned state key survives', () => {
+    const configP = codexConfigPath()
+    const scriptPath = codexHookScriptPath()
+    const preCmd = codexHookCommandFor(scriptPath, 'pre_tool_use')
+    const postCmd = codexHookCommandFor(scriptPath, 'post_tool_use')
+    const compactCmd = codexHookCommandFor(scriptPath, 'pre_compact')
+    const promptCmd = codexHookCommandFor(scriptPath, 'user_prompt_submit')
+    const subagentCmd = codexHookCommandFor(scriptPath, 'subagent_stop')
+
+    // Old CODEX_MATCHERS order was ['view_image|Bash', 'apply_patch', 'web_search'], and the old install wrote groups in that order, so 'view_image|Bash' really did sit at real array position 0 on a machine that installed before the matcher string changed.
+    const oldConfig = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'view_image|Bash', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'apply_patch', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'web_search', hooks: [{ type: 'command', command: preCmd }] },
+        ],
+        PostToolUse: [
+          { matcher: 'view_image|Bash', hooks: [{ type: 'command', command: postCmd }] },
+          { matcher: 'apply_patch', hooks: [{ type: 'command', command: postCmd }] },
+          { matcher: 'web_search', hooks: [{ type: 'command', command: postCmd }] },
+        ],
+        PreCompact: [{ hooks: [{ type: 'command', command: compactCmd }] }],
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: promptCmd }] }],
+        SubagentStop: [{ hooks: [{ type: 'command', command: subagentCmd }] }],
+        state: {
+          [`${configP}:pre_tool_use:0:0`]: { trusted_hash: computeCodexHookHash('pre_tool_use', preCmd, 'view_image|Bash') },
+          [`${configP}:pre_tool_use:1:0`]: { trusted_hash: computeCodexHookHash('pre_tool_use', preCmd, 'apply_patch') },
+          [`${configP}:pre_tool_use:2:0`]: { trusted_hash: computeCodexHookHash('pre_tool_use', preCmd, 'web_search') },
+          [`${configP}:post_tool_use:0:0`]: { trusted_hash: computeCodexHookHash('post_tool_use', postCmd, 'view_image|Bash') },
+          [`${configP}:post_tool_use:1:0`]: { trusted_hash: computeCodexHookHash('post_tool_use', postCmd, 'apply_patch') },
+          [`${configP}:post_tool_use:2:0`]: { trusted_hash: computeCodexHookHash('post_tool_use', postCmd, 'web_search') },
+          [`${configP}:pre_compact:0:0`]: { trusted_hash: computeCodexHookHash('pre_compact', compactCmd) },
+          [`${configP}:user_prompt_submit:0:0`]: { trusted_hash: computeCodexHookHash('user_prompt_submit', promptCmd) },
+          [`${configP}:subagent_stop:0:0`]: { trusted_hash: computeCodexHookHash('subagent_stop', subagentCmd) },
+        },
+      },
+    }
+    fs.mkdirSync(path.dirname(configP), { recursive: true })
+    fs.writeFileSync(configP, stringify(oldConfig as unknown as Record<string, unknown>))
+
+    installCodex()
+
+    const config = readConfig()
+    const preGroups = config.hooks?.['PreToolUse'] ?? []
+    // The dead old-matcher group must not survive as a distinct group carrying token-goat's command; only the three current CODEX_MATCHERS matchers remain.
+    expect(preGroups.map((g) => g.matcher).filter((m): m is string => m !== undefined)).toEqual(
+      expect.arrayContaining(['view_image|shell|bash', 'apply_patch', 'web_search']),
+    )
+    expect(preGroups.some((g) => g.matcher === 'view_image|Bash')).toBe(false)
+
+    // No orphaned state key survives holding the old, dead matcher's hash.
+    const state = (config.hooks?.['state'] as unknown as Record<string, { trusted_hash?: string }>) ?? {}
+    const oldHash = computeCodexHookHash('pre_tool_use', preCmd, 'view_image|Bash')
+    expect(Object.values(state).some((v) => v.trusted_hash === oldHash)).toBe(false)
+
+    expect(isCodexInstalled()).toBe(true)
   })
 })
