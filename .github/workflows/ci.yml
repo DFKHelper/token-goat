@@ -88,7 +88,10 @@ jobs:
       # Exported here rather than in a job-level `env:` block, because the `runner` context does not exist at job level and naming it there makes GitHub reject the whole workflow file. Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
       - name: Point the embedding model cache at a path that outlives the data root
         shell: bash
-        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+        run: |
+          echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+          # Read by tests/guards/embed_model_available_where_required.test.ts: here the weights are warmed deliberately, so the seven files that gate real embeddings on them must run rather than skip, and a suite that skips them reports success while covering nothing.
+          echo "TOKEN_GOAT_REQUIRE_EMBED_MODEL=1" >> "$GITHUB_ENV"
       # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
       - name: Restore the embedding model cache
         id: model-cache
@@ -96,13 +99,23 @@ jobs:
         with:
           path: ${{ runner.temp }}/tg-model-cache
           key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
-      # Retries absorb two known non-code causes of an otherwise-green run failing here: a
-      # transient Hugging Face CDN block/rate-limit on the embedding model download (the app
-      # itself now retries+backs off internally too, but a sustained outage outlasts that), and
-      # a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero
-      # assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers
-      # per-test instances of this). A real regression fails deterministically and still fails
-      # after 3 attempts.
+      # The one place allowed to fetch the model. The suite itself never downloads it: the files that
+      # exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default.
+      # That gate also means the test run can no longer populate this cache as a side effect, which is
+      # why the download is a named step: on a restore miss it fetches once, the save step below then
+      # keeps it, and on the next run the restore makes this step a no-op that prints so and exits.
+      # Deliberately not conditioned on the restore missing: the script's own presence check is the
+      # cheaper guard, and it also repairs a cache that restored as a hit while being incomplete,
+      # which an `if` on cache-hit would leave broken for as long as the key survives. A failure here
+      # is reported as a failure, instead of silently degrading the whole population to skips.
+      - name: Warm the embedding model cache
+        shell: bash
+        run: npm run model:warm
+      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake
+      # with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also
+      # covers per-test instances of this). A real regression fails deterministically and still
+      # fails after 3 attempts. The embedding model download used to be retried here too; it now
+      # has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -117,8 +130,8 @@ jobs:
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension
-      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: the expensive file would go on being
-      # downloaded while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in
+      # the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
       - name: Check the embedding model cache is worth saving
         id: model-cache-complete
         if: always() && steps.model-cache.outputs.cache-hit != 'true'
@@ -153,7 +166,10 @@ jobs:
       # Exported here rather than in a job-level `env:` block, because the `runner` context does not exist at job level and naming it there makes GitHub reject the whole workflow file. Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
       - name: Point the embedding model cache at a path that outlives the data root
         shell: bash
-        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+        run: |
+          echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+          # Read by tests/guards/embed_model_available_where_required.test.ts: here the weights are warmed deliberately, so the seven files that gate real embeddings on them must run rather than skip, and a suite that skips them reports success while covering nothing.
+          echo "TOKEN_GOAT_REQUIRE_EMBED_MODEL=1" >> "$GITHUB_ENV"
       # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
       - name: Restore the embedding model cache
         id: model-cache
@@ -161,6 +177,23 @@ jobs:
         with:
           path: ${{ runner.temp }}/tg-model-cache
           key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
+      # The one place allowed to fetch the model. The suite itself never downloads it: the files that
+      # exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default.
+      # That gate also means the test run can no longer populate this cache as a side effect, which is
+      # why the download is a named step: on a restore miss it fetches once, the save step below then
+      # keeps it, and on the next run the restore makes this step a no-op that prints so and exits.
+      # Deliberately not conditioned on the restore missing: the script's own presence check is the
+      # cheaper guard, and it also repairs a cache that restored as a hit while being incomplete,
+      # which an `if` on cache-hit would leave broken for as long as the key survives. A failure here
+      # is reported as a failure, instead of silently degrading the whole population to skips.
+      - name: Warm the embedding model cache
+        shell: bash
+        run: npm run model:warm
+      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake
+      # with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also
+      # covers per-test instances of this). A real regression fails deterministically and still
+      # fails after 3 attempts. The embedding model download used to be retried here too; it now
+      # has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -171,8 +204,8 @@ jobs:
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension
-      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: the expensive file would go on being
-      # downloaded while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in
+      # the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
       - name: Check the embedding model cache is worth saving
         id: model-cache-complete
         if: always() && steps.model-cache.outputs.cache-hit != 'true'
@@ -207,7 +240,10 @@ jobs:
       # Exported here rather than in a job-level `env:` block, because the `runner` context does not exist at job level and naming it there makes GitHub reject the whole workflow file. Without this each worker resolves the model under its own temp data root and refetches the 32 MB weights: one run did it 57 times.
       - name: Point the embedding model cache at a path that outlives the data root
         shell: bash
-        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+        run: |
+          echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+          # Read by tests/guards/embed_model_available_where_required.test.ts: here the weights are warmed deliberately, so the seven files that gate real embeddings on them must run rather than skip, and a suite that skips them reports success while covering nothing.
+          echo "TOKEN_GOAT_REQUIRE_EMBED_MODEL=1" >> "$GITHUB_ENV"
       # Restored, not `actions/cache`, so the save can be held back until the cache is worth keeping (see the save step at the end of this job).
       - name: Restore the embedding model cache
         id: model-cache
@@ -215,6 +251,23 @@ jobs:
         with:
           path: ${{ runner.temp }}/tg-model-cache
           key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts') }}
+      # The one place allowed to fetch the model. The suite itself never downloads it: the files that
+      # exercise real embeddings gate on `modelFilesPresent()`, so `npm test` is offline by default.
+      # That gate also means the test run can no longer populate this cache as a side effect, which is
+      # why the download is a named step: on a restore miss it fetches once, the save step below then
+      # keeps it, and on the next run the restore makes this step a no-op that prints so and exits.
+      # Deliberately not conditioned on the restore missing: the script's own presence check is the
+      # cheaper guard, and it also repairs a cache that restored as a hit while being incomplete,
+      # which an `if` on cache-hit would leave broken for as long as the key survives. A failure here
+      # is reported as a failure, instead of silently degrading the whole population to skips.
+      - name: Warm the embedding model cache
+        shell: bash
+        run: npm run model:warm
+      # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake
+      # with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also
+      # covers per-test instances of this). A real regression fails deterministically and still
+      # fails after 3 attempts. The embedding model download used to be retried here too; it now
+      # has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
@@ -227,8 +280,8 @@ jobs:
         run: npm run test:vscode-extension
 
   # The stable check name the branch ruleset points at. The sharded jobs report as `test-linux (1)`, `test-windows (2)` and so on, so a required context naming a shard would stop gating the moment the shard count changed; this job keeps one name the ruleset can pin, and pulls Windows and macOS under the same gate while it is there.
-      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: the expensive file would go on being
-      # downloaded while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
+      # A cache saved half-populated would be restored forever and never rewritten, because the key would already exist: every run would then pay the download again in
+      # the warm step above while the cache reported a hit. So the save waits until the weights are actually present, and is skipped entirely on a restore hit.
       - name: Check the embedding model cache is worth saving
         id: model-cache-complete
         if: always() && steps.model-cache.outputs.cache-hit != 'true'
