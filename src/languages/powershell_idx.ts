@@ -266,8 +266,8 @@ export function extractPowershell(
       }
     }
 
-    // CLASS or ENUM (top-level)
-    if (braceDepth === 0) {
+    // CLASS or ENUM: matched whenever we are not already inside a tracked class's body, not just at braceDepth 0, because a class declared inside a function or an if-block (e.g. the common `if (-not ([PSTypeName]'Foo').Type) { class Foo { ... } }` re-import guard) is still a real, permanently-defined top-level type in PowerShell regardless of the textual nesting, since class definitions are resolved at parse time independent of runtime control flow.
+    if (currentClass === null) {
       const classMatch = CLASS_RE.exec(stripped)
       if (classMatch) {
         const cname = classMatch[2] ?? ''
