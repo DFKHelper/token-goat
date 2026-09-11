@@ -318,6 +318,20 @@ For VS Code using the token-goat MCP server (`token-goat install --vscode`), ena
 }
 ```
 
+## Troubleshooting
+
+### tree-sitter unavailable
+
+`token-goat doctor` warns when the optional `tree-sitter` package does not load. Without it, TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C and C++ files are read by a rougher scan that finds fewer symbols and no references, and the skeleton fold is off. Every other language indexes as usual. The doctor line says which of three causes applies:
+
+- **Not installed.** The install left out optional dependencies. Run `npm install -g token-goat --include=optional`.
+- **No native build for this platform.** `tree-sitter` and each grammar ship prebuilt binaries inside the npm package for Windows, Linux and macOS on x64 and arm64, and pick the matching one when they load, so no compiler runs and nothing is downloaded when one matches. Their install script (`node-gyp-build`) compiles a binary only when none matches, which needs a C++ toolchain. npm 12 skips dependency install scripts unless you allow them, so reinstall with `npm install -g token-goat --allow-scripts=tree-sitter`.
+- **Binary will not load.** The binary was built for a different Node version or CPU. Reinstall with the same Node you run token-goat with: `npm install -g token-goat`.
+
+### A file type shows no symbols
+
+`outline`, `skeleton` and `read "file::Name"` say when token-goat has no symbol extractor for a file type (for example Fortran, PL/I, RPG, JCL, or an extension it does not know). Grep and plain reads still work on those files. To ask for support for another file type, [open an issue](https://github.com/DFKHelper/token-goat/issues) or email token-goat@dfkhelper.com.
+
 ## What gets installed?
 
 `token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Integrations for other harnesses are additive on the way out as well as in, so a plain uninstall does not touch one you installed with `--codex`, `--copilot`, or a sibling flag: rather than undo something you did not ask about, it names each one still present and the flag that removes it. Run `token-goat doctor` at any time to see which of these are currently present.

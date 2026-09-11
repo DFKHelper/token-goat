@@ -30,7 +30,7 @@ import { fingerprintContent } from './fingerprint.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
-import { detectLanguage, refineLanguageByContent } from './parser_types.js'
+import { detectLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
 import { precedingDocComment } from './doc_comment.js'
 import type { DocCommentStyle } from './doc_comment.js'
@@ -117,6 +117,8 @@ let _parserCtor: TsParserCtor | null | undefined
 let _parserCtorError: Error | null = null
 // Test-only override for the core binding: `undefined` means "use the real lazy-loaded module", `null` or a constructor forces that value instead.
 let _parserCtorOverride: TsParserCtor | null | undefined = undefined
+// Test-only load error reported alongside a forced binding, so doctor's classification runs on a real captured error.
+let _parserCtorErrorOverride: Error | null | undefined = undefined
 const _grammarCache = new Map<string, Grammar | null>()
 
 function loadParserCtor(): TsParserCtor | null {
@@ -138,12 +140,13 @@ export function treeSitterCoreAvailable(): boolean {
 
 /** Last error from loading the core `tree-sitter` binding, for diagnostics (`token-goat doctor` style callers). `null` when never attempted, attempted successfully, or overridden for testing. */
 export function treeSitterCoreLoadError(): Error | null {
-  return _parserCtorError
+  return _parserCtorErrorOverride !== undefined ? _parserCtorErrorOverride : _parserCtorError
 }
 
 /** Test-only: force `loadParserCtor()` (and therefore `treeSitterCoreAvailable()`/`isTreeSitterAvailable()`) to use `mod` instead of the real lazy-loaded binding. Pass `undefined` to restore the real resolution. */
-export function setTreeSitterCoreForTesting(mod: TsParserCtor | null | undefined): void {
+export function setTreeSitterCoreForTesting(mod: TsParserCtor | null | undefined, loadError: Error | null = null): void {
   _parserCtorOverride = mod
+  _parserCtorErrorOverride = mod === undefined ? undefined : loadError
 }
 
 // `.h` is inherently ambiguous between C and C++ (unlike `.hpp`, which is unambiguous cpp) -- the
@@ -383,20 +386,33 @@ function loadGrammar(lang: Language, filePath?: string, content?: string): Gramm
  * bash, unknown) are always `false`.
  */
 export function isTreeSitterAvailable(lang: Language): boolean {
-  if (
-    lang !== 'typescript' &&
-    lang !== 'javascript' &&
-    lang !== 'python' &&
-    lang !== 'go' &&
-    lang !== 'rust' &&
-    lang !== 'ruby' &&
-    lang !== 'java' &&
-    lang !== 'c' &&
-    lang !== 'cpp'
-  ) {
-    return false
-  }
+  if (!TREE_SITTER_LANGUAGES.includes(lang)) return false
   return loadParserCtor() !== null && loadGrammar(lang) !== null
+}
+
+/** The grammar packages `loadGrammar` requires. */
+const TREE_SITTER_GRAMMAR_PACKAGES: readonly string[] = [
+  'tree-sitter-typescript',
+  'tree-sitter-javascript',
+  'tree-sitter-python',
+  'tree-sitter-go',
+  'tree-sitter-rust',
+  'tree-sitter-ruby',
+  'tree-sitter-java',
+  'tree-sitter-c',
+  'tree-sitter-cpp',
+]
+
+/** Grammar packages that do not resolve from the bundle's location; resolution only, so it answers even when the core binding cannot load. */
+export function missingTreeSitterGrammarPackages(): string[] {
+  return TREE_SITTER_GRAMMAR_PACKAGES.filter((pkg) => {
+    try {
+      _require.resolve(pkg)
+      return false
+    } catch {
+      return true
+    }
+  })
 }
 
 // --- Symbol extraction via tree-sitter --------------------------------------

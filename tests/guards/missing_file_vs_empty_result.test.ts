@@ -19,6 +19,8 @@ import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
+import { ISSUES_URL, SUPPORT_EMAIL } from '../../src/version.js'
+
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
 let projectDir: string
@@ -47,6 +49,9 @@ beforeAll(() => {
   writeFileSync(join(projectDir, 'blank.ts'), '\n')
   // A real file with no markdown headings: the "exists but no sections" control for `section --list`.
   writeFileSync(join(projectDir, 'blank.md'), 'plain text, no headings\n')
+  // HAND-DERIVED: a fixed-form Fortran program (a named unsupported language) and a file with an extension nothing maps.
+  writeFileSync(join(projectDir, 'legacy.f90'), '      PROGRAM HELLO\n      PRINT *, "hi"\n      END\n')
+  writeFileSync(join(projectDir, 'notes.xyz'), 'Foo bar\n')
   run(['index', '.', '--walk'])
 })
 
@@ -92,6 +97,34 @@ describe('missing path vs empty result', () => {
     const r = run(['section', 'blank.md', '--list'])
     expect(r.out).toContain('No sections found')
     expect(r.out).not.toContain('Could not read')
+  })
+
+  // A file type with no extractor says so, with the one-line invitation, instead of implying an empty or stale index.
+  for (const [cmd, file, what] of [
+    ['outline', 'legacy.f90', 'Fortran, .f90'],
+    ['skeleton', 'legacy.f90', 'Fortran, .f90'],
+    ['outline', 'notes.xyz', '.xyz'],
+  ] as const) {
+    it(`${cmd} ${file} names the missing extractor and how to ask for one`, () => {
+      const r = run([cmd, file])
+      expect(r.status).not.toBe(0)
+      expect(r.out).toContain(`token-goat has no symbol extractor for this file type (${what})`)
+      expect(r.out).toContain(ISSUES_URL)
+      expect(r.out).toContain(SUPPORT_EMAIL)
+      expect(r.out).not.toContain('No indexed symbols found')
+    })
+  }
+
+  it('read file::Name on a file type with no extractor carries the same invitation', () => {
+    const r = run(['read', 'notes.xyz::Foo'])
+    expect(r.status).not.toBe(0)
+    expect(r.out).toContain('token-goat has no symbol extractor for this file type (.xyz)')
+    expect(r.out).toContain(ISSUES_URL)
+    expect(r.out).toContain(SUPPORT_EMAIL)
+  })
+
+  it('does not print the invitation for a supported language', () => {
+    expect(run(['outline', 'blank.ts']).out).not.toContain(SUPPORT_EMAIL)
   })
 
   // The already-fixed siblings, pinned so the family cannot drift back apart one command at a time.
