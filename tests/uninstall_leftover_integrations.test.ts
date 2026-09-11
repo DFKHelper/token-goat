@@ -91,6 +91,7 @@ describe('leftoverIntegrations', () => {
       copilot: true,
       opencode: true,
       grok: true,
+      visualstudio: true,
     })
 
     expect(all).toEqual([])

@@ -60,8 +60,8 @@ function readMcpJsonFile(configPath: string): McpServerConfig | null {
     if (!fs.existsSync(configPath)) return null
     const content = fs.readFileSync(configPath, 'utf-8')
     const parsed = JSON.parse(content)
-    // Support both { mcpServers: {...} } and direct {...} formats
-    const servers = parsed && typeof parsed === 'object' ? (parsed.mcpServers ?? parsed) : null
+    // Support both { mcpServers: {...} } and direct {...} formats; a file with only Visual Studio's `servers` key (install --visualstudio -p) registers nothing for Claude Code, so it must not read as one server named "servers".
+    const servers = parsed && typeof parsed === 'object' ? (parsed.mcpServers ?? ('servers' in parsed ? null : parsed)) : null
     return servers && typeof servers === 'object' ? servers : null
   } catch {
     return null

@@ -24,6 +24,8 @@ From `serializeOutput` plus a full producer enumeration (`rg "contextOutput\(|de
 | rewriteInput | `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput"}}` | pre_tool_use only (agent-spawn briefing, bash command wrap) |
 | rewriteOutput | `{"hookSpecificOutput":{"updatedToolOutput"}}` | post_tool_use only (WebFetch fencing/redaction/compression, websearch, bash/bashoutput/taskoutput/grep compression, mcp compression, browser-image dedup, agent-report compaction, exitplanmode) |
 
+`visualstudio` (`install --visualstudio`) has no column in the verdicts below: Visual Studio documents no agent hooks, so the bridge writes no hooks file and every channel is **X** there. token-goat reaches that agent only through its MCP tools and the instructions block.
+
 `subagent_stop` and `post_compact` handlers only ever return pass (side effects only). `notification`
 and `stop` have zero registered handlers. `hermes` has no bridge row in `BRIDGE_CAPABILITY_MATRIX`
 and is out of scope here.

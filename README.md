@@ -21,7 +21,7 @@ permalink: /
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
-Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
+Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Visual Studio** (Copilot agent, MCP tools and instructions only), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command:**
 
@@ -379,6 +379,19 @@ from, so token-goat sees the agent's built-in reads, edits, and terminal
 commands. `token-goat uninstall --vscode` (add `-p`/`--project` for the
 project scope) removes only token-goat's server entry, guidance block, and
 hooks, and keeps the hooks if `--copilot` still uses them.
+
+**Visual Studio** (2022 17.14 or later, or 2026): `token-goat install --visualstudio`
+adds the same `servers` entry to `%USERPROFILE%\.mcp.json` and a routing block
+to `%USERPROFILE%\copilot-instructions.md` (Visual Studio 2026 reads that
+file). With `-p`/`--project` it writes `.mcp.json` and
+`.github/copilot-instructions.md` in the solution folder instead. Visual Studio
+has no agent hooks, so token-goat works there through its MCP tools and
+instructions only: no read dedup, hints, image shrink, or output folding. Two
+switches in Visual Studio turn it on: the Tools > Options checkbox for custom
+instructions, and the token-goat tools in the chat Tools picker, since new MCP
+tools start disabled. `token-goat uninstall --visualstudio` (add `-p` for the
+project) removes only token-goat's entry and block. See
+[Visual Studio users](docs/install.md#visual-studio-users).
 
 The optional source-controlled extension lives in `vscode-extension/`. Build
 and install its VSIX manually; `--vscode` intentionally does not copy or

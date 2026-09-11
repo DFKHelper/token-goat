@@ -27,6 +27,7 @@ export type HarnessName =
   | 'qwen'
   | 'kimi'
   | 'vscode'
+  | 'visualstudio'
   | 'generic'
 
 /** Static description of how one harness's hooks are wired. */

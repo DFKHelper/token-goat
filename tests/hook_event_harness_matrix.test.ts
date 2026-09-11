@@ -217,6 +217,8 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   openclaw: callHookEvents(OPENCLAW_PLUGIN_SCRIPT, 'OPENCLAW_PLUGIN_SCRIPT'),
   copilot_cli: copilotCliEvents(),
   vscode: vscodeEvents(),
+  // install --visualstudio writes no hooks file at all (src/bridges/visualstudio_install.ts), so no event is wired there.
+  visualstudio: [],
   generic: [...HOOK_EVENTS],
 }
 
@@ -249,6 +251,7 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
     'post_tool_use_failure',
   ],
   vscode: ['session_start', 'pre_tool_use', 'post_tool_use', 'stop', 'subagent_stop', 'user_prompt_submit'],
+  visualstudio: [],
   generic: [...HOOK_EVENTS],
 }
 

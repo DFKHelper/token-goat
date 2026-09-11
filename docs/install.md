@@ -196,6 +196,25 @@ The hooks folder and files are the same ones `token-goat install --copilot` uses
 
 If VS Code's `chat.useClaudeHooks` setting is on, VS Code also runs the Claude Code hooks in `~/.claude/settings.json`, so each token-goat hook fires twice. `token-goat install --vscode` prints a note when it sees that setting, and `token-goat doctor` reports it. Turn the setting off to keep only the VS Code hooks. token-goat never edits your VS Code settings.
 
+### Visual Studio users
+
+```
+token-goat install --visualstudio
+```
+
+This is for the full Visual Studio IDE with GitHub Copilot agent mode: Visual Studio 2022 17.14 or later, or Visual Studio 2026. It registers token-goat's MCP server under the `servers` key of `%USERPROFILE%\.mcp.json`, the user-level file Visual Studio reads ([Microsoft's MCP servers page](https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers)), and adds a routing block to `%USERPROFILE%\copilot-instructions.md`, which Visual Studio 2026 reads as user-level custom instructions ([Microsoft's chat context page](https://learn.microsoft.com/en-us/visualstudio/ide/copilot-chat-context)). A user install never writes into the folder you run it from. Add `-p`/`--project` to install for the solution in the current folder instead: the entry goes to `.mcp.json` and the block to `.github/copilot-instructions.md`, which Visual Studio 2022 reads too. `.mcp.json` then holds absolute paths to node and token-goat on your machine, so do not commit it.
+
+In Visual Studio, token-goat works through its MCP tools and instructions only. Visual Studio has no documented agent hooks (GitHub's [hooks page](https://docs.github.com/en/copilot/concepts/agents/hooks) lists only Copilot cloud agent and Copilot CLI), so `--visualstudio` writes no hooks file, and there is no read dedup, no hints, no image shrink, and no output folding. The agent gets narrow reads only when it calls the token-goat tools.
+
+Two steps in Visual Studio after installing:
+
+1. Tools > Options: turn on "Enable custom instructions to be loaded from .github/copilot-instructions.md files and added to requests". Without it, Visual Studio ignores the routing block.
+2. In Copilot Chat agent mode, open the Tools picker and tick the token-goat tools. New MCP tools start disabled. Visual Studio 18.7 and later also asks you to trust the server when its command or arguments change, for example after a reinstall.
+
+The project root `.mcp.json` is also Claude Code's project MCP file, under a different key (`mcpServers`). token-goat writes only `servers`, so it registers nothing for Claude Code and leaves your `mcpServers` entries as they were. Visual Studio also reads `.vscode/mcp.json`, so after `token-goat install --vscode -p` it can see the VS Code entry too, under the same `token-goat` name. If `--vscode -p` or `--copilot --local` already put a token-goat block in `.github/copilot-instructions.md`, the Visual Studio block shrinks to a short addendum rather than repeating it, and grows back to the full text when that other block is removed.
+
+`token-goat doctor` reports the entry and warns when its node or token-goat path no longer exists. To remove: `token-goat uninstall --visualstudio` (add `-p` for the project install). It removes only token-goat's entry and block.
+
 ### Grok CLI (xAI Grok Build) users
 
 Grok Build already reads Claude Code's `~/.claude/settings.json` as a "Harness Compatibility" source out of the box (confirmed against grok 0.2.93 and its own [hooks doc](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)), so `token-goat install` alone already gets most of the integration working — image shrinking, session hints, post-edit indexing, and bash output compression all fire. The one gap: Grok's own `PreToolUse` hook contract documents only `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`, never token-goat's harness-independent `{"decision":"block","reason":"..."}` shape (unlike Gemini CLI, whose docs explicitly confirm `"block"` as an accepted alias for `"deny"`), so re-read denial and oversized-first-read redirects don't reliably block on the Claude Code compat path alone.
@@ -393,6 +412,13 @@ Three things follow, and they are worth knowing before you decide. It never leav
 | `%APPDATA%\Code\User\mcp.json` (Windows) / `~/Library/Application Support/Code/User/mcp.json` (macOS) / `~/.config/Code/User/mcp.json` (Linux) — or `<project>/.vscode/mcp.json` with `-p`/`--project` | Merges the `token-goat` stdio entry under VS Code's `servers` root key, preserving unrelated servers and settings. Refuses to write if the other scope already has a token-goat-managed entry, to avoid a duplicate registration. |
 | `~/.copilot/instructions/token-goat.instructions.md` (`<project>/.github/copilot-instructions.md` with `-p`) | A delimited VS Code routing block that documents supported MCP selection and what the agent hooks can and cannot do with built-in file reads. The user-scope file is a personal instructions file with `applyTo: '**'`, so VS Code applies it in every workspace; install creates it with that frontmatter if it is missing and otherwise merges the block in, and uninstall deletes it again when nothing else is left in it. A user-scope install never writes into the folder you run it from. |
 | `~/.copilot/hooks/token-goat.json`, `token-goat-shim.js`, `token-goat.owners` (`<project>/.github/hooks/` with `-p`) | VS Code agent hooks, shared with `--copilot`; the owners file records which of the two installs still uses them. |
+
+**With `--visualstudio`** (Visual Studio MCP configuration; user scope by default, `-p`/`--project` for the solution folder)
+
+| Path | What |
+|------|------|
+| `%USERPROFILE%\.mcp.json` (`<project>/.mcp.json` with `-p`) | Merges the `token-goat` stdio entry under the `servers` root key, preserving other servers, comments, and Claude Code's `mcpServers` key. Refuses to write if the other scope already has a token-goat-managed entry. Uninstall removes the entry, and deletes the file if nothing else is left in it. |
+| `%USERPROFILE%\copilot-instructions.md` (`<project>/.github/copilot-instructions.md` with `-p`) | A delimited Visual Studio routing block (`<!-- token-goat-visualstudio-begin -->` … `<!-- token-goat-visualstudio-end -->`). Everything outside the markers is preserved. |
 
 **With `--hermes`** (Hermes Agent integration)
 

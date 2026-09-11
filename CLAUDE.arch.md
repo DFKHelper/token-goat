@@ -85,7 +85,9 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
-| [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \| `codex` \| `opencode` \| `gemini` \| `qwen` \| `kimi` \| `hermes` \| `openclaw` \| `pi` \| `copilot_cli` \| `vscode` \| `grok` \| `generic`), `BridgeConfig` |
+| [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \| `codex` \| `opencode` \| `gemini` \| `qwen` \| `kimi` \| `hermes` \| `openclaw` \| `pi` \| `copilot_cli` \| `vscode` \| `visualstudio` \| `grok` \| `generic`), `BridgeConfig` |
+| [`src/bridges/visualstudio_install.ts`](src/bridges/visualstudio_install.ts) | `install --visualstudio`: Visual Studio's `servers` entry in `.mcp.json` plus a guidance block, no hooks; its block shrinks to an addendum while a VS Code or Copilot CLI gate shares `.github/copilot-instructions.md` (`syncVisualStudioProjectGuidance`) |
+| [`src/bridges/mcp_servers_json.ts`](src/bridges/mcp_servers_json.ts) | The `servers`-keyed MCP JSON reader/writer VS Code and Visual Studio share; edits `servers["token-goat"]` without re-indenting the user's other entries |
 | [`src/bridges/registry.ts`](src/bridges/registry.ts) | `detectHarness()` / `getHarnessName()` — env-variable-based harness detection |
 | [`src/bridges/claudecode.ts`](src/bridges/claudecode.ts) | Claude Code hook script template and install config |
 | [`src/bridges/codex.ts`](src/bridges/codex.ts) | Codex hook script template; `hookSpecificOutput: true` (Codex schemas use `additionalProperties: false`) |

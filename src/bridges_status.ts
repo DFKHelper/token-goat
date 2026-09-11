@@ -324,6 +324,22 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ],
   },
   {
+    harness: 'visualstudio',
+    label: 'Visual Studio (Copilot agent)',
+    sourceFile: 'src/bridges/visualstudio_install.ts',
+    verification: 'documented',
+    verificationNote:
+      "MCP file locations and the servers key from Microsoft's Visual Studio MCP docs (learn.microsoft.com/en-us/visualstudio/ide/mcp-servers), instructions paths from its Copilot chat context page; no run inside a live Visual Studio is recorded here.",
+    implemented: new Set(),
+    reasons: [
+      {
+        events: [...HOOK_EVENTS],
+        reason:
+          'Visual Studio documents no agent hooks (GitHub lists hooks only for Copilot cloud agent and Copilot CLI), so install --visualstudio writes no hooks file and token-goat works there through its MCP tools and instructions only',
+      },
+    ],
+  },
+  {
     harness: 'kimi',
     label: 'Kimi Code CLI',
     sourceFile: 'src/bridges/kimi_install.ts (KIMI_EVENT_ARG), src/bridges/kimi.ts (KIMI_HOOK_SCRIPT)',
