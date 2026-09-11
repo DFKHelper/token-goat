@@ -659,7 +659,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
 // ---------------------------------------------------------------------------
 
 /** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
-export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw'
+export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw' | 'swiftExtended'
 
 /**
  * Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state
@@ -675,7 +675,7 @@ export interface MultilineStringState {
    * string literals may open with a run of 3 or more `"` characters, and the closer must match
    * that same run length (or greater), so the fixed 3-quote assumption can't be baked into the
    * `findMultilineCloser` switch. Kotlin's triple-quoted strings are always exactly 3 and use
-   * `'3'` here too. Unused for `verbatim`/`psHereDouble`/`psHereSingle`.
+   * `'3'` here too. For `swiftExtended`, carries the exact closing delimiter (`"""` followed by the opener's own hash run, e.g. `"""##`), so an N-hash opener can only be closed by an N-hash closer. Unused for `verbatim`/`psHereDouble`/`psHereSingle`.
    */
   identifier: string
   /**
@@ -720,8 +720,9 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       const m = re.exec(line.slice(from))
       return m === null ? null : { maskEnd: from + m.index + m[0].length }
     }
-    case 'rRaw': {
-      // An R raw character constant has no escape sequences at all, so its closing run is a plain search (R base help page `?Quotes`, "Raw character constants").
+    case 'rRaw':
+    case 'swiftExtended': {
+      // An R raw character constant has no escape sequences at all, so its closing run is a plain search (R base help page `?Quotes`, "Raw character constants"). A Swift extended-delimiter string closes the same way: inside one, `\` and `"` lose their special meaning and an escape needs the matching hash count (The Swift Programming Language, "Strings and Characters", section "Extended String Delimiters"), so a backslash cannot hide the closer either.
       const idx = line.indexOf(state.identifier, from)
       return idx === -1 ? null : { maskEnd: idx + state.identifier.length }
     }
@@ -871,6 +872,38 @@ export function matchRRawOpener(text: string, index: number): RRawOpener | null 
   return { openerEnd: index + m[0].length, closer: `${close}${m[2] ?? ''}${m[1] ?? ''}` }
 }
 
+// Opening punctuation of a Swift extended-delimiter string, anchored at its first `#`: a run of one or more `#`, then either `"""` (the multi-line form) or a single `"` (the single-line form). Sticky for the same reason R_RAW_OPENER_RE is: a scan tests one offset without slicing the rest of the line.
+const SWIFT_EXTENDED_OPENER_RE = /(#+)("""|")/y
+
+/** A Swift extended-delimiter string opening at some offset: where its opening punctuation ends, whether it is the multi-line form, and the exact sequence that closes it. */
+export interface SwiftExtendedOpener {
+  /** Offset just past the opening `#"` / `##"""` punctuation, where the string's verbatim content begins. */
+  openerEnd: number
+  /** True for the `#"""` ... `"""#` multi-line form, which is the only extended form that may carry across lines. */
+  multiline: boolean
+  /** Closing quote run then the opener's own hash run, e.g. `"##` or `"""#`. */
+  closer: string
+}
+
+/**
+ * Match a Swift extended-delimiter string opening at `index` in `text`, or null when none does.
+ *
+ * Any number of `#` may pad the delimiter and the count must match to close, so the hash run is
+ * carried on the result rather than assumed to be one (The Swift Programming Language, "Strings
+ * and Characters", section "Extended String Delimiters"). The `#` must be immediately followed by
+ * the quote run, which is what keeps Swift's other `#` spellings -- `#available(iOS 15, *)`,
+ * `#selector(foo)`, `#file`, `#if`, and macro attachment -- from being read as string openers.
+ */
+export function matchSwiftExtendedOpener(text: string, index: number): SwiftExtendedOpener | null {
+  if (text[index] !== '#') return null
+  SWIFT_EXTENDED_OPENER_RE.lastIndex = index
+  const m = SWIFT_EXTENDED_OPENER_RE.exec(text)
+  if (m === null) return null
+  const hashes = m[1] ?? ''
+  const multiline = m[2] === '"""'
+  return { openerEnd: index + m[0].length, multiline, closer: `${multiline ? '"""' : '"'}${hashes}` }
+}
+
 /** Index of the `quote` that ends an ordinary R character constant started before `start`, or -1 when the line ends with it still open. Backslash escapes a quote inside one (R Language Definition, section 10.3.1 "Literal constants"). */
 function findRQuoteEnd(line: string, start: number, quote: string): number {
   for (let j = start; j < line.length; j++) {
@@ -946,7 +979,28 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
 
   if (lang === 'kotlin' || lang === 'swift' || lang === 'scala') {
     // Kotlin raw strings, Swift multi-line string literals and Scala multi-line string literals all use a fixed `"""` delimiter (unlike C#'s variable-length `"{3,}` run), so one branch serves all three.
+    // Swift alone also has the extended-delimiter family (`#"..."#`, `##"""..."""##`, any hash count, which must match to close). Unlike R's raw constant, one that closes on the same line is masked rather than skipped: no Swift matcher reads a symbol name out of string content -- FUNC_RE, INIT_RE, SUBSCRIPT_RE, PROPERTY_RE and TYPE_HEADER_RE each read a bare identifier after a keyword -- so blanking one cannot cost a name, while leaving it unmasked lets a `}` inside it close the enclosing declaration early.
+    let swiftExt: OpenerMatch | null = null
+    if (lang === 'swift') {
+      for (let h = line.indexOf('#', from); h !== -1; h = line.indexOf('#', h + 1)) {
+        const ext = matchSwiftExtendedOpener(line, h)
+        if (ext === null || isInsideStringLiteral(line, h, from) || isCommented(h)) continue
+        const extClose = line.indexOf(ext.closer, ext.openerEnd)
+        const extState: MultilineStringState = { kind: 'swiftExtended', identifier: ext.closer }
+        if (extClose !== -1) {
+          swiftExt = { openStart: h, closesSameLine: extClose + ext.closer.length, state: extState }
+          break
+        }
+        // Only the `#"""` form may carry across lines. A single-line `#"..."#` cannot contain a newline, so one with no closer on its own line is malformed source rather than an open span: it is skipped so it cannot blank every following line of the file.
+        if (ext.multiline) {
+          swiftExt = { openStart: h, closesSameLine: null, state: extState }
+          break
+        }
+      }
+    }
     const idx = line.indexOf('"""', from)
+    // An extended opener starting before the first bare `"""` wins, which is also what makes `#"""` read as one extended opener rather than a `#` followed by a plain multi-line string.
+    if (swiftExt !== null && (idx === -1 || swiftExt.openStart < idx)) return swiftExt
     // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
     // already-open single-line string literal is not a real raw-string opener.
     if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
