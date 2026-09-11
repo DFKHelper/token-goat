@@ -65,11 +65,15 @@ async function tryInProcess(entryPath, eventName, input) {
   }
 }`
 
-/** The `spawnSync` fallback ladder, indented for use inside `main()`'s `if (stdout === undefined)`. */
+/** The `spawnSync` fallback ladder, indented for use inside `main()`'s `if (stdout === undefined)`. Node's `spawnSync` defaults `maxBuffer` to 1 MB; a fenced MCP tool result (see hooks_mcp.ts's unconditional `passOrFence`) has no upper size bound of its own, so without an explicit override a large one gets ENOBUFS-killed, the shim fails open to `{}`, and the fence protecting that untrusted payload never reaches the model. `SHIM_MAX_BUFFER_BYTES` below matches this codebase's existing largest capture ceiling (`MAX_CAPTURE_BYTES` in bash_runner.ts) so this path is bounded by the same number rather than an arbitrary new one. */
 export const SHIM_SPAWN_LADDER = `    const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
           input,
           encoding: 'utf8',
           timeout: 3000,
           killSignal: 'SIGKILL',
+          maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })`
+
+/** 32 MiB, matching `MAX_CAPTURE_BYTES` in bash_runner.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
+export const SHIM_MAX_BUFFER_CONST = `const SHIM_MAX_BUFFER_BYTES = 32 * 1024 * 1024`

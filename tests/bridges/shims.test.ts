@@ -54,6 +54,7 @@ function runShim(script: string, eventName: string, cwd: string, env?: NodeJS.Pr
     input: '{}',
     encoding: 'utf8',
     timeout: 15000,
+    maxBuffer: 32 * 1024 * 1024,
     env: env ?? process.env,
   })
   return res.stdout ?? ''
@@ -265,5 +266,43 @@ process.exit(1)
     expect(status).toBe(0)
     expect(out).toBe('{}')
     expect(out).not.toContain('deny')
+  })
+})
+
+/**
+ * Writes a fake `token-goat` PATH shim that runs a Node script (not a literal `echo` line, which
+ * would hit a batch/shell line-length ceiling long before reaching megabyte-scale payloads) and
+ * prints `jsonStdout` verbatim. Reuses the shell-fallback resolution rule documented on
+ * `withFakeTokenGoat` above: PATH must be prepended, a same-named file in cwd is not picked up.
+ */
+function withFakeTokenGoatLarge(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
+  const bodyPath = join(cwd, 'large-body.json')
+  writeFileSync(bodyPath, jsonStdout, 'utf8')
+  const printerPath = join(cwd, 'print-large-body.js')
+  writeFileSync(printerPath, `process.stdout.write(require('fs').readFileSync(${JSON.stringify(bodyPath)}, 'utf8'))\n`, 'utf8')
+  if (process.platform === 'win32') {
+    writeFileSync(join(cwd, 'token-goat.cmd'), `@echo off\r\n"${process.execPath}" "${printerPath}"\r\n`, 'utf8')
+  } else {
+    const scriptPath = join(cwd, 'token-goat')
+    writeFileSync(scriptPath, `#!/bin/sh\nexec "${process.execPath}" "${printerPath}"\n`, 'utf8')
+    chmodSync(scriptPath, 0o755)
+  }
+  return { ...process.env, PATH: cwd + delimiter + (process.env['PATH'] ?? '') }
+}
+
+describe('shim shell fallback does not truncate a large hook response (regression: Node spawnSync defaults maxBuffer to 1 MB, and hooks_mcp.ts unconditionally fences an MCP tool result of any size, so a fenced payload over ~1 MB used to be ENOBUFS-killed and silently fail open to "{}", dropping the fence)', () => {
+  describe.each([
+    ['CLAUDECODE_HOOK_SCRIPT', CLAUDECODE_HOOK_SCRIPT],
+    ['CODEX_HOOK_SCRIPT', CODEX_HOOK_SCRIPT],
+  ])('%s', (_name, script) => {
+    it('relays a 1.5 MB hookSpecificOutput.additionalContext through the PATH-based shell fallback intact', () => {
+      const cwd = mkIsolated()
+      const bigContext = 'x'.repeat(1_500_000)
+      const payload = JSON.stringify({ hookSpecificOutput: { additionalContext: bigContext } })
+      const env = withFakeTokenGoatLarge(cwd, payload)
+      const stdout = runShim(script, 'post_tool_use', cwd, env)
+      const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } }
+      expect(parsed.hookSpecificOutput?.additionalContext?.length).toBe(bigContext.length)
+    })
   })
 })

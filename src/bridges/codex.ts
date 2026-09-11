@@ -34,7 +34,7 @@
  *
  * On any error the shim prints `{}` so the tool call proceeds unchanged.
  */
-import { SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Codex hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then strips _tg_* keys and injects hookEventName so the response satisfies Codex's strict (additionalProperties:false) schema.
@@ -75,6 +75,8 @@ function stripTg(value) {
 
 ${SHIM_TRY_IN_PROCESS}
 
+${SHIM_MAX_BUFFER_CONST}
+
 async function main() {
   const eventName = process.argv[2] || ''
   if (!VALID_HOOK_EVENTS.has(eventName)) {
@@ -111,6 +113,7 @@ ${SHIM_SPAWN_LADDER}
           shell: true,
           timeout: 3000,
           killSignal: 'SIGKILL',
+          maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })
     if (res.status !== 0 || !res.stdout) {
       process.stdout.write('{}')

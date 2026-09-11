@@ -81,6 +81,7 @@ function callHookViaSpawn(event, payload) {
           timeout: 3000,
           killSignal: "SIGKILL",
           windowsHide: true,
+          maxBuffer: 32 * 1024 * 1024,
         })
       : spawnSync("token-goat hook " + event, {
           input: JSON.stringify(payload),
@@ -89,6 +90,7 @@ function callHookViaSpawn(event, payload) {
           killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
+          maxBuffer: 32 * 1024 * 1024,
         });
     if (r.error) return null;
     const out = r.stdout ? r.stdout.trim() : "";
