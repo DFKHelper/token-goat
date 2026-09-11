@@ -165,8 +165,10 @@ function splitDeclaratorNames(tail: string): string[] {
 // before that keyword was added. The name may be dotted (`extension Array.Index`, `extension
 // Foo.Bar`) for nested-type extension targets.
 const TYPE_HEADER_RE = new RegExp(
-  '^(?:(?:public|private|fileprivate|internal|open|package|final|indirect|distributed)\\s+)*' +
+  '^(?:(?:public|private|fileprivate|internal|open|package|final|indirect|distributed|nonisolated)\\s+)*' +
   '(class|struct|enum|protocol|extension|actor)\\s+' +
+  // `class` is also a MEMBER modifier in Swift: `class func`, `class var`, `class let` and `class subscript` declare the overridable type-scoped counterparts of their `static` forms. Without this guard the type-header branch claimed `class func alpha()` as a type named `func`, which is worse than dropping it: it invented a symbol that does not exist, pushed a type frame for it that then mis-scoped everything after it, and suppressed the real method, since this branch returning a match skips the member branch entirely. The lookahead rejects only the BARE keywords: a type legitimately named with a backtick-quoted keyword (``class `func` {}``) begins with a backtick and is unaffected.
+  '(?!(?:func|var|let|subscript)\\b)' +
   `(${IDENT}(?:\\.${IDENT})*)`,
 )
 
