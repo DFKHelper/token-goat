@@ -32,7 +32,7 @@ import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
-import { embeddingsDepsAvailable } from './embeddings.js'
+import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { fingerprintFile, fingerprintContent } from './fingerprint.js'
@@ -369,6 +369,10 @@ export async function cmdIndex(
   }
   const blockedRoots = loadConfig().worker.blocked_roots
   const ixCfg = loadConfig().indexing
+  // files.embed_sha records WHICH CONTENT was embedded, never WHICH STACK embedded it, so the per-file freshness gate in the loop below cannot see a model or inference-runtime change on its own: it reads a bare sha as fresh and skips the file. ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision, but its only callers were upsertChunks and searchSemantic, both downstream of that gate -- so a whole-index run after an onnxruntime major.minor upgrade printed "Skipped N unchanged file(s)" and left every vector from the previous stack in place, which is exactly what the warning that reset prints tells the user to run this command to fix. It must run here rather than inside the loop: the reset clears each affected file's embed_sha, and by the time the loop has read a file's row into `entry` that clearing is already too late to be seen. Gated on the deps being usable because backendId() cannot name a runtime that did not load, and wiping the index on the strength of an unknowable identity would be worse than the staleness it is guarding against.
+  if ((loadConfig().indexing?.embeddings_enabled ?? true) && embeddingsDepsAvailable(getDb(dbPath))) {
+    ensureEmbeddingProvenance(getDb(dbPath))
+  }
   let indexed = 0
   let failed = 0
   let skipped = 0

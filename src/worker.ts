@@ -20,7 +20,7 @@ import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
-import { embeddingsDepsAvailable } from './embeddings.js'
+import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
 import { ensureDirSync, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
@@ -668,6 +668,10 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
       }
+      // Same reason as the identical call in cli.ts's cmdIndex: files.embed_sha encodes the content but not the embedding stack that produced the vectors, so the gate below reads a file embedded by a previous model or inference runtime as fresh and returns "nothing to do". ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision. It has to run before getFileEntry below, not beside the gate that consults the result: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so this costs one Set lookup per drained file after the first. embeddingsEnabled/depsAvailable are hoisted here from beside the gate for the same ordering reason; see their comments there.
+      const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+      const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
+      if (depsAvailable) ensureEmbeddingProvenance(getDb(dbPath))
       const entry = getFileEntry(absPath, dbPath)
       // Skip the syntactic reparse when content is byte-identical to what's already indexed
       // (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed.
@@ -683,9 +687,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         indexFileSync(absPath, dbPath)
       }
       // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts). If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha gate above would otherwise mask that forever: identical content would keep skipping the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check embed_sha against the current sha every time, even when the parse gate above skipped. While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged file -- but a bare-sha match must never satisfy the gate while disabled, or a file that was only ever marker-stamped (never actually embedded) would look "unchanged" the instant embeddings are re-enabled, permanently skipping its real first embed. Optional chaining/fallback here is a defensive test-mock safety net, not a real production path: loadConfig() always returns a fully-populated, schema-validated config object in production. Several existing tests in this file mock loadConfig() with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled (true), matching config.ts's own default, so this new gate check is a no-op for tests that never cared about embeddings.
-      const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
-      // depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable.
-      const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
+      // embeddingsEnabled and depsAvailable are computed above, before getFileEntry. depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable.
       const embedUnchanged =
         parseUnchanged &&
         isEmbedFresh(
