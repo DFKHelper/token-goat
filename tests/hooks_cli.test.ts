@@ -130,6 +130,17 @@ describe('normalizePayload', () => {
     expect(result['tool_input']).toEqual({ pattern: 'foo', path: '/tmp' })
   })
 
+  // FORMAT-DERIVED: 'google_web_search' is WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts (cited in the GEMINI_TOOL_NAME_MAP comment this test guards); the query key name is not independently verified against gemini-cli's own WebSearchTool schema in this repo, only inferred from the sibling Grok/Qwen search tools' schemas, which both carry 'query' verbatim.
+  it('remaps google_web_search to WebSearch, not WebFetch (WebFetch requires a url key a search call never sends, so routing it there left the hook permanently inert)', () => {
+    const payload: HookPayload = {
+      tool_name: 'google_web_search',
+      tool_input: { query: 'token goat' },
+    }
+    const result = normalizePayload(payload, 'gemini')
+    expect(result['tool_name']).toBe('WebSearch')
+    expect(result['tool_input']).toEqual({ query: 'token goat' })
+  })
+
   it('remaps Gemini functionCallId to toolUseId', () => {
     const payload: HookPayload = {
       tool_name: 'read_file',
