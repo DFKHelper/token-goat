@@ -32,6 +32,7 @@ import { readFileSync, statSync } from 'node:fs'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput, getToolName, getToolInput, getFilePath } from './hooks_common.js'
+import { vscodePathDeclined } from './vscode_path_gate.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import type { HookOutput } from './types.js'
@@ -112,6 +113,8 @@ export function preWriteRewriteHandler(event: HookEvent): HookOutput {
     if (getToolName(event) !== 'Write') return passOutput()
     const filePath = getFilePath(event)
     if (filePath === undefined) return passOutput()
+    // Before the stat below: on VS Code this runs ahead of the user's approval, see vscodePathDeclined.
+    if (vscodePathDeclined(event, filePath)) return passOutput()
     const newContent = getToolInput(event)['content']
     if (typeof newContent !== 'string') return passOutput()
 

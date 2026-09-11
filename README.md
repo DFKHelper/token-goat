@@ -365,9 +365,12 @@ token-goat handoff-resolve review-notes --full
 user-profile `mcp.json` by default (`%APPDATA%\Code\User\mcp.json` on
 Windows, `~/Library/Application Support/Code/User/mcp.json` on macOS,
 `~/.config/Code/User/mcp.json` on Linux) — add `-p`/`--project` for the
-project-local `.vscode/mcp.json` shown above instead. Either way it also adds
-a delimited block to `.github/copilot-instructions.md`, preserving unrelated
-JSON and user text. It fails clearly on malformed JSON, and refuses to
+project-local `.vscode/mcp.json` shown above instead. It also adds a delimited
+routing block, preserving unrelated JSON and user text: to
+`~/.copilot/instructions/token-goat.instructions.md` for the user install (a
+personal instructions file VS Code applies in every workspace, so the folder
+you run it from is left alone), or to `.github/copilot-instructions.md` with
+`-p`. It fails clearly on malformed JSON, and refuses to
 install into one scope if the other scope already has a token-goat-managed
 entry (registering it twice would duplicate its tool schemas in that
 workspace). It also installs agent hooks in `~/.copilot/hooks/` (or
