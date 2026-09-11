@@ -26,6 +26,14 @@ import {
   uninstallGemini,
 } from '../src/bridges/gemini_install.js'
 
+// Side-effect import: registers every hook handler, mirroring cli.ts's real cmdInstall path
+// (which now imports relay.js before calling any install* function -- see cmdInstall in
+// src/cli.ts) and tests/install_hook_matcher.test.ts's own documented pattern. gemini_install.ts
+// derives its per-event matcher gate from the live handler registry (registeredInternalTools,
+// backed by hook_registry.ts's toolMatcherFor) rather than a hand-maintained list; without this
+// import the registry is empty and every matcher assertion below would be vacuously wrong.
+import '../src/relay.js'
+
 interface GeminiHookEntry {
   type: string
   command: string
@@ -88,7 +96,9 @@ describe('installGemini', () => {
 
     const settings = readSettings()
 
-    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch all have a pre_tool_use handler; Write/Edit don't.
+    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch/Write all have a pre_tool_use handler
+    // (hooks_write.ts's preWriteRewriteHandler registers on 'Write' too, src/hooks_write.ts:162);
+    // Edit is the one Gemini-mapped internal tool with no pre_tool_use handler anywhere.
     const beforeMatchers = matchersFor(settings, 'BeforeTool')
     expect(beforeMatchers).toContain('^(run_shell_command)$')
     expect(beforeMatchers).toContain('^(read_file|read_many_files|list_directory)$')
@@ -96,6 +106,7 @@ describe('installGemini', () => {
     expect(beforeMatchers).toContain('^(web_fetch)$')
     expect(beforeMatchers).toContain('^(google_web_search)$')
     expect(beforeMatchers).toContain('^(glob)$')
+    expect(beforeMatchers).toContain('^(write_file)$')
     expect(process.argv[1]).toBeDefined()
     for (const command of commandsFor(settings, 'BeforeTool')) {
       expect(command).toContain(`"${process.execPath}"`)
@@ -104,7 +115,9 @@ describe('installGemini', () => {
       expect(command.endsWith('hook pre_tool_use')).toBe(true)
     }
 
-    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob/WebSearch have a post_tool_use handler; Grep doesn't.
+    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob/WebSearch/Grep all have a post_tool_use
+    // handler (hooks_grep.ts's postGrepHandler registers on 'Grep' too, src/hooks_grep.ts:230,
+    // and also does secret redaction on Grep output -- see redactSecrets there).
     const afterMatchers = matchersFor(settings, 'AfterTool')
     expect(afterMatchers).toContain('^(run_shell_command)$')
     expect(afterMatchers).toContain('^(read_file|read_many_files|list_directory)$')
@@ -113,7 +126,7 @@ describe('installGemini', () => {
     expect(afterMatchers).toContain('^(web_fetch)$')
     expect(afterMatchers).toContain('^(google_web_search)$')
     expect(afterMatchers).toContain('^(glob)$')
-    expect(afterMatchers.some((m) => m?.includes('grep_search'))).toBe(false)
+    expect(afterMatchers).toContain('^(grep_search|search_file_content)$')
     for (const command of commandsFor(settings, 'AfterTool')) {
       expect(command).toContain(`"${process.execPath}"`)
       expect(command.startsWith('node ')).toBe(false)

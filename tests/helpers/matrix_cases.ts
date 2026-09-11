@@ -1886,13 +1886,35 @@ export const cases: Record<string, () => void | Promise<void>> = {
 
     // The generated hook shim must actually be written and wired -- through the BUILT bundle, not source. It sat fully built and fully unit-tested but never written by any install path for months (the injected-seam trap CLAUDE.md calls out), which no source-level test caught.
     const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as {
-      hooks: Record<string, Array<{ hooks?: Array<{ command: string }> }>>
+      hooks: Record<string, Array<{ matcher?: string; hooks?: Array<{ command: string }> }>>
     }
     const preCommand = settings.hooks['PreToolUse']?.[0]?.hooks?.[0]?.command ?? ''
     expect(preCommand).toMatch(/token-goat-shim\.js/)
     const shimPath = preCommand.match(/"([^"]*token-goat-shim\.js)"/)?.[1]
     expect(shimPath, `no quoted shim path in wired command: ${preCommand}`).toBeDefined()
     expect(fs.existsSync(shimPath!)).toBe(true)
+
+    // The narrowed PreToolUse/PostToolUse matcher must cover every tool with a real handler,
+    // not just whichever hook modules cli.ts's OTHER commands happen to import for unrelated
+    // reasons. cmdInstall used to call installHooks() without first importing relay.ts (which
+    // side-effect-imports every hook handler module to populate the registry toolMatcherFor
+    // narrows against), so a real install narrowed PreToolUse down to only "^Read$|^Grep$" and
+    // PostToolUse down to only "^Read$" -- silently dropping Bash/Write/Edit/Glob/WebFetch/
+    // WebSearch/Agent/Skill hook coverage from every fresh install and from re-narrowing any
+    // existing one. HAND-DERIVED from real `registerHook('pre_tool_use'|'post_tool_use', ...,
+    // { toolName: ... })` call sites read directly in src/hooks_bash.ts, hooks_write.ts,
+    // hooks_glob.ts, hooks_fetch.ts, hooks_websearch.ts, hooks_skill.ts, hooks_agent_spawn.ts,
+    // hooks_edit.ts, hooks_bashoutput.ts, hooks_taskoutput.ts, hooks_exitplanmode.ts --
+    // independent of hook_registry.ts's own toolMatcherFor implementation, since this only
+    // string-matches the JSON the real built bundle wrote.
+    const preMatcher = settings.hooks['PreToolUse']?.[0]?.matcher ?? ''
+    for (const name of ['Bash', 'Write', 'Glob', 'WebFetch', 'WebSearch', 'Skill', 'Agent']) {
+      expect(preMatcher, `PreToolUse matcher missing ^${name}$: ${preMatcher}`).toContain(`^${name}$`)
+    }
+    const postMatcher = settings.hooks['PostToolUse']?.[0]?.matcher ?? ''
+    for (const name of ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'WebFetch', 'WebSearch', 'Skill', 'BashOutput', 'TaskOutput', 'ExitPlanMode', 'Agent']) {
+      expect(postMatcher, `PostToolUse matcher missing ^${name}$: ${postMatcher}`).toContain(`^${name}$`)
+    }
   },
   'mcp-status': () => {
     // Backs the VS Code extension's ensureDecoderSetup check -- must run through the built

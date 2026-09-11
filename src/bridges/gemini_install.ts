@@ -44,14 +44,22 @@
  * Event -> internal-tool coverage is derived from {@link GEMINI_TOOL_NAME_MAP}
  * (`../hooks_cli.ts`, exported so both the runtime payload normalizer and this
  * installer share one source of truth) grouped by which internal tool actually
- * has a registered `pre_tool_use`/`post_tool_use` handler -- see
- * {@link GEMINI_PRE_TOOLS}/{@link GEMINI_POST_TOOLS} below for the exact
- * evidence (registerHook call sites in hooks_bash.ts/hooks_read.ts/hooks_edit.ts/
- * hooks_fetch.ts/hooks_glob.ts). Gemini's `glob` tool name maps to token-goat's
- * `Glob` canonical tool, which now has registered pre/post handlers
- * (hooks_glob.ts, added 2026-07-18, after this module's original claim that
- * Glob had no handler at all was written and had gone stale) -- both sets
- * below include it so Gemini's real `glob` calls actually reach them.
+ * has a registered `pre_tool_use`/`post_tool_use` handler -- queried live from
+ * {@link toolMatcherFor} (`../hook_registry.ts`) rather than a hand-maintained
+ * list. A hand-maintained list is exactly what went stale twice here already:
+ * Gemini's `glob` tool name mapped to `Glob`, which gained pre/post handlers
+ * in hooks_glob.ts on 2026-07-18, seven weeks after the original hardcoded set
+ * was written and silently missed the addition; a hardcoded set also once
+ * excluded `WebSearch` entirely, forcing google_web_search through the
+ * unrelated WebFetch handler as a workaround (see GEMINI_TOOL_NAME_MAP's
+ * `google_web_search` entry in `../hooks_cli.ts`) since that was the only
+ * web-ish name the old set allowed. Deriving from the live registry the same
+ * way `../install.ts` already narrows Claude Code's own matcher makes the next
+ * missed handler mechanically impossible instead of merely tested for -- see
+ * `registeredInternalTools` below. This depends on every hook handler module
+ * already being imported (side effect of `../relay.ts`) before this module's
+ * install/uninstall functions run; `cmdInstall` in `../cli.ts` is responsible
+ * for that, exactly as it is for `../install.ts`'s own narrowing.
  *
  * A corrupt-but-recoverable `settings.json` (exists but fails to parse) must
  * never be silently clobbered -- {@link installGemini} throws
@@ -65,7 +73,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
+import { toolMatcherFor } from '../hook_registry.js'
 import { anchoredMarkerPattern } from '../install.js'
+import type { HookEventName } from '../types.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 import { groupHasTokenGoat } from './matcher_group.js'
 
@@ -88,31 +98,18 @@ const GEMINI_EVENT_ARG: Record<GeminiHookEvent, string> = {
 }
 
 /**
- * Internal tools with a registered `pre_tool_use` handler (evidence:
- * `registerHook('pre_tool_use', ...)` call sites): Bash (hooks_bash.ts
- * preBashHandler), Read (hooks_read.ts preReadHandler + image_shrink.ts
- * preReadImageHandler), Grep (hooks_read.ts preReadHandler, registered
- * separately for the 'Grep' tool name), WebFetch (hooks_fetch.ts
- * preFetchHandler), Glob (hooks_glob.ts preGlobHandler, added 2026-07-18
- * after this set was first written), WebSearch (hooks_websearch.ts
- * preWebSearchDedupHandler, also missing from this set until it was found
- * that google_web_search had been mapped to WebFetch instead of WebSearch
- * as a workaround for that gap: WebFetch's handler requires a `url` key,
- * which a search tool never sends, so the workaround wired the hook but
- * left it permanently inert). Write/Edit have no pre-hook.
+ * Internal tool names (`Bash`, `Read`, ...) with at least one plain `toolName`-filtered handler registered for `eventName`, read live from {@link toolMatcherFor}'s anchored `^Name$` alternation rather than a hand-maintained list -- see this file's header docblock for the two prior staleness incidents (Glob, WebSearch) that motivated dropping the hand-maintained sets entirely, and a third (Write missing from pre_tool_use, Grep missing from post_tool_use) found the same way once this function replaced them: both sets' own comments claimed "Write/Edit have no pre-hook" and "Grep has no post-hook registered", which were true when written and false by the time hooks_write.ts and hooks_grep.ts's registerHook calls landed. `toolMatcherFor` also emits non-name fragments for pattern-based handlers (e.g. `^mcp__` for the MCP dedup/browser-image/screenshot handlers), which the `^[A-Za-z]+$`-anchored extraction below correctly excludes: Gemini's own tool-name map has no MCP-shaped entries to gate in the first place.
  */
-const GEMINI_PRE_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Grep', 'WebFetch', 'Glob', 'WebSearch'])
-
-/**
- * Internal tools with a registered `post_tool_use` handler: Bash
- * (hooks_bash.ts postBashHandler), Read (hooks_read.ts postReadHandler),
- * Write/Edit (hooks_edit.ts postEditHandler), WebFetch (hooks_fetch.ts
- * postFetchHandler), Glob (hooks_glob.ts postGlobHandler, added 2026-07-18
- * after this set was first written), WebSearch (hooks_websearch.ts
- * postWebSearchHandler, same missing-then-worked-around history as above).
- * Grep has no post-hook registered.
- */
-const GEMINI_POST_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Write', 'Edit', 'WebFetch', 'Glob', 'WebSearch'])
+function registeredInternalTools(eventName: HookEventName): ReadonlySet<string> {
+  const matcher = toolMatcherFor(eventName)
+  const names = new Set<string>()
+  if (matcher === null) return names
+  for (const part of matcher.split('|')) {
+    const match = /^\^([A-Za-z]+)\$$/.exec(part)
+    if (match?.[1] !== undefined) names.add(match[1])
+  }
+  return names
+}
 
 /** One `type: "command"` hook entry as Gemini's settings.json stores it. */
 interface GeminiHookEntry {
@@ -287,12 +284,12 @@ function geminiNamesByInternalTool(): Map<string, string[]> {
  * (`undefined`) that fires on every occurrence, per Gemini's own docs.
  * `BeforeTool`/`AfterTool` get one regex-alternation matcher per internal tool
  * that actually has a registered handler for that (event, tool) pair (see
- * {@link GEMINI_PRE_TOOLS}/{@link GEMINI_POST_TOOLS}), e.g.
- * `^(read_file|read_many_files|list_directory)$` for Read.
+ * {@link registeredInternalTools}), e.g. `^(read_file|read_many_files|list_directory)$`
+ * for Read.
  */
 function desiredMatchersFor(event: GeminiHookEvent): Array<string | undefined> {
   if (event === 'PreCompress') return [undefined]
-  const toolSet = event === 'BeforeTool' ? GEMINI_PRE_TOOLS : GEMINI_POST_TOOLS
+  const toolSet = registeredInternalTools(GEMINI_EVENT_ARG[event] as HookEventName)
   const matchers: string[] = []
   for (const [internalTool, names] of geminiNamesByInternalTool()) {
     if (!toolSet.has(internalTool)) continue
