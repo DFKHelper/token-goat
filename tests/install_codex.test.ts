@@ -503,4 +503,61 @@ describe('isCodexInstalled / uninstallCodex', () => {
 
     expect(isCodexInstalled()).toBe(true)
   })
+
+  // Regression: a token-goat entry for a global (matcher-less) event that sits inside a group carrying a `matcher` key was written and trusted by installCodex (both write sides scan every group blind to `matcher`) but invisible to isCodexInstalled, which demanded a matcher-less group, so it reported not installed forever and install never repaired it. The fixture shape is HAND-DERIVED: a `matcher` key on a `[[hooks.PreCompact]]` group, which Codex CLI's hooks TOML schema allows on any hooks group, constructed here independently of token-goat's own scan code. The assertion is a round trip between the two sides rather than a comparison against any value read off the implementation.
+  it('isCodexInstalled reports true for a global-event entry that install accepted inside a group carrying a matcher', () => {
+    const configP = codexConfigPath()
+    const compactCmd = codexHookCommandFor(codexHookScriptPath(), 'pre_compact')
+
+    fs.mkdirSync(path.dirname(configP), { recursive: true })
+    fs.writeFileSync(
+      configP,
+      stringify({
+        hooks: { PreCompact: [{ matcher: 'some-hand-edited-matcher', hooks: [{ type: 'command', command: compactCmd }] }] },
+      } as unknown as Record<string, unknown>),
+    )
+
+    installCodex()
+
+    const config = readConfig()
+    const compactGroups = config.hooks?.['PreCompact'] ?? []
+    // Install treated the matcher-carrying group as already holding our entry, so it appended no second group: the read side has to agree with that or nothing ever repairs the config.
+    expect(compactGroups).toHaveLength(1)
+    expect(isCodexInstalled()).toBe(true)
+  })
+
+  // Regression: the stale-matcher migration recorded each stripped entry's state key from the live array index while the same loop spliced groups out of that array, so with two fully stripped stale groups the second one's key was recorded one slot short and its trust hash survived as an orphan. The two stale groups sit after the current ones so the later write loop cannot mask the orphan by overwriting that key. The `${configPath}:${eventArg}:${groupIndex}:${hookIndex}` state-key format is FORMAT-DERIVED, read off 'git show 2be706dd^:src/bridges/codex_install.ts' (same source as the migration test above); the hashes come from computeCodexHookHash, matching the sibling fixture at the top of this describe block.
+  it('purges the state key of every stale-matcher group it strips, including ones after the first removal shifted the array', () => {
+    const configP = codexConfigPath()
+    const scriptPath = codexHookScriptPath()
+    const preCmd = codexHookCommandFor(scriptPath, 'pre_tool_use')
+    const staleHashA = computeCodexHookHash('pre_tool_use', preCmd, 'retired-matcher-a')
+    const staleHashB = computeCodexHookHash('pre_tool_use', preCmd, 'retired-matcher-b')
+
+    const oldConfig = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'view_image|shell|bash', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'apply_patch', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'web_search', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'retired-matcher-a', hooks: [{ type: 'command', command: preCmd }] },
+          { matcher: 'retired-matcher-b', hooks: [{ type: 'command', command: preCmd }] },
+        ],
+        state: {
+          [`${configP}:pre_tool_use:3:0`]: { trusted_hash: staleHashA },
+          [`${configP}:pre_tool_use:4:0`]: { trusted_hash: staleHashB },
+        },
+      },
+    }
+    fs.mkdirSync(path.dirname(configP), { recursive: true })
+    fs.writeFileSync(configP, stringify(oldConfig as unknown as Record<string, unknown>))
+
+    installCodex()
+
+    const config = readConfig()
+    expect((config.hooks?.['PreToolUse'] ?? []).some((g) => g.matcher === 'retired-matcher-b')).toBe(false)
+    const state = (config.hooks?.['state'] as unknown as Record<string, { trusted_hash?: string }>) ?? {}
+    expect(Object.values(state).some((v) => v.trusted_hash === staleHashA)).toBe(false)
+    expect(Object.values(state).some((v) => v.trusted_hash === staleHashB)).toBe(false)
+  })
 })
