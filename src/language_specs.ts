@@ -56,7 +56,7 @@ export const LANGUAGE_SPECS = [
   // Rake task files, Gemfile, Rakefile and the other extensionless Ruby DSL files are plain Ruby syntax.
   { id: 'ruby', extraction: 'tree-sitter', extensions: ['.rb', '.ruby', '.rake'], basenames: ['gemfile', 'rakefile', 'vagrantfile', 'guardfile', 'podfile', 'capfile', 'fastfile', 'brewfile'], ...CODE, fence: 'ruby' },
   { id: 'java', extraction: 'tree-sitter', extensions: ['.java'], ...CODE, fence: 'java' },
-  // `.h` is always C: an Objective-C or C++ header parses with the C grammar until a content sniff exists.
+  // `.h` is C unless it declares an Objective-C `@interface` or `@protocol` (refineLanguageByContent); a C++ header parses with the C grammar.
   { id: 'c', extraction: 'tree-sitter', extensions: ['.c', '.h'], label: 'C', ...CODE, fence: 'c' },
   { id: 'cpp', extraction: 'tree-sitter', extensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hxx'], label: 'C++', ...CODE, fence: 'cpp' },
   // zsh, ksh and bats scripts share the POSIX `name() {` and `function name {` function forms the bash adapter reads.
@@ -109,6 +109,19 @@ export const LANGUAGE_SPECS = [
   // `.rpg` stays unmapped: RPG II and RPG III sources use it, and their fixed layout predates the ILE RPG forms this adapter reads.
   { id: 'rpg', extraction: 'regex', extensions: ['.rpgle', '.sqlrpgle'], label: 'RPG', ...CODE, fence: 'rpgle' },
   { id: 'jcl', extraction: 'regex', extensions: ['.jcl'], label: 'JCL', ...CODE, fence: 'jcl' },
+  // `.mm` is always Objective-C++. A `.m` (MATLAB uses it too) is Objective-C only on an `#import`, `@interface`, `@implementation` or `@protocol` line, and a `.h` only on `@interface` or `@protocol`: refineLanguageByContent in parser_types.ts decides.
+  { id: 'objc', extraction: 'regex', extensions: ['.mm'], label: 'Objective-C', ...CODE, fence: 'objectivec' },
+  // Gradle build scripts and Jenkinsfiles are Groovy.
+  { id: 'groovy', extraction: 'regex', extensions: ['.groovy', '.gvy', '.gradle'], basenames: ['jenkinsfile'], label: 'Groovy', ...CODE, fence: 'groovy', basenameImportsExtension: '.groovy' },
+  // A Prolog `.pl` stays unknown (refineLanguageByContent), and a `.t` is Perl only on a Perl marker line.
+  { id: 'perl', extraction: 'regex', extensions: ['.pl', '.pm'], label: 'Perl', ...CODE, fence: 'perl' },
+  { id: 'solidity', extraction: 'regex', extensions: ['.sol'], label: 'Solidity', ...CODE, fence: 'solidity' },
+  { id: 'thrift', extraction: 'regex', extensions: ['.thrift'], label: 'Thrift', ...DATA, symbolBearing: true, fence: 'thrift' },
+  { id: 'glsl', extraction: 'regex', extensions: ['.glsl', '.vert', '.frag', '.comp', '.geom', '.tesc', '.tese'], label: 'GLSL', ...CODE, fence: 'glsl' },
+  // `.fx` stays unmapped: other languages use it too.
+  { id: 'hlsl', extraction: 'regex', extensions: ['.hlsl', '.hlsli'], label: 'HLSL', ...CODE, fence: 'hlsl' },
+  { id: 'wgsl', extraction: 'regex', extensions: ['.wgsl'], label: 'WGSL', ...CODE, fence: 'wgsl' },
+  { id: 'metal', extraction: 'regex', extensions: ['.metal'], label: 'Metal', ...CODE, fence: 'metal' },
   // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },

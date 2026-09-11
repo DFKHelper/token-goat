@@ -101,6 +101,15 @@ const CASES: readonly AdapterCase[] = [
   { language: 'pli', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.pli'), targetBasename: 'Sample.pli' },
   { language: 'rpg', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.rpgle'), targetBasename: 'Sample.rpgle' },
   { language: 'jcl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.jcl'), targetBasename: 'Sample.jcl' },
+  { language: 'objc', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.m'), targetBasename: 'Sample.m' },
+  { language: 'groovy', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.groovy'), targetBasename: 'Sample.groovy' },
+  { language: 'perl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.pm'), targetBasename: 'Sample.pm' },
+  { language: 'solidity', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.sol'), targetBasename: 'Sample.sol' },
+  { language: 'thrift', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.thrift'), targetBasename: 'Sample.thrift' },
+  { language: 'glsl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.frag'), targetBasename: 'Sample.frag' },
+  { language: 'hlsl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.hlsl'), targetBasename: 'Sample.hlsl' },
+  { language: 'wgsl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.wgsl'), targetBasename: 'Sample.wgsl' },
+  { language: 'metal', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.metal'), targetBasename: 'Sample.metal' },
   // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
   { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
   {

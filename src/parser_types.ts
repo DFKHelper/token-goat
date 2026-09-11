@@ -14,6 +14,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { isAblSource } from './languages/abl.js'
+import { isObjcHeader, isObjcSource } from './languages/objc.js'
+import { isPerlSource, isPrologSource } from './languages/perl.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
@@ -90,28 +92,43 @@ export function isVb6ClassModule(content: string): boolean {
  * The language of a file once its content is known. {@link detectLanguage} is path-only, and `.cls` is an Apex class, a VB6 class module or an OpenEdge ABL class, while `.p` and `.w` are ABL only on an ABL marker (Pascal and CWEB use them too), so the indexer's two entry points (indexFileSync, parseFile) call this after reading the file and store the refined language. Every other language passes through unchanged. A consumer that prints the language or picks a reader by it (section_reader, the ref-blindness notices, the `map` language tally) refines too, through this or {@link detectLanguageOfFile}; the path-only ones left (the read/grep/bash hooks, the fold gates) treat `apex` and `vb` identically, since neither has a tree-sitter grammar or a reference index.
  */
 export function refineLanguageByContent(filePath: string, language: Language, content: string): Language {
-  const ext = path.extname(filePath).toLowerCase()
-  if (language === 'apex' && ext === '.cls') {
-    if (isVb6ClassModule(content)) return 'vb'
-    if (isAblSource(content)) return 'abl'
-    return language
-  }
-  // A `.p` or `.w` is ABL only on an ABL marker; a Pascal program or a CWEB file stays unknown, as it was before ABL was indexed.
-  if (language === 'unknown' && ABL_SNIFFED_EXTENSIONS.has(ext) && isAblSource(content)) return 'abl'
-  return language
+  const sniff = CONTENT_SNIFFS.get(path.extname(filePath).toLowerCase())
+  if (sniff === undefined || sniff.from !== language) return language
+  return sniff.refine(content) ?? language
 }
 
-/** Extensions {@link detectLanguage} leaves unknown that are OpenEdge ABL when {@link isAblSource} says so. */
-const ABL_SNIFFED_EXTENSIONS: ReadonlySet<string> = new Set(['.p', '.w'])
+/** How many leading bytes {@link detectLanguageOfFile} reads: comfortably more than the {@link VB6_HEADER_SCAN_LINES} lines the VB6 sniff looks at. */
+const LANGUAGE_SNIFF_BYTES = 8192
+
+/** The first {@link LANGUAGE_SNIFF_BYTES} bytes of `content`, so a sniff on full content sees what {@link detectLanguageOfFile} sees from the file's head. */
+function sniffHead(content: string): string {
+  const head = content.slice(0, LANGUAGE_SNIFF_BYTES)
+  return Buffer.byteLength(head, 'utf8') <= LANGUAGE_SNIFF_BYTES ? head : Buffer.from(head, 'utf8').subarray(0, LANGUAGE_SNIFF_BYTES).toString('utf8')
+}
+
+const ablOrUnknown = (c: string): Language | undefined => (isAblSource(c) ? 'abl' : undefined)
+
+/**
+ * Each extension whose path language a content check can change: the path language the check applies to, and what it returns
+ * instead (undefined keeps the path language). A `.cls` is VB6, then ABL, else Apex. A `.p` or `.w` is ABL only on an ABL marker;
+ * a Pascal or CWEB file stays unknown, as before ABL was indexed. A `.m` is Objective-C only on an Objective-C marker, so a MATLAB
+ * file stays unknown; a `.h` is Objective-C only on `@interface` or `@protocol`, so a C header is unchanged. A `.pl` that reads as
+ * Prolog is left unknown, and a `.t` is Perl only on a Perl marker.
+ */
+const CONTENT_SNIFFS: ReadonlyMap<string, { readonly from: Language; readonly refine: (content: string) => Language | undefined }> = new Map([
+  ['.cls', { from: 'apex', refine: (c: string) => (isVb6ClassModule(c) ? 'vb' : ablOrUnknown(c)) }],
+  ['.p', { from: 'unknown', refine: ablOrUnknown }],
+  ['.w', { from: 'unknown', refine: ablOrUnknown }],
+  ['.m', { from: 'unknown', refine: (c: string) => (isObjcSource(sniffHead(c)) ? 'objc' : undefined) }],
+  ['.h', { from: 'c', refine: (c: string) => (isObjcHeader(sniffHead(c)) ? 'objc' : undefined) }],
+  ['.pl', { from: 'perl', refine: (c: string) => (isPrologSource(sniffHead(c)) ? 'unknown' : undefined) }],
+  ['.t', { from: 'unknown', refine: (c: string) => (isPerlSource(sniffHead(c)) ? 'perl' : undefined) }],
+] as const)
 
 /** True when {@link refineLanguageByContent} could change the path language of `filePath`, so its head is worth reading. */
 function needsContentSniff(filePath: string, language: Language): boolean {
-  const ext = path.extname(filePath).toLowerCase()
-  return (language === 'apex' && ext === '.cls') || (language === 'unknown' && ABL_SNIFFED_EXTENSIONS.has(ext))
+  return CONTENT_SNIFFS.get(path.extname(filePath).toLowerCase())?.from === language
 }
-
-/** How many leading bytes {@link detectLanguageOfFile} reads from a `.cls`: comfortably more than the {@link VB6_HEADER_SCAN_LINES} lines the sniff looks at. */
-const LANGUAGE_SNIFF_BYTES = 8192
 
 /** {@link detectLanguage} for a file that exists on disk, for a consumer that has no content in hand but reports or branches on the language: a `.cls` has its first few KB read so a VB6 or ABL class is not reported as Apex, and a `.p` or `.w` so an ABL source is not reported as unknown; every other path reads nothing. */
 export function detectLanguageOfFile(filePath: string): Language {

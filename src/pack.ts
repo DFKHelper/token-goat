@@ -203,8 +203,12 @@ const CSTYLE_LINE_RE = /[ \t]*\/\/[^\r\n]*/gm
 const SQL_LINE_RE = /[ \t]*--[^\r\n]*/gm
 const HASH_LINE_RE = /[ \t]*#(?!!)[^\r\n]*/gm
 
-const CSTYLE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.kt', '.swift', '.dart'])
-const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua'])
+// `.m` (MATLAB or Objective-C), `.pl` (Perl or Prolog) and `.t` are left out: this is path-only, and the other language's comments differ.
+const CSTYLE_EXTS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.kt', '.swift', '.dart', '.mm', '.groovy', '.gvy',
+  '.gradle', '.sol', '.glsl', '.vert', '.frag', '.comp', '.geom', '.tesc', '.tese', '.hlsl', '.hlsli', '.wgsl', '.metal',
+])
+const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua', '.pm'])
 
 /**
  * Which quote character (if any) is currently open, tracked as a single mutually-exclusive state
