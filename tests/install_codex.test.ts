@@ -92,7 +92,7 @@ describe('codexHookCommandFor', () => {
 describe('computeCodexHookHash', () => {
   it('computes the canonical sha256 hash matching Codex CLIs [hooks.state] format for matcher-scoped hooks', () => {
     const cmd = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\.codex\\hooks\\token-goat-shim.js" pre_tool_use "C:\\Users\\user\\dist\\token-goat.mjs"'
-    const hash = computeCodexHookHash('pre_tool_use', cmd, 'view_image|Bash')
+    const hash = computeCodexHookHash('pre_tool_use', cmd, 'view_image|shell|bash')
     expect(hash.startsWith('sha256:')).toBe(true)
     expect(hash).toHaveLength(71) // 'sha256:' (7) + 64 hex chars
   })
@@ -135,7 +135,7 @@ describe('installCodex', () => {
     const config = readConfig()
     for (const event of ['PreToolUse', 'PostToolUse']) {
       const matchers = (config.hooks?.[event] ?? []).map((g) => g.matcher)
-      expect(matchers).toContain('view_image|Bash')
+      expect(matchers).toContain('view_image|shell|bash')
       expect(matchers).toContain('apply_patch')
       expect(matchers).toContain('web_search')
       for (const command of commandsFor(config, event)) {
@@ -159,6 +159,19 @@ describe('installCodex', () => {
     }
 
     expect(isCodexInstalled()).toBe(true)
+  })
+
+  // Regression: CODEX_MATCHERS wrote 'view_image|Bash' into config.toml, but Codex matches a matcher string against its own native tool names ('apply_patch' and 'web_search' in the same list are already native names), and this same install's own AGENTS.md text below (FORMAT-DERIVED: read off codex_install.ts's buildAgentsBlock, not an independently captured Codex payload) names Codex's native shell tool 'shell', not 'Bash', so the old matcher's shell alternative never matched anything a real Codex install would send and every Codex shell call fell through with no hook coverage at all, independent of whatever tool-name remap hooks_cli.ts's CODEX_TOOL_NAME_MAP applied downstream.
+  it('the view_image matcher alternation names a native shell tool name that matches the AGENTS.md guidance text written by the same install', () => {
+    const result = installCodex()
+    const config = readConfig()
+    const agents = fs.readFileSync(result.agentsPath, 'utf8')
+    const nativeShellName = agents.match(/Codex's native `(\w+)`, `apply_patch`, and `view_image` tools/)?.[1]
+    expect(nativeShellName).toBeTruthy()
+    const viewImageMatcher = (config.hooks?.['PreToolUse'] ?? []).map((g) => g.matcher).find((m) => m?.startsWith('view_image'))
+    expect(viewImageMatcher).toBeTruthy()
+    const alternatives = (viewImageMatcher as string).split('|')
+    expect(alternatives).toContain(nativeShellName)
   })
 
   // Regression coverage for the parity-matrix gap found via feature-queue #307's
@@ -198,7 +211,7 @@ describe('installCodex', () => {
       const matchers = (config.hooks?.[event] ?? []).map((g) => g.matcher)
       expect(matchers.filter((m) => m === 'apply_patch')).toHaveLength(1)
       expect(matchers.filter((m) => m === 'web_search')).toHaveLength(1)
-      expect(matchers.filter((m) => m === 'view_image|Bash')).toHaveLength(1)
+      expect(matchers.filter((m) => m === 'view_image|shell|bash')).toHaveLength(1)
     }
     for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
       expect(commandsFor(config, event)).toHaveLength(1)
@@ -305,7 +318,7 @@ describe('installCodex', () => {
     // left behind.
     const staleConfig = [
       '[[hooks.PreToolUse]]',
-      'matcher = "view_image|Bash"',
+      'matcher = "view_image|shell|bash"',
       '',
       '[[hooks.PreToolUse.hooks]]',
       'type = "command"',

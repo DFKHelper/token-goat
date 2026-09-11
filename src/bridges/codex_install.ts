@@ -65,12 +65,9 @@ const CODEX_COMMAND_MARKER = 'token-goat-shim'
 
 /**
  * The three Codex-specific tool-name matchers token-goat wires (README
- * "What gets installed?" -> "With `--codex`"). `view_image|Bash` covers image
- * reads and shell execution together (mirrors Claude Code's combined
- * Read/Grep/Bash pre-read handling); `apply_patch` covers file edits; `web_search`
- * covers Codex's web-fetch equivalent.
+ * "What gets installed?" -> "With `--codex`"). Codex's matcher string is matched against its own native tool names, not token-goat's internal ones (`apply_patch` and `web_search` below are Codex's native names, confirmed by codex_install.ts's own buildAgentsBlock fallbackToolClause text "Codex's native `shell`, `apply_patch`, and `view_image` tools"), so `view_image|shell` covers image reads and shell execution together (mirrors Claude Code's combined Read/Grep/Bash pre-read handling), with `bash` kept as a fallback alternative in case some Codex version or fork still names its shell tool that; `apply_patch` covers file edits; `web_search` covers Codex's web-fetch equivalent.
  */
-const CODEX_MATCHERS = ['view_image|Bash', 'apply_patch', 'web_search'] as const
+const CODEX_MATCHERS = ['view_image|shell|bash', 'apply_patch', 'web_search'] as const
 
 /** Event keys wired for each matcher: pre- and post- tool-call interception. */
 const CODEX_HOOK_EVENTS = ['PreToolUse', 'PostToolUse'] as const
