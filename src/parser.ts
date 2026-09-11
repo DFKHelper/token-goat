@@ -2948,6 +2948,26 @@ export function unavailableEmbedSha(sha: string): string {
 }
 
 /**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} skipped a file only
+ * because it is larger than `indexing.large_file_symbol_only_kb`. Third instance of the same shape
+ * as {@link DISABLED_EMBED_SHA_PREFIX} and {@link UNAVAILABLE_EMBED_SHA_PREFIX}, and it clears on a
+ * third condition: the threshold itself, which is a user-tunable config value rather than a
+ * property of the content. A bare sha here reads as "really embedded, nothing left to do", so
+ * raising the threshold left every previously-skipped file looking permanently fresh and the
+ * background worker never re-embedded any of them -- `semantic` stayed blind to that content until
+ * something edited it, while `symbol` and `read` worked normally. `token-goat doctor`'s embedding
+ * coverage remediation tells users to raise exactly this value, so the case is reached by following
+ * the product's own advice. The threshold in force at stamp time is encoded in the marker so a
+ * later change to it no longer matches and the file is re-examined; see {@link isEmbedFresh}.
+ */
+export const OVERSIZE_EMBED_SHA_PREFIX = 'oversize:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when the file is over `symbolOnlyKb`. */
+export function oversizeEmbedSha(sha: string, symbolOnlyKb: number): string {
+  return `${OVERSIZE_EMBED_SHA_PREFIX}${symbolOnlyKb}:${sha}`
+}
+
+/**
  * Return `absPath` with its final segment spelled the way the filesystem actually spells it.
  *
  * The companion of `indexedPathSpellingIsStale`. That guard notices when a stored row's spelling
@@ -3095,17 +3115,26 @@ export function indexedPathSpellingIsStale(storedPath: string, absPath: string):
  *    so an unchanged file is not re-entered on every worker drain while deps stay missing.
  *  - enabled + deps available: an `unavailable:` (or `disabled:`) marker is NOT fresh, forcing the
  *    real first embed now that it can finally succeed.
+ *  - enabled + an `oversize:` marker: fresh only while `symbolOnlyKb` still matches the threshold
+ *    the marker was stamped under, so raising `indexing.large_file_symbol_only_kb` re-examines the
+ *    file instead of leaving it permanently skipped. See {@link OVERSIZE_EMBED_SHA_PREFIX}.
+ *
+ * `symbolOnlyKb` is the caller's current `indexing.large_file_symbol_only_kb`. Pass 0 when no
+ * config is in hand: config validation floors that key at 1, so 0 matches no stamped marker and the
+ * file is re-examined rather than assumed current, which is the safe direction.
  */
 export function isEmbedFresh(
   storedEmbedSha: string | undefined,
   sha: string,
   embeddingsEnabled: boolean,
   depsAvailable: boolean,
+  symbolOnlyKb: number,
 ): boolean {
   if (storedEmbedSha === undefined) return false
   if (!embeddingsEnabled) return storedEmbedSha === disabledEmbedSha(sha)
   if (storedEmbedSha === sha) return true
   if (!depsAvailable && storedEmbedSha === unavailableEmbedSha(sha)) return true
+  if (storedEmbedSha === oversizeEmbedSha(sha, symbolOnlyKb)) return true
   return false
 }
 
@@ -3157,12 +3186,10 @@ export async function indexFileEmbeddings(
       return
     }
     if (extracted.length > ixCfg.large_file_symbol_only_kb * 1024) {
-      // Reuse the same large-file threshold as the generic content-length check below --
-      // extracted document text is comparatively expensive to embed for comparatively little
-      // retrieval value once it's this large, not a case that needs its own config knob.
+      // Reuse the same large-file threshold as the generic content-length check below -- extracted document text is comparatively expensive to embed for comparatively little retrieval value once it's this large, not a case that needs its own config knob. Stamped with the threshold-bearing oversize marker, not a bare sha, for the reason given on OVERSIZE_EMBED_SHA_PREFIX: this skip is conditional on a user-tunable value, so it is not terminal the way the extraction-failure case above is.
       const db = getDb(dbPath)
       deleteFileEmbeddings(db, filePath)
-      stampEmbedSha(db, filePath, sha, (s) => s)
+      stampEmbedSha(db, filePath, sha, (s) => oversizeEmbedSha(s, ixCfg.large_file_symbol_only_kb))
       return
     }
     try {
@@ -3199,10 +3226,10 @@ export async function indexFileEmbeddings(
     content = virtual.content
   }
   if (content.length > ixCfg.large_file_symbol_only_kb * 1024) {
-    // Between the symbol-only and full-skip thresholds: syntactic symbols/refs are already indexed by indexFileSync (only large_file_skip_kb gates that), but embedding a moderately-large file is comparatively expensive for comparatively little retrieval value -- deliberately never embed it, mirroring the profile-meta.xml / salesforce_metadata terminal-skip pattern below.
+    // Between the symbol-only and full-skip thresholds: syntactic symbols/refs are already indexed by indexFileSync (only large_file_skip_kb gates that), but embedding a moderately-large file is comparatively expensive for comparatively little retrieval value -- skip embedding it. Unlike the profile-meta.xml / salesforce_metadata skips below, this one is conditional on a user-tunable config value rather than on the content, so it is stamped with the threshold-bearing oversize marker instead of a bare sha: see OVERSIZE_EMBED_SHA_PREFIX for what a bare sha cost here.
     const db = getDb(dbPath)
     deleteFileEmbeddings(db, filePath)
-    stampEmbedSha(db, filePath, sha, (s) => s)
+    stampEmbedSha(db, filePath, sha, (s) => oversizeEmbedSha(s, ixCfg.large_file_symbol_only_kb))
     return
   }
   if (detectLanguage(filePath) === 'salesforce_metadata' && content.length > 512 * 1024) {

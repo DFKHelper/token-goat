@@ -38,6 +38,7 @@ import { querySymbols, getFileEntry } from '../src/index_reader.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { closeAllDbs } from '../src/db.js'
 import * as parserModule from '../src/parser.js'
+const { oversizeEmbedSha } = parserModule
 
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -483,16 +484,18 @@ describe('indexFileSync own skip-eligible branch also removes orphaned embedding
 // real implementation -- the same seam tests/cmdindex_unchanged_skip.test.ts already uses for
 // this exact kind of gate regression.
 describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', () => {
-  it('stamps a terminal (bare-sha) embed_sha for a symbol-only-tier file so a repeat cmdIndex run does not re-enter indexFileEmbeddings', async () => {
+  it('stamps a threshold-bearing embed_sha for a symbol-only-tier file so a repeat cmdIndex run does not re-enter indexFileEmbeddings', async () => {
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     const cfg = defaultConfig()
     cfg.indexing.large_file_symbol_only_kb = 1 // 1 KB cap -- keep symbols, skip embedding
     saveConfig(cfg)
 
     const src = path.join(TMP, 'symbolonly.ts')
+    // 20 KB, not 2 KB: the third phase below moves the threshold to 10 KB, and the file has to stay
+    // clearly over it so the re-entry it proves costs no real embedding (and so no model fetch).
     fs.writeFileSync(
       src,
-      `// ${'x'.repeat(2000)}\nexport function symbolOnlySymbol(): number {\n  return 1\n}\n`,
+      `// ${'x'.repeat(20000)}\nexport function symbolOnlySymbol(): number {\n  return 1\n}\n`,
     )
 
     const realIndexFileEmbeddings = parserModule.indexFileEmbeddings
@@ -501,9 +504,9 @@ describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', (
       .mockImplementation((fp, dbp, sha) => realIndexFileEmbeddings(fp, dbp, sha))
 
     // First run: the file is new, so indexFileEmbeddings must be entered once (it hits the
-    // large_file_symbol_only_kb branch internally, deletes any embeddings, and stamps the file's
-    // real content sha -- per isEmbedFresh's own contract, a bare-sha match while embeddings are
-    // enabled is a terminal "nothing to embed" state regardless of deps, same as an empty file).
+    // large_file_symbol_only_kb branch internally, deletes any embeddings, and stamps the oversize
+    // marker for the threshold in force -- not a bare sha, which is what a genuinely successful
+    // embed writes and would make this skip indistinguishable from one).
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(embedSpy).toHaveBeenCalledTimes(1)
     expect(querySymbols({ name: 'symbolOnlySymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
@@ -511,14 +514,28 @@ describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', (
     const key = resolveIndexPath(src)
     const entry = getFileEntry(key, dbPath)
     const fileSha = getFileEntry(key, dbPath)?.sha
-    expect(entry?.embedSha).toBe(fileSha)
+    expect(entry?.embedSha).toBe(oversizeEmbedSha(fileSha ?? '', 1))
 
     embedSpy.mockClear()
 
-    // Second run over the SAME, byte-identical file: embedUnchanged must now hold (embed_sha
-    // matches the stamped bare sha), so indexFileEmbeddings must not be re-entered at all.
+    // Second run over the SAME, byte-identical file with the SAME threshold: embedUnchanged must
+    // hold, so indexFileEmbeddings must not be re-entered at all.
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(embedSpy).not.toHaveBeenCalled()
     expect(querySymbols({ name: 'symbolOnlySymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+
+    // Third run, content still byte-identical, but the user has raised the threshold -- which is
+    // what `token-goat doctor`'s embedding-coverage remediation tells them to do. The skip was a
+    // decision about a config value, not about the content, so it has to be re-made: with a bare
+    // sha stamped above, the gate held and every previously-skipped file stayed permanently absent
+    // from the semantic index. 10 KB keeps this 20 KB fixture over the cap, so the re-entry is
+    // observable without any real embedding running.
+    embedSpy.mockClear()
+    const raised = defaultConfig()
+    raised.indexing.large_file_symbol_only_kb = 10
+    saveConfig(raised)
+    await cmdIndex(TMP, { walk: true, dbPath })
+    expect(embedSpy).toHaveBeenCalledTimes(1)
+    expect(getFileEntry(key, dbPath)?.embedSha).toBe(oversizeEmbedSha(fileSha ?? '', 10))
   })
 })

@@ -13,11 +13,20 @@ import {
   indexFileEmbeddings,
   indexFileSync,
   isEmbedFresh,
+  oversizeEmbedSha,
   unavailableEmbedSha,
 } from '../src/parser.js'
 
+// The indexing.large_file_symbol_only_kb value these tests pass to isEmbedFresh. Matches config.ts's
+// own default so the gate is exercised at the value a real install runs at.
+const SYMBOL_ONLY_KB = 500
+
 let TMP: string
 let prevEmbeddingsEnv: string | undefined
+// Several tests here move the indexing size thresholds to reach the branch they are about, and
+// those values are now visible in what gets stamped (the `oversize:` marker carries the threshold),
+// so a leaked value would change a later test's expected stamp. Snapshot and restore per test.
+let prevIndexingThresholds: { symbolOnly: number; skip: number }
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-embed-gate-'))
@@ -25,9 +34,18 @@ beforeEach(() => {
   // The suite forces embeddings off by default (tests/setup/isolate-home.ts); these tests need
   // it on to exercise the enabled indexFileEmbeddings path. A test setting its own value wins.
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+  const cfg = loadConfig()
+  prevIndexingThresholds = {
+    symbolOnly: cfg.indexing.large_file_symbol_only_kb,
+    skip: cfg.indexing.large_file_skip_kb,
+  }
 })
 
 afterEach(() => {
+  const restore = structuredClone(loadConfig())
+  restore.indexing.large_file_symbol_only_kb = prevIndexingThresholds.symbolOnly
+  restore.indexing.large_file_skip_kb = prevIndexingThresholds.skip
+  saveConfig(restore)
   closeAllDbs()
   fs.rmSync(TMP, { recursive: true, force: true })
   if (prevEmbeddingsEnv === undefined) {
@@ -46,6 +64,15 @@ afterEach(() => {
 describe('policy-skipped files stamp embed_sha so they are not re-embedded every drain', () => {
   it('stamps the real sha for a >512KB salesforce metadata file (bug 2)', async () => {
     const dbPath = path.join(TMP, 'index.db')
+    // indexFileEmbeddings checks the generic large_file_symbol_only_kb threshold BEFORE the
+    // salesforce-specific >512 KB rule, so at the default of 500 KB nothing can reach the
+    // salesforce branch at all -- this test named that branch while actually exercising the
+    // generic one, which was invisible while both stamped the same bare sha. Raise the generic
+    // threshold past 512 KB so the fixture really lands on the branch the test is about.
+    const raised = structuredClone(loadConfig())
+    raised.indexing.large_file_symbol_only_kb = 1024
+    raised.indexing.large_file_skip_kb = 4096
+    saveConfig(raised)
     const file = path.join(TMP, 'CustomObject__c.object-meta.xml')
     // >512KB measured in UTF-16 code units (content.length), with multi-byte UTF-8 chars mixed in
     // so the file is a realistic large generated-metadata dump.
@@ -62,7 +89,7 @@ describe('policy-skipped files stamp embed_sha so they are not re-embedded every
     const entry = getFileEntry(file, dbPath)
     expect(entry?.embedSha).toBe(sha)
     // And the freshness gate now treats it as done (would report "Skipped", not "Indexed").
-    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true)).toBe(true)
+    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true, SYMBOL_ONLY_KB)).toBe(true)
   })
 
   it('stamps the real sha for a .profile-meta.xml file (bug 2)', async () => {
@@ -76,7 +103,7 @@ describe('policy-skipped files stamp embed_sha so they are not re-embedded every
 
     const entry = getFileEntry(file, dbPath)
     expect(entry?.embedSha).toBe(sha)
-    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true)).toBe(true)
+    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true, SYMBOL_ONLY_KB)).toBe(true)
   })
 })
 
@@ -116,8 +143,9 @@ describe('large_file_symbol_only_kb gates embedding independently of symbol inde
       await indexFileEmbeddings(file, dbPath, sha ?? undefined)
 
       const entry = getFileEntry(file, dbPath)
-      expect(entry?.embedSha).toBe(sha)
-      expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true)).toBe(true)
+      // The oversize marker, not a bare sha: this skip is conditional on large_file_symbol_only_kb, which the user can raise, so it must stay distinguishable from a real embed. See OVERSIZE_EMBED_SHA_PREFIX. The stated intent of this test -- the gate treats the file as done so the worker stops re-reading it every drain -- is unchanged, and the assertion below still checks it, at the threshold actually in force here.
+      expect(entry?.embedSha).toBe(oversizeEmbedSha(sha ?? '', 1))
+      expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true, 1)).toBe(true)
 
       const db = getDb(dbPath)
       const chunkRows = db.prepare('SELECT COUNT(*) as n FROM chunks WHERE file_path = ?').get(file) as { n: number }
@@ -163,8 +191,8 @@ describe('deps-absent embedding does not falsely stamp a file as embedded (bug 3
     // Gate behavior: still "fresh" while deps remain absent (so an unchanged file is not
     // re-entered on every drain), but NOT fresh once the deps become available -- forcing the
     // real first embed instead of silently masquerading as done forever.
-    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, false)).toBe(true)
-    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true)).toBe(false)
+    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, false, SYMBOL_ONLY_KB)).toBe(true)
+    expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true, SYMBOL_ONLY_KB)).toBe(false)
   })
 })
 
@@ -173,27 +201,44 @@ describe('isEmbedFresh', () => {
   const sha = 'abc123'
 
   it('treats an undefined stored embed_sha as stale', () => {
-    expect(isEmbedFresh(undefined, sha, true, true)).toBe(false)
+    expect(isEmbedFresh(undefined, sha, true, true, SYMBOL_ONLY_KB)).toBe(false)
   })
 
   it('when embeddings are disabled, is fresh only for the disabled marker', () => {
-    expect(isEmbedFresh(disabledEmbedSha(sha), sha, false, false)).toBe(true)
-    expect(isEmbedFresh(sha, sha, false, false)).toBe(false)
-    expect(isEmbedFresh(unavailableEmbedSha(sha), sha, false, false)).toBe(false)
+    expect(isEmbedFresh(disabledEmbedSha(sha), sha, false, false, SYMBOL_ONLY_KB)).toBe(true)
+    expect(isEmbedFresh(sha, sha, false, false, SYMBOL_ONLY_KB)).toBe(false)
+    expect(isEmbedFresh(unavailableEmbedSha(sha), sha, false, false, SYMBOL_ONLY_KB)).toBe(false)
   })
 
   it('when enabled, a bare sha match is always fresh', () => {
-    expect(isEmbedFresh(sha, sha, true, true)).toBe(true)
-    expect(isEmbedFresh(sha, sha, true, false)).toBe(true)
+    expect(isEmbedFresh(sha, sha, true, true, SYMBOL_ONLY_KB)).toBe(true)
+    expect(isEmbedFresh(sha, sha, true, false, SYMBOL_ONLY_KB)).toBe(true)
   })
 
   it('an unavailable marker is fresh only while deps are still absent', () => {
-    expect(isEmbedFresh(unavailableEmbedSha(sha), sha, true, false)).toBe(true)
-    expect(isEmbedFresh(unavailableEmbedSha(sha), sha, true, true)).toBe(false)
+    expect(isEmbedFresh(unavailableEmbedSha(sha), sha, true, false, SYMBOL_ONLY_KB)).toBe(true)
+    expect(isEmbedFresh(unavailableEmbedSha(sha), sha, true, true, SYMBOL_ONLY_KB)).toBe(false)
   })
 
   it('a disabled marker never counts as fresh once embeddings are enabled', () => {
-    expect(isEmbedFresh(disabledEmbedSha(sha), sha, true, true)).toBe(false)
-    expect(isEmbedFresh(disabledEmbedSha(sha), sha, true, false)).toBe(false)
+    expect(isEmbedFresh(disabledEmbedSha(sha), sha, true, true, SYMBOL_ONLY_KB)).toBe(false)
+    expect(isEmbedFresh(disabledEmbedSha(sha), sha, true, false, SYMBOL_ONLY_KB)).toBe(false)
+  })
+
+  // HAND-DERIVED: the marker strings are built by calling the producer (oversizeEmbedSha), and the
+  // expected verdicts come from the rule "a size skip is only still correct at the size threshold it
+  // was decided under", not from reading the gate's own branches.
+  it('an oversize marker is fresh only at the threshold it was stamped under', () => {
+    expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, true, true, 500)).toBe(true)
+    expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, true, false, 500)).toBe(true)
+    // Raising indexing.large_file_symbol_only_kb re-opens the decision: the file is now under the
+    // threshold and must be re-examined rather than left permanently skipped.
+    expect(isEmbedFresh(oversizeEmbedSha(sha, 1), sha, true, true, 500)).toBe(false)
+    // Lowering it re-opens the decision too, so the marker is re-stamped with the value in force.
+    expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, true, true, 1)).toBe(false)
+  })
+
+  it('an oversize marker never counts as fresh once embeddings are disabled', () => {
+    expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, false, false, 500)).toBe(false)
   })
 })
