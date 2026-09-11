@@ -9,11 +9,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **token-goat now works inside VS Code's Copilot agent, not just beside it.** `token-goat install --vscode` now also installs agent hooks, so token-goat sees the file reads, searches, edits, and terminal commands VS Code's agent makes with its built-in tools. In VS Code, token-goat now:
   - stops the agent from reading a large file again when it already has it, and points it at the copy it has
   - adds short hints to reads and edits
-  - shrinks a large image before `view_image` loads it
-  - compresses the output of build and test commands run in the terminal
+  - shrinks a large image inside the workspace before `view_image` loads it
   - queues edited files for reindexing
 
-  VS Code gives hooks no way to change what a tool returns, so token-goat cannot fold or trim a file's contents there the way it does in Claude Code.
+  VS Code gives hooks no way to change what a tool returns, so token-goat cannot fold or trim a file's contents there the way it does in Claude Code. Terminal output is not compressed in VS Code either: VS Code does not tell the hook which shell will run a terminal command, so rewriting it safely is not possible, and token-goat leaves the command as it is. The hooks run before VS Code asks you to approve a call, so token-goat does not open an image on a network share or outside the workspace, and on macOS and Linux the shrunk copy it writes can only be read by you.
+
+  With `-p`, `.vscode/mcp.json` and `.github/hooks/token-goat.json` hold absolute paths to node and token-goat on your machine. `install --vscode -p` and `install --copilot --local` now remind you not to commit them: list them in `.git/info/exclude` or `.gitignore`. None of this needs a reindex.
 
   If you already use `--vscode`, run `token-goat install --vscode` again to add the hooks (with `-p` for a project install). They go in the same folder Copilot CLI reads, `~/.copilot/hooks/` (or `.github/hooks/` with `-p`), and share one hooks file with `--copilot`. Uninstalling either one leaves the hooks the other still uses.
 

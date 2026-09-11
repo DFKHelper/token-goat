@@ -288,9 +288,10 @@ describe('preReadImageHandler', () => {
     const filePath = path.join(TMP, 'vscode-large.png')
     fs.writeFileSync(filePath, big)
     try {
-      const asReadFile = makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { _tg_vscode_tool_name: 'read_file' } })
+      // cwd is the workspace VS Code runs the hook in; an image outside it is declined (tests/vscode_image_path_confinement.test.ts).
+      const asReadFile = makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { _tg_vscode_tool_name: 'read_file', cwd: TMP } })
       expect((await preReadImageHandler(asReadFile)).hookType).toBe('pass')
-      const asViewImage = makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { _tg_vscode_tool_name: 'view_image' } })
+      const asViewImage = makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { _tg_vscode_tool_name: 'view_image', cwd: TMP } })
       const out = await preReadImageHandler(asViewImage)
       expect(out.hookType).toBe('context')
       if (out.hookType === 'context') expect(out.context).toContain('data:image/')

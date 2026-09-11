@@ -113,12 +113,12 @@ describe('serializeOutput: rewriteInput', () => {
 })
 
 describe('preBashHandler: compression rewrite', () => {
-  // PROVENANCE: HAND-DERIVED. On Windows VS Code runs run_in_terminal in PowerShell, where the POSIX '\'' escape shellQuote emits is not an escape, so a vscode command holding a single quote is left alone rather than wrapped.
-  it('does not wrap a VS Code command that contains a single quote, but still wraps one without', () => {
+  // PROVENANCE: HAND-DERIVED. VS Code's run_in_terminal payload does not name the terminal's shell, so no quoting of the wrapped command is safe there; the end-to-end version of this is tests/vscode_terminal_never_rewritten.test.ts.
+  it('never wraps a VS Code command, quoted or not, while the same command still wraps on Claude Code', () => {
     const quoted = preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command: "cargo build --message-format 'short'" }, sessionId: 's', raw: { tool_name: 'Bash', _tg_harness: 'vscode' } }))
     expect(quoted.hookType).not.toBe('rewriteInput')
     const plain = preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command: 'cargo build' }, sessionId: 's', raw: { tool_name: 'Bash', _tg_harness: 'vscode' } }))
-    expect(plain.hookType).toBe('rewriteInput')
+    expect(plain.hookType).not.toBe('rewriteInput')
     const claude = preBashHandler(preEvent({ command: "cargo build --message-format 'short'" }))
     expect(claude.hookType).toBe('rewriteInput')
   })

@@ -292,7 +292,7 @@ export interface CopilotCliInstallResult {
 export type CopilotHooksOwner = 'copilot' | 'vscode'
 
 const HOOKS_CONFIG_FILE = 'token-goat.json'
-const HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
+export const HOOKS_SCRIPT_FILE = 'token-goat-shim.js'
 const HOOKS_OWNERS_FILE = 'token-goat.owners'
 
 export function copilotHooksOwnersPath(hooksDir: string): string {

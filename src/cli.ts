@@ -60,7 +60,7 @@ import { installKimi, isKimiInstalled, uninstallKimi } from './bridges/kimi_inst
 import { installPi, isPiInstalled, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, isOpencodeInstalled, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridges/openclaw_install.js'
-import { installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
+import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
@@ -610,6 +610,12 @@ async function cmdHook(event: string, opts: { harness?: string }): Promise<void>
   await relay(event)
 }
 
+/** One-line warning for a project-scope install whose files hold absolute paths on this machine and so must not be committed for a team: VS Code runs the hooks file for everyone who opens the repository. */
+function projectHooksCommitNote(pathFiles: readonly string[], hooksConfigPath: string): string {
+  const shim = path.join(path.dirname(hooksConfigPath), HOOKS_SCRIPT_FILE)
+  return `Note: ${pathFiles.join(', ')} ${pathFiles.length === 1 ? 'holds' : 'hold'} absolute paths to node and token-goat on this machine (${shim} is generated with them), so do not commit them: list them in .git/info/exclude or .gitignore.`
+}
+
 async function cmdInstall(opts: {
   project?: boolean
   codex?: boolean
@@ -730,6 +736,7 @@ async function cmdInstall(opts: {
     } else {
       out(`Installed token-goat Copilot CLI integration → ${copilotResult.configPath}, ${copilotResult.scriptPath}, ${copilotResult.instructionsPath}`)
     }
+    if (opts.local === true) out(projectHooksCommitNote([copilotResult.configPath], copilotResult.configPath))
     printBridgeVerificationNotice('copilot_cli')
   }
 
@@ -762,6 +769,7 @@ async function cmdInstall(opts: {
         ? `VS Code MCP integration (${vscodeResult.scope} scope) already installed → ${vscodeResult.mcpPath}`
         : `Installed token-goat VS Code MCP integration and agent hooks (${vscodeResult.scope} scope) → ${vscodeResult.mcpPath}, ${vscodeResult.hooksConfigPath}, ${vscodeResult.instructionsPath}`,
     )
+    if (vscodeResult.scope === 'project') out(projectHooksCommitNote([vscodeResult.mcpPath, vscodeResult.hooksConfigPath], vscodeResult.hooksConfigPath))
     if (vscodeUsesClaudeHooks()) out(VSCODE_DOUBLE_FIRE_NOTE)
   }
 
