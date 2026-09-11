@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.11] - 2026-09-11
+
 ### Added
 
 - **token-goat now works inside VS Code's Copilot agent, not just beside it.** `token-goat install --vscode` now also installs agent hooks, so token-goat sees the file reads, searches, edits, and terminal commands VS Code's agent makes with its built-in tools. In VS Code, token-goat now:
@@ -20,7 +22,15 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
   If VS Code's `chat.useClaudeHooks` setting is on, VS Code also runs the Claude Code hooks in `~/.claude/settings.json`, so each hook fires twice. `install --vscode` and `token-goat doctor` now point this out. token-goat does not change your VS Code settings.
 
+- **token-goat now works with the Copilot agent in Visual Studio.** `token-goat install --visualstudio` registers the token-goat MCP server in `%USERPROFILE%\.mcp.json` and adds the token-goat read gate to `%USERPROFILE%\copilot-instructions.md`, so the agent can use `symbol`, `read`, `section`, and the other narrow reads. With `-p`, it writes `.mcp.json` and `.github/copilot-instructions.md` in the current project instead, and reminds you not to commit them. Everything else in those files stays as it was, including Claude Code's `mcpServers` list, and `uninstall --visualstudio` removes only what token-goat added.
+
+  Visual Studio has no agent hooks, so token-goat gives no read hints, file dedup, or image shrinking there: the agent gets the MCP tools and the instructions only. Two steps are left to you after installing, and the install prints both: turn on the token-goat tools in the Copilot Chat Tools picker (Visual Studio adds new MCP tools switched off), and tick the Tools > Options setting that loads `.github/copilot-instructions.md`. See [Visual Studio users](docs/install.md#visual-studio-users) and Microsoft's [MCP servers in Visual Studio](https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers). None of this needs a reindex.
+
+  If `--vscode` or `--copilot` already put the gate in the same instructions file, the Visual Studio section is a short note pointing at it instead of a second copy, and uninstalling one leaves the gate the others still need.
+
 ### Fixed
+
+- **`token-goat mcp-audit` no longer reads a `.mcp.json` that holds only a `servers` list as one server named "servers".** Such a file, the format Visual Studio uses, now reads as having no Claude Code servers.
 
 - **`token-goat install --vscode` no longer edits the project you run it from.** A user-scope install wrote its routing block into `.github/copilot-instructions.md` in whatever folder you were in. It now writes `~/.copilot/instructions/token-goat.instructions.md`, a personal instructions file VS Code applies in every workspace, and `uninstall --vscode` removes it. With `-p`, the block still goes to the project's `.github/copilot-instructions.md`. If an earlier install left a block between `<!-- token-goat-vscode-begin -->` and `<!-- token-goat-vscode-end -->` in some project's `.github/copilot-instructions.md`, delete it by hand. Run `token-goat install --vscode` again to write the new file. No reindex needed.
 

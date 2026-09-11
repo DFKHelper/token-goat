@@ -63,6 +63,7 @@ import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridg
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
 import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
 import {
   isWorkerRunning,
@@ -611,9 +612,19 @@ async function cmdHook(event: string, opts: { harness?: string }): Promise<void>
 }
 
 /** One-line warning for a project-scope install whose files hold absolute paths on this machine and so must not be committed for a team: VS Code runs the hooks file for everyone who opens the repository. */
-function projectHooksCommitNote(pathFiles: readonly string[], hooksConfigPath: string): string {
-  const shim = path.join(path.dirname(hooksConfigPath), HOOKS_SCRIPT_FILE)
-  return `Note: ${pathFiles.join(', ')} ${pathFiles.length === 1 ? 'holds' : 'hold'} absolute paths to node and token-goat on this machine (${shim} is generated with them), so do not commit them: list them in .git/info/exclude or .gitignore.`
+function projectHooksCommitNote(pathFiles: readonly string[], hooksConfigPath?: string): string {
+  const shim = hooksConfigPath === undefined ? '' : ` (${path.join(path.dirname(hooksConfigPath), HOOKS_SCRIPT_FILE)} is generated with them)`
+  return `Note: ${pathFiles.join(', ')} ${pathFiles.length === 1 ? 'holds' : 'hold'} absolute paths to node and token-goat on this machine${shim}, so do not commit them: list them in .git/info/exclude or .gitignore.`
+}
+
+/** What install --visualstudio prints after writing: Visual Studio needs two manual switches before the agent sees anything. */
+export function visualStudioManualSteps(scope: 'project' | 'user'): string[] {
+  return [
+    'Visual Studio runs no token-goat hooks: it gets the MCP tools and the routing guidance only (no read dedup, hints, image shrink or output folding). It needs Visual Studio 2022 17.14 or later, or Visual Studio 2026, and two steps there:',
+    '  1. Tools > Options: turn on "Enable custom instructions to be loaded from .github/copilot-instructions.md files and added to requests".',
+    '  2. In Copilot Chat agent mode, open the Tools picker and tick the token-goat tools: new MCP tools start disabled. If Visual Studio asks whether to trust the token-goat server, it is asking because the command or its arguments changed.',
+    ...(scope === 'user' ? ['The user-level instructions file is read by Visual Studio 2026; on Visual Studio 2022, run this with -p/--project to put the guidance in the solution\'s .github/copilot-instructions.md.'] : []),
+  ]
 }
 
 async function cmdInstall(opts: {
@@ -629,6 +640,7 @@ async function cmdInstall(opts: {
   copilot?: boolean
   grok?: boolean
   vscode?: boolean
+  visualstudio?: boolean
   local?: boolean
 }): Promise<void> {
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
@@ -773,6 +785,17 @@ async function cmdInstall(opts: {
     if (vscodeUsesClaudeHooks()) out(VSCODE_DOUBLE_FIRE_NOTE)
   }
 
+  if (opts.visualstudio === true) {
+    const vsResult = installVisualStudio({ project: opts.project === true })
+    out(
+      vsResult.alreadyInstalled
+        ? `Visual Studio MCP integration (${vsResult.scope} scope) already installed → ${vsResult.mcpPath}`
+        : `Installed token-goat Visual Studio MCP integration (${vsResult.scope} scope) → ${vsResult.mcpPath}, ${vsResult.instructionsPath}`,
+    )
+    if (vsResult.scope === 'project') out(projectHooksCommitNote([vsResult.mcpPath]))
+    for (const line of visualStudioManualSteps(vsResult.scope)) out(line)
+  }
+
   // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
   if (opts.hermes === true) {
     out(
@@ -844,6 +867,7 @@ function cmdUninstall(opts: {
   copilot?: boolean
   grok?: boolean
   vscode?: boolean
+  visualstudio?: boolean
   local?: boolean
   purge?: boolean
 }): void {
@@ -882,6 +906,7 @@ function cmdUninstall(opts: {
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
     { flag: opts.vscode === true, run: () => uninstallVscode({ project: opts.project === true }), label: 'VS Code MCP integration' },
+    { flag: opts.visualstudio === true, run: () => uninstallVisualStudio({ project: opts.project === true }), label: 'Visual Studio MCP integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -911,6 +936,11 @@ function cmdUninstall(opts: {
   if (opts.vscode === true && otherScopeHasManagedServer({ project: opts.project === true })) {
     const otherScope = opts.project === true ? 'user' : 'project'
     out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run "token-goat uninstall --vscode${otherScope === 'project' ? ' --project' : ''}" to remove it too.`)
+  }
+
+  if (opts.visualstudio === true && visualStudioOtherScopeHasManagedServer({ project: opts.project === true })) {
+    const otherScope = opts.project === true ? 'user' : 'project'
+    out(`NOTE: token-goat is still registered in Visual Studio ${otherScope} scope. Run "token-goat uninstall --visualstudio${otherScope === 'project' ? ' --project' : ''}" to remove it too.`)
   }
 
   // --hermes removes no files: Hermes shares the Claude Code hook entries uninstallHooks() above already stripped, so this only exists for CLI symmetry with the other harness flags (README's uninstall table lists --hermes alongside the rest).
@@ -946,6 +976,7 @@ export function leftoverIntegrations(opts: {
   copilot?: boolean
   opencode?: boolean
   grok?: boolean
+  visualstudio?: boolean
 }): LeftoverIntegration[] {
   const candidates: Array<{ skipped: boolean; present: () => boolean; flag: string; label: string }> = [
     { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
@@ -962,6 +993,12 @@ export function leftoverIntegrations(opts: {
     },
     { skipped: opts.opencode !== true, present: isOpencodeInstalled, flag: '--opencode', label: 'opencode plugin' },
     { skipped: opts.grok !== true, present: isGrokInstalled, flag: '--grok', label: 'Grok CLI integration' },
+    {
+      skipped: opts.visualstudio !== true,
+      present: () => isVisualStudioInstalled() || isVisualStudioInstalled({ project: true }),
+      flag: '--visualstudio',
+      label: 'Visual Studio MCP integration',
+    },
   ]
   const found: LeftoverIntegration[] = []
   for (const candidate of candidates) {
@@ -3907,6 +3944,7 @@ export function buildProgram(): Command {
     .option('--copilot', 'also register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.js, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.js, <project>/.github/copilot-instructions.md)')
     .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
     .option('--vscode', 'also configure a VS Code MCP server (user-profile mcp.json by default; -p/--project for the workspace .vscode/mcp.json) and Copilot routing guidance')
+    .option('--visualstudio', 'also configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -3925,6 +3963,7 @@ export function buildProgram(): Command {
     .option('--copilot', 'also remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local)')
     .option('--grok', 'also remove the Grok CLI hook config and shim script')
     .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
+    .option('--visualstudio', 'also remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
     .action(guard(cmdUninstall))

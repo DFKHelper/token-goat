@@ -32,6 +32,7 @@ import { hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDiffe
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { loadConfig } from '../config.js'
+import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
 export interface CopilotCliScopeOptions {
@@ -158,8 +159,8 @@ export function copilotCliInstructionsPath(opts: CopilotCliScopeOptions = {}): s
 // these markers (copied from the CLAUDE.md convention), and the installer must
 // upgrade that block in place, not append a second one beside it. The file is a
 // separate path from CLAUDE.md, so there is no marker collision.
-const COPILOT_INSTRUCTIONS_BEGIN = '<!-- token-goat-begin -->'
-const COPILOT_INSTRUCTIONS_END = '<!-- token-goat-end -->'
+export const COPILOT_INSTRUCTIONS_BEGIN = '<!-- token-goat-begin -->'
+export const COPILOT_INSTRUCTIONS_END = '<!-- token-goat-end -->'
 
 /** The token-goat routing block for Copilot CLI, naming Copilot's own read tools in the conflict clause. */
 function buildCopilotInstructionsBlock(): string {
@@ -186,11 +187,17 @@ function stripInlineCodeSpans(text: string): string {
  * user-owned and hand-edited). Mirrors codex_install.ts's writeAgentsBlock.
  */
 function writeCopilotInstructionsBlock(p: string): boolean {
-  return upsertDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, buildCopilotInstructionsBlock())
+  const changed = upsertDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, buildCopilotInstructionsBlock())
+  // A project file shared with install --visualstudio -p: its block shrinks to an addendum now that this gate is present.
+  syncVisualStudioProjectGuidance(p)
+  return changed
 }
 
 function stripCopilotInstructionsBlock(p: string): boolean {
-  return stripDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END)
+  const removed = stripDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END)
+  // A Visual Studio block that leaned on this gate now has to carry the full gate itself.
+  if (removed) syncVisualStudioProjectGuidance(p)
+  return removed
 }
 
 // Cross-platform 'command' field (vs the also-supported bash/powershell-specific

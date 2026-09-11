@@ -24,6 +24,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { findStrayClaudeMdBlocks, isInstalled } from './install.js'
 import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable } from './parser.js'
@@ -775,6 +776,32 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
   }
 }
 
+/**
+ * Reports the `install --visualstudio` MCP entries found in `mcpPaths` (the user `.mcp.json` and the cwd one); null when neither has one.
+ *
+ * Visual Studio runs no token-goat hooks, so there is no hook to exercise: the one thing that can break on this machine is the entry's node or bundle path going stale after an upgrade.
+ */
+export function checkVisualStudio(mcpPaths: readonly string[]): DoctorResult | null {
+  const found = mcpPaths.flatMap((mcpPath) => {
+    const entry = visualStudioManagedEntry(mcpPath)
+    return entry === null ? [] : [{ mcpPath, ...entry }]
+  })
+  if (found.length === 0) return null
+  const stale = found.find((e) => !fs.existsSync(e.command) || !fs.existsSync(e.bundlePath))
+  if (stale !== undefined) {
+    return {
+      name: 'Visual Studio',
+      status: 'warn',
+      message: `the token-goat MCP entry in ${stale.mcpPath} points at ${stale.command} ${stale.bundlePath}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
+    }
+  }
+  return {
+    name: 'Visual Studio',
+    status: 'ok',
+    message: `MCP server registered in ${found.map((e) => e.mcpPath).join(', ')}. Visual Studio runs no token-goat hooks: it gets the MCP tools and instructions only, and only once the token-goat tools are ticked in the chat Tools picker.`,
+  }
+}
+
 export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
   if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
     return null
@@ -1298,6 +1325,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
     vscodeHooksInstalled() || vscodeHooksInstalled({ project: true }),
   )
   if (vscodeHooksResult) results.push(vscodeHooksResult)
+  const visualStudioResult = checkVisualStudio([visualStudioUserMcpPath(), visualStudioProjectMcpPath()])
+  if (visualStudioResult) results.push(visualStudioResult)
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 

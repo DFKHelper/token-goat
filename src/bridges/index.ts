@@ -67,3 +67,13 @@ export {
   vscodeUserMcpPath,
 } from './vscode_install.js'
 export type { VscodeInstallResult, VscodeScopeOptions } from './vscode_install.js'
+export {
+  installVisualStudio,
+  isVisualStudioInstalled,
+  uninstallVisualStudio,
+  visualStudioInstructionsPath,
+  visualStudioMcpPath,
+  visualStudioProjectMcpPath,
+  visualStudioUserMcpPath,
+} from './visualstudio_install.js'
+export type { VisualStudioInstallResult, VisualStudioScopeOptions } from './visualstudio_install.js'

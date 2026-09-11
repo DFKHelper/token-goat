@@ -36,6 +36,7 @@ export const KNOWN_HARNESS_NAMES = new Set<string>([
   'qwen',
   'kimi',
   'vscode',
+  'visualstudio',
   'generic',
 ])
 

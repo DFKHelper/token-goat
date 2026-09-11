@@ -8,58 +8,19 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
-import type { ParseError } from 'jsonc-parser'
-import type * as JsoncParser from 'jsonc-parser'
-
-// Loaded on first use, not at module scope: this module is statically imported by cli.ts, so a
-// top-level require here runs on every invocation of the binary -- including every hook and every
-// `--version` -- to serve the two VS Code install commands that actually parse JSONC.
-let jsoncParser: typeof JsoncParser | undefined
-function jsonc(): typeof JsoncParser {
-  jsoncParser ??= createRequire(import.meta.url)('jsonc-parser') as typeof JsoncParser
-  return jsoncParser
-}
 
 import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
+import { isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
-const BEGIN = '<!-- token-goat-vscode-begin -->'
-const END = '<!-- token-goat-vscode-end -->'
-
-function bundledCliPath(): string {
-  const here = path.dirname(fileURLToPath(import.meta.url))
-  const bundled = path.join(here, 'token-goat.mjs')
-  if (fs.existsSync(bundled)) return bundled
-  return path.resolve(here, '..', '..', 'dist', 'token-goat.mjs')
-}
-
-function managedServer(): Record<string, unknown> {
-  return {
-    type: 'stdio',
-    // VS Code launches MCP commands without a shell. Use Node plus the resolved
-    // bundle rather than an npm .cmd shim, which is not executable on Windows.
-    command: process.execPath,
-    args: [bundledCliPath(), 'mcp-serve'],
-  }
-}
-
-function isManagedServer(value: unknown): boolean {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-  const entry = value as Record<string, unknown>
-  const args = entry['args']
-  return (
-    entry['type'] === 'stdio' &&
-    Array.isArray(args) &&
-    args.length === 2 &&
-    typeof args[0] === 'string' &&
-    path.basename(args[0]).toLowerCase() === 'token-goat.mjs' &&
-    args[1] === 'mcp-serve'
-  )
-}
+/** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
+export const VSCODE_GUIDANCE_BEGIN = '<!-- token-goat-vscode-begin -->'
+export const VSCODE_GUIDANCE_END = '<!-- token-goat-vscode-end -->'
+const BEGIN = VSCODE_GUIDANCE_BEGIN
+const END = VSCODE_GUIDANCE_END
 
 /** Scope selector shared by every VS Code path helper below, mirroring CopilotCliScopeOptions. */
 export interface VscodeScopeOptions {
@@ -183,32 +144,11 @@ export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): 
   return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
 }
 
-interface VscodeConfig {
-  text: string
-  value: Record<string, unknown>
+function readConfig(filePath: string): ServersJsonConfig {
+  return readServersJson(filePath, 'VS Code')
 }
 
-function readConfig(filePath: string): VscodeConfig {
-  const text = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '{}\n'
-  const errors: ParseError[] = []
-  const parsed = jsonc().parse(text, errors, { allowTrailingComma: true, disallowComments: false })
-  if (errors.length > 0) {
-    throw new Error(`malformed VS Code MCP JSON at ${filePath}`)
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`malformed VS Code MCP JSON at ${filePath}: expected a JSON object`)
-  }
-  return { text, value: parsed as Record<string, unknown> }
-}
-
-function updateConfig(text: string, value: unknown): string {
-  return jsonc().applyEdits(
-    text,
-    jsonc().modify(text, ['servers', 'token-goat'], value, {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' },
-    }),
-  )
-}
+const updateConfig = setTokenGoatServer
 
 export interface VscodeInstallResult {
   mcpPath: string
@@ -320,6 +260,7 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
   if (config.text !== next) atomicWriteText(mcpPath, next)
   const guidanceChanged = writeGuidance(instructionsPath, scope === 'user')
+  if (scope === 'project') syncVisualStudioProjectGuidance(instructionsPath)
   const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
   return {
     mcpPath,
@@ -349,6 +290,8 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
     removed = true
     // The personal file is one install created: once its block is gone and only the frontmatter install wrote is left, it goes too.
     if (opts.project !== true && fs.readFileSync(instructionsPath, 'utf8').trim() === USER_INSTRUCTIONS_FRONTMATTER.trim()) fs.rmSync(instructionsPath, { force: true })
+    // A Visual Studio block that leaned on this gate now has to carry the full gate itself.
+    if (opts.project === true) syncVisualStudioProjectGuidance(instructionsPath)
   }
   // Leaves the hooks file in place while `install --copilot` still relies on it.
   if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode')) removed = true
