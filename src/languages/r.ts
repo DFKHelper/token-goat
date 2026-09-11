@@ -14,6 +14,7 @@ import type { SymbolEntry } from '../parser_types.js'
 import {
   buildLineIndex,
   findMatchingBraceEndLine,
+  matchRRawOpener,
   offsetToLine,
   stripLineComment,
   stripMultilineStringSpan,
@@ -70,6 +71,14 @@ function matchingParenIndex(content: string, openIndex: number): number | null {
       while (i < content.length && content[i] !== '\n') i++
       continue
     }
+    // A raw character constant takes no escapes and may hold an unpaired quote, so it is skipped whole by the shared rule rather than read as an ordinary string: `f <- function(x = r"(a"b)")` re-pairs into code otherwise, and the `)` of the constant's own closer then reads as the end of the parameter list.
+    const rOpen = matchRRawOpener(content, i)
+    if (rOpen !== null) {
+      const end = content.indexOf(rOpen.closer, rOpen.openerEnd)
+      if (end === -1) return null
+      i = end + rOpen.closer.length - 1
+      continue
+    }
     if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue }
     if (ch === '(') depth++
     else if (ch === ')') {
@@ -114,7 +123,8 @@ function bracedBodyEndLine(
   // backtickQuote: R quotes identifiers with backticks and such a name may contain `{`, `}`, or `#`
   // (e.g. `` `a}b` <- 1 `` in a body); without it the `}` ends the span early. matchingParenIndex
   // already handles backticks in the signature for the same reason.
-  return findMatchingBraceEndLine(content, j, totalLines, lineIndex, '#', { backtickQuote: true })
+  // rRawStrings: a `}` or a stray `"` inside an `r"(...)"` constant in the body is text, not code, and the shared scan needs the same rule the parameter-list walk above uses.
+  return findMatchingBraceEndLine(content, j, totalLines, lineIndex, '#', { backtickQuote: true, rRawStrings: true })
 }
 
 /**

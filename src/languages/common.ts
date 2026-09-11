@@ -834,12 +834,42 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
 // commented -- an equivalent check here would be redundant.
 const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp', 'swift', 'scala', 'dart'])
 
-// Opening punctuation of an R raw character constant, anchored at the `r`/`R` prefix: quote, an optional dash run, then one of the three bracket openers (R base help page `?Quotes`, "Raw character constants").
-const R_RAW_OPENER_RE = /^[rR](["'])(-*)([([{])/
+// Opening punctuation of an R raw character constant, anchored at the `r`/`R` prefix: quote, an optional dash run, then one of the three bracket openers (R base help page `?Quotes`, "Raw character constants"). Sticky rather than `^`-anchored so a content-wide scan can test one offset without slicing the rest of the file on every character.
+const R_RAW_OPENER_RE = /[rR](["'])(-*)([([{])/y
 // The bracket the closing sequence mirrors, per the same reference.
 const R_RAW_CLOSE_BRACKET: Record<string, string> = { '(': ')', '[': ']', '{': '}' }
 // Characters R allows inside a name (R Language Definition, section 10.3.2 "Identifiers"), used only to tell a standalone `r` prefix from the last letter of a longer name.
 const R_IDENT_CHAR_RE = /[A-Za-z0-9._]/
+
+/** An R raw character constant opening at some offset: where its opening punctuation ends, and the exact sequence that closes it. */
+export interface RRawOpener {
+  /** Offset just past the opening `r"(` / `R'-['` punctuation, where the constant's verbatim content begins. */
+  openerEnd: number
+  /** Mirrored bracket, the same dash run, then the same quote -- the literal text that ends this constant. */
+  closer: string
+}
+
+/**
+ * Match an R raw character constant opening at `index` in `text`, or null when none does.
+ *
+ * The `r`/`R` prefix only opens one when it is a token of its own, so a preceding identifier
+ * character means this is the tail of a longer name rather than a prefix. Exported so the
+ * line-scoped mask in {@link findMultilineOpener} and the content-scoped delimiter walks (R's
+ * parameter-list scan and {@link findMatchingBraceEndLine}) all read one copy of the rule: a raw
+ * constant's content is verbatim, so a walk that instead reads it as an ordinary quoted string
+ * re-pairs the quotes inside it and then counts a bracket in its text as a real delimiter.
+ */
+export function matchRRawOpener(text: string, index: number): RRawOpener | null {
+  const ch = text[index]
+  if (ch !== 'r' && ch !== 'R') return null
+  if (R_IDENT_CHAR_RE.test(text[index - 1] ?? '')) return null
+  R_RAW_OPENER_RE.lastIndex = index
+  const m = R_RAW_OPENER_RE.exec(text)
+  if (m === null) return null
+  const close = R_RAW_CLOSE_BRACKET[m[3] ?? '']
+  if (close === undefined) return null
+  return { openerEnd: index + m[0].length, closer: `${close}${m[2] ?? ''}${m[1] ?? ''}` }
+}
 
 /** Index of the `quote` that ends an ordinary R character constant started before `start`, or -1 when the line ends with it still open. Backslash escapes a quote inside one (R Language Definition, section 10.3.1 "Literal constants"). */
 function findRQuoteEnd(line: string, start: number, quote: string): number {
@@ -964,16 +994,12 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
         i = end + 1
         continue
       }
-      if (ch === 'r' || ch === 'R') {
-        // The prefix only makes a raw constant when it is a token of its own: a preceding identifier character means this `r` is the tail of some longer name.
-        const rawM = R_RAW_OPENER_RE.exec(line.slice(i))
-        if (rawM !== null && !R_IDENT_CHAR_RE.test(line[i - 1] ?? '')) {
-          const closer = `${R_RAW_CLOSE_BRACKET[rawM[3] ?? ''] ?? ''}${rawM[2] ?? ''}${rawM[1] ?? ''}`
-          const closeIdx = line.indexOf(closer, i + rawM[0].length)
-          if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rRaw', identifier: closer } }
-          i = closeIdx + closer.length
-          continue
-        }
+      const raw = matchRRawOpener(line, i)
+      if (raw !== null) {
+        const closeIdx = line.indexOf(raw.closer, raw.openerEnd)
+        if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rRaw', identifier: raw.closer } }
+        i = closeIdx + raw.closer.length
+        continue
       }
       if (ch === '"' || ch === "'") {
         const closeIdx = findRQuoteEnd(line, i + 1, ch)
@@ -1347,8 +1373,12 @@ export interface BraceSpanOpts {
   tripleSingleQuote?: boolean
   /** See {@link BraceScanOpts.rawStringQuotes}. */
   rawStringQuotes?: boolean
+  /** See {@link BraceScanOpts.rRawStrings}. */
+  rRawStrings?: boolean
   /** See {@link BraceScanOpts.lineStringPrefix}. */
   lineStringPrefix?: string
+  /** Blank this language's multi-line-capable string literals before walking braces, via {@link maskMultilineStrings}. The per-literal {@link BraceScanOpts} flags cover the forms whose delimiters are fixed; this covers the ones whose closer is decided by the opener, which a character-at-a-time walk cannot recognise: a PHP heredoc (`<<<EOT`) and a Swift raw string (`#"..."#`). A `}` inside either is text, and without this it decrements the brace depth and ends the enclosing function at that line. The extractors for those languages already mask with the same function to find declarations, so this makes the span walk read the same text they did. */
+  multilineLang?: MultilineStringLang
 }
 
 /** Opt-in extras for {@link findMatchingBraceEndLine}. Each defaults to the pre-existing behaviour,
@@ -1381,6 +1411,8 @@ export interface BraceScanOpts {
   lineCommentExceptions?: readonly string[]
   /** Whether a run of three or more """ opens a C# 11 raw string literal, closed by the next run of at least that many quotes. Unlike {@link tripleQuote} the delimiter length is not fixed: four opening quotes are closed by four, which is how a literal containing three quotes is written. Inside, nothing is an escape, so without this a raw path such as """"C:\Users\"""" reads as ordinary quotes plus a trailing backslash escape, which swallows the rest of the file and leaves the enclosing method and class at their signature lines. */
   rawStringQuotes?: boolean
+  /** Whether `r"(` (R's raw character constant, with optional dash padding as in `r"---(`) opens a literal that runs verbatim to its mirrored closer. R spells it this way per the base help page `?Quotes`, "Raw character constants"; no other language here does. Its content takes no escapes and may hold an unpaired quote, so without this the scan reads it as an ordinary quoted string, re-pairs the quotes inside it, and then counts a `}` sitting in the constant's text as a real closing brace -- ending the enclosing function at that line instead of at its body. */
+  rRawStrings?: boolean
   /** Whether ''' opens a triple-quoted string on the same terms as {@link tripleQuote}. Dart has both spellings; Kotlin, Scala and Swift have only the double-quoted one, and there ''' is something else. Without this a Dart literal holding an odd number of single quotes, such as '''a ' } b''', re-pairs them so the brace between them is read as code and the enclosing method ends on it. */
   tripleSingleQuote?: boolean
 }
@@ -1468,6 +1500,7 @@ export function findMatchingBraceEndLine(
   const escapes = opts?.stringEscapes ?? 'backslash'
   const nestedBlock = opts?.nestedBlockComments === true
   const rawString = opts?.rawStringQuotes === true
+  const rRaw = opts?.rRawStrings === true
   const tripleDelims = tripleQuoteDelimiters(opts)
   const lineString = opts?.lineStringPrefix
   let depth = 0
@@ -1512,6 +1545,15 @@ export function findMatchingBraceEndLine(
     if (lineString !== undefined && content.startsWith(lineString, i)) {
       while (i < content.length && content[i] !== '\n') i++
       continue
+    }
+    // An R raw character constant is opaque and its closer is decided by the opening punctuation, so jump past the whole thing before the quote rules below can re-pair the quotes inside it.
+    if (rRaw) {
+      const rOpen = matchRRawOpener(content, i)
+      if (rOpen !== null) {
+        const end = content.indexOf(rOpen.closer, rOpen.openerEnd)
+        i = end === -1 ? content.length : end + rOpen.closer.length - 1
+        continue
+      }
     }
     // A C# raw string is opaque and its delimiter length varies, so measure the opening run and jump past the first run at least as long.
     if (rawString && ch === '"') {
@@ -1589,6 +1631,8 @@ export function assignBraceBlockSpans(
   // Sorted start lines let each symbol find the next one that begins strictly after it, which is
   // the boundary the brace search must not cross. Built once rather than per symbol.
   const starts = [...new Set(symbols.map((s) => s.lineStart))].sort((a, b) => a - b)
+  // Braces are walked over a copy with every multi-line-capable string literal blanked, so a brace or a quote inside one is text. The blanking is offset-preserving, so `lineIndex` and every offset below still address the same places, and bodies are still sliced from the untouched `lines`.
+  const scanContent = opts.multilineLang === undefined ? content : maskMultilineStrings(content, opts.multilineLang)
   // Block-comment delimiters for the two comment styles these callers use, so a brace inside a
   // `/* ... */` (C-style) or `<# ... #>` (PowerShell) comment never derails the brace search.
   // An explicit `blockComment` overrides the guess, and `null` means the language has none at all: Zig writes `//` line comments but has no block comment, so deriving `/* */` from the prefix made an ordinary `a/*b` (divide then dereference) open a comment that never closed.
@@ -1611,10 +1655,10 @@ export function assignBraceBlockSpans(
     const nextStart = starts.find((s) => s > sym.lineStart)
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
     const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
-    const openIndex = findBlockOpenBrace(content, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, scanOpts)
+    const openIndex = findBlockOpenBrace(scanContent, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, scanOpts)
     if (openIndex === null) return sym
     // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
-    const endLine = findMatchingBraceEndLine(content, openIndex, totalLines, lineIndex, lineCommentPrefix,
+    const endLine = findMatchingBraceEndLine(scanContent, openIndex, totalLines, lineIndex, lineCommentPrefix,
       scanOpts)
     // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
     if (endLine <= sym.lineStart) return sym
@@ -1629,6 +1673,33 @@ export function assignBraceBlockSpans(
  * search.
  */
 const BRACE_SEARCH_MAX_LINES = 10
+
+/**
+ * Blank every multi-line-capable string literal in `content` for `lang`, carrying open state across
+ * line breaks exactly as {@link stripMultilineStringSpan} does per line.
+ *
+ * Offset-preserving: each literal's text is replaced by the same number of spaces and every line
+ * terminator is copied through, so a line index built from `content` still addresses the result.
+ * Line comments are left intact, because a brace walk over the result still needs to recognise them
+ * and each caller already knows its own comment markers.
+ */
+export function maskMultilineStrings(content: string, lang: MultilineStringLang): string {
+  let state: MultilineStringState | null = null
+  const parts: string[] = []
+  let pos = 0
+  for (;;) {
+    const nl = content.indexOf('\n', pos)
+    const end = nl === -1 ? content.length : nl
+    const lineEnd = end > pos && content[end - 1] === '\r' ? end - 1 : end
+    const masked = stripMultilineStringSpan(content.slice(pos, lineEnd), state, lang)
+    state = masked.state
+    parts.push(masked.code, content.slice(lineEnd, end))
+    if (nl === -1) break
+    parts.push('\n')
+    pos = nl + 1
+  }
+  return parts.join('')
+}
 
 /**
  * Offset of the brace that opens `startLine`'s block, or null when there is none to find within
