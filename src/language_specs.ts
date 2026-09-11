@@ -129,6 +129,10 @@ export const LANGUAGE_SPECS = [
   // MATLAB has no extension of its own: a `.m` that is not Objective-C is MATLAB only on a `function` or `classdef` header line, which refineLanguageByContent in parser_types.ts checks, so a Mathematica or Mercury `.m` stays unknown.
   { id: 'matlab', extraction: 'regex', extensions: [], label: 'MATLAB', ...CODE, fence: 'matlab' },
   { id: 'cmake', extraction: 'regex', extensions: ['.cmake'], basenames: ['cmakelists.txt'], label: 'CMake', ...CODE, fence: 'cmake', basenameImportsExtension: '.cmake' },
+  // One adapter for the three assembly dialects that share these extensions: GNU as (`.s`, and `.S` through the lowercase lookup), NASM (`.asm`, `.nasm`) and IBM High Level Assembler (`.asm`), which the adapter tells apart by content. `.inc` stays unmapped: many languages use it.
+  { id: 'asm', extraction: 'regex', extensions: ['.s', '.asm', '.nasm'], label: 'Assembly', ...CODE, fence: 'asm' },
+  { id: 'batch', extraction: 'regex', extensions: ['.bat', '.cmd'], label: 'Windows batch', ...CODE, fence: 'batch' },
+  { id: 'erlang', extraction: 'regex', extensions: ['.erl', '.hrl'], label: 'Erlang', ...CODE, fence: 'erlang' },
   // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },

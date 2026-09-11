@@ -4,10 +4,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
-### Added
-
-- **The package now ships a third-party notices file.** Building `dist/` copies about two dozen small npm packages into the files you install, and their licenses ask for their copyright notices to come along. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) now reproduces each one in full and is part of the published package. Run `npm run notices` to rebuild it: it reads the list from the build itself, so it names exactly what the bundle contains, and never a package that only sits in `package.json`. A new test, [tests/guards/third_party_notices.test.ts](tests/guards/third_party_notices.test.ts), fails if the file falls behind the build, if a bundled package is missing from it, or if a package that is not permissively licensed reaches the bundle at all. This needs no reindex.
-
 ## [2.9.11] - 2026-09-11
 
 ### Added
@@ -64,6 +60,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
   - CMake (`CMakeLists.txt` and `.cmake`): functions, macros, the `project` name, and the targets made by `add_library`, `add_executable`, and `add_custom_target`, plus `include`, `add_subdirectory`, and `find_package`.
 
   A `.m` is read as MATLAB when it is not Objective-C and has a `function` or `classdef` line, so a Mathematica or Mercury file, or a MATLAB script with no functions, is left alone. A `.pp` is read as Pascal only when it starts with a `unit`, `program`, or `library` line, so a Puppet manifest is left alone. `.inc` and `.fpp` are not indexed, because they are used in more than one way. The new readers are in [src/languages](src/languages). Upgrading reindexes your projects once.
+- **token-goat now indexes Assembly, Windows batch files, and Erlang.** `symbol`, `read "file::Name"`, `outline`, `skeleton`, and `imports` now work on these files:
+  - Assembly (`.s`, `.S`, `.asm`, `.nasm`): labels written with a colon, `.macro` and `%macro` definitions, and NASM `struc` structures, plus `.include` and `%include` files. An `.asm` file written for IBM High Level Assembler is read that way instead: its `CSECT`, `DSECT`, `RSECT`, and `START` sections, and its `MACRO` definitions named by the prototype statement. A label whose name starts with a period, such as `.L1`, is local and is left out.
+  - Windows batch files (`.bat`, `.cmd`): the `:label` blocks, each one running to the next label, plus the batch files a `call` runs.
+  - Erlang (`.erl`, `.hrl`): the module, functions with all of their clauses, `-record` definitions, `-define` macros, and `-type` and `-opaque` declarations, plus `-include`, `-include_lib`, and `-import`.
+
+  The first `token-goat index` after this version reindexes the project, so files in these languages get symbols.
+
+- **The package now ships a third-party notices file.** Building `dist/` copies about two dozen small npm packages into the files you install, and their licenses ask for their copyright notices to come along. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) now reproduces each one in full and is part of the published package. Run `npm run notices` to rebuild it: it reads the list from the build itself, so it names exactly what the bundle contains, and never a package that only sits in `package.json`. A new test, [tests/guards/third_party_notices.test.ts](tests/guards/third_party_notices.test.ts), fails if the file falls behind the build, if a bundled package is missing from it, or if a package that is not permissively licensed reaches the bundle at all. This needs no reindex.
 
 ### Changed
 
