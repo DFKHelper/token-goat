@@ -75,9 +75,10 @@ const CONST_RE = new RegExp(
 // mislabeling every Kotlin `interface Foo { ... }` and singleton `object Foo { ... }` (both very
 // common idioms - dependency-inversion interfaces and Kotlin's idiomatic singleton/utility
 // pattern) as a plain class in the index.
+// `external`, `final` and `inline` complete the modifier set: `external` introduces a Kotlin/JS or native interop declaration (`external interface Console { ... }`), `final` is the explicit spelling of the default inheritance modifier, and `inline class` is the pre-1.5 spelling of `value class`. FUN_RE above already accepts `external` and `final`, so leaving them out here made the same file treat a modifier as real on a function and unknown on a class: the header never matched, no frame was pushed, and every member inside the body was dropped alongside the type itself, exactly the way an unmatched `companion object` drops its members.
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|internal|protected|private|open|abstract|sealed|data|' +
-  'inner|expect|actual|value|annotation|fun)\\s+)*' +
+  'inner|expect|actual|value|annotation|fun|external|final|inline)\\s+)*' +
   '(class|interface|object|enum\\s+class)\\s+(' + NAME_RE + ')',
 )
 
