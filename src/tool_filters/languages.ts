@@ -931,7 +931,8 @@ export const zigFilter = new ZigFilter()
 // ===========================================================================
 
 const R_CHECKING_RE = /^\s*\*\s+checking\s+\S/i
-const R_CHECKING_OK_RE = /^\s*\*\s+checking\s+.*\s+(?:OK|SKIPPED)\s*$/i
+// Only OK. A SKIPPED check is a different outcome: it says the check did not run, which is the one thing a caller reading an `R CMD check` report needs to know about it. Counting it here both deleted that line and made the `collapsed N R CMD check-OK line(s)` note a false claim, reporting a skipped check as a passing one.
+const R_CHECKING_OK_RE = /^\s*\*\s+checking\s+.*\s+OK\s*$/i
 const R_DONE_RE = /^\s*\*\s+DONE\s*\(/i
 const R_STATUS_RE =
   /^\s*(?:Status:\s+|R\s+CMD\s+check\s+results?|0\s+errors\s+\||\d+\s+errors?\s+\||\d+\s+warning[s]?\s+\||\d+\s+note[s]?\s+\|)/i
