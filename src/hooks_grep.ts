@@ -146,7 +146,7 @@ function foldGrepContentHandler(event: HookEvent): HookOutput {
 }
 
 const DOC_EXT_RE = /\.(?:md|mdx|rst|txt)$/i
-const SOURCE_EXT_RE = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|vb|bas|vbs|frm)$/i
+const SOURCE_EXT_RE = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|vb|bas|vbs|frm|cbl|cob|cpy|cobol|nsp|nsn|nss|nsa|nsl|nsg|nsc|nsh)$/i
 
 const STRUCTURAL_DOC_PATTERN_RE = /^(?:\^)?#+\s*/
 const STRUCTURAL_SOURCE_PATTERN_RE = /^(?:\^|\s)*(?:def|class|function|async\s+def|async\s+function|export\s+(?:default\s+)?(?:class|function|interface|type|const|enum)|func|fn|struct|interface|impl|type)\b/i

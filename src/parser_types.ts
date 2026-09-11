@@ -98,6 +98,8 @@ export type Language =
   | 'env_file'
   | 'powershell'
   | 'vb'
+  | 'cobol'
+  | 'natural'
   | 'apex'
   | 'salesforce_metadata'
   | 'salesforce_markup'
@@ -200,6 +202,20 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.bas', 'vb'],
   ['.vbs', 'vb'],
   ['.frm', 'vb'],
+  // COBOL source (`.cbl`, `.cob`, `.cobol`) and copybooks (`.cpy`).
+  ['.cbl', 'cobol'],
+  ['.cob', 'cobol'],
+  ['.cobol', 'cobol'],
+  ['.cpy', 'cobol'],
+  // Natural object sources as NaturalONE and SYSOBJH export them: program, subprogram, subroutine, parameter/local/global data area, copycode, helproutine. Maps (.nsm) and DDMs (.nsd) are layouts, not code, and stay unmapped.
+  ['.nsp', 'natural'],
+  ['.nsn', 'natural'],
+  ['.nss', 'natural'],
+  ['.nsa', 'natural'],
+  ['.nsl', 'natural'],
+  ['.nsg', 'natural'],
+  ['.nsc', 'natural'],
+  ['.nsh', 'natural'],
   ['.cls', 'apex'],
   ['.trigger', 'apex'],
   ['.cmp', 'salesforce_markup'],
@@ -358,6 +374,8 @@ export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new 
   ['.rpgle', 'RPG'],
   ['.sqlrpgle', 'RPG'],
   ['.jcl', 'JCL'],
+  ['.nsm', 'Natural map'],
+  ['.nsd', 'Natural DDM'],
 ])
 
 /** The languages indexed through a tree-sitter grammar when the optional `tree-sitter` package loads; without it they fall back to a coarse regex scan with no references. */

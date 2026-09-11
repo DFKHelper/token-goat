@@ -52,6 +52,8 @@ const LANGUAGE_LABELS: ReadonlyMap<Language, string> = new Map<Language, string>
   ['php', 'PHP'],
   ['powershell', 'PowerShell'],
   ['vb', 'Visual Basic'],
+  ['cobol', 'COBOL'],
+  ['natural', 'Natural'],
   ['sql', 'SQL'],
   ['graphql', 'GraphQL'],
   ['proto', 'Protocol Buffers'],

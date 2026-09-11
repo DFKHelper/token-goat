@@ -18,6 +18,8 @@ import { supportRequestLine } from './version.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
 import { IMPORT_RE as SWIFT_IMPORT_RE, stripLeadingAttributes as stripSwiftImportAttributes } from './languages/swift.js'
+import { extractCobol } from './languages/cobol.js'
+import { extractNatural } from './languages/natural.js'
 import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
@@ -6417,6 +6419,12 @@ export function extractImports(text: string, ext: string): string[] {
         push(alias ? alias[1] : (/^[\w.]+/.exec(c) ?? [undefined])[0])
       }
     }
+  } else if (/^\.(?:cbl|cob|cpy|cobol)$/i.test(e)) {
+    // COBOL `COPY member [OF|IN library]` and `EXEC SQL INCLUDE member`, read by the adapter so the column rules and comment lines agree with the index.
+    for (const imp of extractCobol(text, `imports${e}`).imports) push(imp.target)
+  } else if (/^\.ns[pnsalgch]$/i.test(e)) {
+    // Natural `LOCAL|PARAMETER|GLOBAL USING area` and `INCLUDE copycode`, read by the adapter for the same reason.
+    for (const imp of extractNatural(text, `imports${e}`).imports) push(imp.target)
   } else if (e === '.lua') {
     // Lua's idiomatic module load is `require("mod")` -- the parenthesized, quoted form. The
     // generic `import|require|use|#include` fallback only matches the paren-LESS `require "mod"`

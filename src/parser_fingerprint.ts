@@ -4,4 +4,4 @@
 // content sha every time a file is indexed. The freshness gates treat a mismatch as changed, so
 // an extraction-logic change invalidates already-indexed files whose content never moved. Before
 // this existed those files kept their old symbols indefinitely, because content was the only key.
-export const PARSER_FINGERPRINT = '6b96cb4f1514ba5e'
+export const PARSER_FINGERPRINT = 'cca8854d78ed80e7'
