@@ -64,6 +64,7 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   run_shell_command: 'Bash',
   read_file: 'Read',
   read_many_files: 'Read',
+  // Deliberately 'Read', not 'Glob', even though list_directory enumerates a directory the way a Glob call does: Grok's equivalent list_dir maps to 'Glob' instead, but Grok's GROK_INPUT_KEY_MAP never remaps a 'pattern' key for it either, so on Grok this call is inert (preGlobHandler/globSignature require a non-empty toolInput['pattern'], which a plain directory listing never sends). Gemini's Read mapping, by contrast, is confirmed live: preReadHandler's node_modules deny fires on a list_directory call targeting node_modules (dogfooded in commit f1fc02de), which Glob's handler has no equivalent check for. Read was the considered choice, not an oversight; kept even though the two harnesses disagree.
   list_directory: 'Read',
   write_file: 'Write',
   replace: 'Edit',
@@ -72,7 +73,8 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   // 'search_file_content' was GREP_TOOL_NAME's value before gemini-cli renamed it to 'grep_search' (confirmed against gemini-cli's current base-declarations.ts, which now defines GREP_TOOL_NAME = 'grep_search'; some of gemini-cli's own docs pages still lag the rename). Kept as a backward-compat entry for older installed gemini-cli versions that still emit the pre-rename name -- not dead/hallucinated, just legacy.
   search_file_content: 'Grep',
   // Gemini's real web-search tool is registered as 'google_web_search' (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is not a tool name Gemini CLI ever emits, so the old entry here silently never matched a real invocation.
-  google_web_search: 'WebFetch',
+  // Previously mapped to 'WebFetch' as a workaround for GEMINI_PRE_TOOLS/POST_TOOLS (gemini_install.ts) excluding 'WebSearch' -- that made the hook fire under the installer's matcher, but hooks_fetch.ts's preFetchHandler/postFetchHandler require a `url` tool-input key, which a search call never sends (it sends `query`), so every google_web_search call silently no-op'd through WebFetch's handler: no URL policy check ever applied to it (it has no URL to check) and no search-result dedup ever ran. Now mapped to the dedicated 'WebSearch' handler (hooks_websearch.ts), which reads `query` directly; the installer gate above was extended to include 'WebSearch' so the hook stays wired.
+  google_web_search: 'WebSearch',
   web_fetch: 'WebFetch',
 }
 
@@ -218,6 +220,7 @@ const QWEN_TOOL_NAME_MAP: Record<string, string> = {
   glob: 'Glob',
   web_fetch: 'WebFetch',
   web_search: 'WebSearch',
+  // Same deliberate 'Read' choice as Gemini's list_directory entry above (see its comment): node_modules deny fires, Grok's rival 'Glob' mapping is inert for the equivalent tool anyway.
   list_directory: 'Read',
 }
 

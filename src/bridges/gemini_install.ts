@@ -94,18 +94,25 @@ const GEMINI_EVENT_ARG: Record<GeminiHookEvent, string> = {
  * preReadImageHandler), Grep (hooks_read.ts preReadHandler, registered
  * separately for the 'Grep' tool name), WebFetch (hooks_fetch.ts
  * preFetchHandler), Glob (hooks_glob.ts preGlobHandler, added 2026-07-18
- * after this set was first written). Write/Edit have no pre-hook.
+ * after this set was first written), WebSearch (hooks_websearch.ts
+ * preWebSearchDedupHandler, also missing from this set until it was found
+ * that google_web_search had been mapped to WebFetch instead of WebSearch
+ * as a workaround for that gap: WebFetch's handler requires a `url` key,
+ * which a search tool never sends, so the workaround wired the hook but
+ * left it permanently inert). Write/Edit have no pre-hook.
  */
-const GEMINI_PRE_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Grep', 'WebFetch', 'Glob'])
+const GEMINI_PRE_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Grep', 'WebFetch', 'Glob', 'WebSearch'])
 
 /**
  * Internal tools with a registered `post_tool_use` handler: Bash
  * (hooks_bash.ts postBashHandler), Read (hooks_read.ts postReadHandler),
  * Write/Edit (hooks_edit.ts postEditHandler), WebFetch (hooks_fetch.ts
  * postFetchHandler), Glob (hooks_glob.ts postGlobHandler, added 2026-07-18
- * after this set was first written). Grep has no post-hook registered.
+ * after this set was first written), WebSearch (hooks_websearch.ts
+ * postWebSearchHandler, same missing-then-worked-around history as above).
+ * Grep has no post-hook registered.
  */
-const GEMINI_POST_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Write', 'Edit', 'WebFetch', 'Glob'])
+const GEMINI_POST_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Read', 'Write', 'Edit', 'WebFetch', 'Glob', 'WebSearch'])
 
 /** One `type: "command"` hook entry as Gemini's settings.json stores it. */
 interface GeminiHookEntry {

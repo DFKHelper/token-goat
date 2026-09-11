@@ -88,12 +88,13 @@ describe('installGemini', () => {
 
     const settings = readSettings()
 
-    // BeforeTool: Bash/Read/Grep/WebFetch/Glob all have a pre_tool_use handler; Write/Edit don't.
+    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch all have a pre_tool_use handler; Write/Edit don't.
     const beforeMatchers = matchersFor(settings, 'BeforeTool')
     expect(beforeMatchers).toContain('^(run_shell_command)$')
     expect(beforeMatchers).toContain('^(read_file|read_many_files|list_directory)$')
     expect(beforeMatchers).toContain('^(grep_search|search_file_content)$')
-    expect(beforeMatchers).toContain('^(google_web_search|web_fetch)$')
+    expect(beforeMatchers).toContain('^(web_fetch)$')
+    expect(beforeMatchers).toContain('^(google_web_search)$')
     expect(beforeMatchers).toContain('^(glob)$')
     expect(process.argv[1]).toBeDefined()
     for (const command of commandsFor(settings, 'BeforeTool')) {
@@ -103,13 +104,14 @@ describe('installGemini', () => {
       expect(command.endsWith('hook pre_tool_use')).toBe(true)
     }
 
-    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob have a post_tool_use handler; Grep doesn't.
+    // AfterTool: Bash/Read/Write/Edit/WebFetch/Glob/WebSearch have a post_tool_use handler; Grep doesn't.
     const afterMatchers = matchersFor(settings, 'AfterTool')
     expect(afterMatchers).toContain('^(run_shell_command)$')
     expect(afterMatchers).toContain('^(read_file|read_many_files|list_directory)$')
     expect(afterMatchers).toContain('^(write_file)$')
     expect(afterMatchers).toContain('^(replace)$')
-    expect(afterMatchers).toContain('^(google_web_search|web_fetch)$')
+    expect(afterMatchers).toContain('^(web_fetch)$')
+    expect(afterMatchers).toContain('^(google_web_search)$')
     expect(afterMatchers).toContain('^(glob)$')
     expect(afterMatchers.some((m) => m?.includes('grep_search'))).toBe(false)
     for (const command of commandsFor(settings, 'AfterTool')) {
