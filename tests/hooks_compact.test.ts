@@ -21,7 +21,8 @@ const _testConfigPath = tempConfigPath('tg-hooks-compact-config-test.toml')
 import type { HookEvent } from '../src/hook_registry.js'
 import { buildManifest, preCompactHandler } from '../src/hooks_compact.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileEdit, recordFileRead, recordSymbolRead, recordWebFetch, recordBashOutput, recordBashRerun } from '../src/session.js'
+import { recordFileEdit, recordFileRead, recordSymbolRead, recordWebFetch, recordBashOutput, recordBashRerun, exportSessionState, importSessionState } from '../src/session.js'
+import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { normalizePath } from '../src/paths.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
@@ -538,5 +539,46 @@ describe('surgically-read files in the manifest', () => {
   it('omits the section entirely when no file was surgically read', () => {
     recordFileRead(makeTmpFile('plain'))
     expect(buildManifest()).not.toContain('Surgically read files')
+  })
+})
+
+describe('mergeManifestFiles sibling collision keeps symbols_read', () => {
+  // Regression: mergeManifestFiles builds the collision-branch object with an explicit field
+  // list that never included symbols_read, so a file surgically read by TWO sibling subagent
+  // blobs (readCount: 0, wasEdited: false on both) lost its symbol list on the second blob's
+  // merge and matched none of buildManifest's three section filters -- it vanished from the
+  // pre_compact manifest entirely, exactly the failure the symbolOnlyFiles bucket comment above
+  // was added to prevent, just reached through the sibling-merge path instead of a single blob.
+  const EMPTY_STATE = JSON.parse(JSON.stringify(exportSessionState()))
+  const sessionId = 'merge-symbols-parent'
+  const agentKey = (agentId: string): string => `${sessionId}:agent:${agentId}`
+
+  it('unions symbols_read across two sibling blobs that both surgically read the same path', () => {
+    const p = makeTmpFile('export function alpha() {}\nexport function beta() {}\n')
+
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(agentKey('agent-one'))
+    recordSymbolRead(p, 'alpha')
+    saveSessionState(agentKey('agent-one'))
+
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(agentKey('agent-two'))
+    recordSymbolRead(p, 'beta')
+    saveSessionState(agentKey('agent-two'))
+
+    // The parent process itself has no reads of its own -- everything comes through the
+    // sibling-merge branch of buildManifest, which is the only branch that ever calls
+    // mergeManifestFiles.
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(sessionId)
+
+    const manifest = buildManifest(sessionId)
+    const key = normalizePath(p)
+    expect(manifest).toContain('### Surgically read files')
+    // Sibling merge order depends on filesystem readdir order, not code semantics -- assert
+    // both symbols survived rather than pinning a union order neither side controls.
+    const row = manifest.split('\n').find((l) => l.startsWith(`- ${key} (symbols:`))
+    expect(row).toBeDefined()
+    expect(row).toMatch(/symbols: (alpha, beta|beta, alpha)\)$/)
   })
 })

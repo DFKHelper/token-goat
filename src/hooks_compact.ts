@@ -66,9 +66,15 @@ function renderSymbolReadRow(entry: FileEntry): string {
  * key session_store.ts's own merge logic uses). A file counts as edited if
  * ANY blob — parent or any subagent — marked it edited; readCount/lastReadAt
  * take the max across blobs and sizeBytes comes from whichever view is most
- * recent. This is a display-only merge for the compaction manifest, not the
- * persisted-state merge in session_store.ts (that one tracks per-process
- * read-count baselines that don't apply to blobs read cold off disk here).
+ * recent. symbols_read unions both blobs' lists (deduplicated) so a file that
+ * was surgically read by one blob and whole-read or edited by the other keeps
+ * its symbol list rather than losing it on collision, which previously made
+ * such a file vanish from every buildManifest section: readFiles/editedFiles
+ * require readCount>0/wasEdited, and symbolOnlyFiles required a non-empty
+ * symbols_read that this merge was silently dropping. This is a display-only
+ * merge for the compaction manifest, not the persisted-state merge in
+ * session_store.ts (that one tracks per-process read-count baselines that
+ * don't apply to blobs read cold off disk here).
  */
 function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): FileEntry[] {
   const byPath = new Map<string, FileEntry>()
@@ -80,6 +86,7 @@ function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): Fil
       byPath.set(key, f)
       continue
     }
+    const mergedSymbols = [...new Set([...(prev.symbols_read ?? []), ...(f.symbols_read ?? [])])]
     byPath.set(key, {
       path: prev.path,
       readCount: Math.max(prev.readCount, f.readCount),
@@ -87,6 +94,7 @@ function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): Fil
       wasEdited: prev.wasEdited || f.wasEdited,
       sizeBytes: f.lastReadAt >= prev.lastReadAt ? f.sizeBytes : prev.sizeBytes,
       ...(prev.wasTruncated || f.wasTruncated ? { wasTruncated: true } : {}),
+      ...(mergedSymbols.length > 0 ? { symbols_read: mergedSymbols } : {}),
     })
   }
   return Array.from(byPath.values())
