@@ -10,7 +10,7 @@
  * `NAME=value` variable assignments (optionally prefixed with `export`/`declare`/`readonly`, each optionally followed by getopts-style flags like `-a`/`-A`/`-x`/`-r`).
  * "Top-level" means not nested inside another function body -- mirrors the powershell adapter's
  * `braceDepth === 0 && currentClass === null` gate, one level simpler since bash has no classes.
- * Heredoc bodies (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ... EOF`) are masked out entirely
+ * Heredoc bodies (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ... EOF`, `<<\EOF ... EOF`, and any other delimiter word the shell would accept, matched by `matchBashHeredocOpener`) are masked out entirely
  * so embedded script content (which can itself contain `#`, `=`, and `{`/`}` that would
  * otherwise desync comment stripping and brace-depth tracking) is never misread as real code.
  * A single line may open several (`cat <<A <<B`), so pending terminators are held as a queue.
@@ -18,7 +18,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { isInsideStringLiteral, stripStringLiterals, makeLineSymbol } from './common.js'
+import { isInsideStringLiteral, stripStringLiterals, makeLineSymbol, matchBashHeredocOpener } from './common.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
@@ -27,8 +27,6 @@ const FUNC_NAME = '[A-Za-z_][A-Za-z0-9_.+:-]*'
 const FUNC_KEYWORD_RE = new RegExp(`^function\\s+(${FUNC_NAME})\\s*(?:\\(\\s*\\))?`)
 const FUNC_POSIX_RE = new RegExp(`^(${FUNC_NAME})\\s*\\(\\s*\\)`)
 const VAR_RE = /^(?:(?:export|declare|readonly)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)=/
-// The `<` guards on either side keep `<<<` (a here-string, not a heredoc) out. Without them `cmd <<< "hello"` matched from the second `<`, taking `hello` for a heredoc terminator and masking every following line as heredoc body until a line that happened to read exactly `hello` -- usually never, so the rest of the file was lost.
-const HEREDOC_RE = /(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_]\w*)\1/g
 
 /**
  * Strips a bash `#` line comment, respecting bash's own word-boundary comment rule: `#` only
@@ -103,12 +101,13 @@ function maskArithmeticSpans(line: string, carryDepth: number): { masked: string
 function findHeredocOpeners(line: string, carryDepth: number): { terminators: string[]; depth: number } {
   const terminators: string[] = []
   const { masked, depth } = maskArithmeticSpans(line, carryDepth)
-  HEREDOC_RE.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = HEREDOC_RE.exec(masked)) !== null) {
-    if (isInsideStringLiteral(line, m.index)) continue
-    const terminator = m[2] ?? ''
-    if (terminator) terminators.push(terminator)
+  for (let i = 0; i < masked.length; i++) {
+    const opener = matchBashHeredocOpener(masked, i)
+    if (opener === null) continue
+    // The delimiter word is scanned on `masked` (arithmetic blanked) but the quote state is read off the raw line, because blanking replaces characters with spaces and would lose a quote that opened earlier on the line.
+    if (isInsideStringLiteral(line, i)) continue
+    terminators.push(opener.terminator)
+    i = opener.openerEnd - 1
   }
   return { terminators, depth }
 }

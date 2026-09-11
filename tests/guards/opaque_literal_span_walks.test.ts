@@ -27,6 +27,7 @@ import { assignBraceBlockSpans } from '../../src/languages/common.js'
 import { extractPhp } from '../../src/languages/php.js'
 import { extractR } from '../../src/languages/r.js'
 import { extractSwift } from '../../src/languages/swift.js'
+import { parseFixture } from '../helpers/parse-fixture.js'
 
 /** Every symbol as `name lineStart-lineEnd`, so a failure names the span that was wrong. */
 function spans(symbols: readonly { name: string; lineStart: number; lineEnd: number }[]): string[] {
@@ -256,5 +257,113 @@ describe('span walks and opaque literals', () => {
       '',
     ].join('\n')
     expect(swiftSpans(source)).toEqual(['G 1-7', 'title 2-2', 'real 4-6'])
+  })
+
+  // Bash here documents, PowerShell here-strings. FORMAT-DERIVED: the delimiter word being an
+  // ordinary shell word subject to quote removal, and `<<<`/`<<` being a here string and a left
+  // shift rather than here-document openers, is from the GNU Bash Reference Manual, sections
+  // 3.6.6 "Here Documents", 3.6.7 "Here Strings" and 6.5 "Shell Arithmetic". A here-string opening
+  // with `@"`/`@'` as the last token on its line and closing with `"@`/`'@` at the start of a line
+  // is from the PowerShell `about_Quoting_Rules` topic, section "Here-strings". Expected line
+  // numbers are HAND-DERIVED: counted off the fixture text, not read from any output. Both run
+  // through the real parseFile dispatch, so each exercises the shipping adapter-table entry rather
+  // than a set of options the test supplies for itself.
+  it('closes a bash here document whose delimiter was quoted with a backslash', async () => {
+    const source = [
+      'first_fn() {',
+      '  cat <<\\EOF',
+      'BOGUS_VAR=1',
+      '}',
+      'EOF',
+      '  echo done',
+      '}',
+      '',
+      'second_fn() {',
+      '  echo ok',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('heredoc_backslash.sh', source)
+    expect(spans(result.symbols)).toEqual(['first_fn 1-7', 'second_fn 9-11'])
+  })
+
+  it('closes a bash here document whose quoted delimiter contains a hyphen', async () => {
+    const source = [
+      'first_fn() {',
+      "  cat <<'END-OF-FILE'",
+      'BOGUS_VAR=1',
+      '}',
+      'END-OF-FILE',
+      '  echo done',
+      '}',
+      '',
+      'second_fn() {',
+      '  echo ok',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('heredoc_hyphen.sh', source)
+    expect(spans(result.symbols)).toEqual(['first_fn 1-7', 'second_fn 9-11'])
+  })
+
+  it('still reads `<<` as a left shift and `<<<` as a here string, not as here-document openers', async () => {
+    const source = [
+      'TOP_VAR=1',
+      '',
+      'shift_fn() {',
+      '  local x=$(( 1 << 4 ))',
+      '  local y=$(( 8 >> 2 ))',
+      '  grep foo <<< "$TOP_VAR"',
+      '  echo "$x $y"',
+      '}',
+      '',
+      'after_control() {',
+      '  echo ok',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('heredoc_control.sh', source)
+    expect(spans(result.symbols)).toEqual(['TOP_VAR 1-1', 'shift_fn 3-8', 'after_control 10-12'])
+  })
+
+  it('does not end a PowerShell function at a brace inside a here-string body', async () => {
+    const source = [
+      'function First-Thing {',
+      '    $t = @"',
+      'It is a brace: }',
+      'and an unpaired " quote',
+      '"@',
+      '    Write-Output $t',
+      '}',
+      '',
+      'function Second-Thing {',
+      "    $u = @'",
+      'It is literal: }',
+      '"@',
+      "'@",
+      '    Write-Output $u',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('herestring.ps1', source)
+    expect(spans(result.symbols)).toEqual(['First-Thing 1-7', 'Second-Thing 9-15'])
+  })
+
+  it('does not open a PowerShell here-string on an array, hash, splat, or a literal ending in @', async () => {
+    const source = [
+      'function Control-One {',
+      '    $arr = @(1, 2, 3)',
+      "    $map = @{ Name = 'x' }",
+      '    $mail = "admin@"',
+      '    Write-Output $arr $map $mail',
+      '}',
+      '',
+      'function Control-Two {',
+      '    Write-Output @args',
+      '}',
+      '',
+    ].join('\n')
+    const result = await parseFixture('herestring_control.ps1', source)
+    expect(spans(result.symbols)).toEqual(['Control-One 1-6', 'Control-Two 8-10'])
   })
 })
