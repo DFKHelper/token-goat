@@ -3,6 +3,8 @@ import { buildLineIndex, offsetToLine, stripCstyleComments, stripStringLiterals,
 import { escapeRegExp } from '../util.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
+// Apex is a case-insensitive language (Apex Developer Guide, "Writing Apex" > "Language Constructs": keywords, type names and identifiers all ignore case), so `Public class Foo` and `Trigger T on Account` are as legal as the lowercase spellings and appear in real org code. Matching them case-sensitively dropped the whole declaration, not just its keyword. The `i` flag here changes only the literal keywords: every capture and character class in these patterns is `[A-Za-z...]`, already case-agnostic, so nothing that was previously matched is matched differently and no name capture is folded - a declared `fooBar` still indexes as `fooBar`, exactly as written.
+const CASE_INSENSITIVE_GM = 'gmi'
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*'
 const MODIFIER =
   '(?:public|private|protected|global|static|final|override|virtual|abstract|webservice|testMethod|transient|with|without|inherited|sharing)'
@@ -12,7 +14,7 @@ const MODIFIER =
 // at all, silently dropping the type and misattributing every member inside it.
 const TYPE_DECL_RE = new RegExp(
   `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
-  'gm',
+  CASE_INSENSITIVE_GM,
 )
 // The event list is routinely wrapped across lines when a trigger handles several events, so it
 // must not be confined to one line. When it was, the trigger did not merely go unindexed: `on` read
@@ -21,7 +23,7 @@ const TYPE_DECL_RE = new RegExp(
 // covers those lines, and overlapsExisting suppresses that phantom.
 const TRIGGER_RE = new RegExp(
   `^[ \\t]*trigger[ \\t]+(${IDENT})[ \\t]+on[ \\t]+([A-Za-z_][A-Za-z0-9_.]*)[ \\t\\r\\n]*\\([^)]*\\)`,
-  'gm',
+  CASE_INSENSITIVE_GM,
 )
 // Apex allows a method/constructor to be declared with no access modifier at all (implicitly
 // private), and interface method signatures never carry a modifier at all - so the modifier
@@ -52,7 +54,7 @@ const METHOD_RE = new RegExp(
   `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?=[^\\n]*\\()` +
     `(?:(?:${MODIFIER}[ \\t]+)+(${RETURN_TYPE})?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}(${RETURN_TYPE}))` +
     `(${IDENT})[ \\t]*\\([^;{}]*\\)[ \\t\\r\\n]*(?:\\{|;)`,
-  'gm',
+  CASE_INSENSITIVE_GM,
 )
 
 const CONTROL_NAMES = new Set([
@@ -237,14 +239,18 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // the class keyword instead of its real declaration start -- the same span-folding
   // annotationStartLine already applies to constructors/methods below, just not here.
   const typeNames = new Set<string>()
+  const typeNamesLower = new Set<string>()
   for (const match of code.matchAll(TYPE_DECL_RE)) {
     const typeKind = match[1] ?? ''
     const name = match[2] ?? ''
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
     const bodyStartLine = annotationStartLine(codeLines, line)
-    const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
+    // The keyword capture carries whatever case the source wrote it in, so it has to be folded before it becomes part of a kind string: `Interface Foo` would otherwise be filed under the invented kind `apex_Interface`, which no consumer matches on.
+    const typeKindLower = typeKind.toLowerCase()
+    const kind = typeKindLower === 'class' ? 'apex_class' : `apex_${typeKindLower}`
     typeNames.add(name)
+    typeNamesLower.add(name.toLowerCase())
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 
@@ -259,7 +265,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // later line.
   if (typeNames.size > 0) {
     const namesAlt = [...typeNames].map(escapeRegExp).join('|')
-    const ctorNoModifierRe = new RegExp(`^[ \\t]*(${namesAlt})[ \\t]*\\([^;{}]*\\)[ \\t]*\\{`, 'gm')
+    const ctorNoModifierRe = new RegExp(`^[ \\t]*(${namesAlt})[ \\t]*\\([^;{}]*\\)[ \\t]*\\{`, CASE_INSENSITIVE_GM)
     for (const match of code.matchAll(ctorNoModifierRe)) {
       const name = match[1] ?? ''
       const startOffset = match.index ?? 0
@@ -272,7 +278,8 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
 
   for (const match of code.matchAll(METHOD_RE)) {
     const name = match[3] ?? ''
-    if (CONTROL_NAMES.has(name)) continue
+    // CONTROL_NAMES is lowercase and METHOD_RE now matches keywords in any case, so the lookup has to fold too: an `If (...)`-style control statement must be rejected here on the same terms as `if (...)`.
+    if (CONTROL_NAMES.has(name.toLowerCase())) continue
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
     if (overlapsExisting(symbols, line)) continue
@@ -283,7 +290,8 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     // the declaration, but a constructor never has a return type, and a method always does -- so
     // requiring the no-return-type branch settles the ambiguous case without needing scopes.
     const hasReturnType = (match[1] ?? match[2] ?? '') !== ''
-    const kind = typeNames.has(name) && !hasReturnType ? 'apex_constructor' : 'apex_method'
+    // Matched against the case-folded type names because Apex resolves a constructor to its type without regard to case: `public account_service(...)` inside `class Account_Service` is that type's constructor, not a method that happens to share a spelling.
+    const kind = typeNamesLower.has(name.toLowerCase()) && !hasReturnType ? 'apex_constructor' : 'apex_method'
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 

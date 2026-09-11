@@ -16,14 +16,16 @@ import {
   makeLineSymbol,
 } from './common.js'
 
-const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/
-const CLASS_RE = /^(?:(?:abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
+// PHP keywords are case-insensitive (PHP Manual, "Language Reference" > "Classes and Objects" > "The Basics", and "Functions" > "User-defined functions"), so `Class Repo`, `Public Function run()` and `Var $x` are legal and still turn up in older code. Matching them case-sensitively dropped the entire declaration, and with it every member the class context would have scoped. Each matcher below therefore carries `i`, which changes only the literal keywords: every capture here is `[A-Za-z_]`/`[\w\\]`/`[^'"]`, already case-agnostic, so a name is still indexed with the exact case the source wrote it in.
+const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/i
+const CLASS_RE = /^(?:(?:abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/i
 const METHOD_RE = new RegExp(
   '^(?:(?:public|protected|private|static|abstract|final)\\s+)*' +
   // The `&` branch is PHP's return-by-reference declarator (`function &alpha()`), which sits between the `function` keyword and the name; the two branches are disjoint because only the first accepts a `&`.
   'function(?:\\s*&\\s*|\\s+)([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
+  'i',
 )
-const ANON_FN_RE = /^\s*function\s*\(/
+const ANON_FN_RE = /^\s*function\s*\(/i
 // One PHP type expression, shared by the typed-constant and typed-property matchers: an optionally nullable, optionally namespaced name, or a union/intersection of those, with the DNF parentheses PHP 8.3 allows around an intersection term. Every repetition past the first needs a literal `|` or `&` separator, so the pattern stays unambiguous and linear.
 const TYPE_ATOM = '\\??[A-Za-z_\\\\][A-Za-z0-9_\\\\]*'
 const TYPE_TERM = `(?:\\(\\s*${TYPE_ATOM}(?:\\s*[|&]\\s*${TYPE_ATOM})*\\s*\\)|${TYPE_ATOM})`
@@ -34,8 +36,9 @@ const CONST_RE = new RegExp(
   '^(?:(?:public|protected|private|static|final)\\s+)*' +
   `const\\s+(?:${TYPE_SLOT}\\s+)?` +
   '([A-Za-z_][A-Za-z0-9_]*)',
+  'i',
 )
-const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/
+const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/i
 // `var` is PHP's legacy property-visibility declarator (a full synonym for `public`), still valid
 // syntax in every current PHP version - without it in the alternation, a `var $foo;` property is
 // silently dropped from the index entirely, unlike every other property-declaration style.
@@ -44,6 +47,7 @@ const PROP_RE = new RegExp(
   '^(?:(?:(?:public|protected|private)\\(set\\)|public|protected|private|static|readonly|abstract|final|var)\\s+)+' +
   `(?:${TYPE_SLOT}\\s+)?` +
   '\\$([A-Za-z_][A-Za-z0-9_]*)',
+  'i',
 )
 // `use function Foo\bar;` / `use const Foo\BAR;` -- PHP 7's single-symbol imports for a
 // namespaced function or constant, distinct from the class-import form GROUP_USE_RE's own
@@ -51,13 +55,13 @@ const PROP_RE = new RegExp(
 // optional prefix here, USE_RE's `([\w\\]+)` captured "function"/"const" as if it were the
 // imported name itself, then failed to match the trailing `;` (real target text follows), so
 // these single-symbol forms were silently dropped entirely rather than merely mis-captured.
-const USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+\w+)?\s*;/
+const USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+\w+)?\s*;/i
 // `use App\{Foo, Bar};` -- PHP 7's group-use declaration, idiomatic when importing several
 // classes from one namespace -- never matched USE_RE at all: the char class `[\w\\]+` stops at
 // `{`, leaving `{Foo, Bar}` where USE_RE's `(?:\s+as\s+\w+)?\s*;` alternative is anchored, so the
 // whole regex failed to match and the entire line was silently dropped (not merely truncated).
-const GROUP_USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)\\\{([^}]*)\}/
-const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/
+const GROUP_USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)\\\{([^}]*)\}/i
+const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/i
 
 export function extractPhp(
   content: string,
@@ -140,7 +144,7 @@ export function extractPhp(
       if (groupUseM) {
         const base = groupUseM[1] ?? ''
         for (const part of (groupUseM[2] ?? '').split(',')) {
-          const trimmed = part.trim().replace(/^(?:function|const)\s+/, '')
+          const trimmed = part.trim().replace(/^(?:function|const)\s+/i, '')
           if (trimmed === '') continue
           // A rename (`Foo as Bar`) resolves to the original class name callers reference.
           const name = (trimmed.split(/\s+as\s+/)[0] ?? '').trim()
@@ -172,7 +176,8 @@ export function extractPhp(
     // of depth, misattributing any function-local class as a real nested member class.
     const clsM = CLASS_RE.exec(stripped)
     if (clsM) {
-      const kind = clsM[1] ?? 'class'
+      // Folded because the capture carries the source's own case: `Interface Repo` would otherwise be filed under the invented kind `Interface`, which no consumer matches on.
+      const kind = (clsM[1] ?? 'class').toLowerCase()
       const name = clsM[2] ?? ''
       const preLineDepth = braceDepth - openB + closeB
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined

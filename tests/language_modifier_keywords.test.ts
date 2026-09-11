@@ -5,6 +5,7 @@ import { extractScala } from '../src/languages/scala.js'
 import { extractSwift } from '../src/languages/swift.js'
 import { extractDart } from '../src/languages/dart.js'
 import { extractPhp } from '../src/languages/php.js'
+import { extractApex } from '../src/languages/apex.js'
 
 /**
  * Per-keyword guard over every declaration-modifier alternation in the hand-written
@@ -29,6 +30,18 @@ import { extractPhp } from '../src/languages/php.js'
  *     plus the versioned declaration forms those lists sit alongside -- typed class
  *     constants (PHP 8.3), asymmetric visibility and property hooks (PHP 8.4), and
  *     return-by-reference functions.
+ *   - Apex: the Salesforce Apex Developer Guide's "Access Modifiers", "Defining
+ *     Apex Classes", "Using the final Keyword", "Using the with sharing, without
+ *     sharing, and inherited sharing Keywords" and "Trigger Syntax" sections.
+ *
+ * A second axis runs through the same instrument: CASE. Apex and PHP both ignore
+ * keyword case (Apex Developer Guide, "Writing Apex" > "Language Constructs"; PHP
+ * manual, "Classes and Objects" > "The Basics" and "Functions" > "User-defined
+ * functions"), so a case variant of a legal declaration is still that same legal
+ * declaration and must index identically. Cases labelled "(mixed case)" or
+ * "(upper case)" below carry that axis. They also pin the other half of it: the
+ * NAME is not a keyword, so it must come back with the exact case the source wrote
+ * -- `Public class fooBar` indexes `fooBar`, never `FooBar` or `foobar`.
  *
  * The point of the shape is the PER-KEYWORD assertion. A union assertion -- "some
  * modifier form produces some symbol" -- is what let a missing alternative hide
@@ -215,6 +228,46 @@ const PHP_MODIFIERS: ModifierCase[] = [
   { keyword: 'abstract (property)', source: '<?php\nabstract class Outer {\n  abstract public string $alpha { get; }\n}', expect: 'alpha', reject: ['string'] },
   { keyword: 'final (property)', source: '<?php\nclass Outer {\n  final public string $alpha = "x";\n}', expect: 'alpha', reject: ['string'] },
   { keyword: '& (by-reference function)', source: '<?php\nclass Outer {\n  public function &alpha() { }\n}', expect: 'alpha' },
+  { keyword: 'Class (mixed case)', source: '<?php\nClass fooBar { }', expect: 'fooBar' },
+  { keyword: 'CLASS (upper case)', source: '<?php\nCLASS fooBar { }', expect: 'fooBar' },
+  { keyword: 'Abstract Class (mixed case)', source: '<?php\nAbstract Class fooBar { }', expect: 'fooBar' },
+  { keyword: 'Interface (mixed case)', source: '<?php\nInterface fooBar { }', expect: 'fooBar' },
+  { keyword: 'Trait (mixed case)', source: '<?php\nTrait fooBar { }', expect: 'fooBar' },
+  { keyword: 'Enum (mixed case)', source: '<?php\nEnum fooBar { }', expect: 'fooBar' },
+  { keyword: 'Namespace (mixed case)', source: '<?php\nNamespace App;', expect: 'App' },
+  { keyword: 'Public Function (mixed case)', source: '<?php\nclass Outer {\n  Public Function alpha() { }\n}', expect: 'alpha', reject: ['Function', 'function'] },
+  { keyword: 'Static Function (mixed case)', source: '<?php\nclass Outer {\n  Static Function alpha() { }\n}', expect: 'alpha', reject: ['Function'] },
+  { keyword: 'Var (mixed case)', source: '<?php\nclass Outer {\n  Var $alpha;\n}', expect: 'alpha' },
+  { keyword: 'Public Const (mixed case, typed)', source: '<?php\nclass Outer {\n  Public Const int ALPHA = 5;\n}', expect: 'ALPHA', reject: ['int', 'Const'] },
+  { keyword: 'Define (mixed case)', source: '<?php\nDefine(\'ALPHA\', 1);', expect: 'ALPHA' },
+]
+
+const APEX_MODIFIERS: ModifierCase[] = [
+  { keyword: 'public (class)', source: 'public class Alpha { }', expect: 'Alpha' },
+  { keyword: 'private (class)', source: 'private class Alpha { }', expect: 'Alpha' },
+  { keyword: 'global (class)', source: 'global class Alpha { }', expect: 'Alpha' },
+  { keyword: 'virtual (class)', source: 'public virtual class Alpha { }', expect: 'Alpha' },
+  { keyword: 'abstract (class)', source: 'public abstract class Alpha { }', expect: 'Alpha' },
+  { keyword: 'with sharing (class)', source: 'public with sharing class Alpha { }', expect: 'Alpha' },
+  { keyword: 'without sharing (class)', source: 'public without sharing class Alpha { }', expect: 'Alpha' },
+  { keyword: 'inherited sharing (class)', source: 'public inherited sharing class Alpha { }', expect: 'Alpha' },
+  { keyword: 'interface', source: 'public interface Alpha { }', expect: 'Alpha' },
+  { keyword: 'enum', source: 'public enum Alpha { ONE, TWO }', expect: 'Alpha' },
+  { keyword: 'trigger', source: 'trigger Alpha on Account (before insert) { }', expect: 'Alpha' },
+  { keyword: 'static (method)', source: 'public class Outer {\n    public static void alpha() { }\n}', expect: 'alpha', reject: ['void'] },
+  { keyword: 'override (method)', source: 'public class Outer {\n    public override void alpha() { }\n}', expect: 'alpha', reject: ['void'] },
+  { keyword: 'webservice (method)', source: 'global class Outer {\n    webservice static void alpha() { }\n}', expect: 'alpha', reject: ['void'] },
+  { keyword: 'testMethod (method)', source: 'private class Outer {\n    static testMethod void alpha() { }\n}', expect: 'alpha', reject: ['void'] },
+  { keyword: 'Public class (mixed case)', source: 'Public class fooBar { }', expect: 'fooBar' },
+  { keyword: 'PUBLIC CLASS (upper case)', source: 'PUBLIC CLASS fooBar { }', expect: 'fooBar' },
+  { keyword: 'Global class (mixed case)', source: 'Global class fooBar { }', expect: 'fooBar' },
+  { keyword: 'Public With Sharing Class (mixed case)', source: 'Public With Sharing Class fooBar { }', expect: 'fooBar', reject: ['Sharing', 'sharing'] },
+  { keyword: 'Public Interface (mixed case)', source: 'Public Interface iThing { }', expect: 'iThing' },
+  { keyword: 'Public Enum (mixed case)', source: 'Public Enum Season { WINTER, SPRING }', expect: 'Season' },
+  { keyword: 'Trigger ... ON (mixed case)', source: 'Trigger AccountTrigger ON Account (Before Insert) { }', expect: 'AccountTrigger', reject: ['Account'] },
+  { keyword: '@IsTest + Private class (mixed case)', source: '@IsTest\nPrivate class fooBar {\n    static testmethod void alpha() { }\n}', expect: 'fooBar' },
+  { keyword: 'Public Static void (mixed case, method)', source: 'public class Outer {\n    Public Static void alpha() { }\n}', expect: 'alpha', reject: ['void', 'Static'] },
+  { keyword: 'TestMethod (mixed case, method)', source: 'private class Outer {\n    Static TestMethod void alpha() { }\n}', expect: 'alpha', reject: ['void'] },
 ]
 
 const ADAPTERS: AdapterCases[] = [
@@ -227,18 +280,19 @@ const ADAPTERS: AdapterCases[] = [
   { label: 'swift member declaration', extract: extractSwift, file: 'Alpha.swift', cases: SWIFT_MEMBER_MODIFIERS },
   { label: 'dart class declaration', extract: extractDart, file: 'alpha.dart', cases: DART_CLASS_MODIFIERS },
   { label: 'php declaration', extract: extractPhp, file: 'Alpha.php', cases: PHP_MODIFIERS },
+  { label: 'apex declaration', extract: extractApex, file: 'Alpha.cls', cases: APEX_MODIFIERS },
 ]
 
 describe('language adapters: every declaration modifier keeps its declaration indexable', () => {
   it('the guard population is non-empty and every adapter contributes cases', () => {
-    expect(ADAPTERS.length).toBe(9)
+    expect(ADAPTERS.length).toBe(10)
     for (const adapter of ADAPTERS) {
       expect(adapter.cases.length, `${adapter.label} has no cases`).toBeGreaterThan(5)
     }
-    expect(ADAPTERS.reduce((n, a) => n + a.cases.length, 0)).toBeGreaterThanOrEqual(116)
+    expect(ADAPTERS.reduce((n, a) => n + a.cases.length, 0)).toBeGreaterThanOrEqual(161)
     // At least one case must carry a `reject` list, otherwise the fabrication half of the guard
     // is silently switched off and every case degrades to a presence-only check.
-    expect(ADAPTERS.reduce((n, a) => n + a.cases.filter((c) => (c.reject?.length ?? 0) > 0).length, 0)).toBeGreaterThanOrEqual(5)
+    expect(ADAPTERS.reduce((n, a) => n + a.cases.filter((c) => (c.reject?.length ?? 0) > 0).length, 0)).toBeGreaterThanOrEqual(16)
   })
 
   for (const adapter of ADAPTERS) {
@@ -333,5 +387,105 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     ].join('\n')
     const names = extractPhp(source, 'Repo.php').symbols.map((s) => s.name)
     expect(names).toEqual(['Repo', 'LIMIT', 'TAG', 'KEY', 'name', 'items', 'run'])
+  })
+
+  /**
+   * Fixture provenance: HAND-DERIVED. A legal Apex compilation unit composed from the Apex
+   * Developer Guide's own constructs -- comments, single-quoted string literals, `if`/`for`/
+   * `while` statements, `return`, and the `new` object-creation expression -- each written in a
+   * case the language accepts but the matchers previously did not. Nothing here was read off the
+   * matchers.
+   *
+   * Case-insensitive keyword matching is only correct if it stays keyword matching. A language
+   * that ignores case for keywords does not ignore case for the rest of the file: an identifier,
+   * a string's contents, a file path and a comment's prose are all still literal text, and none of
+   * them may become a symbol just because a keyword now matches in any case.
+   */
+  it('apex case-insensitive keywords never promote a comment, string, path or control statement to a symbol', () => {
+    const source = [
+      '// Public class GhostComment { }',
+      '/* Global interface GhostBlock { } */',
+      'Public class Gate {',
+      "    Public static String label = 'Public class GhostString { }';",
+      "    Public static String path = '/force-app/Public/classes/GhostPath.cls';",
+      '    Public Integer Run(Integer n) {',
+      '        IF (n > 0) {',
+      '            Return compute(n);',
+      '        }',
+      '        FOR (Integer i = 0; i < n; i++) {',
+      '            System.debug(i);',
+      '        }',
+      '        WHILE (n > 0) { n--; }',
+      "        Account a = NEW Account(Name = 'x');",
+      '        Return 0;',
+      '    }',
+      '    Private Integer compute(Integer x) { return x; }',
+      '}',
+      '',
+    ].join('\n')
+    const names = extractApex(source, 'Gate.cls').symbols.map((s) => s.name)
+    expect(names).toEqual(['Gate', 'Run', 'compute'])
+  })
+
+  /**
+   * Fixture provenance: HAND-DERIVED. Legal Apex declarations composed from the Apex Developer
+   * Guide's "Defining Apex Classes", "Interfaces", "Enums", "Constructors" and "Trigger Syntax"
+   * sections, written in mixed case because the language permits it.
+   */
+  it('apex mixed-case declarations keep their real kind and their source casing', () => {
+    const source = [
+      'Public Interface iThing { }',
+      'Public Enum Season { WINTER, SPRING }',
+      'Public With Sharing Class fooBar {',
+      '    Public fooBar() { }',
+      '    Public void doIt() { }',
+      '}',
+      '',
+    ].join('\n')
+    const got = extractApex(source, 'fooBar.cls').symbols.map((s) => `${s.name}:${s.kind}`)
+    // The keyword capture feeds the kind string, so an unfolded `Interface`/`Enum` would be filed
+    // under the invented kinds `apex_Interface`/`apex_Enum` that nothing queries for, while every
+    // presence-only check still passed. The name is the opposite case: it must NOT be folded.
+    expect(got).toEqual([
+      'iThing:apex_interface',
+      'Season:apex_enum',
+      'fooBar:apex_class',
+      'fooBar:apex_constructor',
+      'doIt:apex_method',
+    ])
+  })
+
+  /**
+   * Fixture provenance: HAND-DERIVED. A legal PHP file composed from the PHP manual's comment
+   * syntaxes (`//`, `#`, `/* *\/`), single- and double-quoted string literals, and the mixed-case
+   * keyword spellings the language accepts.
+   */
+  it('php case-insensitive keywords never promote a comment or string body to a symbol', () => {
+    const source = [
+      '<?php',
+      '// class GhostComment { }',
+      '# Class GhostHash { }',
+      'Namespace App\\Repo;',
+      'Use App\\Support\\Helper;',
+      'Class fooBar {',
+      '    Public Const int LIMIT = 5;',
+      '    Var $Alpha;',
+      '    Public Static Function Run(): void {',
+      '        $sql = "CLASS GhostString { }";',
+      "        $p = 'Function GhostString2(';",
+      '        Return $sql . $p;',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    const out = extractPhp(source, 'fooBar.php')
+    expect(out.symbols.map((s) => `${s.name}:${s.kind}`)).toEqual([
+      'App\\Repo:namespace',
+      'fooBar:class',
+      'LIMIT:const',
+      'Alpha:var',
+      'Run:method',
+    ])
+    expect(out.imports.map((i) => i.target)).toEqual(['App\\Support\\Helper'])
   })
 })
