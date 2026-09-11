@@ -242,7 +242,7 @@ const CLAIMED_CHANGE_VERBS_RE =
 // presence must suppress the hallucination warning rather than trigger it.
 const CLAIMED_COMMIT_VERBS_RE = /\b(commit(?:ted|s|ting)?|push(?:ed|es|ing)?)\b/i;
 
-// A bare verb alternation cannot tell "fixed the bug" from "did not fix anything", so a negation cue anywhere before the matched verb within its own clause voids the claim.
+// A bare verb alternation cannot tell "fixed the bug" from "did not fix anything", so a negation cue in the few words immediately preceding the matched verb voids the claim; deliberately not the whole clause, since an unrelated earlier negation ("No tests were skipped, and I updated the config") must still leave the real claim standing.
 const NEGATION_RE = /\b(no|not|n't|never|none|nothing|without)\b/i;
 
 // Returns true only if lastAssistantMessage contains an un-negated claimed-change verb: splits on sentence boundaries so a negation earlier in the same message does not suppress a genuine claim in a later, unrelated clause, and only looks at the 4 words immediately before the matched verb so an unrelated negation earlier in the same clause does not falsely suppress a real claim later in it.
