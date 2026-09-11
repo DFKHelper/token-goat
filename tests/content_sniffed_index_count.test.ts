@@ -33,7 +33,7 @@ function seed(): string[] {
     return target
   })
   // Same-extension files of the other language: neither indexed nor counted.
-  fs.copyFileSync(path.join(FIXTURES, 'matlab_isolate_axes.m'), path.join(TMP, 'isolate_axes.m'))
+  fs.copyFileSync(path.join(FIXTURES, 'mathematica_package.m'), path.join(TMP, 'Collatz.m'))
   fs.copyFileSync(path.join(FIXTURES, 'prolog_pairs.pl'), path.join(TMP, 'pairs.pl'))
   return files
 }

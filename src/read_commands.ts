@@ -34,6 +34,10 @@ import { extractPerl, isPerlSource, isPrologSource } from './languages/perl.js'
 import { extractCShader } from './languages/shader.js'
 import { extractSolidity } from './languages/solidity.js'
 import { extractThrift } from './languages/thrift.js'
+import { extractFortran } from './languages/fortran.js'
+import { extractPascal, isPascalSource } from './languages/pascal.js'
+import { extractMatlab, isMatlabSource } from './languages/matlab.js'
+import { extractCmake } from './languages/cmake.js'
 
 /** The statement-scanning adapters whose import targets `imports` reads, by lowercase extension. */
 const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath: string) => StatementAdapterResult> = new Map([
@@ -44,6 +48,9 @@ const STATEMENT_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath:
   ['.rpgle', extractRpg],
   ['.sqlrpgle', extractRpg],
   ['.jcl', extractJcl],
+  ...['.f', '.for', '.f77', '.f90', '.f95', '.f03', '.f08'].map((e): [string, typeof extractFortran] => [e, extractFortran]),
+  ...['.pas', '.dpr', '.dpk', '.lpr'].map((e): [string, typeof extractPascal] => [e, extractPascal]),
+  ['.cmake', extractCmake],
 ])
 
 /** The brace-language and Perl adapters whose import targets `imports` reads, by lowercase extension. `.m`, `.h`, `.pl` and `.t` are here only when their content says so (see braceAdapterImportsFor). */
@@ -60,7 +67,8 @@ const BRACE_ADAPTER_IMPORTS: ReadonlyMap<string, (content: string, filePath: str
 
 /** The adapter `imports` reads a file with extension `e` through, or undefined; the shared extensions go to it only when their content is that language, so a MATLAB `.m`, a C header, a Prolog `.pl` or a non-Perl `.t` reads as before. */
 function braceAdapterImportsFor(e: string, text: string): ((content: string, filePath: string) => { imports: readonly AdapterImport[] }) | undefined {
-  if (e === '.m') return isObjcSource(text) ? extractObjc : undefined
+  if (e === '.m') return isObjcSource(text) ? extractObjc : isMatlabSource(text) ? extractMatlab : undefined
+  if (e === '.pp') return isPascalSource(text) ? extractPascal : undefined
   if (e === '.h') return isObjcHeader(text) ? extractObjc : undefined
   if (e === '.pl') return isPrologSource(text) ? undefined : extractPerl
   if (e === '.t') return isPerlSource(text) ? extractPerl : undefined
@@ -84,7 +92,7 @@ import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
 import { detectLanguage, detectLanguageOfFile } from './parser_types.js'
-import { basenameImportsExtension } from './language_specs.js'
+import { basenameImportsExtension, FILENAME_LANGUAGE } from './language_specs.js'
 import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT, refBlindKindVerdict } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
@@ -6674,8 +6682,8 @@ export function extractImports(text: string, ext: string): string[] {
  */
 export function importsExtensionFor(filePath: string): string {
   const ext = path.extname(filePath)
-  // A basename-matched file (a bare `Makefile`) parses as the extension its table row names.
-  if (ext === '') return basenameImportsExtension(detectLanguage(filePath)) ?? ext
+  // A basename-matched file (a bare `Makefile`, or `CMakeLists.txt` whose `.txt` says nothing) parses as the extension its table row names.
+  if (ext === '' || FILENAME_LANGUAGE.has(path.basename(filePath).toLowerCase())) return basenameImportsExtension(detectLanguage(filePath)) ?? ext
   return ext
 }
 

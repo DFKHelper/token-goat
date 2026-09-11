@@ -122,6 +122,13 @@ export const LANGUAGE_SPECS = [
   { id: 'hlsl', extraction: 'regex', extensions: ['.hlsl', '.hlsli'], label: 'HLSL', ...CODE, fence: 'hlsl' },
   { id: 'wgsl', extraction: 'regex', extensions: ['.wgsl'], label: 'WGSL', ...CODE, fence: 'wgsl' },
   { id: 'metal', extraction: 'regex', extensions: ['.metal'], label: 'Metal', ...CODE, fence: 'metal' },
+  // `.f`, `.for` and `.f77` are read as fixed form unless code starts in column 1. `.fpp` stays unmapped: it is used for both forms.
+  { id: 'fortran', extraction: 'regex', extensions: ['.f', '.for', '.f77', '.f90', '.f95', '.f03', '.f08'], label: 'Fortran', ...CODE, fence: 'fortran' },
+  // `.inc` stays unmapped (many languages use it), and a `.pp` (Puppet uses it too) is Pascal only on a unit, program or library header: refineLanguageByContent in parser_types.ts decides. Text-form `.dfm` forms list their components.
+  { id: 'pascal', extraction: 'regex', extensions: ['.pas', '.dpr', '.dpk', '.lpr', '.dfm'], label: 'Pascal', ...CODE, fence: 'pascal' },
+  // MATLAB has no extension of its own: a `.m` that is not Objective-C is MATLAB only on a `function` or `classdef` header line, which refineLanguageByContent in parser_types.ts checks, so a Mathematica or Mercury `.m` stays unknown.
+  { id: 'matlab', extraction: 'regex', extensions: [], label: 'MATLAB', ...CODE, fence: 'matlab' },
+  { id: 'cmake', extraction: 'regex', extensions: ['.cmake'], basenames: ['cmakelists.txt'], label: 'CMake', ...CODE, fence: 'cmake', basenameImportsExtension: '.cmake' },
   // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },

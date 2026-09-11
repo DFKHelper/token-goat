@@ -1,0 +1,23 @@
+{ CAPTURE: Embarcadero BoldForDelphi BoldIB.dpk, trimmed (compiler switches removed), https://github.com/Embarcadero/BoldForDelphi/blob/master/BoldIB.dpk
+  Copyright (c) 2020 Embarcadero Technologies. MIT License: https://github.com/Embarcadero/BoldForDelphi/blob/master/LICENSE }
+package BoldIB;
+
+{$R *.RES}
+{$DESCRIPTION 'Bold 4.0 for Delphi (IBX Support)'}
+{$LIBSUFFIX '90'}
+
+requires
+  vcl,
+  vcldb,
+  ibxpress,
+  DesignIDE,
+  Bold;
+
+contains
+  BoldDatabaseAdapterIB in 'Source\Persistence\IBX\BoldDatabaseAdapterIB.pas',
+  BoldIBDatabaseAction in 'Source\Persistence\IBX\BoldIBDatabaseAction.pas',
+  BoldIBInterfaces in 'Source\Persistence\IBX\BoldIBInterfaces.pas',
+  BoldPersistenceHandleIB in 'Source\Persistence\IBX\BoldPersistenceHandleIB.pas',
+  BoldPersistenceHandleIBReg in 'Source\Persistence\IBX\BoldPersistenceHandleIBReg.pas';
+
+end.

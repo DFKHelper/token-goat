@@ -9,9 +9,9 @@ import { cFunctionHeader, quotedTarget, scanBraceLanguage, trailingIdentifier, w
 // How far into a `.m` or `.h` the markers are looked for, matching the head detectLanguageOfFile reads.
 const SNIFF_CHARS = 8192
 
-/** True when a `.m` file is Objective-C rather than MATLAB: a line starts with `#import`, `@interface`, `@implementation` or `@protocol`. */
+/** True when a `.m` file is Objective-C rather than MATLAB: a line starts with `#import <...>` or `#import "..."`, `@interface`, `@implementation` or `@protocol`. The target is required so an Octave comment such as `# import the data` does not count. */
 export function isObjcSource(content: string): boolean {
-  return /^[ \t]*(?:#[ \t]*import\b|@(?:interface|implementation|protocol)\b)/m.test(content.slice(0, SNIFF_CHARS))
+  return /^[ \t]*(?:#[ \t]*import[ \t]*[<"]|@(?:interface|implementation|protocol)\b)/m.test(content.slice(0, SNIFF_CHARS))
 }
 
 /** True when a `.h` header declares an Objective-C class or protocol, so it is not a plain C header. */

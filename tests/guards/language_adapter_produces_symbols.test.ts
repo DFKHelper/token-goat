@@ -110,6 +110,12 @@ const CASES: readonly AdapterCase[] = [
   { language: 'hlsl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.hlsl'), targetBasename: 'Sample.hlsl' },
   { language: 'wgsl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.wgsl'), targetBasename: 'Sample.wgsl' },
   { language: 'metal', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.metal'), targetBasename: 'Sample.metal' },
+  { language: 'fortran', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.f90'), targetBasename: 'Sample.f90' },
+  { language: 'pascal', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.pas'), targetBasename: 'Sample.pas' },
+  // A `.m` is MATLAB only by content, so this case is live only while the fixture has a `function` header line and no Objective-C marker.
+  { language: 'matlab', kind: 'regex', source: path.join(HAND_FIXTURES, 'matlab_isolate_axes.m'), targetBasename: 'isolate_axes.m' },
+  // CMake is found by the CMakeLists.txt basename here, not the `.cmake` extension.
+  { language: 'cmake', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.cmake'), targetBasename: 'CMakeLists.txt' },
   // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
   { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
   {
