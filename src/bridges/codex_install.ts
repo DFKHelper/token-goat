@@ -58,7 +58,7 @@ import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { loadConfig } from '../config.js'
-import { groupHasTokenGoat, findTokenGoatEntryPosition } from './matcher_group.js'
+import { groupHasTokenGoat, findTokenGoatEntryPosition, findAnyTokenGoatEntryPosition } from './matcher_group.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
 const CODEX_COMMAND_MARKER = 'token-goat-shim'
@@ -194,13 +194,7 @@ function anyGroupHasTokenGoat(
   groups: CodexMatcherGroup[] | undefined,
   predicate: (command: string) => boolean = isCodexTokenGoatCommand,
 ): boolean {
-  if (groups === undefined) return false
-  for (const group of groups) {
-    for (const h of group.hooks ?? []) {
-      if (predicate(h.command)) return true
-    }
-  }
-  return false
+  return findAnyTokenGoatEntryPosition(groups, predicate) !== undefined
 }
 
 // hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
@@ -301,14 +295,17 @@ export function installCodex(): CodexInstallResult {
     // A hand-edited or foreign-tool-written config.toml can hold a scalar (e.g. a bare string) under a key that Codex CLI's own hooks schema requires to be an array of matcher-group tables; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
     const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
     // Migrate a group left behind by a previous token-goat version whose matcher string has since changed (e.g. CODEX_MATCHERS[0] widening from "view_image|Bash" to "view_image|shell|bash"): stripStaleGroupHooks below only ever compares against the *current* matcher being installed, so a group under an old, no-longer-current matcher would otherwise survive untouched forever and permanently desync every later group's array position from what isCodexInstalled expects.
+    // A state key records the position the *existing* config wrote it under, so it has to be built from the group's original index; `idx` alone is the live-array index, which every splice below shifts down, which would record a key one slot short and leave the real orphan behind while transiently deleting a live entry's key.
+    let removedGroups = 0
     for (let idx = 0; idx < groups.length; idx++) {
       const g = groups[idx]!
       if (g.matcher === undefined || (CODEX_MATCHERS as readonly string[]).includes(g.matcher)) continue
       const hookList = g.hooks ?? []
       const keptHooks = hookList.filter((h) => !isCodexTokenGoatCommand(h.command))
       if (keptHooks.length === hookList.length) continue
+      const originalIdx = idx + removedGroups
       hookList.forEach((h, hi) => {
-        if (isCodexTokenGoatCommand(h.command)) staleStateKeysToRemove.push(`${configPath}:${eventArg}:${idx}:${hi}`)
+        if (isCodexTokenGoatCommand(h.command)) staleStateKeysToRemove.push(`${configPath}:${eventArg}:${originalIdx}:${hi}`)
       })
       hooksChanged = true
       if (keptHooks.length > 0) {
@@ -316,6 +313,7 @@ export function installCodex(): CodexInstallResult {
       } else {
         groups.splice(idx, 1)
         idx--
+        removedGroups++
       }
     }
     for (const matcher of CODEX_MATCHERS) {
@@ -523,8 +521,8 @@ export function isCodexInstalled(): boolean {
     const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
     const expectedCommand = codexHookCommandFor(scriptPath, eventArg)
     const groups = (hooks[event] as CodexMatcherGroup[] | undefined) ?? []
-    // Same real-position lookup as above: a global (matcher-less) event can also have a foreign group ahead of ours, so the hardcoded ":0:0" state key was wrong under the same conditions.
-    const position = findTokenGoatEntryPosition(groups, undefined, (c) => c === expectedCommand)
+    // Same real-position lookup as above, but matcher-blind: a global (matcher-less) event can have a foreign group ahead of ours, so the hardcoded ":0:0" state key was wrong under the same conditions, and both write sides (anyGroupHasTokenGoat and the [hooks.state] loop below it) scan every group regardless of `matcher`, so demanding a matcher-less group here would report not-installed forever for an entry install itself writes and trusts.
+    const position = findAnyTokenGoatEntryPosition(groups, (c) => c === expectedCommand)
     if (position === undefined) return false
     const stateKey = `${configPath}:${eventArg}:${position.groupIndex}:${position.hookIndex}`
     const expectedHash = computeCodexHookHash(eventArg, expectedCommand)
