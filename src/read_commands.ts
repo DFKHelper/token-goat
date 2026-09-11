@@ -37,7 +37,8 @@ import { redactSecrets } from './secret_redact.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
-import { detectLanguageOfFile } from './parser_types.js'
+import { detectLanguage, detectLanguageOfFile } from './parser_types.js'
+import { basenameImportsExtension } from './language_specs.js'
 import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT, refBlindKindVerdict } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
@@ -6617,9 +6618,10 @@ export function extractImports(text: string, ext: string): string[] {
  * other path falls through to its real `path.extname()`.
  */
 export function importsExtensionFor(filePath: string): string {
-  const base = path.basename(filePath).toLowerCase()
-  if (base === 'makefile' || base === 'gnumakefile' || base === 'bsdmakefile') return '.mk'
-  return path.extname(filePath)
+  const ext = path.extname(filePath)
+  // A basename-matched file (a bare `Makefile`) parses as the extension its table row names.
+  if (ext === '') return basenameImportsExtension(detectLanguage(filePath)) ?? ext
+  return ext
 }
 
 /** Handle ``token-goat imports file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */

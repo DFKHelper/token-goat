@@ -32,7 +32,8 @@ import { compressOutput, detectFromCommand, filterByName, hasBareBackgroundOrNew
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { canRunWrappedShell } from './shell.js'
-import { detectLanguage, type Language } from './parser_types.js'
+import { detectLanguage } from './parser_types.js'
+import { languageHasFlag } from './language_specs.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
 import { isUnderSystemTemp } from './project.js'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -1093,11 +1094,6 @@ function extractLineRangeReadsCompound(cmd: string): Array<{ filePath: string; r
   return [...merged.values()]
 }
 
-// Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
-const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
-  'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'swift', 'scala', 'lua', 'elixir', 'dart', 'zig', 'r', 'sql', 'graphql', 'proto', 'terraform', 'bash', 'powershell', 'vb', 'cobol', 'natural', 'apex', 'salesforce_metadata', 'salesforce_markup',
-])
-
 // Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`), tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range per requested range.
 function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, number]>, tool: 'sed' | 'awk'): string {
   const lang = detectLanguage(filePath)
@@ -1116,7 +1112,8 @@ function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, 
   if (lang === 'toml' || lang === 'json' || lang === 'yaml' || lang === 'ini') {
     return prefix + 'For config, `token-goat config-get "' + filePath + '" <key>` or `token-goat section "' + filePath + '::<block>"` extracts one value; or ' + allReads + ' for exactly those lines.'
   }
-  if (SYMBOL_BEARING_LANGUAGES.has(lang)) {
+  // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
+  if (languageHasFlag(lang, 'symbolBearing')) {
     return prefix + 'For a whole function/class, `token-goat symbol <name>` or `token-goat read "' + filePath + '::<Symbol>"` is robust to line shifts; or ' + allReads + ' for exactly those lines.'
   }
   return prefix + 'Use ' + allReads + ' to read exactly those lines.'

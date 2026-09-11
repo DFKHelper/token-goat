@@ -15,6 +15,8 @@ import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/i
 import { redactSecrets } from './secret_redact.js'
 import { displaySafePath } from './paths.js'
 import { recordStat } from './stats.js'
+import { detectLanguage } from './parser_types.js'
+import { languageHasFlag } from './language_specs.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
  *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
@@ -146,7 +148,6 @@ function foldGrepContentHandler(event: HookEvent): HookOutput {
 }
 
 const DOC_EXT_RE = /\.(?:md|mdx|rst|txt)$/i
-const SOURCE_EXT_RE = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|vb|bas|vbs|frm|cbl|cob|cpy|cobol|nsp|nsn|nss|nsa|nsl|nsg|nsc|nsh)$/i
 
 const STRUCTURAL_DOC_PATTERN_RE = /^(?:\^)?#+\s*/
 const STRUCTURAL_SOURCE_PATTERN_RE = /^(?:\^|\s)*(?:def|class|function|async\s+def|async\s+function|export\s+(?:default\s+)?(?:class|function|interface|type|const|enum)|func|fn|struct|interface|impl|type)\b/i
@@ -178,7 +179,7 @@ export function extractGrepStructuralSearch(toolInput: Record<string, unknown>):
     return { filePath: rawPath, isDoc: true, isSource: false }
   }
 
-  if (SOURCE_EXT_RE.test(rawPath) && STRUCTURAL_SOURCE_PATTERN_RE.test(pattern)) {
+  if (languageHasFlag(detectLanguage(rawPath), 'grepSource') && STRUCTURAL_SOURCE_PATTERN_RE.test(pattern)) {
     return { filePath: rawPath, isDoc: false, isSource: true }
   }
 

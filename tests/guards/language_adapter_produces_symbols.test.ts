@@ -33,6 +33,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../../src/db.js'
 import { querySymbols } from '../../src/index_reader.js'
+import { LANGUAGE_SPECS } from '../../src/language_specs.js'
 import { detectLanguage, type Language } from '../../src/parser_types.js'
 import { indexFileSync, isTreeSitterAvailable } from '../../src/parser.js'
 import { pinnedPopulation } from './population.js'
@@ -93,8 +94,8 @@ const CASES: readonly AdapterCase[] = [
   { language: 'terraform', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.tf'), targetBasename: 'sample.tf' },
   { language: 'powershell', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.ps1'), targetBasename: 'sample.ps1' },
   { language: 'vb', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.vb'), targetBasename: 'Sample.vb' },
-  { language: 'cobol', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.cbl'), targetBasename: 'Sample.cbl' },
-  { language: 'natural', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.nsp'), targetBasename: 'Sample.nsp' },
+  { language: 'cobol', kind: 'special', source: path.join(HAND_FIXTURES, 'Sample.cbl'), targetBasename: 'Sample.cbl' },
+  { language: 'natural', kind: 'special', source: path.join(HAND_FIXTURES, 'Sample.nsp'), targetBasename: 'Sample.nsp' },
   {
     language: 'apex',
     kind: 'regex',
@@ -151,6 +152,11 @@ describe('every registered language adapter produces symbols on a real file, thr
       floor: 40,
       mustInclude: ['typescript', 'javascript', 'python', 'markdown', 'json'],
     })
+
+    // Every row of the language table needs a case here, of the matching extraction kind.
+    const kindOf = { 'tree-sitter': 'tree-sitter', regex: 'regex', 'own-result': 'special' } as const
+    const missing = LANGUAGE_SPECS.filter((s) => !CASES.some((c) => c.language === s.id && c.kind === kindOf[s.extraction])).map((s) => `${s.id} (${s.extraction})`)
+    expect(missing, 'language table rows with no CASES entry of the matching kind').toEqual([])
 
     const stale = CASES.filter((c) => !caseIsLive(c)).map((c) => c.language)
     expect(

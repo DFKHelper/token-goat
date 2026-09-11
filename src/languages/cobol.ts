@@ -83,6 +83,20 @@ function blankStrings(text: string): string {
   return out
 }
 
+/**
+ * Append a fixed-format continuation line (indicator `-`) to the program line before it, so a word or literal split across the two reads whole: `PERFORM CALC-` then `-    PARA` is `PERFORM CALC-PARA`.
+ * The continued text starts at its first nonblank character in Area B; when that is a quote the literal above carries on, so the quote is dropped (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-continuation-lines).
+ */
+function joinContinuation(out: CobolLine[], areaB: string): void {
+  const prev = out[out.length - 1]
+  const rest = areaB.trimStart()
+  if (prev === undefined || rest === '') return
+  const opensLiteral = (prev.code.match(/["']/g) ?? []).length % 2 === 1
+  const piece = (opensLiteral && (rest[0] === '"' || rest[0] === "'") ? rest.slice(1) : rest).trimEnd()
+  const text = stripFloatingComment(prev.text + piece).trimEnd()
+  out[out.length - 1] = { ...prev, text, code: blankStrings(text) }
+}
+
 function toLines(rawLines: readonly string[]): CobolLine[] {
   const out: CobolLine[] = []
   let free = startsFree(rawLines)
@@ -104,8 +118,12 @@ function toLines(rawLines: readonly string[]): CobolLine[] {
     } else {
       if (raw.length <= 7) continue
       const indicator = raw[6]!
-      // Comment, debugging, and continuation lines: none opens a declaration, and a continuation only carries the rest of a word or literal.
-      if (indicator === '*' || indicator === '/' || indicator === 'D' || indicator === 'd' || indicator === '-') continue
+      // Comment and debugging lines: neither opens a declaration nor carries a reference.
+      if (indicator === '*' || indicator === '/' || indicator === 'D' || indicator === 'd') continue
+      if (indicator === '-') {
+        joinContinuation(out, raw.slice(7, 72))
+        continue
+      }
       text = raw.slice(7, 72)
       offset = 7
       areaA = text.slice(0, 4).trim() !== ''

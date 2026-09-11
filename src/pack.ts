@@ -6,60 +6,9 @@ import * as minimatch from 'minimatch'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { decodeSource } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
+import { detectLanguage } from './parser_types.js'
+import { fenceFor } from './language_specs.js'
 
-const LANG_MAP: Record<string, string> = {
-  '.py': 'python',
-  '.ts': 'typescript',
-  '.tsx': 'tsx',
-  '.js': 'javascript',
-  '.jsx': 'jsx',
-  '.rs': 'rust',
-  '.go': 'go',
-  '.java': 'java',
-  '.c': 'c',
-  '.cpp': 'cpp',
-  '.h': 'c',
-  '.hpp': 'cpp',
-  '.cs': 'csharp',
-  '.rb': 'ruby',
-  '.sh': 'bash',
-  '.bash': 'bash',
-  '.zsh': 'bash',
-  '.fish': 'fish',
-  '.sql': 'sql',
-  '.yaml': 'yaml',
-  '.yml': 'yaml',
-  '.toml': 'toml',
-  '.json': 'json',
-  '.md': 'markdown',
-  '.html': 'html',
-  '.css': 'css',
-  '.scss': 'scss',
-  '.tf': 'hcl',
-  '.kt': 'kotlin',
-  '.swift': 'swift',
-  '.lua': 'lua',
-  '.vb': 'vbnet',
-  '.bas': 'vb',
-  '.frm': 'vb',
-  '.cbl': 'cobol',
-  '.cob': 'cobol',
-  '.cpy': 'cobol',
-  '.cobol': 'cobol',
-  '.nsp': 'natural',
-  '.nsn': 'natural',
-  '.nss': 'natural',
-  '.nsa': 'natural',
-  '.nsl': 'natural',
-  '.nsg': 'natural',
-  '.nsc': 'natural',
-  '.nsh': 'natural',
-  '.vbs': 'vbscript',
-  '.r': 'r',
-  '.dart': 'dart',
-  '.ex': 'elixir',
-  '.exs': 'elixir',
-}
 
 export interface PackFile {
   path: string
@@ -97,9 +46,9 @@ export interface BudgetResult {
   total_tokens: number
 }
 
+// The code-fence name: the `fence` column of src/language_specs.ts.
 function getLang(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase()
-  return LANG_MAP[ext] ?? ''
+  return fenceFor(detectLanguage(filePath), path.extname(filePath).toLowerCase())
 }
 
 function matches(rel: string, patterns: string[]): boolean {

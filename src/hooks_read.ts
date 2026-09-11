@@ -59,6 +59,7 @@ import { findVerifiedFileEvidence, recordEvidence } from './evidence_cache.js'
 import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
 import { detectLanguage } from './parser_types.js'
+import { languageHasFlag } from './language_specs.js'
 import { foldDetail } from './code_fold.js'
 import { foldDelivery, foldingEnabled } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton, type StructuralFold } from './fold_structure.js'
@@ -409,27 +410,14 @@ function describeSliceAdvice(slice: RequestedSlice, rawAbsPath: string): string 
   return 'Use Read with offset/limit to sample specific sections.'
 }
 
-/** Source/style/data extensions eligible for diff-on-reread when serve_diff_on_reread is enabled. */
-const DIFFABLE_SOURCE_RE =
-  /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|json|jsonc|py|go|rs|java|rb|php|kt|c|h|cpp|cc|cxx|hpp|cs|sql|yaml|yml|toml|ps1|psm1|cls|trigger|swift|scala|sc|lua|ex|exs|dart|zig|r|R|vb|bas|vbs|frm|cbl|cob|cpy|cobol|nsp|nsn|nss|nsa|nsl|nsg|nsc|nsh)$/i
+/** Source/style/data files eligible for diff-on-reread when serve_diff_on_reread is enabled: the `diffable` column of src/language_specs.ts. */
+function isDiffableSource(basename: string): boolean {
+  return languageHasFlag(detectLanguage(basename), 'diffable')
+}
 
-/**
- * Extensions with a tree-sitter language adapter AND where `token-goat skeleton`/`outline`
- * are the intended re-read tool (markdown, json, yaml, etc. also have adapters but keep
- * their own dedicated read path -- e.g. `token-goat section` -- so they're deliberately
- * excluded here even though EXTENSION_LANGUAGE recognizes them). Previously omitted several
- * real language extensions (.cs, .mjs/.cjs/.mts/.cts, .cc/.cxx/.hpp/.hxx, .kts, .pyi) and
- * wrongly included `.swift`, which at the time had no adapter at all (it now does -- see
- * `src/languages/swift.ts` -- so it belongs here again). Also previously omitted
- * .ps1/.psm1 (powershell) and .cls/.trigger (apex), both of which have real adapters.
- */
-const SOURCE_EXT_RE =
-  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb|php|kt|kts|cpp|cc|cxx|hpp|hxx|c|h|cs|ps1|psm1|cls|trigger|swift|scala|sc|lua|ex|exs|dart|zig|r|R|vb|bas|vbs|frm|cbl|cob|cpy|cobol|nsp|nsn|nss|nsa|nsl|nsg|nsc|nsh)$/i
-
+/** Files where `token-goat skeleton`/`outline` are the intended re-read tool: the `sourceHints` column of src/language_specs.ts. Markdown, JSON, YAML and the other data formats have adapters too but keep their own read path (`token-goat section`), so their rows leave it off. */
 function isSourceExtension(basename: string): boolean {
-  if (SOURCE_EXT_RE.test(basename)) return true
-  const language = detectLanguage(basename)
-  return language === 'apex' || language === 'salesforce_metadata' || language === 'salesforce_markup'
+  return languageHasFlag(detectLanguage(basename), 'sourceHints')
 }
 
 // Extensions dispatchFileTypeHandler() (hints/file_type_handler.ts) recognizes and gives
@@ -1153,7 +1141,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a snapshot was captured by postReadHandler on the first read. When serve_diff_on_reread is enabled, source/style/data files also get diffs. Falls through to the generic wasFileReadThisSession block when no snapshot exists, preserving existing context vs. deny behavior for un-snapshotted files.
   const isDocDiffable = /\.(md|mdx|markdown|rst|txt)$/i.test(basename)
-  const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && DIFFABLE_SOURCE_RE.test(basename)
+  const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && isDiffableSource(basename)
   if (
     (isDocDiffable || isSourceDiffable) &&
     wasFileReadThisSession(normalized) &&
@@ -1536,7 +1524,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
   const postBasename = path.basename(normalized)
   const diffSourcesEnabled = loadConfig().hints.serve_diff_on_reread
-  if (/\.(md|mdx|markdown|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && DIFFABLE_SOURCE_RE.test(postBasename))) {
+  if (/\.(md|mdx|markdown|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && isDiffableSource(postBasename))) {
     try {
       const sz = statSize(normalized)
       if (sz !== null && sz <= 256 * 1024) {
@@ -1590,7 +1578,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   // Post-read structural-navigation hint: once a just-read source file crosses
   // post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of
   // a future full re-read. Only fires for extensions with a tree-sitter language adapter
-  // (SOURCE_EXT_RE), where skeleton/outline actually produce structure.
+  // (the sourceHints column of src/language_specs.ts), where skeleton/outline actually produce structure.
   if (isSourceExtension(postBasename)) {
     try {
       const sz = statSize(normalized)
