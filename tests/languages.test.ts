@@ -1577,6 +1577,48 @@ fun topLevel() {}
     expect(imports.some((i) => i.target.includes('List'))).toBe(true)
   })
 
+  // Fixture provenance: HAND-DERIVED. The declaration forms are the `external` / `final` / `inline` spellings listed in the Kotlin grammar's classModifier and inheritanceModifier productions (https://kotlinlang.org/docs/reference/grammar.html#classModifier), not read off this adapter's own regex, and the expected symbol names are read off the source text by hand.
+  it('extracts a class, interface and object introduced by external, final or inline (regression: CLASS_HEADER_RE omitted all three from its modifier alternation, so the header never matched, no class frame was pushed, and the type plus every member in its body was dropped)', () => {
+    const content = `package com.example
+
+external interface Console {
+    fun log(message: String)
+}
+
+external object NativeConsole {
+    fun warn(message: String)
+}
+
+final class Locked {
+    fun locked(): Int = 1
+}
+
+inline class Legacy(val raw: String)
+
+class Normal {
+    fun normal(): Int = 2
+}
+
+fun tailTop(): Int = 3
+`
+    const { symbols } = extractKotlin(content, 'Modifiers.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Console')
+    expect(names).toContain('log')
+    expect(names).toContain('NativeConsole')
+    expect(names).toContain('warn')
+    expect(names).toContain('Locked')
+    expect(names).toContain('locked')
+    expect(names).toContain('Legacy')
+    expect(names).toContain('Normal')
+    expect(names).toContain('tailTop')
+    expect(symbols.find((s) => s.name === 'log')?.parent).toBe('Console')
+    expect(symbols.find((s) => s.name === 'warn')?.parent).toBe('NativeConsole')
+    expect(symbols.find((s) => s.name === 'locked')?.parent).toBe('Locked')
+    expect(symbols.find((s) => s.name === 'Console')?.kind).toBe('interface')
+    expect(symbols.find((s) => s.name === 'NativeConsole')?.kind).toBe('object')
+  })
+
   it('extracts a class, method, and top-level function that carry a same-line annotation (regression: FUN_RE/CLASS_HEADER_RE/TOP_FUN_RE are all ^-anchored against the modifier alternation or declaration keyword directly, with no room for a leading @Annotation token, so @Composable fun Foo() / @Test fun bar() / @Serializable data class Foo(...) - all extremely common real-world Kotlin - silently dropped the whole declaration and, for a class, every member inside it)', () => {
     const content = `@Serializable data class Foo(val x: Int)
 
