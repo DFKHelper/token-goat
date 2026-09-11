@@ -75,6 +75,11 @@ describe('documentation command coverage', () => {
     const manifest = buildCommandManifest(buildProgram())
     const realCommands = manifest.map(e => e.name.toLowerCase())
 
+    // Floor the needle as well as the haystack. `buildCommandManifest` reads `program.commands`, so a registration module that stopped running (or a refactor that moved commands onto a lazily built subprogram) yields an empty manifest, an empty `undocumented`, and a test that passes while checking nothing. 148 commands are registered today; the floor sits well below that so ordinary additions and removals do not trip it.
+    expect(realCommands.length).toBeGreaterThan(100)
+    expect(realCommands).toContain('symbol')
+    expect(realCommands).toContain('read')
+
     // Find which real commands are NOT documented
     const undocumented = realCommands.filter(cmd => !documentedCommands.has(cmd))
 

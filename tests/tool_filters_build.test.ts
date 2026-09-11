@@ -357,6 +357,17 @@ describe('MesonFilter', () => {
     expect(result).toContain('collapsed')
   })
 
+  // FORMAT-DERIVED: `Found ninja-1.11.1 at /usr/bin/ninja` and `Found pkg-config: /usr/bin/pkg-config (0.29.2)` are the tool-discovery lines `meson setup` prints, as documented in the Meson manual's "Running Meson" sample setup output. Cited from that reference rather than from this filter's own regex.
+  it('discloses the count of suppressed tool-discovery lines instead of dropping them silently', () => {
+    const out = 'Found ninja-1.11.1 at /usr/bin/ninja\nFound pkg-config: /usr/bin/pkg-config (0.29.2)\nFound CMake: /usr/bin/cmake (3.27.4)\nProject name: myproject\n'
+    const result = apply(f, out, '', 0, ['meson', 'setup', 'builddir'])
+    expect(result).toContain('Project name: myproject')
+    expect(result).not.toContain('/usr/bin/ninja')
+    expect(result).toContain('suppressed 2 "Found <tool>" discovery lines')
+    // Must not over-count: `Found CMake:` is capitalised differently and is not one of the three matched tools, so it stays in the output rather than being counted as dropped.
+    expect(result).toContain('Found CMake')
+  })
+
   it('passthrough on non-zero exit (errorPassthrough=true)', () => {
     const out = 'meson.build:5:0: ERROR: Dependency "openssl" not found\n'
     const result = apply(f, out, '', 1, ['meson', 'setup', 'builddir'])
@@ -721,6 +732,27 @@ describe('NxFilter', () => {
     const result = apply(f, out, '', 0, ['nx', 'run', 'app:build'])
     expect(result).not.toContain('existing outputs match')
     expect(result).toContain('Successfully ran target build')
+  })
+
+  // FORMAT-DERIVED: `> nx run <project>:<target>` is the task header Nx prints above each task's output, as shown in the Nx documentation's "Run Tasks" guide sample terminal output. Cited from that reference rather than from this filter's own regex.
+  it('discloses the count of dropped task headers on a green run', () => {
+    const out = ['> nx run app:build', 'built app', '> nx run lib:build', 'built lib', 'NX   Successfully ran target build for 2 projects'].join('\n') + '\n'
+    const result = apply(f, out, '', 0, ['nx', 'run-many', '--target=build'])
+    expect(result).not.toContain('> nx run app:build')
+    expect(result).toContain('dropped 2 task header lines')
+    // Loss direction: the task output and the summary both survive the drop.
+    expect(result).toContain('built app')
+    expect(result).toContain('built lib')
+    expect(result).toContain('Successfully ran target build')
+  })
+
+  it('discloses only the task headers past the sample cap on a red run', () => {
+    const out = Array.from({ length: 8 }, (_, i) => `> nx run pkg${i}:build`).join('\n') + '\nNX   Failed\n'
+    const result = apply(f, out, '', 1, ['nx', 'run-many', '--target=build'])
+    expect(result).toContain('> nx run pkg0:build')
+    expect(result).toContain('> nx run pkg4:build')
+    expect(result).not.toContain('> nx run pkg5:build')
+    expect(result).toContain('dropped 3 task header lines')
   })
 
   it('keeps summary lines', () => {
