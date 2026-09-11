@@ -4306,6 +4306,37 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(names).toContain('srv.db.dbo.Widgets')
   })
 
+  // Fixture provenance: HAND-DERIVED. The identifiers are written from the escaping rule each
+  // dialect states -- SQL:2016 delimited identifier (`""` is one `"`), MySQL identifier syntax
+  // (a doubled backtick is one backtick), T-SQL delimited identifiers (`]]` is one `]`) -- and the
+  // expected names are the characters those rules spell out, computed by hand rather than read
+  // from any output of this adapter.
+  it('reads a doubled delimiter inside a delimited identifier as one escaped character rather than a close followed by a reopen (regression: QUOTED matched only up to the first half of the escape, so CREATE TABLE "a.""b".c was captured as "a." and indexed under the fabricated name a. -- a name the file never declares, which is worse than no symbol at all because the index then looks populated)', () => {
+    const content = [
+      'CREATE TABLE "a.""b".c (id int);',
+      'CREATE TABLE `m``n`.t2 (id int);',
+      'CREATE TABLE [b]]racket].t3 (id int);',
+      'CREATE TABLE plain_table (id int);',
+    ].join('\n')
+    const names = extractSql(content, 'schema.sql').map((s) => s.name)
+    expect(names).toContain('a."b.c')
+    expect(names).toContain('m`n.t2')
+    expect(names).toContain('b]racket.t3')
+    // A fabricated name is worse than a missing one, so the wrong spellings are asserted absent:
+    // a test that only checks the right name exists passes against code emitting both.
+    expect(names).not.toContain('a.')
+    expect(names).not.toContain('m')
+    expect(names).not.toContain('b.t3')
+    // Negative control: an unquoted neighbour in the same file is unaffected by the change.
+    expect(names).toContain('plain_table')
+  })
+
+  it('keeps a literal dot inside a bracketed identifier in the same segment when the identifier also escapes a bracket (regression: splitQualifiedSegments treated the second ] of ]] as an ordinary character rather than the escape, fell outside the identifier, and split its literal dot into a second segment)', () => {
+    const names = extractSql('CREATE TABLE [a]].b] (id int);', 'schema.sql').map((s) => s.name)
+    expect(names).toContain('a].b')
+    expect(names).not.toContain('a].b]')
+  })
+
   it('control: a two-part qualified name still keeps its schema prefix rather than being reduced to the bare object name', () => {
     const symbols = extractSql('CREATE TABLE reporting.daily_orders (id INT);', 'schema.sql')
     expect(symbols.map((s) => s.name)).toContain('reporting.daily_orders')
