@@ -30,7 +30,7 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getDb } from './db.js'
@@ -5299,6 +5299,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     serveBatch(argv[3], (a) => run(a))
     return
   }
+  // Any command that reads or indexes a file can reach a synchronous parse, and the regex language adapters live behind a dynamic import so the hook path never compiles them (see loadRegexExtractors). Load them once here rather than at each of the call sites below it.
+  await loadRegexExtractors()
   const program = buildProgram()
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command)
   // instead of letting it call process.exit() mid-flush.

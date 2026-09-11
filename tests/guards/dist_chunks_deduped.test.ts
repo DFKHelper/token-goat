@@ -37,14 +37,42 @@ const DIST = path.join(ROOT, 'dist')
 const ENTRY_FILES = new Set(['token-goat.mjs', 'token-goat.core.mjs', 'token-goat-hook.mjs'])
 
 /**
+ * The language modules the hook path may compile. Everything else under src/languages/ is an extractor only the indexer
+ * calls, and adding one must not grow the eager set -- which is what every adapter batch did before
+ * languages/registry.ts existed. Each name here earns its place by being called on the hook path itself.
+ */
+const EAGER_LANGUAGE_MODULES = new Set([
+  'src/languages/common.ts', // heading and line helpers section_reader and the file-type hints call
+  'src/languages/ini_idx.ts', // the .env quote scan dotenv redaction and section_reader share
+  'src/languages/ipynb_idx.ts', // notebook flattening, reached from parser.ts's own indexing entry points
+  'src/languages/salesforce_frontend.ts', // LWC composition inside the tree-sitter parse the read hook's fold calls
+  'src/languages/sniff.ts', // the content sniffs detectLanguage runs to tell `.m`, `.pp`, `.h`, `.pl` and `.t` apart
+])
+
+/**
+ * The `src/...` module markers esbuild writes above each module it inlines, read out of `files`.
+ *
+ * CAPTURE: the names come from the built bundle itself, not from a list of what we expect to be in it.
+ */
+function modulesIn(files: readonly string[]): Set<string> {
+  const out = new Set<string>()
+  for (const f of files) {
+    for (const m of fs.readFileSync(f, 'utf8').matchAll(/^\/\/ (src\/[\w./-]+)$/gm)) out.add(m[1]!)
+  }
+  return out
+}
+
+/**
  * Ceiling on what the hook entry pulls in statically, mirroring the core's ceiling in
  * core_bundle_stays_split.test.ts. A bridge `import()`s this bundle on nearly every tool call and
  * V8 parses every byte of the eager set before running any of it. Measured at 1.837 MB across 7
  * chunks both before and after the two builds were merged; the headroom is a regression trip-wire,
- * not a budget to re-tune on every dependency change. Raised from 2.4 MB to 2.6 MB when the Fortran, Pascal, MATLAB
- * and CMake adapters (41 KB, eager like every other adapter) took the set from 2.507 MB to 2.548 MB.
+ * not a budget to re-tune on every dependency change. It went 2.4 MB -> 2.6 MB when the Fortran, Pascal, MATLAB
+ * and CMake adapters (41 KB, eager like every other adapter) grew the set, and back to 2.25 MB once the adapters moved
+ * behind parser.ts's dynamic import of languages/registry.ts. Measured on one machine across that move: 2.430 MB over
+ * 7 chunks before, 2.167 MB over 8 after, and 47-53 ms to import the hook bundle before against 42-43 ms after.
  */
-const MAX_HOOK_EAGER_BYTES = 2.6 * 1024 * 1024
+const MAX_HOOK_EAGER_BYTES = 2.25 * 1024 * 1024
 
 /** Chunk filenames `file` imports with a static `import ... from "./..."`, not a deferred one. */
 function staticChunkImports(file: string): string[] {
@@ -133,6 +161,27 @@ describe('dist chunks are shared, not duplicated', () => {
       bytes,
       `hook eager set is ${(bytes / 1024 / 1024).toFixed(3)} MB across ${eager.size} chunks`,
     ).toBeLessThan(MAX_HOOK_EAGER_BYTES)
+  })
+
+  it('compiles no regex language adapter on the hook path', () => {
+    const eager = [HOOK_BUNDLE, ...[...closure(HOOK_BUNDLE, 'static')].map((c) => path.join(DIST, c))]
+    const modules = modulesIn(eager)
+    // Non-vacuous: a build whose markers this stopped finding would report an empty adapter set for the wrong reason.
+    expect(modules.size, 'no src/ module markers found in the hook eager set').toBeGreaterThan(50)
+    const languages = [...modules].filter((m) => m.startsWith('src/languages/')).sort()
+    expect(languages.length, 'the hook eager set names no language module at all').toBeGreaterThan(0)
+    expect(languages.filter((m) => !EAGER_LANGUAGE_MODULES.has(m))).toEqual([])
+  })
+
+  it('reaches a regex adapter only through a deferred chunk', () => {
+    // fortran.ts stands for the adapters as a group: it is called from ADAPTER_EXTRACTORS alone, so the hook must be
+    // able to reach it (the CLI and worker share these chunks) without compiling it up front.
+    const eager = [...closure(HOOK_BUNDLE, 'static')]
+    const deferred = [...closure(HOOK_BUNDLE, 'any')].filter((c) => !eager.includes(c))
+    const holding = (chunks: string[]): string[] =>
+      chunks.filter((c) => modulesIn([path.join(DIST, c)]).has('src/languages/fortran.ts'))
+    expect(holding(deferred).length, 'no deferred chunk holds src/languages/fortran.ts').toBeGreaterThan(0)
+    expect(holding([...eager, path.basename(HOOK_BUNDLE)]), 'src/languages/fortran.ts is compiled eagerly').toEqual([])
   })
 
   it('defers at least one chunk from the hook entry', () => {

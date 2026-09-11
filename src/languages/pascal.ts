@@ -137,30 +137,8 @@ const HEADER_WORDS: ReadonlySet<string> = new Set(['PROGRAM', 'UNIT', 'LIBRARY',
 const IMPORT_WORDS: ReadonlySet<string> = new Set(['USES', 'REQUIRES', 'CONTAINS'])
 const MEMBER_KINDS: Readonly<Record<string, string>> = { PROCEDURE: 'method', FUNCTION: 'method', CONSTRUCTOR: 'constructor', DESTRUCTOR: 'destructor', OPERATOR: 'operator' }
 
-/** True when a `.pp` file (Puppet uses it too) opens, after any comments, with a Pascal `unit`, `program` or `library` header. */
-export function isPascalSource(content: string): boolean {
-  const head = content.slice(0, 8192)
-  let i = 0
-  for (;;) {
-    while (i < head.length && /\s/.test(head[i]!)) i++
-    if (head[i] === '{') {
-      const end = head.indexOf('}', i)
-      if (end < 0) return false
-      i = end + 1
-    } else if (head.startsWith('(*', i)) {
-      const end = head.indexOf('*)', i)
-      if (end < 0) return false
-      i = end + 2
-    } else if (head.startsWith('//', i)) {
-      const end = head.indexOf('\n', i)
-      if (end < 0) return false
-      i = end + 1
-    } else {
-      break
-    }
-  }
-  return /^(?:unit|program|library)[ \t\r\n]+[A-Za-z_][\w.]*[ \t\r\n]*[;(]/i.test(head.slice(i, i + 300))
-}
+// The Pascal sniff lives in sniff.ts so language detection on the hook path does not load this adapter.
+export { isPascalSource } from './sniff.js'
 
 class PascalParser {
   private p = 0

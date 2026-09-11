@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
@@ -1278,6 +1278,8 @@ export async function runWorkerLoop(
   pollIntervalMs: number,
   shouldStop: () => boolean = () => false,
 ): Promise<void> {
+  // The drain indexes files, and the regex language adapters it needs are behind a dynamic import (see loadRegexExtractors): load them before the first cycle, since drainOnce and the index callback under it are synchronous.
+  await loadRegexExtractors()
   // Local to this loop invocation (not module-level) so each call starts its own fresh throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across tests in the same process).
   let lastSnapshotCleanupMs = 0
   let lastKnownRootsSweepMs = 0

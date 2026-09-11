@@ -3,7 +3,7 @@
  * from it: the extension and basename maps detectLanguage reads (parser_types.ts), the read,
  * grep and bash hook gates, the pack fence names, and the display labels. The {@link Language}
  * union itself is derived from the `id` column, so a new row that has no extractor in
- * parser.ts's NO_TREE_SITTER_EXTRACTORS fails the type check rather than indexing nothing.
+ * languages/registry.ts's ADAPTER_EXTRACTORS fails the type check rather than indexing nothing.
  *
  * Adding a language is one row here plus its extractor: see CLAUDE.arch.md "Adding a New Language".
  *
@@ -13,7 +13,7 @@
 /** Column meanings, one row per language. */
 interface LanguageSpecShape {
   readonly id: string
-  /** How symbols are extracted: a tree-sitter grammar, a regex adapter in NO_TREE_SITTER_EXTRACTORS, or a branch in parser.ts's extractNoTreeSitter that returns symbols and refs together. */
+  /** How symbols are extracted: a tree-sitter grammar, a regex adapter in languages/registry.ts's ADAPTER_EXTRACTORS, or a branch in parser.ts's extractNoTreeSitter that returns symbols and refs together. */
   readonly extraction: 'tree-sitter' | 'regex' | 'own-result'
   /** Lowercase extensions with the leading dot. */
   readonly extensions: readonly string[]
@@ -150,7 +150,7 @@ export type Language = Spec['id'] | 'unknown'
 /** Languages indexed through a tree-sitter grammar. */
 export type TreeSitterLanguage = Extract<Spec, { extraction: 'tree-sitter' }>['id']
 
-/** Languages whose regex adapter must have an entry in parser.ts's NO_TREE_SITTER_EXTRACTORS. */
+/** Languages whose regex adapter must have an entry in languages/registry.ts's ADAPTER_EXTRACTORS (or, for the structured-document formats, in parser.ts's own half of that table). */
 export type RegexLanguage = Extract<Spec, { extraction: 'regex' }>['id']
 
 /** Languages parser.ts's extractNoTreeSitter handles in a branch of their own. */

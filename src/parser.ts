@@ -37,55 +37,13 @@ import { precedingDocComment } from './doc_comment.js'
 import type { DocCommentStyle } from './doc_comment.js'
 import { querySymbols } from './index_reader.js'
 import { extractMarkdownHeadings } from './hints/markdown_hints.js'
-import { extractCsharp } from './languages/csharp.js'
-import { extractPhp } from './languages/php.js'
-import { extractHtml } from './languages/html.js'
-import { extractLiquid } from './languages/liquid.js'
-import { extractKotlin } from './languages/kotlin.js'
-import { extractSwift } from './languages/swift.js'
-import { extractScala } from './languages/scala.js'
-import { extractLua } from './languages/lua.js'
-import { extractVb } from './languages/vb.js'
-import { extractCobol } from './languages/cobol.js'
-import { extractNatural } from './languages/natural.js'
-import { extractAbap } from './languages/abap.js'
-import { extractAbl } from './languages/abl.js'
-import { extractJcl } from './languages/jcl.js'
-import { extractPli } from './languages/pli.js'
-import { extractRpg } from './languages/rpg.js'
-import { extractSas } from './languages/sas.js'
-import { extractGroovy } from './languages/groovy.js'
-import { extractObjc } from './languages/objc.js'
-import { extractPerl } from './languages/perl.js'
-import { extractCShader, extractWgsl } from './languages/shader.js'
-import { extractSolidity } from './languages/solidity.js'
-import { extractThrift } from './languages/thrift.js'
-import { extractFortran } from './languages/fortran.js'
-import { extractPascal } from './languages/pascal.js'
-import { extractMatlab } from './languages/matlab.js'
-import { extractCmake } from './languages/cmake.js'
-import { extractElixir } from './languages/elixir.js'
-import { extractDart } from './languages/dart.js'
-import { extractZig } from './languages/zig.js'
-import { extractR } from './languages/r.js'
-import { extractGraphql } from './languages/graphql_idx.js'
-import { extractSql } from './languages/sql_idx.js'
-import { assignBraceBlockSpans, stripCstyleComments, stripStringLiterals } from './languages/common.js'
-import { extractIni, extractEnv } from './languages/ini_idx.js'
-import { extractBash } from './languages/bash_idx.js'
-import { extractMakefile } from './languages/makefile_idx.js'
-import { extractProto } from './languages/proto_idx.js'
-import { extractTerraform } from './languages/terraform_idx.js'
-
-import { extractPowershell } from './languages/powershell_idx.js'
-import { extractApex } from './languages/apex.js'
-import { extractSalesforceMetadata } from './languages/salesforce_metadata.js'
+import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
+import type * as RegexAdapters from './languages/registry.js'
 import {
   extractLwcJavaScript,
   extractLwcTemplate,
   extractSalesforceMarkup,
 } from './languages/salesforce_frontend.js'
-import { extractVue, extractSvelte, extractAstro } from './languages/sfc_idx.js'
 import { ipynbToVirtualSource } from './languages/ipynb_idx.js'
 import { decodeSource, foldPath, isCaseInsensitiveFs } from './util.js'
 import { normalizePath } from './paths.js'
@@ -2566,6 +2524,7 @@ export function extractWithRegex(content: string, filePath: string): SymbolEntry
  * regex-fallback and structured-config languages yield no refs.
  */
 export async function parseFile(filePath: string): Promise<ParseResult> {
+  await loadRegexExtractors()
   const start = Date.now()
   const pathLanguage = detectLanguage(filePath)
 
@@ -2691,88 +2650,41 @@ export function parseSourceSymbolsTreeSitterOnly(content: string, filePath: stri
   return parsed === null ? null : parsed.symbols
 }
 
-/**
- * Map an adapter's parsed `.sections` (heading, level, line, endLine) into indexable
- * SymbolEntry rows. HTML and Liquid compute headings into `.sections` for the section-outline
- * consumer but historically never surfaced them as symbols, so they never entered the index
- * and were unreachable via `symbol`/`skeleton`/`outline` -- unlike markdown/proto/graphql/sql,
- * which push headings into both symbols and sections via makeSymbolEmitter.
- */
-function sectionsToHeadingSymbols(
-  sections: ReadonlyArray<{ heading: string; level: number; line: number; endLine: number }>,
-  filePath: string,
-): SymbolEntry[] {
-  return sections.map((s) => ({
-    filePath,
-    name: s.heading,
-    kind: 'heading',
-    lineStart: s.line,
-    lineEnd: s.endLine,
-    body: '',
-    docstring: '',
-    parent: '',
-  }))
-}
-
 type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
 
-// One entry per `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
-const NO_TREE_SITTER_EXTRACTORS: Record<RegexLanguage, SymbolExtractor> = {
-  markdown: extractMarkdownSymbols,
-  json: extractJsonSymbols,
-  yaml: extractYamlSymbols,
-  toml: extractTomlSymbols,
-  css: extractCssSymbols,
-  dockerfile: extractDockerfileSymbols,
-  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true }),
-  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' }),
-  html: (content, filePath) => {
-    const r = extractHtml(content, filePath)
-    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
-  },
-  liquid: (content, filePath) => {
-    const r = extractLiquid(content, filePath)
-    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
-  },
-  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last' }),
-  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift' }),
-  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last' }),
-  lua: (content, filePath) => extractLua(content, filePath).symbols,
-  vb: (content, filePath) => extractVb(content, filePath).symbols,
-  elixir: (content, filePath) => extractElixir(content, filePath).symbols,
-  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleSingleQuote: true, tripleQuoteRunClose: 'first' }),
-  zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, { lineComment: '//', blockComment: null, lineStringPrefix: '\\\\' }),
-  r: (content, filePath) => extractR(content, filePath).symbols,
-  graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
-  sql: extractSql,
-  ini: extractIni,
-  makefile: extractMakefile,
-  proto: (content, filePath) => extractProto(content, filePath).symbols,
-  terraform: extractTerraform,
-  powershell: (content, filePath) => assignBraceBlockSpans(extractPowershell(content, filePath).symbols, content, { lineComment: '#', stringEscapes: 'powershell', multilineLang: 'powershell' }),
-  apex: (content, filePath) => extractApex(content, filePath).symbols,
-  salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
-  env_file: extractEnv,
-  bash: extractBash,
-  abap: (content, filePath) => extractAbap(content, filePath).symbols,
-  sas: (content, filePath) => extractSas(content, filePath).symbols,
-  pli: (content, filePath) => extractPli(content, filePath).symbols,
-  rpg: (content, filePath) => extractRpg(content, filePath).symbols,
-  jcl: (content, filePath) => extractJcl(content, filePath).symbols,
-  abl: (content, filePath) => extractAbl(content, filePath).symbols,
-  objc: (content, filePath) => extractObjc(content, filePath).symbols,
-  groovy: (content, filePath) => extractGroovy(content, filePath).symbols,
-  perl: (content, filePath) => extractPerl(content, filePath).symbols,
-  solidity: (content, filePath) => extractSolidity(content, filePath).symbols,
-  thrift: (content, filePath) => extractThrift(content, filePath).symbols,
-  glsl: (content, filePath) => extractCShader(content, filePath).symbols,
-  hlsl: (content, filePath) => extractCShader(content, filePath).symbols,
-  metal: (content, filePath) => extractCShader(content, filePath).symbols,
-  wgsl: (content, filePath) => extractWgsl(content, filePath).symbols,
-  fortran: (content, filePath) => extractFortran(content, filePath).symbols,
-  pascal: (content, filePath) => extractPascal(content, filePath).symbols,
-  matlab: (content, filePath) => extractMatlab(content, filePath).symbols,
-  cmake: (content, filePath) => extractCmake(content, filePath).symbols,
+// In the global symbol registry so a module reset (vi.resetModules) or a second copy of this module in one process still finds the adapters loaded.
+const REGEX_ADAPTERS_SLOT = Symbol.for('token-goat.regex-adapters')
+const adapterSlot = globalThis as unknown as Record<symbol, typeof RegexAdapters | undefined>
+
+/**
+ * Load the regex language adapters (src/languages/registry.ts), once per process.
+ *
+ * They sit behind a dynamic import because parser.ts is on the hook path, where none of them is ever called: imported statically, every adapter was compiled on every hook invocation. Each entry point that parses awaits this first (the CLI's run(), runWorkerLoop, parseFile); a sync parse without it throws rather than quietly indexing a file to nothing.
+ */
+export async function loadRegexExtractors(): Promise<void> {
+  adapterSlot[REGEX_ADAPTERS_SLOT] ??= await import('./languages/registry.js')
+}
+
+function regexAdapters(): typeof RegexAdapters {
+  const loaded = adapterSlot[REGEX_ADAPTERS_SLOT]
+  if (loaded === undefined) throw new Error('token-goat: the regex language adapters are not loaded; await loadRegexExtractors() before parsing')
+  return loaded
+}
+
+let noTreeSitterTable: Record<RegexLanguage, SymbolExtractor> | undefined
+
+// One entry per `regex` row of src/language_specs.ts, required by the type: the adapter rows come from registry.ts's ADAPTER_EXTRACTORS, whose own type fails on a row without an extractor.
+function noTreeSitterExtractors(): Record<RegexLanguage, SymbolExtractor> {
+  noTreeSitterTable ??= {
+    markdown: extractMarkdownSymbols,
+    json: extractJsonSymbols,
+    yaml: extractYamlSymbols,
+    toml: extractTomlSymbols,
+    css: extractCssSymbols,
+    dockerfile: extractDockerfileSymbols,
+    ...regexAdapters().ADAPTER_EXTRACTORS,
+  }
+  return noTreeSitterTable
 }
 
 function extractNoTreeSitter(
@@ -2780,25 +2692,26 @@ function extractNoTreeSitter(
   filePath: string,
   language: Language,
 ): ParseContentResult {
-  if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath)
+  const adapters = regexAdapters()
+  if (language === 'salesforce_metadata') return adapters.extractSalesforceMetadata(content, filePath)
   if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
   if (language === 'html' && isLwcFile(filePath, '.html')) {
-    const base: ParseContentResult = { symbols: NO_TREE_SITTER_EXTRACTORS.html(content, filePath), refs: [] }
+    const base: ParseContentResult = { symbols: adapters.ADAPTER_EXTRACTORS.html(content, filePath), refs: [] }
     return mergeParseResults(base, extractLwcTemplate(content, filePath))
   }
   // Vue/Svelte/Astro adapters emit both symbols and refs (template component-tag references),
   // same shape as extractSalesforceMarkup above -- returned directly rather than forced through
-  // the symbols-only NO_TREE_SITTER_EXTRACTORS map.
-  if (language === 'vue') return extractVue(content, filePath)
-  if (language === 'svelte') return extractSvelte(content, filePath)
-  if (language === 'astro') return extractAstro(content, filePath)
+  // the symbols-only noTreeSitterExtractors table.
+  if (language === 'vue') return adapters.extractVue(content, filePath)
+  if (language === 'svelte') return adapters.extractSvelte(content, filePath)
+  if (language === 'astro') return adapters.extractAstro(content, filePath)
   // COBOL and Natural also emit refs (PERFORM, GO TO, CALL/CALLNAT/FETCH literals); they stay outside REF_LANGUAGES because paragraphs are reached by fall-through and programs by name, so an empty ref set is no evidence of dead code.
   if (language === 'cobol') {
-    const r = extractCobol(content, filePath)
+    const r = adapters.extractCobol(content, filePath)
     return { symbols: r.symbols, refs: r.refs }
   }
   if (language === 'natural') {
-    const r = extractNatural(content, filePath)
+    const r = adapters.extractNatural(content, filePath)
     return { symbols: r.symbols, refs: r.refs }
   }
 
@@ -2822,7 +2735,7 @@ function extractSymbolsNoTreeSitter(
 ): SymbolEntry[] {
   if (language === 'unknown') return []
   // A tree-sitter language whose grammar did not load has no entry and falls back to the coarse regex scan.
-  return ((NO_TREE_SITTER_EXTRACTORS as Partial<Record<Language, SymbolExtractor>>)[language] ?? extractWithRegex)(content, filePath)
+  return ((noTreeSitterExtractors() as Partial<Record<Language, SymbolExtractor>>)[language] ?? extractWithRegex)(content, filePath)
 }
 
 /**

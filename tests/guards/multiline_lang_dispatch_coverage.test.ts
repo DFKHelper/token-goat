@@ -26,7 +26,8 @@ import { describe, expect, it } from 'vitest'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const COMMON_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'common.ts'), 'utf8')
-const PARSER_SRC = readFileSync(path.join(ROOT, 'src', 'parser.ts'), 'utf8')
+// The adapter dispatch table moved out of parser.ts when it went behind a dynamic import, so hooks stop compiling every adapter.
+const REGISTRY_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'registry.ts'), 'utf8')
 const R_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'r.ts'), 'utf8')
 
 /**
@@ -74,13 +75,13 @@ function unionMembers(): string[] {
   return [...(m?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((q) => q[1] as string)
 }
 
-/** The body of NO_TREE_SITTER_EXTRACTORS, which is the adapter dispatch table. */
+/** The body of ADAPTER_EXTRACTORS, which is the adapter dispatch table. */
 function tableBody(): string {
-  const start = PARSER_SRC.indexOf('const NO_TREE_SITTER_EXTRACTORS')
-  expect(start, 'NO_TREE_SITTER_EXTRACTORS not found in src/parser.ts').toBeGreaterThan(-1)
-  const end = PARSER_SRC.indexOf('\n}\n', start)
+  const start = REGISTRY_SRC.indexOf('const ADAPTER_EXTRACTORS')
+  expect(start, 'ADAPTER_EXTRACTORS not found in src/languages/registry.ts').toBeGreaterThan(-1)
+  const end = REGISTRY_SRC.indexOf('\n}\n', start)
   expect(end).toBeGreaterThan(start)
-  return PARSER_SRC.slice(start, end)
+  return REGISTRY_SRC.slice(start, end)
 }
 
 /** One language's entry in the table: from its key to the start of the next top-level key. */
@@ -88,7 +89,7 @@ function tableEntry(lang: string): string {
   const body = tableBody()
   const re = new RegExp(`^  ${lang}:`, 'm')
   const m = re.exec(body)
-  expect(m, `no \`${lang}\` entry in NO_TREE_SITTER_EXTRACTORS`).not.toBeNull()
+  expect(m, `no \`${lang}\` entry in ADAPTER_EXTRACTORS`).not.toBeNull()
   const from = m?.index ?? 0
   const nextKey = /^ {2}[a-z_]+:/m.exec(body.slice(from + 3))
   return nextKey === null ? body.slice(from) : body.slice(from, from + 3 + nextKey.index)

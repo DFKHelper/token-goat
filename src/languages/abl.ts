@@ -186,35 +186,5 @@ export function extractAbl(content: string, filePath: string): StatementAdapterR
   return { symbols: spans.finish(rawLines), imports }
 }
 
-/** Lines at the head of a file that only ABL writes, each read from the trimmed line. */
-const ABL_MARKER_RES: readonly RegExp[] = [
-  /^&ANALYZE-SUSPEND\b/i,
-  /^&(?:SCOPED|GLOBAL)-DEFINE\s/i,
-  /^(?:ROUTINE|BLOCK)-LEVEL\s+ON\s+ERROR\s+UNDO\b/i,
-  /^DEF(?:INE)?\s+(?:NEW\s+)?(?:GLOBAL\s+)?(?:SHARED\s+)?(?:VAR|VARIABLE|TEMP-TABLE|BUFFER|QUERY|STREAM|DATASET|FRAME|(?:INPUT|OUTPUT|INPUT-OUTPUT)\s+PARAM(?:ETER)?)\s/i,
-  /^FUNCTION\s+[\w-]+\s+RETURNS\s/i,
-  /^FOR\s+EACH\s/i,
-  /^END\s+(?:PROCEDURE|FUNCTION|CLASS|INTERFACE|METHOD|CONSTRUCTOR)\s*\.$/i,
-  /^USING\s+[\w.*-]+(?:\s+FROM\s+(?:ASSEMBLY|PROPATH))?\s*\.$/i,
-]
-// Header lines that must also end with the block colon: `PROCEDURE x:`, `CLASS a.b.C INHERITS D:`. Apex and Pascal headers never do.
-const ABL_HEADER_RE = /^(?:PROCEDURE\s+[\w-]+|(?:CLASS|INTERFACE)\s+[\w.-]+)(?:\s|:)/i
-
-/** How much of a file the ABL sniff reads: the same head {@link detectLanguageOfFile} reads from disk, so both answer alike. */
-export const ABL_SNIFF_CHARS = 8192
-
-/**
- * True when the head of `content` has a line only ABL writes: an ABL `.p`, `.w` or `.cls` is told from a Pascal program, a
- * CWEB file or an Apex class this way. Header comments before the first marker are fine; the marker must start its line.
- */
-export function isAblSource(content: string): boolean {
-  const head = content.slice(0, ABL_SNIFF_CHARS)
-  if (head.includes('\0')) return false
-  for (const raw of head.split(/\r?\n/)) {
-    const line = raw.trim()
-    if (line === '') continue
-    if (ABL_MARKER_RES.some((re) => re.test(line))) return true
-    if (ABL_HEADER_RE.test(line) && line.endsWith(':')) return true
-  }
-  return false
-}
+// The ABL sniff lives in sniff.ts so language detection on the hook path does not load this adapter.
+export { ABL_SNIFF_CHARS, isAblSource } from './sniff.js'

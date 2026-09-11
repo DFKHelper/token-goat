@@ -186,10 +186,15 @@ describe('detached worker daemon (built bundle)', () => {
         // call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle.
         const srcFile = path.join(repo, 'daemon_e2e_sample.ts')
         fs.writeFileSync(srcFile, 'export function daemonDrainedSymbol(): number {\n  return 1\n}\n')
+        // A regex-adapter language too: those adapters load through parser.ts's dynamic import (loadRegexExtractors), which
+        // the drain loop awaits before its first cycle. Miss that await and the daemon indexes this file to nothing, while
+        // the tree-sitter file beside it still resolves -- so only a second language proves the lazy load reached the daemon.
+        const fortranFile = path.join(repo, 'daemon_e2e_sample.f90')
+        fs.writeFileSync(fortranFile, 'subroutine daemon_drained_fortran(x)\n  integer :: x\n  x = 1\nend subroutine daemon_drained_fortran\n')
 
         const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
         fs.mkdirSync(queueDir, { recursive: true })
-        fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n`)
+        fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n${fortranFile}\n`)
 
         let sym: RunResult | undefined
         const drainMs = await waitFor('the running daemon to drain the seeded queue entry', 20000, () => {
@@ -197,6 +202,13 @@ describe('detached worker daemon (built bundle)', () => {
           return sym.status === 0 && sym.stdout.includes('daemonDrainedSymbol')
         })
         expect(sym?.stdout).toContain('daemonDrainedSymbol')
+
+        let fortranSym: RunResult | undefined
+        await waitFor('the running daemon to index the Fortran file through the lazily loaded adapter', 20000, () => {
+          fortranSym = runBundle(['symbol', 'daemon_drained_fortran'], env, repo)
+          return fortranSym.status === 0 && fortranSym.stdout.includes('daemon_drained_fortran')
+        })
+        expect(fortranSym?.stdout).toContain('daemon_drained_fortran')
 
         // The drain landing this fast is itself the assertion that TG_WORKER_POLL_MS reached the
         // daemon. `worker start` used to hardcode the 2000ms default into the child's env
