@@ -20,17 +20,29 @@ const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/
 const CLASS_RE = /^(?:(?:abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
 const METHOD_RE = new RegExp(
   '^(?:(?:public|protected|private|static|abstract|final)\\s+)*' +
-  'function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
+  // The `&` branch is PHP's return-by-reference declarator (`function &alpha()`), which sits between the `function` keyword and the name; the two branches are disjoint because only the first accepts a `&`.
+  'function(?:\\s*&\\s*|\\s+)([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
 )
 const ANON_FN_RE = /^\s*function\s*\(/
-const CONST_RE = /^(?:(?:public|protected|private|static|final)\s+)*const\s+([A-Za-z_][A-Za-z0-9_]*)/
+// One PHP type expression, shared by the typed-constant and typed-property matchers: an optionally nullable, optionally namespaced name, or a union/intersection of those, with the DNF parentheses PHP 8.3 allows around an intersection term. Every repetition past the first needs a literal `|` or `&` separator, so the pattern stays unambiguous and linear.
+const TYPE_ATOM = '\\??[A-Za-z_\\\\][A-Za-z0-9_\\\\]*'
+const TYPE_TERM = `(?:\\(\\s*${TYPE_ATOM}(?:\\s*[|&]\\s*${TYPE_ATOM})*\\s*\\)|${TYPE_ATOM})`
+const TYPE_SLOT = `${TYPE_TERM}(?:\\s*[|&]\\s*${TYPE_TERM})*`
+
+// The type slot is optional and sits between `const` and the name: PHP 8.3 allows a typed class constant (`const int LIMIT = 5;`). Without the slot the matcher captured the type as the constant's name, so `LIMIT` was lost and a constant named `int` was invented in its place.
+const CONST_RE = new RegExp(
+  '^(?:(?:public|protected|private|static|final)\\s+)*' +
+  `const\\s+(?:${TYPE_SLOT}\\s+)?` +
+  '([A-Za-z_][A-Za-z0-9_]*)',
+)
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/
 // `var` is PHP's legacy property-visibility declarator (a full synonym for `public`), still valid
 // syntax in every current PHP version - without it in the alternation, a `var $foo;` property is
 // silently dropped from the index entirely, unlike every other property-declaration style.
+// `public(set)` / `protected(set)` / `private(set)` are PHP 8.4's asymmetric-visibility set-scope declarators, and `abstract` / `final` are the property modifiers the same version's property hooks admit; each alternative still has to be followed by a `$name`, so none of them can match a line that is not a property declaration.
 const PROP_RE = new RegExp(
-  '^(?:(?:public|protected|private|static|readonly|var)\\s+)+' +
-  '(?:\\??[A-Za-z_][A-Za-z0-9_|\\\\]*\\s+)?' +
+  '^(?:(?:(?:public|protected|private)\\(set\\)|public|protected|private|static|readonly|abstract|final|var)\\s+)+' +
+  `(?:${TYPE_SLOT}\\s+)?` +
   '\\$([A-Za-z_][A-Za-z0-9_]*)',
 )
 // `use function Foo\bar;` / `use const Foo\BAR;` -- PHP 7's single-symbol imports for a
