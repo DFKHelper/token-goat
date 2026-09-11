@@ -3,7 +3,7 @@
  *
  * Covers VB.NET (`.vb`), VB6/VBA standard modules (`.bas`), VBScript (`.vbs`), VB6 forms (`.frm`), and VB6 class modules (`.cls`, routed here only when the content sniff in parser_types.ts recognizes the VB6 header; every other `.cls` stays Apex).
  *
- * Extracts: Namespace, Module, Class, Structure, Interface, Enum (members as children), Sub, Function, Property (VB.NET block and auto forms, VB6 Property Get/Let/Set), Event (plain and Custom), Delegate, Declare, Operator, Const, VB6 `Type` blocks and their members, and type-level fields.
+ * Extracts: Namespace, Module, Class, Structure, Interface, Enum (members as children), Sub, Function, Property (VB.NET block and auto forms, VB6 Property Get/Let/Set), Event (plain and Custom), Delegate, Declare, Operator, Const, VB6 `Type` blocks and their members, and type-level fields. A `'''` XML doc comment directly above a declaration (or above its attribute lines) becomes that symbol's docstring. `#Region` blocks are sections, read by section_reader.ts rather than indexed here.
  *
  * VB is keyword-terminated and case-insensitive: a declaration opens a frame and `End <Keyword>` closes the nearest frame of that keyword. `End If`/`End Select`/`End With`/`End Try`/`End Using`/`End While` and a bare `End` never close a declaration, `MustOverride` members and interface members have no `End`, and a multi-line lambda (`Sub()` ... `End Sub`) pushes an anonymous frame so its `End Sub` never closes the enclosing procedure.
  *
@@ -11,6 +11,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
+import { precedingDocComment } from '../doc_comment.js'
 import { makeLineSymbol, type AdapterImport } from './common.js'
 
 /** Same cap every other adapter's emitter applies, so a generated file cannot bloat the index. */
@@ -67,6 +68,8 @@ const END_RE = /^End\s+(Namespace|Module|Class|Structure|Interface|Enum|Sub|Func
 const ACCESSOR_RE = /^(?:(?:Public|Private|Friend|Protected)\s+)*(?:Get|Set)\s*(?:\(|$)/i
 // A VB6 `Attribute Name.VB_Description = "..."` line, in a module header or inside a procedure: metadata, never a declaration.
 const ATTRIBUTE_LINE_RE = /^Attribute\s+[\w.]+\s*=/i
+// A physical line holding only a VB.NET attribute block, optionally ending in a ` _` continuation.
+const ATTRIBUTE_ONLY_LINE_RE = /^\s*<[^>].*>\s*(?:_\s*)?$/
 // The VB compiler also accepts the typographic single quotes U+2018 and U+2019 as comment starters, which editors and word processors substitute for `'`.
 const LEFT_SINGLE_QUOTE = String.fromCharCode(0x2018)
 const RIGHT_SINGLE_QUOTE = String.fromCharCode(0x2019)
@@ -212,6 +215,13 @@ function blankVb6Header(lines: string[], versionLine: number): void {
   }
 }
 
+/** The 1-based line a doc comment must sit directly above: `lineStart`, moved up past attribute-only lines (`<TestMethod>`, `<Obsolete("x")> _`), since `'''` goes above a declaration's attributes. */
+function docAnchorLine(rawLines: readonly string[], lineStart: number): number {
+  let line = lineStart
+  while (line > 1 && ATTRIBUTE_ONLY_LINE_RE.test(rawLines[line - 2] ?? '')) line--
+  return line
+}
+
 function firstNonBlankLine(lines: readonly string[]): number {
   for (let i = 0; i < lines.length; i++) if ((lines[i] ?? '').trim() !== '') return i
   return -1
@@ -283,7 +293,7 @@ export function extractVb(
     if (!name || symbols.length >= MAX_SYMBOLS) return undefined
     const parent = nearestNamed()?.name
     const sym = makeLineSymbol(filePath, name, kind, stmt.lineStart, rawLines.slice(stmt.lineStart - 1, stmt.lineEnd).join('\n'), parent)
-    symbols.push({ ...sym, lineEnd: stmt.lineEnd })
+    symbols.push({ ...sym, lineEnd: stmt.lineEnd, docstring: precedingDocComment(rawLines, docAnchorLine(rawLines, stmt.lineStart), 'vb') })
     return symbols.length - 1
   }
   const open = (kind: FrameKind, name: string, symbolKind: string, stmt: Statement): void => {

@@ -6593,6 +6593,40 @@ describe('Visual Basic adapter', () => {
   const rows = (content: string, file = 'x.vb'): string[] =>
     extractVb(content, file).symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd} ${s.parent}`.trimEnd())
 
+  it("attaches a ''' XML doc comment to the declaration below it, reaching past attribute lines, and nothing else", () => {
+    // HAND-DERIVED: doc comment placement from https://learn.microsoft.com/en-us/dotnet/visual-basic/programming-guide/program-structure/documenting-your-code-with-xml (the `'''` block sits above the declaration and its attributes); expected docstrings are read off this source text.
+    const content = [
+      "''' <summary>Adds two numbers.</summary>",
+      "''' <param name=\"a\">first</param>",
+      '<Pure>',
+      '<Obsolete("use Sum")> _',
+      'Public Function Add(a As Integer, b As Integer) As Integer',
+      '    Return a + b',
+      'End Function',
+      '',
+      "' just a note, not documentation",
+      'Public Sub Plain()',
+      'End Sub',
+      '',
+      "''' <summary>Detached.</summary>",
+      '',
+      'Public Sub Gap()',
+      'End Sub',
+      'Public Class Widget',
+      "    ''' <summary>The count.</summary>",
+      '    Private _count As Integer',
+      'End Class',
+    ].join('\n')
+    const docs = Object.fromEntries(extractVb(content, 'Docs.vb').symbols.map((s) => [s.name, s.docstring]))
+    expect(docs).toEqual({
+      Add: '<summary>Adds two numbers.</summary>\n<param name="a">first</param>',
+      Plain: '',
+      Gap: '',
+      Widget: '',
+      _count: '<summary>The count.</summary>',
+    })
+  })
+
   it('extracts every VB.NET declaration form in mixed case, with exact spans and parents', () => {
     // HAND-DERIVED: written from the Visual Basic language reference (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/statements/), and the expected rows are read off this source text by line number, not off the adapter's regexes. Keywords are deliberately mixed case (`END CLASS`, `public sub`), which VB accepts.
     const content = `Imports System.Text

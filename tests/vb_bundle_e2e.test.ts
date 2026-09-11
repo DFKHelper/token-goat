@@ -45,6 +45,11 @@ beforeAll(() => {
     path.join(project, 'CFileInfo.cls'),
     'VERSION 1.0 CLASS\r\nBEGIN\r\n  MultiUse = -1  \'True\r\nEND\r\nAttribute VB_Name = "CFileInfo"\r\nOption Explicit\r\nPublic Property Get FileName() As String\r\n   FileName = "x"\r\nEnd Property\r\n',
   )
+  // HAND-DERIVED: `#Region` from https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive and the `'''` doc comment from https://learn.microsoft.com/en-us/dotnet/visual-basic/programming-guide/program-structure/documenting-your-code-with-xml
+  fs.writeFileSync(
+    path.join(project, 'Regions.vb'),
+    "Public Class Counter\n#Region \"Helpers\"\n    ''' <summary>Adds one.</summary>\n    Public Function Bump(n As Integer) As Integer\n        Return n + 1\n    End Function\n#End Region\n\n    Public Sub Outside()\n    End Sub\nEnd Class\n",
+  )
   const idx = tg(['index', '.', '--walk'])
   expect(idx.status, idx.stderr).toBe(0)
 })
@@ -70,5 +75,25 @@ describe('the built bundle indexes Visual Basic', () => {
     const sym = tg(['symbol', 'FileName'])
     expect(sym.status, sym.stderr).toBe(0)
     expect(sym.stdout).toContain('CFileInfo.cls')
+  })
+
+  it('section reads a #Region block to its #End Region', () => {
+    const sec = tg(['section', 'Regions.vb::Helpers'])
+    expect(sec.status, sec.stderr).toBe(0)
+    expect(sec.stdout).toContain('Public Function Bump(n As Integer) As Integer')
+    expect(sec.stdout).toContain('#End Region')
+    expect(sec.stdout).not.toContain('Public Sub Outside()')
+  })
+
+  it("stores the ''' doc comment as the symbol's docstring", () => {
+    const sym = tg(['symbol', 'Bump', '--json'])
+    expect(sym.status, sym.stderr).toBe(0)
+    expect(sym.stdout).toContain('<summary>Adds one.</summary>')
+  })
+
+  it('names Visual Basic, not Apex, in the ref-blind notice for a VB6 .cls symbol', () => {
+    const refs = tg(['refs', 'FileName'])
+    expect(refs.stderr).toContain('Visual Basic call sites are not indexed')
+    expect(refs.stderr).not.toMatch(/apex call sites/i)
   })
 })

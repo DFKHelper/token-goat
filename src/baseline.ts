@@ -17,7 +17,7 @@ import * as path from 'node:path'
 import { globalDbPath } from './constants.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
-import { detectLanguage } from './parser_types.js'
+import { detectLanguageOfFile } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { suggestedIndexCommand } from './index_health.js'
@@ -122,7 +122,7 @@ export function walkProject(
         }
         stack.push(full)
       } else if (entry.isFile()) {
-        const lang: Language = detectLanguage(full)
+        const lang: Language = detectLanguageOfFile(full)
         if (lang === 'unknown' && !(includeEmbeddableDocuments && isEmbeddableDocument(full))) continue
         if (excludeTests && isTestFile(full)) continue
         files.push(full)

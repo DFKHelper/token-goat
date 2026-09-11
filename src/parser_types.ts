@@ -10,6 +10,7 @@
  * path-extension lookup. Importable from any layer without side effects.
  */
 
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
@@ -284,11 +285,32 @@ export function isVb6ClassModule(content: string): boolean {
 }
 
 /**
- * The language of a file once its content is known. {@link detectLanguage} is path-only, and `.cls` is both an Apex class and a VB6 class module, so the indexer's two entry points (indexFileSync, parseFile) call this after reading the file and store the refined language. Every other language passes through unchanged. Consumers that only have a path (hooks, section_reader, ref-blindness notices) still see `apex` for a VB6 `.cls`; none of them treats the two differently, since neither language has a tree-sitter grammar or a reference index.
+ * The language of a file once its content is known. {@link detectLanguage} is path-only, and `.cls` is both an Apex class and a VB6 class module, so the indexer's two entry points (indexFileSync, parseFile) call this after reading the file and store the refined language. Every other language passes through unchanged. A consumer that prints the language or picks a reader by it (section_reader, the ref-blindness notices, the `map` language tally) refines too, through this or {@link detectLanguageOfFile}; the path-only ones left (the read/grep/bash hooks, the fold gates) treat `apex` and `vb` identically, since neither has a tree-sitter grammar or a reference index.
  */
 export function refineLanguageByContent(filePath: string, language: Language, content: string): Language {
   if (language === 'apex' && path.extname(filePath).toLowerCase() === '.cls' && isVb6ClassModule(content)) return 'vb'
   return language
+}
+
+/** How many leading bytes {@link detectLanguageOfFile} reads from a `.cls`: comfortably more than the {@link VB6_HEADER_SCAN_LINES} lines the sniff looks at. */
+const LANGUAGE_SNIFF_BYTES = 8192
+
+/** {@link detectLanguage} for a file that exists on disk, for a consumer that has no content in hand but reports or branches on the language: a `.cls` has its first few KB read so a VB6 class module is not reported as Apex; every other path reads nothing. */
+export function detectLanguageOfFile(filePath: string): Language {
+  const language = detectLanguage(filePath)
+  if (language !== 'apex' || path.extname(filePath).toLowerCase() !== '.cls') return language
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const buf = Buffer.alloc(LANGUAGE_SNIFF_BYTES)
+      const n = fs.readSync(fd, buf, 0, buf.length, 0)
+      return refineLanguageByContent(filePath, language, buf.subarray(0, n).toString('utf8'))
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return language
+  }
 }
 
 /**

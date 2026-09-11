@@ -3,6 +3,23 @@ import { describe, expect, it } from 'vitest'
 import { precedingDocComment } from '../src/doc_comment.js'
 
 describe('precedingDocComment', () => {
+  // HAND-DERIVED: Visual Basic XML doc comments are `'''` lines directly above the declaration (https://learn.microsoft.com/en-us/dotnet/visual-basic/programming-guide/program-structure/documenting-your-code-with-xml); expectations read off these literals.
+  describe("'vb' style", () => {
+    it("reads a contiguous run of ''' lines and strips the markers", () => {
+      expect(precedingDocComment(["''' <summary>Adds.</summary>", "''' <param name=\"a\">first</param>", 'Sub F()'], 3, 'vb')).toBe('<summary>Adds.</summary>\n<param name="a">first</param>')
+    })
+
+    it("ignores a plain ' comment, a // comment, and a doc block separated by a blank line", () => {
+      expect(precedingDocComment(["' just a note", 'Sub F()'], 2, 'vb')).toBe('')
+      expect(precedingDocComment(['// not vb', 'Sub F()'], 2, 'vb')).toBe('')
+      expect(precedingDocComment(["''' detached", '', 'Sub F()'], 3, 'vb')).toBe('')
+    })
+
+    it("stops at the first line that is not '''", () => {
+      expect(precedingDocComment(["''' old", 'End Sub', "''' <summary>New.</summary>", 'Sub G()'], 4, 'vb')).toBe('<summary>New.</summary>')
+    })
+  })
+
   describe("'c' style block comments", () => {
     it('reads a multi-line block comment directly above the symbol', () => {
       const lines = ['/**', ' * Does the thing.', ' * @param x the thing', ' */', 'function f() {}']

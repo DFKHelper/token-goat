@@ -9,8 +9,8 @@
  * import them from `parser.js` keep working unchanged.
  */
 
-/** Comment-syntax family {@link precedingDocComment} recognizes: `'c'` for `//`- and block-comment languages, `'hash'` for `#`-line-comment languages. */
-export type DocCommentStyle = 'c' | 'hash'
+/** Comment-syntax family {@link precedingDocComment} recognizes: `'c'` for `//`- and block-comment languages, `'hash'` for `#`-line-comment languages, `'vb'` for Visual Basic `'''` XML doc comments. */
+export type DocCommentStyle = 'c' | 'hash' | 'vb'
 
 /**
  * Derive a docstring from the comment block immediately above `lineStart` (1-indexed).
@@ -44,6 +44,18 @@ export function precedingDocComment(
   const aboveLine = lines[aboveIdx]
   if (aboveLine === undefined) return ''
   const aboveTrimmed = aboveLine.trim()
+
+  // 'vb' style: a contiguous run of `'''` lines, the Visual Basic XML doc comment; a plain `'` comment is not documentation, as a plain `//` would be for C#'s `///`.
+  if (style === 'vb') {
+    if (!aboveTrimmed.startsWith("'''")) return ''
+    const collected: string[] = []
+    for (let i = aboveIdx; i >= 0; i--) {
+      const trimmed = (lines[i] ?? '').trim()
+      if (!trimmed.startsWith("'''")) break
+      collected.unshift(trimmed.replace(/^'''\s?/, ''))
+    }
+    return collected.join('\n').trim()
+  }
 
   if (style === 'hash') {
     if (!aboveTrimmed.startsWith('#')) return ''

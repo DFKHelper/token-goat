@@ -147,6 +147,17 @@ describe('walkProject', () => {
     expect(result.files.some((f) => f.endsWith('add.ts') && !f.includes('test'))).toBe(true)
   })
 
+  it('tallies a VB6 class module .cls as Visual Basic and an Apex .cls as Apex', () => {
+    // CAPTURE: the VB6 header lines are verbatim from https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls ; the Apex class is HAND-DERIVED.
+    write('vb6/CFileInfo.cls', 'VERSION 1.0 CLASS\r\nBEGIN\r\n  MultiUse = -1  \'True\r\nEND\r\nAttribute VB_Name = "CFileInfo"\r\n')
+    write('force-app/Svc.cls', 'public with sharing class Svc {\n}\n')
+
+    const result = walkProject(TMP)
+
+    expect(result.languages['vb']).toBe(1)
+    expect(result.languages['apex']).toBe(1)
+  })
+
   it('includes test files when opts.excludeTests is false or omitted', () => {
     write('src/add.ts', 'export const add = (a: number, b: number) => a + b\n')
     write('tests/add.test.ts', 'export const t = 1\n')
