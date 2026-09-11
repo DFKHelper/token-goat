@@ -190,6 +190,45 @@ describe('GradleFilter', () => {
     expect(result).not.toContain('> Task :compileJava\n')
   })
 
+  // HAND-DERIVED: the stack trace is 15 synthetic `\tat ...` frames built to straddle the filter's own MAX_STACK_FRAMES of 10; the assertion is about our cap emitting a marker, not about any Gradle wire format. The surrounding `FAILURE:` / `* What went wrong:` / `BUILD FAILED` lines are FORMAT-DERIVED from the Gradle User Manual, "Command-Line Interface" > "Executing tasks" (the failure report block Gradle prints on a failed build).
+  it('says how many stack frames the 10-frame cap ate (regression: frames past the cap vanished with no marker, so a truncated trace read as one that genuinely ended there)', () => {
+    const frames = Array.from({ length: 15 }, (_, i) => `\tat com.example.Frame${i}.run(Frame${i}.java:${i + 1})`)
+    const out = [
+      'FAILURE: Build failed with an exception.',
+      '* What went wrong:',
+      '\tjava.lang.IllegalStateException: boom',
+      ...frames,
+      'BUILD FAILED in 3s',
+    ].join('\n') + '\n'
+    const result = apply(f, out, '', 1, ['gradle', 'build'])
+    expect(result).toContain('and 5 more stack frames')
+    // Loss direction: the verdict and the frames inside the cap survive.
+    expect(result).toContain('BUILD FAILED')
+    expect(result).toContain('Frame0.java:1')
+    expect(result).toContain('Frame9.java:10')
+    // Must-not-appear: a suppressed frame is not silently reinstated somewhere else in the output.
+    expect(result).not.toContain('Frame14.java:15')
+  })
+
+  // HAND-DERIVED: the drop categories are this filter's own declared responsibilities; the assertion is that each one is accounted for in a note, which is a property of our code and needs no capture of Gradle output.
+  it('accounts for every category it drops (regression: this filter emitted no notes at all, so a dropped deprecation warning or download left no trace)', () => {
+    const out = [
+      'Starting a Gradle Daemon, 1 busy Daemon could not be reused',
+      'Downloading https://services.gradle.org/distributions/gradle.zip',
+      '> Task :compileJava',
+      'Deprecated Gradle features were used in this build.',
+      'Publishing a build scan to scans.gradle.com',
+      'BUILD SUCCESSFUL in 2s',
+    ].join('\n') + '\n'
+    const result = apply(f, out, '', 0, ['gradle', 'build'])
+    expect(result).toContain('BUILD SUCCESSFUL')
+    expect(result).toContain('1 Gradle daemon lines')
+    expect(result).toContain('1 download lines')
+    expect(result).toContain(`1 '> Task :' progress lines`)
+    expect(result).toContain('1 deprecation-warning lines')
+    expect(result).toContain('1 build-scan lines')
+  })
+
   it('drops download lines', () => {
     const out = 'Downloading https://services.gradle.org/distributions/gradle.zip\nBUILD SUCCESSFUL in 5s\n'
     const result = apply(f, out, '', 0, ['gradle', 'build'])
