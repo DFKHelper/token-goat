@@ -24,7 +24,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { findStrayClaudeMdBlocks, isInstalled } from './install.js'
 import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
-import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
+import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable } from './parser.js'
@@ -779,9 +779,9 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
 /**
  * Reports the `install --visualstudio` MCP entries found in `mcpPaths` (the user `.mcp.json` and the cwd one); null when neither has one.
  *
- * Visual Studio runs no token-goat hooks, so there is no hook to exercise: the one thing that can break on this machine is the entry's node or bundle path going stale after an upgrade.
+ * Visual Studio runs no token-goat hooks, so there is no hook to exercise: what can break on this machine is the entry's node or bundle path going stale after an upgrade, or the server being listed twice because `alsoReadPaths` (the solution's `.vscode/mcp.json`, which Visual Studio reads too) registers it as well.
  */
-export function checkVisualStudio(mcpPaths: readonly string[]): DoctorResult | null {
+export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: readonly string[] = []): DoctorResult | null {
   const found = mcpPaths.flatMap((mcpPath) => {
     const entry = visualStudioManagedEntry(mcpPath)
     return entry === null ? [] : [{ mcpPath, ...entry }]
@@ -793,6 +793,14 @@ export function checkVisualStudio(mcpPaths: readonly string[]): DoctorResult | n
       name: 'Visual Studio',
       status: 'warn',
       message: `the token-goat MCP entry in ${stale.mcpPath} points at ${stale.command} ${stale.bundlePath}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
+    }
+  }
+  const registered = [...found.map((e) => e.mcpPath), ...alsoReadPaths.filter((p) => visualStudioManagedEntry(p) !== null)]
+  if (registered.length > 1) {
+    return {
+      name: 'Visual Studio',
+      status: 'warn',
+      message: `Visual Studio reads ${registered.join(' and ')}, and each registers token-goat, so it lists the token-goat server more than once. Keep one: "token-goat uninstall --vscode -p" drops the .vscode/mcp.json entry, "token-goat uninstall --visualstudio" (add -p for the project entry) drops a Visual Studio one.`,
     }
   }
   return {
@@ -1325,7 +1333,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
     vscodeHooksInstalled() || vscodeHooksInstalled({ project: true }),
   )
   if (vscodeHooksResult) results.push(vscodeHooksResult)
-  const visualStudioResult = checkVisualStudio([visualStudioUserMcpPath(), visualStudioProjectMcpPath()])
+  const visualStudioResult = checkVisualStudio([visualStudioUserMcpPath(), visualStudioProjectMcpPath()], [visualStudioSolutionVscodeMcpPath()])
   if (visualStudioResult) results.push(visualStudioResult)
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))

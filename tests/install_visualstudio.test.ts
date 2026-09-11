@@ -17,10 +17,13 @@ import {
   uninstallVisualStudio,
   VISUALSTUDIO_GUIDANCE_BEGIN,
   VISUALSTUDIO_GUIDANCE_END,
+  visualStudioDuplicateNote,
+  visualStudioMcpStatus,
   visualStudioProjectMcpPath,
+  visualStudioSolutionVscodeMcpPath,
   visualStudioUserMcpPath,
 } from '../src/bridges/visualstudio_install.js'
-import { installVscode, uninstallVscode, VSCODE_GUIDANCE_BEGIN, VSCODE_GUIDANCE_END } from '../src/bridges/vscode_install.js'
+import { installVscode, uninstallVscode, VSCODE_GUIDANCE_BEGIN, VSCODE_GUIDANCE_END, vscodeProjectMcpPath } from '../src/bridges/vscode_install.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from '../src/bridges_status.js'
 import { leftoverIntegrations } from '../src/cli.js'
 import { checkVisualStudio } from '../src/cli_doctor.js'
@@ -98,7 +101,8 @@ describe('install --visualstudio, user scope (default)', () => {
     expect(fs.existsSync(path.join(root, 'copilot-home'))).toBe(false)
 
     const config = JSON.parse(fs.readFileSync(result.mcpPath, 'utf8')) as Record<string, unknown>
-    expect(Object.keys(config)).toEqual(['servers'])
+    expect(Object.keys(config).sort()).toEqual(['mcpServers', 'servers'])
+    expect(config['mcpServers']).toEqual({})
     expect((config['servers'] as Record<string, unknown>)['token-goat']).toEqual(MANAGED())
 
     const guidance = fs.readFileSync(result.instructionsPath, 'utf8')
@@ -179,8 +183,13 @@ describe('install --visualstudio -p (project scope)', () => {
     expect(fs.readFileSync(path.join(project, '.mcp.json'), 'utf8')).toBe(original)
   })
 
-  it('a .mcp.json holding only Visual Studio servers reads as no Claude Code config, not as a server named "servers"', () => {
+  it('a .mcp.json install --visualstudio -p writes reads as no Claude Code servers, not as a server named "servers"', () => {
     installVisualStudio({ project: true })
+    expect(Object.keys(readMcpConfig(project) ?? {})).toEqual([])
+  })
+
+  it('a .mcp.json holding only Visual Studio servers still reads as no Claude Code config', () => {
+    fs.writeFileSync(path.join(project, '.mcp.json'), JSON.stringify({ servers: { other: { type: 'stdio', command: 'x' } } }))
     expect(readMcpConfig(project)).toBeNull()
   })
 
@@ -192,6 +201,136 @@ describe('install --visualstudio -p (project scope)', () => {
     installVisualStudio()
     expect(() => installVisualStudio({ project: true })).toThrow(/already registered in Visual Studio user scope/)
     expect(fs.existsSync(visualStudioProjectMcpPath())).toBe(false)
+  })
+})
+
+/**
+ * Emulates Claude Code's `.mcp.json` validation, which it runs on every `<dir>\.mcp.json` from the cwd up to the drive root, so the user-scope file is read by every session under the home folder.
+ *
+ * PROVENANCE: FORMAT-DERIVED. Read off the installed Claude Code bundle `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` (minified; function `NBe`): the schema is `object({mcpServers: record(string, <server>)}).safeParse(configObject)` with `mcpServers` required, and a failing object that has `servers` and no `mcpServers` gets the fatal error 'Missing "mcpServers" — found "servers" instead. Claude Code reads MCP servers from the "mcpServers" key.' Each server value is a config object, so this emulation requires a record of objects.
+ */
+function claudeCodeMcpJsonError(text: string): string | null {
+  const config: unknown = JSON.parse(text)
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) return 'expected object'
+  const record = config as Record<string, unknown>
+  const mcpServers = record['mcpServers']
+  if (mcpServers === undefined) {
+    return 'servers' in record ? 'Missing "mcpServers" — found "servers" instead. Claude Code reads MCP servers from the "mcpServers" key.' : 'mcpServers: Required'
+  }
+  if (mcpServers === null || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) return 'mcpServers: expected record'
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (server === null || typeof server !== 'object' || Array.isArray(server)) return `mcpServers.${name}: expected object`
+  }
+  return null
+}
+
+function mcpJsonFiles(): string[] {
+  return [...filesUnder(home).map((f) => path.join(home, f)), ...filesUnder(project).map((f) => path.join(project, f))].filter((f) => path.basename(f) === '.mcp.json')
+}
+
+describe("every .mcp.json install --visualstudio writes passes Claude Code's schema", () => {
+  // The 2.9.11-dev shape: Visual Studio's servers key alone, which Claude Code rejects.
+  const DEV_SERVERS_ONLY = (): string => `${JSON.stringify({ servers: { 'token-goat': MANAGED() } }, null, 2)}\n`
+
+  it('the emulated check rejects the servers-only shape with the Claude Code error', () => {
+    expect(claudeCodeMcpJsonError(DEV_SERVERS_ONLY())).toContain('Missing "mcpServers"')
+    expect(claudeCodeMcpJsonError('{"mcpServers": {}}')).toBeNull()
+  })
+
+  for (const isProject of [false, true]) {
+    it(`${isProject ? 'project' : 'user'} scope: a fresh install writes an object mcpServers, and uninstall deletes the file it created`, () => {
+      const result = installVisualStudio({ project: isProject })
+      const files = mcpJsonFiles()
+      expect(files).toEqual([result.mcpPath])
+      for (const f of files) {
+        const text = fs.readFileSync(f, 'utf8')
+        expect(claudeCodeMcpJsonError(text), text).toBeNull()
+        const mcpServers = (JSON.parse(text) as Record<string, unknown>)['mcpServers']
+        expect(typeof mcpServers === 'object' && mcpServers !== null && !Array.isArray(mcpServers)).toBe(true)
+      }
+      expect(uninstallVisualStudio({ project: isProject })).toBe(true)
+      expect(mcpJsonFiles()).toEqual([])
+    })
+
+    it(`${isProject ? 'project' : 'user'} scope: reinstall repairs a servers-only file an earlier build wrote, and uninstall still deletes it`, () => {
+      const mcpPath = isProject ? visualStudioProjectMcpPath() : visualStudioUserMcpPath()
+      fs.writeFileSync(mcpPath, DEV_SERVERS_ONLY())
+      expect(installVisualStudio({ project: isProject }).alreadyInstalled).toBe(false)
+      expect(claudeCodeMcpJsonError(fs.readFileSync(mcpPath, 'utf8'))).toBeNull()
+      uninstallVisualStudio({ project: isProject })
+      expect(fs.existsSync(mcpPath)).toBe(false)
+    })
+  }
+
+  it("a user's servers-only file gains mcpServers on install and keeps it after uninstall, so Claude Code can read it", () => {
+    const mcpPath = visualStudioUserMcpPath()
+    fs.writeFileSync(mcpPath, '{\n  "servers": {\n    "other": { "type": "stdio", "command": "other-mcp" }\n  }\n}\n')
+    installVisualStudio()
+    expect(claudeCodeMcpJsonError(fs.readFileSync(mcpPath, 'utf8'))).toBeNull()
+    uninstallVisualStudio()
+    const after = fs.readFileSync(mcpPath, 'utf8')
+    expect(claudeCodeMcpJsonError(after)).toBeNull()
+    expect(JSON.parse(after)).toEqual({ servers: { other: { type: 'stdio', command: 'other-mcp' } }, mcpServers: {} })
+  })
+
+  it("never removes a user's mcpServers, and keeps an empty one in a file it does not delete", () => {
+    const mcpPath = visualStudioUserMcpPath()
+    const original = '// mine\n{\n  "mcpServers": {}\n}\n'
+    fs.writeFileSync(mcpPath, original)
+    installVisualStudio()
+    uninstallVisualStudio()
+    expect(fs.readFileSync(mcpPath, 'utf8')).toBe(original)
+  })
+
+  it('uninstall of a servers-only file that also holds a foreign server adds mcpServers rather than leaving the Claude Code error', () => {
+    const mcpPath = visualStudioProjectMcpPath()
+    fs.writeFileSync(mcpPath, JSON.stringify({ servers: { 'token-goat': MANAGED(), other: { type: 'stdio', command: 'x' } } }, null, 2))
+    uninstallVisualStudio({ project: true })
+    expect(claudeCodeMcpJsonError(fs.readFileSync(mcpPath, 'utf8'))).toBeNull()
+  })
+})
+
+describe('Visual Studio seeing token-goat in both .mcp.json and .vscode/mcp.json', () => {
+  it('the solution .vscode/mcp.json path is the one install --vscode -p writes', () => {
+    expect(visualStudioSolutionVscodeMcpPath(project)).toBe(vscodeProjectMcpPath(project))
+  })
+
+  it('the duplicate note names both files after vscode -p plus visualstudio -p, and is silent with one of them', () => {
+    installVisualStudio({ project: true })
+    expect(visualStudioDuplicateNote()).toBeNull()
+    installVscode({ project: true, projectRoot: project })
+    const note = visualStudioDuplicateNote()
+    expect(note).toContain(visualStudioProjectMcpPath())
+    expect(note).toContain(vscodeProjectMcpPath(project))
+    expect(note).toContain('token-goat uninstall --vscode -p')
+    expect(note).toContain('token-goat uninstall --visualstudio -p')
+    uninstallVisualStudio({ project: true })
+    expect(visualStudioDuplicateNote()).toBeNull()
+  })
+
+  it('a Visual Studio user install plus vscode -p is a duplicate too, and the note names the user uninstall', () => {
+    installVisualStudio()
+    installVscode({ project: true, projectRoot: project })
+    expect(visualStudioDuplicateNote()).toMatch(/"token-goat uninstall --visualstudio"\.$/)
+  })
+
+  it('doctor warns about the duplicate and is ok without it', () => {
+    const paths = [visualStudioUserMcpPath(), visualStudioProjectMcpPath()]
+    const alsoRead = [visualStudioSolutionVscodeMcpPath()]
+    installVisualStudio({ project: true })
+    expect(checkVisualStudio(paths, alsoRead)?.status).toBe('ok')
+    installVscode({ project: true, projectRoot: project })
+    const dup = checkVisualStudio(paths, alsoRead)
+    expect(dup?.status).toBe('warn')
+    expect(dup?.message).toContain('more than once')
+    expect(dup?.message).toContain(vscodeProjectMcpPath(project))
+  })
+
+  it('mcp-status --visualstudio reports the user file, and the project file with a projectRoot', () => {
+    expect(visualStudioMcpStatus({ projectRoot: project })).toEqual({ configured: false, checkedPaths: [visualStudioUserMcpPath(), visualStudioProjectMcpPath(project)] })
+    installVisualStudio({ project: true })
+    expect(visualStudioMcpStatus().configured).toBe(false)
+    expect(visualStudioMcpStatus({ projectRoot: project }).configured).toBe(true)
   })
 })
 
@@ -342,5 +481,20 @@ describe('the built bundle', () => {
     const uninstall = run(project, ['uninstall', '-p', '--visualstudio'])
     expect(uninstall.status, uninstall.stderr).toBe(0)
     expect(fs.readFileSync(mcpPath, 'utf8')).toBe(original)
+  })
+
+  it('install -p --visualstudio after --vscode -p writes a Claude-valid .mcp.json, prints the duplicate note, and mcp-status --visualstudio sees it', () => {
+    const mcpPath = path.join(project, '.mcp.json')
+    expect(JSON.parse(run(project, ['mcp-status', '--visualstudio', '--project']).stdout)).toEqual({ configured: false, checkedPaths: [path.join(home, '.mcp.json'), mcpPath] })
+    expect(run(project, ['install', '-p', '--vscode']).status).toBe(0)
+    const install = run(project, ['install', '-p', '--visualstudio'])
+    expect(install.status, install.stderr).toBe(0)
+    expect(install.stdout).toMatch(/^Note: Visual Studio reads .*more than once for this solution/m)
+    expect(claudeCodeMcpJsonError(fs.readFileSync(mcpPath, 'utf8'))).toBeNull()
+    const status = run(project, ['mcp-status', '--visualstudio', '--project'])
+    expect(status.status, status.stderr).toBe(0)
+    expect((JSON.parse(status.stdout) as { configured: boolean }).configured).toBe(true)
+    expect(run(project, ['mcp-status']).status).not.toBe(0)
+    expect(run(project, ['mcp-status', '--vscode', '--visualstudio']).status).not.toBe(0)
   })
 })

@@ -5,7 +5,7 @@
  * Instructions: `.github/copilot-instructions.md` in the solution, and `%USERPROFILE%\copilot-instructions.md` for the user on Visual Studio 2026, both gated by the Tools > Options checkbox "Enable custom instructions to be loaded from .github/copilot-instructions.md files and added to requests" (https://learn.microsoft.com/en-us/visualstudio/ide/copilot-chat-context).
  * Hooks: GitHub documents agent hooks only for Copilot cloud agent and Copilot CLI (https://docs.github.com/en/copilot/concepts/agents/hooks), so this bridge writes no hooks file. In Visual Studio there is no read dedup, no hint, no image shrink and no output folding.
  *
- * The project root `.mcp.json` is also Claude Code's project MCP file, but Claude Code reads it under `mcpServers`; this module only ever edits `servers["token-goat"]`, so it registers nothing for Claude Code and leaves an `mcpServers` key byte-for-byte as it was.
+ * Both `.mcp.json` paths are also Claude Code files: it reads `<dir>\.mcp.json` in every directory from the cwd up to the drive root, validates each with `mcpServers` required, and fails fatally on a file holding only `servers`. So this module edits `servers["token-goat"]`, adds an empty `mcpServers` to any file it writes that lacks one, and leaves an existing `mcpServers` key byte-for-byte as it was; it registers nothing for Claude Code.
  *
  * This module must not import vscode_install.ts or copilot_cli_install.ts: both call syncVisualStudioProjectGuidance, so importing either would close an import cycle.
  */
@@ -16,7 +16,7 @@ import * as path from 'node:path'
 import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
-import { dropEmptyServers, hasManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 
 const LABEL = 'Visual Studio'
 
@@ -66,6 +66,32 @@ export function visualStudioOtherScopeHasManagedServer(opts: VisualStudioScopeOp
 /** Whether this scope's `.mcp.json` registers token-goat. */
 export function isVisualStudioInstalled(opts: VisualStudioScopeOptions = {}): boolean {
   return hasManagedServer(visualStudioMcpPath(opts), LABEL)
+}
+
+/** The solution's `.vscode/mcp.json`, which Visual Studio also reads and `install --vscode -p` writes; a literal copy of vscodeProjectMcpPath because importing vscode_install.ts would be a cycle, and a test pins the two together. */
+export function visualStudioSolutionVscodeMcpPath(projectRoot = process.cwd()): string {
+  return path.join(path.resolve(projectRoot), '.vscode', 'mcp.json')
+}
+
+/** Every file Visual Studio reads for a solution at `projectRoot` that registers token-goat: two or more means it lists the server twice. */
+export function visualStudioManagedRegistrations(projectRoot = process.cwd()): string[] {
+  return [visualStudioUserMcpPath(), visualStudioProjectMcpPath(projectRoot), visualStudioSolutionVscodeMcpPath(projectRoot)].filter((p) => hasManagedServer(p, LABEL))
+}
+
+/** The note install prints when Visual Studio would see token-goat twice for the solution at `projectRoot`, or null when it sees it at most once. */
+export function visualStudioDuplicateNote(projectRoot = process.cwd()): string | null {
+  const found = visualStudioManagedRegistrations(projectRoot)
+  if (found.length < 2) return null
+  const lead = `Note: Visual Studio reads ${found.join(' and ')}, and each registers token-goat, so it will list the token-goat server more than once for this solution.`
+  if (!found.includes(visualStudioSolutionVscodeMcpPath(projectRoot))) return `${lead} Keep one: run "token-goat uninstall --visualstudio" or "token-goat uninstall --visualstudio -p".`
+  return `${lead} Keep one: if you do not use VS Code in this folder, run "token-goat uninstall --vscode -p"; otherwise run "token-goat uninstall --visualstudio${found.includes(visualStudioUserMcpPath()) ? '' : ' -p'}".`
+}
+
+/** Backs `mcp-status --visualstudio`: whether the user `.mcp.json` (and, with a projectRoot, the solution one) registers token-goat. */
+export function visualStudioMcpStatus(opts: { projectRoot?: string } = {}): { configured: boolean; checkedPaths: string[] } {
+  const checkedPaths = [visualStudioUserMcpPath()]
+  if (opts.projectRoot !== undefined) checkedPaths.push(visualStudioProjectMcpPath(opts.projectRoot))
+  return { configured: checkedPaths.some((p) => hasManagedServer(p, LABEL)), checkedPaths }
 }
 
 /** The command and bundle path of a managed entry in `filePath`, or null when there is none (or the file is unreadable). */
@@ -150,7 +176,7 @@ export function installVisualStudio(opts: VisualStudioScopeOptions = {}): Visual
   if (current !== undefined && !isManagedServer(current)) {
     throw new Error(`Visual Studio MCP JSON at ${mcpPath} already has a non-token-goat-managed server named "token-goat"`)
   }
-  const next = setTokenGoatServer(config.text, managedServer())
+  const next = ensureMcpServersKey(setTokenGoatServer(config.text, managedServer()))
   if (config.text !== next) {
     fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
     atomicWriteText(mcpPath, next)
@@ -167,8 +193,8 @@ export function uninstallVisualStudio(opts: VisualStudioScopeOptions = {}): bool
     const config = readServersJson(mcpPath, LABEL)
     if (isManagedServer(serversOf(config, mcpPath, LABEL)['token-goat'])) {
       const next = dropEmptyServers(setTokenGoatServer(config.text, undefined))
-      if (/^\s*\{\s*\}\s*$/.test(next)) fs.rmSync(mcpPath, { force: true })
-      else atomicWriteText(mcpPath, next)
+      if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next))) fs.rmSync(mcpPath, { force: true })
+      else atomicWriteText(mcpPath, ensureMcpServersKey(next))
       removed = true
     }
   }
