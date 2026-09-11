@@ -21,7 +21,8 @@ const MAX_HEADING_LEN = 128
 
 // SQL identifier: bare, double-quoted, backtick-quoted, or bracket-quoted. Qualified names are captured as a single token, up to the four parts SQL Server permits (server.database.schema.object); BigQuery/Snowflake/SQL Server three-part names (project.dataset.table, db.schema.table) are common, and capturing only two segments would name the symbol after its schema and silently drop the real object name.
 const BARE = '[A-Za-z_][A-Za-z0-9_$]*'
-const QUOTED = '"[^"]{1,128}"|`[^`]{1,128}`|\\[[^\\]]{1,128}\\]'
+// Every one of the three delimited-identifier forms escapes its own closing delimiter by doubling it: `""` in a SQL:2016 delimited identifier, ` `` ` in a MySQL backtick-quoted identifier, `]]` in a T-SQL bracketed identifier. Without the doubled alternative the match stops at the first half of the escape, so `"a.""b".c` was captured as `"a."` and indexed under the name `a.`, which is a name the file never declares. The two branches of each alternation are disjoint on their first character, so the repetition cannot backtrack ambiguously.
+const QUOTED = '"(?:[^"]|""){1,128}"|`(?:[^`]|``){1,128}`|\\[(?:[^\\]]|\\]\\]){1,128}\\]'
 const NAME_PAT = `(?:${QUOTED}|${BARE})(?:\\.(?:${QUOTED}|${BARE})){0,3}`
 
 function makeCreateRe(objectKw: string, optPrefix = ''): RegExp {
@@ -267,15 +268,12 @@ function stripSqlStringLiterals(text: string): string {
 }
 
 function unquoteSegment(segment: string): string {
-  if (
-    segment.length >= 2 &&
-    ((segment[0] === '"' && segment[segment.length - 1] === '"') ||
-      (segment[0] === '`' && segment[segment.length - 1] === '`') ||
-      (segment[0] === '[' && segment[segment.length - 1] === ']'))
-  ) {
-    return segment.slice(1, -1)
-  }
-  return segment
+  const open = segment[0]
+  if (open !== '"' && open !== '`' && open !== '[') return segment
+  const close = open === '[' ? ']' : open
+  if (segment.length < 2 || segment[segment.length - 1] !== close) return segment
+  // A doubled closing delimiter inside the identifier is one character of the name, not a close followed by a reopen, so it collapses on the way out: `"a.""b"` names the column `a."b`.
+  return segment.slice(1, -1).split(close + close).join(close)
 }
 
 // NAME_PAT captures a schema-qualified name (e.g. "public"."users") as a single token, so a
@@ -292,11 +290,10 @@ function splitQualifiedSegments(name: string): string[] {
   for (let i = 0; i < name.length; i++) {
     const ch = name[i]
     if (quote) {
-      if (
-        (quote === '"' && ch === '"') ||
-        (quote === '`' && ch === '`') ||
-        (quote === '[' && ch === ']')
-      ) {
+      const close = quote === '[' ? ']' : quote
+      if (ch === close) {
+        // A doubled closing delimiter is the escape for that delimiter, so skip both halves and stay inside. For `"` and `` ` `` a naive close-then-reopen happens to land on the same parity, but for a bracketed identifier it does not: the second `]` of `[a]].b]` is not an opener, so the walk fell outside the identifier and split its literal dot into a second segment.
+        if (name[i + 1] === close) { i++; continue }
         quote = null
       }
       continue
