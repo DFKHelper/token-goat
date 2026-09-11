@@ -9,8 +9,10 @@ import type { SymbolEntry } from '../parser_types.js'
 import {
   stripBlockCommentSpan,
   stripLineComment,
+  stripMultilineStringSpan,
   stripStringLiterals,
   type AdapterImport,
+  type MultilineStringState,
   makeLineSymbol,
 } from './common.js'
 
@@ -97,14 +99,23 @@ export function extractScala(
   const typeStack: TypeFrame[] = []
   let braceDepth = 0
   let inComment = false
+  let mlState: MultilineStringState | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
+    // Mask multi-line Scala `"""..."""` string spans first, state carried across lines, so braces inside one can never desync braceDepth and its content can never be read as a declaration. Skipped on lines that start already inside a block comment (mlState null) to avoid misreading comment prose that happens to contain opener-shaped text.
+    let mlLine = rawLine
+    if (mlState !== null || !inComment) {
+      const masked = stripMultilineStringSpan(rawLine, mlState, 'scala')
+      mlLine = masked.code
+      mlState = masked.state
+    }
+
     // Strip /* */ block-comment spans (state carried across lines via inComment) so braces
     // inside commented-out code are not counted toward braceDepth.
-    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
 
     // Strip a trailing `//` line comment so braces/text after it are ignored.
