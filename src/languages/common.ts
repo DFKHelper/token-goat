@@ -704,6 +704,44 @@ export interface MultilineStringState {
   interpolated?: boolean
   /** Which quotes of an over-long closing run form this literal's delimiter, carried from the opener because `findMultilineCloser` sees only the state and not the language. Set for `tripleQuote`/`tripleSingleQuote`; unused for every other kind. */
   runClose?: QuoteRunClose
+  /** Where on its line this literal's closing delimiter is allowed to sit, carried from the opener for the same reason `runClose` is: `findMultilineCloser` sees only the state, never the language. See {@link CloserAnchor} and {@link MULTILINE_CLOSER_ANCHOR}. Absent means `'anywhere'`. */
+  closerAnchor?: CloserAnchor
+}
+
+/** Where a multi-line literal's closing delimiter may sit on the line that holds it. `'anywhere'`: the first delimiter on the line closes the literal, wherever it falls. `'lineStart'`: only whitespace may precede it, so a delimiter appearing mid-line is ordinary content; the leading whitespace is also what the language strips from the body, which is why it is allowed rather than requiring column zero. `'column0'`: the delimiter must be the very first character of the line, with no indent at all. The rule is always named rather than assumed: reading an unanchored closer for an anchored language ends the literal early and parses its remaining body as code, which invents declarations the file never makes, while anchoring one that should not be anchored leaves the literal open to end of file and loses every declaration below it. Only the cross-line closer search consults this. A literal that opens and closes on one line is matched by the opener's own same-line scan, where an anchored rule could never be satisfied and applying it would leave a malformed one-line literal open to end of file. */
+export type CloserAnchor = 'anywhere' | 'lineStart' | 'column0'
+
+/**
+ * Per-language closer-position rule, read by every branch of `findMultilineCloser` that searches for a delimiter. A `Record` rather than a lookup with a fallback, so adding a language to {@link MultilineStringLang} is a compile error until its rule is decided.
+ *
+ * Each entry states the rule for that language's cross-line literals, with the reference it comes from. None of these were executed against a compiler here; they are read from the cited specification text.
+ */
+const MULTILINE_CLOSER_ANCHOR: Record<MultilineStringLang, CloserAnchor> = {
+  // An Elixir heredoc is terminated only by a delimiter run that begins its own line, preceded by nothing but the whitespace that also sets the indentation stripped from the body (Elixir syntax reference, section "Strings", heredocs). A run appearing mid-line inside the body is content.
+  elixir: 'lineStart',
+  // The closing delimiter of a Swift multi-line string literal has to appear on a line of its own, and its indentation sets what is stripped from each body line (The Swift Programming Language, "Strings and Characters", section "Multiline String Literals"). The same section's rules apply to the extended-delimiter multi-line form (`#"""`), whose only reachable state here is the cross-line one.
+  swift: 'lineStart',
+  // A PHP heredoc or nowdoc closes on its identifier at the start of a line; PHP 7.3 allowed that identifier to be indented and to be followed by other characters (PHP language reference, "Strings", section "Heredoc text"). Read by the heredoc/nowdoc branch, which builds its anchor regex from this value.
+  php: 'lineStart',
+  // A PowerShell here-string terminator (`"@` / `'@`) must be the first characters on its line, with no leading whitespace at all, which is the one language here that is stricter than `'lineStart'` (about_Quoting_Rules, "Here-Strings").
+  powershell: 'column0',
+  // Kotlin's raw string is terminated by the next `"""` wherever it falls, so `val s = """a"""` on one line is a complete literal (Kotlin language specification, "Expressions", section "String literals").
+  kotlin: 'anywhere',
+  // Scala's multi-line string literal is likewise terminated by the next run of three quotes on any line (Scala language specification, section 1.3.5 "Character Literals and String Literals").
+  scala: 'anywhere',
+  // Dart's multi-line string production is a delimiter, content, then the delimiter, with no rule about where on a line the closing delimiter falls (Dart Programming Language Specification, section "Strings").
+  dart: 'anywhere',
+  // C# has two cross-line forms and they disagree, so the language-level value is the permissive one. A verbatim string (`@"..."`) closes on the next non-doubled quote wherever it sits and has no positional rule (C# language reference, "String literals"). A multi-line raw string literal does require its closing run to begin its own line (C# language reference, "Raw string literals"), but that rule is unreachable as a mis-pairing here: the same section forbids the content from holding a quote run as long as the delimiter, so no run inside the body can be mistaken for the closer in the first place, and the run-length rule already in `closingQuoteRunEnd` is what enforces it.
+  csharp: 'anywhere',
+  // R has no fixed-delimiter multi-line form and no positional rule: an ordinary character constant runs to its next unescaped quote (R Language Definition, section 10.3.1 "Literal constants") and a raw constant to its mirrored closing punctuation (R base help page `?Quotes`, "Raw character constants"), on whatever line either lands.
+  r: 'anywhere',
+}
+
+/** Index on `line` where a closer search may begin under `anchor`, or -1 when this line cannot hold a closer at all. For the two anchored values the delimiter must start exactly at the returned index, which callers check. */
+function closerSearchStart(line: string, from: number, anchor: CloserAnchor): number {
+  if (anchor === 'anywhere') return from
+  const indent = anchor === 'column0' ? 0 : (/^[ \t]*/.exec(line)?.[0].length ?? 0)
+  return from <= indent ? indent : -1
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
@@ -725,6 +763,20 @@ const TRIPLE_QUOTE_RUN_CLOSE: Record<MultilineStringLang, QuoteRunClose> = {
   r: 'last',
 }
 
+/** Closer match for a quote-run-delimited literal, applying both of the rules a language decides: {@link QuoteRunClose} for which quotes of an over-long run form the delimiter, and {@link CloserAnchor} for where on the line that run is allowed to begin. Under an anchored rule the run must start at the line's first non-whitespace character and be at least `len` long, so a shorter or later run on the same line is body content rather than the closer. */
+function quoteRunCloser(line: string, from: number, quote: string, len: number, state: MultilineStringState): CloserMatch | null {
+  const anchor = state.closerAnchor ?? 'anywhere'
+  const start = closerSearchStart(line, from, anchor)
+  if (start === -1) return null
+  if (anchor !== 'anywhere') {
+    let run = 0
+    while (line[start + run] === quote) run++
+    if (run < len) return null
+  }
+  const end = closingQuoteRunEnd(line, start, quote, len, state.runClose ?? 'last')
+  return end === -1 ? null : { maskEnd: end }
+}
+
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
   maskEnd: number
@@ -734,25 +786,30 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
   switch (state.kind) {
     case 'heredoc':
     case 'nowdoc': {
-      // PHP 7.3+ allows an indented closing marker; the identifier must be a whole word (not
-      // immediately followed by another identifier character).
-      const re = new RegExp(`^[ \\t]*${escapeRegExp(state.identifier)}\\b`)
+      // The closing marker begins its own line, indented or not per this language's MULTILINE_CLOSER_ANCHOR entry (PHP 7.3+ allows an indent); the identifier must be a whole word (not immediately followed by another identifier character).
+      const indent = (state.closerAnchor ?? 'anywhere') === 'column0' ? '' : '[ \\t]*'
+      const re = new RegExp(`^${indent}${escapeRegExp(state.identifier)}\\b`)
       const m = re.exec(line)
       return m ? { maskEnd: m[0].length } : null
     }
     case 'tripleSingleQuote': {
       // Elixir's charlist heredoc and Dart's `'''` string, closed by their own delimiter rather than `"""`. The `runClose` rule is the opener's: Dart ends at the first three of a longer run, Elixir takes the whole run.
-      const end = closingQuoteRunEnd(line, from, "'", 3, state.runClose ?? 'last')
-      return end === -1 ? null : { maskEnd: end }
+      return quoteRunCloser(line, from, "'", 3, state)
     }
     case 'tripleQuote': {
       // Closer length comes from the opener's quote-run length -- see the `identifier` field doc on `MultilineStringState` for why a fixed `"""` can't be used -- and `runClose` decides which quotes of a longer run form it.
       const n = state.identifier !== '' ? parseInt(state.identifier, 10) : 3
-      const end = closingQuoteRunEnd(line, from, '"', n, state.runClose ?? 'last')
-      return end === -1 ? null : { maskEnd: end }
+      return quoteRunCloser(line, from, '"', n, state)
     }
     case 'rRaw':
     case 'swiftExtended': {
+      // `closerAnchor` splits these two: R's raw constant closes wherever its punctuation lands, while a Swift multi-line literal's delimiter has to begin its line.
+      const anchor = state.closerAnchor ?? 'anywhere'
+      if (anchor !== 'anywhere') {
+        const start = closerSearchStart(line, from, anchor)
+        if (start === -1 || !line.startsWith(state.identifier, start)) return null
+        return { maskEnd: start + state.identifier.length }
+      }
       // An R raw character constant has no escape sequences at all, so its closing run is a plain search (R base help page `?Quotes`, "Raw character constants"). A Swift extended-delimiter string closes the same way: inside one, `\` and `"` lose their special meaning and an escape needs the matching hash count (The Swift Programming Language, "Strings and Characters", section "Extended String Delimiters"), so a backslash cannot hide the closer either.
       const idx = line.indexOf(state.identifier, from)
       return idx === -1 ? null : { maskEnd: idx + state.identifier.length }
@@ -762,6 +819,7 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       return idx === -1 ? null : { maskEnd: idx + 1 }
     }
     case 'verbatim': {
+      // No anchor is consulted here on purpose: a C# verbatim string closes on its next non-doubled quote wherever that falls, and it is the reason MULTILINE_CLOSER_ANCHOR.csharp is `'anywhere'` -- see that entry.
       if (!state.interpolated) {
         // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
         // quote and does not close it.
@@ -830,9 +888,13 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       return null
     }
     case 'psHereDouble':
-      return line.startsWith('"@', from) ? { maskEnd: from + 2 } : null
-    case 'psHereSingle':
-      return line.startsWith("'@", from) ? { maskEnd: from + 2 } : null
+    case 'psHereSingle': {
+      // `column0` per this language's MULTILINE_CLOSER_ANCHOR entry: a here-string terminator takes no indent.
+      const start = closerSearchStart(line, from, state.closerAnchor ?? 'anywhere')
+      const terminator = state.kind === 'psHereDouble' ? '"@' : "'@"
+      if (start === -1 || !line.startsWith(terminator, start)) return null
+      return { maskEnd: start + terminator.length }
+    }
     default:
       return null
   }
@@ -1072,7 +1134,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const identifier = m[2] ?? ''
     const kind: MultilineStringKind = m[1] === "'" ? 'nowdoc' : 'heredoc'
     // Heredoc/nowdoc syntax never has real code after the opening marker on the same line.
-    return { openStart: m.index, closesSameLine: null, state: { kind, identifier } }
+    return { openStart: m.index, closesSameLine: null, state: { kind, identifier, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] } }
   }
 
   if (lang === 'kotlin' || lang === 'swift' || lang === 'scala') {
@@ -1084,7 +1146,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
         const ext = matchSwiftExtendedOpener(line, h)
         if (ext === null || isInsideStringLiteral(line, h, from) || isCommented(h)) continue
         const extClose = line.indexOf(ext.closer, ext.openerEnd)
-        const extState: MultilineStringState = { kind: 'swiftExtended', identifier: ext.closer }
+        const extState: MultilineStringState = { kind: 'swiftExtended', identifier: ext.closer, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] }
         if (extClose !== -1) {
           swiftExt = { openStart: h, closesSameLine: extClose + ext.closer.length, state: extState }
           break
@@ -1103,7 +1165,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     // already-open single-line string literal is not a real raw-string opener.
     if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
     const runClose = TRIPLE_QUOTE_RUN_CLOSE[lang]
-    const tripleState: MultilineStringState = { kind: 'tripleQuote', identifier: '3', runClose }
+    const tripleState: MultilineStringState = { kind: 'tripleQuote', identifier: '3', runClose, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] }
     const closeEnd = closingQuoteRunEnd(line, idx + 3, '"', 3, runClose)
     if (closeEnd !== -1) {
       return { openStart: idx, closesSameLine: closeEnd, state: tripleState }
@@ -1129,7 +1191,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const [idx, kind, delim] = first
     if (isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
     const runClose = TRIPLE_QUOTE_RUN_CLOSE[lang]
-    const state: MultilineStringState = { kind, identifier: '3', runClose }
+    const state: MultilineStringState = { kind, identifier: '3', runClose, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] }
     const closeEnd = closingQuoteRunEnd(line, idx + 3, delim[0] ?? '"', 3, runClose)
     if (closeEnd !== -1) return { openStart: idx, closesSameLine: closeEnd, state }
     return { openStart: idx, closesSameLine: null, state }
@@ -1152,13 +1214,13 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
       const raw = matchRRawOpener(line, i)
       if (raw !== null) {
         const closeIdx = line.indexOf(raw.closer, raw.openerEnd)
-        if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rRaw', identifier: raw.closer } }
+        if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rRaw', identifier: raw.closer, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] } }
         i = closeIdx + raw.closer.length
         continue
       }
       if (ch === '"' || ch === "'") {
         const closeIdx = findRQuoteEnd(line, i + 1, ch)
-        if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rString', identifier: ch } }
+        if (closeIdx === -1) return { openStart: i, closesSameLine: null, state: { kind: 'rString', identifier: ch, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] } }
         i = closeIdx + 1
         continue
       }
@@ -1193,7 +1255,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
 
     if (useTriple) {
-      const rawState: MultilineStringState = { kind: 'tripleQuote', identifier: String(tripleLen), runClose: TRIPLE_QUOTE_RUN_CLOSE.csharp }
+      const rawState: MultilineStringState = { kind: 'tripleQuote', identifier: String(tripleLen), runClose: TRIPLE_QUOTE_RUN_CLOSE.csharp, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] }
       const closeEnd = closingQuoteRunEnd(line, tripleIdx + tripleLen, '"', tripleLen, rawState.runClose ?? 'last')
       if (closeEnd !== -1) {
         return { openStart: tripleIdx, closesSameLine: closeEnd, state: rawState }
@@ -1229,7 +1291,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     if (isInsideStringLiteral(line, openStart, from)) return null
     const kind: MultilineStringKind = m[1] === '"' ? 'psHereDouble' : 'psHereSingle'
     // Here-strings never close on the opening line by construction.
-    return { openStart, closesSameLine: null, state: { kind, identifier: '' } }
+    return { openStart, closesSameLine: null, state: { kind, identifier: '', closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] } }
   }
 
   return null
