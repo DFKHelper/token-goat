@@ -15,6 +15,7 @@ import {
   upsertChunks,
 } from '../src/embeddings.js'
 import type { Chunk } from '../src/embeddings.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 import Database from '../src/sqlite_driver.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
@@ -99,7 +100,7 @@ describe('insertChunkVector + KNN round-trip on the real vec0 table', () => {
 // comment notes upsertChunks no-ops when the model is unavailable). Without this
 // combination, upsertChunks's real insert code - the line that actually binds a
 // rowid into chunk_vectors - never runs, and the bug hides behind the seam.
-const canExerciseRealUpsert = vec0State === 'working' && isAvailable()
+const canExerciseRealUpsert = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 describe('upsertChunks (real function, not insertChunkVector in isolation) against a real vec0 table', () => {
   // Regression: upsertChunks bypassed insertChunkVector and bound chunkResult.lastInsertRowid

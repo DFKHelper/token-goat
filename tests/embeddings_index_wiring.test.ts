@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { indexFileEmbeddings, indexFileSync } from '../src/parser.js'
 import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
 import { fingerprintFile } from '../src/fingerprint.js'
 import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
@@ -58,7 +59,7 @@ function classifyVec0(): Vec0State {
 const vec0State = classifyVec0()
 // Both the model and a genuinely loaded vec0 table must be real for these tests to exercise
 // the actual insert/search code, mirroring embeddings_vec_insert.test.ts's canExerciseRealUpsert.
-const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable()
+const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 let TMP: string
 let prevEmbeddingsEnv: string | undefined

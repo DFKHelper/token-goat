@@ -45,6 +45,7 @@ import { createRequire } from 'node:module'
 
 import { getDb } from '../src/db.js'
 import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 import Database from '../src/sqlite_driver.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
@@ -72,7 +73,7 @@ function classifyVec0(): Vec0State {
 }
 
 const vec0State = classifyVec0()
-const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable()
+const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 let TMP: string
 let dbPath: string

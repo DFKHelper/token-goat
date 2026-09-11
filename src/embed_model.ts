@@ -91,6 +91,32 @@ export function modelDir(): string {
   return path.join(dataDir(), 'models', ...DEFAULT_MODEL.split('/'), PINNED_MODEL_REVISION)
 }
 
+/**
+ * Is every pinned model file already on this machine, so {@link ensureModelFiles} would place it
+ * without reaching the network?
+ *
+ * Both locations count, because both make the fetch unnecessary: the data root's own copy, and the
+ * shared cache {@link sharedModelCacheDir} names, which is copied from rather than downloaded.
+ * Size only, deliberately: the sha256 of each file is verified by the code that places it, and
+ * re-hashing 33 MB just to answer "would this need the network" would cost more than the question
+ * is worth. A file of the right size that fails its digest is still discarded and refetched there.
+ *
+ * This answers a question `isRuntimeAvailable()` does not: the runtime can load perfectly well
+ * while the weights are absent, which is the state a fresh checkout is in.
+ */
+export function modelFilesPresent(): boolean {
+  const roots = [modelDir(), sharedModelCacheDir()].filter((d): d is string => d !== null)
+  return roots.some((root) =>
+    MODEL_FILES.every((file) => {
+      try {
+        return fs.statSync(path.join(root, file.name)).size === file.bytes
+      } catch {
+        return false
+      }
+    }),
+  )
+}
+
 /** The one URL shape this module will fetch. Every component is a constant above. */
 function downloadUrl(file: ModelFile): string {
   return `https://huggingface.co/${DEFAULT_MODEL}/resolve/${PINNED_MODEL_REVISION}/${file.name}`

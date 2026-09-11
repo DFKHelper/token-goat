@@ -117,7 +117,8 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
       tool_input: { file_path: imgPath },
       session_id: 'matrix-image-ocr',
     })
-    const r = run(['hook', 'pre_tool_use'], { input: payload })
+    // network.offline, so the spawned bundle takes the OCR path without fetching the 5 MB tesseract language data from cdn.jsdelivr.net. Measured by wrapping fetch for a whole suite run: this was the only test that reached that host, and it cost 12 s per run plus a hard dependency on the internet for a case whose own assertion below already accepts either outcome. What it still proves is the thing it was written for: the built bundle dispatches a large text-heavy image through the real hook path, loads its native addons in the right order, and answers without crashing or hanging. The OCR engine's own wiring -- the child script, the pinned langPath, the cache directory, the integrity refusal -- is covered by tests/image_ocr_integrity.test.ts and tests/image_ocr.test.ts against stubs.
+    const r = run(['hook', 'pre_tool_use'], { input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1' } })
     expect(r.status, r.stderr).toBe(0)
 
     const out = JSON.parse(r.stdout) as {
