@@ -18,6 +18,8 @@ interface TypeFrame {
   name: string
   startDepth: number
   bodyEntered: boolean
+  // Net unclosed `(` count accumulated since the frame was pushed, counted on string-blanked text. A declaration whose parameter list spans several lines (`class Multi(` / `val a: Int,` / `) {`) is still mid-declaration until this returns to 0, so the stale-frame sweep below must not treat it as finished just because no brace has arrived yet.
+  openParens: number
 }
 
 // `import scala.util.matching.Regex` or `import java.util._` (wildcard imports)
@@ -69,6 +71,19 @@ const VAL_RE = new RegExp('^\\s*' + MODS + 'val\\s+(' + NAME + ')')
 
 // `var x: Int = 5`, `var y = "hello"` — same pattern as val.
 const VAR_RE = new RegExp('^\\s*' + MODS + 'var\\s+(' + NAME + ')')
+
+// True when `stripped` opens any declaration this extractor recognizes. Used only by the stale-frame sweep, which needs to distinguish a real new declaration from a continuation line (`) extends Bar {`, `with Baz {`, a bare `{`) that must leave the open frame alone.
+function startsDeclaration(stripped: string): boolean {
+  return (
+    CLASS_RE.test(stripped) ||
+    OBJECT_RE.test(stripped) ||
+    TRAIT_RE.test(stripped) ||
+    ENUM_RE.test(stripped) ||
+    FUNC_RE.test(stripped) ||
+    VAL_RE.test(stripped) ||
+    VAR_RE.test(stripped)
+  )
+}
 
 export function extractScala(
   content: string,
@@ -124,6 +139,15 @@ export function extractScala(
       }
     }
 
+    // A bodyless type declaration -- `sealed trait Op` and `sealed abstract class Shape` (the two halves of the idiomatic Scala ADT), a plain `class Foo extends Bar`, or a Scala 3 indentation-syntax `object Foo:` -- never gets a `{`, so `bodyEntered` never flips and the frame the push above created would sit on typeStack forever. That permanently fails `typeDetectionGateOk` and silently drops every later declaration in the file, and any brace from a later sibling flips the stale frame's `bodyEntered`, so the sibling's members get attributed to the wrong parent. A declaration-shaped line whose brace depth has fallen back to the frame's start depth proves that frame's body is over (or never began), so sweep such frames off before the gate is evaluated. `openParens === 0` is required so a declaration still inside its own multi-line parameter list is not mistaken for a finished one, and the line must itself start a declaration so a continuation line such as `) extends Bar {` keeps its frame intact until the brace arrives.
+    if (typeStack.length > 0 && startsDeclaration(stripped)) {
+      while (typeStack.length > 0) {
+        const top = typeStack[typeStack.length - 1]!
+        if (braceDepth <= top.startDepth && top.openParens === 0) typeStack.pop()
+        else break
+      }
+    }
+
     // class/object/trait — recognized at column 0 (top-level), or indented while
     // one brace level inside another type's body (a real nested type member).
     // Matches kotlin.ts's classDetectionGateOk pattern.
@@ -145,17 +169,7 @@ export function extractScala(
       const cname = unquoteName(cm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
-      // A `case class` is idiomatically bodyless (`case class Foo(x: Int)`, optionally with
-      // `extends`/`with` clauses, but never a `{...}` body). If this line has no `{` at all, no
-      // brace will ever arrive to flip `bodyEntered` and pop the frame -- it would sit on
-      // typeStack forever, permanently failing typeDetectionGateOk and silently dropping every
-      // subsequent top-level class/object/trait/enum/def/val/var in the file. Pop it immediately
-      // for this known-bodyless form (mirrors php.ts's self-contained-one-liner immediate pop,
-      // generalized to "no brace on the line" instead of "open+close both on the line").
-      if (/\bcase\s+class\b/.test(stripped) && !stripStringLiterals(line).includes('{')) {
-        typeStack.pop()
-      }
+      typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
       matched = true
     }
 
@@ -164,12 +178,7 @@ export function extractScala(
       const oname = unquoteName(om[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false })
-      // Same bodyless-one-liner leak as `case class` above, but for `case object Foo` (the
-      // idiomatic zero-argument ADT variant, e.g. Scala 3 enum-alternative style).
-      if (/\bcase\s+object\b/.test(stripped) && !stripStringLiterals(line).includes('{')) {
-        typeStack.pop()
-      }
+      typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
       matched = true
     }
 
@@ -178,7 +187,7 @@ export function extractScala(
       const tname = unquoteName(tm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false })
+      typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
       matched = true
     }
 
@@ -187,7 +196,7 @@ export function extractScala(
       const enname = unquoteName(enm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false })
+      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
       matched = true
     }
 
@@ -243,6 +252,13 @@ export function extractScala(
 
     // Brace-count on a string-stripped copy
     const braceLine = stripStringLiterals(line)
+
+    // Track the innermost frame's unclosed parentheses until its body opens, so the stale-frame sweep above can tell a finished bodyless declaration from one whose parameter list is still open across several lines.
+    if (frame !== null && !frame.bodyEntered) {
+      const parenDelta = (braceLine.match(/\(/g) ?? []).length - (braceLine.match(/\)/g) ?? []).length
+      frame.openParens = Math.max(0, frame.openParens + parenDelta)
+    }
+
     for (const ch of braceLine) {
       if (ch === '{') {
         braceDepth++

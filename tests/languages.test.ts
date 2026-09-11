@@ -2746,6 +2746,78 @@ def topLevelFn(): Unit = {}
     expect(symbols.find((s) => s.name === 'method')?.parent).toBe('Baz')
     expect(symbols.find((s) => s.name === 'topLevelFn')?.kind).toBe('function')
   })
+
+  it('does not leak a TypeFrame for a bodyless trait or abstract class', () => {
+    // Regression: the bodyless-declaration pop was spelled for `case class`/`case object` only, so `sealed trait Op` -- the other half of the canonical Scala ADT pairing, and just as brace-free -- kept its TypeFrame forever. Every later top-level declaration then failed typeDetectionGateOk and vanished from the index, and the first later brace flipped the stale frame's bodyEntered, so that sibling's members were reparented onto the bodyless trait.
+    // Fixture provenance: HAND-DERIVED. The source is the ADT pattern documented in the Scala 3 book ("Algebraic Datatypes"); the expected symbol list is what the declarations plainly say, computed without reference to the extractor.
+    const content = `package com.example.adt
+
+sealed trait Op
+
+case class Add(x: Int) extends Op
+
+case class Sub(y: Int) extends Op
+
+object Runner {
+  def run(o: Op): Int = 1
+}
+
+sealed abstract class Shape
+
+final case class Circle(radius: Double) extends Shape
+
+class Later {
+  def later(): Int = 2
+}
+`
+    const { symbols } = extractScala(content, 'adt.scala')
+    const names = symbols.map((s) => s.name)
+    for (const wanted of ['Op', 'Add', 'Sub', 'Runner', 'run', 'Shape', 'Circle', 'Later', 'later']) {
+      expect(names).toContain(wanted)
+    }
+    expect(symbols.find((s) => s.name === 'Add')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Runner')?.kind).toBe('object')
+    expect(symbols.find((s) => s.name === 'Circle')?.kind).toBe('class')
+    // The stale frame used to swallow Runner's brace, so `run` was emitted with parent `Op`.
+    expect(symbols.find((s) => s.name === 'run')?.parent).toBe('Runner')
+    expect(symbols.find((s) => s.name === 'later')?.parent).toBe('Later')
+    // The bodyless trait spans exactly its own line, not everything up to the next closing brace.
+    expect(symbols.find((s) => s.name === 'Op')?.lineStart).toBe(3)
+  })
+
+  it('keeps a multi-line parameter list open while sweeping stale bodyless frames', () => {
+    // Guards the sweep's `openParens` condition: `val a: Int,` inside a multi-line parameter list is itself declaration-shaped, so without the paren check the sweep would pop the class frame before its body brace arrived and drop every member.
+    // Fixture provenance: HAND-DERIVED. Ordinary multi-line Scala constructor-parameter formatting; expectations read off the declarations, not off the extractor.
+    const content = `object Wrapper {
+  sealed trait Op
+
+  case class Add(x: Int) extends Op
+
+  def run(o: Op): Int = 1
+
+  val limit: Int = 5
+}
+
+class Multi(
+  val a: Int,
+  val b: Int
+) {
+  def sum(): Int = a + b
+}
+
+class AfterMulti {
+  def hello(): String = "hi"
+}
+`
+    const { symbols } = extractScala(content, 'nested.scala')
+    const names = symbols.map((s) => s.name)
+    for (const wanted of ['Wrapper', 'Op', 'Add', 'run', 'limit', 'Multi', 'sum', 'AfterMulti', 'hello']) {
+      expect(names).toContain(wanted)
+    }
+    expect(symbols.find((s) => s.name === 'sum')?.parent).toBe('Multi')
+    expect(symbols.find((s) => s.name === 'hello')?.parent).toBe('AfterMulti')
+    expect(symbols.find((s) => s.name === 'run')?.parent).toBe('Wrapper')
+  })
 })
 
 // ---------------------------------------------------------------------------
