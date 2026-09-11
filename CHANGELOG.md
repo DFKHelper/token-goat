@@ -4,6 +4,21 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **token-goat now works inside VS Code's Copilot agent, not just beside it.** `token-goat install --vscode` now also installs agent hooks, so token-goat sees the file reads, searches, edits, and terminal commands VS Code's agent makes with its built-in tools. In VS Code, token-goat now:
+  - stops the agent from reading a large file again when it already has it, and points it at the copy it has
+  - adds short hints to reads and edits
+  - shrinks a large image before `view_image` loads it
+  - compresses the output of build and test commands run in the terminal
+  - queues edited files for reindexing
+
+  VS Code gives hooks no way to change what a tool returns, so token-goat cannot fold or trim a file's contents there the way it does in Claude Code.
+
+  If you already use `--vscode`, run `token-goat install --vscode` again to add the hooks (with `-p` for a project install). They go in the same folder Copilot CLI reads, `~/.copilot/hooks/` (or `.github/hooks/` with `-p`), and share one hooks file with `--copilot`. Uninstalling either one leaves the hooks the other still uses.
+
+  If VS Code's `chat.useClaudeHooks` setting is on, VS Code also runs the Claude Code hooks in `~/.claude/settings.json`, so each hook fires twice. `install --vscode` and `token-goat doctor` now point this out. token-goat does not change your VS Code settings.
+
 ### Fixed
 
 - **More declaration forms now index in Elixir, Zig, Terraform, SQL, PowerShell, and R.** Each of these adapters matches declarations with patterns rather than a grammar, and each was missing forms the language documents. They now index, and what they index as:

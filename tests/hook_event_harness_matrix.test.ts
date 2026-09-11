@@ -57,6 +57,7 @@ import { OPENCLAW_PLUGIN_SCRIPT } from '../src/bridges/openclaw.js'
 import { OPENCODE_PLUGIN_SCRIPT } from '../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../src/bridges/pi.js'
 import type { HarnessName } from '../src/bridges/types.js'
+import { VSCODE_HOOK_FILE_EVENT_KEYS } from '../src/bridges/vscode_install.js'
 import { HOOK_EVENTS, type HookEventName } from '../src/types.js'
 
 import { BUNDLE, ROOT } from './helpers/bundle.js'
@@ -160,6 +161,20 @@ function copilotCliEvents(): HookEventName[] {
   return extractKnownEvents(m[1], 'src/bridges/copilot_cli.ts COPILOT_TO_TG_EVENT')
 }
 
+/** VS Code reads the same hooks file as Copilot CLI but only fires the keys in VSCODE_HOOK_FILE_EVENT_KEYS (src/bridges/vscode_install.ts, from VS Code 1.136.0's hook-type table), so its events are the COPILOT_TO_TG_EVENT entries whose key VS Code knows. */
+function vscodeEvents(): HookEventName[] {
+  const src = readSrc('bridges/copilot_cli.ts')
+  const m = src.match(/const COPILOT_TO_TG_EVENT = \{\r?\n([\s\S]*?)\r?\n\}/)
+  if (!m || m[1] === undefined) {
+    throw new Error('COPILOT_TO_TG_EVENT not found in src/bridges/copilot_cli.ts -- update the matrix derivation')
+  }
+  const kept = m[1].split(/\r?\n/).filter((line) => {
+    const key = /^\s*(\w+):/.exec(line)?.[1]
+    return key !== undefined && VSCODE_HOOK_FILE_EVENT_KEYS.includes(key)
+  })
+  return extractKnownEvents(kept.join('\n'), 'src/bridges/copilot_cli.ts COPILOT_TO_TG_EVENT filtered by VSCODE_HOOK_FILE_EVENT_KEYS')
+}
+
 /**
  * pi / opencode / openclaw wire their hooks by calling `callHook("<event>", ...)`
  * directly inside a hand-authored, auto-discovered extension/plugin script,
@@ -201,6 +216,7 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   opencode: callHookEvents(OPENCODE_PLUGIN_SCRIPT, 'OPENCODE_PLUGIN_SCRIPT'),
   openclaw: callHookEvents(OPENCLAW_PLUGIN_SCRIPT, 'OPENCLAW_PLUGIN_SCRIPT'),
   copilot_cli: copilotCliEvents(),
+  vscode: vscodeEvents(),
   generic: [...HOOK_EVENTS],
 }
 
@@ -232,6 +248,7 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
     'user_prompt_submit',
     'post_tool_use_failure',
   ],
+  vscode: ['session_start', 'pre_tool_use', 'post_tool_use', 'stop', 'subagent_stop', 'user_prompt_submit'],
   generic: [...HOOK_EVENTS],
 }
 
@@ -391,6 +408,10 @@ function toolPayload(harness: HarnessName, sessionId: string, filePath: string):
       toolInput: { target_file: filePath },
     }
   }
+  if (harness === 'vscode') {
+    // FORMAT-DERIVED: the envelope ChatHookService.executePreToolUseHook builds in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js, with read_file's schema (filePath, startLine, endLine) from resources/app/extensions/copilot/package.json.
+    return { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: sessionId, tool_name: 'read_file', tool_input: { filePath, startLine: 1, endLine: 1 }, tool_use_id: 'tu-matrix' }
+  }
   return { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId }
 }
 
@@ -507,6 +528,62 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     expect(parsed.permissionDecision).toBe('deny')
     expect(typeof parsed.permissionDecisionReason).toBe('string')
     expect(parsed.permissionDecisionReason ?? '').toContain('was already read this session')
+  })
+
+  // VS Code reads a PreToolUse deny only from hookSpecificOutput.permissionDecision (ChatHookService in VS Code 1.136.0's extension.js); a top-level decision:'block' is ignored there, so the read would go through.
+  it('vscode: the real bundle denies a re-read through hookSpecificOutput.permissionDecision "deny", with no top-level decision/modifiedArgs/modifiedResult', () => {
+    const sessionId = 'matrix-deny-vscode'
+    const filePath = path.join(dataBase, `${sessionId}-large.bin`)
+    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    const env = tgEnv('vscode')
+    const payload = toolPayload('vscode', sessionId, filePath)
+    const first = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
+    expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
+    const second = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
+    expect(second.status, `second read, stderr: ${second.stderr}`).toBe(0)
+    const parsed = JSON.parse(second.stdout) as Record<string, unknown> & {
+      hookSpecificOutput?: { hookEventName?: string; permissionDecision?: string; permissionDecisionReason?: string }
+    }
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny')
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('was already read this session')
+    for (const key of ['decision', 'modifiedArgs', 'modifiedResult', 'permissionDecision']) expect(key in parsed, key).toBe(false)
+  })
+
+  it('vscode: the shared COPILOT_CLI_HOOK_SCRIPT shim recognizes a VS Code payload and returns the VS Code deny shape, not the Copilot CLI one', () => {
+    const cwd = mkIsolated('tg-hookmatrix-vscodeshim-')
+    const sessionId = 'matrix-deny-vscode-shim'
+    const filePath = path.join(cwd, 'large.bin')
+    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    const payload = toolPayload('vscode', sessionId, filePath)
+    // VS Code sets no token-goat override; the shim must tell the payload apart on its own.
+    const env = tgEnv('vscode')
+    delete env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    const first = runShim(COPILOT_CLI_HOOK_SCRIPT, cwd, 'preToolUse', [BUNDLE], payload, env)
+    expect(first.status, `first read, stderr: ${first.stderr}`).toBe(0)
+    const second = runShim(COPILOT_CLI_HOOK_SCRIPT, cwd, 'preToolUse', [BUNDLE], payload, env)
+    expect(second.status, `second read, stderr: ${second.stderr}`).toBe(0)
+    const parsed = JSON.parse(second.stdout) as Record<string, unknown> & {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
+    }
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny')
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('was already read this session')
+    for (const key of ['permissionDecision', 'modifiedArgs', 'modifiedResult', 'decision']) expect(key in parsed, key).toBe(false)
+  })
+
+  it('copilot_cli: the same shim still answers a Copilot CLI payload with the top-level Copilot shape when no override is set', () => {
+    const cwd = mkIsolated('tg-hookmatrix-copilotshim-nooverride-')
+    const filePath = path.join(cwd, 'large.bin')
+    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    const payload = { sessionId: 'matrix-deny-copilot-nooverride', cwd, toolName: 'view', toolArgs: { path: filePath } }
+    const env = tgEnv('copilot_cli')
+    delete env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    runShim(COPILOT_CLI_HOOK_SCRIPT, cwd, 'preToolUse', [BUNDLE], payload, env)
+    const second = runShim(COPILOT_CLI_HOOK_SCRIPT, cwd, 'preToolUse', [BUNDLE], payload, env)
+    expect(second.status, `second read, stderr: ${second.stderr}`).toBe(0)
+    const parsed = JSON.parse(second.stdout) as Record<string, unknown>
+    expect(parsed['permissionDecision']).toBe('deny')
+    expect(parsed['hookSpecificOutput']).toBeUndefined()
   })
 
   // The whole point of mapping read_bash -> BashOutput is that Copilot's shell is

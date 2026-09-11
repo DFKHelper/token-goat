@@ -1848,6 +1848,8 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
     return null
   }
   if (cfg.disabled_filters.includes(filterName)) return null
+  // VS Code's run_in_terminal hands the rewritten command to the user's own terminal shell, PowerShell by default on Windows, which does not read bash's '\'' escape inside a single-quoted string; a command with no single quote quotes identically in both.
+  if (event.raw['_tg_harness'] === 'vscode' && rawCmd.includes("'")) return null
 
   const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds} -c ${shellQuoteSingle(rawCmd)}`
   return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }

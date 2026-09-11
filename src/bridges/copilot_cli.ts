@@ -297,16 +297,57 @@ function remapToolInput(copilotToolName, input) {
 // process spawn entirely. Returns undefined (triggering the spawnSync fallback below)
 // when entryPath is absent, the sibling file doesn't exist (an older install predating
 // this file), or anything else goes wrong -- this must never throw.
-async function tryInProcess(entryPath, tgEvent, canonical) {
+async function tryInProcess(entryPath, tgEvent, canonical, harness) {
   if (!entryPath) return undefined
   try {
     const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
     if (!require('node:fs').existsSync(hookLibPath)) return undefined
     const mod = await import(pathToFileURL(hookLibPath).href)
-    process.env.TOKEN_GOAT_HARNESS_OVERRIDE = 'copilot_cli'
+    process.env.TOKEN_GOAT_HARNESS_OVERRIDE = harness
     return await mod.relayInProcess(tgEvent, canonical)
   } catch {
     return undefined
+  }
+}
+
+// VS Code's built-in agent reads this same hooks file (~/.copilot/hooks and .github/hooks are both
+// on its hook-source list) and runs these same entries, but it sends Claude Code's payload shape:
+// hook_event_name, session_id, tool_name, tool_input, tool_response. Copilot CLI's payload never
+// carries hook_event_name and always names its tool in toolName, so that pair tells them apart.
+// The payload goes to token-goat as-is under the vscode harness, which does its own tool-name
+// mapping and writes a response VS Code reads directly, so nothing here translates it.
+function isVscodePayload(payload) {
+  return payload !== null && typeof payload === 'object' && typeof payload.hook_event_name === 'string' && payload.toolName === undefined
+}
+
+async function relayVscode(entryPath, tgEvent, payload) {
+  // VS Code omits session_id when the chat has no session resource yet; key the state on the workspace instead, the same fallback the Copilot path uses.
+  const input = typeof payload.session_id === 'string' && payload.session_id !== ''
+    ? payload
+    : Object.assign({}, payload, { session_id: stableFallbackSessionId(process.cwd()) })
+  let stdout = await tryInProcess(entryPath, tgEvent, input, 'vscode')
+  if (stdout === undefined) {
+    // tgEvent is a value of the closed COPILOT_TO_TG_EVENT map (gated in main) and the harness is a literal, so nothing caller-controlled reaches the shell string below.
+    const spawnOpts = {
+      input: JSON.stringify(input),
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 32 * 1024 * 1024,
+      env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'vscode' }),
+    }
+    const res = entryPath
+      ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent, '--harness', 'vscode'], spawnOpts)
+      : spawnSync('token-goat hook ' + tgEvent + ' --harness vscode', Object.assign({ shell: true }, spawnOpts))
+    if (res.status !== 0 || !res.stdout) return '{}'
+    stdout = res.stdout
+  }
+  try {
+    const parsed = JSON.parse(stdout)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? JSON.stringify(parsed) : '{}'
+  } catch {
+    return '{}'
   }
 }
 
@@ -343,6 +384,11 @@ async function main() {
     payload = JSON.parse(raw)
   } catch {
     process.stdout.write('{}')
+    return
+  }
+
+  if (isVscodePayload(payload)) {
+    process.stdout.write(await relayVscode(process.argv[3], tgEvent, payload))
     return
   }
 
@@ -432,7 +478,7 @@ async function main() {
   // timeout/killSignal on both spawnSync fallbacks keeps them well under Copilot CLI's
   // own hook timeout budget (~30000ms), so token-goat degrades to its own fail-open
   // '{}' rather than being force-killed by Copilot first.
-  let stdout = await tryInProcess(entryPath, tgEvent, canonical)
+  let stdout = await tryInProcess(entryPath, tgEvent, canonical, 'copilot_cli')
   if (stdout === undefined) {
     const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent], {

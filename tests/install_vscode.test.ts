@@ -3,7 +3,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { installVscode, uninstallVscode, vscodeDecoderConfigured, vscodeUserMcpPath } from '../src/bridges/vscode_install.js'
+import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
+import { installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
+import { checkVscodeClaudeHooks } from '../src/cli_doctor.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
@@ -59,7 +61,7 @@ describe('VS Code project-local install', () => {
       const guidance = fs.readFileSync(path.join(project, '.github', 'copilot-instructions.md'), 'utf8')
       expect(guidance).toContain('user guidance')
       expect(guidance).toContain('servers root key')
-      expect(guidance).toContain('does not intercept')
+      expect(guidance).toContain('cannot fold or trim what a built-in read returns')
       // The decode contract: without it the model receives a compressed
       // payload with no instruction to call retrieve_text and parrots the blob.
       expect(guidance).toContain('retrieve_text')
@@ -248,5 +250,108 @@ describe('vscodeDecoderConfigured (extension false-prompt regression)', () => {
       fs.rmSync(userDir, { recursive: true, force: true })
       fs.rmSync(project, { recursive: true, force: true })
     }
+  })
+})
+
+describe('VS Code agent hooks share the Copilot hooks file (ownership)', () => {
+  let project: string
+  const originalCwd = process.cwd()
+
+  beforeEach(() => {
+    project = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-hooks-owner-'))
+    process.chdir(project)
+  })
+
+  afterEach(() => {
+    process.chdir(originalCwd)
+    fs.rmSync(project, { recursive: true, force: true })
+  })
+
+  const hooksDir = (): string => path.join(project, '.github', 'hooks')
+  const configPath = (): string => path.join(hooksDir(), 'token-goat.json')
+  const shimPath = (): string => path.join(hooksDir(), 'token-goat-shim.js')
+
+  it('install --vscode -p writes the shared hooks file and shim, whose commands carry only Copilot event names', () => {
+    const result = installVscode({ project: true, projectRoot: project })
+    expect(result.hooksConfigPath).toBe(configPath())
+    expect(fs.existsSync(shimPath())).toBe(true)
+    expect(vscodeHooksInstalled({ project: true, projectRoot: project })).toBe(true)
+    const config = JSON.parse(fs.readFileSync(configPath(), 'utf8')) as { hooks: Record<string, unknown> }
+    // VS Code fires these keys from the same file (its hook-type table in 1.136.0's extension.js).
+    for (const key of ['sessionStart', 'preToolUse', 'postToolUse', 'agentStop', 'subagentStop', 'userPromptSubmitted']) {
+      expect(VSCODE_HOOK_FILE_EVENT_KEYS).toContain(key)
+      expect(config.hooks[key], key).toBeDefined()
+    }
+  })
+
+  it('copilot then vscode: uninstall --vscode leaves the hooks Copilot CLI still needs, and the Copilot uninstall then removes them', () => {
+    installCopilotCli({ local: true })
+    installVscode({ project: true, projectRoot: project })
+    expect([...readCopilotHooksOwners(hooksDir())].sort()).toEqual(['copilot', 'vscode'])
+
+    uninstallVscode({ project: true, projectRoot: project })
+    expect(fs.existsSync(configPath())).toBe(true)
+    expect(fs.existsSync(shimPath())).toBe(true)
+    expect([...readCopilotHooksOwners(hooksDir())]).toEqual(['copilot'])
+    expect(isCopilotCliInstalled({ local: true })).toBe(true)
+
+    uninstallCopilotCli({ local: true })
+    expect(fs.existsSync(configPath())).toBe(false)
+    expect(fs.existsSync(shimPath())).toBe(false)
+    expect(fs.existsSync(copilotHooksOwnersPath(hooksDir()))).toBe(false)
+  })
+
+  it('vscode then copilot: uninstalling Copilot CLI leaves the hooks VS Code still needs, and isCopilotCliInstalled turns false', () => {
+    installVscode({ project: true, projectRoot: project })
+    installCopilotCli({ local: true })
+
+    uninstallCopilotCli({ local: true })
+    expect(fs.existsSync(configPath())).toBe(true)
+    expect(fs.existsSync(shimPath())).toBe(true)
+    expect(isCopilotCliInstalled({ local: true })).toBe(false)
+    expect(vscodeHooksInstalled({ project: true, projectRoot: project })).toBe(true)
+
+    uninstallVscode({ project: true, projectRoot: project })
+    expect(fs.existsSync(configPath())).toBe(false)
+    expect(fs.existsSync(shimPath())).toBe(false)
+  })
+
+  it('a Copilot install from before the owners file existed counts as owned by copilot, so uninstall --vscode keeps it', () => {
+    installCopilotCli({ local: true })
+    fs.rmSync(copilotHooksOwnersPath(hooksDir()))
+    installVscode({ project: true, projectRoot: project })
+    expect([...readCopilotHooksOwners(hooksDir())].sort()).toEqual(['copilot', 'vscode'])
+    uninstallVscode({ project: true, projectRoot: project })
+    expect(fs.existsSync(configPath())).toBe(true)
+    expect(isCopilotCliInstalled({ local: true })).toBe(true)
+  })
+})
+
+describe('chat.useClaudeHooks double-fire detection', () => {
+  it('vscodeUsesClaudeHooks reads a JSONC settings file with comments and trailing commas, true only for a literal true', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-settings-'))
+    try {
+      const settings = path.join(dir, 'settings.json')
+      fs.writeFileSync(settings, '{\n  // chat\n  "chat.useClaudeHooks": true,\n}\n')
+      expect(vscodeUsesClaudeHooks(settings)).toBe(true)
+      fs.writeFileSync(settings, '{ "chat.useClaudeHooks": "true" }')
+      expect(vscodeUsesClaudeHooks(settings)).toBe(false)
+      fs.writeFileSync(settings, '{ "editor.fontSize": 12 }')
+      expect(vscodeUsesClaudeHooks(settings)).toBe(false)
+      expect(vscodeUsesClaudeHooks(path.join(dir, 'missing.json'))).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('checkVscodeClaudeHooks warns only when the setting is on and Claude Code hooks are installed', () => {
+    expect(checkVscodeClaudeHooks(false, true, true)).toBeNull()
+    expect(checkVscodeClaudeHooks(true, false, true)).toBeNull()
+    const both = checkVscodeClaudeHooks(true, true, true)
+    expect(both?.status).toBe('warn')
+    expect(both?.message).toContain('fires twice')
+    const claudeOnly = checkVscodeClaudeHooks(true, true, false)
+    expect(claudeOnly?.status).toBe('warn')
+    expect(claudeOnly?.message).toContain('install --vscode')
   })
 })

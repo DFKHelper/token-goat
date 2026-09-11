@@ -45,7 +45,7 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
   it('covers exactly the real bridge modules -- excludes hermes (no install-writer) and generic (fallback, not a harness)', () => {
     const harnesses = BRIDGE_CAPABILITY_MATRIX.map((r) => r.harness).sort()
     expect(harnesses).toEqual(
-      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'kimi', 'openclaw', 'opencode', 'pi', 'qwen'].sort(),
+      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'kimi', 'openclaw', 'opencode', 'pi', 'qwen', 'vscode'].sort(),
     )
     expect(harnesses).not.toContain('hermes')
     expect(harnesses).not.toContain('generic')

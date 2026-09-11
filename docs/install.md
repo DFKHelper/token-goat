@@ -182,6 +182,20 @@ No ambient environment variable documents "this process is running under Copilot
 
 **If Copilot CLI starts denying every tool call with `Denied by preToolUse hook ... (hook errored)`:** this is Copilot's own fail-closed behavior for a `preToolUse` hook that crashes, exits non-zero, or returns unparseable output -- it isn't limited to token-goat's own tool calls, since a fail-closed `preToolUse` hook blocks the whole session. Copilot caches hook configs at session start, so **renaming or reinstalling the hook mid-session has no effect** -- the only recovery is: run `token-goat install --copilot` (or `token-goat doctor`, which now checks the installed hook end-to-end and calls out a stale node-binary path from an nvm/fnm/volta upgrade specifically), then **fully restart Copilot CLI**.
 
+### VS Code (Copilot agent) users
+
+```
+token-goat install --vscode
+```
+
+This registers token-goat's MCP server in VS Code's user `mcp.json` and installs agent hooks in `~/.copilot/hooks/` (`token-goat.json` plus the `token-goat-shim.js` it runs). VS Code's Copilot agent reads hooks from that folder, so token-goat sees the agent's built-in tool calls: `read_file`, `view_image`, `list_dir`, `grep_search`, `file_search`, `create_file`, `replace_string_in_file`, `insert_edit_into_file`, `edit_notebook_file`, and `run_in_terminal`. Add `-p`/`--project` to install for the current project instead: the MCP entry goes to `.vscode/mcp.json` and the hooks to `.github/hooks/`.
+
+What works: a repeated read of a large file is denied, with a pointer to what the agent already has; hints ride along with reads and edits; a large image is shrunk before `view_image` loads it; build and test commands run through `run_in_terminal` come back compressed; edited files are queued for reindexing; and the session-start reminder tells the agent token-goat exists. What does not: VS Code gives hooks no way to change what a tool returns, so token-goat cannot fold or trim what `read_file` returns the way it does in Claude Code. VS Code also never fires a pre-compaction hook, so the compaction manifest has no route there.
+
+The hooks folder and files are the same ones `token-goat install --copilot` uses, and one shim serves both: it tells a VS Code payload from a Copilot CLI one and answers each in its own format. token-goat records which install owns the files (`token-goat.owners` next to them), so `token-goat uninstall --vscode` leaves the hooks in place while `--copilot` still needs them, and the other way round. To remove: `token-goat uninstall --vscode` (add `-p` for the project install).
+
+If VS Code's `chat.useClaudeHooks` setting is on, VS Code also runs the Claude Code hooks in `~/.claude/settings.json`, so each token-goat hook fires twice. `token-goat install --vscode` prints a note when it sees that setting, and `token-goat doctor` reports it. Turn the setting off to keep only the VS Code hooks. token-goat never edits your VS Code settings.
+
 ### Grok CLI (xAI Grok Build) users
 
 Grok Build already reads Claude Code's `~/.claude/settings.json` as a "Harness Compatibility" source out of the box (confirmed against grok 0.2.93 and its own [hooks doc](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)), so `token-goat install` alone already gets most of the integration working — image shrinking, session hints, post-edit indexing, and bash output compression all fire. The one gap: Grok's own `PreToolUse` hook contract documents only `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`, never token-goat's harness-independent `{"decision":"block","reason":"..."}` shape (unlike Gemini CLI, whose docs explicitly confirm `"block"` as an accepted alias for `"deny"`), so re-read denial and oversized-first-read redirects don't reliably block on the Claude Code compat path alone.
@@ -377,7 +391,8 @@ Three things follow, and they are worth knowing before you decide. It never leav
 | Path | What |
 |------|------|
 | `%APPDATA%\Code\User\mcp.json` (Windows) / `~/Library/Application Support/Code/User/mcp.json` (macOS) / `~/.config/Code/User/mcp.json` (Linux) — or `<project>/.vscode/mcp.json` with `-p`/`--project` | Merges the `token-goat` stdio entry under VS Code's `servers` root key, preserving unrelated servers and settings. Refuses to write if the other scope already has a token-goat-managed entry, to avoid a duplicate registration. |
-| `<project>/.github/copilot-instructions.md` | Adds a delimited VS Code routing block that documents supported MCP selection and explicitly says MCP does not intercept built-in file reads. |
+| `<project>/.github/copilot-instructions.md` | Adds a delimited VS Code routing block that documents supported MCP selection and what the agent hooks can and cannot do with built-in file reads. |
+| `~/.copilot/hooks/token-goat.json`, `token-goat-shim.js`, `token-goat.owners` (`<project>/.github/hooks/` with `-p`) | VS Code agent hooks, shared with `--copilot`; the owners file records which of the two installs still uses them. |
 
 **With `--hermes`** (Hermes Agent integration)
 

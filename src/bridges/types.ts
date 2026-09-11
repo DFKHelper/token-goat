@@ -26,6 +26,7 @@ export type HarnessName =
   | 'grok'
   | 'qwen'
   | 'kimi'
+  | 'vscode'
   | 'generic'
 
 /** Static description of how one harness's hooks are wired. */
