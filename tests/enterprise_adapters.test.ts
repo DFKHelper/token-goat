@@ -279,15 +279,15 @@ describe('OpenEdge ABL adapter', () => {
   })
 
   it('treats a .p or .w as ABL only on an ABL marker, and a .cls as ABL only after the VB6 check', () => {
-    // CAPTURE: lines 1-3 and the include line are verbatim from https://github.com/progress/ADE/blob/a4c50786c109169991ff633eec633f3b1da1adbe/workshop/_timeout.w
-    const webObject = ['&ANALYZE-SUSPEND _VERSION-NUMBER WDT_v2r1 WebSpeed-Object', '&ANALYZE-RESUME', '&ANALYZE-SUSPEND _CODE-BLOCK _CUSTOM Definitions', '{ webutil/wstyle.i }', 'PROCEDURE outputHeader:', 'END PROCEDURE.'].join('\n')
+    // FORMAT-DERIVED: an invented WebSpeed web object. `&ANALYZE-SUSPEND` / `&ANALYZE-RESUME` are the preprocessor markers the OpenEdge AppBuilder writes around each generated section of a .w, and `{ name.i }` is an include-file reference: https://documentation.progress.com/output/ua/OpenEdge_latest/dvref/%7B-%7D-include-file-reference.html
+    const webObject = ['&ANALYZE-SUSPEND _VERSION-NUMBER WDT_v2r1 WebSpeed-Object', '&ANALYZE-RESUME', '&ANALYZE-SUSPEND _CODE-BLOCK _CUSTOM Definitions', '{ acme/pagestyle.i }', 'PROCEDURE renderBanner:', 'END PROCEDURE.'].join('\n')
     expect(refineLanguageByContent('_timeout.w', detectLanguage('_timeout.w'), webObject)).toBe('abl')
-    expect(shape(extractAbl(webObject, '_timeout.w'))).toEqual(['procedure outputHeader 5-6'])
-    expect(imports(extractAbl(webObject, '_timeout.w'))).toEqual(['webutil/wstyle.i'])
+    expect(shape(extractAbl(webObject, '_timeout.w'))).toEqual(['procedure renderBanner 5-6'])
+    expect(imports(extractAbl(webObject, '_timeout.w'))).toEqual(['acme/pagestyle.i'])
     expect(refineLanguageByContent('Item.cls', detectLanguage('Item.cls'), ABL_CLASS)).toBe('abl')
-    // CAPTURE: the VB6 header lines of https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls
-    const vb6 = ['VERSION 1.0 CLASS', 'BEGIN', "  MultiUse = -1  'True", 'END', 'Attribute VB_Name = "CFileInfo"'].join('\n')
-    expect(refineLanguageByContent('CFileInfo.cls', 'apex', vb6)).toBe('vb')
+    // HAND-DERIVED: an invented class module carrying the header the VB6 IDE writes above every .cls (VERSION 1.0 CLASS, the BEGIN/MultiUse/END block, then the Attribute lines).
+    const vb6 = ['VERSION 1.0 CLASS', 'BEGIN', "  MultiUse = -1  'True", 'END', 'Attribute VB_Name = "CAssetInfo"'].join('\n')
+    expect(refineLanguageByContent('CAssetInfo.cls', 'apex', vb6)).toBe('vb')
     // Path-only detection never claims ABL: `.p` and `.w` stay unknown and `.cls` stays apex, and `.i` is unmapped.
     for (const p of ['a.p', 'a.W', 'inc/x.i']) expect(detectLanguage(p), p).toBe('unknown')
     expect(detectLanguage('Item.cls')).toBe('apex')

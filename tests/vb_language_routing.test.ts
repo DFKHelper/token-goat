@@ -16,25 +16,25 @@ import { indexFileSync, parseFile } from '../src/parser.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const APEX_FIXTURE = path.join(HERE, 'fixtures', 'salesforce-dx', 'force-app', 'main', 'default', 'classes', 'SafeNavigationService.cls')
 
-// CAPTURE: lines 1-9 and 24 verbatim from a real VB6 class module, https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls; the Property pair and Function below it are shortened from the same file.
+// HAND-DERIVED: an invented class module. The header is the one the VB6 IDE writes above every .cls (VERSION 1.0 CLASS, the BEGIN/MultiUse/END block, then the Attribute lines); the Declare, the Property pair and the Sub below it are written from the Visual Basic statement reference.
 const VB6_CLASS = [
   'VERSION 1.0 CLASS',
   'BEGIN',
   "  MultiUse = -1  'True",
   'END',
-  'Attribute VB_Name = "CFileInfo"',
+  'Attribute VB_Name = "CAssetInfo"',
   'Attribute VB_GlobalNameSpace = False',
   'Attribute VB_Creatable = False',
   'Attribute VB_PredeclaredId = False',
   'Attribute VB_Exposed = False',
   'Option Explicit',
-  'Private Declare Function GetFullPathName Lib "kernel32" Alias "GetFullPathNameA" (ByVal lpFileName As String, ByVal nBufferLength As Long, ByVal lpBuffer As String, lpFilePart As Long) As Long',
-  'Private m_Path As String',
-  'Public Property Let FullPathName(ByVal NewVal As String)',
-  '   m_Path = NewVal',
+  'Private Declare Function QueryAssetTag Lib "assetapi" Alias "QueryAssetTagA" (ByVal lpAssetId As String, ByVal nBufferLength As Long, ByVal lpBuffer As String, lpTagPart As Long) As Long',
+  'Private m_Label As String',
+  'Public Property Let Label(ByVal NewVal As String)',
+  '   m_Label = NewVal',
   'End Property',
-  'Public Property Get FullPathName() As String',
-  '   FullPathName = m_Path',
+  'Public Property Get Label() As String',
+  '   Label = m_Label',
   'End Property',
   'Public Sub Refresh()',
   'End Sub',
@@ -64,14 +64,14 @@ describe('Visual Basic routing through the real indexer entry points', () => {
   }
 
   it('indexes a VB6 class module .cls with the VB extractor and stores its language as vb', async () => {
-    const { dir, file } = tmpFile('CFileInfo.cls', VB6_CLASS)
+    const { dir, file } = tmpFile('CAssetInfo.cls', VB6_CLASS)
     const parsed = await parseFile(file)
     expect(parsed.language).toBe('vb')
     expect(parsed.symbols.map((s) => `${s.kind} ${s.name}`)).toEqual([
-      'function GetFullPathName',
-      'field m_Path',
-      'property FullPathName',
-      'property FullPathName',
+      'function QueryAssetTag',
+      'field m_Label',
+      'property Label',
+      'property Label',
       'function Refresh',
     ])
 

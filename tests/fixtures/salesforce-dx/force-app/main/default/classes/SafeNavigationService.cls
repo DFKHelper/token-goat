@@ -1,3 +1,4 @@
+// HAND-DERIVED: standard Apex written from language knowledge, not from any adapter regex.
 public class SafeNavigationService {
   public Boolean beforeNavigation(Account account) {
     return account != null;

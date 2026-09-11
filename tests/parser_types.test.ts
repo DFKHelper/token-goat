@@ -21,13 +21,13 @@ describe('Visual Basic language routing', () => {
   })
 
   it('refines a VB6 class module .cls to vb by content, and leaves every other .cls on apex', () => {
-    // CAPTURE: header lines 1-5 of https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls.
-    const vb6 = 'VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  \'True\nEND\nAttribute VB_Name = "CFileInfo"\nOption Explicit\n'
+    // HAND-DERIVED: an invented class module carrying the header the VB6 IDE writes above every .cls (VERSION 1.0 CLASS, the BEGIN/MultiUse/END block, then the Attribute lines).
+    const vb6 = 'VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  \'True\nEND\nAttribute VB_Name = "CAssetInfo"\nOption Explicit\n'
     expect(isVb6ClassModule(vb6)).toBe(true)
     expect(isVb6ClassModule('\uFEFF\r\n\r\n' + vb6.replace(/\n/g, '\r\n'))).toBe(true)
     // HAND-DERIVED: a VBA-exported class (no VERSION block) still carries its Attribute VB_Name line.
     expect(isVb6ClassModule('Attribute VB_Name = "Sheet1"\nPublic Sub A()\nEnd Sub\n')).toBe(true)
-    expect(refineLanguageByContent('C:/p/CFileInfo.cls', 'apex', vb6)).toBe('vb')
+    expect(refineLanguageByContent('C:/p/CAssetInfo.cls', 'apex', vb6)).toBe('vb')
     // HAND-DERIVED: ordinary Apex, including a comment that mentions the header text, stays Apex.
     const apex = 'public with sharing class Foo {\n  // VERSION 1.0 CLASS\n  // Attribute VB_Name = "x"\n  public void bar() {}\n}\n'
     expect(isVb6ClassModule(apex)).toBe(false)

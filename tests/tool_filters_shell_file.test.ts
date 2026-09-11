@@ -311,7 +311,7 @@ describe('LsFilter dir.exe output', () => {
       ' Volume in drive C is Windows',
       ' Volume Serial Number is 1234-ABCD',
       '',
-      ' Directory of C:/Users/zelys/Projects/token-goat',
+      ' Directory of C:/Users/me/Projects/token-goat',
       '',
       ...dirEntries,
       ...fileEntries,
@@ -322,7 +322,7 @@ describe('LsFilter dir.exe output', () => {
 
     // Banner lines pass through untouched, not folded into the entry list
     expect(out).toContain('Volume in drive C is Windows')
-    expect(out).toContain('Directory of C:/Users/zelys/Projects/token-goat')
+    expect(out).toContain('Directory of C:/Users/me/Projects/token-goat')
 
     // The trailing summary must survive truncation, not be silently dropped
     expect(out).toContain('15 File(s)')

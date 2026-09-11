@@ -40,10 +40,10 @@ beforeAll(() => {
     path.join(project, 'Greeter.vb'),
     'Namespace Demo\n    Public Class Greeter\n        Public Function Hello(ByVal who As String) As String\n            If who = "" Then\n                Return "hi"\n            End If\n            Return "hi " & who\n        End Function\n    End Class\nEnd Namespace\n',
   )
-  // CAPTURE: header lines verbatim from https://github.com/respec/VB6/blob/master/Utility/CFileInfo.cls; body shortened.
+  // HAND-DERIVED: an invented class module carrying the header the VB6 IDE writes above every .cls (VERSION 1.0 CLASS, the BEGIN/MultiUse/END block, then the Attribute lines), with one property below it.
   fs.writeFileSync(
-    path.join(project, 'CFileInfo.cls'),
-    'VERSION 1.0 CLASS\r\nBEGIN\r\n  MultiUse = -1  \'True\r\nEND\r\nAttribute VB_Name = "CFileInfo"\r\nOption Explicit\r\nPublic Property Get FileName() As String\r\n   FileName = "x"\r\nEnd Property\r\n',
+    path.join(project, 'CAssetInfo.cls'),
+    'VERSION 1.0 CLASS\r\nBEGIN\r\n  MultiUse = -1  \'True\r\nEND\r\nAttribute VB_Name = "CAssetInfo"\r\nOption Explicit\r\nPublic Property Get FileName() As String\r\n   FileName = "x"\r\nEnd Property\r\n',
   )
   // HAND-DERIVED: `#Region` from https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive and the `'''` doc comment from https://learn.microsoft.com/en-us/dotnet/visual-basic/programming-guide/program-structure/documenting-your-code-with-xml
   fs.writeFileSync(
@@ -74,7 +74,7 @@ describe('the built bundle indexes Visual Basic', () => {
   it('indexes a VB6 class module .cls through the content refinement', () => {
     const sym = tg(['symbol', 'FileName'])
     expect(sym.status, sym.stderr).toBe(0)
-    expect(sym.stdout).toContain('CFileInfo.cls')
+    expect(sym.stdout).toContain('CAssetInfo.cls')
   })
 
   it('section reads a #Region block to its #End Region', () => {
