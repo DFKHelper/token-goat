@@ -22,6 +22,16 @@ interface TypeFrame {
   bodyEntered: boolean
   // Net unclosed `(` count accumulated since the frame was pushed, counted on string-blanked text. A declaration whose parameter list spans several lines (`class Multi(` / `val a: Int,` / `) {`) is still mid-declaration until this returns to 0, so the stale-frame sweep below must not treat it as finished just because no brace has arrived yet.
   openParens: number
+  // Column the declaration itself starts at, and whether it opened a Scala 3 indentation-syntax body (`object Foo:` with no `{`). Such a frame has no closing brace to pop it, so its extent is governed by indentation: it ends at the first non-blank line indented no further than `declIndent`.
+  declIndent: number
+  colonBody: boolean
+  // Column of the first line of an indentation-syntax body, which is the column its direct members sit at. Null until that line is seen.
+  bodyIndent: number | null
+}
+
+// Leading-whitespace width of an already comment-stripped line, counting a tab as one column (Scala 3's own indentation rules treat tabs as opaque and the language reference discourages mixing them, so no tab-expansion table is warranted here).
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length
 }
 
 // `import scala.util.matching.Regex` or `import java.util._` (wildcard imports)
@@ -129,6 +139,21 @@ export function extractScala(
     }
 
     const isIndented = line[0] === ' ' || line[0] === '\t'
+    const indent = indentOf(line)
+
+    // Close every indentation-syntax frame this line has dedented out of, then record the body column of the innermost one still open. Done before any declaration matching so the frame stack reflects where this line actually sits.
+    while (typeStack.length > 0) {
+      const top = typeStack[typeStack.length - 1]!
+      if (top.colonBody && indent <= top.declIndent) typeStack.pop()
+      else break
+    }
+    const colonTop = typeStack.length > 0 && typeStack[typeStack.length - 1]!.colonBody ? typeStack[typeStack.length - 1]! : null
+    if (colonTop !== null && colonTop.bodyIndent === null) {
+      colonTop.bodyIndent = indent
+      colonTop.bodyEntered = true
+    }
+    // True when this line is a direct member of the innermost indentation-syntax frame: same brace depth as the declaration and sitting exactly at the body column, so a continuation line of a member (`  def f =` followed by a deeper expression) is never mistaken for a member of its own.
+    const inColonBody = colonTop !== null && braceDepth === colonTop.startDepth && indent === colonTop.bodyIndent
 
     // import
     const braceImportM = BRACE_IMPORT_RE.exec(stripped)
@@ -155,7 +180,8 @@ export function extractScala(
     if (typeStack.length > 0 && startsDeclaration(stripped)) {
       while (typeStack.length > 0) {
         const top = typeStack[typeStack.length - 1]!
-        if (braceDepth <= top.startDepth && top.openParens === 0) typeStack.pop()
+        // `!top.colonBody`: an indentation-syntax frame is popped by the dedent check above and nothing else, otherwise the first declaration in its body -- which is exactly a declaration-shaped line at the frame's own brace depth -- would sweep the frame away before its members could be attributed to it.
+        if (!top.colonBody && braceDepth <= top.startDepth && top.openParens === 0) typeStack.pop()
         else break
       }
     }
@@ -165,7 +191,7 @@ export function extractScala(
     // Matches kotlin.ts's classDetectionGateOk pattern.
     const outerFrame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
-    const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1
+    const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1 || inColonBody
     // `matched` tracks whether this line was already classified as a class/object/trait/
     // func/val/var declaration. Unlike an early `continue`, classification must still fall
     // through to the brace-counting block below so a same-line opening `{` (e.g. `class Foo {`
@@ -176,12 +202,15 @@ export function extractScala(
     // which pushes the frame but does NOT `continue` -- it falls through to brace-counting).
     let matched = false
 
+    // A Scala 3 indentation-syntax declaration ends in `:` and opens no brace on its own line (Scala 3 Reference, "Other New Features" > "Optional Braces"): `object Foo:`, `class Bar(x: Int) extends Baz:`, `trait Qux:`. A declaration that also opens a brace here keeps the brace-counted extent it has always had.
+    const opensColonBody = stripped.endsWith(':') && !stripped.includes('{')
+
     const cm = typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? CLASS_RE.exec(stripped) : null
     if (cm) {
       const cname = unquoteName(cm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
+      typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
       matched = true
     }
 
@@ -190,7 +219,7 @@ export function extractScala(
       const oname = unquoteName(om[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
+      typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
       matched = true
     }
 
@@ -199,7 +228,7 @@ export function extractScala(
       const tname = unquoteName(tm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
+      typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
       matched = true
     }
 
@@ -208,7 +237,7 @@ export function extractScala(
       const enname = unquoteName(enm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false, openParens: 0 })
+      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
       matched = true
     }
 
@@ -218,7 +247,8 @@ export function extractScala(
       const depthInType = braceDepth - frame.startDepth
       // === 1, not >= 1: a local def inside a method body sits at depthInType 2+
       // (matches kotlin.ts/csharp.ts, which gate the same way).
-      if (depthInType === 1) {
+      // `inColonBody && frame === colonTop` is the indentation-syntax equivalent of `depthInType === 1`: same brace depth as the declaration, sitting exactly at the body column.
+      if (depthInType === 1 || (inColonBody && frame === colonTop)) {
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
           symbols.push(makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
@@ -285,7 +315,8 @@ export function extractScala(
     // Pop finished type frames
     while (typeStack.length > 0) {
       const top = typeStack[typeStack.length - 1]!
-      if (top.bodyEntered && braceDepth <= top.startDepth) {
+      // `!top.colonBody`: an indentation-syntax frame sits at the same brace depth as its whole body, so this brace-based test would pop it on its first member line. The dedent check at the top of the loop is what ends it.
+      if (!top.colonBody && top.bodyEntered && braceDepth <= top.startDepth) {
         typeStack.pop()
       } else {
         break

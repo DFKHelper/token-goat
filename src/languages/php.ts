@@ -63,6 +63,9 @@ const USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+\w+)?\s*;/i
 const GROUP_USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)\\\{([^}]*)\}/i
 const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/i
 
+// An enum case declaration (PHP Manual, "Language Reference" > "Enumerations" > "Basics" and "Backed Enumerations"): `case Hearts;` in a pure enum, `case Hearts = 'H';` in a backed one. Requiring `=` or `;` immediately after the name is what separates this from a `switch` arm, which is `case <expr>:` and so never reaches the terminator this pattern demands; the enum-kind and body-depth gates at the call site cover the `case <expr>;` spelling a switch also accepts.
+const ENUM_CASE_RE = /^case\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/i
+
 export function extractPhp(
   content: string,
   filePath: string,
@@ -72,7 +75,8 @@ export function extractPhp(
   const lines = content.split(/\r?\n/)
 
   // Stack of (className, braceDepthAtEntry, bodyEntered)
-  const contextStack: Array<[string, number, boolean]> = []
+  // Fourth slot is the declaration's own kind (`class`/`interface`/`trait`/`enum`), lower-cased: the enum-case branch below must fire only inside an `enum` body.
+  const contextStack: Array<[string, number, boolean, string]> = []
   let braceDepth = 0
   let inComment = false
   let mlState: MultilineStringState | null = null
@@ -183,7 +187,7 @@ export function extractPhp(
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
       const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : null
       symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined, lines, 'c'))
-      contextStack.push([name, braceDepth - openB + closeB, false])
+      contextStack.push([name, braceDepth - openB + closeB, false, kind])
       if (openB > 0 && openB === closeB) {
         // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration
         // line itself, so braceDepth never rises above the frame's start depth and the
@@ -191,6 +195,17 @@ export function extractPhp(
         contextStack.pop()
       }
       continue
+    }
+
+    // enum case. Gated on the same "directly inside the body" pre-line-depth check as the method/property/const branches, plus the enclosing frame actually being an `enum`, so a `switch` arm inside one of the enum's own methods (which sits deeper and, for the `case <expr>;` spelling, would otherwise match) is never filed as a case.
+    const enumCaseM = ENUM_CASE_RE.exec(stripped)
+    if (enumCaseM) {
+      const preLineDepth = braceDepth - openB + closeB
+      const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
+      if (topFrame !== undefined && topFrame[3] === 'enum' && preLineDepth === topFrame[1] + 1) {
+        symbols.push(makeLineSymbol(filePath, enumCaseM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), topFrame[0], lines, 'c'))
+        continue
+      }
     }
 
     // Anonymous function — skip
