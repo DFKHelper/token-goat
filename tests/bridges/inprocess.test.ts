@@ -23,7 +23,7 @@ import { pathToFileURL } from 'node:url'
 import { transformSync } from 'esbuild'
 import sharp from 'sharp'
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
@@ -506,6 +506,14 @@ async function makeLargeJpegFixture(cwd: string): Promise<string> {
 }
 
 describe('image shrink materialization: the shrink payload becomes a rewritten path argument on the bridges with no pre-tool context channel', () => {
+  // The fixture below is random noise, so OCR finds no text in it, but it is attempted before the shrink and on a cold language-model cache that attempt means the real tesseract.js child fetching ~2.9 MB from cdn.jsdelivr.net. Every test file gets its own TOKEN_GOAT_HOME, so the cache is always cold here. Measured by instrumenting the spawn rather than by reading a log line: these three cases were the whole of the suite's remaining network traffic, three real-entry spawns and nothing else anywhere. Offline makes the OCR branch decline before the spawn, which is the branch these tests already take with noise input, so every assertion below is unchanged. Set on the process because the copilot case reaches the hook in a spawned child that inherits it, which no in-process interception covers.
+  beforeAll(() => {
+    process.env['TOKEN_GOAT_OFFLINE'] = '1'
+  })
+  afterAll(() => {
+    delete process.env['TOKEN_GOAT_OFFLINE']
+  })
+
   it('opencode: tool.execute.before rewrites args.filePath to a materialized shrunk copy of a large image', async () => {
     const cwd = mkIsolated()
     const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
@@ -640,5 +648,12 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     // Copilot's modifiedArgs REPLACES the tool call's arguments wholesale (ESr in the 1.0.80 bundle), so the rewrite must carry every original arg, not a bare path object.
     expect(parsed.modifiedArgs?.['viewRange']).toEqual([1, 40])
     expect(existsSync(markerPath)).toBe(false)
+  })
+
+  // Effect-level proof that the offline setting at the top of this describe really stopped the OCR attempt, checked after the three cases above have run. src/image_ocr.ts calls ensureOcrCacheDir() immediately before spawning the tesseract child and nothing else creates that directory, so its existence means the spawn happened and the language-data fetch with it. The directory is what gets asserted on rather than a log line, because the fetch happens inside a child process this one never sees.
+  it('leaves no OCR cache directory behind, so the three cases above reached no engine and fetched no language data', () => {
+    const home = process.env['TOKEN_GOAT_HOME']
+    expect(home, 'tests/setup/isolate-home.ts sets this per test file; without it this check would be reading the real home').toBeTruthy()
+    expect(existsSync(join(home as string, 'ocr-cache'))).toBe(false)
   })
 })
