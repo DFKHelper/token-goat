@@ -69,18 +69,17 @@ describe('locateBashOnPath', () => {
 describe('shell resolution by platform', () => {
   const isWin = process.platform === 'win32'
 
-  it('off Windows: resolveWindowsBash is null and the wrapper uses the POSIX shell', () => {
-    if (isWin) return // POSIX-only assertions
+  // POSIX-only assertions, so on Windows this is a skip rather than a body that runs to the end having asserted nothing.
+  it.skipIf(isWin)('off Windows: resolveWindowsBash is null and the wrapper uses the POSIX shell', () => {
     expect(resolveWindowsBash()).toBeNull()
     expect(wrappedShell()).toBe(true)
     expect(canRunWrappedShell()).toBe(true)
   })
 
-  it('on Windows with Git-Bash present: wrapper runs under a resolved bash.exe', () => {
-    if (!isWin) return
+  it.skipIf(!isWin || resolveWindowsBash() === null)('on Windows with Git-Bash present: wrapper runs under a resolved bash.exe', () => {
     const bash = resolveWindowsBash()
-    if (bash === null) return // tri-state: skip only when no bash is installed, never silently pass
-    expect(bash.toLowerCase()).toContain('bash')
+    expect(bash).not.toBeNull()
+    expect(bash!.toLowerCase()).toContain('bash')
     expect(wrappedShell()).toBe(bash)
     expect(canRunWrappedShell()).toBe(true)
   })

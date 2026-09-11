@@ -15,10 +15,8 @@ import * as bashRunner from '../src/bash_runner.js'
 import { resolveWindowsBash } from '../src/shell.js'
 
 describe('compress runs the inner command under bash on Windows', () => {
-  it('evaluates a bash-only arithmetic expansion instead of echoing it literally', () => {
-    if (process.platform !== 'win32') return // POSIX cannot regress this way
-    if (resolveWindowsBash() === null) return // no Git-Bash installed: absent, not broken
-
+  // POSIX cannot regress this way, and with no Git-Bash installed the wrapper is absent rather than broken: both are skips, so the run reports them on the skip counter instead of as a pass for a body that asserted nothing.
+  it.skipIf(process.platform !== 'win32' || resolveWindowsBash() === null)('evaluates a bash-only arithmetic expansion instead of echoing it literally', () => {
     let captured = ''
     const exit = bashRunner.run('echo answer=$((6*7))', {
       filterName: 'generic',
