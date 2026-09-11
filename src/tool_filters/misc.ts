@@ -459,6 +459,8 @@ export class Sqlite3Filter extends ToolFilter {
 
   private static readonly ROW_THRESHOLD = 20
   private static readonly KEEP_ROWS = 5
+  // Rows kept from the END of the result set. A head-only cut assumed the first rows answer the query, which is false for the ordinary shapes: an `ORDER BY` puts the extreme the caller asked for on the last row, and `sqlite3 -json` closes its array there, so cutting the tail both hid the answer and left output that no longer parses as JSON.
+  private static readonly KEEP_TAIL_ROWS = 5
 
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[], ctx: CompressContext = {}): string {
     const merged = this.combineOutput(stdout, stderr)
@@ -484,13 +486,16 @@ export class Sqlite3Filter extends ToolFilter {
 
     const nonEmptyBody = bodyLines.filter((ln) => ln.trim())
     if (nonEmptyBody.length > Sqlite3Filter.ROW_THRESHOLD) {
-      kept.push(...nonEmptyBody.slice(0, Sqlite3Filter.KEEP_ROWS))
+      const head = Sqlite3Filter.KEEP_ROWS
+      const tail = Math.min(Sqlite3Filter.KEEP_TAIL_ROWS, nonEmptyBody.length - head)
+      kept.push(...nonEmptyBody.slice(0, head))
       // The row count answers "how big is this result set", so it is a claim about the query's data rather than a description of what this filter did. When the pre-filter clamp already dropped part of stdout, the surviving rows are all this can count, which makes the figure a floor: say so, instead of letting a clamped read of a 90000-row table print an exact `2000 rows` nothing here can prove.
       kept.push(
         ctx.inputTruncated === true
-          ? `[token-goat: at least ${nonEmptyBody.length} rows (counted over a truncated input; showing first ${Sqlite3Filter.KEEP_ROWS})]`
-          : `[token-goat: ${nonEmptyBody.length} rows (showing first ${Sqlite3Filter.KEEP_ROWS})]`,
+          ? `[token-goat: at least ${nonEmptyBody.length} rows (counted over a truncated input; showing first ${head}, last ${tail})]`
+          : `[token-goat: ${nonEmptyBody.length} rows (showing first ${head}, last ${tail})]`,
       )
+      if (tail > 0) kept.push(...nonEmptyBody.slice(-tail))
     } else {
       kept.push(...bodyLines)
     }
