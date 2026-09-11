@@ -52,6 +52,8 @@ const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   list_files: 'Glob',
   glob: 'Glob',
   web_search: 'WebFetch',
+  // Codex's only wired image-viewing tool (CODEX_MATCHERS in codex_install.ts wires the matcher 'view_image|Bash', with the codex_install.ts docstring calling out that 'view_image|Bash' covers image reads and shell execution together, mirroring Claude Code's Read handling) -- without this entry, tool_name stayed the literal 'view_image', which matches neither preReadHandler's nor image_shrink.ts's preReadImageHandler's toolName: 'Read' filter, so every Codex image view silently skipped image shrinking and read-session tracking entirely.
+  view_image: 'Read',
 }
 
 /**
