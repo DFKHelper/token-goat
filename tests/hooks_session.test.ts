@@ -422,6 +422,69 @@ describe('hooks_session', () => {
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+
+    // HAND-DERIVED: phrasings written independently of the detector, in the style of genuine subagent completion reports, to probe the false-positive direction (a bare verb alternation cannot distinguish a claim from its negation).
+    it.each([
+      'No changes were needed, the code already worked correctly.',
+      'I did not modify any files in this pass.',
+      'I found no issue and made no edits.',
+      'Reviewed the module and concluded no fix was required.',
+    ])('does not warn when the report negates the claimed-change verb: %j', async (message) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      const event: HookEvent = {
+        eventName: 'subagent_stop',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        agentId: undefined,
+        raw: {
+          cwd: '/tmp/repo',
+          last_assistant_message: message,
+        },
+      };
+
+      subagentStopHandler(event);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    // HAND-DERIVED: a genuine (non-negated) claim placed after an unrelated negated clause, to confirm the per-clause split does not over-suppress a real claim elsewhere in the same report.
+    it('still warns when a genuine claim follows an unrelated negated clause', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      const event: HookEvent = {
+        eventName: 'subagent_stop',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        agentId: undefined,
+        raw: {
+          cwd: '/tmp/repo',
+          last_assistant_message: 'No tests were skipped, and I updated the config to fix the crash',
+        },
+      };
+
+      subagentStopHandler(event);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('subagent-stop')
+      );
+      warnSpy.mockRestore();
+    });
   });
 
   describe('hints.git_hint_max_ms wiring', () => {
