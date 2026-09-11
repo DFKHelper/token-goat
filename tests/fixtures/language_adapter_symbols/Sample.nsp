@@ -1,0 +1,20 @@
+* FORMAT-DERIVED: Natural structured-mode syntax per https://documentation.softwareag.com/natural/nat912win/sm/defineda.htm, https://documentation.softwareag.com/natural/nat912win/sm/definesu.htm, https://documentation.softwareag.com/natural/nat912win/sm/callnat.htm and https://documentation.softwareag.com/natural/nat912win/sm/fetch.htm
+DEFINE DATA
+LOCAL USING EMPLDA
+LOCAL
+1 #COUNTER (I4)
+1 EMP VIEW OF EMPLOYEES
+  2 NAME
+  2 CITY
+END-DEFINE
+*
+PERFORM ADD-ONE
+CALLNAT 'CALCSUB' #COUNTER
+FETCH RETURN 'REPORTP'
+INCLUDE COPYCC
+WRITE 'PERFORM NOT-A-SUB'
+*
+DEFINE SUBROUTINE ADD-ONE
+  ADD 1 TO #COUNTER /* count one more
+END-SUBROUTINE
+END

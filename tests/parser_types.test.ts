@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import { detectLanguage, isVb6ClassModule, refineLanguageByContent, unsupportedLanguageName } from '../src/parser_types.js'
 
+describe('COBOL and Natural language routing', () => {
+  it('maps COBOL and Natural source extensions in any case, and names Natural maps and DDMs as unsupported', () => {
+    for (const p of ['src/PAYROLL.CBL', 'lib/pay.cob', 'copy/CUST.CPY', 'x/y.cobol']) expect(detectLanguage(p), p).toBe('cobol')
+    for (const p of ['EMPRPT.NSP', 'calc.nsn', 'SUB.NSS', 'p.nsa', 'l.NSL', 'g.nsg', 'c.nsc', 'h.NSH']) expect(detectLanguage(p), p).toBe('natural')
+    expect(unsupportedLanguageName('MAP01.NSM')).toBe('Natural map')
+    expect(unsupportedLanguageName('EMPLOYEES.nsd')).toBe('Natural DDM')
+    expect(unsupportedLanguageName('PAYROLL.CBL')).toBeUndefined()
+  })
+})
+
 describe('Visual Basic language routing', () => {
   it('maps every VB extension, in any case, to vb, and leaves .cls on Apex by path', () => {
     for (const p of ['src/Module1.vb', 'legacy/Main.BAS', 'scripts/deploy.vbs', 'forms/Form1.frm', 'X.VB']) {

@@ -1,0 +1,27 @@
+      * FORMAT-DERIVED: fixed reference format (cols 1-6 sequence, 7 indicator, 8-11 Area A, 12-72 Area B) per https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format; PROGRAM-ID, END PROGRAM and COPY per https://www.ibm.com/docs/en/cobol-zos/6.3.0?topic=division-program-id-paragraph and https://www.ibm.com/docs/en/cobol-zos/6.3.0?topic=statements-copy-statement
+000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. PAYROLL.
+000300 ENVIRONMENT DIVISION.
+000400 DATA DIVISION.
+000500 FILE SECTION.
+000600 FD  EMP-FILE.
+000700 01  EMP-REC.
+000800     05  EMP-ID          PIC 9(5).
+000900     05  EMP-PAY         PIC 9(7)V99.
+001000 WORKING-STORAGE SECTION.
+001100 01  WS-TOTAL            PIC 9(9)V99 VALUE 0.
+001200 77  WS-COUNT            PIC 9(3) VALUE 0.
+001300 01  FILLER              PIC X(10).
+001400     COPY PAYCONST OF PAYLIB.
+001500 PROCEDURE DIVISION.
+001600 MAIN-PARA.
+001700     PERFORM CALC-PARA THRU CALC-EXIT
+001800     CALL 'TAXCALC' USING WS-TOTAL
+001900     DISPLAY 'PERFORM NOT-A-PARA'
+002000     GOBACK.
+002100 CALC-PARA.
+002200     ADD EMP-PAY TO WS-TOTAL
+002300     ADD 1 TO WS-COUNT.
+002400 CALC-EXIT.
+002500     EXIT.
+002600 END PROGRAM PAYROLL.

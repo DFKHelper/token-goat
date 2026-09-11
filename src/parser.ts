@@ -45,6 +45,8 @@ import { extractSwift } from './languages/swift.js'
 import { extractScala } from './languages/scala.js'
 import { extractLua } from './languages/lua.js'
 import { extractVb } from './languages/vb.js'
+import { extractCobol } from './languages/cobol.js'
+import { extractNatural } from './languages/natural.js'
 import { extractElixir } from './languages/elixir.js'
 import { extractDart } from './languages/dart.js'
 import { extractZig } from './languages/zig.js'
@@ -2708,6 +2710,15 @@ function extractNoTreeSitter(
   if (language === 'vue') return extractVue(content, filePath)
   if (language === 'svelte') return extractSvelte(content, filePath)
   if (language === 'astro') return extractAstro(content, filePath)
+  // COBOL and Natural also emit refs (PERFORM, GO TO, CALL/CALLNAT/FETCH literals); they stay outside REF_LANGUAGES because paragraphs are reached by fall-through and programs by name, so an empty ref set is no evidence of dead code.
+  if (language === 'cobol') {
+    const r = extractCobol(content, filePath)
+    return { symbols: r.symbols, refs: r.refs }
+  }
+  if (language === 'natural') {
+    const r = extractNatural(content, filePath)
+    return { symbols: r.symbols, refs: r.refs }
+  }
 
   const parsed: ParseContentResult = {
     symbols: extractSymbolsNoTreeSitter(content, filePath, language),
