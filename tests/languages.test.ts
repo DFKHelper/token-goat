@@ -1600,6 +1600,46 @@ describe('liquid adapter', () => {
 // ---------------------------------------------------------------------------
 
 describe('kotlin adapter', () => {
+  // FORMAT-DERIVED: shapes taken from the Kotlin language reference, "Type aliases" (which gives
+  // `typealias NodeSet = Set<Network.Node>` and the function-type form, and states that type
+  // aliases may be declared only at the top level) and the grammar production `typeAlias:
+  // modifiers? 'typealias' simpleIdentifier typeParameters? '=' type`. Not written from
+  // kotlin.ts's own regexes.
+  it('indexes top-level typealias declarations and leaves illegal nested ones out', () => {
+    const content = `package demo
+
+val doc = """
+typealias FromRawString = Int
+"""
+// typealias FromComment = Int
+typealias NodeSet = Set<Node>
+internal typealias Handler = (Int) -> Unit
+typealias Pairing<A, B> = Map<A, B>
+class Holder {
+  typealias NestedNotLegal = Int
+  fun go() {
+    typealias LocalNotLegal = Int
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'main.kt')
+    const names = symbols.map((s) => s.name)
+    // Loss direction: every symbol the pre-fix extractor produced is still here.
+    expect(names).toContain('Holder')
+    expect(names).toContain('go')
+    for (const n of ['NodeSet', 'Handler', 'Pairing']) {
+      expect(names).toContain(n)
+      expect(symbols.find((s) => s.name === n)?.kind).toBe('type')
+    }
+    // Must not appear: a type alias is a top-level declaration only, so neither the class-body
+    // nor the function-body form is a real declaration.
+    expect(names).not.toContain('NestedNotLegal')
+    expect(names).not.toContain('LocalNotLegal')
+    // Must not appear: an alias written inside a raw string or a comment is not a declaration.
+    expect(names).not.toContain('FromRawString')
+    expect(names).not.toContain('FromComment')
+  })
+
   it('extracts class, method, top-level function, and import', () => {
     const content = `import kotlin.collections.List
 
@@ -2272,6 +2312,53 @@ class Utils {
 // ---------------------------------------------------------------------------
 
 describe('swift adapter', () => {
+  // FORMAT-DERIVED: shapes taken from The Swift Programming Language, "Declarations" chapter --
+  // "Type Alias Declaration" (`typealias`, legal at file scope and as a type member), "Protocol
+  // Associated Type Declaration" (`associatedtype`, a protocol member), and "Macro Declaration"
+  // (`macro`, file scope only; introduced by SE-0382 Expression Macros). Not written from
+  // swift.ts's own regexes.
+  it('indexes typealias, associatedtype and macro declarations', () => {
+    const content = `let doc = """
+typealias FromRawString = Int
+macro fromRawString()
+"""
+// typealias FromComment = Int
+typealias Callback = (Int) -> Void
+public typealias Meters = Double
+protocol Container {
+  associatedtype Item
+  func add(_ item: Item)
+}
+struct Wrapper {
+  typealias Element = Int
+  func go() {
+    typealias LocalAlias = Int
+  }
+}
+@freestanding(expression)
+macro stringify<T>(_ value: T) -> (T, String)
+`
+    const { symbols } = extractSwift(content, 'main.swift')
+    const names = symbols.map((s) => s.name)
+    // Loss direction: every symbol the pre-fix extractor produced is still here.
+    for (const n of ['doc', 'Container', 'add', 'Wrapper', 'go']) expect(names).toContain(n)
+    for (const n of ['Callback', 'Meters', 'Item', 'Element']) {
+      expect(names).toContain(n)
+      expect(symbols.find((s) => s.name === n)?.kind).toBe('type')
+    }
+    expect(symbols.find((s) => s.name === 'stringify')?.kind).toBe('macro')
+    // Parents follow the enclosing type, matching every other member branch in this adapter.
+    expect(symbols.find((s) => s.name === 'Item')?.parent).toBe('Container')
+    expect(symbols.find((s) => s.name === 'Element')?.parent).toBe('Wrapper')
+    expect(symbols.find((s) => s.name === 'Callback')?.parent).toBeFalsy()
+    // Must not appear: an alias declared inside a function body is a local, not a type member.
+    expect(names).not.toContain('LocalAlias')
+    // Must not appear: declarations written inside a multi-line string or a comment.
+    expect(names).not.toContain('FromRawString')
+    expect(names).not.toContain('fromRawString')
+    expect(names).not.toContain('FromComment')
+  })
+
   it('extracts a top-level function, a class with a method, and an import', () => {
     const content = `import Foundation
 
@@ -3558,6 +3645,42 @@ end
 // ---------------------------------------------------------------------------
 
 describe('dart adapter', () => {
+  // FORMAT-DERIVED: shapes taken from the Dart language specification, "Type aliases", and the
+  // dart.dev language tour section "Typedefs", which give both the generalised `typedef Name =
+  // Type;` form (Dart 2.13) and the pre-2.13 `typedef ReturnType name(params);` form. Not
+  // written from dart.ts's own regexes.
+  it('indexes both typedef forms and stops the function-type alias fabricating a symbol named Function', () => {
+    const content = `const doc = """
+typedef FromRawString = int;
+""";
+// typedef FromComment = int;
+typedef IntList = List<int>;
+typedef Compare<T> = int Function(T a, T b);
+typedef int LegacyCompare(Object a, Object b);
+class Wrapper {
+  void go() {}
+}
+void topLevel() {}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    const names = symbols.map((s) => s.name)
+    // Loss direction: every symbol the pre-fix extractor produced is still here.
+    expect(names).toContain('Wrapper')
+    expect(names).toContain('go')
+    expect(names).toContain('topLevel')
+    // The three aliases, all kind 'type'.
+    for (const n of ['IntList', 'Compare', 'LegacyCompare']) {
+      expect(names).toContain(n)
+      expect(symbols.find((s) => s.name === n)?.kind).toBe('type')
+    }
+    // Must not appear: pre-fix, FUNC_RE read `int Function(T a, T b)` as a declaration and filed
+    // a phantom top-level function literally named `Function`.
+    expect(names).not.toContain('Function')
+    // Must not appear: an alias written inside a raw string or a comment is not a declaration.
+    expect(names).not.toContain('FromRawString')
+    expect(names).not.toContain('FromComment')
+  })
+
   it('extracts class and enum declarations', () => {
     const content = `class Animal {
   String name;

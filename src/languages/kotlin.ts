@@ -2,7 +2,8 @@
  * Kotlin symbol extractor — regex-based (no tree-sitter grammar needed).
  *
  * Extracts: classes, interfaces, objects, data classes, sealed classes,
- * companion objects, top-level functions, methods, and SCREAMING_SNAKE const vals.
+ * companion objects, top-level type aliases, top-level functions, methods, and
+ * SCREAMING_SNAKE const vals.
  * Import directives are returned as import entries.
  */
 
@@ -92,6 +93,12 @@ const CLASS_HEADER_RE = new RegExp(
 const COMPANION_RE = new RegExp(
   '^(?:(?:public|internal|protected|private)\\s+)*' +
   'companion\\s+object\\b(?:\\s+(' + NAME_RE + '))?',
+)
+
+// `typealias NodeSet = Set<Network.Node>`, `typealias Handler = (Int) -> Unit`, and their visibility/multiplatform-modifier forms (Kotlin language reference, "Type aliases"; grammar `typeAlias: modifiers? 'typealias' simpleIdentifier typeParameters? '=' type`). A type alias may be declared only at the top level, which is why this is checked on the non-indented branch alone. The declaration has no brace body, so no class frame is pushed for it.
+const TYPEALIAS_RE = new RegExp(
+  '^(?:(?:public|internal|private|actual|expect)\\s+)*' +
+  'typealias\\s+(' + NAME_RE + ')(?:\\s*<[^>]*>)?\\s*=',
 )
 
 const TOP_FUN_RE = new RegExp(
@@ -246,6 +253,10 @@ export function extractKotlin(
         const sigEnd = line.indexOf('{')
         const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200), undefined, lines, 'c'))
+      }
+      const taM = TYPEALIAS_RE.exec(lineNoAnn)
+      if (taM) {
+        symbols.push(makeLineSymbol(filePath, unquoteName(taM[1] ?? ''), 'type', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
       }
       // Top-level SCREAMING_SNAKE const/val declarations (no parent class).
       const topConstM = CONST_RE.exec(lineNoAnn)

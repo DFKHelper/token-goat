@@ -2,8 +2,8 @@
  * Swift symbol extractor — regex-based (no tree-sitter grammar needed).
  *
  * Extracts: classes, structs, enums, protocols, extensions, actors, top-level
- * functions, methods (including init/deinit/subscript), properties, and
- * `import` directives.
+ * functions, methods (including init/deinit/subscript), properties, type aliases,
+ * associated types, macro declarations, and `import` directives.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -186,6 +186,12 @@ function stripRegexLiterals(line: string): string {
   return line.replace(/([=(,[:]|^|\breturn\b)(\s*)\/(?![\s/*])(?:\\.|[^\\/\n])*\//g, '$1$2')
 }
 
+// Body-less declarations that name a type but open no `{ }` block, so no frame is pushed for them. `typealias Callback = (Int) -> Void` is legal at file scope and as a type member (The Swift Programming Language, "Declarations" > "Type Alias Declaration"); `associatedtype Item` is a protocol member (same chapter, "Protocol Associated Type Declaration"); `macro stringify<T>(_ value: T) -> (T, String)` is file-scope only (same chapter, "Macro Declaration", added by SE-0382). None of the three carries a `func`, `var` or `let` keyword, so every member and top-level regex in this file missed all of them and the declaration never reached the index.
+const ALIAS_RE = new RegExp(
+  '^(?:' + MODIFIER_ALT + '\\s+)*' +
+  '(typealias|associatedtype|macro)\\s+(' + IDENT + ')',
+)
+
 /** Kind for a type-header keyword. */
 function typeKindFor(keyword: string): string {
   return keyword === 'struct' ? 'struct'
@@ -312,6 +318,15 @@ export function extractSwift(
         const tail = strippedNoAttr.slice(open + 1).replace(/\}\s*$/, '').trim()
         if (tail) pushMembers(tail, tname, lineNum, tail.slice(0, 200))
       }
+    }
+
+    // Gated exactly like the type header above: file scope, or one brace level inside a type's body. `associatedtype` is a protocol member and `macro` is file-scope only, but both are shaped so they cannot appear in the other position anyway, so one gate covers all three.
+    const am = tm === null && typeDetectionGateOk && (braceDepth === 0 || typeStack.length > 0)
+      ? ALIAS_RE.exec(strippedNoAttr)
+      : null
+    if (am) {
+      const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
+      symbols.push(makeLineSymbol(filePath, unquoteIdent(am[2] ?? ''), am[1] === 'macro' ? 'macro' : 'type', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
     }
 
     const frame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null

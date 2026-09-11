@@ -1,8 +1,8 @@
 /**
  * Dart symbol extractor — regex-based (no tree-sitter grammar needed).
  *
- * Extracts: classes, enums, mixins, extensions, methods, properties,
- * top-level functions and variables.
+ * Extracts: classes, enums, mixins, extensions, extension types, type aliases,
+ * methods, properties, top-level functions and variables.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -93,6 +93,12 @@ const FIELD_START_RE = /^(?:(?:static|covariant|late|external)\s+)*(?:final|var|
 // was pushed onto the type stack like any other class, and with no braces to close it the frame
 // never popped, so the next top-level declaration was silently attributed to it and lost.
 const CLASS_ALIAS_RE = /^(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*=/
+
+// `typedef IntList = List<int>;` and `typedef Compare<T> = int Function(T a, T b);`, the generalised type alias of Dart 2.13 (Dart language specification, "Type aliases" / dart.dev language tour, "Typedefs"). A type alias is a top-level declaration only. The non-function form (`= List<int>`) has no parens at all and matched nothing, so the alias never reached the index; the function form did reach FUNC_RE, which read `int Function(` as a declaration and filed a phantom top-level symbol literally named `Function` -- the same phantom FIELD_START_RE above exists to suppress for fields.
+const TYPEDEF_RE = /^typedef\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]*>)?\s*=/
+
+// The pre-2.13 function-type alias, `typedef int Compare(Object a, Object b);`, where the name follows the return type rather than the `typedef` keyword. Still legal Dart and common in older sources. The return-type class excludes whitespace so it cannot overlap the `\s+` that follows it.
+const TYPEDEF_LEGACY_RE = /^typedef\s+[A-Za-z_][A-Za-z0-9_<>,?]*\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]*>)?\s*\(/
 
 // Variable declarations not extracted at this time — would need complex parsing of
 // multi-variable declarations on a single line (e.g., `var x = 1, y = 2;`)
@@ -193,6 +199,15 @@ export function extractDart(
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, etname, 'extension_type', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         typeStack.push({ name: etname, startDepth: braceDepth, bodyEntered: false })
+        matched = true
+      }
+
+      // A type alias has no body, so no frame is pushed for it; `matched` is still set so the line never reaches FUNC_RE below, which would otherwise index the `Function(` in a function-type alias as a top-level function named `Function`.
+      const tdm = !matched ? (TYPEDEF_RE.exec(stripped) ?? TYPEDEF_LEGACY_RE.exec(stripped)) : null
+      if (tdm) {
+        const tdname = tdm[1] ?? ''
+        const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
+        symbols.push(makeLineSymbol(filePath, tdname, 'type', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         matched = true
       }
 
