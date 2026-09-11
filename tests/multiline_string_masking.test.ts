@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { extractCsharp } from '../src/languages/csharp.js'
 import { extractPhp } from '../src/languages/php.js'
 import { extractKotlin } from '../src/languages/kotlin.js'
+import { extractScala } from '../src/languages/scala.js'
+import { extractDart } from '../src/languages/dart.js'
 import { extractPowershell } from '../src/languages/powershell_idx.js'
 import { stripMultilineStringSpan, type MultilineStringState } from '../src/languages/common.js'
 
@@ -602,5 +604,153 @@ function AfterFunction {
     const { symbols } = extractPowershell(content, 'commented_here_string.ps1')
     const after = symbols.find((s) => s.name === 'AfterFunction')
     expect(after?.kind).toBe('function')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Scala and Dart multi-line string literals. Both languages were declared
+// `tripleQuote: true` (Dart also `tripleSingleQuote: true`) for brace-span
+// assignment in `src/parser.ts`, but neither extractor carried any multi-line
+// string state, so a declaration-shaped line inside a `"""` / `'''` body was
+// extracted as a real symbol.
+//
+// Fixture provenance: FORMAT-DERIVED. The delimiters come from the Scala
+// Language Specification, chapter 1 "Lexical Syntax", section 1.3.5 "String
+// Literals" (multi-line string literals, delimited by `"""`), and from the Dart
+// Programming Language Specification, section "Strings" (multi-line strings
+// delimited by `'''` or `"""`, with the `r` prefix marking a raw string). The
+// surrounding declarations are ordinary source in each language.
+// ---------------------------------------------------------------------------
+
+describe('Scala """ multi-line string masking', () => {
+  it('does not extract declaration-shaped content inside a """ string as real symbols', () => {
+    const content = `package probe
+
+object Queries {
+  val sql: String = """
+class FabricatedClass {
+  def fabricatedMethod(x: Int): Int = x
+}
+val fabricatedVal = 1
+"""
+
+  def realMethod(y: Int): Int = y + 1
+}
+
+class RealClass {
+  def realOther(): Unit = ()
+}
+`
+    const { symbols } = extractScala(content, 'probe.scala')
+    const names = symbols.map((s) => s.name)
+    // Must not appear: every one of these is string content, not a declaration.
+    expect(names).not.toContain('FabricatedClass')
+    expect(names).not.toContain('fabricatedMethod')
+    expect(names).not.toContain('fabricatedVal')
+    // Must survive: the real declarations on both sides of the string.
+    expect(symbols.find((s) => s.name === 'Queries')?.kind).toBe('object')
+    expect(symbols.find((s) => s.name === 'sql')?.kind).toBe('val')
+    expect(symbols.find((s) => s.name === 'realMethod')?.parent).toBe('Queries')
+    expect(symbols.find((s) => s.name === 'RealClass')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'realOther')?.parent).toBe('RealClass')
+  })
+
+  it('does not let an unbalanced brace inside a """ string desync scope depth', () => {
+    const content = `object Outer {
+  val broken = """
+  {{{ unbalanced braces }
+  """
+
+  def stillMine(): Int = 1
+}
+
+class Sibling {
+  def siblingMethod(): Int = 2
+}
+`
+    const { symbols } = extractScala(content, 'unbalanced.scala')
+    expect(symbols.find((s) => s.name === 'stillMine')?.parent).toBe('Outer')
+    expect(symbols.find((s) => s.name === 'Sibling')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'siblingMethod')?.parent).toBe('Sibling')
+  })
+
+  it('keeps a declaration that merely follows a same-line """ string (masking must not swallow real code)', () => {
+    const content = `object Holder {
+  val greeting = """hello { world }"""
+  def afterInline(): Int = 3
+  val tail = 4
+}
+`
+    const { symbols } = extractScala(content, 'inline.scala')
+    expect(symbols.find((s) => s.name === 'greeting')?.kind).toBe('val')
+    expect(symbols.find((s) => s.name === 'afterInline')?.parent).toBe('Holder')
+    expect(symbols.find((s) => s.name === 'tail')?.parent).toBe('Holder')
+  })
+})
+
+describe('Dart multi-line string masking', () => {
+  it("does not extract declaration-shaped content inside a ''' string as real symbols", () => {
+    const content = `class RealDart {
+  static const String tpl = '''
+class FabricatedDartClass {
+}
+void fabricatedDartFn() {}
+''';
+
+  void realDartMethod() {}
+}
+
+void realTopLevel() {}
+`
+    const { symbols } = extractDart(content, 'probe.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('FabricatedDartClass')
+    expect(names).not.toContain('fabricatedDartFn')
+    expect(symbols.find((s) => s.name === 'RealDart')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'realDartMethod')?.parent).toBe('RealDart')
+    expect(symbols.find((s) => s.name === 'realTopLevel')?.kind).toBe('function')
+  })
+
+  it('does not extract declaration-shaped content inside a """ string as real symbols', () => {
+    const content = `class DoubleQuoted {
+  static const String tpl = """
+class FabricatedDoubleClass {
+}
+void fabricatedDoubleFn() {}
+""";
+
+  void realDoubleMethod() {}
+}
+`
+    const { symbols } = extractDart(content, 'double.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('FabricatedDoubleClass')
+    expect(names).not.toContain('fabricatedDoubleFn')
+    expect(symbols.find((s) => s.name === 'DoubleQuoted')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'realDoubleMethod')?.parent).toBe('DoubleQuoted')
+  })
+
+  it('keeps a declaration that merely follows a same-line multi-line string (masking must not swallow real code)', () => {
+    const content = `class Inline {
+  static const String one = '''a brace { in a one-line string }''';
+  void afterInline() {}
+  int tail = 4;
+}
+`
+    const { symbols } = extractDart(content, 'inline.dart')
+    expect(symbols.find((s) => s.name === 'Inline')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'afterInline')?.parent).toBe('Inline')
+  })
+
+  it('does not treat an ordinary single-quoted string as a multi-line opener', () => {
+    const content = `class Ordinary {
+  String name = 'plain';
+  String empty = '';
+  void stillHere() {}
+}
+`
+    const { symbols } = extractDart(content, 'ordinary.dart')
+    expect(symbols.find((s) => s.name === 'Ordinary')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'stillHere')?.parent).toBe('Ordinary')
   })
 })

@@ -690,7 +690,7 @@ export interface MultilineStringState {
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
-export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir'
+export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir' | 'scala' | 'dart'
 
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
@@ -813,6 +813,8 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
   powershell: ['#'],
   swift: ['//'],
   elixir: ['#'],
+  scala: ['//'],
+  dart: ['//'],
 }
 
 // Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
@@ -820,7 +822,7 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
 // literal `#` character that MULTILINE_OPENER_COMMENT_MARKERS.powershell already scans for, so
 // the line-comment guard above incidentally already treats everything from `<#` onward as
 // commented -- an equivalent check here would be redundant.
-const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp', 'swift'])
+const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp', 'swift', 'scala', 'dart'])
 
 /**
  * True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at
@@ -882,7 +884,8 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     return { openStart: m.index, closesSameLine: null, state: { kind, identifier } }
   }
 
-  if (lang === 'kotlin') {
+  if (lang === 'kotlin' || lang === 'swift' || lang === 'scala') {
+    // Kotlin raw strings, Swift multi-line string literals and Scala multi-line string literals all use a fixed `"""` delimiter (unlike C#'s variable-length `"{3,}` run), so one branch serves all three.
     const idx = line.indexOf('"""', from)
     // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
     // already-open single-line string literal is not a real raw-string opener.
@@ -894,24 +897,13 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '3' } }
   }
 
-  if (lang === 'swift') {
-    // Swift multi-line string literals use a fixed `"""` delimiter (unlike C#'s variable-length
-    // `"{3,}` run) -- identical shape to Kotlin's raw string, so this branch mirrors that one.
-    const idx = line.indexOf('"""', from)
-    if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
-    const closeIdx = line.indexOf('"""', idx + 3)
-    if (closeIdx !== -1) {
-      return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
-    }
-    return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '3' } }
-  }
-
-  if (lang === 'elixir') {
+  if (lang === 'elixir' || lang === 'dart') {
     // Elixir heredocs open with `"""` or `'''`, and `@doc`/`@moduledoc` bodies -- which are
     // heredocs -- routinely contain example code. Whichever delimiter appears first on the line
     // wins, so a `'''` inside a `"""` body (or vice versa) is content, not a second opener.
     // A sigil heredoc (`~S"""`, `~s'''`) needs no special case: its delimiter run is what this
     // finds, and the sigil prefix is left as ordinary code before the opener.
+    // Dart's multi-line strings spell the same two delimiters and share the same "first one on the line wins" rule, so they route through this branch too; a raw multi-line string (`r'''`/`r"""`) needs no special case either, since the `r` prefix is left as ordinary code before the delimiter run this finds.
     const candidates: Array<[number, MultilineStringKind, string]> = []
     const dq = line.indexOf('"""', from)
     if (dq !== -1) candidates.push([dq, 'tripleQuote', '"""'])
