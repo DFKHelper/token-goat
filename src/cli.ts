@@ -443,7 +443,14 @@ export async function cmdIndex(
       !force &&
       parseUnchanged &&
       sha !== null &&
-      isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
+      isEmbedFresh(
+        entry?.embedSha,
+        sha,
+        embeddingsEnabled,
+        depsAvailable,
+        // See isEmbedFresh: an `oversize:` marker stays fresh only while indexing.large_file_symbol_only_kb is still what it was stamped under, so raising the threshold re-embeds the files it just admitted instead of leaving them permanently skipped. 0 matches no marker (config floors this key at 1), the safe direction for a partially-mocked config.
+        loadConfig().indexing?.large_file_symbol_only_kb ?? 0,
+      )
     if (parseUnchanged && embedUnchanged) {
       skipped += 1
       continue

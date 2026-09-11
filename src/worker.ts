@@ -687,7 +687,15 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable.
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
       const embedUnchanged =
-        parseUnchanged && isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
+        parseUnchanged &&
+        isEmbedFresh(
+          entry?.embedSha,
+          sha,
+          embeddingsEnabled,
+          depsAvailable,
+          // Same partial-config defensiveness as embeddingsEnabled above: 0 matches no stamped oversize marker (config floors this key at 1), so a mocked config re-examines the file rather than assuming it current. See isEmbedFresh.
+          loadConfig().indexing?.large_file_symbol_only_kb ?? 0,
+        )
       if (embedUnchanged) {
         // Nothing to do at all: parse and embeddings are both already current for this content.
         return false
