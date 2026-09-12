@@ -65,11 +65,33 @@ describe('isInsideRoot containment', () => {
     expect(isInsideRoot(path.join(tmp, 'PROJECT', 'a.ts'), root)).toBe(caseInsensitive)
   })
 
-  it('falls back to a lexical answer for a path that does not exist yet', () => {
+  it('accepts a path that does not exist yet but whose real ancestors are inside the root', () => {
     const root = path.join(tmp, 'project')
     fs.mkdirSync(root)
 
     expect(isInsideRoot(path.join(root, 'not-created-yet.ts'), root)).toBe(true)
+    // Several missing levels, not just a missing leaf: an installer creating `.github/hooks/x.json`
+    // asks about all three at once.
+    expect(isInsideRoot(path.join(root, 'a', 'b', 'c.json'), root)).toBe(true)
+  })
+
+  it.skipIf(!CAN_SYMLINK)('rejects a nonexistent leaf behind a directory symlink that leaves the root', () => {
+    // The ENOENT half. realpathSync throws on the whole path the moment ANY component is missing,
+    // and the old code answered from the merely-lexical form when it did -- so a link out of the
+    // root read as contained for precisely the paths an installer is about to create. Resolving
+    // the nearest EXISTING ancestor and re-appending the missing tail is what closes it.
+    const root = path.join(tmp, 'project')
+    const outside = path.join(tmp, 'other-project')
+    fs.mkdirSync(root)
+    fs.mkdirSync(outside)
+    fs.symlinkSync(outside, path.join(root, 'link'), 'dir')
+
+    expect(isInsideRoot(path.join(root, 'link', 'not-created-yet.ts'), root)).toBe(false)
+    expect(isInsideRoot(path.join(root, 'link', 'deep', 'not-created-yet.ts'), root)).toBe(false)
+    // And a link that stays inside is still contained, so the fix is not just "reject everything".
+    fs.symlinkSync(path.join(root, 'sub'), path.join(root, 'inner'), 'dir')
+    fs.mkdirSync(path.join(root, 'sub'))
+    expect(isInsideRoot(path.join(root, 'inner', 'not-created-yet.ts'), root)).toBe(true)
   })
 })
 

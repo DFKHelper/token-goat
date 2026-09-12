@@ -392,6 +392,68 @@ export function resolveProjectRoot(opts?: { project?: string }): string {
 }
 
 /**
+ * Canonical form of `p` with every symlink on it followed, INCLUDING when `p` does not exist yet.
+ *
+ * `realpathSync` throws ENOENT the moment any component is missing, which for an installer is the
+ * ordinary case: it is asked about a file it is about to create. The previous version caught that
+ * throw and returned the merely-lexical path, so {@link isInsideRoot} silently degraded to a
+ * lexical prefix test in exactly the situation it exists to guard. That was a real hole, not a
+ * theoretical one: a repository that commits `.github` as a DIRECTORY symlink with no leaf file
+ * behind it made `install --vscode --project` exit 0 and write four files outside the project.
+ * (With the leaf present, realpath succeeded and the install was correctly refused -- the coverage
+ * asymmetry was the bug.)
+ *
+ * So: resolve the nearest ancestor that DOES exist, then re-append the segments that do not. One
+ * subtlety keeps that from being enough on its own -- the first missing segment can be a DANGLING
+ * symlink, which realpath refuses but `readlink` answers exactly, so it is followed by hand and the
+ * walk repeats from where it points.
+ *
+ * Falls back to the lexical form only when nothing on the path resolves at all (an unreachable
+ * drive), and to {@link UNRESOLVABLE_PATH} when the link chain does not terminate -- which fails
+ * every containment test in both directions rather than handing a cycle a lexical answer.
+ */
+const UNRESOLVABLE_PATH = 'unresolvable-link-chain'; // slashless, so no canonicalized path can equal it
+
+/** Symlink hops followed before a chain is called a cycle. Mirrors a typical kernel ELOOP limit. */
+const MAX_LINK_HOPS = 40;
+
+function resolveThroughLinks(p: string): string {
+  let c = canonicalize(p); // always forward-slash, hence path.posix below
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
+    const missing: string[] = [];
+    let cur = c;
+    let real: string | null = null;
+    // A bare `c:` (or any slashless remnant) is NOT a filesystem root: realpathSync would resolve
+    // it to that drive's current directory, silently answering about somewhere else entirely.
+    while (cur.includes('/')) {
+      try {
+        real = fs.realpathSync(cur);
+        break;
+      } catch {
+        missing.unshift(path.posix.basename(cur));
+        const parent = path.posix.dirname(cur);
+        if (parent === cur) break;
+        cur = parent;
+      }
+    }
+    if (real === null) return c;
+    if (missing.length === 0) return canonicalize(real);
+    const first = path.join(real, missing[0] as string);
+    let link: string | null = null;
+    try {
+      if (fs.lstatSync(first).isSymbolicLink()) link = fs.readlinkSync(first);
+    } catch {
+      link = null;
+    }
+    // Nothing below `real` exists, and the first absent segment is not a link, so no component of
+    // the remainder can be one either: re-appending it is exact, not a guess.
+    if (link === null) return canonicalize(path.join(real, ...missing));
+    c = canonicalize(path.resolve(real, link, ...missing.slice(1)));
+  }
+  return UNRESOLVABLE_PATH;
+}
+
+/**
  * Is `target` the same path as `root`, or somewhere beneath it?
  *
  * Both sides are resolved through the real filesystem before comparison, then canonicalized, so
@@ -399,9 +461,9 @@ export function resolveProjectRoot(opts?: { project?: string }): string {
  * short names all compare equal. Resolving links is the load-bearing step: `canonicalize` does
  * NOT call realpath, so a directory symlink inside the root pointing out of it (`<root>/link` ->
  * `/other-project`) satisfies a purely lexical prefix test while naming a file the caller was
- * confined away from. `realpathSync` is best-effort -- a path that does not exist yet has no link
- * to resolve and falls back to its lexical form, which is the safe direction here since a
- * nonexistent path cannot be read either way.
+ * confined away from. A path whose leaf does not exist yet is resolved through
+ * {@link resolveThroughLinks}, which follows the links on the part that DOES exist rather than
+ * giving up on the whole path -- see that function for why the giving-up version was a hole.
  *
  * The trailing-separator guard is what stops `/srv/project-secrets` from reading as inside
  * `/srv/project`. Case is folded via foldPath, which asks the platform rather than assuming
@@ -409,16 +471,13 @@ export function resolveProjectRoot(opts?: { project?: string }): string {
  * rejected `--file /Users/alice/repo/x.ts` under a root git reports as `/Users/alice/Repo`.
  */
 export function isInsideRoot(target: string, root: string): boolean {
-  const resolve = (p: string): string => {
-    const c = canonicalize(p);
-    try {
-      return canonicalize(fs.realpathSync(c));
-    } catch {
-      return c;
-    }
-  };
-  const t = foldPath(resolve(target));
-  const r = foldPath(resolve(root));
+  const rt = resolveThroughLinks(target);
+  const rr = resolveThroughLinks(root);
+  // Checked before the equality test below, which would otherwise read two unresolvable paths as
+  // the same place.
+  if (rt === UNRESOLVABLE_PATH || rr === UNRESOLVABLE_PATH) return false;
+  const t = foldPath(rt);
+  const r = foldPath(rr);
   if (t === r) return true;
   return t.startsWith(r.endsWith('/') ? r : r + '/');
 }
