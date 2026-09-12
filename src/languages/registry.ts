@@ -55,6 +55,7 @@ import { extractPowershell } from './powershell_idx.js'
 import { extractApex } from './apex.js'
 import { extractSalesforceMetadata } from './salesforce_metadata.js'
 import { extractVue, extractSvelte, extractAstro } from './sfc_idx.js'
+import { extractJinja2, extractHandlebars, extractErb, extractEjs, extractNunjucks, extractTwig } from './templates_idx.js'
 
 export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro }
 
@@ -100,6 +101,33 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   },
   liquid: (content, filePath) => {
     const r = extractLiquid(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  // The six template dialects mask their own delimiters out and hand off to extractHtml, so they
+  // compose the same way html/liquid do above -- see templates_idx.ts's module doc for why this
+  // is the one place in Batch G/F where sharing IS correct.
+  jinja2: (content, filePath) => {
+    const r = extractJinja2(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  handlebars: (content, filePath) => {
+    const r = extractHandlebars(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  erb: (content, filePath) => {
+    const r = extractErb(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  ejs: (content, filePath) => {
+    const r = extractEjs(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  nunjucks: (content, filePath) => {
+    const r = extractNunjucks(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  twig: (content, filePath) => {
+    const r = extractTwig(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
   kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last' }),

@@ -1,0 +1,14 @@
+<!-- FORMAT-DERIVED: Twig Template designer documentation, twig.symfony.com/doc/3.x/templates.html
+     -- "{{ }}" output, "{% %}" tags, "{# #}" comments; this fixture follows those forms, not this
+     repo's extractor. -->
+<html>
+<body>
+  <h1 id="article-title">{{ article.title }}</h1>
+  {# a Twig comment #}
+  <ul class="tag-list">
+  {% for tag in article.tags %}
+    <li class="tag-item">{{ tag }}</li>
+  {% endfor %}
+  </ul>
+</body>
+</html>

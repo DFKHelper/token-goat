@@ -1,0 +1,14 @@
+<!-- FORMAT-DERIVED: Nunjucks Templating documentation, mozilla.github.io/nunjucks/templating.html
+     -- "Variables" ({{ }}), "Tags" ({% %} for/if), "Comments" ({# #}); this fixture follows those
+     forms, not this repo's extractor. -->
+<html>
+<body>
+  <h1 id="site-title">{{ title }}</h1>
+  {# a comment #}
+  <ul class="nav-list">
+  {% for item in items %}
+    <li class="nav-item">{{ item.name }}</li>
+  {% endfor %}
+  </ul>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<!-- FORMAT-DERIVED: Ruby stdlib ERB documentation, docs.ruby-lang.org/en/3.3/ERB.html -- delimiter
+     forms "<%= %>" (output), "<%# %>" (comment), "<%- -%>" (omit leading/trailing whitespace);
+     this fixture follows those forms, not this repo's extractor. -->
+<html>
+<body>
+  <h1 id="greeting">Hi, <%= @user.name %></h1>
+  <%# This is a comment and will be ignored %>
+  <ul class="item-list">
+  <% @items.each do |item| -%>
+    <li class="item-row"><%= item %></li>
+  <% end -%>
+  </ul>
+</body>
+</html>

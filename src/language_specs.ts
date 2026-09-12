@@ -73,6 +73,14 @@ export const LANGUAGE_SPECS = [
   { id: 'php', extraction: 'regex', extensions: ['.php'], label: 'PHP', ...CODE, fence: 'php' },
   { id: 'html', extraction: 'regex', extensions: ['.html', '.htm'], label: 'HTML', ...DATA, fence: 'html' },
   { id: 'liquid', extraction: 'regex', extensions: ['.liquid'], ...DATA, fence: 'liquid' },
+  // Six template dialects, each masking its own delimiters out then handing off to the HTML
+  // extractor (src/languages/templates_idx.ts) -- markup formats, so DATA defaults like html/liquid.
+  { id: 'jinja2', extraction: 'regex', extensions: ['.j2', '.jinja', '.jinja2'], label: 'Jinja2', ...DATA, fence: 'jinja' },
+  { id: 'handlebars', extraction: 'regex', extensions: ['.hbs', '.handlebars'], label: 'Handlebars', ...DATA, fence: 'handlebars' },
+  { id: 'erb', extraction: 'regex', extensions: ['.erb'], label: 'ERB', ...DATA, fence: 'erb' },
+  { id: 'ejs', extraction: 'regex', extensions: ['.ejs'], label: 'EJS', ...DATA, fence: 'ejs' },
+  { id: 'nunjucks', extraction: 'regex', extensions: ['.njk'], label: 'Nunjucks', ...DATA, fence: 'html' },
+  { id: 'twig', extraction: 'regex', extensions: ['.twig'], label: 'Twig', ...DATA, fence: 'twig' },
   { id: 'kotlin', extraction: 'regex', extensions: ['.kt', '.kts'], ...CODE, fence: 'kotlin' },
   { id: 'swift', extraction: 'regex', extensions: ['.swift'], ...CODE, fence: 'swift' },
   { id: 'scala', extraction: 'regex', extensions: ['.scala', '.sc'], ...CODE, fence: 'scala' },
