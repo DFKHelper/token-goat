@@ -226,8 +226,32 @@ describe('Groovy adapter', () => {
     expect(shape(extractGroovy(src, 'build.gradle'))).toEqual(['task hello 1-5', 'task tasksAll 6-8', 'task myCopy 9-9'])
   })
 
+  // HAND-DERIVED from https://groovy-lang.org/syntax.html, sections "Slashy string" and "Dollar
+  // slashy string": a slashy string `/.../` needs no escaping of a quote, and a dollar-slashy
+  // string `$/.../$` needs no escaping of a forward slash either. The expected spans below are
+  // read off the braces the Groovy source actually writes, not off this repo's masker.
+  //
+  // Regression: the masker knew only `"` and `'` quoting, so a `'` inside a slashy string opened
+  // a single-quote span that blanked the real `{` after it, and a `//` or `/*` inside a
+  // dollar-slashy string was read as a comment opener. Either way the brace counter popped the
+  // wrong frame: `after` was reported at the top level with no parent, or swallowed entirely.
+  it('reads a slashy string as a string, so an apostrophe in one does not blank the brace after it', () => {
+    const src = ['class A {', '  def m() {', "    if (s ==~ /it's ok/) {", '      println 1', '    }', '  }', '  def after() { return 1 }', '}'].join('\n')
+    expect(shape(extractGroovy(src, 'A.groovy'))).toEqual(['class A 1-8', 'method m 2-6 A', 'method after 7-7 A'])
+  })
+
+  it('reads a dollar-slashy string as a string, so a // or /* inside one is not a comment opener', () => {
+    const src = ['class B {', '  def m() {', '    def u = $/https://ex.com/$', '    def c = $/ a /* b /$', '    println 1', '  }', '  def after() { return 2 }', '}'].join('\n')
+    expect(shape(extractGroovy(src, 'B.groovy'))).toEqual(['class B 1-8', 'method m 2-6 B', 'method after 7-7 B'])
+  })
+
+  it('does not count a brace inside a slashy string, and still reads a real division as division', () => {
+    const src = ['class C {', '  def m() {', '    def r = ~/\\{/', '    def x = a / b', '  }', '  def after() { return 3 }', '}'].join('\n')
+    expect(shape(extractGroovy(src, 'C.groovy'))).toEqual(['class C 1-7', 'method m 2-5 C', 'method after 6-6 C'])
+  })
+
   it('scans a pathological 50 KB line fast', () => {
-    for (const line of ['class '.repeat(LINE_50K / 6), "stage('".repeat(LINE_50K / 7), 'def "'.repeat(LINE_50K / 5), "'''".repeat(LINE_50K / 3), '{'.repeat(LINE_50K), 'a('.repeat(LINE_50K / 2)]) {
+    for (const line of ['class '.repeat(LINE_50K / 6), "stage('".repeat(LINE_50K / 7), 'def "'.repeat(LINE_50K / 5), "'''".repeat(LINE_50K / 3), '{'.repeat(LINE_50K), 'a('.repeat(LINE_50K / 2), '/'.repeat(LINE_50K), '$/'.repeat(LINE_50K / 2), '= /a'.repeat(LINE_50K / 4)]) {
       expectFast(() => extractGroovy(line, 'p.groovy'), 'groovy')
     }
   })

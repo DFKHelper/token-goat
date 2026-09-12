@@ -7,7 +7,7 @@
 
 import { precedingDocComment } from '../doc_comment.js'
 import type { SymbolEntry } from '../parser_types.js'
-import type { AdapterImport } from './common.js'
+import { matchGroovySlashy, type AdapterImport } from './common.js'
 
 /** How a language writes comments and strings, for {@link maskSource}. */
 export interface BraceLexOpts {
@@ -20,6 +20,8 @@ export interface BraceLexOpts {
   readonly tripleQuotes?: boolean
   /** A `#!` first line is a comment (Groovy scripts). */
   readonly shebang?: boolean
+  /** Groovy's `/.../` and `$/.../$` strings, which neither quote nor comment rules delimit. See {@link matchGroovySlashy}. */
+  readonly slashyStrings?: boolean
 }
 
 /** Where a line sits: at file level, directly in a container's body, in a function body, or in an unnamed block. */
@@ -138,6 +140,18 @@ export function maskSource(content: string, opts: BraceLexOpts): string {
       blank(i, end)
       i = end
       continue
+    }
+    // Before the quote rule below, because neither `"` nor `'` delimits a slashy string: an
+    // apostrophe inside one would otherwise open a quote span that blanks the real brace after it.
+    // After both comment rules, because Groovy reads `//` and `/*` as comment openers even where
+    // an operand is expected.
+    if (opts.slashyStrings === true) {
+      const slashy = matchGroovySlashy(content, i)
+      if (slashy !== null) {
+        blank(slashy.bodyStart, slashy.bodyEnd)
+        i = slashy.end
+        continue
+      }
     }
     if (opts.tripleQuotes === true && (content.startsWith('"""', i) || content.startsWith("'''", i))) {
       const q = content.slice(i, i + 3)

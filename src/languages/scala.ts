@@ -13,8 +13,12 @@ import {
   stripStringLiterals,
   type AdapterImport,
   type MultilineStringState,
+  type StripStringOpts,
   makeLineSymbol,
 } from './common.js'
+
+/** Scala spells a character literal `'a'`, but a `'` that opens none is a symbol literal or a Scala 3 quoted block and never closes. Every read of a Scala line -- blanking its strings and finding its `//` -- has to apply that same rule, or the two disagree about where the line's code ends. */
+const SCALA_STRIP: StripStringOpts = { symbolLiterals: true }
 
 interface TypeFrame {
   name: string
@@ -129,11 +133,11 @@ export function extractScala(
     inComment = nextInComment
 
     // Strip a trailing `//` line comment so braces/text after it are ignored.
-    const line = stripLineComment(blockStripped).trimEnd()
+    const line = stripLineComment(blockStripped, ['//'], SCALA_STRIP).trimEnd()
     const stripped = line.trim()
 
     if (!stripped) {
-      const braceLine = stripStringLiterals(line)
+      const braceLine = stripStringLiterals(line, SCALA_STRIP)
       braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
       continue
     }
@@ -293,7 +297,7 @@ export function extractScala(
     }
 
     // Brace-count on a string-stripped copy
-    const braceLine = stripStringLiterals(line)
+    const braceLine = stripStringLiterals(line, SCALA_STRIP)
 
     // Track the innermost frame's unclosed parentheses until its body opens, so the stale-frame sweep above can tell a finished bodyless declaration from one whose parameter list is still open across several lines.
     if (frame !== null && !frame.bodyEntered) {
