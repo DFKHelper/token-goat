@@ -2804,13 +2804,31 @@ function writeParseResult(
   const mtime = safeMtime(filePath)
   const now = Date.now() / 1000
 
+  // embed_sha is the OTHER freshness key this same row carries (see files.embed_sha / makeIndexer
+  // in worker.ts): it answers "were the current chunks/vectors embedded from this exact content",
+  // independent of files.parser_sha answering "did this extractor version write the symbol/ref
+  // rows below". A parser-only reparse -- this write happening because parser_sha was stale while
+  // the bytes on disk never moved -- must not silently reset that independent answer to unknown.
+  // Read the prior row BEFORE deleteFileRows below removes it: once the DELETE runs there is
+  // nothing left to read this from, and the whole point is to carry it across that delete.
+  const priorRow = db
+    .prepare(`SELECT sha, embed_sha FROM files WHERE ${pathEqClause('path')}`)
+    .get(foldPath(filePath)) as { sha: string | null; embed_sha: string | null } | undefined
+  // Preserve only when the CONTENT this row describes is unchanged (sha match): a content change
+  // means the old embed_sha was computed from bytes that no longer exist, and carrying it forward
+  // would make makeIndexer's `isEmbedFresh` check believe stale vectors are still valid for the
+  // new content. When sha matches, the chunks embeddings.ts wrote for it are untouched by this
+  // reparse (deleteFileRows never touches chunks/chunk_vectors), so the stamp describing them is
+  // still true and re-embedding identical content for a parser-only bump would be pure waste.
+  const embedShaToCarry = priorRow !== undefined && priorRow.sha === sha ? priorRow.embed_sha : null
+
   const writeAll = db.transaction(() => {
     deleteFileRows(db, filePath)
 
     // parser_sha records WHICH extraction logic produced the symbol and ref rows written just below, so a later parser change can tell that these rows are stale even though the content sha still matches. Without it, files.sha was the only freshness key and answered only "has the content changed", which left an unedited file pinned to the symbol set an older parser gave it for as long as nobody touched it. Stamped here rather than in the gates so it is written by exactly the transaction that writes the rows it describes.
     db.prepare(
-      'INSERT INTO files (path, sha, mtime, language, indexed_at, parser_sha) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(filePath, sha, mtime, result.language, now, PARSER_FINGERPRINT)
+      'INSERT INTO files (path, sha, mtime, language, indexed_at, parser_sha, embed_sha) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(filePath, sha, mtime, result.language, now, PARSER_FINGERPRINT, embedShaToCarry)
 
     const insSym = db.prepare(
       'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) ' +
