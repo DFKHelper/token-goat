@@ -22,7 +22,7 @@ import { passOutput } from './hooks_common.js'
 import { resolveIndexPath } from './paths.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
-import { encodeDirtyQueueLine, parseDirtyQueueLines } from './worker.js'
+import { encodeDirtyQueueLine, ensureWorkerAlive, parseDirtyQueueLines } from './worker.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
 export function dirtyQueuePath(): string {
@@ -81,6 +81,22 @@ export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?
   } catch {
     // Fail-soft: the file write/reparse already landed either way, just not reindexed until the
     // next `token-goat index` or edit touches this file again.
+    return
+  }
+  // Every caller of this function just queued work for the background worker to drain --
+  // `hooks_edit.ts` was the only site that ever nudged a dead worker back to life after doing so,
+  // so a session driven entirely through the Bash hook's rewrite enqueues (`hooks_bash.ts`), the
+  // stale-read self-heal (`read_commands.ts::healStaleIndex`), or a plain CLI append (`cli.ts`,
+  // `fold_delivery.ts`, `reconcile.ts`) could fill the dirty queue with nothing running to drain
+  // it. Calling it here, at the one choke point every enqueue path already funnels through,
+  // covers all of them at once instead of repeating the same nudge at each call site.
+  // `ensureWorkerAlive` already gates on `TOKEN_GOAT_NO_WORKER_SPAWN` and rate-limits itself
+  // internally, so this is cheap (and test-safe) on every call after the first in a given window.
+  try {
+    ensureWorkerAlive()
+  } catch {
+    // Best-effort, same as hooks_edit.ts's own call: a healthcheck failure must never turn a
+    // successful enqueue into a thrown error.
   }
 }
 
