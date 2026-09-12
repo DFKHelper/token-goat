@@ -142,6 +142,13 @@ export const LANGUAGE_SPECS = [
   { id: 'batch', extraction: 'regex', extensions: ['.bat', '.cmd'], label: 'Windows batch', ...CODE, fence: 'batch' },
   { id: 'erlang', extraction: 'regex', extensions: ['.erl', '.hrl'], label: 'Erlang', ...CODE, fence: 'erlang' },
   { id: 'vhdl', extraction: 'regex', extensions: ['.vhd', '.vhdl'], label: 'VHDL', ...CODE, fence: 'vhdl' },
+  // Five Lisp-family dialects, each its own row: none shares an extractor (see common_lisp.ts's
+  // module doc for why their lexical rules stay separate rather than a single Lisp masker).
+  { id: 'common_lisp', extraction: 'regex', extensions: ['.lisp', '.lsp', '.cl'], label: 'Common Lisp', ...CODE, fence: 'lisp' },
+  { id: 'scheme', extraction: 'regex', extensions: ['.scm', '.ss'], label: 'Scheme', ...CODE, fence: 'scheme' },
+  { id: 'racket', extraction: 'regex', extensions: ['.rkt', '.rktl'], label: 'Racket', ...CODE, fence: 'racket' },
+  { id: 'clojure', extraction: 'regex', extensions: ['.clj', '.cljs', '.cljc'], label: 'Clojure', ...CODE, fence: 'clojure' },
+  { id: 'emacs_lisp', extraction: 'regex', extensions: ['.el'], label: 'Emacs Lisp', ...CODE, fence: 'lisp' },
   // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6, LaTeX) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },

@@ -129,6 +129,11 @@ const CASES: readonly AdapterCase[] = [
   { language: 'twig', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.twig'), targetBasename: 'Sample.twig' },
   // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
   { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
+  { language: 'common_lisp', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.lisp'), targetBasename: 'sample.lisp' },
+  { language: 'scheme', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.scm'), targetBasename: 'sample.scm' },
+  { language: 'racket', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.rkt'), targetBasename: 'sample.rkt' },
+  { language: 'clojure', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.clj'), targetBasename: 'sample.clj' },
+  { language: 'emacs_lisp', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.el'), targetBasename: 'sample.el' },
   {
     language: 'apex',
     kind: 'regex',

@@ -101,6 +101,21 @@ const CLASSIFICATION: Readonly<Record<string, 'NESTS' | 'DOES_NOT_NEST' | 'CALLE
   // ends the span at the first `#>`, so a `<#` seen after the first opener never widens it.
   // PowerShell's own grammar does not define nested block comments.
   blankCompletedBlockComments: 'DOES_NOT_NEST',
+  // common_lisp.ts::maskCommonLispBlockComment -- CLHS 2.4.8.19 "Sharpsign Vertical-Bar": a `#|`
+  // seen while already inside a `#| |#` comment increments depth; only the matching `|#`
+  // decrements it back to zero.
+  maskCommonLispBlockComment: 'NESTS',
+  // scheme.ts::maskSchemeBlockComment -- R7RS section 2.2 "Whitespace and comments": block
+  // comments (`#| |#`) can be nested. Written independently of maskCommonLispBlockComment (own
+  // dialect, own citation) per this batch's settled no-shared-masker decision.
+  maskSchemeBlockComment: 'NESTS',
+  // racket.ts::maskRacketBlockComment -- Racket Reference, "Reading Text": "Nested #|...|#
+  // comments are supported." Written independently of the Common Lisp/Scheme versions for the
+  // same reason.
+  maskRacketBlockComment: 'NESTS',
+  // Clojure (clojure.ts) and Emacs Lisp (emacs_lisp.ts) have NO block comment at all -- neither
+  // dialect defines a `/* */`-shaped delimited comment -- so neither file has a function this
+  // scan could find, and neither appears in this registry.
 }
 
 describe('every block-comment masking function declares whether its comments nest', () => {
