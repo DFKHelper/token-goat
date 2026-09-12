@@ -2,6 +2,8 @@
  * Shared reader and writer for the `servers`-keyed MCP JSON files that VS Code (`mcp.json`) and Visual Studio (`.mcp.json`) both read.
  *
  * Both hosts use the same entry shape under the same `servers` root key (not Claude Code's `mcpServers`), so the managed-entry test, the JSONC-preserving edit and the bundle path live here once. Visual Studio's format: https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers
+ *
+ * The root-key-agnostic functions below (`serversOf`, `setTokenGoatServer`, `dropEmptyServers`, `hasManagedServer`) take an optional `rootKey` (default `'servers'`) so `./zed_install.ts` can reuse the same JSONC-preserving edit machinery for Zed's `context_servers` root key without duplicating it: Zed's entry *shape* is unrelated (a shell-executed `command` string plus `timeout`, not `type`/`command`/`args`), so `managedServer`/`isManagedServer` stay VS Code/Visual Studio-specific and Zed defines its own pair.
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -17,7 +19,8 @@ export function jsonc(): typeof JsoncParser {
   return jsoncParser
 }
 
-function bundledCliPath(): string {
+/** Resolves the shipping `dist/token-goat.mjs` path from within a bridge module; shared with `./zed_install.ts`'s shim script, which needs the identical bundle path but cannot use `managedServer()`'s stdio-args shape (Zed shell-executes a single `command` string, not `command`+`args`). */
+export function bundledCliPath(): string {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const bundled = path.join(here, 'token-goat.mjs')
   if (fs.existsSync(bundled)) return bundled
@@ -67,12 +70,12 @@ export function readServersJson(filePath: string, label: string): ServersJsonCon
   return { text, value: parsed as Record<string, unknown> }
 }
 
-/** The file's `servers` object, `{}` when absent; throws when `servers` is present but not an object. */
-export function serversOf(config: ServersJsonConfig, filePath: string, label: string): Record<string, unknown> {
-  const servers = config.value['servers']
+/** The file's `rootKey` object (`'servers'` unless the caller names another, e.g. Zed's `'context_servers'`), `{}` when absent; throws when present but not an object. */
+export function serversOf(config: ServersJsonConfig, filePath: string, label: string, rootKey = 'servers'): Record<string, unknown> {
+  const servers = config.value[rootKey]
   if (servers === undefined) return {}
   if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
-    throw new Error(`malformed ${label} MCP JSON at ${filePath}: servers must be an object`)
+    throw new Error(`malformed ${label} MCP JSON at ${filePath}: ${rootKey} must be an object`)
   }
   return servers as Record<string, unknown>
 }
@@ -89,11 +92,11 @@ function editAt(text: string, jsonPath: string[], value: unknown): string {
   return out
 }
 
-/** Sets (or, with `undefined`, removes) `servers["token-goat"]` in `text`, leaving every other byte, comment and key where it was. */
-export function setTokenGoatServer(text: string, value: unknown): string {
+/** Sets (or, with `undefined`, removes) `rootKey["token-goat"]` in `text`, leaving every other byte, comment and key where it was. */
+export function setTokenGoatServer(text: string, value: unknown, rootKey = 'servers'): string {
   // An empty object (a new file reads as `{}`) has no layout to keep, and a range format of `{}` leaves the braces hugging the insert.
-  if (value !== undefined && /^\s*\{\s*\}\s*$/.test(text)) return `${JSON.stringify({ servers: { 'token-goat': value } }, null, 2)}\n`
-  return editAt(text, ['servers', 'token-goat'], value)
+  if (value !== undefined && /^\s*\{\s*\}\s*$/.test(text)) return `${JSON.stringify({ [rootKey]: { 'token-goat': value } }, null, 2)}\n`
+  return editAt(text, [rootKey, 'token-goat'], value)
 }
 
 /** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
@@ -117,12 +120,12 @@ export function holdsOnlyManagedServer(value: Record<string, unknown>): boolean 
   return names.length === 1 && names[0] === 'token-goat' && isManagedServer((servers as Record<string, unknown>)['token-goat'])
 }
 
-export function dropEmptyServers(text: string): string {
+export function dropEmptyServers(text: string, rootKey = 'servers'): string {
   const parsed = parseObject(text)
   if (parsed === null) return text
-  const servers = parsed['servers']
+  const servers = parsed[rootKey]
   if (servers === null || typeof servers !== 'object' || Array.isArray(servers) || Object.keys(servers).length > 0) return text
-  return editAt(text, ['servers'], undefined)
+  return editAt(text, [rootKey], undefined)
 }
 
 function parseObject(text: string): Record<string, unknown> | null {
@@ -146,12 +149,16 @@ export function dropLoneEmptyMcpServers(text: string): string {
   return editAt(text, ['mcpServers'], undefined)
 }
 
-/** Whether `filePath` holds a token-goat-managed `servers` entry; a missing, unreadable or malformed file reads as false. */
-export function hasManagedServer(filePath: string, label: string): boolean {
+/**
+ * Whether `filePath` holds a token-goat-managed entry under `rootKey`; a missing, unreadable or
+ * malformed file reads as false. `isManaged` defaults to VS Code/Visual Studio's `isManagedServer`;
+ * `./zed_install.ts` passes its own `isZedManagedServer` for Zed's unrelated entry shape.
+ */
+export function hasManagedServer(filePath: string, label: string, rootKey = 'servers', isManaged: (value: unknown) => boolean = isManagedServer): boolean {
   if (!fs.existsSync(filePath)) return false
   try {
     const config = readServersJson(filePath, label)
-    return isManagedServer(serversOf(config, filePath, label)['token-goat'])
+    return isManaged(serversOf(config, filePath, label, rootKey)['token-goat'])
   } catch {
     return false
   }

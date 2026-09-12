@@ -215,6 +215,20 @@ Both `.mcp.json` files are also read by Claude Code, under a different key (`mcp
 
 `token-goat doctor` reports the entry and warns when its node or token-goat path no longer exists. To remove: `token-goat uninstall --visualstudio` (add `-p` for the project install). It removes only token-goat's entry and block.
 
+### Zed users
+
+```
+token-goat install --zed
+```
+
+Zed's first-party agent has no agent-hooks API at all ([zed-industries/zed#52688](https://github.com/zed-industries/zed/issues/52688) is still open), so `--zed` does not install hooks: it registers token-goat as an MCP context server instead, the only integration surface Zed offers. This is user scope only — there is no `-p`/`--project` option, since Zed has no documented project-local equivalent of VS Code's `.vscode/mcp.json`.
+
+`--zed` writes two files: a small generated shim script (`token-goat-mcp.cmd` on Windows, `token-goat-mcp.sh` elsewhere) that launches `token-goat mcp-serve`, and an entry in Zed's `settings.json` (`%APPDATA%\Zed\settings.json` on Windows, `~/.config/zed/settings.json` elsewhere) pointing `context_servers.token-goat` at that shim. Any other content already in your `settings.json` — comments, your theme, other context servers — is left exactly as it was. To use it, open Zed's Agent panel and enable the token-goat server under its MCP tools list; new servers start disabled the same way VS Code's do.
+
+Like Visual Studio, this is MCP tools only: no read dedup, no hints, no image shrink, no output folding, since there is no hook to fire them from. The agent gets narrow reads only when it calls the token-goat tools directly.
+
+`token-goat doctor` reports whether the entry is present. To remove: `token-goat uninstall --zed`, which deletes the shim and the `context_servers.token-goat` entry (and the whole `settings.json`, but only if token-goat created it and nothing else was ever added to it).
+
 ### Grok CLI (xAI Grok Build) users
 
 Grok Build already reads Claude Code's `~/.claude/settings.json` as a "Harness Compatibility" source out of the box (confirmed against grok 0.2.93 and its own [hooks doc](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)), so `token-goat install` alone already gets most of the integration working — image shrinking, session hints, post-edit indexing, and bash output compression all fire. The one gap: Grok's own `PreToolUse` hook contract documents only `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`, never token-goat's harness-independent `{"decision":"block","reason":"..."}` shape (unlike Gemini CLI, whose docs explicitly confirm `"block"` as an accepted alias for `"deny"`), so re-read denial and oversized-first-read redirects don't reliably block on the Claude Code compat path alone.
@@ -435,6 +449,13 @@ Three things follow, and they are worth knowing before you decide. It never leav
 |------|------|
 | `%USERPROFILE%\.mcp.json` (`<project>/.mcp.json` with `-p`) | Merges the `token-goat` stdio entry under the `servers` root key, preserving other servers, comments, and Claude Code's `mcpServers` key. Refuses to write if the other scope already has a token-goat-managed entry. Uninstall removes the entry, and deletes the file if nothing else is left in it. |
 | `%USERPROFILE%\copilot-instructions.md` (`<project>/.github/copilot-instructions.md` with `-p`) | A delimited Visual Studio routing block (`<!-- token-goat-visualstudio-begin -->` … `<!-- token-goat-visualstudio-end -->`). Everything outside the markers is preserved. |
+
+**With `--zed`** (Zed MCP context server; user scope only, no project option)
+
+| Path | What |
+|------|------|
+| `%APPDATA%\Zed\settings.json` (Windows) / `~/.config/zed/settings.json` (macOS/Linux) | Merges the `token-goat` entry (`command`, `timeout` only) under Zed's `context_servers` root key, preserving unrelated keys, comments, and other context servers. Refuses to write if a non-token-goat `token-goat` entry is already there. Uninstall removes the entry, and deletes the file if nothing else is left in it. |
+| `%APPDATA%\Zed\token-goat-mcp.cmd` (Windows) / `~/.config/zed/token-goat-mcp.sh` (macOS/Linux) | The shim script the `settings.json` entry's `command` points at; runs `node <bundle path> mcp-serve`. Regenerated on every `install --zed` run. |
 
 **With `--hermes`** (Hermes Agent integration)
 

@@ -63,6 +63,7 @@ import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridg
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.js'
 import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
 import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
 import {
@@ -645,6 +646,7 @@ async function cmdInstall(opts: {
   grok?: boolean
   vscode?: boolean
   visualstudio?: boolean
+  zed?: boolean
   local?: boolean
 }): Promise<void> {
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
@@ -800,6 +802,17 @@ async function cmdInstall(opts: {
     for (const line of visualStudioManualSteps(vsResult.scope)) out(line)
   }
 
+  // --zed is additive and user-scope only: Zed's context_servers has no documented project-local
+  // equivalent to VS Code's .vscode/mcp.json, so -p/--project has no effect here.
+  if (opts.zed === true) {
+    const zedResult = installZed()
+    out(
+      zedResult.alreadyInstalled
+        ? `Zed MCP context-server integration already installed → ${displaySafePath(zedResult.settingsPath)}`
+        : `Installed token-goat Zed MCP context-server integration → ${displaySafePath(zedResult.settingsPath)}, ${displaySafePath(zedResult.shimPath)}`,
+    )
+  }
+
   // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so -p installs for the two hosts overlap there.
   if (opts.project === true && (opts.vscode === true || opts.visualstudio === true)) {
     const duplicateNote = visualStudioDuplicateNote()
@@ -879,6 +892,7 @@ function cmdUninstall(opts: {
   grok?: boolean
   vscode?: boolean
   visualstudio?: boolean
+  zed?: boolean
   local?: boolean
   purge?: boolean
 }): void {
@@ -918,6 +932,7 @@ function cmdUninstall(opts: {
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
     { flag: opts.vscode === true, run: () => uninstallVscode({ project: opts.project === true }), label: 'VS Code MCP integration' },
     { flag: opts.visualstudio === true, run: () => uninstallVisualStudio({ project: opts.project === true }), label: 'Visual Studio MCP integration' },
+    { flag: opts.zed === true, run: uninstallZed, label: 'Zed MCP context-server integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -988,6 +1003,7 @@ export function leftoverIntegrations(opts: {
   opencode?: boolean
   grok?: boolean
   visualstudio?: boolean
+  zed?: boolean
 }): LeftoverIntegration[] {
   const candidates: Array<{ skipped: boolean; present: () => boolean; flag: string; label: string }> = [
     { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
@@ -1010,6 +1026,7 @@ export function leftoverIntegrations(opts: {
       flag: '--visualstudio',
       label: 'Visual Studio MCP integration',
     },
+    { skipped: opts.zed !== true, present: isZedInstalled, flag: '--zed', label: 'Zed MCP context-server integration' },
   ]
   const found: LeftoverIntegration[] = []
   for (const candidate of candidates) {
@@ -3982,6 +3999,7 @@ export function buildProgram(): Command {
     .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
     .option('--vscode', 'also configure a VS Code MCP server (user-profile mcp.json by default; -p/--project for the workspace .vscode/mcp.json) and Copilot routing guidance')
     .option('--visualstudio', 'also configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
+    .option('--zed', 'also register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -4001,6 +4019,7 @@ export function buildProgram(): Command {
     .option('--grok', 'also remove the Grok CLI hook config and shim script')
     .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
     .option('--visualstudio', 'also remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
+    .option('--zed', 'also remove the Zed MCP context server entry and its generated shim script')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
     .action(guard(cmdUninstall))
