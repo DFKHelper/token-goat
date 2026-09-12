@@ -8,6 +8,7 @@ import { decodeSource } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { detectLanguage } from './parser_types.js'
 import { fenceFor } from './language_specs.js'
+import { matchGroovySlashy } from './languages/common.js'
 
 
 export interface PackFile {
@@ -286,10 +287,50 @@ function isInsideStringLiteral(text: string, index: number, lineStates: QuoteSta
 }
 
 /** Applies a line-comment regex, skipping any match that starts inside a string literal. */
-function stripLineComments(content: string, pattern: RegExp, lineStates: QuoteState[]): string {
+function stripLineComments(content: string, pattern: RegExp, lineStates: QuoteState[], skip: Spans = []): string {
   return content.replace(pattern, (match, offset: number) =>
-    isInsideStringLiteral(content, offset, lineStates) ? match : '',
+    isInsideStringLiteral(content, offset, lineStates) || inSpans(skip, offset) ? match : '',
   )
+}
+
+/** Sorted, non-overlapping character ranges that a comment match may not start inside. */
+type Spans = ReadonlyArray<readonly [number, number]>
+
+const GROOVY_EXTS: ReadonlySet<string> = new Set(['.groovy', '.gvy', '.gradle'])
+
+/**
+ * Ranges covered by Groovy slashy (`/.../`) and dollar-slashy (`$/.../$`) strings. The quote-state
+ * guard above knows only `"`, `'` and `` ` ``, so a `//` or `/*` inside one of these read as a
+ * comment opener and `--strip-comments` truncated the line or ate the middle of the pair --
+ * destroying code rather than comments. Shares {@link matchGroovySlashy} with the indexer's masker
+ * so the two layers cannot drift on what counts as a slashy string.
+ */
+function groovySlashySpans(content: string, lineStates: QuoteState[]): Array<[number, number]> {
+  const spans: Array<[number, number]> = []
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]
+    if (ch !== '/' && ch !== '$') continue
+    if (isInsideStringLiteral(content, i, lineStates)) continue
+    const m = matchGroovySlashy(content, i)
+    if (m === null) continue
+    spans.push([i, m.end])
+    i = m.end - 1
+  }
+  return spans
+}
+
+/** True when `offset` falls inside one of `spans`. */
+function inSpans(spans: Spans, offset: number): boolean {
+  let lo = 0
+  let hi = spans.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const [start, end] = spans[mid]!
+    if (offset < start) hi = mid - 1
+    else if (offset >= end) lo = mid + 1
+    else return true
+  }
+  return false
 }
 
 /**
@@ -299,9 +340,9 @@ function stripLineComments(content: string, pattern: RegExp, lineStates: QuoteSt
  * string literal to span multiple lines, so if the block-comment opener is inside a string,
  * the whole match is part of that string's content.
  */
-function stripBlockComments(content: string, pattern: RegExp, lineStates: QuoteState[]): string {
+function stripBlockComments(content: string, pattern: RegExp, lineStates: QuoteState[], skip: Spans = []): string {
   return content.replace(pattern, (match, offset: number) =>
-    isInsideStringLiteral(content, offset, lineStates) ? match : '\n'.repeat(match.split('\n').length - 1),
+    isInsideStringLiteral(content, offset, lineStates) || inSpans(skip, offset) ? match : '\n'.repeat(match.split('\n').length - 1),
   )
 }
 
@@ -318,8 +359,12 @@ export function stripComments(content: string, filePath: string): string {
   }
 
   if (CSTYLE_EXTS.has(ext)) {
-    content = stripBlockComments(content, CSTYLE_BLOCK_RE, lineStates)
-    return stripLineComments(content, CSTYLE_LINE_RE, computeLineStartQuoteStates(content))
+    const groovy = GROOVY_EXTS.has(ext)
+    content = stripBlockComments(content, CSTYLE_BLOCK_RE, lineStates, groovy ? groovySlashySpans(content, lineStates) : [])
+    // Block stripping shifts every offset after the first comment it removes, so the line pass
+    // re-reads both the quote states and the slashy spans from the content it will actually walk.
+    const afterStates = computeLineStartQuoteStates(content)
+    return stripLineComments(content, CSTYLE_LINE_RE, afterStates, groovy ? groovySlashySpans(content, afterStates) : [])
   }
 
   if (HASH_COMMENT_EXTS.has(ext)) {

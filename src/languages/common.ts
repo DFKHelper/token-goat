@@ -313,11 +313,18 @@ export function stripSqlLineComments(text: string): string {
  * apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted
  * string that never closes.
  */
-export function isInsideStringLiteral(line: string, index: number, from = 0): boolean {
+export function isInsideStringLiteral(line: string, index: number, from = 0, opts: StripStringOpts = {}): boolean {
   let openQuote: '"' | "'" | null = null
   let i = from
   while (i < index) {
     const ch = line[i]
+    // A Scala `'` either opens a character literal, which is skipped whole, or opens nothing at
+    // all. Either way it must not leave a quote hanging open over the rest of the line.
+    if (opts.symbolLiterals === true && openQuote === null && ch === "'") {
+      const len = scalaCharLiteralLength(line, i)
+      i += len === 0 ? 1 : len
+      continue
+    }
     // Only treat backslash as an escape while already inside a string (mirrors
     // stripStringLiterals below); a bare backslash outside a string can't escape
     // anything, and this avoids miscounting consecutive backslashes preceding a
@@ -450,8 +457,8 @@ export function stripNestedBlockCommentSpan(line: string, depth: number): { code
  * `"http://example.com"`) is not treated as a comment opener, mirroring the quote-awareness
  * `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found.
  */
-export function stripLineComment(line: string, markers: string[] = ['//']): string {
-  const cutIdx = lineCommentStartIndex(line, markers)
+export function stripLineComment(line: string, markers: string[] = ['//'], opts: StripStringOpts = {}): string {
+  const cutIdx = lineCommentStartIndex(line, markers, 0, opts)
   return cutIdx === -1 ? line : line.slice(0, cutIdx)
 }
 
@@ -460,11 +467,11 @@ export function stripLineComment(line: string, markers: string[] = ['//']): stri
  * `markers`, or -1 if none is found. Shared scan logic behind {@link stripLineComment} and
  * `findMultilineOpener`'s comment-awareness guard below.
  */
-function lineCommentStartIndex(line: string, markers: string[], from = 0): number {
+function lineCommentStartIndex(line: string, markers: string[], from = 0, opts: StripStringOpts = {}): number {
   let cutIdx = -1
   for (const marker of markers) {
     let idx = line.indexOf(marker, from)
-    while (idx !== -1 && isInsideStringLiteral(line, idx, from)) {
+    while (idx !== -1 && isInsideStringLiteral(line, idx, from, opts)) {
       idx = line.indexOf(marker, idx + 1)
     }
     if (idx !== -1 && (cutIdx === -1 || idx < cutIdx)) cutIdx = idx
@@ -515,6 +522,34 @@ export interface StripStringOpts {
    *  Without it a triple-quoted string holding an odd number of interior quotes desyncs the
    *  frame stack, and any brace after that quote leaks out as real code. */
   tripleQuotes?: boolean
+  /** Scala, where a `'` that opens no character literal is a symbol literal or a quoted block and
+   *  never closes. See {@link scalaCharLiteralLength}. */
+  symbolLiterals?: boolean
+}
+
+/**
+ * Length of the Scala character literal starting at `index` (`'a'`, `'\n'`, `'A'`), or 0 when
+ * that `'` opens none. A `'` that opens no character literal is a Scala 2 symbol literal (`'ident`)
+ * or a Scala 3 quoted block (`'{`/`'[`), and neither is closed by a second quote -- so reading one
+ * as a string blanks the rest of the line, taking any brace on it. Scala Language Specification
+ * sections 1.3.4 "Character Literals" and 1.3.6 "Symbol Literals".
+ *
+ * Exported so the string blanker and the comment finder read one copy of the rule: fixing only the
+ * blanker leaves the comment finder believing the line is still inside a string, so a trailing
+ * `// note {` is never stripped and its brace is counted instead. The two failures cancel today;
+ * they stop cancelling the moment either one is corrected alone.
+ */
+export function scalaCharLiteralLength(line: string, index: number): number {
+  if (line[index] !== "'") return 0
+  if (line[index + 1] === '\\') {
+    if (line[index + 2] === 'u') {
+      let i = index + 3
+      while (line[i] === 'u') i++
+      return /^[0-9a-fA-F]{4}$/.test(line.slice(i, i + 4)) && line[i + 4] === "'" ? i + 5 - index : 0
+    }
+    return line[index + 2] !== undefined && line[index + 3] === "'" ? 4 : 0
+  }
+  return line[index + 1] !== undefined && line[index + 1] !== "'" && line[index + 2] === "'" ? 3 : 0
 }
 export function stripStringLiterals(line: string, opts: StripStringOpts = {}): string {
   // A string frame blanks its content until the matching quote (unless a hole is open on top of
@@ -557,6 +592,11 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
     const top = stack[stack.length - 1]
 
     if (top === undefined) {
+      if (opts.symbolLiterals === true && ch === "'" && scalaCharLiteralLength(line, i) === 0) {
+        out += ch
+        i++
+        continue
+      }
       if (ch === '"' || ch === "'") {
         // A `$` immediately before the opening `"` marks a C# interpolated string, where a bare
         // `{` (not `${`) opens an interpolation hole.
@@ -573,6 +613,11 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
     }
 
     if (top.kind === 'hole') {
+      if (opts.symbolLiterals === true && ch === "'" && scalaCharLiteralLength(line, i) === 0) {
+        out += ch
+        i++
+        continue
+      }
       if (ch === '"' || ch === "'") {
         const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
         const delim = openDelim(i)
@@ -659,7 +704,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
 // ---------------------------------------------------------------------------
 
 /** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
-export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw' | 'swiftExtended'
+export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw' | 'swiftExtended' | 'sigil'
 
 /** Which quotes of a run longer than the delimiter itself close a quote-delimited literal. Languages disagree, so the rule is always named rather than assumed. `'last'`: the run's LAST `len` quotes are the delimiter, so `"""a""""` is the string `a"` -- Kotlin (Kotlin language specification, "Expressions", section "String literals", multiline string literals) and Scala (Scala language specification, section 1.3.5 "Character Literals and String Literals", which states that a multi-line literal is terminated by the last three of a run of three or more) both read it that way, and C# 11 raw string literals likewise consume the whole closing run, with `len` taken from the opening run rather than fixed at three (C# language reference, "Raw string literals"). `'first'`: the run's FIRST `len` quotes are the delimiter and the rest of the run is ordinary code, which is what Dart's grammar gives -- its multi-line string production is a delimiter, then a repetition of a content production that excludes the delimiter, then the delimiter (Dart Programming Language Specification, section "Strings"), so the literal ends at the first complete run, and the same section's rule that adjacent string literals concatenate makes `'''a''''''b'''` two literals in a row, which only the first-run reading parses correctly. */
 export type QuoteRunClose = 'first' | 'last'
@@ -702,6 +747,10 @@ export interface MultilineStringState {
    * non-interpolated `@"..."` verbatim string.
    */
   interpolated?: boolean
+  /** Nesting depth inside a bracket-delimited Elixir sigil, whose delimiters nest. Carried across lines; unused for every other kind. */
+  depth?: number
+  /** Whether this literal takes `\` escapes. Set for `sigil`, where a lowercase sigil does and an uppercase one does not; unused for every other kind. */
+  escapes?: boolean
   /** Which quotes of an over-long closing run form this literal's delimiter, carried from the opener because `findMultilineCloser` sees only the state and not the language. Set for `tripleQuote`/`tripleSingleQuote`; unused for every other kind. */
   runClose?: QuoteRunClose
   /** Where on its line this literal's closing delimiter is allowed to sit, carried from the opener for the same reason `runClose` is: `findMultilineCloser` sees only the state, never the language. See {@link CloserAnchor} and {@link MULTILINE_CLOSER_ANCHOR}. Absent means `'anywhere'`. */
@@ -791,6 +840,10 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       const re = new RegExp(`^${indent}${escapeRegExp(state.identifier)}\\b`)
       const m = re.exec(line)
       return m ? { maskEnd: m[0].length } : null
+    }
+    case 'sigil': {
+      const end = elixirSigilEnd(line, from, state)
+      return end === -1 ? null : { maskEnd: end }
     }
     case 'tripleSingleQuote': {
       // Elixir's charlist heredoc and Dart's `'''` string, closed by their own delimiter rather than `"""`. The `runClose` rule is the opener's: Dart ends at the first three of a longer run, Elixir takes the whole run.
@@ -963,6 +1016,155 @@ export function matchRRawOpener(text: string, index: number): RRawOpener | null 
   const close = R_RAW_CLOSE_BRACKET[m[3] ?? '']
   if (close === undefined) return null
   return { openerEnd: index + m[0].length, closer: `${close}${m[2] ?? ''}${m[1] ?? ''}` }
+}
+
+/** A Groovy slashy or dollar-slashy string found at an offset: where its content begins, where the closing delimiter starts, and where the whole literal ends. */
+export interface GroovySlashy {
+  bodyStart: number
+  bodyEnd: number
+  end: number
+}
+
+/**
+ * Characters after which Groovy expects an operand, so a `/` following one opens a slashy string
+ * rather than dividing. `==~`, `=~`, `!` and the arithmetic operators all end in one of these.
+ */
+const GROOVY_OPERAND_BEFORE: ReadonlySet<string> = new Set([...'([{,;=+-*/%<>!&|^~?:'])
+
+/** Longest body either Groovy slashy form may have; see the scan loop in {@link matchGroovySlashy} for why a bound is required rather than merely tidy. */
+const MAX_GROOVY_SLASHY_BODY = 1024
+
+/** Keywords that end in identifier characters yet are still followed by an operand, so `return /x/` is a slashy string and not a division. */
+const GROOVY_OPERAND_KEYWORDS: ReadonlySet<string> = new Set(['return', 'case', 'in', 'new', 'assert', 'instanceof'])
+
+/** True when a `/` at `index` sits where Groovy expects a value rather than an operator. */
+function groovyOperandPosition(text: string, index: number): boolean {
+  let i = index - 1
+  while (i >= 0 && (text[i] === ' ' || text[i] === '\t')) i--
+  if (i < 0) return true
+  const ch = text[i]!
+  if (ch === '\n' || ch === '\r') return true
+  if (GROOVY_OPERAND_BEFORE.has(ch)) return true
+  // An identifier, `)`, `]`, `}`, digit or closing quote means a value just ended, so the `/` divides it.
+  if (!/[\w$]/.test(ch)) return false
+  let j = i
+  while (j >= 0 && /[\w$]/.test(text[j]!)) j--
+  return GROOVY_OPERAND_KEYWORDS.has(text.slice(j + 1, i + 1))
+}
+
+/**
+ * Match a Groovy slashy (`/.../`) or dollar-slashy (`$/.../$`) string opening at `index`, or null
+ * when none does (https://groovy-lang.org/syntax.html, sections "Slashy string" and "Dollar slashy
+ * string"). Exported so the brace-language masker and `pack`'s comment stripper read one copy of
+ * the rule: neither `"` nor `'` delimits these, so a walk that does not know them reads an
+ * apostrophe in one as opening a string and a `//` or `/*` in one as opening a comment.
+ *
+ * A `/` is ambiguous with division and is resolved by position: it opens a string only where an
+ * operand is expected. Two deliberate limitations follow, both erring towards leaving code alone.
+ * A slashy string is confined to the line it opens on, even though Groovy lets one span lines --
+ * an unterminated `/` would otherwise swallow the rest of the file on a mere division misread. And
+ * `//` and an empty slashy string are spelled the same, so `//` is always the comment Groovy reads
+ * it as. The unambiguous `$/` form has neither restriction and may span lines.
+ */
+export function matchGroovySlashy(text: string, index: number): GroovySlashy | null {
+  const dollar = text[index] === '$' && text[index + 1] === '/'
+  if (!dollar) {
+    if (text[index] !== '/') return null
+    const next = text[index + 1]
+    if (next === '/' || next === '*') return null
+    if (!groovyOperandPosition(text, index)) return null
+  }
+  const bodyStart = index + (dollar ? 2 : 1)
+  // A failed scan runs to this bound, so the cap is what keeps a file full of unterminated `$/`
+  // from costing O(n^2): every `$` would otherwise scan to end of file. No real regex or text
+  // block comes near 1 KB, and a literal that does is simply left unmasked, which is where this
+  // started rather than anywhere worse.
+  const limit = Math.min(text.length, bodyStart + MAX_GROOVY_SLASHY_BODY)
+  for (let i = bodyStart; i < limit; i++) {
+    const ch = text[i]
+    if (dollar) {
+      // Inside a dollar-slashy string only `$$` and `$/` are escapes; a lone `/` is content.
+      if (ch === '$' && (text[i + 1] === '$' || text[i + 1] === '/')) {
+        i++
+        continue
+      }
+      if (ch === '/' && text[i + 1] === '$') return { bodyStart, bodyEnd: i, end: i + 2 }
+      continue
+    }
+    if (ch === '\\' && text[i + 1] === '/') {
+      i++
+      continue
+    }
+    if (ch === '\n') return null
+    if (ch === '/') return { bodyStart, bodyEnd: i, end: i + 1 }
+  }
+  return null
+}
+
+/** Closing delimiter for each Elixir sigil opener. The four bracket forms close on their mirror and nest; the rest close on a repeat of themselves (Elixir "Sigils" guide). */
+const ELIXIR_SIGIL_CLOSER: Readonly<Record<string, string>> = { '(': ')', '[': ']', '{': '}', '<': '>', '/': '/', '|': '|', '"': '"', "'": "'" }
+
+/** Opening delimiter for each nesting Elixir sigil closer; absent for the non-nesting ones, which is what tells {@link elixirSigilEnd} not to count depth. */
+const ELIXIR_SIGIL_OPENER: Readonly<Record<string, string>> = { ')': '(', ']': '[', '}': '{', '>': '<' }
+
+/** A non-heredoc Elixir sigil opening at an offset: where its content begins, what closes it, and whether it takes backslash escapes. */
+export interface ElixirSigilOpener {
+  openerEnd: number
+  closer: string
+  escapes: boolean
+}
+
+/**
+ * Match a non-heredoc Elixir sigil opening at `index`: `~`, then one lowercase letter or a run of
+ * uppercase letters, then a delimiter from `/ | " ' ( [ { <` (Elixir "Sigils" guide and the
+ * `Kernel.SpecialForms` docs). A lowercase sigil takes `\` escapes; an uppercase one takes none.
+ * A heredoc sigil (`~S"""`) returns null on purpose: its `"""` run is what the triple-quote opener
+ * already finds, and that path handles the indentation-anchored closer heredocs require.
+ */
+export function matchElixirSigilOpener(line: string, index: number): ElixirSigilOpener | null {
+  if (line[index] !== '~') return null
+  let i = index + 1
+  const first = line[i] ?? ''
+  let escapes: boolean
+  if (first >= 'a' && first <= 'z') {
+    escapes = true
+    i++
+  } else if (first >= 'A' && first <= 'Z') {
+    escapes = false
+    while (i < line.length && (line[i] ?? '') >= 'A' && (line[i] ?? '') <= 'Z') i++
+  } else {
+    return null
+  }
+  const delim = line[i] ?? ''
+  const closer = ELIXIR_SIGIL_CLOSER[delim]
+  if (closer === undefined) return null
+  if ((delim === '"' || delim === "'") && line[i + 1] === delim && line[i + 2] === delim) return null
+  return { openerEnd: i + 1, closer, escapes }
+}
+
+/** Offset just past the delimiter closing an open Elixir sigil, or -1 when it stays open past this line. Updates `state.depth` for the bracket forms, whose delimiters nest, so a `(` in the body does not let the matching `)` close the sigil early. */
+function elixirSigilEnd(line: string, from: number, state: MultilineStringState): number {
+  const closer = state.identifier
+  const opener = ELIXIR_SIGIL_OPENER[closer]
+  for (let i = from; i < line.length; i++) {
+    const ch = line[i]
+    if (state.escapes === true && ch === '\\') {
+      i++
+      continue
+    }
+    if (opener !== undefined && ch === opener) {
+      state.depth = (state.depth ?? 0) + 1
+      continue
+    }
+    if (ch === closer) {
+      if ((state.depth ?? 0) > 0) {
+        state.depth = (state.depth ?? 0) - 1
+        continue
+      }
+      return i + 1
+    }
+  }
+  return -1
 }
 
 // Opening punctuation of a Swift extended-delimiter string, anchored at its first `#`: a run of one or more `#`, then either `"""` (the multi-line form) or a single `"` (the single-line form). Sticky for the same reason R_RAW_OPENER_RE is: a scan tests one offset without slicing the rest of the line.
@@ -1187,6 +1389,21 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     if (sq !== -1) candidates.push([sq, 'tripleSingleQuote', "'''"])
     candidates.sort((a, b) => a[0] - b[0])
     const first = candidates[0]
+    // A sigil that is not a heredoc (`~s{...}`, `~r/.../`, `~w(...)`) may span lines too, and only
+    // the heredoc forms were masked before -- so a `def` inside one was indexed as a real function
+    // and a bare `end` inside one popped the enclosing module's frame, orphaning everything after
+    // it. Whichever opener comes first on the line wins, so a `~s` inside a heredoc body stays
+    // content and a `"""` inside a sigil body does too. Dart shares this branch but has no sigils.
+    if (lang === 'elixir') {
+      for (let t = line.indexOf('~', from); t !== -1; t = line.indexOf('~', t + 1)) {
+        if (first !== undefined && first[0] < t) break
+        const open = matchElixirSigilOpener(line, t)
+        if (open === null || isInsideStringLiteral(line, t, from) || isCommented(t)) continue
+        const state: MultilineStringState = { kind: 'sigil', identifier: open.closer, depth: 0, escapes: open.escapes }
+        const end = elixirSigilEnd(line, open.openerEnd, state)
+        return { openStart: t, closesSameLine: end === -1 ? null : end, state }
+      }
+    }
     if (first === undefined) return null
     const [idx, kind, delim] = first
     if (isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null

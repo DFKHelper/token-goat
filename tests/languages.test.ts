@@ -2878,6 +2878,48 @@ class Sibling {
     expect(names).not.toContain('inner')
   })
 
+  // HAND-DERIVED from the Scala Language Specification, section 1.3.4 "Character Literals" (a
+  // character literal is a single character, or an escape, between two single quotes) and section
+  // 1.3.6 "Symbol Literals" (`'ident`, a single quote followed by an identifier and NOT closed by
+  // a second quote). Scala 3 dropped symbol literals and spells a quoted block `'{ ... }`, which
+  // is likewise an unclosed single quote. The expectations are read off that grammar.
+  //
+  // Regression: a naive quote rule treated the `'` of `'sym` as opening a string, so everything
+  // after it on the line was blanked -- including the closing `}` -- and `b` was never found.
+  it('reads a symbol literal as an unclosed quote rather than a string, keeping the brace after it', () => {
+    const content = `object O {
+  def a: Int = { val s = 'sym; 1 }
+  def b: Int = 2
+}
+`
+    const { symbols } = extractScala(content, 'O.scala')
+    expect(symbols.find((s) => s.name === 'b')?.parent).toBe('O')
+  })
+
+  // The second layer of the same rule. Once a symbol literal no longer blanks the rest of the
+  // line, the trailing `//` comment has to be stripped on its own merits -- otherwise the `{` in
+  // the comment text is counted as a real brace and `b` is lost again, for the opposite reason.
+  it('still strips a line comment that follows a symbol literal, so a brace in the comment is not counted', () => {
+    const content = `object P {
+  val s = 'sym  // note { unbalanced
+  def b: Int = 2
+}
+`
+    const { symbols } = extractScala(content, 'P.scala')
+    expect(symbols.find((s) => s.name === 'b')?.parent).toBe('P')
+  })
+
+  it('still reads a character literal as a string, so a brace inside one is not counted', () => {
+    const content = `object Q {
+  def a: Int = { val c = '}'; 1 }
+  def b: Int = 2
+}
+`
+    const { symbols } = extractScala(content, 'Q.scala')
+    expect(symbols.find((s) => s.name === 'a')?.parent).toBe('Q')
+    expect(symbols.find((s) => s.name === 'b')?.parent).toBe('Q')
+  })
+
   it('expands multi-selector brace imports into one target per selector', () => {
     const content = `import scala.collection.{mutable, immutable}
 import foo.bar.{A => Renamed, B}
@@ -3653,6 +3695,72 @@ end
     const { symbols } = extractElixir(content, 'm.ex')
     expect(symbols.find((s) => s.name === 'real')?.parent).toBe('M')
     expect(symbols.find((s) => s.name === 'after_it')?.parent).toBe('M')
+  })
+
+  // HAND-DERIVED from the Elixir "Sigils" guide and the `Kernel.SpecialForms` docs: a sigil is
+  // `~`, one lowercase letter or a run of uppercase letters, then a delimiter drawn from
+  // `/ | " ' ( [ { <`; the bracket forms close on their mirror and nest, the rest close on a
+  // repeat of the same character; an uppercase sigil takes no escapes, a lowercase one does.
+  // Only the `"""` and `'''` heredoc forms were masked, so a sigil that merely spanned lines was
+  // read as ordinary code. The expectations come from that grammar, not from our masker.
+  //
+  // Regression: a `def` inside a multi-line sigil was indexed as a real function, and a bare
+  // `end` inside one popped the enclosing module frame -- truncating the module's span and
+  // orphaning every function declared after it.
+  it('does not read a def inside a multi-line sigil as a real function', () => {
+    const content = `defmodule P do
+  @s ~s{
+    def fake(a) do
+    end
+  }
+  def real(x), do: x
+end
+`
+    const { symbols } = extractElixir(content, 'p.ex')
+    expect(symbols.map((s) => s.name)).not.toContain('fake')
+    expect(symbols.find((s) => s.name === 'real')?.parent).toBe('P')
+  })
+
+  it('does not let a bare end inside a multi-line sigil pop the enclosing module frame', () => {
+    const content = `defmodule R do
+  @s ~s{
+end
+  }
+  def real(x), do: x
+end
+`
+    const { symbols } = extractElixir(content, 'r.ex')
+    expect(symbols.find((s) => s.name === 'real')?.parent).toBe('R')
+    expect(symbols.find((s) => s.name === 'R')?.lineEnd).toBe(6)
+  })
+
+  it('closes a bracket-delimited sigil on its mirror, counting the nesting its delimiter allows', () => {
+    const content = `defmodule T do
+  @s ~s(
+    a (nested) b
+  )
+  def real(x), do: x
+end
+`
+    const { symbols } = extractElixir(content, 't.ex')
+    expect(symbols.find((s) => s.name === 'real')?.parent).toBe('T')
+    expect(symbols.find((s) => s.name === 'T')?.lineEnd).toBe(6)
+  })
+
+  it('still reads a def after a single-line sigil and after a heredoc sigil', () => {
+    const content = `defmodule S do
+  @a ~s{def fake_one(a) do end}
+  @b ~S"""
+  def fake_two(a) do
+  end
+  """
+  def real(x), do: x
+end
+`
+    const { symbols } = extractElixir(content, 's.ex')
+    expect(symbols.map((s) => s.name)).not.toContain('fake_one')
+    expect(symbols.map((s) => s.name)).not.toContain('fake_two')
+    expect(symbols.find((s) => s.name === 'real')?.parent).toBe('S')
   })
 })
 

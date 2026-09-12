@@ -4,6 +4,15 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **Groovy slashy strings, Elixir sigils, and Scala symbol literals now read as the strings they are.** Each one used to look like code, or like a string that never ended, which moved or dropped the symbols around it:
+  - Groovy `/.../` and `$/.../$` strings are read as strings, so a brace, an apostrophe, a `//` or a `/*` inside one no longer opens a block, a string, or a comment. Groovy tells a slashy string from a division by where the `/` sits: after an operator, a comma, an opening bracket, or a keyword such as `return`, it starts a string; after a value, it divides. `pack --strip-comments` follows the same rule, where before it could cut a line short at a `//` inside one of these strings.
+  - Elixir sigils such as `~w(...)` and `~r/.../` can span lines, including the bracket forms that nest.
+  - Scala `'symbol` literals are no longer read as the start of a character literal, so the rest of the line still gets indexed.
+
+  Run `token-goat index` to reparse: the symbols and line numbers recorded for Groovy, Elixir, and Scala files change.
+
 ## [2.9.11] - 2026-09-11
 
 ### Added

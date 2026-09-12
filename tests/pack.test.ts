@@ -112,6 +112,28 @@ describe('stripComments', () => {
     expect(result).toBe(code)
   })
 
+  // HAND-DERIVED from https://groovy-lang.org/syntax.html, section "Dollar slashy string": a
+  // `$/.../$` string needs no escaping of a forward slash, so `//` and `/*` are ordinary content
+  // in one. Packing must hand the model the code the file actually holds; the quote-state guard
+  // that protects a `"`-quoted URL knew nothing about Groovy's slash-delimited strings, so
+  // `--strip-comments` truncated the line at the `//` and ate the middle of the `/* */` pair.
+  it('leaves // and /* inside a Groovy dollar-slashy string untouched', () => {
+    const code = 'def u = $/https://ex.com/$\ndef c = $/ a /* b /$\n'
+    expect(stripComments(code, 'build.gradle')).toBe(code)
+  })
+
+  it('leaves an apostrophe-bearing Groovy slashy string untouched', () => {
+    const code = "def r = /it's ok/\n"
+    expect(stripComments(code, 'A.groovy')).toBe(code)
+  })
+
+  it('still strips a real line comment and a real block comment in Groovy', () => {
+    const result = stripComments('def x = 1 // gone\n/* also gone */\ndef y = 2\n', 'A.groovy')
+    expect(result).not.toContain('gone')
+    expect(result).toContain('def x = 1')
+    expect(result).toContain('def y = 2')
+  })
+
   it('strips a real comment after a string ending in an escaped backslash (Python)', () => {
     const code = 'path = "C:\\\\\\\\"\n# real comment'
     const result = stripComments(code, 'file.py')
