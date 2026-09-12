@@ -1352,6 +1352,35 @@ describe('read_commands', () => {
         expect(second.text).toContain('second bar body')
         expect(second.text).not.toContain('first bar body')
       })
+
+      it('an outer symbol and a same-named symbol nested inside it (HTML heading + html_id colliding on "Overview") get a Parent.symbol retry that actually resolves, not a self-referential qualifier that stays ambiguous', () => {
+        // Reproduces the reported defect literally: an HTML `heading` symbol named "Overview"
+        // spans lines 5-12 (a heading's section extends until the next heading), and an
+        // unrelated `html_id` symbol -- also named "Overview" -- sits on line 12, inside that
+        // span. findParentName (used to LABEL the ambiguity) finds the heading as the html_id's
+        // innermost enclosing symbol and renders the qualifier "Overview.Overview". Before the
+        // fix, feeding that exact qualifier back into resolveSymbolSpec's container-scoping
+        // filter let the heading satisfy containment against ITSELF (a container's span
+        // trivially contains itself when the check doesn't exclude the identical span), so both
+        // candidates stayed in scope and the retry reported ambiguous again -- a hint that could
+        // never resolve the condition it was emitted for.
+        const heading: MockSymbol = { name: 'Overview', kind: 'heading', filePath: 'sample.html', lineStart: 5, lineEnd: 12, body: '', docstring: '', parent: '' }
+        const htmlId: MockSymbol = { name: 'Overview', kind: 'html_id', filePath: 'sample.html', lineStart: 12, lineEnd: 12, body: '', docstring: '', parent: '' }
+        poolMock([heading, htmlId])
+
+        const { text: stdout, code } = runRead({ spec: 'sample.html::Overview' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Ambiguous symbol 'Overview'")
+        expect(stdout).toContain('  - Overview@5 (line 5)  ->  token-goat read "sample.html::Overview@5"')
+        expect(stdout).toContain('  - Overview.Overview (line 12)  ->  token-goat read "sample.html::Overview.Overview"')
+
+        // Both printed retries must actually resolve to exactly one, correct, distinct candidate.
+        const anchored = runRead({ spec: 'sample.html::Overview@5' })
+        expect(anchored.code).toBe(0)
+        const dotted = runRead({ spec: 'sample.html::Overview.Overview' })
+        expect(dotted.code).toBe(0)
+        expect(dotted.text).not.toContain('Ambiguous symbol')
+      })
     })
 
     describe('symbol spec line anchors (@LINE)', () => {
