@@ -7,11 +7,15 @@
  * override removes.
  *
  * What is left cannot be removed, so it has to be disclosed instead: six packages whose declaration
- * no scanner can resolve, and fourteen carrying a copyleft term. (`jszip` used to make it fifteen;
- * it arrived through `exceljs`, which is no longer a dependency a consumer installs. `flatbuffers`
- * used to make the first group seven, and left when `@xenova/transformers` stopped being one --
- * which is why the row for it came out of the document at the same time as this entry came out of
- * FAMILIES: a family nobody matches any more reads as coverage the document no longer has.) This
+ * no scanner can resolve, and none carrying a copyleft term. (The copyleft half used to be fourteen
+ * `@img/*` packages, the LGPL libvips builds behind `sharp`. They left in one go when `sharp` became
+ * a development dependency -- nothing under `src/` imports it -- so an install downloads no libvips
+ * at all. `jszip` used to make it fifteen; it arrived through `exceljs`, which is no longer a
+ * dependency a consumer installs. `flatbuffers` used to make the first group seven, and left when
+ * `@xenova/transformers` stopped being one -- which is why the row for it came out of the document
+ * at the same time as this entry came out of FAMILIES, and why the two `@img/*` rows and entries
+ * came out together here: a family nobody matches any more reads as coverage the document no longer
+ * has.) This
  * test is the thing that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because
  * the lockfile lists every platform's packages while an install only holds one platform's -- a
  * `node_modules` sweep on Windows never sees the ten Linux and macOS libvips builds.
@@ -56,8 +60,10 @@ function isCopyleft(license: string | undefined): boolean {
  * something new needs an answer in the document.
  */
 const FAMILIES: { match: RegExp; documentedAs: string }[] = [
-  { match: /^@img\/sharp-libvips-/, documentedAs: '`@img/sharp-libvips-<platform>`' },
-  { match: /^@img\/sharp-/, documentedAs: '`@img/sharp-<platform>`' },
+  // The two `@img/sharp-*` families were here until `sharp` became a development dependency. Their
+  // platform binaries are no longer in a consumer's tree for a scan to find, so the entries are
+  // deleted rather than kept against a future return: the last test below fails a family that
+  // matches nothing, on purpose.
   { match: /^sqlite-vec/, documentedAs: '`sqlite-vec`' },
 ]
 
@@ -68,12 +74,21 @@ describe('dependency licenses', () => {
   // Both floors guard against the same thing: a sweep that reads nothing and reports nothing wrong.
   // They are deliberately far below the real figures rather than pinned to them, because the tree
   // shrinks whenever a dependency is removed and a floor set just under today's count turns every
-  // such removal into a failure that says nothing useful. It has already happened once: this read
-  // 200 while the production tree was around 240, and dropping `@modelcontextprotocol/sdk` took the
-  // tree to 153 and broke it. The SDK carried no flagged license, so the second floor did not move.
+  // such removal into a failure that says nothing useful. It has already happened twice. First this
+  // read 200 while the production tree was around 240, and dropping `@modelcontextprotocol/sdk`
+  // took the tree to 153 and broke it (the SDK carried no flagged license, so the second floor did
+  // not move). Then the first floor was reset to 100 against a tree of about 105 -- just under,
+  // which is the very shape this comment warns against -- and moving `sharp` to a devDependency
+  // took the tree to 73 and broke it again. That move also took every `@img/*` platform binary out
+  // of the production tree, which is the whole of the copyleft half, so the second floor moved too:
+  // 20 flagged packages became 6, all of them sqlite-vec.
+  //
+  // Measured 2026-09-11: 73 production packages, 6 flagged. The floors sit well under both so that
+  // removing a dependency stays a green event. Raising one to hug today's number re-creates the bug
+  // this comment records; if a floor fails, re-measure and ask what left the tree before touching it.
   it('reads a real lockfile, so an empty sweep cannot pass as a clean one', () => {
-    expect(packages.length).toBeGreaterThan(100)
-    expect(flagged.length).toBeGreaterThan(10)
+    expect(packages.length).toBeGreaterThan(40)
+    expect(flagged.length).toBeGreaterThan(3)
   })
 
   // The packages with no license grant at all. Named individually because these are the ones that

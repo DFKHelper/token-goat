@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- **A default install is smaller: it no longer downloads `sharp`, or the libvips image library that comes with it.** Image shrinking is built into token-goat and needs no extra package, so `sharp` was being installed and never loaded. A default install goes from 70 packages to 62, and an install without optional packages is unchanged at 2. `sharp` is now a development dependency, where the tests use it as a second opinion on token-goat's own image output. Every copyleft licence in an installed copy came in with libvips and is gone with it, leaving six packages that need a human answer instead of twenty: see [SECURITY.md](SECURITY.md#dependency-licenses). Nothing needs reindexing.
+
 ### Fixed
 
 - **Groovy slashy strings, Elixir sigils, and Scala symbol literals now read as the strings they are.** Each one used to look like code, or like a string that never ended, which moved or dropped the symbols around it:

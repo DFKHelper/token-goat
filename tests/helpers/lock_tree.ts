@@ -13,18 +13,28 @@
  * `<path>/node_modules/<name>`, then walk up the path chain -- and the set of paths reached is the
  * set of directories that would exist. Counting paths rather than distinct names is deliberate: two
  * copies of one package at different versions are two directories, and that is the unit SECURITY.md
- * counts in (a distinct-name count of the same tree gives 101 and 39 where the real install gives
- * 106 and 40).
+ * counts in (a distinct-name count of the same tree gives 58 and 2 where counting directories gives
+ * 62 and 2, both including token-goat itself -- an earlier version of this note quoted the two on
+ * different bases, leaving the root out of the distinct-name pair and in the directory pair, which
+ * made the gap between the units look four larger than it is).
  *
  * Two things this deliberately is not.
  *
- * It is not platform-agnostic. The lock lists a prebuilt binary for every platform sharp,
- * `@napi-rs/canvas` and `sqlite-vec` support, and an install takes only the matching one -- 34 to 38
- * of them are skipped depending on where you stand, which is most of the difference between a naive
- * lock count and a real install. So `os`/`cpu` filtering is applied exactly as npm applies it, and
- * the answer for the optional-inclusive tree is a per-platform answer (measured: 102 on win32/x64,
- * 106 on linux/x64, 103 on darwin/arm64). The tree without optional packages contains no
- * platform-gated entry at all and is the same 40 everywhere.
+ * It is not platform-agnostic. The lock lists a prebuilt binary for every platform
+ * `@napi-rs/canvas` and `sqlite-vec` support, and an install takes only the matching one; the rest
+ * are skipped, which is most of the difference between a naive lock count and a real install. So
+ * `os`/`cpu` filtering is applied exactly as npm applies it, and the answer for the
+ * optional-inclusive tree is a per-platform answer (measured 2026-09-11: 61 on win32/x64, 62 on
+ * linux/x64, 61 on darwin/arm64). The tree without optional packages contains no platform-gated
+ * entry at all and is the same 2 everywhere.
+ *
+ * Those figures go stale, and they have. This note read 102, 106, 103 and 40 for a long time, and
+ * every one of them was right when it was written: run the walk against the lock file as it stood
+ * at `d1538278` and exactly those numbers come back. What moved them was the tree rather than the
+ * counting -- `better-sqlite3` gave way to `node:sqlite`, several packages became development
+ * dependencies, and `sharp` left the consumer tree altogether, taking every `@img/*` libvips
+ * binary with it. So a figure here that no longer reproduces is a prompt to re-measure against
+ * today's lock file, not evidence that the walk is counting the wrong unit.
  *
  * It is not an upper bound. The lock pins versions that were current when it was last built; a
  * fresh install resolves the same ranges to whatever is newest that day, and other people's trees

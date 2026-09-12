@@ -32,8 +32,8 @@ export const NOTICES_FILE = 'THIRD_PARTY_NOTICES.md'
  * notice this file exists to give, and nothing more. A copyleft or no-grant package reaching the
  * bundle is not a notices problem to be written up, it is a dependency decision to be made
  * deliberately, so the generator stops rather than quietly documenting it. (The LGPL libvips
- * binaries behind `sharp` are not in this set and never reach here: sharp is external, optional,
- * dynamically linked and disclosed in SECURITY.md.)
+ * binaries behind `sharp` are not in this set and never reach here: nothing under `src/` imports
+ * `sharp`, so it is a development dependency and no part of it is in the graph this bundles.)
  */
 export const PERMISSIVE = new Set([
   '0BSD',
@@ -168,8 +168,8 @@ export async function renderNotices(repoRoot = process.cwd()) {
     'This file is generated. Regenerate it with `npm run notices` after any dependency change that',
     'reaches the bundle; `tests/guards/third_party_notices.test.ts` fails if it drifts.',
     '',
-    'Packages this project depends on but does not bundle are not listed here. `sharp` and the other',
-    'optional native dependencies stay external and install separately from npm; the licenses that',
+    'Packages this project depends on but does not bundle are not listed here. `sqlite-vec` and the',
+    'other optional native dependencies stay external and install separately from npm; the licenses that',
     'need a human answer are covered in [SECURITY.md](SECURITY.md#dependency-licenses).',
     '',
   ].join('\n')

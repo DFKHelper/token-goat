@@ -47,7 +47,7 @@ The following are not treated as security issues unless paired with a working pr
 | --- | --- | --- |
 | this repository | `npm audit` | clean, development dependencies included |
 | an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 2 packages |
-| a default install | `npm install token-goat` then `npm audit --omit=dev` | clean, 70 packages |
+| a default install | `npm install token-goat` then `npm audit --omit=dev` | clean, 62 packages |
 
 The repository carries an `overrides` block in [`package.json`](package.json) that pins six packages to patched versions, and **npm applies `overrides` only in the root project**, so those pins do not travel to anyone who installs Token-Goat as a dependency. That distinction used to matter a great deal, because a clean repository scan was standing in for an install that was not clean. It decides one thing now, and the section on the embedding runtime below says which. Otherwise the packages those pins were protecting against are not in a consumer's tree at all, whether or not the pins travel; the block stays because the development tree still resolves them.
 
@@ -73,7 +73,7 @@ Nothing else is needed. The index notices on its own: files skipped while the mo
 
 The model weights are no longer a package at all. They are downloaded once, on first use, from a URL whose every component is a constant in [`src/embed_model.ts`](src/embed_model.ts) -- repository, revision and filename alike, with nothing caller-supplied anywhere in it. The revision is an immutable commit rather than a branch, and each file is checked against a recorded SHA-256 and an exact byte length, on download and again on every load, with the length enforced while the body is still streaming so an overrunning response is cut off rather than written out. The digest is what is trusted, not the hostname: `huggingface.co` accepts uploads from anyone, which is the shape of [CVE-2026-54316](https://github.com/advisories/GHSA-fg94-h982-f3mm), so allowlisting the host would decide nothing. Because the digest decides, following the redirect that `resolve` issues to Hugging Face's CDN is safe. With `network.offline` set, the download is refused and the path says so rather than degrading quietly; files copied into the cache directory by hand are still accepted, because they are checked the same way.
 
-The old model had cost something before any of this, through the nested `sharp` it carried. That `sharp` ships its own libvips binaries, and loading the model eagerly put them ahead of Token-Goat's own `sharp` in the Windows DLL search order, which broke image shrinking with `ERR_DLOPEN_FAILED` while `sharp` loaded perfectly well on its own. `onnxruntime-node` carries no `sharp` and no libvips, so that particular collision cannot recur -- but the load is still deferred until something actually asks to embed, in [`src/embed_model.ts`](src/embed_model.ts), because it is a native addon whose DLLs have no business being loaded into every hook invocation that never embeds anything.
+The old model had cost something before any of this, through the nested `sharp` it carried. That `sharp` ships its own libvips binaries, and loading the model eagerly put them ahead of the `sharp` Token-Goat installed for itself at the time in the Windows DLL search order, which broke image shrinking with `ERR_DLOPEN_FAILED` while `sharp` loaded perfectly well on its own. Neither package reaches an install today: image shrinking is pure TypeScript in the bundle, and `sharp` is a development dependency. `onnxruntime-node` carries no `sharp` and no libvips, so that particular collision cannot recur -- but the load is still deferred until something actually asks to embed, in [`src/embed_model.ts`](src/embed_model.ts), because it is a native addon whose DLLs have no business being loaded into every hook invocation that never embeds anything.
 
 `npm install --omit=optional` remains available and gives a smaller install still, at 2 packages -- Token-Goat and [`jsonc-parser`](https://www.npmjs.com/package/jsonc-parser), and nothing else. Every command starts either way; the ones that need a package you skipped say so. The `xlsx-*`, `docx-*` and `pptx-*` commands report that fflate is not installed rather than failing oddly, and `zip-list`/`zip-read` do the same.
 
@@ -87,7 +87,7 @@ The old model had cost something before any of this, through the nested `sharp` 
 
 `better-sqlite3` stays as a development dependency, and like the MCP SDK that is load-bearing. Three parts of the driver are reimplementations rather than passthroughs, and a test written only against the driver would pin whatever the driver does, bugs included. So [`tests/sqlite_driver.test.ts`](tests/sqlite_driver.test.ts) runs both libraries over the same input and requires the answers to match -- most carefully for the `reader` flag, which is the third defence-in-depth layer in the `sqlite-query` read-only guard and the one thing the driver derives rather than reads. The two libraries differ in exactly one place, deliberately: asked for an integer above 2^53 without big-integer reads switched on, `better-sqlite3` returns the nearest double and `node:sqlite` refuses. Silently rounding is the behaviour `sqlite-query` already had to defend against, so the refusal is kept, and that test pins the difference rather than papering over it. That takes a default install from 106 packages to 70, and an install without optional packages from 40 to 2.
 
-Every package count on this page is a measurement, not a constant, and it was taken the same way each time: `npm install <the package>` into an empty project, then counting the directories under `node_modules`, the package itself included. They are counts as of 2026-08-22 and they drift upward on their own, because the version ranges a dependency declares resolve to whatever is newest at install time and other people's trees grow. This paragraph said 238 and 87 for a while for exactly that reason: both were true when they were written and neither was true a few releases later. Re-measure before quoting them rather than assuming they still hold. The default figure additionally depends on where you stand: `sharp`, `@napi-rs/canvas` and `sqlite-vec` each publish a prebuilt binary per platform, an install takes only the one that matches, and the rest are skipped, so a default install is a few packages larger on Linux than on Windows or macOS. The 70 above was measured on Windows x64, and it is the largest of the three. The no-optional install has no prebuilt binary in it at all, so 2 is 2 everywhere.
+Every package count on this page is a measurement, not a constant, and it was taken the same way each time: `npm install <the package>` into an empty project, then counting the directories under `node_modules`, the package itself included. They are counts as of 2026-09-11 and they drift upward on their own, because the version ranges a dependency declares resolve to whatever is newest at install time and other people's trees grow. This paragraph said 238 and 87 for a while for exactly that reason: both were true when they were written and neither was true a few releases later. Re-measure before quoting them rather than assuming they still hold. The default figure additionally depends on where you stand: `@napi-rs/canvas` and `sqlite-vec` each publish a prebuilt binary per platform, an install takes only the one that matches, and the rest are skipped, so a default install is a package larger on Linux than on Windows or macOS. The 62 above is the Linux x64 figure, which is the largest of the three; Windows and macOS are 61. The no-optional install has no prebuilt binary in it at all, so 2 is 2 everywhere.
 
 One half of that drift is checked rather than trusted. [`tests/guards/dependency_advisory_disclosure.test.ts`](tests/guards/dependency_advisory_disclosure.test.ts) resolves both installs out of [`package-lock.json`](package-lock.json) the way npm resolves them, platform gating included, and holds this page to the answer: the no-optional figure has to match exactly, and the default figure may not be smaller than the lock file already proves it must be. That catches every package this project adds or removes on its own. It cannot catch the other half, which is other people's trees growing inside ranges an install already accepts, and that is what the date is for.
 
@@ -95,7 +95,7 @@ One half of that drift is checked rather than trusted. [`tests/guards/dependency
 
 Five more packages were in `dependencies` for the same reason and have moved the same way: `commander`, `csv-parse`, `js-yaml`, `smol-toml` and `zod`. esbuild inlines each one into the bundle, and the published bundle resolves none of them, so a consumer was downloading code the artifact already carried. Moving them takes an install without optional packages from 46 packages to 40. `jsonc-parser` stays, because the bundle really does load it at run time: it is reached through `createRequire` rather than an import esbuild can inline. `zod` is the largest of the five on disk, and when that move was made it saved least in practice, because `@modelcontextprotocol/sdk` and `puppeteer-core` both depended on it and a default install still got it from them. Neither is true any more: the puppeteer-core major bump dropped its `zod` dependency, and the MCP SDK is a development dependency now for the reason below. A default install carries no copy of `zod` at all.
 
-Direct dependencies with a forward patch are kept current rather than pinned: `sharp` and `puppeteer-core` were both moved across a major version to clear their advisories.
+Direct dependencies with a forward patch are kept current rather than pinned: `puppeteer-core` was moved across a major version to clear its advisories, and `sharp` was moved the same way while it was still one. `sharp` is a development dependency now, which is the larger change: nothing under `src/` imports it, the image pipeline is pure TypeScript that esbuild inlines into the bundle, and so a default install no longer downloads it or the libvips binaries behind it. The tests still use it, as an independent encoder to check the bundled one against, so it is kept current there for the repository's own `npm audit`.
 
 For a scanner that ingests a bill of materials rather than a lockfile, `npm run sbom` writes CycloneDX 1.5 to stdout.
 
@@ -122,9 +122,9 @@ Token-Goat is source-available under the PolyForm Noncommercial License 1.0.0. S
 
 Every production dependency is permissively licensed, but a scan does not read it that way on its
 own. Counted from `package-lock.json`, which lists the packages for every platform rather than only
-the ones this machine installed, 21 entries need a human answer: 7 declare a license a scanner
-cannot resolve, and 14 carry a copyleft term. All 21 arrive through optional dependencies. Install
-with `npm install --omit=optional token-goat` and not one of them is present.
+the ones this machine installed, 6 entries need a human answer: all 6 declare a license a scanner
+cannot resolve, and none carries a copyleft term. All 6 arrive through optional dependencies.
+Install with `npm install --omit=optional token-goat` and not one of them is present.
 
 **Declarations a scanner cannot resolve.** One remains, and it is an upstream mistake of the same
 kind this project made in its own manifest and fixed: `MIT OR Apache` is not a valid expression,
@@ -136,15 +136,13 @@ while actually granting Apache-2.0. It arrived through `@xenova/transformers` an
 | --- | --- | --- | --- |
 | `sqlite-vec` and its 5 platform packages | `MIT OR Apache` | MIT or Apache-2.0, your choice | direct optional dependency |
 
-**Copyleft terms.** Two families, and neither puts a copyleft obligation on Token-Goat's own code.
-
-| Package | Declares | Why it is not a problem |
-| --- | --- | --- |
-| `@img/sharp-libvips-<platform>` (10 packages) | `LGPL-3.0-or-later` | libvips, shipped as a prebuilt shared library and used unmodified. LGPL asks that the library stay replaceable, and it is: it is a separate package that `sharp` loads at runtime. |
-| `@img/sharp-<platform>` (4 packages) | `Apache-2.0 AND LGPL-3.0-or-later` | the Apache half is `sharp` itself, the LGPL half is the same libvips |
-
-`sharp` is optional: it powers image shrinking. `jszip` used to be listed here too; it arrived
-through `exceljs`, which is no longer a dependency a consumer installs.
+**Copyleft terms.** None reach an install. Two families used to be here, and both left at once:
+`@img/sharp-libvips-<platform>` (10 packages, `LGPL-3.0-or-later`, the libvips shared library) and
+`@img/sharp-<platform>` (4 packages, `Apache-2.0 AND LGPL-3.0-or-later`, `sharp` itself over that
+same libvips). They arrived through `sharp`, which is a development dependency now: nothing under
+`src/` imports it, image shrinking is pure TypeScript inlined into the bundle, and so no libvips
+is downloaded by an install at all. `jszip` used to be listed here too; it arrived through
+`exceljs`, which is no longer a dependency a consumer installs.
 
 **Three packages with no license at all used to be here.** `buffers@0.1.1` and `chainsaw@0.1.0`
 shipped with neither a `license` field nor a license file, and `traverse@0.3.9` had the file but

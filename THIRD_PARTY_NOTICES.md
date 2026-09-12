@@ -9,8 +9,8 @@ reproduced here in full.
 This file is generated. Regenerate it with `npm run notices` after any dependency change that
 reaches the bundle; `tests/guards/third_party_notices.test.ts` fails if it drifts.
 
-Packages this project depends on but does not bundle are not listed here. `sharp` and the other
-optional native dependencies stay external and install separately from npm; the licenses that
+Packages this project depends on but does not bundle are not listed here. `sqlite-vec` and the
+other optional native dependencies stay external and install separately from npm; the licenses that
 need a human answer are covered in [SECURITY.md](SECURITY.md#dependency-licenses).
 
 ## @selderee/plugin-htmlparser2 0.12.0

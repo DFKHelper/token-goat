@@ -15,7 +15,7 @@ image: /token-goat/assets/goat-social.png
 ```
 npm install -g token-goat
 token-goat install
-token-goat doctor          # confirms hooks and sharp are working; look for "sharp: ok"
+token-goat doctor          # confirms the hooks, index, and integrations are healthy
 ```
 
 Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
@@ -39,7 +39,7 @@ The commands stay separate so every retrieval is visible, repeatable, and easy t
 
 For bounded archive/document comparisons after setup, see the [CLI comparison workflow](cli.md#archivedocument-comparison-workflow).
 
-**Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](../README.md#image-support) section in the README before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
+**Image shrinking needs nothing extra.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding, and the encoder is pure TypeScript inside the published bundle. There is no native image library to build and no platform where the image pipeline has to be installed separately, so a standard `npm install -g token-goat` already has it. See [Image support](../README.md#image-support) in the README for which formats it converts.
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a delimited routing block written to `~/.claude/CLAUDE.md` plus a registered skill gate the agent's reads — before any file read it must ask whether a `token-goat read` / `symbol` / `section` returns just what it needs, and the block explicitly subordinates the harness's own Read/Grep tool-preference rules to the *fallback* choice once token-goat is ruled out. Install writes no permission entry: whether `token-goat` commands need a per-call approval prompt is left to your own `settings.json`, unchanged.
 
@@ -240,7 +240,7 @@ There is no auto-update mechanism — token-goat never schedules or runs anythin
 | When | Command |
 |------|---------|
 | Update now | `npm install -g token-goat@latest` |
-| Reinstall from scratch (broken install, sharp failure) | `npm install -g token-goat@latest` |
+| Reinstall from scratch (broken or partial install) | `npm install -g token-goat@latest` |
 
 ### Upgrading from the Python version
 
