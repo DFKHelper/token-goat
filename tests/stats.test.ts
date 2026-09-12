@@ -23,6 +23,7 @@ import {
   SOURCE_CONTENT,
   SOURCE_OTHER,
   GLOBAL_SCHEMA_SQL,
+  rollupAndPruneStats,
 } from '../src/stats.js'
 
 /**
@@ -844,6 +845,68 @@ describe('stats', () => {
 
       expect(summary.by_source[SOURCE_WEB]).toMatchObject({ events: 1 })
       expect(summary.by_source[SOURCE_SKILL]).toMatchObject({ events: 1 })
+    })
+  })
+
+  // S2 regression: `stats` had no retention policy at all (411,208 rows / ~54 MB with indexes
+  // measured on one real install) -- rollupAndPruneStats aggregates old rows into
+  // stats_daily_rollup and deletes them, and summarize() folds the rollup back in so a
+  // long --window-days report keeps its totals even after the raw rows are gone.
+  describe('rollupAndPruneStats', () => {
+    it('aggregates rows older than retentionDays into stats_daily_rollup and deletes them, keeping recent rows raw', () => {
+      const dbPath = path.join(tempDir, 'rollup-test.db')
+      const db = openStatsDb(dbPath)
+      const nowSec = Math.floor(Date.now() / 1000)
+      const oldTs = nowSec - 200 * 86400
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, harness, tg_version) VALUES (?, 'read_replacement', 100, 10, 'claude-code', 'v1')`).run(oldTs)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, harness, tg_version) VALUES (?, 'read_replacement', 200, 20, 'claude-code', 'v1')`).run(oldTs + 1)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, harness, tg_version) VALUES (?, 'read_replacement', 5, 1, 'claude-code', 'v1')`).run(nowSec)
+
+      rollupAndPruneStats(db, 180)
+
+      const rawCount = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
+      expect(rawCount).toBe(1)
+      const rollupRow = db
+        .prepare(`SELECT events, bytes_saved, tokens_saved FROM stats_daily_rollup WHERE kind = 'read_replacement'`)
+        .get() as { events: number; bytes_saved: number; tokens_saved: number }
+      expect(rollupRow).toMatchObject({ events: 2, bytes_saved: 300, tokens_saved: 30 })
+      db.close()
+    })
+
+    it('running twice does not double-count the rollup (interrupted-halfway safety)', () => {
+      const dbPath = path.join(tempDir, 'rollup-idempotent-test.db')
+      const db = openStatsDb(dbPath)
+      const oldTs = Math.floor(Date.now() / 1000) - 200 * 86400
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, 'read_replacement', 100, 10)`).run(oldTs)
+
+      rollupAndPruneStats(db, 180)
+      rollupAndPruneStats(db, 180) // second call: nothing left in `stats` to aggregate
+
+      const rollupRow = db
+        .prepare(`SELECT events, bytes_saved, tokens_saved FROM stats_daily_rollup WHERE kind = 'read_replacement'`)
+        .get() as { events: number; bytes_saved: number; tokens_saved: number }
+      expect(rollupRow).toMatchObject({ events: 1, bytes_saved: 100, tokens_saved: 10 })
+      db.close()
+    })
+
+    it("summarize() with a window reaching a rolled-up day still reports that day's totals", () => {
+      const dbPath = path.join(tempDir, 'rollup-summarize-test.db')
+      const db = openStatsDb(dbPath)
+      const oldTs = Math.floor(Date.now() / 1000) - 100 * 86400
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, 'read_replacement', 100, 10)`).run(oldTs)
+      db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, 'read_replacement', 5, 1)`).run(Math.floor(Date.now() / 1000))
+
+      rollupAndPruneStats(db, 90) // rolls up the 100-day-old row, keeps today's
+
+      const summaryLongWindow = summarize(365, db)
+      expect(summaryLongWindow.total_events).toBe(2)
+      expect(summaryLongWindow.total_bytes_saved).toBe(105)
+      expect(summaryLongWindow.by_kind['read_replacement']).toMatchObject({ events: 2, bytes_saved: 105, tokens_saved: 11 })
+
+      // A window that never reaches the rolled-up day must not pull it in.
+      const summaryShortWindow = summarize(1, db)
+      expect(summaryShortWindow.total_events).toBe(1)
+      db.close()
     })
   })
 })
