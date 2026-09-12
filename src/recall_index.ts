@@ -20,9 +20,12 @@
  * when `cache_recall_fts` does not exist.
  */
 
+import * as fs from 'node:fs'
+
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { sanitizeFtsQuery } from './index_reader.js'
+import { blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 
 export type RecallCacheType = 'bash' | 'web' | 'mcp'
 
@@ -32,6 +35,29 @@ export interface RecallHit {
   readonly label: string
   readonly snippet: string
   readonly storedAt: number
+  /** Whether the blob this hit points at is still present on disk -- see {@link blobStillExists}. */
+  readonly blobPresent: boolean
+}
+
+/**
+ * `cache_recall` rows are indexed once and read forever, but the blob they point at
+ * (`bash_outputs`/`web_outputs`, via disk_cache.ts's `storeBlob`) is pruned on its own
+ * age/count/bytes budget -- see {@link pruneCacheRecallRows}'s doc comment for why age alone
+ * cannot guarantee the two stay in sync. mcp entries share bash-output's blob-store subdir
+ * (see cli_recall.ts's RECALL_COMMAND comment), so both map to 'bash_outputs' here.
+ */
+function subdirForCacheType(cacheType: RecallCacheType): string {
+  return cacheType === 'web' ? 'web_outputs' : 'bash_outputs'
+}
+
+/** True when the on-disk blob a recall hit points at is still there. Fail-soft: any fs error (permission, traversal) reads as absent rather than throwing out of a best-effort lookup. */
+function blobStillExists(cacheType: RecallCacheType, id: string): boolean {
+  try {
+    const p = blobPath(subdirForCacheType(cacheType), id)
+    return p !== null && fs.existsSync(p)
+  } catch {
+    return false
+  }
 }
 
 const VALID_TYPES: readonly RecallCacheType[] = ['bash', 'web', 'mcp']
@@ -70,6 +96,34 @@ export function indexRecallEntry(cacheType: RecallCacheType, id: string, label: 
          content = excluded.content,
          stored_at = excluded.stored_at`,
     ).run({ cacheType, id, label, content, storedAt })
+  } catch {
+    // Fail-soft: see doc comment above.
+  }
+  // Prune on write, mirroring storeBlob()'s own prune-after-write in disk_cache.ts -- both this
+  // row's expiry and the blob's age eviction derive from the one shared DEFAULT_MAX_AGE_MS
+  // constant, so the two lifetimes cannot drift back apart the way they did before this fix
+  // (rows had no expiry at all: 25,062 of 30,655 live rows, 81.8%, were already older than the
+  // blob's 24h window, 145.8 MB of text pointing at nothing). This does not by itself guarantee
+  // every surviving row has a live blob -- storeBlob also evicts early on count/bytes budgets,
+  // an axis this age-only prune can't see -- which is why {@link blobStillExists} additionally
+  // gates the printed/JSON pointer at read time regardless of row age.
+  pruneCacheRecallRows()
+}
+
+/**
+ * Delete `cache_recall` rows older than `maxAgeMs` (default: the same {@link DEFAULT_MAX_AGE_MS}
+ * disk_cache.ts prunes blobs on), so the recall index's row lifetime cannot silently outlive the
+ * blob lifetime again. Bounded by `stored_at` on every call -- safe to interrupt (a partial run
+ * just leaves more expired rows for the next write's prune) and safe against a database this
+ * function has never seen before (no schema-version assumption beyond the `cache_recall` table
+ * this module already owns). Fail-soft, matching every other write path in this module: a prune
+ * failure never blocks the insert it accompanies.
+ */
+export function pruneCacheRecallRows(maxAgeMs: number = DEFAULT_MAX_AGE_MS): void {
+  try {
+    const db = getDb(globalDbPath())
+    const cutoff = Date.now() - maxAgeMs
+    db.prepare(`DELETE FROM cache_recall WHERE stored_at < ?`).run(cutoff)
   } catch {
     // Fail-soft: see doc comment above.
   }
@@ -160,6 +214,7 @@ function mapRowsToHits(
       label: r.label ?? '',
       snippet: buildSnippet(r.content ?? '', snippetQuery),
       storedAt: r.storedAt ?? 0,
+      blobPresent: blobStillExists(r.cacheType, r.id),
     }))
 }
 

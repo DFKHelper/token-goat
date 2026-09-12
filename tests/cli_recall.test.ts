@@ -2,10 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { runRecallCommand } from '../src/cli_recall.js'
 import { indexRecallEntry, resetRecallFtsCacheForTesting } from '../src/recall_index.js'
+import { storeBlob } from '../src/disk_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 function nonce(): string {
   return `cr${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
+// The pointer line is only printed when the blob it names is actually still on disk (see
+// recall_index.ts's blobStillExists) -- indexRecallEntry alone only writes the DB row, mirroring
+// production's actual write order (storeBlob, then indexRecallEntry), so a test asserting the
+// pointer text must also write the blob the way bash_output_cache.ts / web_cache.ts do.
+function storeRealBlob(subdir: 'bash_outputs' | 'web_outputs', id: string): void {
+  storeBlob(subdir, id, { stored: true })
 }
 
 beforeEach(() => {
@@ -37,14 +46,28 @@ describe('runRecallCommand', () => {
     expect(output).toContain(`No cache entries match: no-such-thing-${n}`)
   })
 
-  it('prints matching hits with their cache type, id, and the exact per-type recall command', () => {
+  it('prints matching hits with their cache type, id, and the exact per-type recall command when the blob is still present', () => {
     const n = nonce()
+    storeRealBlob('web_outputs', `w-${n}`)
     indexRecallEntry('web', `w-${n}`, `https://example.com/${n}`, `https://example.com/${n}\nbody text`, Date.now())
 
     const output = captureStdout(() => runRecallCommand(n))
     expect(output).toContain(`w-${n}`)
     expect(output).toContain(`token-goat web-output w-${n}`)
     expect(output).toContain('[web')
+  })
+
+  // S1 regression: a row whose blob already pruned (age, or storeBlob's own count/bytes eviction)
+  // must never point the caller at a command that will 404 -- see recall_index.ts's blobStillExists.
+  it('omits the recall-command pointer when the blob it would name is already gone', () => {
+    const n = nonce()
+    // No storeRealBlob call: the row exists, the blob never did.
+    indexRecallEntry('web', `gone-${n}`, `https://example.com/${n}`, `https://example.com/${n}\nbody text`, Date.now())
+
+    const output = captureStdout(() => runRecallCommand(n))
+    expect(output).toContain(`gone-${n}`)
+    expect(output).not.toContain(`token-goat web-output gone-${n}`)
+    expect(output).toContain('blob expired')
   })
 
   it('--json emits a machine-readable array matching the hit shape', () => {
@@ -102,8 +125,9 @@ describe('runRecallCommand with no query (browse)', () => {
     expect(parsed.map((p) => p.cacheType)).toEqual(['mcp', 'web', 'bash'])
   })
 
-  it('still emits the per-type recall command for each listed entry', () => {
+  it('still emits the per-type recall command for each listed entry whose blob is present', () => {
     const n = nonce()
+    storeRealBlob('web_outputs', `w-${n}`)
     indexRecallEntry('web', `w-${n}`, `web label ${n}`, 'web body', Date.now())
 
     const output = captureStdout(() => runRecallCommand(undefined, { limit: 5 }))
@@ -132,8 +156,11 @@ describe('runRecallCommand with no query (browse)', () => {
 
   it('honours --type when browsing', () => {
     const n = nonce()
-    indexRecallEntry('bash', `b-${n}`, `bash label ${n}`, 'bash body', 1000)
-    indexRecallEntry('web', `w-${n}`, `web label ${n}`, 'web body', 2000)
+    // Real, recent timestamps -- pruneCacheRecallRows (S1's write-time row-expiry prune, wired
+    // into every indexRecallEntry call) deletes anything older than DEFAULT_MAX_AGE_MS on the very
+    // next write, so a stale fixed epoch like 1000/2000 no longer survives past the second insert.
+    indexRecallEntry('bash', `b-${n}`, `bash label ${n}`, 'bash body', Date.now() - 2000)
+    indexRecallEntry('web', `w-${n}`, `web label ${n}`, 'web body', Date.now() - 1000)
 
     const parsed = JSON.parse(captureStdout(() => runRecallCommand(undefined, { type: 'bash', limit: 10, json: true }))) as Array<{ id: string; cacheType: string }>
     expect(parsed.every((p) => p.cacheType === 'bash')).toBe(true)
