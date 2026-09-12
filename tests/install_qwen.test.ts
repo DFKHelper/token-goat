@@ -384,15 +384,27 @@ describe('isQwenInstalled / uninstallQwen', () => {
     expect(beforeCommands.some((c) => c.includes(process.execPath))).toBe(false)
   })
 
-  it('writes a timestamped .bak of settings.json before removing entries', () => {
+  it('backs settings.json up before a rewrite, then removes only the backups it made itself', () => {
     installQwen()
+    const p = qwenSettingsPath()
+    // Hand-edited back to an empty object, so the second install has something to write and
+    // therefore something to back up first.
+    fs.writeFileSync(p, '{}\n')
+    installQwen()
+
+    const dir = path.dirname(p)
+    const backups = () => fs.readdirSync(dir).filter((f) => f.startsWith('settings.json.bak.')).sort()
+
+    expect(backups()).toHaveLength(1)
+    expect(fs.readFileSync(path.join(dir, backups()[0] as string), 'utf8')).toBe('{}\n')
+
+    // A copy the user made by hand: same name shape, never recorded, so it has to survive.
+    const decoy = `${p}.bak.keep-this`
+    fs.writeFileSync(decoy, 'user copy')
+
     uninstallQwen()
 
-    const p = qwenSettingsPath()
-    const dir = fs.readdirSync(path.dirname(p))
-    const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly
-    // one call above actually produces a backup file.
-    expect(backups.length).toBe(1)
+    expect(backups()).toEqual(['settings.json.bak.keep-this'])
+    expect(fs.readFileSync(decoy, 'utf8')).toBe('user copy')
   })
 })

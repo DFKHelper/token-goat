@@ -289,20 +289,32 @@ describe('isInstalled / uninstallHooks', () => {
     expect(JSON.parse(backupContent)).toEqual({ theme: 'dark' })
   })
 
-  it('writes a timestamped .bak of settings.json before uninstallHooks removes entries', () => {
+  it('backs settings.json up before a rewrite, then removes only the backups it made itself', () => {
+    installHooks('project')
+    const p = settingsPath('project')
+    // Hand-edited back to an empty object, so the second install has something to write and
+    // therefore something to back up first.
+    fs.writeFileSync(p, '{}\n')
     installHooks('project')
 
-    const p = settingsPath('project')
-    const before = fs.readFileSync(p, 'utf8')
+    const dir = path.dirname(p)
+    const backups = () => fs.readdirSync(dir).filter((f) => f.startsWith('settings.json.bak.')).sort()
+
+    // Unchanged half of the contract: the backup still gets written before the rewrite.
+    expect(backups()).toHaveLength(1)
+    expect(fs.readFileSync(path.join(dir, backups()[0] as string), 'utf8')).toBe('{}\n')
+
+    // The negative control, and half the evidence. This is a copy the user made by hand: the same
+    // name shape token-goat's own backups have, but token-goat never recorded creating it. An
+    // uninstall that deleted every `settings.json.bak.*` would satisfy the assertion below it
+    // while destroying a file nobody can get back.
+    const decoy = `${p}.bak.keep-this`
+    fs.writeFileSync(decoy, 'user copy')
+
     uninstallHooks('project')
 
-    const dir = fs.readdirSync(path.dirname(p))
-    const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually
-    // produces a backup file.
-    expect(backups.length).toBe(1)
-    const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
-    expect(backupContent).toBe(before)
+    expect(backups()).toEqual(['settings.json.bak.keep-this'])
+    expect(fs.readFileSync(decoy, 'utf8')).toBe('user copy')
   })
 
   it('uninstall leaves unrelated user hooks intact', () => {

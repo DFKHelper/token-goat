@@ -52,6 +52,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
+import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
@@ -316,6 +317,9 @@ export function uninstallKimi(): boolean {
   } catch {
     // best-effort, same rationale as the skill directory above
   }
+
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it.
+  removeCreatedBackups(configPath)
 
   return removed
 }

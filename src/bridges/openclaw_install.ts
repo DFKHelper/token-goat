@@ -32,6 +32,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath, writeJsonSettings } from '../util.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
 
@@ -251,6 +252,9 @@ export function uninstallOpenclaw(): boolean {
       writeJsonSettings(configPath, settings)
     }
   }
+
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it.
+  removeCreatedBackups(configPath)
 
   return removed
 }

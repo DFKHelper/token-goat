@@ -53,6 +53,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
+import { removeCreatedBackups } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
@@ -482,6 +483,9 @@ export function uninstallCodex(): boolean {
   } catch {
     // Already absent; nothing to remove.
   }
+
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it.
+  removeCreatedBackups(configPath)
 
   return removedAny
 }

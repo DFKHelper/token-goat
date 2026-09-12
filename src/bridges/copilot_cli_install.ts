@@ -28,6 +28,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { removeCreatedBackups } from './created_configs.js'
 import { hookCommandFor, hookPowershellCommand, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
@@ -374,6 +375,8 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
     return true
   }
   const configRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_CONFIG_FILE))
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it.
+  removeCreatedBackups(path.join(hooksDir, HOOKS_CONFIG_FILE))
   const scriptRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_SCRIPT_FILE))
   const ownersRemoved = unlinkIfPresent(ownersPath)
   return configRemoved || scriptRemoved || ownersRemoved
