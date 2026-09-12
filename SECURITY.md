@@ -41,11 +41,11 @@ The following are not treated as security issues unless paired with a working pr
 
 ## Dependency advisories
 
-`npm audit` reports Token-Goat clean whichever way you scan it, and that has only been true of a default install since the embedding model became opt-in. All three numbers below are reproducible with the commands shown. The one thing that is not clean is the opt-in package itself, and it is described further down rather than folded into these rows.
+`npm audit` reports Token-Goat clean for anyone who installs it, and that has only been true of a default install since the embedding model became opt-in. This repository's own tree, development dependencies included, is not: two moderate advisories currently sit in dev-only transitive dependencies (`adm-zip` under `onnxruntime-node`, `hono` under `@modelcontextprotocol/sdk`), both behind Dependabot's cooldown rather than bumped ad hoc -- see [`.github/dependabot.yml`](.github/dependabot.yml) for why a plain `npm update` isn't the fix. Neither ships to an installer: both packages drop out the moment `--omit=dev` is added, which is what the next two rows scan. All three numbers below are reproducible with the commands shown. The one thing that is not clean in a default install is the opt-in package itself, and it is described further down rather than folded into these rows.
 
 | What you scan | Command | Result |
 | --- | --- | --- |
-| this repository | `npm audit` | clean, development dependencies included |
+| this repository | `npm audit` | 2 moderate, development dependencies only (`adm-zip`, `hono`; see above) |
 | an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 2 packages |
 | a default install | `npm install token-goat` then `npm audit --omit=dev` | clean, 62 packages |
 
@@ -61,7 +61,7 @@ The embedding runtime is opt-in, the same way the model was. `semantic` still wo
 npm install -g onnxruntime-node   # drop -g if token-goat is a project dependency
 ```
 
-**That command is the one thing on this page that is not clean, and the number is two.** `onnxruntime-node` depends on [`adm-zip`](https://www.npmjs.com/package/adm-zip) below 0.6.0, which carries [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85) -- a crafted ZIP file provoking a 4 GB allocation -- and npm reports it twice, once against `adm-zip` and once against `onnxruntime-node` for depending on it. Both are the same finding. It is reachable only from `onnxruntime-node`'s own postinstall script, which uses it to unpack the prebuilt binary it has just downloaded from Microsoft; nothing in Token-Goat passes it an archive, and no file a user supplies reaches it. This repository pins `adm-zip` past it in `overrides`, which is why the repository row above is clean, and by the rule stated above that pin does not travel: run the command and you will resolve the 0.5 line and see those two. If that matters where you are, the fix is an `overrides` entry of your own:
+**That command is the one thing on this page that is not clean, and the number is two.** `onnxruntime-node` depends on [`adm-zip`](https://www.npmjs.com/package/adm-zip) below 0.6.0, which carries [GHSA-xcpc-8h2w-3j85](https://github.com/advisories/GHSA-xcpc-8h2w-3j85) -- a crafted ZIP file provoking a 4 GB allocation -- and npm reports it twice, once against `adm-zip` and once against `onnxruntime-node` for depending on it. Both are the same finding. It is reachable only from `onnxruntime-node`'s own postinstall script, which uses it to unpack the prebuilt binary it has just downloaded from Microsoft; nothing in Token-Goat passes it an archive, and no file a user supplies reaches it. This repository pins `adm-zip` past it in `overrides`, which used to be why the repository row above was clean. It no longer is: a second, unrelated `adm-zip` advisory ([GHSA-vwc7-r8mq-g2x9](https://github.com/advisories/GHSA-vwc7-r8mq-g2x9), extraction following a destination symlink) reaches into the patched version itself, so the `^0.6.0` override no longer clears everything `adm-zip` carries -- that is the `adm-zip` finding the repository row above now discloses, alongside `hono`'s. By the rule stated above the override does not travel regardless: run the command and you will resolve the 0.5 line and see the original ZIP-bomb finding twice. If that matters where you are, the fix is an `overrides` entry of your own:
 
 ```json
 { "overrides": { "adm-zip": "^0.6.0" } }
