@@ -75,6 +75,11 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'scopes is the direct return value of pinnedPopulation(), which fails on an empty or under-10 population before this table is used.',
   },
   {
+    file: 'tests/guards/installer_writes_are_always_backed_up.test.ts',
+    table: 'population',
+    reason: 'population is the direct return value of pinnedPopulation(), which fails on an empty or under-30 population before this table is used.',
+  },
+  {
     file: 'tests/guards/regexp_suppressions_only_shrink.test.ts',
     table: 'Object.entries(CEILINGS)',
     reason: 'CEILINGS is an object literal declared in this file with one key per lint rule; emptying it means deleting those keys in the same diff, and the per-rule ceiling assertions would go with them.',

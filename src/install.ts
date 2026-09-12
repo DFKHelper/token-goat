@@ -33,7 +33,7 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import type { HookEventName } from './types.js'
 import { removeCreatedBackups } from './bridges/created_configs.js'
-import { atomicWriteText, ensureDirSync, escapeRegExp, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -593,6 +593,7 @@ export function installSkill(): SkillInstallResult {
   const skillContent = skillMdContent()
   if (existing === skillContent) return { path: p, alreadyInstalled: true }
   ensureDirSync(skillDir())
+  backupFile(p)
   atomicWriteText(p, skillContent)
   return { path: p, alreadyInstalled: false }
 }
@@ -601,6 +602,9 @@ export function installSkill(): SkillInstallResult {
 export function uninstallSkill(): boolean {
   const dir = skillDir()
   if (!fs.existsSync(dir)) return false
+  // The directory removal below takes SKILL.md's own timestamped backups with it; this only
+  // drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
+  removeCreatedBackups(skillPath())
   fs.rmSync(dir, { recursive: true, force: true })
   return true
 }

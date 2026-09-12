@@ -13,8 +13,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
-import { recordCreatedConfig, takeCreatedConfig } from './created_configs.js'
+import { atomicWriteText, backupFile, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
@@ -184,6 +184,7 @@ export function installVisualStudio(opts: VisualStudioScopeOptions = {}): Visual
   const next = ensureMcpServersKey(setTokenGoatServer(config.text, managedServer()))
   if (config.text !== next) {
     fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    backupFile(mcpPath)
     atomicWriteText(mcpPath, next)
     if (!mcpExisted || ownedAlready) recordCreatedConfig(mcpPath)
   }
@@ -201,7 +202,12 @@ export function uninstallVisualStudio(opts: VisualStudioScopeOptions = {}): bool
       const next = dropEmptyServers(setTokenGoatServer(config.text, undefined))
       // Empty is not evidence the file is ours: a user's pre-existing `{"mcpServers": {}}` project stub walks back to exactly the same bytes. Only a file this install created is deleted; anything else is left holding its empty stub.
       if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next)) && takeCreatedConfig(mcpPath)) fs.rmSync(mcpPath, { force: true })
-      else atomicWriteText(mcpPath, ensureMcpServersKey(next))
+      else {
+        backupFile(mcpPath)
+        atomicWriteText(mcpPath, ensureMcpServersKey(next))
+      }
+      // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
+      removeCreatedBackups(mcpPath)
       removed = true
     }
   }

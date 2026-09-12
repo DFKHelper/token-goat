@@ -13,7 +13,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
+import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
 import { ensureDataDirPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
 import type { GitResult, RunGitOptions } from './types.js'
@@ -695,7 +695,16 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
     next = after
   }
 
+  // Backed up first, mirroring upsertDelimitedBlock's install-side write above and
+  // writeJsonSettings's settings.json handling: an uninstall's in-place rewrite of a file the
+  // caller may hand-edit gets the same recovery copy an install-side rewrite does.
+  backupFile(p)
   atomicWriteText(p, next)
+  // Mirrors install.ts's uninstallHooks: the backups this path (and any earlier install-side
+  // upsertDelimitedBlock call for the same file) created are token-goat's own litter, so a
+  // strip -- which is always an uninstall action -- takes them with it rather than leaving stray
+  // `.bak.<ISO>` siblings behind for every one of this function's six call sites.
+  removeCreatedBackups(p)
   return true
 }
 
@@ -706,6 +715,11 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
  * (returning false without writing when it's already exactly `block`). Otherwise `block` is
  * appended after a blank line, trimming trailing whitespace first so re-runs don't accumulate
  * blank lines. Creates `p`'s parent directory and treats a missing file as empty content.
+ *
+ * Backs up `p` first, exactly like `writeJsonSettings` does for `settings.json`: this is the
+ * same in-place-overwrite hazard on a file the caller may hand-edit (`~/.claude/CLAUDE.md`,
+ * `AGENTS.md`, an instructions file, ...), so it gets the same timestamped `.bak.<ISO>` recovery
+ * copy before either write path below touches it. `backupFile` no-ops when `p` doesn't exist yet.
  */
 export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: string, block: string): boolean {
   let existing: string
@@ -724,6 +738,7 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
     const current = existing.slice(beginIdx, endIdx + endMarker.length)
     if (current === block) return false
     ensureDirSync(path.dirname(p))
+    backupFile(p)
     atomicWriteText(p, `${before}${block}${after}`)
     return true
   }
@@ -731,6 +746,7 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
   const trimmed = existing.replace(/\s+$/, '')
   const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
   ensureDirSync(path.dirname(p))
+  backupFile(p)
   atomicWriteText(p, next)
   return true
 }

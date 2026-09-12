@@ -55,9 +55,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { recordCreatedConfig, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
-import { atomicWriteText, writeIfDifferent } from '../util.js'
+import { atomicWriteText, backupFile, writeIfDifferent } from '../util.js'
 
 const CONTEXT_SERVERS_KEY = 'context_servers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -157,6 +157,7 @@ export function installZed(): ZedInstallResult {
   if (!alreadyInstalled) {
     const nextText = setTokenGoatServer(config.text, desired, CONTEXT_SERVERS_KEY)
     if (!fileExisted) recordCreatedConfig(settingsPath)
+    backupFile(settingsPath)
     atomicWriteText(settingsPath, nextText)
   }
 
@@ -184,8 +185,11 @@ export function uninstallZed(): boolean {
       if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(settingsPath)) {
         fs.rmSync(settingsPath, { force: true })
       } else {
+        backupFile(settingsPath)
         atomicWriteText(settingsPath, next)
       }
+      // The timestamped backups this bridge made for settingsPath are token-goat's own litter, so a full uninstall takes them with it.
+      removeCreatedBackups(settingsPath)
       entryRemoved = true
     }
   }
