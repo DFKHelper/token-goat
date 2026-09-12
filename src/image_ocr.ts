@@ -47,6 +47,7 @@ import * as path from 'node:path'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { fenceUntrustedOcrText } from './injection_scan.js'
+import { ensureDirSync } from './util.js'
 
 /** Result of a successful OCR pass. `confidence` is Tesseract's own 0-100 mean-word-confidence score. */
 export interface OcrResult {
@@ -156,7 +157,7 @@ function ocrCacheDir(): string {
  * re-download per call, which is the pre-existing behaviour, so it must not fail the OCR itself. */
 function ensureOcrCacheDir(): void {
   try {
-    fs.mkdirSync(ocrCacheDir(), { recursive: true })
+    ensureDirSync(ocrCacheDir())
   } catch {
     // Read-only or otherwise unwritable home. tesseract.js will skip its cache write the same way.
   }

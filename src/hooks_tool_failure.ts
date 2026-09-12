@@ -22,13 +22,14 @@
  * write is fail-soft: a hook that cannot persist its ledger must still return a valid response.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative } from 'node:path'
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { contextOutput, getFilePath, getToolName, passOutput } from './hooks_common.js'
 import { displaySafeText, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
+import { ensureDirSync } from './util.js'
 import { sessionSidecarPath } from './session_store.js'
 import type { HookOutput } from './types.js'
 
@@ -105,7 +106,7 @@ function readLedger(target: string): FailureLedger {
 
 function writeLedger(target: string, ledger: FailureLedger): void {
   try {
-    mkdirSync(dirname(target), { recursive: true })
+    ensureDirSync(dirname(target))
     writeFileSync(target, JSON.stringify(ledger), 'utf8')
   } catch {
     // Best-effort: a ledger that cannot be stored degrades to "every failure looks like the first",

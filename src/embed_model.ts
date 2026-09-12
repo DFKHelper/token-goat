@@ -37,6 +37,7 @@ import { pipeline } from 'node:stream/promises'
 
 import { loadConfig } from './config.js'
 import { dataDir, ensureDataDirPrivate } from './constants.js'
+import { ensureDirSync } from './util.js'
 import { BertWordPiece } from './embed_tokenizer.js'
 import { registerReset } from './reset.js'
 
@@ -184,7 +185,7 @@ function publishToSharedCache(shared: string, file: ModelFile, target: string): 
   let created = false
   try {
     if (fs.existsSync(destination)) return
-    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    ensureDirSync(path.dirname(destination))
     // COPYFILE_EXCL, because this is the one write that lands in a directory the operator named and may share. Without it the copy opens the temp name O_CREAT|O_TRUNC and follows a symlink planted there, so anyone who can write this directory can have the model bytes truncate any file the operator can write; measured, not assumed. With it the copy fails EEXIST and publishing is skipped, which costs a later download and nothing else.
     fs.copyFileSync(target, temp, fs.constants.COPYFILE_EXCL)
     created = true
@@ -366,7 +367,7 @@ export async function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promi
       fs.rmSync(target, { force: true })
     }
     if (shared) {
-      fs.mkdirSync(path.dirname(target), { recursive: true })
+      ensureDirSync(path.dirname(target))
       // Ahead of the offline check on purpose: a hit here needs no network, so offline mode has no reason to refuse it.
       if (await copyFromSharedCache(shared, file, target)) continue
     }
@@ -376,7 +377,7 @@ export async function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promi
           `Copy the pinned files into ${dir} on a connected machine to use semantic search here.`,
       )
     }
-    fs.mkdirSync(path.dirname(target), { recursive: true })
+    ensureDirSync(path.dirname(target))
     console.warn(
       `Downloading the embedding model, once (${file.name}, ${Math.round(file.bytes / 1024 / 1024)} MB) into ${dir}`,
     )

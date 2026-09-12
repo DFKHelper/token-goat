@@ -37,9 +37,10 @@
  * omitting one half disables the feature with nothing failing.
  */
 
-import { readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { sessionSidecarPath } from './session_store.js'
+import { ensureDirSync } from './util.js'
 
 /** Sidecar suffix holding text queued for the next tool call. */
 const PENDING_SUFFIX = '.pending-context.txt'
@@ -69,7 +70,7 @@ export function queuePendingContext(sessionId: string, text: string): void {
     // Keep the tail: when the cap forces a choice, the most recent hint is the accurate one.
     const capped =
       merged.length <= MAX_PENDING_CONTEXT_BYTES ? merged : merged.slice(merged.length - MAX_PENDING_CONTEXT_BYTES)
-    mkdirSync(dirname(target), { recursive: true })
+    ensureDirSync(dirname(target))
     writeFileSync(target, capped, 'utf8')
   } catch {
     // Storage is best-effort; see the doc comment above.

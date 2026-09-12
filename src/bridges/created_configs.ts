@@ -18,7 +18,7 @@ import * as path from 'path'
 
 import { dataDir } from '../constants.js'
 import { normalizePath } from '../paths.js'
-import { atomicWriteText } from '../util.js'
+import { atomicWriteText, ensureDirSync } from '../util.js'
 
 function ledgerPath(): string {
   return path.join(dataDir(), 'created-configs.json')
@@ -40,7 +40,7 @@ function readLedger(): string[] {
 
 function writeLedger(entries: readonly string[]): void {
   try {
-    fs.mkdirSync(path.dirname(ledgerPath()), { recursive: true })
+    ensureDirSync(path.dirname(ledgerPath()))
     atomicWriteText(ledgerPath(), `${JSON.stringify(entries)}\n`)
   } catch {
     // Best effort: a ledger that cannot be written just means uninstall leaves the file in place.
