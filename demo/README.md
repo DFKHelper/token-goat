@@ -4,7 +4,7 @@ Open `demo/index.html` through a local static server or GitHub Pages. The presen
 captured Copilot Chat workflows, including a page-scoped PDF extraction and a representative
 read-only database schema-catalog query. The recorded workflow evidence lives in `demo/evidence/`.
 
-![Approval demo preview](./screenshots/approval-demo.webp)
+![Approval demo preview](./screenshots/approval-demo.png)
 
 Regenerate the local evidence after a meaningful code change:
 
