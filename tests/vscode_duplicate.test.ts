@@ -20,8 +20,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { installCopilotHooksFile, releaseCopilotHooksFile } from '../src/bridges/copilot_cli_install.js'
 import { _resetDataDirCacheForTesting, dataDir } from '../src/constants.js'
 import { normalizePayload } from '../src/hooks_cli.js'
 import { buildEvent, relayInProcess } from '../src/relay.js'
@@ -81,15 +82,28 @@ const ENV_KEYS = [
   VSCODE_HOOKS_DIR_ENV,
 ]
 
-/** A workspace folder with (or without) its own project-scope token-goat hooks file. */
+/**
+ * A workspace folder with (or without) its own project-scope token-goat install.
+ *
+ * The install is REAL -- `installCopilotHooksFile`, the function `installVscode` calls -- rather
+ * than a hand-written `token-goat.json`. That matters now: a bare file at that path is exactly the
+ * attack shape `a repository-committed hooks file` below covers, and standing down for it is the
+ * defect. Only a file this machine's own installer wrote, with its ownership sidecar, counts.
+ */
 function makeWorkspace(name: string, withProjectHooks: boolean): string {
   const root = path.join(tmp, name)
   fs.mkdirSync(root, { recursive: true })
-  if (withProjectHooks) {
-    const hooks = path.join(root, '.github', 'hooks')
-    fs.mkdirSync(hooks, { recursive: true })
-    fs.writeFileSync(path.join(hooks, 'token-goat.json'), '{}')
-  }
+  if (withProjectHooks) installCopilotHooksFile(path.join(root, '.github', 'hooks'), 'vscode')
+  return root
+}
+
+/** A workspace folder carrying a hooks file the repository committed: no sidecar, no ledger entry. */
+function makeHostileWorkspace(name: string, opts: { forgeSidecar?: boolean } = {}): string {
+  const root = path.join(tmp, name)
+  const hooks = path.join(root, '.github', 'hooks')
+  fs.mkdirSync(hooks, { recursive: true })
+  fs.writeFileSync(path.join(hooks, 'token-goat.json'), '{}')
+  if (opts.forgeSidecar === true) fs.writeFileSync(path.join(hooks, 'token-goat.owners'), 'vscode\n')
   return root
 }
 
@@ -245,5 +259,162 @@ describe('shouldSuppressDuplicateVscodeHook', () => {
     // No VSCODE_HOOKS_DIR_ENV: an older installed shim. The cross-scope rule cannot fire, so the
     // user-scope copy keeps working (duplicated) rather than going silent.
     expect(shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'vscode')).toBe(false)
+  })
+})
+
+/**
+ * A repository-committed `.github/hooks/token-goat.json` is not a project install.
+ *
+ * The attack the bare `existsSync` allowed: a repo commits that path containing `{}`, a developer
+ * with a user-scope install opens the clone, and every VS Code hook stands down -- read dedup,
+ * hints, image shrinking, edit-queue reindexing, and the pre-approval path gate all return `{}`
+ * with no error. It is silent by construction and indistinguishable from working.
+ *
+ * PROVENANCE: HAND-DERIVED for the hostile fixture (a file this test writes; `{}` is the minimum
+ * payload that makes VS Code treat a file as a hooks file, per the event-key table cited on
+ * VSCODE_HOOK_FILE_EVENT_KEYS). The legitimate side is not a fixture at all: it is whatever
+ * `installCopilotHooksFile` actually writes, so the two cannot agree by construction.
+ */
+describe('a repository-committed hooks file cannot stand the real hook down', () => {
+  it('keeps working when the clone carries an unowned token-goat.json', () => {
+    const hostile = makeHostileWorkspace('hostile')
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(fs.existsSync(path.join(hostile, '.github', 'hooks', 'token-goat.json'))).toBe(true)
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(hostile, path.join(hostile, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('keeps working when the clone also forges the ownership sidecar', () => {
+    // The sidecar is a plain text file in the clone, so it is forgeable and this check alone would
+    // not close the class. The ledger is the one a clone cannot write.
+    const hostile = makeHostileWorkspace('forged', { forgeSidecar: true })
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(fs.readFileSync(path.join(hostile, '.github', 'hooks', 'token-goat.owners'), 'utf8')).toContain('vscode')
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(hostile, path.join(hostile, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('keeps working when a real install elsewhere left a ledger entry for a different path', () => {
+    // Guards against a ledger check keyed on anything looser than the exact path.
+    makeWorkspace('real', true)
+    const hostile = makeHostileWorkspace('hostile2', { forgeSidecar: true })
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(hostile, path.join(hostile, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('keeps working when the only project install in the clone belongs to Copilot CLI, not VS Code', () => {
+    // The honest counterpart to the forged-sidecar case, and what makes the sidecar check carry its
+    // own weight: `install --copilot --project` writes the same token-goat.json at the same path and
+    // records the same ledger entry, but registers `copilot` as the owner. There is no project-scope
+    // VS Code copy to defer to, so the user-scope copy is still the only one that would answer.
+    const ws = path.join(tmp, 'copilotOnly')
+    fs.mkdirSync(ws, { recursive: true })
+    installCopilotHooksFile(path.join(ws, '.github', 'hooks'), 'copilot')
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('stops standing down once the machine uninstalls the project install it made', () => {
+    const ws = makeWorkspace('rootA', true)
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'vscode')).toBe(true)
+    releaseCopilotHooksFile(path.join(ws, '.github', 'hooks'), 'vscode')
+    // A repository could drop its own file back at that path afterwards; the ledger entry must not
+    // still be sitting there vouching for it.
+    fs.mkdirSync(path.join(ws, '.github', 'hooks'), { recursive: true })
+    fs.writeFileSync(path.join(ws, '.github', 'hooks', 'token-goat.json'), '{}')
+    fs.writeFileSync(path.join(ws, '.github', 'hooks', 'token-goat.owners'), 'vscode\n')
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('records the stand-down on stderr under TOKEN_GOAT_LOG, and says nothing without it', () => {
+    const ws = makeWorkspace('rootA', true)
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    const lines: string[] = []
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk))
+      return true
+    })
+    try {
+      delete process.env['TOKEN_GOAT_LOG']
+      expect(shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'vscode')).toBe(true)
+      expect(lines).toEqual([])
+      process.env['TOKEN_GOAT_LOG'] = '1'
+      expect(shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'vscode')).toBe(true)
+      expect(lines.join('')).toContain('stood down')
+      expect(lines.join('')).toContain('a project-scope install owns this workspace')
+    } finally {
+      spy.mockRestore()
+      delete process.env['TOKEN_GOAT_LOG']
+    }
+  })
+})
+
+/**
+ * A cwd VS Code hands the hook is model-adjacent input arriving BEFORE the user approves anything,
+ * and on Windows a UNC cwd (`\\host\share\repo`) turns a bare `existsSync` into an outbound SMB
+ * connection carrying an NTLM authentication attempt, with no timeout available on the in-process
+ * path. The lookup therefore goes through `vscodePathAllowed`, the same gate every pre_tool_use
+ * handler uses, which declines a two-separator root outright.
+ *
+ * PROVENANCE: HAND-DERIVED. The workspace is a real `installCopilotHooksFile` install -- performed
+ * THROUGH the two-separator spelling, so the ownership sidecar and the created-configs ledger both
+ * vouch for that exact path. Without the gate every other check passes and the hook stands down;
+ * the gate is the only thing between those two outcomes, which is what makes the assertion
+ * discriminating rather than an accident of an absent install.
+ */
+describe('a two-separator workspace root is declined before anything stats it', () => {
+  /** The same real directory addressed the way the gate must refuse: `\\?\C:\...` / `//tmp/...`. */
+  function twoSeparatorSpelling(root: string): string {
+    return process.platform === 'win32' ? `\\\\?\\${root}` : `/${root}`
+  }
+
+  it('does not stand the user-scope copy down for a UNC or device cwd', () => {
+    const root = path.join(tmp, 'uncRoot')
+    const spelled = twoSeparatorSpelling(root)
+    fs.mkdirSync(root, { recursive: true })
+    installCopilotHooksFile(path.join(spelled, '.github', 'hooks'), 'vscode')
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+
+    // Positive control on the arrangement itself: everything the redundancy check looks at is in
+    // place under the two-separator spelling, so a `false` below cannot be a missing install.
+    expect(fs.existsSync(path.join(spelled, '.github', 'hooks', 'token-goat.json')), 'the install did not land, so this proves nothing').toBe(true)
+    expect(fs.readFileSync(path.join(spelled, '.github', 'hooks', 'token-goat.owners'), 'utf8')).toContain('vscode')
+
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(spelled, path.join(spelled, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('still stands down for the same install addressed normally', () => {
+    // The other half: without this, the test above would pass on a gate that refuses everything.
+    const root = path.join(tmp, 'uncRoot2')
+    fs.mkdirSync(root, { recursive: true })
+    installCopilotHooksFile(path.join(twoSeparatorSpelling(root), '.github', 'hooks'), 'vscode')
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(root, path.join(root, 'README.md')), 'vscode')).toBe(true)
+  })
+})
+
+/**
+ * The dedupe marker directory is a first-write path into token-goat's data root, so it is one of
+ * the places that can CREATE that root -- and it must create it owner-only.
+ */
+describe('marker writes harden the data root', () => {
+  // POSIX only: Node ignores POSIX modes on Windows, where the directory inherits the parent ACL.
+  // `it.skipIf` rather than an early `return` so a Windows run says SKIPPED instead of PASSED,
+  // matching tests/helpers/can-symlink.ts's reasoning about silently-unrun fixtures.
+  it.skipIf(process.platform === 'win32')('creates the data root owner-only when a hook is the first thing to write there', () => {
+    // The fresh-install ordering this covers: the VS Code hook fires before any CLI command has
+    // ever run, so THIS is the code that creates ~/.local/share/token-goat. Created with a bare
+    // recursive mkdir it takes the process umask -- 0755 on a stock Linux box -- and every local
+    // user can then list the cached bash output, fetched pages and per-project index that land in
+    // it. ensureDirSync/atomicWriteText are the only helpers that harden the root first.
+    const ws = makeWorkspace('rootA', true)
+    process.env[VSCODE_HOOKS_DIR_ENV] = path.join(ws, '.github', 'hooks')
+    const root = dataDir()
+    fs.rmSync(root, { recursive: true, force: true })
+    _resetDataDirCacheForTesting()
+
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(ws), 'vscode')).toBe(false)
+
+    expect(fs.existsSync(path.join(dataDir(), 'vscode-dedupe')), 'the marker directory was never created, so this proves nothing').toBe(true)
+    expect(fs.statSync(dataDir()).mode & 0o077, 'data root is group/world accessible').toBe(0)
   })
 })

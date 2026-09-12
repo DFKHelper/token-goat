@@ -44,9 +44,14 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
+import { hasCreatedConfig } from './bridges/created_configs.js'
 import { dataDir } from './constants.js'
 import type { HookEvent } from './hook_registry.js'
 import { getCwd, getFilePath } from './hooks_common.js'
+import { displaySafeText } from './paths.js'
+import { atomicWriteText, ensureDirSync } from './util.js'
+import { vscodePathAllowed } from './vscode_path_gate.js'
 
 /**
  * Set by the hook shim to its own directory, which is the hooks directory VS Code loaded it from.
@@ -84,8 +89,29 @@ function userHooksDir(): string {
 
 /**
  * True when this invocation is the user-scope copy AND the workspace it was handed carries its own
- * project-scope token-goat hooks file. That project copy sees the same event with a cwd that is
- * actually this workspace folder, so it is the one that should answer.
+ * project-scope token-goat hooks file THIS MACHINE INSTALLED. That project copy sees the same event
+ * with a cwd that is actually this workspace folder, so it is the one that should answer.
+ *
+ * The bare `existsSync` this started as made a repository file into an off switch: committing
+ * `.github/hooks/token-goat.json` containing `{}` stood the real user-scope hook down for every
+ * event in that clone -- read dedup, hints, image shrinking, edit-queue reindexing and the
+ * pre-approval path gate all silently returned `{}`, which is indistinguishable from working.
+ * Two independent checks now have to agree before this copy defers:
+ *
+ * - the ownership sidecar (`token-goat.owners`) names `vscode`, which `installCopilotHooksFile`
+ *   writes and a hooks file dropped in by hand does not have; and
+ * - the created-configs ledger, which lives in token-goat's own data directory OUTSIDE the clone,
+ *   records that an install on this machine wrote that exact path.
+ *
+ * A repository can still forge the sidecar -- it is a plain text file in the clone -- so this
+ * raises the cost of the attack rather than eliminating the class. The ledger is what a clone
+ * cannot write, and it is the check that actually has to fail for the attack to work; the sidecar
+ * is kept because it is the cheap one and it also catches the honest case of an unrelated
+ * third-party hooks file sharing the name.
+ *
+ * Both checks fail CLOSED for suppression and OPEN for the hook: anything unproven means this copy
+ * keeps working, which duplicates a hook at worst. See the module header for why that is the only
+ * acceptable direction.
  */
 function userScopeCopyIsRedundant(event: HookEvent): boolean {
   const hooksDir = shimHooksDir()
@@ -94,7 +120,33 @@ function userScopeCopyIsRedundant(event: HookEvent): boolean {
   const cwd = getCwd(event)
   // No cwd means no workspace folder is open, so there is no project copy to defer to.
   if (cwd === undefined || cwd === '') return false
-  return fs.existsSync(path.join(cwd, '.github', 'hooks', 'token-goat.json'))
+  const projectHooksDir = path.join(cwd, '.github', 'hooks')
+  // This runs before VS Code has asked the user to approve anything, and `cwd` is whatever the
+  // harness handed us, so the read below goes through the same gate every pre_tool_use handler
+  // uses. It matters most for a UNC `cwd` (`\\host\share`): on Windows merely statting one opens
+  // an SMB connection to that host and offers an NTLM authentication, with no timeout available on
+  // the in-process path -- a hook that hangs or leaks a credential hash before approval.
+  if (!vscodePathAllowed(projectHooksDir, cwd)) return false
+  if (!readCopilotHooksOwners(projectHooksDir).has('vscode')) return false
+  return hasCreatedConfig(path.join(projectHooksDir, 'token-goat.json'))
+}
+
+/**
+ * One line on stderr, only when TOKEN_GOAT_LOG is set, saying that this copy stood down.
+ *
+ * A hook that stands down produces no error and no output, which is exactly what made the
+ * repository-file off switch above invisible: the failure and the success look identical from
+ * outside. This is the record that tells them apart. stderr, not stdout -- stdout is the hook's
+ * wire response -- and `displaySafeText` because a workspace path is attacker-influenced content
+ * being written into someone's log.
+ */
+function logStandDown(reason: string, event: HookEvent): void {
+  if (process.env['TOKEN_GOAT_LOG'] === undefined || process.env['TOKEN_GOAT_LOG'] === '') return
+  try {
+    process.stderr.write(displaySafeText(`token-goat: vscode hook stood down (${reason}) event=${event.eventName} cwd=${getCwd(event) ?? '<none>'}`) + '\n')
+  } catch {
+    // A log line must never be the reason a hook fails.
+  }
 }
 
 /**
@@ -135,7 +187,11 @@ function pruneMarkers(dir: string): void {
     // No stamp yet: this is the first prune.
   }
   try {
-    fs.writeFileSync(stamp, '')
+    // atomicWriteText, not writeFileSync: it is the only text-write helper that runs
+    // ensureDataDirPrivate() first, so the data root cannot be created 0755 by whichever writer
+    // happens to land there first. On a fresh install where a hook fires before any CLI command,
+    // that writer is this one. The hardening memoizes to one syscall per process.
+    atomicWriteText(stamp, '')
   } catch {
     // Unwritable stamp means the prune is unthrottled rather than skipped; still better than not pruning.
   }
@@ -166,7 +222,10 @@ function pruneMarkers(dir: string): void {
 function alreadyClaimed(sessionId: string, eventName: string, timestamp: string): boolean {
   const dir = markerDir()
   try {
-    fs.mkdirSync(dir, { recursive: true })
+    // ensureDirSync, not a bare recursive mkdir: it hardens the data ROOT to 0700 before creating
+    // anything under it. A bare mkdir here takes the process umask, which is 0755 on a stock Linux
+    // box -- and this is a first-write path, so on a fresh install it is what creates the root.
+    ensureDirSync(dir)
   } catch {
     return false
   }
@@ -192,7 +251,10 @@ function alreadyClaimed(sessionId: string, eventName: string, timestamp: string)
 export function shouldSuppressDuplicateVscodeHook(event: HookEvent, harness: string): boolean {
   if (harness !== 'vscode') return false
   try {
-    if (userScopeCopyIsRedundant(event)) return true
+    if (userScopeCopyIsRedundant(event)) {
+      logStandDown('a project-scope install owns this workspace', event)
+      return true
+    }
 
     // A gateable path is present: vscode_path_gate.ts already elects the copy whose workspace
     // contains it, and electing a second time here could stand down the only copy that would
@@ -206,7 +268,9 @@ export function shouldSuppressDuplicateVscodeHook(event: HookEvent, harness: str
     // are indistinguishable, and suppressing on (session, event) alone would drop real work.
     if (typeof timestamp !== 'string' || timestamp === '') return false
 
-    return alreadyClaimed(sessionId, event.eventName, timestamp)
+    if (!alreadyClaimed(sessionId, event.eventName, timestamp)) return false
+    logStandDown('another copy already claimed this event', event)
+    return true
   } catch {
     return false
   }
