@@ -172,6 +172,39 @@ describe('a repository-planted symlink at a project-scope install target', () =>
     expect(String(err)).toMatch(/resolves outside the project/)
   })
 
+  it.skipIf(!CAN_JUNCTION)('is refused when .github is the link and the leaf does not exist yet', () => {
+    // The other half of the directory-link case, and the half that shipped broken: with NO leaf
+    // file behind the link, realpathSync throws ENOENT on the full path, and isInsideRoot used to
+    // answer from the lexical form -- which says `<project>/.github/...` is inside `<project>`.
+    // The install then exited 0 and created four files in `outside/stash`. The absence of a leaf
+    // is the installer's NORMAL case, so this was the reachable shape, not the exotic one.
+    const stash = path.join(outside, 'stash')
+    fs.mkdirSync(stash, { recursive: true })
+    fs.symlinkSync(stash, path.join(project, '.github'), 'junction')
+
+    const err = thrownBy(() => installVscode({ project: true, projectRoot: project }))
+
+    // The observable an attacker cares about: nothing token-goat writes may land outside the
+    // project root. Asserted before the throw, so a refusal that wrote first still fails.
+    expect(filesUnder(outside)).toEqual([])
+    expect(String(err)).toMatch(/resolves outside the project/)
+  })
+
+  it.skipIf(!CAN_SYMLINK)('is refused when the file link itself dangles, so the leaf cannot be realpath\'d', () => {
+    // Same ENOENT trigger through the other door: the leaf IS a symlink but its target does not
+    // exist, so realpathSync throws on the full path exactly as it does for a missing leaf.
+    const absent = path.join(outside, 'not-created-yet.md')
+    const link = path.join(project, '.github', 'copilot-instructions.md')
+    fs.mkdirSync(path.dirname(link), { recursive: true })
+    fs.symlinkSync(absent, link, 'file')
+
+    const err = thrownBy(() => installVscode({ project: true, projectRoot: project }))
+
+    expect(filesUnder(outside)).toEqual([])
+    expect(fs.existsSync(absent)).toBe(false)
+    expect(String(err)).toMatch(/resolves outside the project/)
+  })
+
   it.skipIf(!CAN_SYMLINK)('is refused on the uninstall path too, which reads and backs up the same files', () => {
     plantSymlink(path.join('.github', 'copilot-instructions.md'), SECRET, 'id_ed25519')
 
@@ -221,7 +254,7 @@ describe('the population this guard runs against is not empty', () => {
 })
 
 describe('backupFile does not write through a destination symlink', () => {
-  it.skipIf(!CAN_SYMLINK)('throws instead of copying into a link planted at the .bak path', () => {
+  it.skipIf(!CAN_SYMLINK)('never copies into a link planted at the .bak path, and steps past it', () => {
     // The backup name is `<p>.bak.<ISO-with-dashes>`, so with the clock frozen the attacker's link
     // can be planted at exactly the path backupFile is about to create. This is the destination
     // half of the same read/write-through-a-link class; COPYFILE_EXCL is what closes it.
@@ -233,9 +266,42 @@ describe('backupFile does not write through a destination symlink', () => {
     fs.writeFileSync(victim, 'do not overwrite me\n')
     fs.symlinkSync(victim, `${target}.bak.2026-09-12T00-00-00-000Z`, 'file')
 
-    const err = thrownBy(() => backupFile(target))
+    backupFile(target)
+
+    // The load-bearing assertion: the link's target is untouched. COPYFILE_EXCL is what does that,
+    // and it is set on every attempt. The backup itself lands beside the planted link under a
+    // disambiguated name rather than aborting the install -- see the same-millisecond test below
+    // for why a bare throw here was the wrong shape.
     expect(fs.readFileSync(victim, 'utf8')).toBe('do not overwrite me\n')
-    expect(err).toBeDefined()
+    expect(fs.lstatSync(`${target}.bak.2026-09-12T00-00-00-000Z`).isSymbolicLink()).toBe(true)
+    const written = fs.readdirSync(project).filter((f) => f.startsWith('settings.json.bak.') && !fs.lstatSync(path.join(project, f)).isSymbolicLink())
+    expect(written).toEqual(['settings.json.bak.2026-09-12T00-00-00-000Z-1'])
+    expect(fs.readFileSync(path.join(project, written[0] as string), 'utf8')).toBe('{"a":1}\n')
+  })
+
+  it('gives a second backup in the same millisecond its own name instead of aborting', () => {
+    // Not raced: the clock is pinned, so both calls compute the identical `.bak.<ISO>` stamp with
+    // certainty. Racing would only bound the failure rate (20 fresh installs measured a 4-6 ms gap
+    // between installVscode's two backups of this same file -- 0/20 collisions, which bounds the
+    // rate at ~15% and proves nothing), and the second call must succeed on every box, not most.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-12T00:00:00.000Z'))
+    const target = path.join(project, 'copilot-instructions.md')
+
+    fs.writeFileSync(target, 'first\n')
+    backupFile(target)
+    fs.writeFileSync(target, 'second\n')
+    backupFile(target)
+
+    const backups = fs.readdirSync(project).filter((f) => f.startsWith('copilot-instructions.md.bak.')).sort()
+    expect(backups).toEqual([
+      'copilot-instructions.md.bak.2026-09-12T00-00-00-000Z',
+      'copilot-instructions.md.bak.2026-09-12T00-00-00-000Z-1',
+    ])
+    // Distinct names are only half of it: the second backup must hold the second content, not be a
+    // duplicate of the first under a new name.
+    expect(fs.readFileSync(path.join(project, backups[0] as string), 'utf8')).toBe('first\n')
+    expect(fs.readFileSync(path.join(project, backups[1] as string), 'utf8')).toBe('second\n')
   })
 
   it('still makes an ordinary backup when nothing is planted', () => {
