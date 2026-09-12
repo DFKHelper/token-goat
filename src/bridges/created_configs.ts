@@ -82,6 +82,21 @@ export function forgetCreatedBackup(backupPath: string): void {
 }
 
 /**
+ * Full paths of the backups token-goat recorded for `configPath`, oldest first (ISO-with-dashes
+ * timestamps sort chronologically as strings). Rebuilt from the ledger's case-folded key plus the
+ * recorded stamp, not from a directory listing: a user can name a file anything, and a prune keyed
+ * on `readdirSync` + prefix match would delete a user file that merely looks like one of ours.
+ */
+export function createdBackupsFor(configPath: string): string[] {
+  const resolved = path.resolve(configPath)
+  const prefix = `${keyOf(configPath)}.bak.`
+  return readLedger()
+    .filter((entry) => entry.startsWith(prefix))
+    .sort()
+    .map((entry) => `${resolved}.bak.${entry.slice(prefix.length)}`)
+}
+
+/**
  * Delete the backups token-goat created for `configPath`, and nothing else. Returns how many went.
  *
  * The candidate set is the ledger, not the directory: a user's own `settings.json.bak.keep` was

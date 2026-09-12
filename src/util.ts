@@ -10,10 +10,10 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
+import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
 import { ensureDataDirPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
 import type { GitResult, RunGitOptions } from './types.js'
@@ -352,19 +352,11 @@ export function backupFile(p: string): void {
 }
 
 function pruneOldBackups(p: string): void {
-  const dir = path.dirname(p)
-  const prefix = `${path.basename(p)}.bak.`
-  let entries: string[]
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return
-  }
-  // ISO-with-dashes timestamps sort lexicographically in chronological order.
-  const backups = entries.filter((e) => e.startsWith(prefix)).sort()
+  // The candidate set is the ledger, not a directory listing: a user's own file matching the
+  // `.bak.<stamp>` shape was never recorded, so it is never even considered for deletion.
+  const backups = createdBackupsFor(p)
   const excess = backups.length - MAX_BACKUPS_PER_FILE
-  for (const stale of backups.slice(0, Math.max(0, excess))) {
-    const stalePath = path.join(dir, stale)
+  for (const stalePath of backups.slice(0, Math.max(0, excess))) {
     try {
       unlinkSync(stalePath)
       // Keep the ledger in step: a backup this pruned is gone, and a stale entry for it would

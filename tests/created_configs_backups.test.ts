@@ -130,4 +130,30 @@ describe('removeCreatedBackups', () => {
     expect(ledger).not.toContain((stamps[0] as string).toLowerCase())
     expect(ledger).toContain((stamps[1] as string).toLowerCase())
   })
+
+  it('never deletes a user backup that only matches the filename prefix, even when it sorts oldest', () => {
+    // Negative control for the prune that runs inside backupFile: a decoy the user wrote by hand,
+    // never recorded in the ledger, with a stamp that sorts before every real one so a name-based
+    // prune would pick it first.
+    const p = configAt('settings.json')
+    const decoy = `${p}.bak.1999-01-01T00-00-00-000Z`
+    fs.writeFileSync(decoy, 'user copy')
+
+    const stamps = [
+      '2020-01-01T00-00-01-000Z',
+      '2020-01-01T00-00-02-000Z',
+      '2020-01-01T00-00-03-000Z',
+      '2020-01-01T00-00-04-000Z',
+      '2020-01-01T00-00-05-000Z',
+    ]
+    for (const stamp of stamps) {
+      const backup = `${p}.bak.${stamp}`
+      fs.writeFileSync(backup, 'old')
+      recordCreatedBackup(backup)
+    }
+
+    backupFile(p) // a 6th real backup, over the cap of 5, triggers the prune
+
+    expect(fs.readFileSync(decoy, 'utf8')).toBe('user copy')
+  })
 })
