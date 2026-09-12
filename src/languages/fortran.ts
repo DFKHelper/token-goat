@@ -174,10 +174,32 @@ function fixedFormStatements(lines: readonly string[], imports: AdapterImport[])
   return out
 }
 
-/** True for a `.f`, `.for` or `.f77` file whose lines never start code in column 1, which fixed form reserves for labels and comment marks. */
+/** Free-form evidence: code starting in column 1 (which fixed form reserves for labels and comment marks), a `::` declaration, or a trailing `&` continuation. */
+function hasFreeFormSignal(line: string): boolean {
+  return /^[A-BD-Za-bd-z_&]/.test(line) || line.includes('::') || /&[ \t]*$/.test(line)
+}
+
+/** Fixed-form evidence: a column-1 comment mark, or a continuation character in column 6 behind a label field of blanks and digits. */
+function hasFixedFormSignal(line: string): boolean {
+  const c0 = line[0]
+  if (c0 === 'C' || c0 === 'c' || c0 === '*') return true
+  // A sequence-number field past column 72 is fixed form's alone: free form has no column limit and nothing to put there.
+  if (line.length > 72) return true
+  return line.length > 5 && /^[ \d]{5}$/.test(line.slice(0, 5)) && line[5] !== ' ' && line[5] !== '0'
+}
+
+/**
+ * True for a `.f`, `.for` or `.f77` file that carries positive fixed-form evidence and no free-form signal.
+ *
+ * "No code in column 1" is not evidence of fixed form: an indented free-form file has none either.
+ * Reading one as fixed form makes character 6 of every line a continuation mark, so no statement is
+ * ever flushed and the file indexes to zero symbols with no error. Guessing free form for a file
+ * that is really fixed form only degrades the result, so the doubt is resolved that way.
+ */
 function isFixedForm(filePath: string, lines: readonly string[]): boolean {
   if (!FIXED_FORM_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return false
-  return !lines.some((l) => /^[A-BD-Za-bd-z_&]/.test(l))
+  if (lines.some(hasFreeFormSignal)) return false
+  return lines.some(hasFixedFormSignal)
 }
 
 function isIdentStart(ch: string): boolean {

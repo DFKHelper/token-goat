@@ -75,6 +75,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **Six languages now index files they used to read wrongly or skip.** Upgrading reindexes your projects once.
+  - **Fortran:** a file written in free form but saved with a fixed-form extension, such as `.f` or `.for`, indexed nothing at all. token-goat now decides the form from what is in the file rather than from its extension alone.
+  - **COBOL:** a copybook of well over a hundred thousand lines failed to index instead of returning its symbols.
+  - **Perl:** text inside a string that happened to look like a heredoc marker ended the scan early, so every symbol after it was lost.
+  - **PHP:** functions written in the HTML outside the `<?php` tags were indexed as PHP, inventing symbols that are not code. Only the code between the tags is read now.
+  - **SQL:** a string holding a backslash followed by an apostrophe ran the scan past the end of the string, dropping every symbol after it.
+  - **Visual Basic:** a file with one very long line took time growing with the square of its length. A 50 KB line now scans about 45 times faster.
+
+- **`token-goat uninstall` no longer deletes a config file it did not create.** `uninstall --visualstudio` removed `.mcp.json` whenever it was left holding nothing, which deleted a file you had written yourself once token-goat's own entry came out of it. token-goat now remembers which files it created and removes only those. `uninstall --vscode` follows the same rule, and no longer leaves an empty `mcp.json` behind when the file was token-goat's to remove.
+
+- **token-goat now escapes text it quotes back from your files.** A heading, a sentence, or an MCP server name shaped like one of token-goat's own notices read as token-goat speaking when it appeared in a read hint, a fold notice, or `token-goat mcp-audit`. Such text is now written so it cannot be mistaken for token-goat's own words. What token-goat shows inside a fenced block is unchanged.
+
+- **A shrunk image is now written so only you can read it.** On macOS and Linux, the temporary copy token-goat writes for the pi and shrink-block bridges was readable by every account on the machine.
+
+- **`token-goat doctor` is clearer, and drops one false warning.** When tree-sitter's core will not load, doctor now says that it only checked the grammar packages are installed, because whether each one loads cannot be tested while the core is down. It also no longer reports that Visual Studio registers token-goat twice when the user and project paths are two spellings of the same file, which happens when the project is your home folder.
+
+- **A container listing no longer flags a healthy row whose name contains "failed" or "unknown".** An image named `unknown-service` or a container named `failed-jobs` was reported as a problem. Only the status words themselves count now.
+
+- **Hook commands are now quoted correctly for PowerShell.** A path holding a `$` was expanded as a variable, and a path holding a single quote ended the quoted argument early, so the hook did not run.
+
+- **`token-goat install --copilot` now reports the Visual Studio guidance it refreshed.** The install shares one instructions file with `install --visualstudio -p`, and a run that rewrote the Visual Studio block in it still said everything was already installed.
+
 - **`token-goat index` now indexes and counts every file it finds.** Some files only get a language after token-goat reads their contents, such as an OpenEdge ABL `.p` or an Objective-C `.m`. The walk listed them, but the index step then skipped them. So `index . --walk` reported one file fewer than it found for each such file, and those files were only indexed the first time another command looked them up.
 
 - **Search hints now fire for every source language token-goat indexes.** A search inside `.mjs`, `.cjs`, `.mts`, `.cts`, `.pyi`, `.kts`, `.hxx`, `.ps1`, `.psm1`, `.cls`, `.trigger`, `.sc`, `.lua`, `.ex`, `.exs`, `.dart`, `.zig` or `.r` files used to get no hint pointing at `symbol` or `read`, even though those files are indexed. They now get the same hint as the rest, and Clojure files, which are not indexed, no longer do.

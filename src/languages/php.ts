@@ -66,13 +66,50 @@ const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/i
 // An enum case declaration (PHP Manual, "Language Reference" > "Enumerations" > "Basics" and "Backed Enumerations"): `case Hearts;` in a pure enum, `case Hearts = 'H';` in a backed one. Requiring `=` or `;` immediately after the name is what separates this from a `switch` arm, which is `case <expr>:` and so never reaches the terminator this pattern demands; the enum-kind and body-depth gates at the call site cover the `case <expr>;` spelling a switch also accepts.
 const ENUM_CASE_RE = /^case\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/i
 
+/**
+ * Blanks everything outside `<?php ... ?>`, keeping length and line breaks so every line number still lines up.
+ *
+ * A `.php` file is an HTML template until an opening tag says otherwise, and this adapter used to read the whole file as PHP. A `<script>function init() {` line in the markup matched the method pattern and was indexed as a PHP function: a fabricated symbol, which this repo treats as worse than a missing one. The brace-span layer walked the same markup and mis-nested on its braces.
+ *
+ * Exported because {@link extractPhp} and the brace-span pass in registry.ts must agree about where the PHP is; two copies of this rule could drift, which is the defect that produced the Groovy coupling.
+ *
+ * A file with no opening tag anywhere is returned unchanged: that is a fragment rather than a template, and blanking it would index nothing at all.
+ */
+export function maskPhpInlineHtml(content: string): string {
+  const opener = /<\?(?:php\b|=)/i
+  if (!opener.test(content)) return content
+  let out = ''
+  let i = 0
+  let inPhp = false
+  while (i < content.length) {
+    if (inPhp) {
+      // No closing tag is ordinary in modern PHP, so an unclosed region simply runs to EOF.
+      const close = content.indexOf('?>', i)
+      const end = close === -1 ? content.length : close + 2
+      out += content.slice(i, end)
+      i = end
+      inPhp = false
+      continue
+    }
+    const m = opener.exec(content.slice(i))
+    const end = m === null ? content.length : i + m.index
+    while (i < end) {
+      out += content[i] === '\n' ? '\n' : ' '
+      i++
+    }
+    if (m === null) break
+    inPhp = true
+  }
+  return out
+}
+
 export function extractPhp(
   content: string,
   filePath: string,
 ): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
   const imports: AdapterImport[] = []
-  const lines = content.split(/\r?\n/)
+  const lines = maskPhpInlineHtml(content).split(/\r?\n/)
 
   // Stack of (className, braceDepthAtEntry, bodyEntered)
   // Fourth slot is the declaration's own kind (`class`/`interface`/`trait`/`enum`), lower-cased: the enum-case branch below must fire only inside an `enum` body.

@@ -234,6 +234,15 @@ describe('Groovy adapter', () => {
 })
 
 describe('Perl adapter', () => {
+  it('does not lose a later sub to a heredoc opener that is only text inside a string literal', () => {
+    // HAND-DERIVED: `"<<EOT"` inside a double-quoted string is ordinary text, not a heredoc opener (perlop, "Quote and Quote-like Operators"). Read as an opener, it swallowed every line after it looking for a terminator that never came, taking the rest of the file's subs with it.
+    const src = ['package Demo;', 'sub first {', '  my $x = "<<EOT";', '  return $x;', '}', 'sub second { return 2; }', '1;'].join('\n')
+    const names = extractPerl(src, 'Demo.pm').symbols.map((s) => s.name)
+    // Survival anchor: the sub before the string is still read, so this cannot pass by the masker blanking everything.
+    expect(names).toContain('first')
+    expect(names).toContain('second')
+  })
+
   it('reads the Demo::Paths fixture: the package to its end and each sub to its closing brace, past the POD between them', () => {
     const r = extractPerl(fixture('Sample.pm'), 'Sample.pm')
     expect(shape(r)).toEqual([

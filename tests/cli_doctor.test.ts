@@ -974,6 +974,20 @@ describe('cli_doctor', () => {
     it('reports no missing grammar packages when all resolve', () => {
       expect(missingTreeSitterGrammarPackages()).toEqual([])
     })
+
+    // `missingTreeSitterGrammarPackages` only calls require.resolve, so an empty list means the
+    // packages are PRESENT, never that they work -- and while the core is down, whether a grammar
+    // loads cannot be established at all. Printing nothing in that case read as a clean bill of
+    // health for the half that was never tested, right beside a core failure the same line reports.
+    // Provenance: HAND-DERIVED from what the check actually performs.
+    it('says that only the presence of the grammar packages was checked when the core is unavailable', () => {
+      setTreeSitterCoreForTesting(null, dlopenError())
+      const result = checkTreeSitter()
+      // Survival anchor: the core diagnosis it exists to deliver is still there, so this cannot
+      // pass by the message having been replaced wholesale.
+      expect(result.message).toContain('native binary will not load')
+      expect(result.message).toMatch(/only presence was checked/i)
+    })
   })
 
   describe('runDoctor', () => {

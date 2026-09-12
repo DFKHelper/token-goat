@@ -63,6 +63,25 @@ describe('Fortran adapter', () => {
     expect(shape(extractFortran(fixture('Sample.f'), 'Sample.f'))).toEqual(['program MAIN 2-5', 'subroutine FILL 7-18', 'function TWICE 19-22'])
   })
 
+  it('reads an all-indented free-form file that carries a fixed-form extension, rather than indexing nothing', () => {
+    // HAND-DERIVED: the free-form signals here are a `::` declaration and a trailing `&` continuation (https://fortran-lang.org/learn/quickstart/organising_code/). Every line is indented, so nothing sits in column 1 -- which used to be accepted as proof of fixed form. The file then read as all continuation lines, nothing was ever flushed, and it indexed to zero symbols with no error at all.
+    const src = [
+      '  module shapes',
+      '    implicit none',
+      '    integer :: counter',
+      '  contains',
+      '    subroutine bump(by)',
+      '      integer, intent(in) :: by',
+      '      counter = counter + &',
+      '        by',
+      '    end subroutine bump',
+      '  end module shapes',
+    ].join('\n')
+    const names = extractFortran(src, 'shapes.f').symbols.map((s) => s.name)
+    expect(names).toContain('shapes')
+    expect(names).toContain('bump')
+  })
+
   // FORMAT-DERIVED: https://fortran-lang.org/learn/quickstart/organising_code/ and the IBM XL Fortran language reference (https://www.ibm.com/docs/en/xl-fortran-aix/16.1.0?topic=attributes-abstract-interfacefortran-2003) for submodules, separate module procedures, BLOCK DATA, generic interfaces and SELECT TYPE; keywords in mixed case since Fortran ignores case.
   const FORMS = [
     'SUBMODULE (Geometry) GeometryImpl',

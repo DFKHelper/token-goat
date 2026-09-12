@@ -10,7 +10,7 @@ import type { RegexLanguage } from '../language_specs.js'
 import type { SymbolEntry } from '../parser_types.js'
 import { assignBraceBlockSpans } from './common.js'
 import { extractCsharp } from './csharp.js'
-import { extractPhp } from './php.js'
+import { extractPhp, maskPhpInlineHtml } from './php.js'
 import { extractHtml } from './html.js'
 import { extractLiquid } from './liquid.js'
 import { extractKotlin } from './kotlin.js'
@@ -88,7 +88,11 @@ function sectionsToHeadingSymbols(
 // One entry per adapter-backed `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
 export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLanguage>, SymbolExtractor> = {
   csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true }),
-  php: (content, filePath) => assignBraceBlockSpans(extractPhp(content, filePath).symbols, content, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' }),
+  // Both halves walk the SAME masked text: the brace pass used to span raw file content, so it nested on braces in the inline HTML the extractor is no longer reading.
+  php: (content, filePath) => {
+    const code = maskPhpInlineHtml(content)
+    return assignBraceBlockSpans(extractPhp(code, filePath).symbols, code, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' })
+  },
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]

@@ -11,6 +11,7 @@ import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB, resolveOnPath } from './util.js'
+import { normalizePath } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
@@ -586,7 +587,11 @@ export function checkTreeSitter(): DoctorResult {
       `${TREE_SITTER_LANGUAGES.join(', ')} fall back to a coarse regex scan with no references, and the skeleton fold is off; ` +
       `the other ${nonTreeSitterLanguageCount()} languages index normally`
     const missing = missingTreeSitterGrammarPackages()
-    const grammars = missing.length > 0 ? `; grammar packages not installed: ${missing.join(', ')}` : ''
+    // Says plainly what was checked. `missingTreeSitterGrammarPackages` only resolves each package, so an empty list means "all present", never "all working": whether a grammar loads cannot be established at all while the core is down, and printing nothing here read as a clean bill of health for the half that was never tested.
+    const grammars =
+      missing.length > 0
+        ? `; grammar packages not installed: ${missing.join(', ')}`
+        : '; all grammar packages are present, though only presence was checked: whether each one loads cannot be tested while the core is unavailable'
     let message: string
     switch (classifyTreeSitterLoadError(err)) {
       case 'absent':
@@ -817,8 +822,26 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
  *
  * Visual Studio runs no token-goat hooks, so there is no hook to exercise: what can break on this machine is the entry's node or bundle path going stale after an upgrade, or the server being listed twice because `alsoReadPaths` (the solution's `.vscode/mcp.json`, which Visual Studio reads too) registers it as well.
  */
+/**
+ * `paths` with duplicates removed, comparing on the resolved path.
+ *
+ * The two callers below are unparameterized (`visualStudioUserMcpPath()` and
+ * `visualStudioProjectMcpPath()`), and with the cwd at the user's home directory both resolve to
+ * the same `~/.mcp.json`: a single registration then reports as a duplicate, and the message prints
+ * one path twice. Case folding and separator normalization are both needed, not either alone.
+ */
+function dedupeByResolvedPath(paths: readonly string[]): string[] {
+  const seen = new Set<string>()
+  return paths.filter((p) => {
+    const key = normalizePath(path.resolve(p)).toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: readonly string[] = []): DoctorResult | null {
-  const found = mcpPaths.flatMap((mcpPath) => {
+  const found = dedupeByResolvedPath(mcpPaths).flatMap((mcpPath) => {
     const entry = visualStudioManagedEntry(mcpPath)
     return entry === null ? [] : [{ mcpPath, ...entry }]
   })
@@ -831,7 +854,7 @@ export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: re
       message: `the token-goat MCP entry in ${stale.mcpPath} points at ${stale.command} ${stale.bundlePath}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
     }
   }
-  const registered = [...found.map((e) => e.mcpPath), ...alsoReadPaths.filter((p) => visualStudioManagedEntry(p) !== null)]
+  const registered = dedupeByResolvedPath([...found.map((e) => e.mcpPath), ...alsoReadPaths.filter((p) => visualStudioManagedEntry(p) !== null)])
   if (registered.length > 1) {
     return {
       name: 'Visual Studio',

@@ -516,7 +516,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     }
     result[VSCODE_TOOL_NAME_KEY] = toolName
     result['_tg_harness'] = harness
-    // VS Code's payload carries no cwd (ChatHookService in extension.js sends only timestamp/hook_event_name/session_id/transcript_path plus the tool fields), but it spawns every hook in the workspace folder, so that is the cwd.
+    // VS Code does send a cwd: the shipped bundle adds it from the hook's own cwd as an fsPath, and the hook-config defaults set it to the workspace folder. This fill is the fallback for the case where it arrives absent or empty, which is why it only ever writes when there is nothing there: a real cwd from the harness is always preferred to ours. An earlier version of this comment claimed the payload carried no cwd at all, which was read off the extension source rather than a real run.
     if (typeof result['cwd'] !== 'string' || result['cwd'] === '') result['cwd'] = process.cwd()
     return result
   }
