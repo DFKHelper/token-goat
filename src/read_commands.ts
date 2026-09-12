@@ -1902,7 +1902,20 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
       if (cParent.toLowerCase() === symBaseLower) return true
       if (cParent === '' && c.docstring.toLowerCase() === symBaseLower) return true
       return containers.some(
-        (cls) => cls.filePath === c.filePath && c.lineStart >= cls.lineStart && c.lineEnd <= cls.lineEnd,
+        (cls) =>
+          cls.filePath === c.filePath &&
+          // A container is never its own containment match (mirrors findParentName's `sameSpan`
+          // exclusion above): without this, a same-named non-nesting pair on adjacent spans --
+          // e.g. an HTML `heading` symbol and an unrelated `html_id` symbol that both happen to
+          // be named "Overview" -- lets the OUTER one satisfy containment against ITSELF (its
+          // own span trivially contains itself), so `Overview.Overview` (the exact qualifier
+          // `formatAmbiguity` printed as the retry hint for the html_id candidate, since
+          // findParentName resolved its enclosing heading's name to the same string) kept both
+          // candidates in scope and reported ambiguous again -- a disambiguation hint that could
+          // never resolve the ambiguity it was emitted for.
+          !(cls.lineStart === c.lineStart && cls.lineEnd === c.lineEnd) &&
+          c.lineStart >= cls.lineStart &&
+          c.lineEnd <= cls.lineEnd,
       )
     })
     if (scoped.length > 0) candidates = scoped
