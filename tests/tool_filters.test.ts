@@ -4,6 +4,7 @@ import { CompressedOutput, ToolFilter } from '../src/tool_filters/base.js'
 import {
   detectFromCommand,
   compressOutput,
+  deliverCompressed,
   filterByName,
   selectFilter,
   TOOL_FILTERS,
@@ -309,6 +310,53 @@ describe('apply(): redacts secret-shaped values before returning', () => {
     const result = new GenericFilter().apply(raw, '', 0, [])
     expect(result.text).not.toContain('ghp_' + 'a'.repeat(36))
     expect(result.text).toContain('[REDACTED:github_token]')
+  })
+
+  // Regression (HAND-DERIVED: offset computed independently against helpers.ts's own
+  // LONG_LINE_MAX_CHARS constant, not read off its source): apply()'s truncators (clipWideLines,
+  // capLongLines, truncateMiddleSmart, capBytes) used to run BEFORE step 9.5's
+  // redactSecrets(body). capLongLines (step 7.5) is the tightest of the four for a single long
+  // line -- it head-truncates to LONG_LINE_MAX_CHARS (1000), tighter than clipWideLines's 2000-char
+  // keep -- so a credential straddling ITS cut is the one that actually reaches the final body: the
+  // surviving piece is shorter than the AWS pattern's fixed 20-char match, so the pattern that
+  // would have caught the whole key no longer recognises the remnant. Field name deliberately
+  // avoids any redaction keyword. Asserts absence of a FRAGMENT (4+ trailing AKIA chars), not just
+  // the full key: a full-key-only assertion passes even while a fragment leaks, per this repo's
+  // own fixture-provenance lesson.
+  it('never leaves a raw AKIA fragment when a key straddles capLongLines\' 1000-char cut', () => {
+    const key = 'AKIA' + 'ABCDEFGHIJ123456' // 20 chars total, fixed-length pattern, no keyword fallback
+    const prefix = 'x'.repeat(990) // capLongLines keeps only the first 1000 chars of an over-long line
+    const suffix = 'y'.repeat(200) // pushes the line past LONG_LINE_MAX_CHARS (1000) without engaging clipWideLines's separate 4000-char threshold
+    const line = prefix + key + suffix
+    expect(line.length).toBeGreaterThan(1000)
+    expect(line.length).toBeLessThan(4000)
+    const result = new GenericFilter().apply(line, '', 0, [])
+    expect(result.text).not.toMatch(/AKIA[0-9A-Z]{4,}/)
+  })
+
+  // Regression, found live while dogfooding the capLongLines fix above through the real
+  // `token-goat compress` binary (HAND-DERIVED: the key is a fixed-length AWS-shaped literal, not
+  // read off any matcher). apply() itself always redacts (Step 1.5/9.5), but its caller,
+  // dispatch.ts's deliverCompressed(), only ships `compressed.text` when the net-benefit gate
+  // (`worthApplying`) clears the configured floor; below the floor it used to fall back to
+  // `combineStreams(stdout, stderr)` -- the RAW, pre-redaction streams -- discarding the
+  // redaction apply() had already done. A single-line input that is just a bare credential
+  // guarantees the gate fails (the redaction placeholder is not smaller than the key it
+  // replaces, so there is no net saving to clear the floor), which is exactly the shape that
+  // reproduces this: `apply()` redacts it, but the old fallback re-introduced the raw key on the
+  // one path that decides what the model actually receives (`deliverCompressed`'s own doc
+  // comment calls itself "the single definition of what the model actually receives").
+  it('never leaves a raw AKIA fragment when redaction alone does not clear the net-benefit floor', () => {
+    const key = 'AKIA' + 'ABCDEFGHIJ123456' // 20 chars total, fixed-length pattern, no keyword fallback
+    const filter = new GenericFilter()
+    const compressedOnly = compressOutput(filter, key, '', 0, [])
+    // Pin the premise this test relies on: redaction alone must not clear the net-benefit floor,
+    // so the fallback branch under test actually runs (a full-key -> placeholder swap is not a
+    // net byte saving here).
+    expect(compressedOnly.worthApplying(100)).toBe(false)
+    const delivered = deliverCompressed(filter, key, '', 0, [])
+    expect(delivered.applied).toBe(false)
+    expect(delivered.text).not.toMatch(/AKIA[0-9A-Z]{4,}/)
   })
 })
 

@@ -8,6 +8,7 @@ import { resolveIndexPath } from '../paths.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, combineStreams, hasBareBackgroundOrNewline, hasUnquotedOperator, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
+import { redactSecrets } from '../secret_redact.js'
 import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS, genericCIFilter } from './ci.js'
@@ -235,7 +236,15 @@ export interface DeliveredCompression {
  *
  * A rewrite whose savings do not clear the marker's own byte cost plus the configured
  * floor destabilises the bytes for too small a gain, so below the floor the ORIGINAL
- * streams ship untouched with no marker -- exactly as though no filter had matched.
+ * streams ship untouched (no compression marker) -- exactly as though no filter had
+ * matched, EXCEPT redaction: `compressed` already ran `filter.apply()`, which redacts
+ * secret-shaped values before any truncator can cut one below its recognition floor
+ * (see base.ts's Step 1.5/9.5 comments). Falling back to the raw `combineStreams(stdout,
+ * stderr)` here used to throw that redaction away -- a credential in a command whose
+ * compression didn't clear the net-benefit floor shipped to the model raw, live, on this
+ * exact rewrite surface. Re-redacting the raw streams on the fallback path keeps the
+ * invariant "the net-benefit gate only ever discards compression, never redaction" true
+ * for both branches; it is a no-op whenever nothing in stdout/stderr looked like a secret.
  *
  * Callers assemble `text + marker` themselves rather than receiving a finished body,
  * because the runner caps tokens BETWEEN the two so the savings marker survives
@@ -253,7 +262,7 @@ export function deliverCompressed(
   const compressed = compressOutput(filter, stdout, stderr, exitCode, argv, opts)
   const minNet = resolveMinNetSavingsBytes()
   const applied = compressed.worthApplying(minNet)
-  const text = applied ? compressed.text : combineStreams(stdout, stderr)
+  const text = applied ? compressed.text : redactSecrets(combineStreams(stdout, stderr)).text
   const marker = applied ? compressed.withMarker(minNet).slice(compressed.text.length) : ''
   return { applied, text, marker, compressed }
 }
