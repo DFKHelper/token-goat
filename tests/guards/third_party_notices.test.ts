@@ -139,6 +139,21 @@ describe('third-party notices', () => {
     expect(run).toContain('up to date')
   })
 
+  // The generator reads each dependency's LICENSE file straight off disk and pastes it in. Several
+  // ship CRLF, so the emitted document arrived with mixed line endings -- and `.gitattributes` sets
+  // `* text=auto`, which normalizes to LF on commit. The committed file therefore never matched what
+  // the generator produced from the same tree, so `--check` failed on a clean checkout: the release
+  // gate could not pass no matter how correct the content was. Normalizing the generator's own output
+  // is what makes the two agree.
+  it('is written with LF endings, so the committed file matches what the generator emits', () => {
+    const raw = fs.readFileSync(NOTICES, 'utf8')
+    // Survival anchor: the document still has real content and real sections, so this cannot pass
+    // by the file having been emptied.
+    expect(raw.length).toBeGreaterThan(1000)
+    expect(raw).toContain('\n## ')
+    expect(raw.includes('\r'), 'THIRD_PARTY_NOTICES.md contains a CR, so `* text=auto` will normalize it on commit and the --check gate can never match').toBe(false)
+  })
+
   it('ships inside the published package', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')) as { files?: string[] }
 

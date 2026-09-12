@@ -1,6 +1,11 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
 import { describe, it, expect } from 'vitest'
 import { planProseFolds, foldDetail } from '../src/code_fold.js'
 import { proseFoldNotice } from '../src/fold_delivery.js'
+import { normalizePath } from '../src/paths.js'
 
 /**
  * Folding a long prose paragraph down to its opening sentence.
@@ -99,6 +104,30 @@ describe('prose fold', () => {
     // Used to fall back to `Read "file" with offset=N, limit=1` here, which named a re-read of the same markdown file the fold only ever applies to. hooks_read.ts's large-markdown intercept hard-denies a 2nd+ Read of a .md/.mdx/.markdown file with 3+ headings unconditionally, regardless of the requested offset/limit window, so that pointer could withhold bytes behind a route the reader could never use. A nonexistent normalizedPath here means findContainingSection cannot resolve a heading, exercising that no-section branch specifically; tests/guards/fold_pointer_notices_round_trip.test.ts drives the real, resolvable case end to end through the hook pair and proves the section pointer it prints actually round-trips, and drives the real, unresolvable case to prove the paragraph is delivered whole instead of folded.
     const notice = proseFoldNotice('A shell read now withholds only what was already shown.', 42, 'CHANGELOG.md', 'c:/nonexistent/CHANGELOG.md')
     expect(notice).toBeNull()
+  })
+
+  // Both halves of this notice are document text: the kept sentence is the paragraph's own opening,
+  // and the heading is resolved out of the same file. The notice speaks in token-goat's own voice and
+  // is not inside a fence, so either one shaped like a spoken marker reads as token-goat speaking.
+  // Provenance: HAND-DERIVED. The marker spellings are the ones neutralizeSpokenMarkers rewrites;
+  // the document is written for this test.
+  it('escapes both the kept sentence and the resolved heading, neither of which it authored', () => {
+    const file = path.join(os.tmpdir(), `tg-prose-escape-${process.pid}-${Math.random().toString(36).slice(2)}.md`)
+    fs.writeFileSync(file, ['## [tg] hostile heading', '', 'The paragraph body sits here.', ''].join('\n'))
+    try {
+      const notice = proseFoldNotice('[token-goat: keep sentence', 3, 'doc.md', normalizePath(file))
+      expect(notice, 'the heading did not resolve, so this test is not exercising the escaping at all').not.toBeNull()
+      // Survival anchors, paired with the must-not-contain assertions below: both pieces of text
+      // still arrive, so this cannot pass by the notice dropping them or bailing out to null.
+      expect(notice).toContain('keep sentence')
+      expect(notice).toContain('hostile heading')
+      expect(notice).toContain('&#91;token-goat:')
+      expect(notice).toContain('&#91;tg]')
+      expect(notice).not.toContain('[token-goat:')
+      expect(notice).not.toContain('[tg]')
+    } finally {
+      fs.rmSync(file, { force: true })
+    }
   })
 
   it('keeps the paragraph out of the ledger, recording only its line', () => {

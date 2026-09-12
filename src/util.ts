@@ -1193,10 +1193,22 @@ export function quoteShellPath(value: string): string {
   return `"${value.replace(/[\\$`"]/g, '\\$&')}"`
 }
 
+// Wraps a path in single quotes for embedding in a generated PowerShell command, doubling any inner single quote. A PowerShell field is not a cmd.exe command line: PowerShell expands `$name` and `$(...)` inside a double-quoted string, and a dollar sign is a legal character in a Windows directory name, so the double-quoted form quoteShellPath emits on win32 (which escapes nothing) would have that text evaluated every time the hook fires. A single-quoted PowerShell string is literal, which is why this is a separate helper rather than a branch inside quoteShellPath: the correct quoting depends on the shell the field is read by, not on the platform.
+export function quotePowershellPath(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
 export function hookCommandFor(scriptPath: string, event: string): string {
   const entryPath = process.argv[1]
   const entryArg = entryPath ? ` ${quoteShellPath(entryPath)}` : ''
   return `${quoteShellPath(process.execPath)} ${quoteShellPath(scriptPath)} ${event}${entryArg}`
+}
+
+/** hookCommandFor's PowerShell form: the same shape, single-quoted so PowerShell cannot expand a `$` in any embedded path. */
+export function hookPowershellCommand(scriptPath: string, event: string): string {
+  const entryPath = process.argv[1]
+  const entryArg = entryPath ? ` ${quotePowershellPath(entryPath)}` : ''
+  return `${quotePowershellPath(process.execPath)} ${quotePowershellPath(scriptPath)} ${event}${entryArg}`
 }
 
 // Capped Levenshtein distance, mirroring config_commands.ts's didYouMeanKeySuffix helper (same

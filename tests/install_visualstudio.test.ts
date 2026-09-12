@@ -326,6 +326,23 @@ describe('Visual Studio seeing token-goat in both .mcp.json and .vscode/mcp.json
     expect(dup?.message).toContain(vscodeProjectMcpPath(project))
   })
 
+  // The user and project paths are distinct spellings of one file whenever the project IS the home
+  // directory, which is ordinary for a solution opened straight out of `%USERPROFILE%`. Counting it
+  // twice made doctor tell the user to uninstall one of two registrations that were the same one,
+  // and following that advice removes the only entry they have. Provenance: HAND-DERIVED, the two
+  // spellings are built here rather than read back off the resolver.
+  it('does not report a duplicate when the user and project paths are two spellings of one file', () => {
+    installVisualStudio()
+    const userPath = visualStudioUserMcpPath()
+    // Same file, reached through a redundant `.` segment. Built by concatenation rather than
+    // path.join, which would collapse the segment on the spot and leave two identical strings.
+    const sameFileOtherSpelling = `${path.dirname(userPath)}${path.sep}.${path.sep}${path.basename(userPath)}`
+    expect(sameFileOtherSpelling).not.toBe(userPath)
+    const result = checkVisualStudio([userPath, sameFileOtherSpelling])
+    expect(result?.status, 'one file counted as two registrations, so doctor advised removing one of them').toBe('ok')
+    expect(result?.message).not.toContain('more than once')
+  })
+
   it('mcp-status --visualstudio reports the user file, and the project file with a projectRoot', () => {
     expect(visualStudioMcpStatus({ projectRoot: project })).toEqual({ configured: false, checkedPaths: [visualStudioUserMcpPath(), visualStudioProjectMcpPath(project)] })
     installVisualStudio({ project: true })
@@ -387,6 +404,36 @@ describe('sharing .github/copilot-instructions.md with the VS Code and Copilot C
     uninstallCopilotCli({ local: true })
     expect(gateCount(instructions())).toBe(1)
     expect(gateCount(blockOf(instructions(), VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END))).toBe(1)
+  })
+})
+
+describe('uninstall deletes only a config file token-goat created', () => {
+  // Once token-goat's entry is walked back, the two cases are byte-identical: a file it created from
+  // nothing and a user's pre-existing empty stub both end up holding the same empty object. Emptiness
+  // is therefore not evidence of ownership, and deleting on that reasoning destroyed a user's file
+  // along with anything else in it. Creation has to be remembered instead.
+  // Provenance: HAND-DERIVED. `{"mcpServers": {}}` is Claude Code's own project stub shape, the one
+  // readMcpConfig reads and the one a developer plausibly already has; the rest is written for this test.
+  it('leaves a user-authored .mcp.json in place, even though uninstall empties it', () => {
+    const userOwned = visualStudioProjectMcpPath()
+    fs.mkdirSync(path.dirname(userOwned), { recursive: true })
+    fs.writeFileSync(userOwned, '{"mcpServers": {}}\n')
+    installVisualStudio({ project: true })
+    expect(uninstallVisualStudio({ project: true })).toBe(true)
+    expect(fs.existsSync(userOwned), 'uninstall deleted a file token-goat never created').toBe(true)
+    // Survival anchor on the other half of the rule: our own entry really was removed, so this
+    // cannot pass by uninstall having done nothing at all.
+    const after = JSON.parse(fs.readFileSync(userOwned, 'utf8')) as Record<string, unknown>
+    expect((after['mcpServers'] as Record<string, unknown> | undefined)?.['token-goat']).toBeUndefined()
+  })
+
+  it('still deletes an .mcp.json it created itself once nothing of the user is left in it', () => {
+    const created = visualStudioProjectMcpPath()
+    expect(fs.existsSync(created)).toBe(false)
+    installVisualStudio({ project: true })
+    expect(fs.existsSync(created)).toBe(true)
+    uninstallVisualStudio({ project: true })
+    expect(fs.existsSync(created), 'a file token-goat created and then emptied should not be left behind').toBe(false)
   })
 })
 

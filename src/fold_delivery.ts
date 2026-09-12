@@ -13,6 +13,7 @@ import { getFileEntry, querySymbols } from './index_reader.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { detectLanguage } from './parser_types.js'
+import { displaySafeText } from './paths.js'
 import { findContainingSection } from './section_reader.js'
 
 /** Lines kept at the head of each folded body: the declaration plus enough to judge the rest. */
@@ -47,7 +48,9 @@ export function bodyFoldNotice(name: string, firstLine: number, lastLine: number
   const n = lastLine - firstLine + 1
   // The anchor is emitted whenever the declaration line is known, never only when a duplicate name is detected: the fold sees one file's spans and cannot cheaply know whether a name is unique, and an anchored command resolves identically for one that is. The `file::symbol@LINE` grammar is resolveSymbolSpec's, adopted by graph_commands.ts for this same failure.
   const anchor = declLine === undefined ? '' : `@${declLine}`
-  return `... ${n} more lines of ${name} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${name}${anchor}"`
+  // The symbol name comes from the file being read, so it is untrusted text on a line this notice speaks in token-goat's own voice: a name shaped like one of our spoken markers would read as a directive rather than as a symbol. The path beside it is escaped by every caller already; the name was not.
+  const safeName = displaySafeText(name)
+  return `... ${n} more lines of ${safeName} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${safeName}${anchor}"`
 }
 
 /**
@@ -77,7 +80,8 @@ export function isProseFoldablePath(normalizedPath: string): boolean {
 export function proseFoldNotice(keep: string, line: number, shownPath: string, normalizedPath: string): string | null {
   const section = findContainingSection(normalizedPath, line, line)
   if (section === null) return null
-  return `${keep} ... rest of paragraph folded (line ${line}) -- token-goat section "${shownPath}::${section.heading}"`
+  // Both the kept sentence and the resolved heading are document text, and this notice is not inside a fence: unescaped, a paragraph opening with one of our spoken markers speaks as token-goat.
+  return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section "${shownPath}::${displaySafeText(section.heading)}"`
 }
 
 export function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {

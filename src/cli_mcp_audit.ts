@@ -14,6 +14,7 @@ import { resolveProjectRoot } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
+import { displaySafeText } from './paths.js'
 
 export interface McpAuditCommandOptions {
   project?: string
@@ -211,7 +212,12 @@ export function buildMcpAuditReport(projectRoot: string, home: string = os.homed
       const cost = perCallTokens * callCount
 
       servers.push({
-        name,
+        // Escaped here, at construction, rather than at print time: the server name is a key an
+        // arbitrary repository's .mcp.json chooses, and it reaches a model verbatim through both
+        // the printed table and `--json`. Unescaped, it can spell token-goat's own `[tg]` and
+        // `[token-goat: ...]` markers and speak in this tool's voice inside the model's context;
+        // a newline or `|` in it also breaks the markdown table apart.
+        name: displaySafeText(name),
         perCallTokens,
         callCount,
         totalTokens: cost,
@@ -226,7 +232,7 @@ export function buildMcpAuditReport(projectRoot: string, home: string = os.homed
     if (!config || !(name in config)) {
       const cost = metrics.perCallEstimate * metrics.callCount
       servers.push({
-        name,
+        name: displaySafeText(name),
         perCallTokens: metrics.perCallEstimate,
         callCount: metrics.callCount,
         totalTokens: cost,
