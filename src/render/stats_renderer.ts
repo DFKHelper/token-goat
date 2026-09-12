@@ -31,6 +31,7 @@ import type {
   SourceStat,
   StatsData,
 } from './types.js'
+import { displaySafeText } from '../paths.js'
 import { toLocalDateKey } from '../stats.js'
 
 // Statistics messages for insights section
@@ -913,7 +914,7 @@ function _renderByProjectSection(stats: StatsData): string[] {
         nameColor: C.TEXT_PRIMARY,
       }),
     )
-    lines.push(`${_M}  ${fg(...C.TEXT_DIM)}└─ ${p.hash}  ${stripAnsi(p.path)}${RESET}`)
+    lines.push(`${_M}  ${fg(...C.TEXT_DIM)}└─ ${p.hash}  ${displaySafeText(stripAnsi(p.path))}${RESET}`)
   }
 
   return lines

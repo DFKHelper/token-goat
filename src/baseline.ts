@@ -23,7 +23,7 @@ import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
-import { normalizePath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
@@ -316,8 +316,8 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
     // path is, so `- normalizePath (function) — src/paths.ts:12-23` can be fed straight back in as
     // `read "src/paths.ts::normalizePath"`. Costs ~10 tokens a line and saves a round trip each.
     for (const s of map.topSymbols) {
-      const loc = `${toDisplayPath(map.rootDir, s.filePath)}:${s.lineStart}-${s.lineEnd}`
-      lines.push(`- ${s.name} (${s.kind}) — ${loc}`)
+      const loc = `${displaySafeText(toDisplayPath(map.rootDir, s.filePath))}:${s.lineStart}-${s.lineEnd}`
+      lines.push(`- ${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${loc}`)
     }
   } else {
     // Reuses checkSymbolCount's wording (cli_doctor.ts) for the same empty-index condition, so a `map` against an unindexed project says so instead of silently omitting the whole section -- otherwise the missing heading reads as "this project has no notable symbols" rather than "this project has never been indexed". The command is built by suggestedIndexCommand rather than hardcoded: a bare `token-goat index .` refuses outright in a non-git folder, which is exactly the case this branch fires in most, so the hardcoded form printed a command that could not run as shown.

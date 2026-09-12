@@ -39,7 +39,7 @@ import { fingerprintFile, fingerprintContent } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
-import { resolveIndexPath } from './paths.js'
+import { displaySafePath, displaySafeText, resolveIndexPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import {
@@ -1028,7 +1028,8 @@ function runPurge(): void {
   const result = purgeDataDirectories()
   for (const root of result.absent) out(`Nothing to purge at ${root}.`)
   for (const removed of result.removed) out(`Purged ${removed.path} (${formatBytes(removed.bytes)} reclaimed).`)
-  for (const failure of result.failed) err(`token-goat: could not purge ${failure.path}: ${failure.reason}`)
+  // The reason is an OS error string, which quotes the offending path back inside it.
+  for (const failure of result.failed) err(`token-goat: could not purge ${displaySafePath(failure.path)}: ${displaySafeText(failure.reason)}`)
 }
 
 function cmdWorkerStart(): void {
@@ -1901,7 +1902,8 @@ function cmdTranscriptOutline(file: string, opts: { json?: boolean }) {
   } else {
     const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
     if (outline.speakers.length > 0) {
-      lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${s.name}  (${s.cueCount} cues)`))
+      // Speaker labels come out of the transcript being read, so they are document text.
+      lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${displaySafeText(s.name)}  (${s.cueCount} cues)`))
     }
     lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
     text = lines.join('\n')
@@ -2329,7 +2331,7 @@ async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
   for (const skill of skills) {
     const bodyKb = (skill.bodyLen / 1024).toFixed(1)
     const compactKb = skill.compactLen > 0 ? (skill.compactLen / 1024).toFixed(1) : '-'
-    lines.push(`  ${skill.name.padEnd(25)} body: ${bodyKb.padStart(6)}K  compact: ${compactKb.padStart(6)}K`)
+    lines.push(`  ${displaySafeText(skill.name).padEnd(25)} body: ${bodyKb.padStart(6)}K  compact: ${compactKb.padStart(6)}K`)
   }
 
   // Add recommendations for skills without compacts and over ~1500 tokens (6000 bytes).
@@ -2339,7 +2341,7 @@ async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
     lines.push('## Recommendations')
     for (const skill of noCompactLargeSkills) {
       const estimatedTokens = Math.floor(skill.bodyLen / 4)
-      lines.push(`  ${skill.name}: add <!-- COMPACT_END --> marker (body ~${estimatedTokens}tok, no compact slice)`)
+      lines.push(`  ${displaySafeText(skill.name)}: add <!-- COMPACT_END --> marker (body ~${estimatedTokens}tok, no compact slice)`)
     }
   }
 
@@ -3388,7 +3390,8 @@ function cmdPack(
     const hits = scanSecrets(result.files)
     if (hits.length > 0) {
       for (const hit of hits) {
-        err(`token-goat: secret in ${hit.rel_path}:${hit.line}: ${hit.kind}`)
+        // rel_path is a repository path. kind is a SECRET_PATTERNS key, so escaping it is a no-op today: it is escaped anyway so that making that table configurable later cannot reopen this line.
+        err(`token-goat: secret in ${displaySafePath(hit.rel_path)}:${hit.line}: ${displaySafeText(hit.kind)}`)
       }
       process.exitCode = 2
       return
@@ -3623,14 +3626,16 @@ export function buildProgram(): Command {
       loadConfig()
       const parseErr = getLastConfigParseError()
       if (parseErr !== null) {
-        err(`token-goat: config.toml failed to parse (${parseErr}); using defaults — run \`token-goat config validate\` for details`)
+        // The parser quotes the offending line of the file back, so this banner carries file bytes in a line prefixed with token-goat's own name.
+        err(`token-goat: config.toml failed to parse (${displaySafeText(parseErr)}); using defaults — run \`token-goat config validate\` for details`)
       }
       // Same distinction as above, for the optional per-project .token-goat.toml override --
       // it fails open (global-only config still loads), but a corrupt project file should not
       // look identical to "no project override" for every command.
       const projectParseErr = getLastProjectConfigParseError()
       if (projectParseErr !== null) {
-        err(`token-goat: .token-goat.toml failed to parse (${projectParseErr}); ignoring project override`)
+        // Same, and worse: a project override arrives with the repository, so these bytes are third-party on every clone. This banner prints before every command.
+        err(`token-goat: .token-goat.toml failed to parse (${displaySafeText(projectParseErr)}); ignoring project override`)
       }
       // A per-project file arrives with the repository, so it may not set the security controls
       // an administrator configures once. Say which settings were ignored: silently dropping
@@ -3638,7 +3643,7 @@ export function buildProgram(): Command {
       const lockedKeys = lastProjectConfigLockedKeys()
       if (lockedKeys.length > 0) {
         err(
-          `token-goat: .token-goat.toml may not set ${lockedKeys.join(', ')}; ` +
+          `token-goat: .token-goat.toml may not set ${displaySafeText(lockedKeys.join(', '))}; ` +
             'these are security settings and come from the global config or the environment only',
         )
       }

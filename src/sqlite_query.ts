@@ -36,6 +36,7 @@
  */
 
 import * as fs from 'node:fs'
+import { displaySafeText } from './paths.js'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
 
@@ -81,10 +82,10 @@ export function isSqliteFile(filePath: string): boolean {
  * fast with a plain Error instead of reaching the native addon with a bogus path. */
 export function openReadonlySqlite(filePath: string): SqliteDatabase {
   if (!fs.existsSync(filePath)) {
-    throw new Error(`file not found: ${filePath}`)
+    throw new Error(`file not found: ${displaySafeText(filePath)}`)
   }
   if (!isSqliteFile(filePath)) {
-    throw new Error(`not a valid SQLite database (bad file header): ${filePath}`)
+    throw new Error(`not a valid SQLite database (bad file header): ${displaySafeText(filePath)}`)
   }
   try {
     return new Database(filePath, { readonly: true, fileMustExist: true })
@@ -221,12 +222,12 @@ export function formatSqliteSchema(result: SqliteSchemaResult): string {
         const flags = [c.primaryKey ? 'PK' : null, c.notNull ? 'NOT NULL' : null, c.defaultValue !== null ? `DEFAULT ${c.defaultValue}` : null]
           .filter((f): f is string => f !== null)
           .join(' ')
-        lines.push(`  ${c.name} ${c.type || '(untyped)'}${flags ? `  ${flags}` : ''}`)
+        lines.push(`  ${displaySafeText(c.name)} ${displaySafeText(c.type || '(untyped)')}${flags ? `  ${flags}` : ''}`)
       }
       if (t.indexes.length > 0) {
         lines.push('  indexes:')
         for (const idx of t.indexes) {
-          lines.push(`    ${idx.name}${idx.unique ? ' (unique)' : ''}: ${idx.columns.join(', ')}`)
+          lines.push(`    ${displaySafeText(idx.name)}${idx.unique ? ' (unique)' : ''}: ${displaySafeText(idx.columns.join(', '))}`)
         }
       }
       if (t.foreignKeys.length > 0) {

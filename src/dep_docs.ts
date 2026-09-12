@@ -26,6 +26,7 @@
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { displaySafeText } from './paths.js'
 import type TsModule from 'typescript'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
@@ -335,8 +336,9 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
   if (!dirExists(pkgDir) || !fileExists(pkgJsonPath)) {
     const known = listInstalledPackageNames(nodeModulesDir)
     const suggestions = suggestPackageNames(opts.packageName, known)
-    const hint = suggestions.length > 0 ? ` (did you mean: ${suggestions.join(', ')}?)` : ''
-    return { text: `Package '${opts.packageName}' not found under ${nodeModulesDir}${hint}`, code: 1 }
+    // Package names come from node_modules, which is third-party by definition, and the requested name is echoed back in token-goat's own sentence.
+    const hint = suggestions.length > 0 ? ` (did you mean: ${suggestions.map(displaySafeText).join(', ')}?)` : ''
+    return { text: `Package '${displaySafeText(opts.packageName)}' not found under ${displaySafeText(nodeModulesDir)}${hint}`, code: 1 }
   }
 
   const pkgJsonRaw = fs.readFileSync(pkgJsonPath, 'utf8')
@@ -344,7 +346,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
   try {
     pkgJson = JSON.parse(pkgJsonRaw) as Record<string, unknown>
   } catch (e) {
-    return { text: `Malformed package.json for '${opts.packageName}': ${e instanceof Error ? e.message : String(e)}`, code: 1 }
+    return { text: `Malformed package.json for '${displaySafeText(opts.packageName)}': ${displaySafeText(e instanceof Error ? e.message : String(e))}`, code: 1 }
   }
 
   const name = typeof pkgJson['name'] === 'string' ? (pkgJson['name'] as string) : opts.packageName
@@ -397,14 +399,15 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     return { text, code: 0 }
   }
 
-  const lines: string[] = [`# ${name}${version !== null ? `  v${version}` : ''}`]
-  if (description !== null) lines.push(description)
+  // Name, version, description and entry point are all fields of a dependency's own package.json.
+  const lines: string[] = [`# ${displaySafeText(name)}${version !== null ? `  v${displaySafeText(version)}` : ''}`]
+  if (description !== null) lines.push(displaySafeText(description))
   lines.push('')
-  lines.push(`Package: ${pkgDir}`)
-  if (main !== null) lines.push(`Main: ${main}`)
+  lines.push(`Package: ${displaySafeText(pkgDir)}`)
+  if (main !== null) lines.push(`Main: ${displaySafeText(main)}`)
 
   if (typesLocation !== null) {
-    lines.push(`Types: ${typesLocation.path}  (${typesLocation.source})`)
+    lines.push(`Types: ${displaySafeText(typesLocation.path)}  (${typesLocation.source})`)
     if (!typescriptAvailable) lines.push('  (declaration outline not extracted: typescript compiler API not installed)')
   } else if (!typescriptAvailable) {
     lines.push('Types: not extracted (typescript compiler API not installed)')
@@ -416,7 +419,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     lines.push('')
     lines.push(`## Type declarations (${declarations.length})`)
     for (const d of declarations) {
-      lines.push(`  ${d.line.toString().padStart(6)}  ${d.kind.padEnd(10)}  ${d.name}  ${d.signature}`)
+      lines.push(`  ${d.line.toString().padStart(6)}  ${displaySafeText(d.kind).padEnd(10)}  ${displaySafeText(d.name)}  ${displaySafeText(d.signature)}`)
     }
   }
 

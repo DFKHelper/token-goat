@@ -25,6 +25,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { findClaudeMdFiles, findMemoryMd } from './cli_context_stats.js'
+import { displaySafeText } from './paths.js'
 import { auditClaudeMd, findContentDuplicates, type ClaudeMdReport, type DupCluster } from './memory_prune.js'
 import { resolveProjectRoot } from './project.js'
 import { confirmAndApply, type FileChange } from './confirm_apply.js'
@@ -53,7 +54,8 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
   } else {
     w(`## CLAUDE.md files (${reports.length})\n`)
     for (const report of reports) {
-      w(`\n  ${report.path}  (${report.tokens} tok)\n`)
+      // Everything echoed below is a line, heading or path out of the project's own CLAUDE.md, quoted back inside token-goat's report rather than fenced, so each one is escaped where it is interpolated.
+      w(`\n  ${displaySafeText(report.path)}  (${report.tokens} tok)\n`)
 
       if (report.exactDupLines.length === 0) {
         w('    exact-duplicate lines: none\n')
@@ -61,7 +63,7 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
         w(`    exact-duplicate lines: ${report.exactDupLines.length}\n`)
         for (const [firstLine, dupLine, stripped] of report.exactDupLines) {
           const shown = stripped.length > 70 ? `${stripped.slice(0, 70)}…` : stripped
-          w(`      line ${dupLine + 1} duplicates line ${firstLine + 1}: "${shown}"\n`)
+          w(`      line ${dupLine + 1} duplicates line ${firstLine + 1}: "${displaySafeText(shown)}"\n`)
         }
       }
 
@@ -70,7 +72,7 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
       } else {
         w(`    duplicate headings: ${report.dupSections.length}  [advisory only]\n`)
         for (const [heading, lnos] of report.dupSections) {
-          w(`      "${heading}" at lines ${lnos.map((n) => n + 1).join(', ')}\n`)
+          w(`      "${displaySafeText(heading)}" at lines ${lnos.map((n) => n + 1).join(', ')}\n`)
         }
       }
 
@@ -79,7 +81,7 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
       } else {
         w(`    cross-file overlaps: ${report.crossFileOverlaps.length}  [advisory only]\n`)
         for (const overlap of report.crossFileOverlaps) {
-          w(`      ${overlap}\n`)
+          w(`      ${displaySafeText(overlap)}\n`)
         }
       }
     }
@@ -92,7 +94,7 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
     for (const cluster of clusters) {
       w(
         `  [${cluster.method}, similarity ${cluster.similarity}, ~${cluster.tokens} tok] ` +
-          `${cluster.members.map((m) => path.basename(m)).join(', ')}\n`,
+          `${cluster.members.map((m) => displaySafeText(path.basename(m))).join(', ')}\n`,
       )
     }
   }
@@ -103,7 +105,7 @@ export async function runMemoryCommand(opts: MemoryCommandOptions = {}): Promise
   const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
 
   process.stdout.write('\n# token-goat memory\n')
-  process.stdout.write(`Project: ${projectRoot}\n\n`)
+  process.stdout.write(`Project: ${displaySafeText(projectRoot)}\n\n`)
 
   const claudeMds = findClaudeMdFiles(projectRoot)
   const reports = auditClaudeMd(claudeMds)

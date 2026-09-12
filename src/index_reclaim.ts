@@ -27,6 +27,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { displaySafeText } from './paths.js'
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { isWorkerRunning } from './worker.js'
@@ -273,11 +274,11 @@ export function cmdReclaimIndex(opts: {
   // worse. It happens on a database that did not exist before the run, where the whole file is
   // growth and there was never anything to reclaim.
   const delta = freed >= 0 ? `freed ${mb(freed)}` : `grew ${mb(-freed)}`
-  process.stdout.write(`reclaim-index: ${dbPath}\n`)
+  process.stdout.write(`reclaim-index: ${displaySafeText(dbPath)}\n`)
   process.stdout.write(`  ${mb(before)} -> ${mb(after)} (${delta})\n`)
   if (result.rebuilt) {
     for (const [table, n] of Object.entries(result.dropped)) {
-      process.stdout.write(`  dropped ${n} row(s) from ${table}\n`)
+      process.stdout.write(`  dropped ${n} row(s) from ${displaySafeText(table)}\n`)
     }
     // Say this explicitly: after a rebuild the index is intentionally empty, and a user who
     // runs a `symbol`/`read` query before reindexing would otherwise read the empty result as

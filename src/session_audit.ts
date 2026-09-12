@@ -30,6 +30,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { displaySafeText } from './paths.js'
 import * as readline from 'node:readline'
 
 import { estimateTokensFromLength } from './overflow_guard.js'
@@ -1201,7 +1202,7 @@ function pct(part: number, whole: number): string {
 export function formatSessionAudit(s: SessionAuditSummary): string {
   const lines: string[] = []
   lines.push('# Session corpus audit')
-  lines.push(`Corpus: ${s.corpusDir}`)
+  lines.push(`Corpus: ${displaySafeText(s.corpusDir)}`)
   lines.push(`Files: ${fmt(s.filesScanned)} scanned, ${fmt(s.filesFailed)} unreadable`)
   lines.push(`Lines: ${fmt(s.lines)} (${fmt(s.parseFailedLines)} unparseable), bytes: ${fmt(s.totalBytes)}`)
   lines.push(`Runtime: ${(s.runtimeMs / 1000).toFixed(1)}s`)
@@ -1236,7 +1237,8 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push('')
   lines.push('## Tool results by tool (estimated content size; calls = tool_use invocations)')
   for (const t of s.tools.slice(0, 25)) {
-    lines.push(`${t.name.padEnd(42)} calls ${fmt(t.calls).padStart(9)}  bytes ${fmt(t.resultBytes).padStart(15)}  est-tokens ${fmt(t.resultEstTokens).padStart(12)}`)
+    // An MCP tool name is chosen by whichever server registered it, so it is third-party text.
+    lines.push(`${displaySafeText(t.name).padEnd(42)} calls ${fmt(t.calls).padStart(9)}  bytes ${fmt(t.resultBytes).padStart(15)}  est-tokens ${fmt(t.resultEstTokens).padStart(12)}`)
   }
   if (s.tools.length > 25) lines.push(`(${s.tools.length - 25} smaller tools omitted from this table; --json has all)`)
   lines.push('')

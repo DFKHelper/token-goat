@@ -15,7 +15,7 @@
  *    looking for detail that isn't there).
  */
 
-import { normalizePath } from './paths.js'
+import { displaySafeText, normalizePath } from './paths.js'
 import { foldPath, stripBom } from './util.js'
 
 // ---- shared types -------------------------------------------------------------
@@ -557,7 +557,8 @@ function formatRanges(ranges: readonly LineRange[]): string {
 }
 
 function formatFileGaps(f: FileCoverageGaps): string {
-  const lines: string[] = [f.filePath]
+  // The file path and the function names come out of the coverage report the project produced.
+  const lines: string[] = [displaySafeText(f.filePath)]
   lines.push(`  lines: ${f.linesHit}/${f.linesTotal}  functions: ${f.functionsHit}/${f.functionsTotal}  branches: ${f.branchesHit}/${f.branchesTotal}`)
 
   if (f.summaryOnly) {
@@ -570,7 +571,7 @@ function formatFileGaps(f: FileCoverageGaps): string {
   }
   if (f.uncoveredFunctions.length > 0) {
     lines.push('  uncovered functions:')
-    for (const fn of f.uncoveredFunctions) lines.push(`    ${fn.name} (line ${fn.line})`)
+    for (const fn of f.uncoveredFunctions) lines.push(`    ${displaySafeText(fn.name)} (line ${fn.line})`)
   }
   if (f.uncoveredBranches.length > 0) {
     const branchLines = [...new Set(f.uncoveredBranches.map((br) => br.line))].sort((a, b) => a - b)

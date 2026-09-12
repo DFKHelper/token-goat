@@ -11,7 +11,7 @@ import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB, resolveOnPath } from './util.js'
-import { normalizePath } from './paths.js'
+import { displaySafeText, normalizePath } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
@@ -58,7 +58,7 @@ export function globalMcpConfigPath(): string {
 
 export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): DoctorResult {
   if (!fs.existsSync(configPath)) {
-    return { name: 'Global MCP configuration', status: 'ok', message: `no global Copilot MCP configuration found at ${configPath}` }
+    return { name: 'Global MCP configuration', status: 'ok', message: `no global Copilot MCP configuration found at ${displaySafeText(configPath)}` }
   }
 
   let parsed: unknown
@@ -68,7 +68,7 @@ export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): Doctor
     return {
       name: 'Global MCP configuration',
       status: 'warn',
-      message: `could not read global Copilot MCP configuration at ${configPath}; unable to audit heavy launchers.`,
+      message: `could not read global Copilot MCP configuration at ${displaySafeText(configPath)}; unable to audit heavy launchers.`,
     }
   }
 
@@ -76,13 +76,13 @@ export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): Doctor
     return {
       name: 'Global MCP configuration',
       status: 'warn',
-      message: `global Copilot MCP configuration at ${configPath} has an unsupported format; unable to audit heavy launchers.`,
+      message: `global Copilot MCP configuration at ${displaySafeText(configPath)} has an unsupported format; unable to audit heavy launchers.`,
     }
   }
 
   const configuredServers = (parsed as Record<string, unknown>)['mcpServers']
   if (typeof configuredServers !== 'object' || configuredServers === null || Array.isArray(configuredServers)) {
-    return { name: 'Global MCP configuration', status: 'ok', message: `no global stdio MCP servers configured at ${configPath}` }
+    return { name: 'Global MCP configuration', status: 'ok', message: `no global stdio MCP servers configured at ${displaySafeText(configPath)}` }
   }
 
   let chromeDevTools = 0
@@ -106,11 +106,12 @@ export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): Doctor
     return {
       name: 'Global MCP configuration',
       status: 'warn',
-      message: `${launchers.join(' and ')} configured at ${configPath}. Move heavy launchers to project scope or remove them when not actively needed.`,
+      // `launchers` is built from counts and literal words, so it carries nothing from the file; `configPath` is the config-derived part of this line and is what gets escaped, here and at the four other returns in this function.
+      message: `${launchers.join(' and ')} configured at ${displaySafeText(configPath)}. Move heavy launchers to project scope or remove them when not actively needed.`,
     }
   }
 
-  return { name: 'Global MCP configuration', status: 'ok', message: `no known heavy global MCP launchers configured at ${configPath}` }
+  return { name: 'Global MCP configuration', status: 'ok', message: `no known heavy global MCP launchers configured at ${displaySafeText(configPath)}` }
 }
 
 export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null): DoctorResult {
@@ -851,7 +852,8 @@ export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: re
     return {
       name: 'Visual Studio',
       status: 'warn',
-      message: `the token-goat MCP entry in ${stale.mcpPath} points at ${stale.command} ${stale.bundlePath}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
+      // Every field here is read straight out of a project `.mcp.json` / `.vscode/mcp.json`, so a repository picks all three spellings. Escaped at the interpolation site because this message is token-goat's own voice: a doctor report reaches the model verbatim as an MCP tool result (mcp_server.ts's captureOutput), and an unescaped `[tg]` in a command path would arrive looking like a token-goat deny.
+      message: `the token-goat MCP entry in ${displaySafeText(stale.mcpPath)} points at ${displaySafeText(stale.command)} ${displaySafeText(stale.bundlePath)}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
     }
   }
   const registered = dedupeByResolvedPath([...found.map((e) => e.mcpPath), ...alsoReadPaths.filter((p) => visualStudioManagedEntry(p) !== null)])
@@ -859,13 +861,13 @@ export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: re
     return {
       name: 'Visual Studio',
       status: 'warn',
-      message: `Visual Studio reads ${registered.join(' and ')}, and each registers token-goat, so it lists the token-goat server more than once. Keep one: "token-goat uninstall --vscode -p" drops the .vscode/mcp.json entry, "token-goat uninstall --visualstudio" (add -p for the project entry) drops a Visual Studio one.`,
+      message: `Visual Studio reads ${registered.map(displaySafeText).join(' and ')}, and each registers token-goat, so it lists the token-goat server more than once. Keep one: "token-goat uninstall --vscode -p" drops the .vscode/mcp.json entry, "token-goat uninstall --visualstudio" (add -p for the project entry) drops a Visual Studio one.`,
     }
   }
   return {
     name: 'Visual Studio',
     status: 'ok',
-    message: `MCP server registered in ${found.map((e) => e.mcpPath).join(', ')}. Visual Studio runs no token-goat hooks: it gets the MCP tools and instructions only, and only once the token-goat tools are ticked in the chat Tools picker.`,
+    message: `MCP server registered in ${found.map((e) => displaySafeText(e.mcpPath)).join(', ')}. Visual Studio runs no token-goat hooks: it gets the MCP tools and instructions only, and only once the token-goat tools are ticked in the chat Tools picker.`,
   }
 }
 
@@ -1418,7 +1420,8 @@ export function printDoctorResults(results: DoctorResult[]): void {
   for (const [, items] of grouped) {
     for (const item of items) {
       const prefix = item.status === 'ok' ? '  ' : `  [${item.status.toUpperCase()}] `
-      console.log(`${prefix}${item.name}: ${item.message}`)
+      // The single print site for every check, so escaping here is the backstop for all of them: a check that interpolates a config-derived path or server name into its message cannot reach stdout unescaped even if it forgets to escape at its own interpolation site. Checks that build a message from several untrusted fields still escape each one individually, because only they know which parts are theirs.
+      console.log(`${prefix}${item.name}: ${displaySafeText(item.message)}`)
     }
   }
 

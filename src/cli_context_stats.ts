@@ -12,6 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { confirmAndApply } from './confirm_apply.js'
+import { displaySafeText } from './paths.js'
 import { pruneIndex } from './memory_prune.js'
 import { resolveProjectRoot } from './project.js'
 import { countNoun } from './util.js'
@@ -183,7 +184,8 @@ export async function runContextStats(opts: ContextStatsOptions = {}): Promise<v
   } else {
     process.stdout.write('## CLAUDE.md files\n')
     for (const row of result.claude_md_rows) {
-      process.stdout.write(`  ${row.tokens.toString().padStart(6)} tok  ${row.label}\n`)
+      // `row.label` is a project-relative CLAUDE.md path, so the repository picks its spelling.
+      process.stdout.write(`  ${row.tokens.toString().padStart(6)} tok  ${displaySafeText(row.label)}\n`)
     }
     process.stdout.write(
       `  ${'─'.repeat(6)}     total\n  ${result.claude_md_total.toString().padStart(6)} tok\n\n`,
@@ -192,7 +194,7 @@ export async function runContextStats(opts: ContextStatsOptions = {}): Promise<v
 
   if (result.memory_md_path !== null) {
     process.stdout.write('## MEMORY.md\n')
-    process.stdout.write(`  ${result.memory_md_tokens.toString().padStart(6)} tok  ${result.memory_md_path}\n\n`)
+    process.stdout.write(`  ${result.memory_md_tokens.toString().padStart(6)} tok  ${displaySafeText(result.memory_md_path)}\n\n`)
   } else {
     process.stdout.write('## MEMORY.md\n  (not found)\n\n')
   }

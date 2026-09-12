@@ -9,6 +9,7 @@
 import * as path from 'node:path'
 import { load as loadYaml } from 'js-yaml'
 
+import { displaySafeText } from './paths.js'
 import { stripBom } from './util.js'
 
 /** The HTTP-method keys OpenAPI/Swagger recognize as operations under a path item. Any other
@@ -199,7 +200,10 @@ export function findOperation(operations: readonly OpenApiOperation[], key: stri
  * the method+path alongside for context) and falls back to `METHOD path` when no operationId
  * exists. */
 export function operationLabel(op: OpenApiOperation): string {
-  return op.operationId !== undefined ? `${op.operationId}  (${op.method} ${op.path})` : `${op.method} ${op.path}`
+  // Operation ids and paths are written by whoever authored the spec being read.
+  return op.operationId !== undefined
+    ? `${displaySafeText(op.operationId)}  (${displaySafeText(op.method)} ${displaySafeText(op.path)})`
+    : `${displaySafeText(op.method)} ${displaySafeText(op.path)}`
 }
 
 function indentedJson(value: unknown, indent: string): string {
@@ -213,11 +217,11 @@ function indentedJson(value: unknown, indent: string): string {
  * required, description, schema), the request body schema, and the response schema per status
  * code -- everything `openapi-op` promises instead of the compact `openapi-outline` listing. */
 export function formatOperationDetail(op: OpenApiOperation): string {
-  const lines: string[] = [`${op.method} ${op.path}`]
-  if (op.operationId !== undefined) lines.push(`operationId: ${op.operationId}`)
-  if (op.summary !== undefined) lines.push(`summary: ${op.summary}`)
-  if (op.description !== undefined) lines.push(`description: ${op.description}`)
-  if (op.tags !== undefined && op.tags.length > 0) lines.push(`tags: ${op.tags.join(', ')}`)
+  const lines: string[] = [`${displaySafeText(op.method)} ${displaySafeText(op.path)}`]
+  if (op.operationId !== undefined) lines.push(`operationId: ${displaySafeText(op.operationId)}`)
+  if (op.summary !== undefined) lines.push(`summary: ${displaySafeText(op.summary)}`)
+  if (op.description !== undefined) lines.push(`description: ${displaySafeText(op.description)}`)
+  if (op.tags !== undefined && op.tags.length > 0) lines.push(`tags: ${op.tags.map(displaySafeText).join(', ')}`)
 
   if (op.parameters.length > 0) {
     lines.push('', 'parameters:')
@@ -228,7 +232,7 @@ export function formatOperationDetail(op: OpenApiOperation): string {
       const location = typeof param['in'] === 'string' ? param['in'] : '?'
       const required = param['required'] === true ? ' required' : ''
       const description = typeof param['description'] === 'string' ? ` - ${param['description']}` : ''
-      lines.push(`  ${name} (${location})${required}${description}`)
+      lines.push(`  ${displaySafeText(name)} (${displaySafeText(location)})${required}${displaySafeText(description)}`)
       if (param['schema'] !== undefined) lines.push(indentedJson(param['schema'], '    '))
     }
   }

@@ -16,6 +16,7 @@ import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { ensureNewline, pad, requireNonNegativeStrictInt, countNoun } from './util.js'
 import { loadConfig } from './config.js'
+import { displaySafeText } from './paths.js'
 
 function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
@@ -147,7 +148,8 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
     // item.command; printed raw, each embedded line would break this fixed-width table's
     // one-row-per-entry structure. Same defect class already fixed in mcp_compress.ts's
     // cellText and resume.ts's bash-command line.
-    const flatCommand = item.command.replace(/[\t\r\n]+/g, ' ')
+    // displaySafeText subsumes the old `[\t\r\n]+ -> ' '` flattening: it escapes those same characters (as `\n`, `\r`, `\t`) so a multi-line command still cannot break this table's one-row-per-entry structure, and it additionally neutralizes the `[tg]` and `[token-goat` spellings, which the strip alone left verbatim.
+    const flatCommand = displaySafeText(item.command)
     const preview = flatCommand.length > 80 ? flatCommand.slice(0, 77) + '...' : flatCommand
     process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
   }
@@ -183,7 +185,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
   for (const item of items) {
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${item.url.replace(/[\t\r\n]+/g, ' ')}\n`)
+    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${displaySafeText(item.url)}\n`)
   }
 }
 
@@ -224,7 +226,7 @@ export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
   for (const item of items) {
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${item.toolName.replace(/[\t\r\n]+/g, ' ')}\n`)
+    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${displaySafeText(item.toolName)}\n`)
   }
 }
 
@@ -362,7 +364,7 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
   }
   for (const f of findings) {
     const mark = f.ok ? 'ok  ' : 'WARN'
-    process.stdout.write(`[${mark}] ${f.check}: ${f.detail}\n`)
+    process.stdout.write(`[${mark}] ${displaySafeText(f.check)}: ${displaySafeText(f.detail)}\n`)
   }
   process.stdout.write(issueCount === 0 ? 'cache-audit: no issues found\n' : `cache-audit: ${issueCount} issue(s) found\n`)
 }
@@ -438,7 +440,7 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
   process.stdout.write(`Files read: ${filesRead}, edited: ${filesEdited}\n`)
   if (topFiles.length > 0) {
     process.stdout.write('Top files:\n')
-    for (const f of topFiles) process.stdout.write(`  ${f}\n`)
+    for (const f of topFiles) process.stdout.write(`  ${displaySafeText(f)}\n`)
   }
 }
 

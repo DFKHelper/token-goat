@@ -2,6 +2,7 @@
 import { readFile } from 'node:fs/promises'
 import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
+import { displaySafeText } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
@@ -109,7 +110,8 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
         // bashEntry.command; pushed raw, each line becomes its own top-level markdown line
         // with only the first prefixed `- `, breaking this list's structure for the model
         // reading it. Collapse to one line, same defect class as mcp_compress.ts's cellText.
-        if (bashEntry !== null) lines.push(`- ${bashEntry.command.replace(/[\t\r\n]+/g, ' ')}`)
+        // displaySafeText replaces the old tab/newline squeeze rather than stacking with it: it already escapes C0 controls, and the two together would double-process the same bytes.
+        if (bashEntry !== null) lines.push(`- ${displaySafeText(bashEntry.command)}`)
       }
     }
     lines.push('')
