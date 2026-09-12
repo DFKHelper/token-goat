@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
-import { querySymbols } from '../src/index_reader.js'
+import { queryRefs, querySymbols } from '../src/index_reader.js'
 import {
   indexFileSync,
   isParseSkipEligible,
@@ -1204,6 +1204,37 @@ describe('parseFile', () => {
 })
 
 describe('parseFile reference extraction', () => {
+  // S3 regression: esbuild injects a `__name(fn, "name")` wrapper call around every named
+  // function/class in its output when a target needs runtime name-preservation (e.g. a CJS
+  // target, or `keepNames`) -- a real, non-hand-written artifact confirmed present in an indexed
+  // aws-cdk checkout's `*.snapshot/asset.*.bundle/index.js` files. Indexing it as a ref pollutes
+  // `callers`/`refs` queries for the name `__name` with thousands of unrelated bundle call-sites
+  // that name no in-project symbol. writeParseResult (the single universal DB-write funnel for
+  // all parsed refs, confirmed via the "single choke point" comment on its symbols-insert loop)
+  // now drops any ref named `__name` via COMPILER_ARTIFACT_REF_NAMES. This must not become a
+  // general stoplist for legitimate identifiers -- so alongside the exclusion, assert a normal
+  // real call-site ref (a positive control) still survives the same indexing pass.
+  it('excludes esbuild-injected __name() wrapper calls from the refs table while a real call-site ref still resolves (drives the REAL indexFileSync -> refs table path)', () => {
+    const dbPath = path.join(TMP, 'index.db')
+    const file = write(
+      'esbuild_artifact.ts',
+      [
+        'function realHelper(): number {',
+        '  return 1',
+        '}',
+        '__name(realHelper, "realHelper");',
+        'export function driverE2e(): number {',
+        '  return realHelper()',
+        '}',
+      ].join('\n'),
+    )
+    indexFileSync(file, dbPath)
+    const artifactRefs = queryRefs({ name: '__name', filePath: file }, dbPath)
+    expect(artifactRefs.length).toBe(0)
+    const realRefs = queryRefs({ name: 'realHelper', filePath: file }, dbPath)
+    expect(realRefs.length).toBeGreaterThan(0)
+  })
+
   it('extracts call-site refs with the enclosing caller in context (.ts)', async () => {
     const file = write(
       'callers.ts',

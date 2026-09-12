@@ -57,6 +57,30 @@ export interface ParseResult {
   readonly duration: number
 }
 
+/**
+ * Ref names that are never hand-written user code, so a ref bearing one carries no retrieval
+ * value under any query and is dropped before it reaches the `refs` table (see the insert loop
+ * in {@link writeParseResult}). This is deliberately a very small, unambiguous set, not a general
+ * "assertion noise" stoplist -- see the S3 finding this closes for the fuller reasoning:
+ *
+ * `__name` is esbuild's own compiler-injected helper (it rewrites `function foo(){}` into
+ * `foo = __name(function(){...}, "foo")` for `Function.prototype.name` support in its bundle
+ * output). Confirmed against a real indexed corpus: every `__name` ref traced back to a
+ * `*.snapshot/asset.*.bundle/index.js` file -- a vendored, pre-bundled build artifact, not source
+ * a developer wrote. No language grammar this indexer parses ever produces `__name` as a
+ * user-authored call site, so excluding it carries no risk of dropping a real caller.
+ *
+ * Deliberately NOT included here: generic test-framework globals (`expect`, `it`, `describe`,
+ * `toBe`, ...), even though they dominate refs-table row count in a JS/TS-heavy index. A project
+ * can legitimately define its own same-named export (a custom `describe`/`it`-shaped DSL is not
+ * far-fetched), and silently dropping those refs at index time would make `callers describe`
+ * permanently return zero for such a project with no error -- the "silently-emptied enumeration
+ * passes forever" failure class this codebase has shipped and fixed before. That risk, plus the
+ * relatively narrow benefit (each of those names is opt-in: nobody queries `callers expect` by
+ * accident), is why S3 did not add a stoplist for them.
+ */
+const COMPILER_ARTIFACT_REF_NAMES: ReadonlySet<string> = new Set(['__name'])
+
 // --- Tree-sitter grammar loading (optional, cached) -------------------------
 
 // Minimal structural typings for the node-tree-sitter API surface we touch. The packages ship no first-class .d.ts under this resolution, so we model only the members used here rather than pulling `any` through the module.
@@ -2857,7 +2881,7 @@ function writeParseResult(
       'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
     )
     for (const r of result.refs) {
-      if (r.name === '') continue
+      if (r.name === '' || COMPILER_ARTIFACT_REF_NAMES.has(r.name)) continue
       insRef.run(r.filePath, r.name, r.line, r.col, r.context)
     }
   })
