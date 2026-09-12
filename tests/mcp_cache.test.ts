@@ -366,4 +366,27 @@ describe('storeMcpOutput / getMcpOutput', () => {
     expect(entry?.sizeBytes).toBe(Buffer.byteLength(entry!.output, 'utf-8'))
     expect(entry?.sizeBytes).not.toBe(Buffer.byteLength(raw, 'utf-8'))
   })
+
+  // Regression (HAND-DERIVED: padding length computed independently so `JSON.stringify(toolInput)`
+  // places the AKIA value's byte offset such that mcpInputPreview's 120-char slice falls inside
+  // it, not derived from mcpInputPreview's own code): mcpInputPreview truncated
+  // JSON.stringify(toolInput) to 120 chars BEFORE storeMcpOutput ever redacted the result, so a
+  // credential straddling that cut could survive as a raw fragment -- the AWS key pattern
+  // (`AKIA[0-9A-Z]{16}`, fixed length, no keyword fallback) has no way to recognise a
+  // shorter-than-20-char remnant, so the truncated piece slipped through unredacted. Field name
+  // is deliberately non-keyword ("key", not "apiKey"/"token") so the keyword-based
+  // generic_secret_assignment pattern cannot mask the ordering bug by coincidence. Asserts absence
+  // of a FRAGMENT (any run of 4+ trailing AKIA chars), not just the full key, per this repo's own
+  // "fixture written from the filter's own regex" lesson: a full-key-only assertion passes even
+  // while a fragment leaks.
+  it('never leaves a raw AKIA fragment in the label when the key straddles the 120-char preview cut', () => {
+    const padded = { pad: 'x'.repeat(90), key: 'AKIA' + 'ABCDEFGHIJ123456' } // AKIA + 16 chars = 20, the pattern's exact required length
+    expect(JSON.stringify(padded).slice(107, 120)).toBe('AKIAABCDEFGHI') // pin the boundary this test relies on
+    const id = storeMcpOutput(sessionId, toolName, padded, 'body')
+    expect(id).not.toBeNull()
+    const entry = getBashOutput(id as string)
+    expect(entry?.command ?? '').not.toMatch(/AKIA[0-9A-Z]{4,}/)
+    const hits = likeSearchForTesting('AKIAABCDEFGHI', 'mcp')
+    expect(hits).toHaveLength(0)
+  })
 })
