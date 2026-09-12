@@ -21,7 +21,7 @@ permalink: /
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
-Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Visual Studio** (Copilot agent, MCP tools and instructions only), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
+Works with **Claude Code**, **Gemini CLI**, **Qwen Code**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, **VS Code** (Copilot agent), **Visual Studio** (Copilot agent, MCP tools and instructions only), **Zed** (MCP tools only), **Kimi Code**, **Grok CLI** (xAI Grok Build), and OpenCode, plus **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command:**
 
@@ -392,6 +392,15 @@ instructions, and the token-goat tools in the chat Tools picker, since new MCP
 tools start disabled. `token-goat uninstall --visualstudio` (add `-p` for the
 project) removes only token-goat's entry and block. See
 [Visual Studio users](docs/install.md#visual-studio-users).
+
+**Zed**: `token-goat install --zed` registers token-goat as an MCP context
+server in Zed's `settings.json` (user scope only — Zed has no
+project-local equivalent). Zed's first-party agent has no hooks API at all,
+so this is MCP tools only, the same limits as Visual Studio above: no read
+dedup, hints, image shrink, or output folding. Enable the token-goat server
+under Zed's Agent panel tools list after installing; new MCP servers start
+disabled. `token-goat uninstall --zed` removes the entry and its generated
+shim script. See [Zed users](docs/install.md#zed-users).
 
 The optional source-controlled extension lives in `vscode-extension/`. Build
 and install its VSIX manually; `--vscode` intentionally does not copy or

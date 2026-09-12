@@ -26,6 +26,7 @@ import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cl
 import { findStrayClaudeMdBlocks, isInstalled } from './install.js'
 import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
+import { zedManagedEntry, zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
@@ -871,6 +872,43 @@ export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: re
   }
 }
 
+/**
+ * Reports the `install --zed` MCP context-server entry; null when none is present.
+ *
+ * Zed runs no token-goat hooks (no hooks API exists for its first-party agent), so there is no
+ * hook to exercise: what can break on this machine is the shim script itself going missing, or the
+ * Node binary / bundle path it was generated with going stale after an upgrade -- the same failure
+ * shape `checkVisualStudio` above reports for its `command`/`args` pair, just read out of the shim
+ * script's own content instead, since Zed's entry carries only `command` (a path to that script).
+ */
+export function checkZed(settingsPath: string): DoctorResult | null {
+  const entry = zedManagedEntry(settingsPath)
+  if (entry === null) return null
+  const shimPath = entry.command
+  if (!fs.existsSync(shimPath)) {
+    return {
+      name: 'Zed',
+      status: 'warn',
+      message: `the token-goat MCP entry in ${displaySafeText(settingsPath)} points at ${displaySafeText(shimPath)}, which no longer exists; run "token-goat uninstall --zed" and then "token-goat install --zed" again.`,
+    }
+  }
+  const script = fs.readFileSync(shimPath, 'utf8')
+  const referencedPaths = [...script.matchAll(/"([^"]+)"/g)].map((m) => m[1]).filter((p): p is string => typeof p === 'string' && p.length > 0)
+  const stalePath = referencedPaths.find((p) => !fs.existsSync(p))
+  if (stalePath !== undefined) {
+    return {
+      name: 'Zed',
+      status: 'warn',
+      message: `the token-goat shim at ${displaySafeText(shimPath)} points at ${displaySafeText(stalePath)}, which no longer exists; run "token-goat uninstall --zed" and then "token-goat install --zed" again.`,
+    }
+  }
+  return {
+    name: 'Zed',
+    status: 'ok',
+    message: `MCP context server registered in ${displaySafeText(settingsPath)}. Zed runs no token-goat hooks: it gets the MCP tools only, and only once the token-goat server is enabled in Zed's Agent panel.`,
+  }
+}
+
 export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
   if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
     return null
@@ -1396,6 +1434,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (vscodeHooksResult) results.push(vscodeHooksResult)
   const visualStudioResult = checkVisualStudio([visualStudioUserMcpPath(), visualStudioProjectMcpPath()], [visualStudioSolutionVscodeMcpPath()])
   if (visualStudioResult) results.push(visualStudioResult)
+  const zedResult = checkZed(zedSettingsPath())
+  if (zedResult) results.push(zedResult)
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 
