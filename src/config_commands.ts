@@ -924,6 +924,6 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
   emit(`${pad('type', 5)}  ${pad('id', 18)}  summary`)
   for (const item of items) {
     const preview = item.summary.length > 80 ? item.summary.slice(0, 77) + '...' : item.summary
-    emit(`${pad(item.type, 5)}  ${pad(item.id, 18)}  ${preview}`)
+    emit(`${pad(item.type, 5)}  ${pad(displaySafeText(item.id), 18)}  ${preview}`)
   }
 }

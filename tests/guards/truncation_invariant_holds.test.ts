@@ -190,6 +190,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['xlsx-query', 'needs a binary .xlsx fixture; the same query envelope is covered through csv-query and json-query'],
   ['sqlite-query', 'needs a binary .db fixture; the same query envelope is covered through csv-query and json-query'],
   ['xml-query', 'needs an XML fixture; the same query envelope is covered through csv-query and json-query'],
+  ['html-query', 'needs an HTML fixture; the same query envelope is covered through csv-query and json-query'],
   ['pdf-extract', 'needs a binary PDF fixture; text extraction, not a row list'],
   ['docx-text', 'needs a binary .docx fixture; text extraction, not a row list'],
   ['logfold', 'its cap is on INPUT LINES while the payload is folded rows -- different units, so "the pre-cap count of the rows being capped" is not a quantity that exists here. It does disclose, in-band and on stderr; driven by its own case in tests/logfold_tail_discloses.test.ts'],

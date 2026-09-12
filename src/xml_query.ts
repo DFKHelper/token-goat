@@ -8,6 +8,7 @@
  * namespaces, or domain models.
  */
 
+import { displaySafeText } from './paths.js'
 import { pushAll } from './util.js'
 
 export interface XmlNode {
@@ -348,11 +349,11 @@ export function outlineXml(xmlText: string, opts: { maxDepth?: number } = {}): X
 export function formatXmlOutline(summary: XmlOutlineSummary): string {
   const lines: string[] = []
   lines.push(
-    `Root element: <${summary.rootTag}> (${summary.totalElements} total elements, ${summary.uniqueTags.length} unique tags, max depth ${summary.maxDepth})`,
+    `Root element: <${displaySafeText(summary.rootTag)}> (${summary.totalElements} total elements, ${summary.uniqueTags.length} unique tags, max depth ${summary.maxDepth})`,
   )
 
   if (summary.doctype) {
-    lines.push(`DOCTYPE: ${summary.doctype}`)
+    lines.push(`DOCTYPE: ${displaySafeText(summary.doctype)}`)
   }
 
   const nsKeys = Object.keys(summary.namespaces)
@@ -389,7 +390,7 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
           ? ` (~${node.textLength} chars text)`
           : ' (empty)'
 
-    lines.push(`${pad}<${node.tag}>${attrStr}${countStr}`)
+    lines.push(`${pad}<${displaySafeText(node.tag)}>${attrStr}${countStr}`)
 
     for (const child of node.children) {
       renderNode(child, indent + 1)

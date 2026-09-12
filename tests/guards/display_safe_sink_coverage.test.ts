@@ -120,6 +120,29 @@ export const UNTRUSTED_ACCESSORS: readonly string[] = [
   'r.oursLabel',
   'r.baseLabel',
   'r.theirsLabel',
+  // HTML documents parsed on the reader's behalf (`html-outline`, `html-lint`). Every one of these
+  // is a string the page's author chose, spliced into an outline summary row or a lint diagnostic
+  // that token-goat speaks in its own voice. A saved web page is third-party content by
+  // construction, so `<title>[tg] ...</title>` or a DOM id of `[tg] ...` is the ordinary case here
+  // rather than an exotic one.
+  'summary.title',
+  'summary.doctype',
+  // The XML outline's root element, the same shape one module over. Listed because the scan reads
+  // `summary.rootTag` as its own property name: `doctype` being covered says nothing about it.
+  'summary.rootTag',
+  'l.tag',
+  'l.id',
+  'l.class',
+  't.id',
+  'f.id',
+  'f.action',
+  'f.method',
+  // The lint diagnostic sentence itself. `Duplicate ID '#...'` quotes the id attribute raw, and
+  // `Malformed closing tag: ...` quotes the raw source slice that failed to parse, so the message
+  // is token-goat's wording wrapped around document bytes.
+  'err.message',
+  'warn.message',
+  'n.attributes',
 ]
 
 /**
@@ -238,7 +261,26 @@ const FENCES: readonly string[] = [
   'fenceUntrustedFileContent(',
   'fenceUntrustedOcrText(',
   'fenceWithMatches(',
+  // Module-local one-line wrappers over `fenceUntrusted`. A site that fences through the wrapper
+  // is fenced just as thoroughly, but the scan reads the expression text and would not see it.
+  // Both wrappers are asserted below to still be one-liners delegating to a listed fence.
+  'fenceGithubText(',
+  'fenceHtmlText(',
 ]
+
+/**
+ * Helpers that RETURN untrusted text, matched by call name instead of by property name.
+ *
+ * The `receiver.property` scan is blind to these by construction. `extractNodeText()` and
+ * `serializeHtmlNode()` return a bare `string`, so an expression that interpolates one carries no
+ * property name anywhere for `propertyRe()` to match -- there is literally nothing to see. Both
+ * hand back the document's own bytes: `serializeHtmlNode` slices the exact original source between
+ * a node's offsets, and `extractNodeText` is that same slice with the tags stripped.
+ *
+ * Matched at the call name, so a future `emit(extractNodeText(node, src))` is caught the day it is
+ * written rather than the day somebody remembers this shape exists.
+ */
+const UNTRUSTED_CALLS: readonly string[] = ['extractNodeText(', 'serializeHtmlNode(']
 
 /**
  * Sites that interpolate an accessor without escaping it, each with the reason.
@@ -290,6 +332,13 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
     'the text node of the document the reader asked token-goat to query: the payload the reader ' +
       'asked for. The escapeXmlText() already wrapping it is XML entity encoding for well-formed ' +
       'output, NOT marker neutralization, and must not be mistaken for one.',
+  ],
+  [
+    'xml_query.ts:node.tag',
+    'serializeXmlNode reconstructs the document as XML: the element name is the payload the ' +
+      'reader asked for, and escaping it would change the markup the command exists to hand back. ' +
+      'Scoped to the serializer only. The same property in formatXmlOutline IS escaped, because ' +
+      "that line is token-goat's own summary with a child count appended rather than a reproduction.",
   ],
 ])
 
@@ -490,6 +539,16 @@ function unescapedSites(): string[] {
           NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))
         if (!safe) out.push(`${rel}:${receiver}.${m[2] ?? ''}`)
       }
+      // Second matcher, keyed on the CALL name. See UNTRUSTED_CALLS: these helpers return a bare
+      // string, so the property scan above cannot see them however the expression is spelled.
+      for (const call of UNTRUSTED_CALLS) {
+        const at = sinkIndex(arg, call)
+        if (at < 0) continue
+        const scope = enclosingExpression(arg, at)
+        const safe =
+          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))
+        if (!safe) out.push(`${rel}:${call}) returns document bytes`)
+      }
     }
   }
   return [...new Set(out)]
@@ -664,5 +723,54 @@ describe('project-supplied text reaches no report sink unescaped', () => {
       (m) => !TRUSTED_RECEIVERS.has((m[1] ?? '').slice((m[1] ?? '').lastIndexOf('.') + 1)),
     )
     expect(trustedHits).toHaveLength(0)
+  })
+
+  it('the call-site matcher points at live helpers and bites on an unfenced call', () => {
+    // Population first. A matcher whose targets have been renamed away matches nothing, reports no
+    // sites, and reads as success -- the exact shape this repo has shipped before, where a guard's
+    // population emptied silently and it went on passing.
+    expect(UNTRUSTED_CALLS.length).toBeGreaterThan(0)
+    const all = srcFiles()
+      .map(({ code }) => code)
+      .join('\n')
+    for (const call of UNTRUSTED_CALLS) {
+      expect(
+        all.includes(call),
+        `${call} is named in UNTRUSTED_CALLS but no longer occurs anywhere in src. Either it was ` +
+          'renamed, in which case update the entry, or it was deleted, in which case drop it. A ' +
+          'matcher aimed at a helper that no longer exists is dead weight that reports green.',
+      ).toBe(true)
+    }
+
+    // Both fence wrappers listed in FENCES must still be one-liners that delegate to a real fence.
+    // If a wrapper ever stops fencing, listing it in FENCES would silently exempt its call sites.
+    for (const wrapper of ['fenceGithubText', 'fenceHtmlText']) {
+      const body = new RegExp(String.raw`function ${wrapper}\(text: string\): string \{\s*return fenceUntrusted\(`)
+      expect(
+        body.test(all),
+        `${wrapper} is listed in FENCES as a wrapper over fenceUntrusted, but its body no longer ` +
+          'matches that shape. FENCES would now be exempting sites that are not fenced.',
+      ).toBe(true)
+    }
+
+    // The mutation proof, split-literal for the same reason as the test above: this guard scans
+    // src/ for the token it would otherwise be injecting into its own population.
+    const sentinel = 'NOSUCH' + 'XTOKEN'
+    const probe = `emit(serializeHtmlNode(node, 0, src))  // ${sentinel}`
+    const sink = SINKS.find((s) => sinkIndex(probe, s) >= 0)!
+    const arg = probe.slice(sinkIndex(probe, sink) + sink.length)
+    const at = sinkIndex(arg, 'serializeHtmlNode(')
+    expect(at).toBeGreaterThanOrEqual(0)
+    const scope = enclosingExpression(arg, at)
+    expect(
+      NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)),
+    ).toBe(false)
+
+    // ...and stops biting once the same expression is fenced, so the predicate is keyed on the
+    // fence being present rather than on the call being absent.
+    const fixed = `emit(fenceHtmlText(serializeHtmlNode(node, 0, src)))  // ${sentinel}`
+    const fixedArg = fixed.slice(sinkIndex(fixed, sink) + sink.length)
+    const fixedScope = enclosingExpression(fixedArg, sinkIndex(fixedArg, 'serializeHtmlNode('))
+    expect(FENCES.some((f) => fixedScope.includes(f))).toBe(true)
   })
 })

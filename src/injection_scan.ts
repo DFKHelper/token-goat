@@ -121,7 +121,7 @@ export function neutralizeSpokenMarkers(text: string): string {
  * So a fenced region is skipped whole. Everything inside one has been through {@link neutralizeFenceMarkers} on the way in, so skipping it drops no protection.
  */
 export function neutralizeOutsideFences(text: string): string {
-  const tags = [UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG, UNTRUSTED_OCR_TAG, UNTRUSTED_TOOL_TAG, UNTRUSTED_GITHUB_TAG].join('|')
+  const tags = [UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG, UNTRUSTED_OCR_TAG, UNTRUSTED_TOOL_TAG, UNTRUSTED_GITHUB_TAG, UNTRUSTED_HTML_TAG].join('|')
   // The preamble is matched as part of the region so it stays unescaped: it is the one line of ours that sits outside the tag pair and would otherwise be mangled.
   const fenced = new RegExp(String.raw`\[token-goat: [^\]\n]*\]\n<(${tags})>\n[\s\S]*?\n</\1>`, 'g')
   let out = ''
@@ -224,3 +224,18 @@ export const UNTRUSTED_TOOL_TAG = 'untrusted-tool-output'
  * naming where the text came from, same rationale as the other three.
  */
 export const UNTRUSTED_GITHUB_TAG = 'untrusted-github-content'
+
+/**
+ * Fence tag for the bytes of an HTML document token-goat was asked to query (`html-query`).
+ *
+ * `html-query` hands back the document verbatim: `serializeHtmlNode` slices the exact original
+ * source between a node's offsets, comments and all, and `--text` only strips the tags from that
+ * same slice. So whoever wrote the page chose every byte that reaches the model, which is the
+ * definition of a payload and not of a line token-goat speaks. A saved web page is third-party
+ * content by construction, so the fence follows that provenance rather than a scan hit, the same
+ * reasoning as {@link fenceUntrustedFileContent} and {@link UNTRUSTED_GITHUB_TAG}.
+ *
+ * Distinct from the other five for the reason they are distinct from each other: an attacker who
+ * learns to escape one tag has not escaped this one.
+ */
+export const UNTRUSTED_HTML_TAG = 'untrusted-html-content'

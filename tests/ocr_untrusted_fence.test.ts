@@ -39,6 +39,7 @@ describe('fenceUntrustedOcrText', () => {
       scan.UNTRUSTED_WEB_TAG,
       scan.UNTRUSTED_TOOL_TAG,
       scan.UNTRUSTED_GITHUB_TAG,
+      scan.UNTRUSTED_HTML_TAG,
     ]
     // Escaping one tag must not escape the others, which only holds while they stay distinct.
     expect(others).not.toContain(UNTRUSTED_OCR_TAG)
