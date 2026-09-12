@@ -134,6 +134,10 @@ const CASES: readonly AdapterCase[] = [
   { language: 'racket', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.rkt'), targetBasename: 'sample.rkt' },
   { language: 'clojure', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.clj'), targetBasename: 'sample.clj' },
   { language: 'emacs_lisp', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.el'), targetBasename: 'sample.el' },
+  { language: 'haskell', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.hs'), targetBasename: 'sample.hs' },
+  { language: 'ocaml', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.ml'), targetBasename: 'sample.ml' },
+  { language: 'fsharp', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.fs'), targetBasename: 'sample.fs' },
+  { language: 'nix', kind: 'regex', source: path.join(HAND_FIXTURES, 'sample.nix'), targetBasename: 'sample.nix' },
   {
     language: 'apex',
     kind: 'regex',

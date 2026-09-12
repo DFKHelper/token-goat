@@ -61,6 +61,10 @@ import { extractScheme } from './scheme.js'
 import { extractRacket } from './racket.js'
 import { extractClojure } from './clojure.js'
 import { extractEmacsLisp } from './emacs_lisp.js'
+import { extractHaskell } from './haskell.js'
+import { extractOcaml } from './ocaml.js'
+import { extractFSharp } from './fsharp.js'
+import { extractNix } from './nix.js'
 
 export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro }
 
@@ -183,4 +187,8 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   racket: (content, filePath) => extractRacket(content, filePath).symbols,
   clojure: (content, filePath) => extractClojure(content, filePath).symbols,
   emacs_lisp: (content, filePath) => extractEmacsLisp(content, filePath).symbols,
+  haskell: (content, filePath) => extractHaskell(content, filePath),
+  ocaml: (content, filePath) => extractOcaml(content, filePath),
+  fsharp: (content, filePath) => extractFSharp(content, filePath),
+  nix: (content, filePath) => extractNix(content, filePath),
 }

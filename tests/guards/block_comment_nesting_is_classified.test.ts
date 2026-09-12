@@ -116,6 +116,30 @@ const CLASSIFICATION: Readonly<Record<string, 'NESTS' | 'DOES_NOT_NEST' | 'CALLE
   // Clojure (clojure.ts) and Emacs Lisp (emacs_lisp.ts) have NO block comment at all -- neither
   // dialect defines a `/* */`-shaped delimited comment -- so neither file has a function this
   // scan could find, and neither appears in this registry.
+  // haskell.ts::maskHaskellBlockComment -- Haskell 2010 Report section 2.3 ("Comments"): "A
+  // nested comment begins with "{-" and ends with "-}"." A `{-` seen while already inside
+  // increments depth; only the matching `-}` decrements it back to zero.
+  maskHaskellBlockComment: 'NESTS',
+  // ocaml.ts::maskOcamlBlockComment -- The OCaml Manual, "Comments"
+  // (https://v2.ocaml.org/manual/lex.html#sss:lex:comments): "Comments are introduced by the two
+  // characters (*, ... and terminated by the characters *) ... Nested comments are handled
+  // correctly." A `(*` seen while already inside increments depth; only the matching `*)`
+  // decrements it back to zero -- except while scanning inside a `"..."` string the comment
+  // opened (per the same section: comments do not occur inside string literals), see the module
+  // doc for that string-aware detail this classification does not capture.
+  maskOcamlBlockComment: 'NESTS',
+  // fsharp.ts::maskFSharpBlockComment -- The F# Language Specification (F# 4.1), section 3.2
+  // "Comments": `(* *)` block comments nest, and (per the well-documented F#-lexer-descends-from-
+  // OCaml-lexer comment-scanning behavior -- see fsharp.ts's module doc) a `"` seen while scanning
+  // a comment switches into string-lexing mode first, so a `*)` inside that string cannot close
+  // the comment. A `(*` seen while already inside increments depth; only the matching `*)`
+  // decrements it back to zero.
+  maskFSharpBlockComment: 'NESTS',
+  // nix.ts::maskNixBlockComment -- Nix Reference Manual, "Syntax"
+  // (https://nix.dev/manual/nix/latest/language/syntax): Nix's `/* */` block comment is documented
+  // as a plain, non-nesting comment form (unlike Haskell/OCaml/F#'s). The first `*\/` closes it
+  // however many `/*` appeared inside.
+  maskNixBlockComment: 'DOES_NOT_NEST',
 }
 
 describe('every block-comment masking function declares whether its comments nest', () => {
