@@ -35,6 +35,7 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
+import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
 import { countNoun, foldPath } from './util.js'
@@ -104,6 +105,14 @@ export interface ReconcileResult {
   removed: string[]
   /** Files whose mtime moved but whose content did not: measured, not estimated. */
   mtimeOnly: number
+  /**
+   * Tracked files (a subset of {@link changed}) enqueued purely because their rows carry a
+   * `parser_sha` other than {@link PARSER_FINGERPRINT} -- content on disk never moved, but the
+   * extractor that produced their symbol/ref rows did. Reported separately from the rest of
+   * `changed` because it is the one bucket a content-only diff (`diskSha !== entry.sha`) could
+   * never have found on its own.
+   */
+  parserStale: number
   /** True when the budget stopped the sweep before every tracked file was examined. */
   budgetExhausted: boolean
   /**
@@ -182,6 +191,10 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   if (result.mtimeOnly > 0) {
     lines.push(`${countNoun(result.mtimeOnly, 'file')} had a newer timestamp but identical content, so ${result.mtimeOnly === 1 ? 'it was' : 'they were'} left alone.`)
   }
+  if (result.parserStale > 0) {
+    const reparseVerb = opts.dryRun === true ? 'would reparse' : 'queued for reparse'
+    lines.push(`${countNoun(result.parserStale, 'file')} of the above ${result.parserStale === 1 ? 'was' : 'were'} unchanged on disk but indexed by an older parser (${reparseVerb}).`)
+  }
   if (result.trackedUnavailable) {
     lines.push('This project has an index but git listed no files in it, so nothing could be compared and no deletions were computed. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
@@ -242,6 +255,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const added: string[] = []
   const seenOnDisk = new Set<string>()
   let mtimeOnly = 0
+  let parserStale = 0
   let scanned = 0
   let budgetExhausted = false
   let lastScanned: string | null = null
@@ -262,6 +276,20 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
     if (entry === undefined) {
       added.push(file)
+      continue
+    }
+
+    // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what
+    // gets extracted from content that never moved, so the mtime/content diff below -- which only
+    // ever compares this file's bytes against themselves -- can never notice it. Without this, a
+    // file nobody edits after a parser bump keeps the old parser's rows forever (this is the same
+    // failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts;
+    // reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the
+    // one place a content-only key silently misses this bucket entirely). An empty parserSha is a
+    // row written before the column existed and is correctly stale, same as the per-file gates.
+    if (entry.parserSha !== PARSER_FINGERPRINT) {
+      changed.push(file)
+      parserStale++
       continue
     }
 
@@ -348,6 +376,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     added,
     removed,
     mtimeOnly,
+    parserStale,
     budgetExhausted,
     trackedUnavailable,
     unscanned: Math.max(0, tracked.length - scanned),
