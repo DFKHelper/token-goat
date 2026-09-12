@@ -29,6 +29,7 @@ import { colorStdout, stripAnsi, fg, RESET, C } from './render/ansi.js'
 import { dataDir } from './constants.js'
 import { getDirtyPathsFor } from './worker.js'
 import { summarize } from './stats.js'
+import { displaySafeJson } from './paths.js'
 
 /**
  * Stdin read timeout for statusline specifically. Claude Code refreshes the
@@ -170,7 +171,7 @@ export async function runStatuslineCommand(opts: StatuslineCommandOptions = {}):
   }
 
   if (opts.json === true) {
-    process.stdout.write(`${JSON.stringify(data)}\n`)
+    process.stdout.write(`${displaySafeJson(data, 0)}\n`)
     return
   }
 

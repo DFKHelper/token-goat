@@ -46,6 +46,10 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedFileContent(',
   'fenceWithMatches(',
   'fenceUntrustedOcrText(',
+  // The interleaved-body fencer. It takes spans rather than one string, so a caller declares which
+  // spans token-goat wrote and the neutralizer runs on the rest -- which is what makes a fence
+  // possible around a block our markers are spliced into. See the class note below.
+  'fenceUntrustedSpans(',
 ]
 
 /**
@@ -59,13 +63,23 @@ const FENCE_TERMINALS: readonly string[] = [
  *
  * (b) Our text and theirs are interleaved by construction: an elision marker sits between the lines
  * it replaced, so there is no cut point that puts our voice outside a tag. Wrapping the whole body
- * would run the marker neutraliser over token-goat's own markers and hand the model
+ * in ONE call would run the marker neutraliser over token-goat's own markers and hand the model
  * `&#91;token-goat: 40 lines elided]` -- our voice, mangled, which is the same defect the Bash cap
- * notice produced before it was moved outside the tag. These three are OPEN, not settled: the
- * defence that would work is escaping each third-party span before our markers are spliced in,
- * which is a different change with its own risk (a span containing the literal `[token-goat` comes
- * back escaped, and a model that round-trips it writes the escape into a file). See CLAUDE.arch.md,
- * "Decision, 2026-09-04", for the measurement and the reopen condition.
+ * notice produced before it was moved outside the tag.
+ *
+ * That is solved, and the fix is `fenceUntrustedSpans`. It takes the body already split into spans,
+ * each marked with whether token-goat wrote it, and runs the neutraliser on the others and on
+ * nothing else. Authorship is positional -- declared by the producer that emitted the span -- and
+ * never recognised from the text, because a rule that spotted our markers by their spelling would
+ * exempt a forged one just as readily. Both `hooks_bash.ts` elision sites fence through it now and
+ * are no longer listed below.
+ *
+ * The three that remain are OPEN, and what keeps them open is not a missing mechanism. It is the
+ * round-trip risk: an untrusted span containing the literal `[token-goat` comes back escaped, and
+ * these three feed the surfaces a model is most likely to copy back into a file (a read the editor
+ * round-trips, a subagent report, a browser block carrying data URLs). The Bash sites do not have
+ * that property, which is why they went first. See CLAUDE.arch.md, "Decision, 2026-09-04", for the
+ * measurement and the reopen condition.
  */
 const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   [
@@ -96,11 +110,6 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'voice in the block to tell apart from the first.',
   ],
   [
-    'hooks_bash.ts::maybeCollapseIdenticalRead',
-    'The inverse case: the emitted body is a pointer token-goat wrote, start to finish, with none ' +
-      'of the command output left in it. Nothing third-party survives to be delimited.',
-  ],
-  [
     'hooks_exitplanmode.ts::postExitPlanModeHandler',
     "Keeps the harness's own fixed approval line and replaces the plan echo below it with a " +
       'pointer. The plan was written by this session, not by a third party, and the retained ' +
@@ -126,12 +135,6 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
     'Interleaved: a `[token-goat] lines N-M were already served` notice sits between the file ' +
       'lines it replaced. Also the surface most likely to be round-tripped back into an edit, ' +
       'which is what makes escaping the retained lines the wrong trade here. Open, not settled.',
-  ],
-  [
-    'hooks_bash.ts::maybeElideServedGenericOutput',
-    'The generic-command sibling of elideServedShellLines above: a `[token-goat] N lines here ' +
-      'were already served` notice sits between rows of the command\'s own untouched output. Same ' +
-      'class as hooks_read.ts::elideAlreadyServedLines. Open, not settled.',
   ],
   [
     'hooks_browser_image.ts::postBrowserImageHandler',

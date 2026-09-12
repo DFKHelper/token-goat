@@ -10,8 +10,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
-import { fenceUntrusted } from './untrusted_fence.js'
-import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
+import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import type { ToolFilter } from './tool_filters/index.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
@@ -21,7 +21,7 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
-import { deliveredOutputBytes, bashOutputCapBytes } from './delivery_cap.js'
+import { deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
 import { foldDetail, type BodyFold } from './code_fold.js'
@@ -2018,7 +2018,7 @@ function deliveredLineNumbers(cmd: string, lineCount: number): Array<number | nu
  *
  * Returns null when the numbering is unknowable, when nothing overlaps, or when no cut pays for the notice replacing it.
  */
-function elideServedShellLines(cmd: string, output: string, priorIds: readonly string[], unknownLineNumbers = false): string | null {
+function elideServedShellLines(cmd: string, output: string, priorIds: readonly string[], unknownLineNumbers = false): FenceSpan[] | null {
   if (priorIds.length === 0) return null
   const lines = output.split('\n')
   const numbers = unknownLineNumbers ? Array.from({ length: lines.length }, () => null) : deliveredLineNumbers(cmd, lines.length)
@@ -2034,18 +2034,30 @@ function elideServedShellLines(cmd: string, output: string, priorIds: readonly s
   }
   const cuts = planServedElisions(rows, bodies)
   if (cuts.length === 0) return null
-  const out: string[] = []
+  // Spans, not one joined string. The notices below are token-goat's own voice spliced BETWEEN the
+  // command's own lines, so this body has no cut point that puts our words outside a fence tag.
+  // Marking authorship here -- where it is known, because this function just wrote them -- is what
+  // lets the fencer neutralize the command's lines without mangling our notices into
+  // `&#91;token-goat] ...`. Matching the notices by their text later would be forgeable by the very
+  // bytes being fenced.
+  const spans: FenceSpan[] = []
+  const push = (text: string, own: boolean): void => {
+    const sep = spans.length === 0 ? '' : '\n'
+    const prev = spans[spans.length - 1]
+    if (prev !== undefined && (prev.own === true) === own) spans[spans.length - 1] = { text: prev.text + sep + text, own }
+    else spans.push({ text: sep + text, own })
+  }
   let at = 0
   for (const cut of cuts) {
-    for (let i = at; i < cut.start; i++) out.push(rows[i]?.raw ?? '')
+    for (let i = at; i < cut.start; i++) push(rows[i]?.raw ?? '', false)
     const first = rows[cut.start]
     const last = rows[cut.start + cut.len - 1]
     if (first === undefined || last === undefined) return null
-    out.push(servedRunNotice(first.no, last.no, cut.id, cut.len))
+    push(servedRunNotice(first.no, last.no, cut.id, cut.len), true)
     at = cut.start + cut.len
   }
-  for (let i = at; i < rows.length; i++) out.push(rows[i]?.raw ?? '')
-  return out.join('\n')
+  for (let i = at; i < rows.length; i++) push(rows[i]?.raw ?? '', false)
+  return spans
 }
 
 /**
@@ -2162,6 +2174,49 @@ function foldShellReadStructure(cmd: string, filePath: string, output: string, f
  * the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is
  * also where the body gets cached, so a later identical run has a baseline to compare against.
  */
+/** Appended OUTSIDE the fence when a composed rewrite had to be cut back to fit the delivery cap. */
+const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness delivery cap; the pointer above recalls the untouched output]'
+
+/**
+ * Fence a body this file composed, clipped so that the fence still closes.
+ *
+ * The single place the tool-output fence is applied to a Bash rewrite, so no call site restates
+ * either half of the rule. Both halves are load-bearing:
+ *
+ * - The fence goes on because these bodies are SUBSTITUTIONS: token-goat splices its own notices in
+ *   beside bytes it did not write, so the model needs to see where one voice ends. A pure
+ *   pass-through owes no fence and does not come through here (see {@link maybeStripAnsiOnly}).
+ * - The clip goes on because the harness truncates a result from the END and PERSISTS the
+ *   substitute. An over-long fenced rewrite would therefore ship with its closing tag and its
+ *   recall pointer cut off, leaving the model an unterminated fence and no route back to the
+ *   original. Overhead is measured off a real fence call rather than assumed, because
+ *   `fenceUntrustedSpans` returns the body unchanged when injection fencing is switched off.
+ *
+ * The caller prices what this RETURNS, never the unfenced body: pricing the body and then fencing
+ * it is how a fence silently pushes a rewrite under its own net-benefit gate, at which point the
+ * rewrite is declined and the bytes ship unfenced anyway.
+ */
+function fenceRewriteWithinCap(spans: readonly FenceSpan[]): string {
+  const joined = spans.map((s) => s.text).join('')
+  const fenced = fenceUntrustedSpans(spans, UNTRUSTED_TOOL_TAG)
+  // Fencing switched off: nothing was wrapped around the body, so there is no closing tag to lose
+  // and the cap behaves exactly as it did before this fence existed.
+  if (fenced === joined) return joined
+  const overhead = Buffer.byteLength(fenced, 'utf-8') - Buffer.byteLength(joined, 'utf-8') + Buffer.byteLength(REWRITE_CLIP_NOTE, 'utf-8')
+  const cut = clipToDeliveryCap(joined, overhead)
+  if (!cut.clipped) return fenced
+  // Re-cut the spans to the clipped length so authorship survives the clip: the clipped text is a
+  // prefix of `joined`, so taking that many characters back off the span list reproduces it exactly.
+  const kept: FenceSpan[] = []
+  let left = cut.text.length
+  for (const s of spans) {
+    if (left <= 0) break
+    kept.push(s.text.length <= left ? s : { ...s, text: s.text.slice(0, left) })
+    left -= s.text.length
+  }
+  return fenceUntrustedSpans(kept, UNTRUSTED_TOOL_TAG) + REWRITE_CLIP_NOTE
+}
+
 async function maybeCollapseIdenticalRead(
   cmd: string,
   rawCmd: string,
@@ -2215,7 +2270,9 @@ async function maybeCollapseIdenticalRead(
     // Elision first, because withholding lines the model has already been shown always beats folding lines it has not. The fold is what is left for a first read, which is where this branch spends most of its time: there is nothing served to withhold and, until now, nothing else to do either.
     let rewrite: { text: string; reason: string; kind: string; detail?: string } | null = null
     if (elided !== null) {
-      if (priced(elided)) rewrite = { text: elided, reason: 'already-served file lines withheld', kind: 'bash_compress:served-elide' }
+      // Priced AFTER fencing, deliberately: see fenceRewriteWithinCap.
+      const fenced = fenceRewriteWithinCap(elided)
+      if (priced(fenced)) rewrite = { text: fenced, reason: 'already-served file lines withheld', kind: 'bash_compress:served-elide' }
     } else {
       // Structural replacement ahead of the body fold, matching the order postReadHandler applies to the identical bytes arriving through the Read tool. It is also the coarser of the two and the only one that works without an index: the body fold needs symbol spans written by the current parser build, and measured on a real index that stamp sits stale on 95% of this project's rows, so on most first reads it plans nothing at all.
       const structural = foldShellReadStructure(cmd, filePath, output, fileKey, cwd)
@@ -2223,8 +2280,16 @@ async function maybeCollapseIdenticalRead(
         rewrite = { text: structural.text, reason: structural.kind === 'bash_compress:markdown-outline' ? 'document replaced with its heading tree' : 'source replaced with its structural skeleton', kind: structural.kind, detail: structural.detail }
       }
       if (rewrite === null) {
+        // One untrusted span: unlike the elision above, every notice this fold splices in (`... N
+        // more lines of X folded`, the comment and prose variants beside it) is bracket-free, and
+        // the marker neutralizer only matches the bracketed forms -- so nothing token-goat authored
+        // is at risk from fencing the block whole. Same argument planSourceSkeleton already makes
+        // for the structural fold, which is why that path arrives fenced by its own producer.
         const folded = foldShellReadBodies(cmd, output, fileKey, cwd)
-        if (folded !== null && priced(folded.text)) rewrite = { text: folded.text, reason: 'code bodies folded', kind: 'bash_compress:body-fold', detail: foldDetail(fileKey, folded.folds) }
+        if (folded !== null) {
+          const fenced = fenceRewriteWithinCap([{ text: folded.text }])
+          if (priced(fenced)) rewrite = { text: fenced, reason: 'code bodies folded', kind: 'bash_compress:body-fold', detail: foldDetail(fileKey, folded.folds) }
+        }
       }
     }
 
@@ -2281,8 +2346,12 @@ async function maybeElideServedGenericOutput(
   let rewrittenText: string | null = null
   if (priorIds.length > 0) {
     const elided = elideServedShellLines(cmd, output, priorIds, true)
-    if (elided !== null && isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(elided, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) {
-      rewrittenText = elided
+    // Fenced before it is priced, for the reason spelled out on fenceRewriteWithinCap: this body is
+    // the command's own rows with token-goat's `[token-goat] N lines ... withheld` notices spliced
+    // between them, which is a substitution and owes a fence.
+    const fenced = elided === null ? null : fenceRewriteWithinCap(elided)
+    if (fenced !== null && isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(fenced, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) {
+      rewrittenText = fenced
     }
   }
   const storedId = await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, cwd)
@@ -2454,18 +2523,12 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   // Fenced like maybeCompressCompoundOutput above: the cleaned text is a fetched webpage's own words, third-party content by provenance the same way a WebFetch body is, so it gets the same untrusted-content fence and injection scan hooks_fetch.ts already applies to that surface.
   // Clipped to the harness delivery cap rather than shipped whole, because unlike every other rewrite in this file this one can legitimately EXCEED that cap: extractCleanText shrinks a page enormously relative to its markup and still leaves more prose than the cap carries, measured at 29,252 bytes of cleaned text from a 197,504-byte Wikipedia article. Shipping past the cap costs nothing in bytes (the harness truncates either way) but loses the tail, and the tail is where the closing fence marker and the recall notice sit. Losing the notice is the expensive half: the harness persists the CLEANED text it was handed, so once this hook substitutes, the raw markup survives only in token-goat's own bash cache and that notice is its only route back. Overhead is measured off an actual fence call rather than assumed, since fenceUntrusted returns the text unchanged when injection fencing is switched off.
   const clipNote = '\n[token-goat: cleaned text clipped to the harness delivery cap; the notice at the top of this output recalls the full raw markup]'
-  const cap = bashOutputCapBytes()
   const fenceOverhead = Buffer.byteLength(fenceUntrusted(cleaned, UNTRUSTED_TOOL_TAG), 'utf-8') - Buffer.byteLength(cleaned, 'utf-8')
-  const room = cap === null ? null : cap - noticeBytes - fenceOverhead - Buffer.byteLength(clipNote, 'utf-8')
-  let body = cleaned
-  let clipped = ''
-  if (room !== null && room > 0 && Buffer.byteLength(cleaned, 'utf-8') > room) {
-    // Cut back to the last complete line so the clip lands on a boundary the model can read, which also drops any multi-byte character the byte-wise slice split in half.
-    const sliced = Buffer.from(cleaned, 'utf-8').subarray(0, room).toString('utf-8')
-    const lastNewline = sliced.lastIndexOf('\n')
-    body = lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced
-    clipped = clipNote
-  }
+  // The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so
+  // the two Bash paths that can outrun the cap cannot drift apart on where they cut.
+  const cut = clipToDeliveryCap(cleaned, noticeBytes + fenceOverhead + Buffer.byteLength(clipNote, 'utf-8'))
+  const body = cut.text
+  const clipped = cut.clipped ? clipNote : ''
   // The clip note stays OUTSIDE the fence: it is token-goat's own sentence, and the fence escapes `[token-goat:` markers found within it so that third-party bytes cannot forge one, which rendered this note as `&#91;token-goat: ...` when it was fenced along with the page text.
   const fenced = fenceUntrusted(body, UNTRUSTED_TOOL_TAG) + clipped
   if (

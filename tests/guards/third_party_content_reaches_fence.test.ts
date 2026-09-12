@@ -78,6 +78,11 @@ export const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
   'runPdfExtractText',
   'runPdfLocate',
   'runPdfOutline',
+  // `runPdfMeta` was the one sibling missing from this list, and it was also the one pdf command
+  // with no neutralizer on either branch. Calibrated when that was found: `runPdfOutline` matched
+  // here and `runPdfMeta` matched elsewhere in tests/, so its absence was a real gap rather than a
+  // dead probe.
+  'runPdfMeta',
   'docxText',
   'docxOutline',
   'pptxSlideText',
@@ -159,6 +164,9 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrusted(',
   'fenceWithMatches(',
   'fenceUntrustedOcrText(',
+  // Same module as fenceUntrusted, same reason it has to be named: it is the span-taking form, for
+  // a body whose third-party bytes and token-goat's own notices alternate.
+  'fenceUntrustedSpans(',
 ]
 
 /** True when `body` reaches the fence boundary itself. */

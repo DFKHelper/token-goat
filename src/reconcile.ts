@@ -34,7 +34,7 @@ import { getDb } from './db.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
-import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
+import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
 import { countNoun, foldPath } from './util.js'
@@ -150,7 +150,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   }
 
   if (opts.json === true) {
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    process.stdout.write(`${displaySafeJson(result)}\n`)
     return 0
   }
 

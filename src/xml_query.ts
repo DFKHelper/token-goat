@@ -359,8 +359,12 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
   const nsKeys = Object.keys(summary.namespaces)
   if (nsKeys.length > 0) {
     lines.push('Namespaces:')
+    // Both halves are the document's own bytes: an XML author picks the namespace prefix as freely
+    // as the URI beside it, and this line is token-goat's own summary rather than a reproduction of
+    // the markup. Held in bare locals, which the display-safe sink guard cannot see by design, so
+    // the coverage for this pair is the end-to-end test that runs the built binary.
     for (const [k, v] of Object.entries(summary.namespaces)) {
-      lines.push(`  ${k}: ${v}`)
+      lines.push(`  ${displaySafeText(k)}: ${displaySafeText(v)}`)
     }
   }
 
@@ -377,8 +381,10 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
         ['id', 'name', 'type', 'key', 'class', 'code', 'status', 'value'].includes(k.toLowerCase()) ||
         attrKeys.length <= 3
       ) {
+        // Truncate first, then escape: the cap is on what the document supplied, so measuring it
+        // after an escape would let a value shrink or grow depending on what it happened to carry.
         const valPreview = v.length > 35 ? `${v.slice(0, 32)}...` : v
-        attrParts.push(`${k}="${valPreview}"`)
+        attrParts.push(`${displaySafeText(k)}="${displaySafeText(valPreview)}"`)
       }
     }
 

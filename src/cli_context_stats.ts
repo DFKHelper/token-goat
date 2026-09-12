@@ -12,7 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { confirmAndApply } from './confirm_apply.js'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 import { pruneIndex } from './memory_prune.js'
 import { resolveProjectRoot } from './project.js'
 import { countNoun } from './util.js'
@@ -172,7 +172,7 @@ export async function runContextStats(opts: ContextStatsOptions = {}): Promise<v
   const result = buildStats(projectRoot)
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(result) + '\n')
     return
   }
 

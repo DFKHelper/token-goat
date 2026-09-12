@@ -3,6 +3,7 @@
  */
 
 import { stripAnsi } from './render/ansi.js';
+import { displaySafeJson } from './paths.js';
 
 /**
  * A single failure block with name and body.
@@ -462,17 +463,14 @@ export function formatFailuresText(result: FailureResult): string {
  * Format failures as JSON.
  */
 export function formatFailuresJson(result: FailureResult): string {
-  return JSON.stringify(
+  return displaySafeJson(
     {
       runner: result.runner,
       count: getFailureCount(result),
       failures: result.blocks.map((b) => ({ name: b.name, body: b.body })),
       summary: result.summaryLines,
       stats: result.statsLine,
-    },
-    null,
-    2
-  );
+    });
 }
 
 // ───────────────────────────────────────────────────────────────────────────── Delta (--delta) ─────────────────────────────────────────────────────────────────────────────
@@ -583,15 +581,12 @@ export function formatFailureDeltaText(delta: FailureDelta, runner: string): str
  * not `stillFailing: string[]`, keeping the JSON and text shapes symmetric.
  */
 export function formatFailureDeltaJson(delta: FailureDelta, runner: string): string {
-  return JSON.stringify(
+  return displaySafeJson(
     {
       runner,
       hasBaseline: delta.hasBaseline,
       newlyFailing: delta.newlyFailing,
       newlyFixed: delta.newlyFixed,
       stillFailingCount: delta.stillFailing.length,
-    },
-    null,
-    2
-  );
+    });
 }

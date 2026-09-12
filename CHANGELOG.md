@@ -78,6 +78,19 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **The architecture and technical questions document now answers 31 questions instead of 14.** [docs/architecture-qa.html](docs/architecture-qa.html) adds answers on how PreToolUse rewriting works, how task success rate is measured, how skill compaction is cached, what each SQLite file holds, how to fill a cache on a machine with no network, the [PolyForm license](https://polyformproject.org/), supply chain provenance, standalone packaging, and what the token costs come to. The document names no organization, system, or tracker id. This needs no reindex.
 
+### Security
+
+- **Reports now escape the text a document supplies, everywhere token-goat speaks in its own voice.** A file, a PDF, a video or a transcript can name itself after one of token-goat's own messages, and several commands printed that name straight into a line that reads as token-goat's. Every one of them now neutralizes it first, so the text still shows but no longer reads as an instruction from the tool:
+  - `pdf-meta` prints the Title and Author from a PDF's information dictionary. Both are chosen by whoever made the file, and neither was checked or redacted on either the text or the `--json` branch. They now go through the same redaction and escaping every other document command already used, so a secret in a title is hidden and a forged message is shown as ordinary text.
+  - `video-chapters` prints chapter titles and subtitle stream names read from the video file.
+  - `transcript-outline` prints the first 60 characters of a cue, one line below the speaker labels that were already escaped.
+  - `transcript` now wraps its output in the same "untrusted content" fence the other document commands use, and redacts secrets before printing. A spoken or pasted password in a meeting transcript was printed as it was.
+  - `sharepoint-resolve` printed the sharing link you passed it, query string and all. SharePoint puts access tokens in that query string, so it is now removed before the link is shown, matching what the rest of that code already promised.
+  - The error messages every command falls back to: a message quoting a spreadsheet's sheet names, a file name, or up to 50 lines of a file being edited went to the error stream unescaped.
+  - `install --vscode`, `install --visualstudio`, `purge`, and `session-outline` print paths and transcript text that can carry the same forged names.
+
+  None of this needs a reindex.
+
 ### Changed
 
 - **Hooks start faster.** The language adapters that read symbols out of Fortran, COBOL, Pascal, PowerShell and the other 50-odd file types without a tree-sitter grammar now load only where files are indexed. A hook running in process, which is how the installed shim handles nearly every tool call, compiles 2.170 MB across 8 chunks and never loads the 131 KB adapter chunk at all. Hosts that shell out to `token-goat hook <event>` still compile the adapters, because token-goat's own read commands call them. Nothing about what gets indexed changes, but the first `token-goat index` after this version reparses every file once, because the extraction code moved.

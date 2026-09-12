@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import * as readline from 'node:readline'
 import { buildStats } from './cli_context_stats.js'
 import { resolveProjectRoot } from './project.js'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 
 export interface BootstrapAuditOptions {
   project?: string
@@ -258,7 +258,7 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
 export async function runBootstrapAudit(opts: BootstrapAuditOptions = {}): Promise<void> {
   const result = await buildBootstrapAudit(opts)
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(result) + '\n')
   } else {
     process.stdout.write('# token-goat bootstrap-audit\n')
     process.stdout.write(`Project: ${displaySafeText(result.project)}\n`)

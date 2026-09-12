@@ -12,7 +12,7 @@ import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
-import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
 import { supportRequestLine } from './version.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -1194,7 +1194,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const label = opts.name ?? opts.grep ?? '*'
     const notice = `no non-test matches for '${label}' (${excludeTestsHiddenNote(hiddenByExcludeTests)})`
     if (opts.json === true) {
-      return { text: JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2), code: 0 }
+      return { text: displaySafeJson({ items: [], truncated: false, totalCount: 0 }), code: 0 }
     }
     return { text: `token-goat: ${notice}`, code: 0 }
   }
@@ -1205,7 +1205,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // nothing in scope at all. Same "filtered store renders as populated" trap already fixed
     // for types/dead/exports.
     if (opts.json === true) {
-      const text = JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2)
+      const text = displaySafeJson({ items: [], truncated: false, totalCount: 0 })
       return { text, code: 0 }
     }
     return { text: grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'symbol', 'symbols'), code: 0 }
@@ -1301,7 +1301,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
     }))
     const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
-    const text = JSON.stringify(payload, null, 2)
+    const text = displaySafeJson(payload)
     recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
     return { text, code: 0 }
   }
@@ -1554,7 +1554,7 @@ function runLineRange(
   const clampedEnd = Math.min(end, allLines.length)
   const slice = allLines.slice(start - 1, clampedEnd)
   if (opts.json === true) {
-    return { text: JSON.stringify({ file, start, end: clampedEnd, lines: slice }, null, 2), code: 0 }
+    return { text: displaySafeJson({ file, start, end: clampedEnd, lines: slice }), code: 0 }
   }
   const tok = Math.ceil(slice.join('\n').length / 4)
   return {
@@ -1975,7 +1975,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one
     // output shape with no honest signal that the text is available elsewhere -- the text form
     // below already resolves it.
-    const text = JSON.stringify(
+    const text = displaySafeJson(
       {
         ...match,
         body: resolveBody(match),
@@ -1983,10 +1983,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
         // would be the one surface that still passes a deleted file's body off as a live read.
         ...(fileIsGone(match.filePath) ? { deleted: true } : {}),
         ...(refCounts !== undefined ? { refCount: refCounts.get(match.name) ?? 0 } : {}),
-      },
-      null,
-      2,
-    )
+      })
     if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
   }
@@ -2041,12 +2038,12 @@ function runReadMulti(pairs: { file: string; symbol: string }[], opts: ReadOptio
   // Count each distinct file's on-disk size once for the whole multi-symbol call, not once per symbol or per file repeat -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see ReadOptions.suppressStat).
   if (anyFound) {
     const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, (f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
-    const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+    const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
     recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
   }
 
-  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   return { text, code: 1 }
 }
 
@@ -2189,7 +2186,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const fullSourceBytes = sumFileSizes([filePath])
 
   if (opts.json === true) {
-    const text = JSON.stringify(result, null, 2)
+    const text = displaySafeJson(result)
     if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
     return { text, code: 0 }
   }
@@ -2240,7 +2237,7 @@ function runSectionMulti(
   // heading -- each sub-call already skipped its own recordReadStat via suppressStat for
   // exactly this reason (see SectionOptions.suppressStat).
   const fullSourceBytes = sumFileSizes([resolvedFilePath])
-  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('section_read', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
 }
@@ -2276,7 +2273,7 @@ function runSectionCrossFile(pairs: { file: string; symbol: string }[], opts: Se
   const resolvePath = (f: string): string =>
     opts.projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(opts.projectRoot, f) : f
 
-  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) {
     // Count each distinct file's on-disk size once for the whole cross-file call, not once per heading or per file repeat -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see SectionOptions.suppressStat).
     const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, resolvePath))
@@ -2560,7 +2557,7 @@ function renderRefsTargets(
   }
   const fullSourceBytes = refsSearchBaselineBytes(refRows)
   if (opts.json === true) {
-    const text = JSON.stringify(jsonOut, null, 2)
+    const text = displaySafeJson(jsonOut)
     emit(text)
     if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
     return anyFound ? 0 : 1
@@ -2691,7 +2688,7 @@ function runRefsSingle(opts: RefsOptions): number {
         // `hiddenByGrep` (brief --json's own convention) is what tells the consumer this empty
         // envelope is a filtered view rather than a symbol with no references -- `totalCount: 0`
         // alone reads identically for both.
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preGrepCount }, null, 2))
+        emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preGrepCount }))
         return 0
       }
       emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references'))
@@ -2762,7 +2759,7 @@ function runRefsSingle(opts: RefsOptions): number {
     // emitted object rather than into `payload` so both `--top` and per-reference envelopes get it
     // without either shape's interface growing an optional field the other never sets.
     const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
-    const text = JSON.stringify({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2)
+    const text = displaySafeJson({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
     emit(text)
     recordReadStat('symbol_read', fullSourceBytes, text, symName)
     return 0
@@ -3085,7 +3082,7 @@ function mergeListingJson(files: string[], blocks: string[], anyOk: boolean): { 
     totalCount += parsed.totalCount ?? parsed.items.length
   }
   const payload = { items, truncated, totalCount, ...(errors.length > 0 ? { errors } : {}) }
-  return { text: JSON.stringify(payload, null, 2), code: anyOk ? 0 : 1 }
+  return { text: displaySafeJson(payload), code: anyOk ? 0 : 1 }
 }
 
 /** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
@@ -3141,7 +3138,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       // tests/json_envelope_shape.test.ts pins.
       ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
-    const text = JSON.stringify(payload, null, 2)
+    const text = displaySafeJson(payload)
     recordReadStat('stub_view', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
   }
@@ -3240,7 +3237,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       // Same envelope-level flag, and same reason, as runSkeleton's payload above.
       ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
-    const text = JSON.stringify(payload, null, 2)
+    const text = displaySafeJson(payload)
     recordReadStat('outline', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
   }
@@ -3338,7 +3335,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       const headTruncated = result.rows.length < result.totalRows
       const capped = guardJsonRows(rowsJson)
       // Text mode says "all N data rows were filtered out"; --json needs the same distinction or a consumer sees totalCount 0 for both "the filter matched nothing" and "the file has no data".
-      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows, ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}) })
+      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows, ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}) }, 0)
       emit(jsonText)
       recordReadStat('csv_query', fullSourceBytes, jsonText, opts.file)
     } else {
@@ -3417,7 +3414,7 @@ function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) =>
   const outline = outlineJson(data)
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(outline)
+    const jsonText = displaySafeJson(outline, 0)
     emit(jsonText)
     recordReadStat(kind, fullSourceBytes, jsonText, opts.file)
   } else {
@@ -3483,7 +3480,7 @@ function runQueryCommand(
 
     if (!result.fanned) {
       const value = result.items[0]
-      const valueText = opts.json === true ? JSON.stringify(value) : JSON.stringify(value, null, 2)
+      const valueText = opts.json === true ? displaySafeJson(value, 0) : displaySafeJson(value)
       emit(valueText)
       recordReadStat(kind, fullSourceBytes, valueText, opts.file)
       return 0
@@ -3495,11 +3492,11 @@ function runQueryCommand(
 
     if (opts.json === true) {
       const capped = guardJsonRows(limited)
-      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
       emit(jsonText)
       recordReadStat(kind, fullSourceBytes, jsonText, opts.file)
     } else {
-      const lines = limited.map((item) => JSON.stringify(item))
+      const lines = limited.map((item) => displaySafeJson(item, 0))
       if (headTruncated) {
         lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
       }
@@ -3597,7 +3594,7 @@ export function runXmlOutline(opts: XmlOutlineCliOptions): number {
 
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(summary, null, 2)
+    const jsonText = displaySafeJson(summary)
     emit(jsonText)
     recordReadStat('xml_outline', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -3639,7 +3636,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
     if (result.attributeValues !== undefined) {
       if (result.attributeValues.length === 0) {
         if (opts.json === true) {
-          const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+          const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
           emit(jsonText)
           recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
         } else {
@@ -3650,7 +3647,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
 
       if (!result.fanned) {
         const val = result.attributeValues[0] ?? ''
-        const outText = opts.json === true ? JSON.stringify(val) : val
+        const outText = opts.json === true ? displaySafeJson(val, 0) : val
         emit(outText)
         recordReadStat('xml_query', fullSourceBytes, outText, opts.file)
         return 0
@@ -3662,7 +3659,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
 
       if (opts.json === true) {
         const capped = guardJsonRows(limited)
-        const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+        const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
@@ -3679,7 +3676,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
 
     if (result.items.length === 0) {
       if (opts.json === true) {
-        const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+        const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
@@ -3692,7 +3689,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
       const node = result.items[0]!
       if (opts.json === true) {
         const jsonVal = xmlNodeToJson(node)
-        const jsonText = JSON.stringify(jsonVal, null, 2)
+        const jsonText = displaySafeJson(jsonVal)
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
@@ -3710,7 +3707,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
     if (opts.json === true) {
       const jsonItems = limited.map(xmlNodeToJson)
       const capped = guardJsonRows(jsonItems)
-      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
       emit(jsonText)
       recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
     } else {
@@ -3745,7 +3742,7 @@ export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
   const summary = outlineHtml(text)
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(summary, null, 2)
+    const jsonText = displaySafeJson(summary)
     emit(jsonText)
     recordReadStat('html_outline', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -3789,7 +3786,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     if (result.attributeValues !== undefined) {
       if (result.attributeValues.length === 0) {
         if (opts.json === true) {
-          const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+          const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
           emit(jsonText)
           recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
         } else {
@@ -3804,7 +3801,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
 
       if (opts.json === true) {
         const capped = guardJsonRows(limited)
-        const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+        const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
         emit(jsonText)
         recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
       } else {
@@ -3821,7 +3818,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
 
     if (result.elements.length === 0) {
       if (opts.json === true) {
-        const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+        const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
         emit(jsonText)
         recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
       } else {
@@ -3843,7 +3840,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
         endLine: n.endLine,
       }))
       const capped = guardJsonRows(jsonItems)
-      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, null, 2)
+      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
       emit(jsonText)
       recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
     } else if (opts.text === true) {
@@ -3888,7 +3885,7 @@ export function runHtmlLint(opts: HtmlLintCliOptions): number {
   const isClean = opts.strict ? (report.errors.length === 0 && report.warnings.length === 0) : report.errors.length === 0
 
   if (opts.json === true) {
-    emit(JSON.stringify(report, null, 2))
+    emit(displaySafeJson(report))
     return isClean ? 0 : 1
   }
 
@@ -3964,7 +3961,7 @@ export function runOpenApiOutline(opts: OpenApiOutlineCliOptions): number {
   if (operations === null) return 1
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(operations)
+    const jsonText = displaySafeJson(operations, 0)
     emit(jsonText)
     recordReadStat('openapi_outline', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -4002,7 +3999,7 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
 
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(match)
+    const jsonText = displaySafeJson(match, 0)
     emit(jsonText)
     recordReadStat('openapi_op', fullSourceBytes, jsonText, opts.operation)
   } else {
@@ -4055,7 +4052,7 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
 
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(entries)
+    const jsonText = displaySafeJson(entries, 0)
     emit(jsonText)
     recordReadStat('zip_list', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -4128,7 +4125,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
   const fullSourceBytes = sumFileSizes([opts.file])
 
   if (opts.json === true) {
-    const jsonText = JSON.stringify({ path: opts.entry, text })
+    const jsonText = displaySafeJson({ path: opts.entry, text }, 0)
     emit(jsonText)
     recordReadStat('zip_read', fullSourceBytes, jsonText, opts.entry)
   } else {
@@ -4212,7 +4209,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         const fullSourceBytes = Buffer.byteLength(JSON.stringify(files), 'utf8')
         if (opts.json === true) {
           const capped = guardJsonRows(files)
-          const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
+          const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, 0)
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} files`)
         } else {
@@ -4238,7 +4235,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         // file's hunk -- see the `files` case above for the same recordStat rationale.
         const fullSourceBytes = Buffer.byteLength(diffText, 'utf8')
         if (opts.json === true) {
-          const jsonText = JSON.stringify({ path: parsed.path, diff: fenceGithubFieldIfMatched(fileDiff) })
+          const jsonText = displaySafeJson({ path: parsed.path, diff: fenceGithubFieldIfMatched(fileDiff) }, 0)
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} diff:${parsed.path}`)
         } else {
@@ -4260,7 +4257,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         if (opts.json === true) {
           const fencedComments = comments.map((c) => ({ ...c, body: fenceGithubFieldIfMatched(c.body) }))
           const capped = guardJsonRows(fencedComments)
-          const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
+          const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, 0)
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} comments`)
         } else {
@@ -4286,7 +4283,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
             title: fenceGithubFieldIfMatched(desc.title),
             body: desc.body !== null ? fenceGithubFieldIfMatched(desc.body) : null,
           }
-          const jsonText = JSON.stringify(fencedDesc)
+          const jsonText = displaySafeJson(fencedDesc, 0)
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} description`)
         } else {
@@ -4317,7 +4314,7 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
     const schema = getSqliteSchema(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = JSON.stringify(schema)
+      const jsonText = displaySafeJson(schema, 0)
       emit(jsonText)
       recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
@@ -4370,22 +4367,22 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
       // `rows`) -- capped.totalCount would report the already-head-limited row count instead of
       // the true result size, same lie as runCsvQuery's --head/--json bug.
       const capped = guardJsonRows(rows)
-      const jsonText = JSON.stringify({
+      const jsonText = displaySafeJson({
         columns: result.columns,
         items: capped.items,
         truncated: capped.truncated || headTruncated || result.rowCapped,
         totalCount,
         rowCapped: result.rowCapped,
-      })
+      }, 0)
       emit(jsonText)
       const uncappedFull = guardJsonRows(result.rows)
-      const baselineJsonText = JSON.stringify({
+      const baselineJsonText = displaySafeJson({
         columns: result.columns,
         items: uncappedFull.items,
         truncated: uncappedFull.truncated || result.rowCapped,
         totalCount,
         rowCapped: result.rowCapped,
-      })
+      }, 0)
       recordReadStat('sqlite_query', Buffer.byteLength(baselineJsonText, 'utf8'), jsonText, opts.file)
     } else {
       const text = formatSqliteQueryTable({ ...result, rows }, { headTruncated })
@@ -4439,7 +4436,7 @@ export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): numbe
   // recordReadStat's fullSourceBytes convention elsewhere in this file.
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = JSON.stringify(scoped)
+    const jsonText = displaySafeJson(scoped, 0)
     emit(jsonText)
     recordReadStat('coverage_report_gaps', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -4491,7 +4488,7 @@ export function runConflicts(opts: ConflictsCliOptions): number {
   const fullSourceBytes = sumFileSizes(files)
   const detail = opts.path ?? '.'
   if (opts.json === true) {
-    const jsonText = JSON.stringify(opts.summary === true ? results.map(summarizeFileConflicts) : results)
+    const jsonText = displaySafeJson(opts.summary === true ? results.map(summarizeFileConflicts) : results, 0)
     emit(jsonText)
     recordReadStat('conflicts', fullSourceBytes, jsonText, detail)
   } else if (opts.summary === true) {
@@ -4769,7 +4766,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
       ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}),
       section,
     }
-    const jsonText = JSON.stringify(result, null, 2)
+    const jsonText = displaySafeJson(result)
     if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
     return { text: jsonText, code: 0 }
   }
@@ -4838,7 +4835,7 @@ function runBriefMulti(file: string, symbols: string[], opts: BriefOptions): { t
 
   // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see BriefOptions.suppressStat).
   const fullSourceBytes = sumFileSizes([resolveIndexPath(file, opts.projectRoot ?? process.cwd())])
-  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
 }
@@ -4864,7 +4861,7 @@ function runBriefCrossFile(pairs: { file: string; symbol: string }[], opts: Brie
   }
 
   const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
-  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
 }
@@ -4971,7 +4968,7 @@ export function runFind(opts: FindOptions): number {
     // got a bare `truncated: true` and no way to size the gap. Taken from `allFiles`, which is the
     // deduplicated list before `.slice`, so it cannot drift into being a restatement of
     // `files.length`.
-    emit(JSON.stringify({ files, truncated, totalCount: allFiles.length, ...fuzzyPayload }, null, 2))
+    emit(displaySafeJson({ files, truncated, totalCount: allFiles.length, ...fuzzyPayload }))
     return 0
   }
 
@@ -5050,7 +5047,7 @@ export function runListSections(opts: ListSectionsOptions): number {
     // nothing to find at all: this exits 0 with a well-formed empty result, same convention as
     // types/exports/imports/deps' own --grep-filtered-to-empty branch.
     if (opts.json === true) {
-      emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+      emit(displaySafeJson({ items: [], truncated: false, totalCount: 0 }))
       return 0
     }
     emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'section', 'sections'))
@@ -5059,7 +5056,7 @@ export function runListSections(opts: ListSectionsOptions): number {
 
   if (opts.json === true) {
     const capped = guardJsonRows(filtered)
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
+    emit(displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
     return 0
   }
 
@@ -5241,7 +5238,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   // pre-filter one. Matches the branches already migrated in callers/dead/deps/types; text mode
   // keeps every human notice verbatim.
   const emptyEnvelope = (): number => {
-    emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+    emit(displaySafeJson({ items: [], truncated: false, totalCount: 0 }))
     return 0
   }
 
@@ -5338,7 +5335,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     const symbolFullBytes = symbolDiffBaselineBytes
     if (opts.json === true) {
       const capped = guardJsonRows(allSymbols)
-      const text = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
+      const text = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
       emit(text)
       recordReadStat('changed_lookup', symbolFullBytes, text, ref)
       return 0
@@ -5354,7 +5351,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   const fullBytes = changedDiffBaselineBytes(cwd, ref, changedFiles)
   if (opts.json === true) {
     const capped = guardJsonRows(changedFiles)
-    const text = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
+    const text = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
     emit(text)
     recordReadStat('changed_lookup', fullBytes, text, ref)
     return 0
@@ -5533,7 +5530,7 @@ export function runDiff(opts: DiffOptions): number {
   if (opts.json === true) {
     const capped = guardJsonRows(overlapping.map((h) => ({ start: h.start, end: h.end, text: h.text })))
     emit(
-      JSON.stringify(
+      displaySafeJson(
         {
           symbol: match.name,
           file: match.filePath,
@@ -5542,10 +5539,7 @@ export function runDiff(opts: DiffOptions): number {
           hunks: capped.items,
           truncated: capped.truncated,
           totalCount: capped.totalCount,
-        },
-        null,
-        2,
-      ),
+        }),
     )
     return 0
   }
@@ -5685,7 +5679,7 @@ export function runLog(opts: LogOptions): number {
   if (opts.json === true) {
     const capped = guardJsonRows(parseLogDashLOutput(logResult.stdout))
     emit(
-      JSON.stringify(
+      displaySafeJson(
         {
           symbol: match.name,
           file: match.filePath,
@@ -5694,10 +5688,7 @@ export function runLog(opts: LogOptions): number {
           commits: capped.items,
           truncated: capped.truncated,
           totalCount: capped.totalCount,
-        },
-        null,
-        2,
-      ),
+        }),
     )
     return 0
   }
@@ -5970,7 +5961,7 @@ export function runGrep(opts: GrepOptions): number {
     // fewer hits than actually matched with no way to tell "capped by --max-lines" apart from
     // "there just weren't more".
     const payload: JsonRowCapResult<GrepHit> = { items: truncated, truncated: hits.length > maxLines, totalCount: hits.length }
-    emit(JSON.stringify(payload, null, 2))
+    emit(displaySafeJson(payload))
     return 0
   }
 
@@ -6145,7 +6136,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
           return 1
         }
       }
-      emit(JSON.stringify(obj))
+      emit(displaySafeJson(obj, 0))
       return 0
     } catch {
       emitErr(`Failed to parse JSON: ${opts.file}`)
@@ -6360,7 +6351,7 @@ export function runExports(opts: ImportsExportsOptions): number {
     // having exports but --grep matching none of them -- distinct states per the repo's
     // filtered-store convention.
     if (opts.json === true) {
-      const jsonText = JSON.stringify([], null, 2)
+      const jsonText = displaySafeJson([])
       emit(jsonText)
       recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
       return 0
@@ -6372,14 +6363,11 @@ export function runExports(opts: ImportsExportsOptions): number {
   }
 
   if (opts.json === true) {
-    const jsonText = JSON.stringify(
+    const jsonText = displaySafeJson(
       filteredNames.map((n) => {
         const loc = locOf(n)
         return { name: n, kind: kindOf(n), lineStart: loc?.lineStart ?? null, lineEnd: loc?.lineEnd ?? null }
-      }),
-      null,
-      2,
-    )
+      }))
     emit(jsonText)
     recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
     return 0
@@ -6957,7 +6945,7 @@ export function runImports(opts: ImportsExportsOptions): number {
 
   if (filteredImports.length === 0) {
     if (opts.json === true) {
-      const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2)
+      const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 })
       emit(jsonText)
       recordReadStat('imports', fullSourceBytes, jsonText, opts.file)
       return 0
@@ -6970,7 +6958,7 @@ export function runImports(opts: ImportsExportsOptions): number {
 
   if (opts.json === true) {
     const capped = guardJsonRows(filteredImports)
-    const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
+    const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
     emit(jsonText)
     recordReadStat('imports', fullSourceBytes, jsonText, opts.file)
     return 0
@@ -7084,7 +7072,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   if (opts.limit !== undefined && opts.limit <= 0) {
     const message = `--limit must be a positive number, got: ${opts.limit}`
     if (opts.json === true) {
-      return { text: JSON.stringify({ error: message }, null, 2), code: 1 }
+      return { text: displaySafeJson({ error: message }), code: 1 }
     }
     return { text: message, code: 1 }
   }
@@ -7100,7 +7088,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
       const message = `token-goat: projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`
       if (opts.json === true) {
-        return { text: JSON.stringify({ error: message }, null, 2), code: 1 }
+        return { text: displaySafeJson({ error: message }), code: 1 }
       }
       return { text: message, code: 1 }
     }
@@ -7274,7 +7262,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       // its bound, so a consumer can tell an exact total from a lower bound instead of being
       // handed a number that quietly means different things on different runs.
       const limitTruncated = hits.length < eligibleCount
-      const text = JSON.stringify({ source, ...capped, truncated: capped.truncated || limitTruncated, totalCount: eligibleCount, ...(candidatesClipped ? { totalCountIsFloor: true } : {}) }, null, 2)
+      const text = displaySafeJson({ source, ...capped, truncated: capped.truncated || limitTruncated, totalCount: eligibleCount, ...(candidatesClipped ? { totalCountIsFloor: true } : {}) })
       recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
@@ -7302,7 +7290,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const notice = grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'match', 'matches')
     if (opts.json === true) {
       const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, grepFilteredToEmpty: true, hint: notice.trim() }
-      return { text: JSON.stringify(payload, null, 2), code: 0 }
+      return { text: displaySafeJson(payload), code: 0 }
     }
     return { text: `token-goat: ${notice.trim()}`, code: 0 }
   }
@@ -7311,7 +7299,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const notice = `no non-test matches for '${query}' (${excludeTestsHiddenNote(suppressedTotal)})`
     if (opts.json === true) {
       const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
-      return { text: JSON.stringify(payload, null, 2), code: 0 }
+      return { text: displaySafeJson(payload), code: 0 }
     }
     return { text: `token-goat: ${notice}`, code: 0 }
   }
@@ -7331,7 +7319,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
           cachedAt: entry.createdAt,
         }))
         const capped = guardJsonRows(items)
-        const text = JSON.stringify({ source: 'workspace-evidence', ...capped }, null, 2)
+        const text = displaySafeJson({ source: 'workspace-evidence', ...capped })
         recordReadStat('semantic_search', evidenceFullBytes, text, query)
         return { text, code: 0 }
       }
@@ -7352,7 +7340,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const payload = indexEmpty
       ? { source: 'fts', items: [], truncated: false, totalCount: 0, indexEmpty: true, hint: emptyIndexMessage(rootDir) }
       : { source: 'fts', items: [], truncated: false, totalCount: 0 }
-    const text = JSON.stringify(payload, null, 2)
+    const text = displaySafeJson(payload)
     return { text, code: 1 }
   }
   const text = indexEmpty
@@ -7402,7 +7390,7 @@ export function runNoteGet(opts: NoteGetOptions): { text: string; code: number }
       createdAt: note.createdAt,
       updatedAt: note.updatedAt,
     }
-    const text = JSON.stringify(payload, null, 2)
+    const text = displaySafeJson(payload)
     recordStat('note_read')
     return { text, code: 0 }
   }
@@ -7437,7 +7425,7 @@ export function runNoteList(opts: NoteListOptions = {}): { text: string; code: n
       updatedAt: note.updatedAt,
     }))
     recordStat('note_list')
-    return { text: JSON.stringify(items, null, 2), code: 0 }
+    return { text: displaySafeJson(items), code: 0 }
   }
 
   recordStat('note_list')

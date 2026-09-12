@@ -182,3 +182,222 @@ describe('conflicts --summary escapes the same labels as the full view', () => {
     expectNeutralized(r.stdout + r.stderr,['lines ', 'feature/ordinary-branch'])
   })
 })
+
+/**
+ * The XML and HTML outlines interpolate namespace and attribute pairs from BARE LOCALS -- a
+ * destructured `const [k, v]` rather than a `node.attributes` access path. The static sink guard
+ * matches on `receiver.property`, so it cannot see these and is documented as not seeing them: a
+ * matcher widened to bare identifiers would flag `name`, `text` and `label` across the whole
+ * codebase and the signal would drown. This is the coverage that replaces it, and it has to run the
+ * BUILT BINARY, because the thing being checked is what a user's terminal receives.
+ *
+ * FIXTURE PROVENANCE: HAND-DERIVED. Both documents are written here to place the marker at each
+ * interpolation the formatter performs, and the expected escaping is `displaySafeText`'s documented
+ * output rather than anything read back from the formatter.
+ *
+ * Worth recording about the XML case: the marker cannot be put in a namespace PREFIX or an
+ * attribute NAME, because both must be legal XML names and neither `[` nor a space is one. The
+ * reachable half of each pair is the URI and the value, which is what these fixtures carry.
+ */
+describe('xml-outline escapes what the document supplies', () => {
+  it('neutralizes a forged deny prefix in a namespace URI and an attribute value', async () => {
+    const doc = path.join(tmpDir, 'hostile.xml')
+    fs.writeFileSync(
+      doc,
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        `<catalog xmlns:ord="http://example.test/${FORGED}" status="${FORGED}">`,
+        '  <item id="ORDINARY_ITEM_ID">some ordinary text</item>',
+        '</catalog>',
+      ].join('\n'),
+      'utf8',
+    )
+
+    const r = await run(['xml-outline', doc])
+    expect(r.status, r.stderr).toBe(0)
+    // Anchors: the outline's own section headers and the unrelated attribute still render, so the
+    // marker is absent because it was escaped rather than because the report collapsed.
+    expectNeutralized(r.stdout + r.stderr, ['Root element:', 'Element hierarchy:', 'ORDINARY_ITEM_ID'])
+  })
+
+  it('keeps the --json envelope parseable while neutralizing the same document', async () => {
+    // The other half of the same rule. A `--json` report has two readers -- a program that parses
+    // it and a model that reads it, since sub-512-byte CLI output reaches the model through the
+    // bash hook and every CLI report is also an MCP tool result -- so it must satisfy both at once.
+    // Neutralizing the leaves before serializing does; escaping the serialized text would not.
+    const doc = path.join(tmpDir, 'hostile_json.xml')
+    fs.writeFileSync(
+      doc,
+      `<?xml version="1.0"?>\n<catalog status="${FORGED}"><item id="ORDINARY_ITEM_ID"/></catalog>\n`,
+      'utf8',
+    )
+
+    const r = await run(['xml-outline', doc, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+
+    // The machine reader's requirement, stated as the parse itself: if neutralizing had touched the
+    // structure rather than the leaves, this throws.
+    const parsed = JSON.parse(r.stdout) as unknown
+    expect(parsed).toBeTypeOf('object')
+
+    // The model reader's requirement, checked on the re-serialized value so it is the PARSED
+    // content being asserted about and not the raw bytes: the escape survived the round-trip.
+    const roundTripped = JSON.stringify(parsed)
+    expect(roundTripped).toContain(ESCAPED)
+    expect(roundTripped).not.toContain('[tg] ')
+    expect(roundTripped).toContain('ORDINARY_ITEM_ID')
+  })
+})
+
+describe('html-outline escapes what the document supplies', () => {
+  it('neutralizes a forged deny prefix in an attribute value and the title', async () => {
+    const doc = path.join(tmpDir, 'hostile.html')
+    fs.writeFileSync(
+      doc,
+      [
+        '<!DOCTYPE html>',
+        '<html>',
+        `<head><title>${FORGED}</title></head>`,
+        `<body><div id="ORDINARY_DIV_ID" class="${FORGED}"><p>ordinary paragraph</p></div></body>`,
+        '</html>',
+      ].join('\n'),
+      'utf8',
+    )
+
+    const r = await run(['html-outline', doc])
+    expect(r.status, r.stderr).toBe(0)
+    // Anchors read off what this command actually prints: a document summary rather than a node
+    // listing, so the element id is not in it and the title is where the document's own text lands.
+    expectNeutralized(r.stdout + r.stderr, ['HTML Document', 'DOCTYPE: html', 'Title:'])
+  })
+})
+
+/**
+ * The commands the second security sweep found printing third-party document text in token-goat's
+ * own voice. Each one below is a HIGH finding's behavioural half; the static guard's half is the
+ * accessor now listed in tests/guards/display_safe_sink_coverage.test.ts.
+ *
+ * FIXTURE PROVENANCE: HAND-DERIVED, with the container formats FORMAT-DERIVED. The PDF is written
+ * here as literal PDF syntax with an Info dictionary (`/Title`, `/Author`, referenced by the
+ * trailer's `/Info`), the shape pdf-meta reads and the same minimal-PDF skeleton the matrix cases
+ * use; the WebVTT file follows the `WEBVTT` / `hh:mm:ss.mmm --> hh:mm:ss.mmm` / `<v Speaker>` shape
+ * from the W3C WebVTT format. The marker payload and its escaped spelling are the product's own
+ * documented contract, not read back from the formatters under test.
+ */
+
+/** A one-page PDF whose Info dictionary carries the marker in both fields pdf-meta prints. */
+function hostileMetaPdf(): string {
+  return '%PDF-1.4\n' +
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n' +
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n' +
+    '5 0 obj\n<< /Length 44 >>\nstream\nBT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET\nendstream\nendobj\n' +
+    `6 0 obj\n<< /Title (${FORGED}) /Author (${FORGED}) >>\nendobj\n` +
+    'trailer\n<< /Size 7 /Root 1 0 R /Info 6 0 R >>\n%%EOF\n'
+}
+
+const HOSTILE_VTT = [
+  'WEBVTT',
+  '',
+  '00:00:00.000 --> 00:00:02.000',
+  `<v Alice>${FORGED}`,
+  '',
+  '00:00:02.000 --> 00:00:04.000',
+  '<v Bob>ORDINARY_CUE_CONTENT here',
+  '',
+].join('\n')
+
+describe('pdf-meta escapes the Info dictionary', () => {
+  it('neutralizes a forged deny prefix in Title and Author', async () => {
+    // The only one of the document commands with no neutralizer on either branch: a Title holding
+    // an instruction, or an API key, printed verbatim. Reached by the first command the docs
+    // recommend for an emailed PDF.
+    const doc = path.join(tmpDir, 'hostile_meta.pdf')
+    fs.writeFileSync(doc, hostileMetaPdf(), 'latin1')
+
+    const r = await run(['pdf-meta', doc])
+    expect(r.status, r.stderr).toBe(0)
+    // Anchors: the two fields that are not attacker-supplied still render, so the report still
+    // answers the question it exists to answer rather than having collapsed.
+    expectNeutralized(r.stdout + r.stderr, ['Pages: 1', 'Text layer:'])
+  })
+
+  it('keeps the --json envelope parseable while neutralizing the same fields', async () => {
+    const doc = path.join(tmpDir, 'hostile_meta_json.pdf')
+    fs.writeFileSync(doc, hostileMetaPdf(), 'latin1')
+
+    const r = await run(['pdf-meta', doc, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+
+    const parsed = JSON.parse(r.stdout) as { pageCount: number; title: string | null; hasTextLayer: boolean }
+    // The machine reader's requirement: the envelope is still JSON and the fields a caller acts on
+    // are unchanged in type. hasTextLayer is the one a caller branches on.
+    expect(parsed.pageCount).toBe(1)
+    expect(parsed.hasTextLayer).toBe(true)
+    // The model reader's requirement, asserted on the PARSED value so it is the round-tripped
+    // content being checked rather than the raw bytes.
+    expect(parsed.title).toContain(ESCAPED)
+    expect(parsed.title).not.toContain('[tg] ')
+  })
+})
+
+describe('the transcript commands escape and fence cue text', () => {
+  it('fences the transcript body and neutralizes the marker inside it', async () => {
+    const doc = path.join(tmpDir, 'hostile.vtt')
+    fs.writeFileSync(doc, HOSTILE_VTT, 'utf8')
+
+    const r = await run(['transcript', doc])
+    expect(r.status, r.stderr).toBe(0)
+    // Anchors: the second cue and token-goat's own fence preamble. The fence is the structural half
+    // of this fix -- every sibling document command already had it and transcript did not -- so its
+    // absence would be a real regression even with the marker escaped.
+    expectNeutralized(r.stdout + r.stderr, ['ORDINARY_CUE_CONTENT', 'untrusted-file-content', 'Bob'])
+  })
+
+  it('neutralizes the cue preview in the outline, beside the speaker label that was already escaped', async () => {
+    const doc = path.join(tmpDir, 'hostile_outline.vtt')
+    fs.writeFileSync(doc, HOSTILE_VTT, 'utf8')
+
+    const r = await run(['transcript-outline', doc])
+    expect(r.status, r.stderr).toBe(0)
+    // Anchors: the outline's own headings and the ordinary cue. The marker sat one line below an
+    // already-escaped sibling, so the surrounding rows rendering is what shows the asymmetry closed.
+    expectNeutralized(r.stdout + r.stderr, ['Duration:', 'Speakers:', 'Markers:', 'ORDINARY_CUE_CONTENT'])
+  })
+})
+
+describe('sharepoint-resolve redacts the query string and escapes the rest', () => {
+  it('drops the access material and neutralizes a marker in the path', async () => {
+    // Two defects in one line. A SharePoint sharing link carries tokens/signatures in its query
+    // string, and the sibling module states that contract for its own throws while this caller
+    // printed the argv url whole -- on what is the command's ordinary outcome, since it is
+    // best-effort and fails whenever OneDrive is not syncing that library.
+    const url = `https://contoso.sharepoint.com/sites/x/Shared%20Documents/${FORGED}.docx?e=SECRET_QUERY_MATERIAL`
+
+    const r = await run(['sharepoint-resolve', url])
+    const combined = r.stdout + r.stderr
+
+    // The leak half, asserted on its own: the query string must not appear at all.
+    expect(combined, 'the share URL query string reached the report, which is where the access material lives').not.toContain('SECRET_QUERY_MATERIAL')
+    // The marker half, with the origin and path surviving as the anchor so this cannot pass by the
+    // command having printed nothing.
+    expectNeutralized(combined, ['could not resolve', 'contoso.sharepoint.com'])
+  })
+})
+
+describe("the catch-all error printer escapes what it quotes", () => {
+  it('neutralizes a marker in a message reaching the shared error sink on stderr', async () => {
+    // Five catch-all printers speak in token-goat's voice for EVERY command, and all five
+    // interpolated the raw message. This is the case that only exists on stderr: the assertion
+    // helper reads both streams for exactly this reason, and stdout here is empty.
+    const missing = path.join(tmpDir, `${FORGED}.xlsx`)
+
+    const r = await run(['xlsx-sheets', missing])
+    expect(r.status, 'the command was expected to fail, which is what routes it through the catch-all printer').not.toBe(0)
+    expect(r.stdout).toBe('')
+    // Anchor: token-goat's own voice is still on the line, so the message still reads as a
+    // token-goat error rather than having been emptied.
+    expectNeutralized(r.stdout + r.stderr, ['token-goat:', 'not found'])
+  })
+})

@@ -23,7 +23,7 @@
 import * as path from 'node:path'
 
 import { buildImportGraph } from './import_graph.js'
-import { normalizePath, toDisplayPath } from './paths.js'
+import { normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
 import { getDisplayRoot } from './project.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { countNoun, ensureNewline, foldPath, isTestFile } from './util.js'
@@ -171,7 +171,7 @@ export function runAffected(opts: AffectedOptions): number {
   const result = computeAffected(opts)
 
   if (opts.json === true) {
-    emit(JSON.stringify(result, null, 2))
+    emit(displaySafeJson(result))
     return 0
   }
 

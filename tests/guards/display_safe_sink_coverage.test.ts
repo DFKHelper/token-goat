@@ -143,6 +143,17 @@ export const UNTRUSTED_ACCESSORS: readonly string[] = [
   'err.message',
   'warn.message',
   'n.attributes',
+  // A PDF's Info dictionary, an ffprobe chapter/stream tag, and a transcript cue preview. All
+  // three are text an outside author chose, printed into a summary row token-goat speaks in its
+  // own voice, and all three were missing here while the commands that print them were missing
+  // their escape -- the population omission and the instance shipped together.
+  'meta.title',
+  'meta.author',
+  'c.title',
+  's.title',
+  's.codec',
+  's.language',
+  'm.preview',
 ]
 
 /**
@@ -244,6 +255,13 @@ const SINKS: readonly string[] = [
   // The startup banners in cli.ts go out through `err`, and one of them printed a raw marker on
   // every single invocation while this guard was green. A sink is a sink whichever stream it uses.
   'err(',
+  // `out(` is cli.ts's primary stdout emitter and was absent from this list while 127 call sites
+  // used it. That single omission is why pdf-meta's Title, video-chapters' chapter names,
+  // transcript's cue text and sharepoint-resolve's share URL all reached the model in token-goat's
+  // own voice while this file reported green. `err(` was itself added only after it leaked a raw
+  // marker; this entry is the other half of the same pair, and a sink is a sink whichever stream
+  // it writes to.
+  'out(',
 ]
 
 /**
@@ -252,7 +270,21 @@ const SINKS: readonly string[] = [
  * `renderValue(` earns its place by being a one-line wrapper whose whole body is
  * `displaySafeText(JSON.stringify(v))`; if that ever stops being true, this entry is wrong.
  */
-const NEUTRALIZERS: readonly string[] = ['displaySafeText(', 'displaySafePath(', 'renderValue(']
+const NEUTRALIZERS: readonly string[] = [
+  'displaySafeText(',
+  'displaySafePath(',
+  'renderValue(',
+  // The `--json` counterpart: it walks the value and neutralizes the leaf strings and keys BEFORE
+  // serializing, so the escape lands inside a JSON string where it survives a round-trip intact.
+  // Escaping the serialized text instead would corrupt the document, which is why the rule is
+  // stated as "serialize through this helper" rather than "escape the output of JSON.stringify".
+  'displaySafeJson(',
+  // A module-local wrapper in cli.ts, listed on the same reasoning as the fence wrappers below:
+  // it escapes every path it interpolates, so a call site handing it a project-derived path is
+  // covered by it. Pinned to that shape by an assertion further down, because a wrapper listed
+  // here that stopped escaping would exempt its call sites while printing raw paths.
+  'projectHooksCommitNote(',
+]
 
 /** Fences delimit a payload instead of escaping it, which is the other correct answer. */
 const FENCES: readonly string[] = [
@@ -261,6 +293,7 @@ const FENCES: readonly string[] = [
   'fenceUntrustedFileContent(',
   'fenceUntrustedOcrText(',
   'fenceWithMatches(',
+  'fenceUntrustedSpans(',
   // Module-local one-line wrappers over `fenceUntrusted`. A site that fences through the wrapper
   // is fenced just as thoroughly, but the scan reads the expression text and would not see it.
   // Both wrappers are asserted below to still be one-liners delegating to a listed fence.
@@ -280,7 +313,21 @@ const FENCES: readonly string[] = [
  * Matched at the call name, so a future `emit(extractNodeText(node, src))` is caught the day it is
  * written rather than the day somebody remembers this shape exists.
  */
-const UNTRUSTED_CALLS: readonly string[] = ['extractNodeText(', 'serializeHtmlNode(']
+const UNTRUSTED_CALLS: readonly string[] = [
+  'extractNodeText(',
+  'serializeHtmlNode(',
+  // `JSON.stringify(` is here for the same reason and with one extra wrinkle. It returns document
+  // bytes, and the property scan cannot see into the object literal it is handed. This guard used
+  // to SKIP a sink whose whole argument was a stringify call, reasoning that a `--json` branch
+  // emits data for a caller to parse and escaping it would corrupt the values read back. Half of
+  // that is right: escaping the SERIALIZED text would corrupt it. But the conclusion did not
+  // follow, because a `--json` report has two readers -- sub-512-byte CLI output reaches the model
+  // through postBashHandler, and every CLI report is also an MCP tool result -- so a forged
+  // `[tg] ...` in a string value arrived wearing token-goat's authority. Neutralizing the LEAVES
+  // before serializing satisfies both readers at once, so the rule is now: serialize a report
+  // through `displaySafeJson`, never through bare `JSON.stringify`.
+  'JSON.stringify(',
+]
 
 /**
  * Sites that interpolate an accessor without escaping it, each with the reason.
@@ -300,6 +347,17 @@ const UNTRUSTED_CALLS: readonly string[] = ['extractNodeText(', 'serializeHtmlNo
  *    exemption covers the whole line.
  */
 const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
+  [
+    'hooks_bash.ts:rewrite.text',
+    'the rewritten command-output body forwarded to emitRewrite, and it arrives already fenced. ' +
+      'Every branch that assigns `rewrite` in this function goes through fenceRewriteWithinCap(, ' +
+      'which calls fenceUntrustedSpans( so the filter notices spliced into the body stay in ' +
+      "token-goat's voice while the command bytes around them are neutralized. The fence is " +
+      'applied by the producer rather than on this line, which is why the expression scan cannot ' +
+      'see it; substituted_output_reaches_fence.test.ts is what pins it, and that guard turns red ' +
+      'if any branch here stops fencing. Escaping the body at this line instead would corrupt the ' +
+      'output it delivers, which is why the fence is the right shape and displaySafeText is not.',
+  ],
   [
     'read_commands.ts:h.text',
     'runDiff joins git diff hunk bodies into its output: these are the payload the reader asked ' +
@@ -353,6 +411,30 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
  * own source or an enum it defines, and that a reader can confirm it without leaving the file.
  */
 const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
+  [
+    'cli.ts:removal.label',
+    "token-goat's own integration names ('Codex CLI integration', 'pi extension' and siblings), " +
+      'string literals in the `removals` array declared a few lines above the print in this same ' +
+      'file. Nothing outside the binary feeds them: the --codex/--vscode flags select WHICH ' +
+      'literal prints, never what it says.',
+  ],
+  [
+    'cli.ts:leftover.label',
+    "token-goat's own integration names again, the same literals in the `candidates` array that " +
+      'leftoverIntegrations builds its result from. The flag printed beside each one is likewise ' +
+      "a literal ('--codex' and siblings) from that array, so the whole sentence is token-goat " +
+      'vocabulary with nothing project-supplied spliced into it.',
+  ],
+  [
+    'bridges/grok.ts:parsed.reason',
+    "token-goat's own deny reason on its way back out. `parsed` is JSON.parse of token-goat's own " +
+      'hook stdout, so `reason` is the message denyOutput composed and already neutralized before ' +
+      'printing it; the bridge only re-labels it into the `{ decision, reason }` shape Grok wants. ' +
+      'Escaping it a second time here would mangle our own words, which is the defect this guard ' +
+      'exists to prevent pointed the other way. Note this site was invisible until the JSON.stringify ' +
+      'skip came out: that skip used `continue` on the whole line, so it hid ordinary property ' +
+      'matches too, not just the serialization it was written for.',
+  ],
   ...(
     [
       ['cli_commands.ts:entry.name', 'command name'],
@@ -412,6 +494,54 @@ const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
  */
 const NOT_AN_OUTPUT_SINK: ReadonlyMap<string, string> = new Map([
   [
+    'cli.ts:opts.file',
+    'not an output sink: `opts.file` is the --file path handed to readBoundedText as the source ' +
+      'to READ, and it shares a line with the out() that prints the result only because the call ' +
+      'is nested. formatCompression interpolates the id, the encoding, four byte counts, the ' +
+      'recovery command and optionally the base64url payload -- the filename appears in none of ' +
+      'them. The value is consumed as a path, never printed.',
+  ],
+  // The four protocol frames below are all `process.stdout.write` and none of them is a report.
+  // Each writes a machine envelope that a parser on the other end consumes, and in every case the
+  // human-readable text inside was already made display-safe by the command or hook that produced
+  // it, so neutralizing here would escape a value a second time rather than a first.
+  [
+    'batch_serve.ts:JSON.stringify() returns document bytes',
+    'not a prose line: the batch transport frame. serveBatch writes `<token> <json>` straight to ' +
+      'the descriptor precisely because process.stdout.write is swapped out while a request runs, ' +
+      'so this reply must not land in the served command\'s own buffer. The batch client parses ' +
+      'the frame, and the report inside it went through the command\'s own display-safe path.',
+  ],
+  [
+    'bridges/codex.ts:JSON.stringify() returns document bytes',
+    "not a prose line: token-goat's own hook response, forwarded. `parsed` is JSON.parse of " +
+      "token-goat's own hook stdout, adjusted by stripTg and given the event name Codex expects, " +
+      'then handed back to the Codex CLI as its hook protocol reply rather than shown to anyone.',
+  ],
+  [
+    'bridges/copilot_cli.ts:JSON.stringify() returns document bytes',
+    "not a prose line: the same hook protocol reply as codex.ts above, with translate() mapping " +
+      "token-goat's own parsed hook response onto Copilot's schema. The envelope is machine-read.",
+  ],
+  [
+    'bridges/grok.ts:JSON.stringify() returns document bytes',
+    "not a prose line: the same hook protocol reply again. On a passive event Grok ignores stdout " +
+      "entirely, so token-goat's own parsed response is forwarded verbatim; on a block it becomes " +
+      "Grok's deny shape. Either way a parser reads it, not a model reading prose.",
+  ],
+  [
+    'image_ocr.ts:JSON.stringify() returns document bytes',
+    'not an output sink: this line is a string inside buildChildScript, which assembles the source ' +
+      'of the OCR child process. The write it describes happens in that CHILD, to the child\'s own ' +
+      'stdout, and token-goat is the parser on the other end of the pipe.',
+  ],
+  [
+    'image_ocr.ts:data.text',
+    'not an output sink: the same generated child-process source as above. `data` is tesseract\'s ' +
+      'own result object inside the child, and the value travels back to token-goat as JSON to be ' +
+      'parsed. The OCR text is fenced by fenceUntrustedOcrText where it reaches a real report.',
+  ],
+  [
     'languages/terraform_idx.ts:bm.name',
     "not an output sink: `emit` in a language adapter is the indexer's row callback, which writes " +
       'a symbols-table row, and never reaches stdout or the model.',
@@ -424,14 +554,6 @@ const NOT_AN_OUTPUT_SINK: ReadonlyMap<string, string> = new Map([
     'read_commands.ts:opts.context',
     'not text: `opts.context ?? 0` is the numeric size of the context window requested with -C, ' +
       'passed to a renderer as a number. There is nothing in it to escape.',
-  ],
-  [
-    'hooks_bash.ts:rewrite.text',
-    'not a prose line: this is the rewritten command-output BODY handed to emitRewrite as the ' +
-      'replacement payload, produced by the bash filters. UNFIXED AND DELIBERATELY SO -- escaping a ' +
-      'whole output body would corrupt the very text it delivers, and the correct treatment for a ' +
-      'payload is a fence applied by the filter that built it, not displaySafeText here. Reported ' +
-      'rather than changed: it is outside this change and bigger than a one-line escape.',
   ],
   [
     'hooks_bash.ts:rewrite.reason',
@@ -519,16 +641,28 @@ function sinkIndex(line: string, sink: string): number {
 function unescapedSites(): string[] {
   const out: string[] = []
   for (const { rel, code } of srcFiles()) {
+    // A one-line variable hop used to defeat this entire scan. `runXmlOutline` wrote
+    // `const jsonText = JSON.stringify(summary, null, 2)` and then `emit(jsonText)`: the sink line's
+    // argument is a bare identifier with no property access in it, so the matcher below found
+    // nothing to check and `xml-outline --json` shipped a forged `[tg] ...` marker verbatim. The
+    // assignment is therefore tracked to the sink, which is the smallest dataflow step that makes
+    // the rule mean what it says.
+    const rawJsonNames = new Set<string>()
+    for (const m of code.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)[^=\n]*=[^=\n]*?JSON\.stringify\(/g)) {
+      const name = m[1]
+      if (name !== undefined) rawJsonNames.add(name)
+    }
+
+    // The sibling shape, which reaches no sink in its own file at all: a command helper that
+    // returns `{ text: JSON.stringify(payload), code }` and leaves the printing to its caller.
+    for (const m of code.matchAll(/\btext:\s*JSON\.stringify\(/g)) {
+      if (m.index !== undefined) out.push(`${rel}:{ text: JSON.stringify(...) } returned for printing`)
+    }
+
     for (const rawLine of code.split('\n')) {
       const sink = SINKS.find((s) => sinkIndex(rawLine, s) >= 0)
       if (sink === undefined) continue
       const arg = rawLine.slice(sinkIndex(rawLine, sink) + sink.length)
-      // A `--json` branch emits a data document for a caller to parse, not a line token-goat
-      // speaks. Escaping inside it would corrupt the very values the consumer reads back, and
-      // every other `--json` branch in this codebase is raw for that reason. Narrow on purpose:
-      // only when the whole argument IS the stringify call, so interpolated prose that merely
-      // mentions JSON.stringify somewhere is still checked.
-      if (arg.trimStart().startsWith('JSON.stringify(')) continue
       for (const m of arg.matchAll(propertyRe())) {
         const receiver = m[1] ?? ''
         // Only the leaf receiver is allowlisted, so `path.sep` is trusted while a project-derived
@@ -548,6 +682,13 @@ function unescapedSites(): string[] {
         const safe =
           NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))
         if (!safe) out.push(`${rel}:${call}) returns document bytes`)
+      }
+      // Third matcher: a name this file assigned from a raw JSON.stringify, now reaching a sink.
+      for (const name of rawJsonNames) {
+        if (!new RegExp(String.raw`\b${name}\b`).test(arg)) continue
+        const scope = enclosingExpression(arg, arg.indexOf(name))
+        if (NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))) continue
+        out.push(`${rel}:${name} was built by JSON.stringify and reaches a sink`)
       }
     }
   }
@@ -602,6 +743,39 @@ describe('project-supplied text reaches no report sink unescaped', () => {
         'or propertyRe() has gone stale, and every site in the tree would now read as clean.',
     ).toBeGreaterThan(100)
     expect(UNTRUSTED_PROPERTIES.length).toBeGreaterThan(15)
+  })
+
+  it('still sees both halves of the JSON rule, so neither can pass by matching nothing', () => {
+    // This guard used to skip a sink whose whole argument was a `JSON.stringify(` call. Removing
+    // that skip is only worth something if both halves of the replacement rule are live, and each
+    // half fails silently in the direction that looks green: a NEUTRALIZERS entry matching nothing
+    // would exempt no site while appearing to, and an UNTRUSTED_CALLS entry matching nothing would
+    // flag no site while appearing to. So both populations are counted, not assumed.
+    const sinkLines = srcFiles().flatMap(({ rel, code }) =>
+      code
+        .split('\n')
+        .filter((l) => SINKS.some((s) => sinkIndex(l, s) >= 0))
+        .map((l) => ({ rel, line: l })),
+    )
+
+    // The neutralizer half: real report sites serialize through the shared helper.
+    const viaHelper = sinkLines.filter((s) => s.line.includes('displaySafeJson('))
+    expect(
+      viaHelper.length,
+      'No sink line serializes through displaySafeJson. Either the helper was renamed and this ' +
+        'guard now exempts nothing, or the --json reports regressed to raw JSON.stringify.',
+    ).toBeGreaterThan(20)
+    // Spread across files, so the count cannot be carried by one command's many branches.
+    expect(new Set(viaHelper.map((s) => s.rel)).size).toBeGreaterThan(5)
+
+    // The matcher half: raw JSON.stringify at a sink is still recognized as something to flag.
+    // These are the protocol frames named in NOT_AN_OUTPUT_SINK; if this hits zero, that map is
+    // exempting sites the scan can no longer find and the exemption test below says so.
+    expect(
+      sinkLines.filter((s) => s.line.includes('JSON.stringify(')).length,
+      'No sink line calls JSON.stringify any more. The UNTRUSTED_CALLS entry for it is now dead ' +
+        'weight rather than a rule, and the exemptions resting on it should go with it.',
+    ).toBeGreaterThan(0)
   })
 
   it('every accessor in the list still appears somewhere in src', () => {
@@ -752,6 +926,16 @@ describe('project-supplied text reaches no report sink unescaped', () => {
           'matches that shape. FENCES would now be exempting sites that are not fenced.',
       ).toBe(true)
     }
+
+    // The NEUTRALIZERS wrapper is pinned the same way and for the same reason: it is listed
+    // because it escapes the paths it is handed, and both of its call sites are exempted by that
+    // listing alone.
+    expect(
+      /function projectHooksCommitNote\([^)]*\): string \{[\s\S]{0,400}?pathFiles\.map\(\(p\) => displaySafePath\(p\)\)/.test(all),
+      'projectHooksCommitNote is listed in NEUTRALIZERS as a wrapper that escapes the paths it ' +
+        'interpolates, but its body no longer maps them through displaySafePath. NEUTRALIZERS ' +
+        'would now be exempting its two call sites while it prints raw project paths.',
+    ).toBe(true)
 
     // The mutation proof, split-literal for the same reason as the test above: this guard scans
     // src/ for the token it would otherwise be injecting into its own population.

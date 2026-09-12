@@ -16,7 +16,7 @@ import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { ensureNewline, pad, requireNonNegativeStrictInt, countNoun } from './util.js'
 import { loadConfig } from './config.js'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 
 function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
@@ -135,7 +135,7 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
     .sort((a, b) => b.storedAt - a.storedAt)
   const items = capAndNote(allItems, limit)
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(items) + '\n')
     return
   }
   if (items.length === 0) {
@@ -176,7 +176,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
     .sort((a, b) => b.storedAt - a.storedAt)
   const items = capAndNote(allItems, limit)
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(items) + '\n')
     return
   }
   if (items.length === 0) {
@@ -217,7 +217,7 @@ export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
     .sort((a, b) => b.storedAt - a.storedAt)
   const items = capAndNote(allItems, limit)
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(items) + '\n')
     return
   }
   if (items.length === 0) {
@@ -247,7 +247,7 @@ export function cmdCleanCache(opts: { json?: boolean }): void {
   removed['web_cache_tmp'] = staleDownloads
   total += staleDownloads
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ removed, total }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ removed, total }) + '\n')
     return
   }
   for (const [sub, n] of Object.entries(removed)) {
@@ -298,7 +298,7 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
   removed['web_cache_tmp'] = staleDownloads
   total += staleDownloads
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ removed, total, maxCount, maxAgeMs }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ removed, total, maxCount, maxAgeMs }) + '\n')
     return
   }
   for (const [sub, n] of Object.entries(removed)) {
@@ -359,7 +359,7 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
   })
   const issueCount = findings.filter((f) => !f.ok).length
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ findings, issueCount }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ findings, issueCount }) + '\n')
     return
   }
   for (const f of findings) {
@@ -378,7 +378,7 @@ export async function cmdResume(opts: { sessionId: string; json?: boolean }): Pr
     throw new Error(`no session blob found for '${opts.sessionId}' — list sessions with: token-goat session-summary --json`)
   }
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ sessionId: opts.sessionId, packet }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ sessionId: opts.sessionId, packet }) + '\n')
     return
   }
   process.stdout.write(packet + (packet.endsWith('\n') ? '' : '\n'))
@@ -398,7 +398,7 @@ export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; jso
     const out: Record<string, unknown> = { tier: pressure.tier, fillFraction: pressure.fillFraction, pct: Number(pct), manifestTokens, eventCount }
     if (sessionId !== null) out['sessionId'] = sessionId
     if (opts.trigger !== undefined) out['trigger'] = opts.trigger
-    process.stdout.write(JSON.stringify(out, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(out) + '\n')
     return
   }
   process.stdout.write(`Compact hint — context: ${pressure.tier} (${pct}% full)\n`)
@@ -417,7 +417,7 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
   const session = getNewestSessionFiles()
   if (session === null) {
     if (opts.json === true) {
-      process.stdout.write(JSON.stringify({ sessionCount: 0, message: 'no session blobs found' }, null, 2) + '\n')
+      process.stdout.write(displaySafeJson({ sessionCount: 0, message: 'no session blobs found' }) + '\n')
       return
     }
     process.stdout.write('No session blobs found.\n')
@@ -432,7 +432,7 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
     .map((f) => (typeof f['path'] === 'string' ? f['path'] : ''))
     .filter(Boolean)
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ sessionId: id, sessionCount, filesRead, filesEdited, topFiles }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ sessionId: id, sessionCount, filesRead, filesEdited, topFiles }) + '\n')
     return
   }
   process.stdout.write(`Session: ${id}\n`)
@@ -452,7 +452,7 @@ export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
     const session = getNewestSessionFiles()
     if (session === null) {
       if (opts.json === true) {
-        process.stdout.write(JSON.stringify({ session: true, message: 'no session blobs found' }, null, 2) + '\n')
+        process.stdout.write(displaySafeJson({ session: true, message: 'no session blobs found' }) + '\n')
         return
       }
       process.stdout.write('No session data found.\n')
@@ -463,7 +463,7 @@ export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
     const totalReads = filesArr.reduce((sum, f) => sum + (typeof f['readCount'] === 'number' ? f['readCount'] : 0), 0)
     const totalBytes = filesArr.reduce((sum, f) => sum + (typeof f['sizeBytes'] === 'number' ? f['sizeBytes'] : 0), 0)
     if (opts.json === true) {
-      process.stdout.write(JSON.stringify({ session: true, sessionId: id, totalFiles, totalReads, totalBytes }, null, 2) + '\n')
+      process.stdout.write(displaySafeJson({ session: true, sessionId: id, totalFiles, totalReads, totalBytes }) + '\n')
       return
     }
     process.stdout.write(`Session: ${id}\n`)
@@ -482,7 +482,7 @@ export function cmdBaseline(opts: { subagent?: boolean; json?: boolean; suggestM
   if (opts.json === true) {
     const jsonOut: Record<string, unknown> = { ...map }
     if (suggestMem) jsonOut['memSuggestions'] = findMemSuggestionCandidates(process.cwd())
-    process.stdout.write(JSON.stringify(jsonOut, null, 2) + String.fromCharCode(10))
+    process.stdout.write(displaySafeJson(jsonOut) + String.fromCharCode(10))
     return
   }
   let out = formatProjectMap(map, map.compact)

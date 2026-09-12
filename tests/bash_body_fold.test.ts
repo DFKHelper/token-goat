@@ -34,6 +34,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { BODY_FOLD_KEEP_LINES } from '../src/fold_delivery.js'
 import { postBashHandler } from '../src/hooks_bash.js'
+import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { querySymbols } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -145,7 +146,13 @@ describe('postBashHandler: body folding on a shell read', () => {
     const body = delivered(out, text)
     expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}@${span.lineStart}"`)
     // The window starts at the declaration, so it survives; the notice replaces only what follows it.
-    expect(body.split('\n')[0]).toBe(LINES[span.lineStart - 1])
+    // The body is fenced: splicing our own fold notice in makes this a substitution, not a pass-through,
+    // so the declaration is the first line INSIDE the tag rather than the first line overall. Anchored on
+    // the open tag rather than a fixed offset, so rewording the preamble cannot silently re-break this.
+    const bodyLines = body.split('\n')
+    const openTagAt = bodyLines.indexOf(`<${UNTRUSTED_TOOL_TAG}>`)
+    expect(openTagAt, 'the fenced rewrite lost its open tag').toBeGreaterThanOrEqual(0)
+    expect(bodyLines[openTagAt + 1]).toBe(LINES[span.lineStart - 1])
   })
 
   it('leaves a window sitting inside one symbol whole, because its declaration was never delivered', async () => {

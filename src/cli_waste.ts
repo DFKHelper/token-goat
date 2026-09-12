@@ -19,6 +19,7 @@ import { copilotCliMcpToolsDir } from './bridges/copilot_cli_install.js'
 import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
+import { displaySafeJson } from './paths.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -252,7 +253,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
         ? 'no Copilot CLI session found under <copilot-home>/session-state'
         : `Copilot session event log not found: ${eventsPath}`
       if (opts.json === true) {
-        process.stdout.write(`${JSON.stringify({ error: detail })}\n`)
+        process.stdout.write(`${displaySafeJson({ error: detail }, 0)}\n`)
       } else {
         process.stdout.write('\n# token-goat waste (Copilot CLI)\n')
         process.stdout.write(`${detail}\n`)
@@ -262,7 +263,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
     }
     const copilotReport = buildCopilotWasteReport(eventsPath)
     if (opts.json === true) {
-      process.stdout.write(`${JSON.stringify(copilotReport)}\n`)
+      process.stdout.write(`${displaySafeJson(copilotReport, 0)}\n`)
       return
     }
     printCopilotReport(copilotReport)
@@ -277,7 +278,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
 
   if (transcriptPath === null) {
     if (opts.json === true) {
-      process.stdout.write(`${JSON.stringify({ error: 'no session transcript found', project: projectRoot })}\n`)
+      process.stdout.write(`${displaySafeJson({ error: 'no session transcript found', project: projectRoot }, 0)}\n`)
     } else {
       process.stdout.write('\n# token-goat waste\n')
       process.stdout.write(`Project: ${projectRoot}\n`)
@@ -296,7 +297,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
   const report = await buildWasteReport(transcriptPath, opts.top !== undefined ? { topN: opts.top } : {})
 
   if (opts.json === true) {
-    process.stdout.write(`${JSON.stringify(report)}\n`)
+    process.stdout.write(`${displaySafeJson(report, 0)}\n`)
     return
   }
 

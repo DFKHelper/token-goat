@@ -58,7 +58,7 @@ import { getDb } from './db.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { loadConfig } from './config.js'
 import { extractErrorMessage } from './util.js'
-import { normalizePath } from './paths.js'
+import { normalizePath, displaySafeJson } from './paths.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level
 // doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal
@@ -721,7 +721,7 @@ export async function createMcpServer(): Promise<McpServer> {
         embeddingsEnabled,
         embeddingsAvailable,
       }
-      return toCallToolResult({ text: JSON.stringify(status, null, 2), code: 0 })
+      return toCallToolResult({ text: displaySafeJson(status), code: 0 })
     },
   )
 
@@ -958,7 +958,7 @@ export async function createMcpServer(): Promise<McpServer> {
         text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('text to compress'),
       },
     },
-    (args) => toCallToolResult({ text: JSON.stringify(compressionPayload(compressText(args.text)), null, 2), code: 0 }),
+    (args) => toCallToolResult({ text: displaySafeJson(compressionPayload(compressText(args.text))), code: 0 }),
   )
 
   server.registerTool(
@@ -989,7 +989,7 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) =>
       toCallToolResult({
-        text: JSON.stringify(createHandoff(args.name, args.text, resolveToolRoot(args.projectRoot)), null, 2),
+        text: displaySafeJson(createHandoff(args.name, args.text, resolveToolRoot(args.projectRoot))),
         code: 0,
       }),
   )
@@ -1013,7 +1013,7 @@ export async function createMcpServer(): Promise<McpServer> {
         ? toCallToolResult({ text: `no local handoff named "${args.name}" in this project`, code: 1 })
         : typeof result === 'string'
           ? toRawCallToolResult({ text: result, code: 0 })
-          : toCallToolResult({ text: JSON.stringify(compressionPayload(result), null, 2), code: 0 })
+          : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })
     },
   )
 

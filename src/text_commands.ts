@@ -16,7 +16,7 @@ import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
 import { ALL_SYMBOLS_IN_FILE_LIMIT, enclosingSymbol } from './graph_commands.js'
 import { querySymbols } from './index_reader.js'
-import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { resolveBody } from './read_commands.js'
@@ -167,7 +167,7 @@ export function cmdTodo(
   }
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ items }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ items }) + '\n')
     return
   }
 
@@ -641,7 +641,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
 
   if (opts.json === true) {
     if (opts.bodies !== true) {
-      process.stdout.write(JSON.stringify({ tracebacks: filtered }, null, 2) + '\n')
+      process.stdout.write(displaySafeJson({ tracebacks: filtered }) + '\n')
       return
     }
     // Same resolution + dedup-by-reference as the text path below, just shaped as JSON fields
@@ -664,7 +664,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
         }
       }),
     }))
-    process.stdout.write(JSON.stringify({ tracebacks: withBodies }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ tracebacks: withBodies }) + '\n')
     return
   }
 
@@ -833,7 +833,7 @@ export function cmdLogfold(
   }
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ lines: folded, truncated, inputLines, shownLines }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ lines: folded, truncated, inputLines, shownLines }) + '\n')
     return
   }
 
@@ -1325,11 +1325,8 @@ function cmdLockdepsPackage(lockfile: string, format: string, deps: DepEntry[], 
 
   if (json) {
     process.stdout.write(
-      JSON.stringify(
-        { file: lockfile, format, package: primary.name, version: primary.version, kind: primary.kind, otherVersions, graphAvailable, dependsOn, dependedOnBy },
-        null,
-        2,
-      ) + '\n',
+      displaySafeJson(
+        { file: lockfile, format, package: primary.name, version: primary.version, kind: primary.kind, otherVersions, graphAvailable, dependsOn, dependedOnBy }) + '\n',
     )
     return
   }
@@ -1366,7 +1363,7 @@ export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean
   }
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ file: found.file, format, total: deps.length, others, deps }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ file: found.file, format, total: deps.length, others, deps }) + '\n')
     return
   }
 
@@ -1400,7 +1397,7 @@ export function cmdNote(
     const hash = resolveProjectHash()
     const entries = loadEntries(hash)
     if (opts.json === true) {
-      process.stdout.write(JSON.stringify(entries, null, 2) + '\n')
+      process.stdout.write(displaySafeJson(entries) + '\n')
     } else {
       const pairs = Object.entries(entries)
       if (pairs.length === 0) {
@@ -1539,7 +1536,7 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   if (opts.json === true) {
     // Already an object payload, so the flag goes in-band where `hot --json | jq` can see it. The
     // bare-array listings elsewhere cannot do this without breaking their consumers.
-    process.stdout.write(JSON.stringify({ entries, truncated, totalCount: eligibleCount }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ entries, truncated, totalCount: eligibleCount }) + '\n')
     return
   }
 
@@ -1593,7 +1590,7 @@ export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): v
     .slice(0, n)
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ entries, scope: 'current-session' }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ entries, scope: 'current-session' }) + '\n')
     return
   }
 
@@ -1657,7 +1654,7 @@ export function cmdIgnores(opts: { json?: boolean }): void {
   }
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(report) + '\n')
     return
   }
 

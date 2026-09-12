@@ -39,7 +39,7 @@ import { fingerprintFile, fingerprintContent } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
-import { displaySafePath, displaySafeText, resolveIndexPath } from './paths.js'
+import { displaySafePath, displaySafeText, resolveIndexPath, displaySafeJson } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import {
@@ -172,7 +172,7 @@ import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource, stripLower } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, redactUrlQuery, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource, stripLower } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
@@ -286,7 +286,7 @@ function cmdRetrieve(id: string, opts: { head?: string; tail?: string; grep?: st
 
 function cmdHandoffCreate(name: string, text: string | undefined, opts: { file?: string }): void {
   const result = createHandoff(name, readBoundedText(text, opts.file))
-  out(JSON.stringify(result, null, 2))
+  out(displaySafeJson(result))
 }
 
 function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
@@ -521,7 +521,7 @@ function cmdMap(opts: { compact?: boolean; json?: boolean }): void {
   const map = buildProjectMap(process.cwd(), { compact: opts.compact === true })
   const text = formatProjectMap(map, map.compact)
   if (opts.json === true) {
-    out(JSON.stringify(map))
+    out(displaySafeJson(map, 0))
   } else {
     out(text)
   }
@@ -537,7 +537,7 @@ function cmdMap(opts: { compact?: boolean; json?: boolean }): void {
 
 function cmdBridgesStatus(opts: { json?: boolean }): void {
   if (opts.json === true) {
-    out(JSON.stringify(bridgesStatusToJson(BRIDGE_CAPABILITY_MATRIX)))
+    out(displaySafeJson(bridgesStatusToJson(BRIDGE_CAPABILITY_MATRIX), 0))
   } else {
     out(formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX))
   }
@@ -549,7 +549,7 @@ function cmdCommands(opts: { json?: boolean; grep?: string }): void {
     manifest = filterCommandManifest(manifest, opts.grep)
   }
   if (opts.json === true) {
-    out(JSON.stringify(manifest))
+    out(displaySafeJson(manifest, 0))
   } else if (manifest.length === 0) {
     // Same wording as cmdPptxText's --grep-with-no-hits path: a filter matching nothing is a
     // legitimate empty result, not an error, so this stays a plain message on exit 0.
@@ -615,9 +615,10 @@ async function cmdHook(event: string, opts: { harness?: string }): Promise<void>
 }
 
 /** One-line warning for a project-scope install whose files hold absolute paths on this machine and so must not be committed for a team: VS Code runs the hooks file for everyone who opens the repository. */
+// Escaped inside this helper rather than at its call sites. Both callers pass paths built from the project root, so a repository cloned into a marker-named directory puts the marker into a note token-goat speaks in its own voice; doing it in the one place covers both callers and any later one. The guard's NEUTRALIZERS lists this function for that reason, and pins the shape below so it cannot quietly stop escaping while still exempting its callers.
 function projectHooksCommitNote(pathFiles: readonly string[], hooksConfigPath?: string): string {
-  const shim = hooksConfigPath === undefined ? '' : ` (${path.join(path.dirname(hooksConfigPath), HOOKS_SCRIPT_FILE)} is generated with them)`
-  return `Note: ${pathFiles.join(', ')} ${pathFiles.length === 1 ? 'holds' : 'hold'} absolute paths to node and token-goat on this machine${shim}, so do not commit them: list them in .git/info/exclude or .gitignore.`
+  const shim = hooksConfigPath === undefined ? '' : ` (${displaySafePath(path.join(path.dirname(hooksConfigPath), HOOKS_SCRIPT_FILE))} is generated with them)`
+  return `Note: ${pathFiles.map((p) => displaySafePath(p)).join(', ')} ${pathFiles.length === 1 ? 'holds' : 'hold'} absolute paths to node and token-goat on this machine${shim}, so do not commit them: list them in .git/info/exclude or .gitignore.`
 }
 
 /** What install --visualstudio prints after writing: Visual Studio needs two manual switches before the agent sees anything. */
@@ -781,8 +782,8 @@ async function cmdInstall(opts: {
     const vscodeResult = installVscode({ project: opts.project === true })
     out(
       vscodeResult.alreadyInstalled
-        ? `VS Code MCP integration (${vscodeResult.scope} scope) already installed → ${vscodeResult.mcpPath}`
-        : `Installed token-goat VS Code MCP integration and agent hooks (${vscodeResult.scope} scope) → ${vscodeResult.mcpPath}, ${vscodeResult.hooksConfigPath}, ${vscodeResult.instructionsPath}`,
+        ? `VS Code MCP integration (${vscodeResult.scope} scope) already installed → ${displaySafePath(vscodeResult.mcpPath)}`
+        : `Installed token-goat VS Code MCP integration and agent hooks (${vscodeResult.scope} scope) → ${displaySafePath(vscodeResult.mcpPath)}, ${displaySafePath(vscodeResult.hooksConfigPath)}, ${displaySafePath(vscodeResult.instructionsPath)}`,
     )
     if (vscodeResult.scope === 'project') out(projectHooksCommitNote([vscodeResult.mcpPath, vscodeResult.hooksConfigPath], vscodeResult.hooksConfigPath))
     if (vscodeUsesClaudeHooks()) out(VSCODE_DOUBLE_FIRE_NOTE)
@@ -792,8 +793,8 @@ async function cmdInstall(opts: {
     const vsResult = installVisualStudio({ project: opts.project === true })
     out(
       vsResult.alreadyInstalled
-        ? `Visual Studio MCP integration (${vsResult.scope} scope) already installed → ${vsResult.mcpPath}`
-        : `Installed token-goat Visual Studio MCP integration (${vsResult.scope} scope) → ${vsResult.mcpPath}, ${vsResult.instructionsPath}`,
+        ? `Visual Studio MCP integration (${vsResult.scope} scope) already installed → ${displaySafePath(vsResult.mcpPath)}`
+        : `Installed token-goat Visual Studio MCP integration (${vsResult.scope} scope) → ${displaySafePath(vsResult.mcpPath)}, ${displaySafePath(vsResult.instructionsPath)}`,
     )
     if (vsResult.scope === 'project') out(projectHooksCommitNote([vsResult.mcpPath]))
     for (const line of visualStudioManualSteps(vsResult.scope)) out(line)
@@ -861,7 +862,7 @@ function cmdMcpStatus(opts: { vscode?: boolean; visualstudio?: boolean; project?
     throw new Error('mcp-status needs exactly one of --vscode or --visualstudio')
   }
   const scope = opts.project === true ? { projectRoot: process.cwd() } : {}
-  out(JSON.stringify(opts.vscode === true ? vscodeDecoderConfigured(scope) : visualStudioMcpStatus(scope)))
+  out(displaySafeJson(opts.vscode === true ? vscodeDecoderConfigured(scope) : visualStudioMcpStatus(scope), 0))
 }
 
 function cmdUninstall(opts: {
@@ -1029,8 +1030,8 @@ function runPurge(): void {
     return
   }
   const result = purgeDataDirectories()
-  for (const root of result.absent) out(`Nothing to purge at ${root}.`)
-  for (const removed of result.removed) out(`Purged ${removed.path} (${formatBytes(removed.bytes)} reclaimed).`)
+  for (const root of result.absent) out(`Nothing to purge at ${displaySafePath(root)}.`)
+  for (const removed of result.removed) out(`Purged ${displaySafePath(removed.path)} (${formatBytes(removed.bytes)} reclaimed).`)
   // The reason is an OS error string, which quotes the offending path back inside it.
   for (const failure of result.failed) err(`token-goat: could not purge ${displaySafePath(failure.path)}: ${displaySafeText(failure.reason)}`)
 }
@@ -1096,7 +1097,7 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean }): Promise<v
     // ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify
     // convention (no envelope) rather than inventing a new shape.
     const results = runDoctor(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir)
-    out(JSON.stringify(results))
+    out(displaySafeJson(results, 0))
     if (results.some((r) => r.status === 'fail')) {
       throw new CliError('doctor checks failed')
     }
@@ -1157,7 +1158,7 @@ async function cmdSessionAudit(opts: { dir?: string; json?: boolean } = {}): Pro
   } catch (err) {
     throw new CliError(err instanceof Error ? err.message : String(err))
   }
-  out(opts.json === true ? JSON.stringify(summary) : formatSessionAudit(summary))
+  out(opts.json === true ? displaySafeJson(summary, 0) : formatSessionAudit(summary))
 }
 
 async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean } = {}): Promise<void> {
@@ -1170,7 +1171,7 @@ async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { pr
     )
   }
   const turns = await buildSessionOutline(transcriptPath)
-  const text = opts.json === true ? JSON.stringify({ transcriptPath, turns }) : `Transcript: ${transcriptPath}\n${formatSessionOutline(turns)}`
+  const text = opts.json === true ? displaySafeJson({ transcriptPath, turns }, 0) : `Transcript: ${transcriptPath}\n${formatSessionOutline(turns)}`
   out(text)
   // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry carries a `session_outline`/`session-outline`
   // entry, but nothing ever called recordStat for it -- the dashboard bucket was permanently zero
@@ -1207,7 +1208,7 @@ async function cmdSessionSlice(
   }
   const { start, end } = parseTurnRange(opts.range)
   const turns = await sliceSessionTurns(transcriptPath, start, end)
-  const text = opts.json === true ? JSON.stringify({ transcriptPath, turns }) : formatSessionSlice(turns)
+  const text = opts.json === true ? displaySafeJson({ transcriptPath, turns }, 0) : formatSessionSlice(turns)
   out(text)
   // Same registry/producer desync as cmdSessionOutline above -- see the comment there.
   const fullSourceBytes = sessionTranscriptSize(transcriptPath)
@@ -1411,7 +1412,8 @@ function fenceFileText(text: string): string {
 function fenceFileFieldIfMatched(text: string): string {
   const redacted = redactSecrets(text).text
   const matches = scanAndRecord(redacted)
-  if (matches.length === 0) return redacted
+  // The gate above is INJECTION_PATTERNS: eight prose matchers ('ignore previous instructions', 'you are now a ...'). None of them matches `[tg]` or `[token-goat`, so the zero-match path returned the one payload wearing token-goat's own authority straight into JSON.stringify, which escapes quotes and control characters but not a bracket. Neutralizing instead of fencing keeps the cost argument this function's comment makes: a few bytes per field rather than the ~125 a wrapper costs, and the value stays a plain JSON string rather than a fence that is no longer JSON.
+  if (matches.length === 0) return displaySafeText(redacted)
   return fenceUntrustedContent(redacted, matches, UNTRUSTED_FILE_TAG)
 }
 
@@ -1540,7 +1542,7 @@ async function cmdPdfLocate(
   let printed: string
   if (opts.json === true) {
     const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet) }))
-    printed = JSON.stringify({ file, pattern, matchCount: fencedMatches.length, truncated, pages, matches: fencedMatches }, null, 2)
+    printed = displaySafeJson({ file, pattern, matchCount: fencedMatches.length, truncated, pages, matches: fencedMatches })
     out(printed)
   } else if (matches.length === 0) {
     // A clean "found nothing", not an error -- the caller asked where a term is and the answer is "nowhere".
@@ -1568,7 +1570,7 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   const entries = await runPdfOutline(file)
   if (entries.length === 0) {
     if (opts.json === true) {
-      out(JSON.stringify([], null, 2))
+      out(displaySafeJson([]))
     } else {
       out('no bookmarks in this PDF; try pdf-extract')
     }
@@ -1580,7 +1582,7 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   // match-gated fence so the envelope stays parseable -- see fenceFileFieldIfMatched above.
   const text =
     opts.json === true
-      ? JSON.stringify(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })), null, 2)
+      ? displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })))
       : fenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'))
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
@@ -1591,15 +1593,17 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
 
 async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
   const meta = await runPdfMeta(file)
+  // The Info dictionary is author-chosen text, so it is third-party content the same way the page bodies are: redact and neutralize it rather than trusting it because it is short. Kept null-preserving because the --json branch's contract is that it carries the nulls as themselves.
+  const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v))
   const lines = [
     `Pages: ${meta.pageCount}`,
-    `Title: ${meta.title ?? '(none)'}`,
-    `Author: ${meta.author ?? '(none)'}`,
+    `Title: ${safeField(meta.title) ?? '(none)'}`,
+    `Author: ${safeField(meta.author) ?? '(none)'}`,
     `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
   ]
   // The text form cannot be parsed back reliably: `Title: (none)` is indistinguishable from a PDF whose title is literally "(none)", a title or author containing a newline or a colon breaks the line-oriented `key: value` shape outright, and hasTextLayer -- the one field a caller acts on, since it decides whether pdf-extract is worth running -- is buried in a prose sentence that has to be substring-matched. JSON carries the nulls and the boolean as themselves.
   const text = opts.json === true
-    ? JSON.stringify({ pageCount: meta.pageCount, title: meta.title, author: meta.author, hasTextLayer: meta.hasTextLayer }, null, 2)
+    ? displaySafeJson({ pageCount: meta.pageCount, title: safeField(meta.title), author: safeField(meta.author), hasTextLayer: meta.hasTextLayer })
     : lines.join('\n')
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
@@ -1616,7 +1620,7 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
     // format token-goat reads -- "install sharp" sent people to fix something that was not broken.
     const msg = 'image-meta unavailable (not a format token-goat can read)'
     const text = opts.json === true
-      ? JSON.stringify({ bytes: meta.bytes, decodable: false, error: msg }, null, 2)
+      ? displaySafeJson({ bytes: meta.bytes, decodable: false, error: msg })
       : `Size: ${meta.bytes} bytes\n${msg}`
     out(text)
     return
@@ -1630,7 +1634,7 @@ async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) {
     `Size: ${meta.bytes} bytes`,
     shrinkLine,
   ]
-  const text = opts.json === true ? JSON.stringify(meta, null, 2) : lines.join('\n')
+  const text = opts.json === true ? displaySafeJson(meta) : lines.join('\n')
   out(text)
   // Same registry/producer desync as cmdPdfMeta above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
@@ -1666,7 +1670,7 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
   const result = await runImageText(file)
   if (!result.ocrAvailable) {
     const msg = 'image-text unavailable (install tesseract.js to use this feature)'
-    const text = opts.json === true ? JSON.stringify({ ocrAvailable: false, error: msg }, null, 2) : msg
+    const text = opts.json === true ? displaySafeJson({ ocrAvailable: false, error: msg }) : msg
     out(text)
     return
   }
@@ -1675,10 +1679,8 @@ async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
     // Fence only the OCR text field, so a --json caller still gets a parseable envelope with
     // just the risky value wrapped -- the same shape the outline- and list-shaped document
     // commands above use.
-    text = JSON.stringify(
+    text = displaySafeJson(
       result.text === null ? result : { ...result, text: fenceOcrText(result.text) },
-      null,
-      2,
     )
   } else {
     const lines = [`Confidence: ${Math.round(result.confidence)}%`, `Characters: ${result.chars}`]
@@ -1704,7 +1706,8 @@ function cmdVideoChapters(file: string) {
     lines.push('(no chapter markers found)')
   } else {
     for (const c of chapters) {
-      const title = c.title ?? `Chapter ${c.index}`
+      // A chapter title is wholly attacker-chosen with no length or charset constraint, and running video-chapters on a downloaded clip is the command's documented purpose.
+      const title = displaySafeText(c.title ?? `Chapter ${c.index}`)
       lines.push(`${formatVideoTimestamp(c.startSeconds)} - ${formatVideoTimestamp(c.endSeconds)}  ${title}`)
     }
   }
@@ -1712,7 +1715,7 @@ function cmdVideoChapters(file: string) {
     lines.push('')
     lines.push('Subtitle/caption streams:')
     for (const s of subtitleStreams) {
-      const parts = [s.codec ?? 'unknown codec', s.language ?? 'unknown language', s.title ?? null].filter((p) => p !== null)
+      const parts = [s.codec ?? 'unknown codec', s.language ?? 'unknown language', s.title ?? null].filter((p) => p !== null).map((p) => displaySafeText(p))
       lines.push(`  stream #${s.index}: ${parts.join(', ')}`)
     }
     lines.push('(extract a subtitle stream to .vtt/.srt with ffmpeg, then use transcript/transcript-outline on it)')
@@ -1743,9 +1746,10 @@ function cmdSharepointResolve(url: string) {
     return
   }
   const lines = [
-    `could not resolve a local synced copy for: ${url}`,
+    // A SharePoint sharing link carries access material (tokens/signatures) in its query string. sharepoint_resolve.ts states that contract for its own throws and honours it everywhere; this caller was discarding it and printing the argv url whole, on what is the command's ORDINARY outcome rather than an exotic one. Redact the query here too, and neutralize the markers the surviving origin+path can still carry.
+    `could not resolve a local synced copy for: ${displaySafeText(redactUrlQuery(url))}`,
     `tried:`,
-    ...result.triedPaths.map((p) => `  ${p}`),
+    ...result.triedPaths.map((p) => `  ${displaySafePath(p)}`),
     result.triedPaths.length === 0
       ? '  (no OneDrive sync root found -- OneDrive may not be installed/signed in on this machine)'
       : '',
@@ -1770,7 +1774,7 @@ async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
   // data xlsx-head/range/query return below. Printed form: one unconditional fence around the
   // whole listing. `--json` form: per-field and match-gated, to keep the envelope parseable.
   // Three sibling commands (xlsx-head, xlsx-range, xlsx-query) take a --sheet whose help text says "see xlsx-sheets", so this output exists to be fed straight back -- but the sheet name had to be copied out of a padded prose line that also carries the range and the dimensions. --json hands over the same {name, ref, rows, cols} the extractor already returns.
-  const text = opts.json === true ? JSON.stringify(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols })), null, 2) : fenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'))
+  const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : fenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'))
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
@@ -1822,7 +1826,7 @@ async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
   // per-field and match-gated, to keep the envelope parseable.
   const text =
     opts.json === true
-      ? JSON.stringify(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })), null, 2)
+      ? displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })))
       : fenceFileText(
           slides
             .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
@@ -1862,7 +1866,7 @@ async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
   const headings = await docxOutline(file)
   if (headings.length === 0) {
     if (opts.json === true) {
-      out(JSON.stringify([], null, 2))
+      out(displaySafeJson([]))
     } else {
       out('no headings found (try docx-text for full body text)')
     }
@@ -1873,7 +1877,7 @@ async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
   // and match-gated, to keep the envelope parseable.
   const text =
     opts.json === true
-      ? JSON.stringify(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })), null, 2)
+      ? displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })))
       : fenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'))
   out(text)
   recordDocStat('docx_outline', file, text)
@@ -1892,7 +1896,7 @@ function cmdTranscriptOutline(file: string, opts: { json?: boolean }) {
   const cues = readTranscript(file)
   if (cues.length === 0) {
     if (opts.json === true) {
-      out(JSON.stringify({ durationSeconds: 0, speakers: [], markers: [] }, null, 2))
+      out(displaySafeJson({ durationSeconds: 0, speakers: [], markers: [] }))
     } else {
       out('no cues found (not a valid .vtt/.srt file?)')
     }
@@ -1901,14 +1905,15 @@ function cmdTranscriptOutline(file: string, opts: { json?: boolean }) {
   const outline = buildTranscriptOutline(cues)
   let text: string
   if (opts.json === true) {
-    text = JSON.stringify(outline, null, 2)
+    text = displaySafeJson(outline)
   } else {
     const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
     if (outline.speakers.length > 0) {
       // Speaker labels come out of the transcript being read, so they are document text.
       lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${displaySafeText(s.name)}  (${s.cueCount} cues)`))
     }
-    lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
+    // Same reasoning as the speaker labels one line above, which were already escaped: the preview is the first 60 characters of a cue, so it is transcript text, and .vtt/.srt files routinely arrive from somewhere else.
+    lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${displaySafeText(m.preview)}`))
     text = lines.join('\n')
   }
   out(text)
@@ -1923,7 +1928,8 @@ function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to
     out('no cues match')
     return
   }
-  const text = formatCues(sliced)
+  // formatCues wraps cue bytes in token-goat's own `[timestamp] speaker:` framing, and unlike the outline's 60-character previews this is the whole transcript: unbounded text, and the one document command that reached the model neither fenced nor redacted. fenceFileText is the convention every sibling already follows.
+  const text = fenceFileText(formatCues(sliced))
   out(text)
   recordDocStat('transcript', file, text)
 }
@@ -2072,7 +2078,7 @@ function runExit(fn: () => number): void {
   try {
     process.exitCode = fn()
   } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
+    err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
     process.exitCode = 1
   }
 }
@@ -2089,7 +2095,7 @@ function runExitText(fn: () => { text: string; code: number }): void {
     ;(code === 0 ? out : err)(text)
     process.exitCode = code
   } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
+    err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
     process.exitCode = 1
   }
 }
@@ -2149,7 +2155,7 @@ async function cmdCompress(opts: {
       ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
     })
   } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
+    err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
     process.exitCode = 1
   }
 }
@@ -2295,7 +2301,7 @@ async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promi
       hit_count: s.hitCount,
       age_ms: s.ageMs,
     }))
-    out(JSON.stringify(json, null, 2))
+    out(displaySafeJson(json))
   } else {
     // Human table format with columns: name, body, compact, marker, hit count, age, stale/fresh/no-compact.
     const lines = skills.map((s) => {
@@ -2380,7 +2386,7 @@ async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
       truncated: m.truncated,
       timestamp: m.ts,
     }))
-    out(JSON.stringify(json, null, 2))
+    out(displaySafeJson(json))
   } else {
     const lines = metas.map((m) => {
       const timeStr = formatLocalTimestamp(new Date(m.ts))
@@ -3447,7 +3453,7 @@ function cmdTokens(
     // `entries`. That is fine on a complete result and actively misleading on a capped one: three
     // entries printed beside a total spanning hundreds of files reads as three files that sum to
     // it. The added fields say which of the two the reader is looking at.
-    out(JSON.stringify({ entries, truncated, totalCount: eligibleCount, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
+    out(displaySafeJson({ entries, truncated, totalCount: eligibleCount, total_tokens: result.total_tokens, total_lines: result.total_lines }))
     return
   }
   if (opts.tree === true) {
@@ -3497,7 +3503,7 @@ function cmdBudget(
   const root = process.cwd()
   const result = estimateBudget(root, expandGlobs(root, patterns))
   if (opts.json === true) {
-    out(JSON.stringify(result, null, 2))
+    out(displaySafeJson(result))
   } else {
     // Falls back to the configured context.model_window_tokens (in thousands, matching
     // --context's own units) so the % line shows up without requiring --context on every call.
@@ -3673,7 +3679,7 @@ export function buildProgram(): Command {
         }
       } catch (e) {
         const msg = extractErrorMessage(e)
-        err(`token-goat: ${msg}`)
+        err(`token-goat: ${displaySafeText(msg)}`)
         process.exitCode = 1
       }
     }
@@ -4048,7 +4054,7 @@ export function buildProgram(): Command {
         const caps = collectCapabilities()
         // JSON is the point of this command: a reviewer asserts on it in their own CI, so the
         // answer comes from the binary they installed rather than from documentation.
-        console.log(opts.json ? JSON.stringify({ version: VERSION, capabilities: caps }, null, 2) : renderCapabilities(caps))
+        console.log(opts.json ? displaySafeJson({ version: VERSION, capabilities: caps }) : renderCapabilities(caps))
       }),
     )
   program
@@ -5382,7 +5388,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
       return
     }
     const msg = extractErrorMessage(e)
-    err(`token-goat: ${msg}`)
+    err(`token-goat: ${displaySafeText(msg)}`)
     process.exitCode = 1
   }
 }

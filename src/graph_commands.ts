@@ -16,7 +16,7 @@ import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
-import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
@@ -334,7 +334,7 @@ export function runCallers(opts: CallersOptions): number {
       // `hiddenByGrep` count is what tells the consumer this empty page is a filtered view and
       // not a caller-less symbol -- `totalCount: 0` alone reads the same for both.
       if (opts.json === true) {
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preGrepCount }, null, 2))
+        emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preGrepCount }))
         return 0
       }
       emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers'))
@@ -348,7 +348,7 @@ export function runCallers(opts: CallersOptions): number {
       // branch above never had. `hiddenByExcludeTests` mirrors --grep's `hiddenByGrep`: it is
       // what tells a JSON consumer this is a filtered view, not a caller-less symbol.
       if (opts.json === true) {
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }, null, 2))
+        emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }))
         return 1
       }
       emitErr(`No non-test references found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressed)})`)
@@ -417,7 +417,7 @@ export function runCallers(opts: CallersOptions): number {
     // Same partial-suppression case for --exclude-tests: some (not all) callers were test-only
     // and pruned before this envelope was built, so the count belongs alongside hiddenByGrep
     // rather than only in the fully-emptied branch above.
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
+    emit(displaySafeJson({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }))
     return 0
   }
 
@@ -570,7 +570,7 @@ export function runCallChain(opts: CallChainOptions): number {
     // The language half of the very disclosure the line above exists to make. Text mode's noCallers branch names it on stderr and the envelope carried no counterpart at all, so a --json consumer reading `chains: [[name]]` could not tell a language whose call sites are never indexed from a genuine root entry point: the same gap refBlindKinds closes, left open on the half that fires for whole languages rather than for one symbol kind. dead-code --json already discloses both halves side by side. Emitted alongside the kind field rather than instead of it, unlike text mode's precedence, because an envelope can carry two facts where a single stderr line has to pick one. Omitted when absent, so every other answer stays byte-identical.
     const blindRootPath = noCallers ? refBlindRootPath() : undefined
     const refBlindLanguage = blindRootPath !== undefined ? { language: detectLanguageOfFile(blindRootPath), definedIn: toDisplayPath(rootDir, blindRootPath) } : undefined
-    emit(JSON.stringify({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}), ...(refBlindKinds.length > 0 ? { refBlindKinds } : {}), ...(refBlindLanguage !== undefined ? { refBlindLanguage } : {}) }, null, 2))
+    emit(displaySafeJson({ chains: filteredChains, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}), ...(refBlindKinds.length > 0 ? { refBlindKinds } : {}), ...(refBlindLanguage !== undefined ? { refBlindLanguage } : {}) }))
     return 0
   }
 
@@ -751,7 +751,7 @@ export function runImpact(opts: ImpactOptions): number {
     // parsed payload changing shape between the filtered and unfiltered cases.
     if (opts.json === true) {
       emitErr(grepFilteredToEmptyNotice(allSorted.length, opts.grep as string, 'impacted symbol', 'impacted symbols'))
-      emit(JSON.stringify([], null, 2))
+      emit(displaySafeJson([]))
       return 0
     }
     emit(grepFilteredToEmptyNotice(allSorted.length, opts.grep as string, 'impacted symbol', 'impacted symbols'))
@@ -770,7 +770,7 @@ export function runImpact(opts: ImpactOptions): number {
       // matches the shape the populated branch below emits (a bare array, no envelope object),
       // so a --json consumer never has to branch on payload shape between the two exit codes.
       if (opts.json === true) {
-        emit(JSON.stringify([], null, 2))
+        emit(displaySafeJson([]))
         return 1
       }
       emitErr(`No non-test impact found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressedCount)})`)
@@ -804,7 +804,7 @@ export function runImpact(opts: ImpactOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(sorted.map(([symbol, h]) => ({ symbol, hops: h })), null, 2))
+    emit(displaySafeJson(sorted.map(([symbol, h]) => ({ symbol, hops: h }))))
     return 0
   }
 
@@ -1051,7 +1051,7 @@ export function runDead(opts: DeadOptions): number {
     // either, the codebase is genuinely clean" -- brief's own hiddenByExcludeTests field, same
     // omit-when-zero convention.
     // `excludedKinds`/`unassessableByLanguage` are the machine-readable form of the two stderr notes above: without them a `--json` consumer sees the same `items: []` for "nothing is dead" and for "the index cannot answer this at all". Omitted when zero, matching hiddenByGrep's convention.
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}), ...(blindKinds.length > 0 ? { excludedKinds: blindKinds, excludedKindsReason: REF_BLIND_KIND_REASON } : {}), ...(refBlindByLanguage > 0 ? { unassessableByLanguage: refBlindByLanguage } : {}) }, null, 2))
+    emit(displaySafeJson({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(opts.excludeTests === true && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}), ...(blindKinds.length > 0 ? { excludedKinds: blindKinds, excludedKindsReason: REF_BLIND_KIND_REASON } : {}), ...(refBlindByLanguage > 0 ? { unassessableByLanguage: refBlindByLanguage } : {}) }))
     return 0
   }
 
@@ -1192,7 +1192,7 @@ export function runDeps(opts: DepsOptions): number {
     // a filtered-to-empty view from a file with no dependencies, which is exactly what the text
     // branch below spells out in prose. Same convention as brief --json's hiddenByGrep.
     const hiddenByGrep = preFilterCount - (filteredInternal.length + filteredExternal.length)
-    emit(JSON.stringify({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: filteredInternal, external: filteredExternal, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }, null, 2))
+    emit(displaySafeJson({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: filteredInternal, external: filteredExternal, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) }))
     return 0
   }
 
@@ -1419,7 +1419,7 @@ export function runTypes(opts: TypesOptions): number {
         // `hiddenByExcludeTests` names the filter as the cause -- `items: []`/`totalCount: 0`
         // alone reads identically to a file that genuinely declares no types, same convention
         // as dead/refs/callers' own hiddenByExcludeTests.
-        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }, null, 2))
+        emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }))
         return 0
       }
       emit(`No non-test type declarations found${ctx} (${excludeTestsHiddenNote(suppressed)})`)
@@ -1463,7 +1463,7 @@ export function runTypes(opts: TypesOptions): number {
       // here by definition), never `preFilterCount` -- it counts what MATCHED the filter. The
       // `hiddenByGrep` count is what tells the consumer this empty envelope is a filtered view
       // and not an empty store.
-      emit(JSON.stringify({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preFilterCount }, null, 2))
+      emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByGrep: preFilterCount }))
       return 0
     }
     emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'type declaration', 'type declarations'))
@@ -1485,7 +1485,7 @@ export function runTypes(opts: TypesOptions): number {
     // inside guardJsonRows -- so `truncated` is the OR of both and `totalCount` is the count
     // before either ran. Reporting only the guard's view is what made `--limit 1` on a 9-row file
     // answer `totalCount: 2, truncated: false`.
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || cappedOut > 0, totalCount: eligibleCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(excludeTests && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }, null, 2))
+    emit(displaySafeJson({ items: capped.items, truncated: capped.truncated || cappedOut > 0, totalCount: eligibleCount, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}), ...(excludeTests && suppressed > 0 ? { hiddenByExcludeTests: suppressed } : {}) }))
     return 0
   }
 
@@ -1596,11 +1596,8 @@ export function runScope(opts: ScopeOptions): number {
   // this machine's absolute path in --json.
   if (opts.json === true) {
     emit(
-      JSON.stringify(
-        enclosing.map((s) => ({ ...s, filePath: toDisplayPath(scopeDisplayRoot, s.filePath) })),
-        null,
-        2,
-      ),
+      displaySafeJson(
+        enclosing.map((s) => ({ ...s, filePath: toDisplayPath(scopeDisplayRoot, s.filePath) }))),
     )
     return 0
   }
@@ -1831,7 +1828,7 @@ export function runSimilar(opts: SimilarOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart })), null, 2))
+    emit(displaySafeJson(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart }))))
     return 0
   }
   for (const h of results) emit(`${displaySafeText(h.name)}\t${displaySafeText(h.kind)}\t${displaySafeText(toDisplayPath(rootDir, h.filePath))}:${h.lineStart}`)
@@ -1916,7 +1913,7 @@ export function runContextFor(opts: ContextForOptions): number {
   for (const n of notices) emitErr(n)
 
   if (opts.json === true) {
-    emit(JSON.stringify(entries, null, 2))
+    emit(displaySafeJson(entries))
     return 0
   }
   for (const e of entries) emit(`token-goat read "${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}"`)
@@ -1992,7 +1989,7 @@ export function runTestFor(opts: TestForOptions): number {
     // totalCount: 0}` rather than a bare `[]`. Nothing truncates `results` upstream, so
     // `totalCount` is simply how many test files matched.
     const capped = guardJsonRows(results.map((r) => ({ ...r, testFile: toDisplayPath(rootDir, r.testFile) })))
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
+    emit(displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
     return 0
   }
   if (results.length === 0) {
@@ -2051,7 +2048,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(sliced, null, 2))
+    emit(displaySafeJson(sliced))
     return 0
   }
   if (sliced.length === 0) {
@@ -2131,7 +2128,7 @@ export function runArch(opts: ArchOptions): number {
     // rendering carries only labels and sizes: a 90-file module is unreadable inline and exactly
     // what a caller wants programmatically.
     const modulePayload = moduleResult === null ? {} : { modules: moduleResult.modules, modulesTotal: moduleResult.modulesTotal, modulesTruncated: moduleResult.modules.length < moduleResult.modulesTotal, modularity: moduleResult.modularity, isolatedCount: moduleResult.isolatedCount, crossImports: moduleResult.crossImports, crossImportsTotal: moduleResult.crossImportsTotal, crossImportsTruncated: moduleResult.crossImports.length < moduleResult.crossImportsTotal, noImportEdges: moduleResult.noEdges }
-    emit(JSON.stringify({ hubs, hubsTotal, hubsTruncated: hubs.length < hubsTotal, entryPoints, entryPointsTotal, entryPointsTruncated: entryPoints.length < entryPointsTotal, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}), ...modulePayload }, null, 2))
+    emit(displaySafeJson({ hubs, hubsTotal, hubsTruncated: hubs.length < hubsTotal, entryPoints, entryPointsTotal, entryPointsTruncated: entryPoints.length < entryPointsTotal, cycles, ...(cyclesTruncated ? { cyclesTruncated: true } : {}), ...modulePayload }))
     return 0
   }
 
@@ -2194,7 +2191,7 @@ export function runBlame(opts: BlameOptions): number {
       if (!m) return { raw: l }
       return { commit: m[2], boundary: m[1] === '^', author: (m[3] ?? '').trim(), date: (m[4] ?? '').trim(), line: Number.parseInt(m[5] ?? '0', 10), content: m[6] }
     })
-    emit(JSON.stringify({ symbol: sym.name, file: filePath, lines }, null, 2))
+    emit(displaySafeJson({ symbol: sym.name, file: filePath, lines }))
     return 0
   }
 
@@ -2248,7 +2245,7 @@ export function runAsk(opts: AskOptions): number {
   // Every degrade path used to print one message: "set TOKEN_GOAT_ASK_BACKEND". That advice is only true for the unset case -- for a correctly-set backend that simply matched nothing, or one whose binary is missing from PATH, it tells the user to set a variable that is already set and hides the real reason. Each caller now supplies its own reason, the way runScope separates "cannot read" / "nothing indexed" / "no enclosing symbol".
   const degrade = (reason: string, extraNote?: string): number => {
     if (opts.json === true) {
-      emit(JSON.stringify({ degraded: true, note: reason, ...(extraNote !== undefined ? { hint: extraNote } : {}), context: entries }, null, 2))
+      emit(displaySafeJson({ degraded: true, note: reason, ...(extraNote !== undefined ? { hint: extraNote } : {}), context: entries }))
       return 0
     }
     emit(`[degraded mode - ${reason}]`)
@@ -2320,7 +2317,7 @@ export function runAsk(opts: AskOptions): number {
     }
     if (answer) {
       if (opts.json === true) {
-        emit(JSON.stringify({ answer, context: entries }, null, 2))
+        emit(displaySafeJson({ answer, context: entries }))
       } else {
         emit(answer)
       }

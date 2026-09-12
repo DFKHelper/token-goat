@@ -22,7 +22,7 @@ import { indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbed
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
-import { normalizePath } from './paths.js'
+import { normalizePath, displaySafeText } from './paths.js'
 import { ensureDirSync, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
@@ -571,14 +571,20 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string): Prom
  *
  * Every caller builds its line by interpolating two values a repository controls: the path of the
  * file that failed, and the error message, which for a parse failure quotes the file's own bytes.
- * A newline in either one forges log entries, and `worker-errors.log` is read back by `doctor` and
- * by `bridges-status`, so a line that reads like a token-goat diagnostic can be written by naming
- * a file after one. Escaping rather than stripping keeps the log honest about what the name was.
+ * A newline in either one forges log entries, so a line that reads like a token-goat diagnostic
+ * can be written by naming a file after one. Escaping rather than stripping keeps the log honest
+ * about what the name was, and routing through displaySafeText covers the markers as well as the
+ * control characters -- escaping only the newline left `[tg]` and `[token-goat` intact, which is
+ * the half of the threat this comment describes.
+ *
+ * Nothing in src/ reads this file back today: an earlier version of this comment claimed `doctor`
+ * and `bridges-status` did, and they only tell the user where to look. It is written for a person
+ * reading it directly, which is a weaker exposure than a parsed one but not a reason to forge
+ * entries into it.
  */
 export function oneLogLine(line: string): string {
-  const body = line.replace(/[\n\r]+$/, '')
-  // eslint-disable-next-line no-control-regex -- catching the control characters is the point, including the ones a terminal acts on rather than prints.
-  return body.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`) + '\n'
+  // displaySafeText covers both halves at once: the control characters this escaped by hand, and the `[tg]`/`[token-goat` markers the docstring above states the threat for but the hand-rolled escape never touched.
+  return displaySafeText(line.replace(/[\n\r]+$/, '')) + '\n'
 }
 
 /**
