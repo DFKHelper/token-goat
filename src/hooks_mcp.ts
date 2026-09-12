@@ -83,12 +83,21 @@ function postMcpHandler(event: HookEvent): HookOutput {
   }
   // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts) is gated on compressibility, not on cache-eligibility: it used to require id !== null (i.e. the call was already read-only-cached), which silently excluded every non-idempotent tool a compression pack was written for -- e.g. chrome-devtools-mcp's take_snapshot, which trips MUTATING_VERBS_RE's `snapshot` token, never reached mcp_compress_packs.ts's dedicated browser-snapshot pack in production even though that pack exists specifically for it. Size-gated so small results are never touched, and opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match TOKEN_GOAT_BASH_COMPRESS's existing convention elsewhere in this codebase. Per-server packs run first (GitHub, browser-automation): a schema-aware pack strips known boilerplate before handing the result to the same generic table-ifying pass. When no pack matches or pays off, the generic pass runs on the untransformed text exactly as before the packs existed.
   if (resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
-    const compressed = compressMcpResultWithPacks(toolName, resultText) ?? compressMcpResult(resultText)
+    // Compress the already-redacted text (redactedResult, computed above before every early
+    // return), not raw resultText. mcp_compress_packs.ts's truncateSnapshotLine (and any other
+    // per-field truncation inside a pack or the generic compressor) can cut a credential mid-value;
+    // if that truncation runs on raw text before redaction, the surviving fragment can fall under a
+    // pattern's minimum-length floor and ship raw on this live, model-visible rewrite -- the same
+    // mechanism as the confirmed mcpInputPreview/tool_filters bugs. Feeding compression the
+    // pre-redacted text means every truncation point inside it only ever cuts placeholder text.
+    const compressed = compressMcpResultWithPacks(toolName, redactedResult.text) ?? compressMcpResult(redactedResult.text)
     if (compressed !== null) {
       // A mutating/non-idempotent call was never cached above (readOnly is false), but the "full via mcp-output <id>" label still needs somewhere to resolve, so store it now purely for recall -- this never feeds preMcpHandler's dedup check, which independently re-gates on isMcpReadOnly.
       if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
       if (id !== null) {
-        // storeMcpOutput() above redacts before writing to the recall cache/index, but this rewriteOutput is what the model actually reads THIS turn -- neither mcp_compress.ts nor mcp_compress_packs.ts run any redaction themselves (they build `compressed` straight from the raw resultText), so a secret sitting in an MCP result's non-stripped fields (a GitHub PAT in a commit message, an API key in an env-dump tool's output) would reach the model unredacted on this live path even though every other place that ever persists MCP output redacts it first. Same defense-in-depth choke point ToolFilter.apply() applies for bash output; mirror it here for MCP's live rewrite.
+        // Defense-in-depth re-pass, normally a no-op now that compression consumes already-redacted
+        // text above: neither mcp_compress.ts nor mcp_compress_packs.ts run their own redaction, so
+        // this still catches any redaction-shaped text a pack's own transform might introduce.
         const redactedBody = redactSecrets(compressed).text
         const notice = `[token-goat: compressed, full via mcp-output ${id}]\n`
         // Net-benefit gate (shared with bash_runner's filter pipeline, see tool_filters/base.ts::isRewriteWorthwhile): a rewrite that barely beats the original after paying for its own notice destabilises bytes that could otherwise be served from the provider's cached prefix for no real gain -- below the floor, ship resultText untouched instead.
