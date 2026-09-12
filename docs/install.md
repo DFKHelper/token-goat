@@ -233,6 +233,8 @@ No separate install step needed. Token-goat compresses the terminal output of th
 
 Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor`), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary — this passive output filter is separate from the `--copilot` hook bridge above; it works with no install step and covers Copilot CLI's own terminal chrome, not the hook-driven read/index integrations), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
 
+Windsurf gets terminal-output compression only — not the read/index hook integration Claude Code, Codex, Copilot CLI, Gemini, Qwen, Kimi, VS Code, Visual Studio and Grok get above. Windsurf's Cascade agent hooks (`cascadeHooksJson`) are configured on Windsurf's own servers, per team, not from a file on your machine, so there is no local hook config for token-goat to install into. There is no `--windsurf` flag, and none is planned unless that changes.
+
 ### Updating
 
 There is no auto-update mechanism — token-goat never schedules or runs anything on its own. Updating is always a manual `npm install -g token-goat@latest`.
