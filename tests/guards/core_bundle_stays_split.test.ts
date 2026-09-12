@@ -172,4 +172,19 @@ describe('sweepStaleChunks', () => {
   it('treats a missing directory as nothing to sweep', () => {
     expect(sweepStaleChunks(path.join(dir, 'nope'), CORE_CHUNK_PREFIX, [])).toEqual([])
   })
+
+  it('an empty prefix clears an orphaned entry file from a retired name, but never a non-.mjs file', () => {
+    // A prior entry-point name (e.g. before ENTRY_POINTS was renamed) leaves its output behind
+    // forever: unlike a chunk, nothing re-emits it under a new content hash, and package.json's
+    // `files: ["dist/"]` ships it in the tarball. Widening the prefix to '' is how the build
+    // catches that case too, so it must not also catch a tracked non-build file like dist/.npmignore
+    // that merely happens to sit in the same directory.
+    write('_m.mjs')
+    const keptEntry = write('token-goat.core.mjs')
+    const keptChunk = write('token-goat-chunk-NEW.mjs')
+    fs.writeFileSync(path.join(dir, '.npmignore'), '*.whl\n')
+
+    expect(sweepStaleChunks(dir, '', [`dist/${keptEntry}`, `dist/${keptChunk}`])).toEqual(['_m.mjs'])
+    expect(fs.readdirSync(dir).sort()).toEqual(['.npmignore', keptChunk, keptEntry].sort())
+  })
 })

@@ -17,10 +17,16 @@ import * as path from 'node:path'
  * `emitted` is authoritative rather than a heuristic: an unchanged chunk keeps its content hash, so
  * it is re-emitted under the same name and kept. Only the prefix given is considered, which is what
  * lets the build sweep its own chunks in one call and, in a second call with an empty `emitted`,
- * clear the legacy `token-goat-hook-chunk-` set from when the hook entry was built separately.
+ * clear the legacy `token-goat-hook-chunk-` set from when the hook entry was built separately. An
+ * empty `prefix` widens a call to the whole directory, which is also how an entry file orphaned by
+ * a since-renamed ENTRY_POINTS key gets cleared -- unlike a chunk, nothing re-emits it under a new
+ * name, and it would otherwise ride along in the tarball forever (`files: ["dist/"]`). Only a
+ * `.mjs` file is ever a candidate, so a tracked non-build file sitting in the same directory (e.g.
+ * dist/.npmignore) is never a target even when `prefix` is ''.
  *
  * @param {string} dir Directory holding the build output.
- * @param {string} prefix Chunk-filename prefix owned by this build.
+ * @param {string} prefix Filename prefix owned by this build; '' widens the sweep to every .mjs
+ *   file in `dir`.
  * @param {readonly string[]} emitted Output paths this build just wrote, as esbuild's metafile
  *   reports them; only the filename of each is used, so relative and absolute both work.
  * @returns {string[]} The filenames removed.
@@ -30,7 +36,7 @@ export function sweepStaleChunks(dir, prefix, emitted) {
   const keep = new Set(emitted.map((p) => p.replaceAll('\\', '/').split('/').pop()))
   const removed = []
   for (const f of readdirSync(dir)) {
-    if (!f.startsWith(prefix) || keep.has(f)) continue
+    if (!f.endsWith('.mjs') || !f.startsWith(prefix) || keep.has(f)) continue
     rmSync(path.join(dir, f))
     removed.push(f)
   }

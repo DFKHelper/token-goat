@@ -94,6 +94,11 @@ const result = await esbuild.build({
 
 sweepStaleChunks('dist', CHUNK_PREFIX, Object.keys(result.metafile.outputs))
 sweepStaleChunks('dist', LEGACY_HOOK_CHUNK_PREFIX, [])
+// Also clears an entry file orphaned by a since-renamed ENTRY_POINTS key (e.g. dist/_m.mjs from
+// before an entry was called 'token-goat.core'): unlike a chunk, nothing re-emits it under a new
+// name, and package.json's `files: ["dist/"]` would otherwise ship it in every tarball forever.
+// The launcher below is the one file this build writes outside esbuild's own outputs.
+sweepStaleChunks('dist', '', [...Object.keys(result.metafile.outputs), 'dist/token-goat.mjs'])
 
 // The `bin` entry point is a launcher, not the bundle itself, purely so that
 // module.enableCompileCache() can run BEFORE the ~3.5MB core bundle is compiled.
