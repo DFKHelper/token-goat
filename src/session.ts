@@ -555,7 +555,10 @@ export const MAX_OUTSTANDING_AGENT_SPAWNS = 30
  * briefing/advisory is appended) is now outstanding this session. Caps the tracked list at
  * {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
 export function recordOutstandingAgentSpawn(prompt: string): void {
-  _outstandingAgentSpawns.push({ prompt, ts: Date.now() })
+  // Redact before storing: this prompt lands in SerializedSession.outstandingAgentSpawns and, on a
+  // later hooks_agent_spawn.ts truncateForWarning read, is echoed back model-ward -- a raw secret
+  // pasted into a spawned agent's prompt must never survive into either surface.
+  _outstandingAgentSpawns.push({ prompt: redactSecrets(prompt).text, ts: Date.now() })
   if (_outstandingAgentSpawns.length > MAX_OUTSTANDING_AGENT_SPAWNS) {
     _outstandingAgentSpawns.splice(0, _outstandingAgentSpawns.length - MAX_OUTSTANDING_AGENT_SPAWNS)
   }

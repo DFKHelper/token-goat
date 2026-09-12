@@ -28,6 +28,7 @@ import * as path from 'node:path'
 import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { normalizePath } from './paths.js'
 import { tokenGoatHome } from './disk_cache.js'
+import { redactSecrets } from './secret_redact.js'
 import { MAX_SEEN_IMAGE_HASHES, consumedCurlDownloadKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -645,7 +646,22 @@ export function saveSessionState(sessionId: string): void {
       const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
       // Stamp the cache's creation time exactly once, on the first write that produces no inherited value (disk had none and mem carries none). Every later write inherits it via readDiskState -> coerce -> mergeSessionState, so it represents creation, not last-modification. Unit: seconds, matching compact.ts's `Date.now() / 1000 - created_ts` age computation.
       if (merged.created_ts === undefined) merged.created_ts = Date.now() / 1000
-      atomicWriteText(p, JSON.stringify(merged))
+      // Defense-in-depth backstop, not the primary control: individual fields (e.g.
+      // recordOutstandingAgentSpawn in session.ts) redact at their own write sites, but
+      // CLAUDE.arch.md documents that this file is the one place a *new* SerializedSession field
+      // does not automatically inherit redaction -- relying on every future field's author to
+      // remember a redactSecrets() call is exactly the gap that shipped outstandingAgentSpawns
+      // unredacted. Sweeping the fully-serialized JSON here, at the sole place this state ever
+      // reaches disk, means a future field is covered whether or not its author remembered.
+      // Fail-safe like storeBlob(): if redaction itself throws, skip this write rather than risk
+      // persisting unredacted content -- the next successful save still merges from disk.
+      let json: string
+      try {
+        json = redactSecrets(JSON.stringify(merged)).text
+      } catch {
+        return true
+      }
+      atomicWriteText(p, json)
       return true
     }
     // Two concurrent hook processes for the same session_id contend on this lock for their *entire* lifetime (every save re-acquires it), not just once -- so under real machine load (e.g. a parallel test run competing for CPU), the default withFileLock budget (2s) can plausibly miss its deadline even though no lock holder is actually stuck. Falling back to an unprotected write on that miss would reintroduce the exact clobber this lock exists to prevent, precisely when contention (and therefore risk) is highest, so give this hot, contended call site a much larger wait budget instead -- an actually-wedged holder still gets its lock stolen well before this via withFileLock's own staleMs abandonment check, so this only lengthens the wait for *genuine*, resolving contention, not a real hang. The unprotected fallback remains only for withFileLock's other undefined case: a hard failure (e.g. missing dir) that waiting longer cannot fix.
