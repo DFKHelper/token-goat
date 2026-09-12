@@ -78,8 +78,13 @@ function printHits(query: string | undefined, hits: readonly RecallHit[]): void 
   const body = hits
     .map((hit) => {
       const label = hit.label.length > 80 ? hit.label.slice(0, 77) + '...' : hit.label
+      // Only print the recall command when its blob is actually still on disk -- the blob prunes
+      // on its own age/count/bytes budget independently of this row, so a pointer printed
+      // unconditionally can (and, on the live index, routinely did) name a command that 404s.
+      const pointer = hit.blobPresent ? `  (token-goat ${RECALL_COMMAND[hit.cacheType]} ${hit.id})` : '  (blob expired -- content below is all that remains)'
       return (
-        `[${pad(hit.cacheType, 4)}] ${hit.id}  (token-goat ${RECALL_COMMAND[hit.cacheType]} ${hit.id})\n` +
+        `[${pad(hit.cacheType, 4)}] ${hit.id}\n` +
+        `${pointer}\n` +
         `  ${label}\n` +
         `  ${hit.snippet}\n`
       )

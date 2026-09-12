@@ -50,7 +50,9 @@ import {
   resetRecallFtsCacheForTesting,
   clearRecallEntriesForTesting,
   likeSearchForTesting,
+  pruneCacheRecallRows,
 } from '../src/recall_index.js'
+import { DEFAULT_MAX_AGE_MS } from '../src/disk_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 // Every seeded entry still uses a randomized nonce prefix, on top of the private db above, so
@@ -206,6 +208,38 @@ describe('searchRecall — ranking', () => {
     const hits = searchRecall(`rankterm-${n}`)
     expect(hits.length).toBe(2)
     expect(hits[0]?.id).toBe(`strong-${n}`)
+  })
+})
+
+// S1 regression: cache_recall rows had no expiry at all, so a row could (and on the live index
+// routinely did) outlive its blob by weeks -- 145.8 MB of dead text pointing at nothing. Row
+// expiry must derive from the same DEFAULT_MAX_AGE_MS disk_cache.ts prunes blobs with, so the two
+// lifetimes cannot silently drift apart again.
+describe('pruneCacheRecallRows — row expiry shares the blob TTL constant', () => {
+  it('removes a row older than DEFAULT_MAX_AGE_MS but keeps one inside the window', () => {
+    const n = nonce()
+    indexRecallEntry('bash', `old-${n}`, `old label ${n}`, `old-content-token-${n}`, Date.now() - DEFAULT_MAX_AGE_MS - 1000)
+    indexRecallEntry('bash', `fresh-${n}`, `fresh label ${n}`, `fresh-content-token-${n}`, Date.now())
+
+    expect(searchRecall(`old-content-token-${n}`)).toEqual([])
+    expect(searchRecall(`fresh-content-token-${n}`).length).toBe(1)
+  })
+
+  it('indexing any entry prunes every row older than the shared TTL, not just its own', () => {
+    const n = nonce()
+    indexRecallEntry('web', `stale-${n}`, `stale label ${n}`, `stale-content-token-${n}`, Date.now() - DEFAULT_MAX_AGE_MS - 1)
+    // A second, unrelated write triggers the write-time prune (mirrors storeBlob's prune-on-write).
+    indexRecallEntry('mcp', `other-${n}`, 'other label', 'other content', Date.now())
+
+    expect(searchRecall(`stale-content-token-${n}`)).toEqual([])
+  })
+
+  it('is bounded and idempotent: calling it directly with no expired rows is a no-op', () => {
+    const n = nonce()
+    indexRecallEntry('bash', `keep-${n}`, `keep label ${n}`, `keep-content-token-${n}`, Date.now())
+    pruneCacheRecallRows()
+    pruneCacheRecallRows()
+    expect(searchRecall(`keep-content-token-${n}`).length).toBe(1)
   })
 })
 
