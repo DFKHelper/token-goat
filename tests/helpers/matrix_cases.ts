@@ -1913,11 +1913,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
-    const r = run(['install', '--project', '--vscode'], { cwd: proj })
+    // A bare `install --project` installs the Claude Code hooks; a scoped `--vscode` install run
+    // alongside it is additive rather than implied by it (see cli.ts's wantsClaudeCodeBase) -- so
+    // this exercises both, one call each, matching how a caller who wants both would run them.
+    const r = run(['install', '--project'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Installed token-goat hooks \(project\)/)
     const settingsFile = path.join(proj, '.claude', 'settings.json')
     expect(fs.existsSync(settingsFile)).toBe(true)
+    const vscodeResult = run(['install', '--project', '--vscode'], { cwd: proj })
+    expect(vscodeResult.status, vscodeResult.stderr).toBe(0)
     expect(fs.existsSync(path.join(proj, '.vscode', 'mcp.json'))).toBe(true)
 
     // The generated hook shim must actually be written and wired -- through the BUILT bundle, not source. It sat fully built and fully unit-tested but never written by any install path for months (the injected-seam trap CLAUDE.md calls out), which no source-level test caught.
@@ -1975,10 +1980,20 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
   uninstall: () => {
     // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.
+    // A bare `install --project` for the Claude Code hooks, and a separate `--vscode` install:
+    // scoped harness flags no longer imply the Claude Code base (see cli.ts's wantsClaudeCodeBase).
     const proj = mkIsolated('tg-matrix-uninstall-')
-    const installed = run(['install', '--project', '--vscode'], { cwd: proj })
+    const installed = run(['install', '--project'], { cwd: proj })
     expect(installed.status, installed.stderr).toBe(0)
-    const r = run(['uninstall', '--project', '--vscode'], { cwd: proj })
+    const installedVscode = run(['install', '--project', '--vscode'], { cwd: proj })
+    expect(installedVscode.status, installedVscode.stderr).toBe(0)
+    // uninstall --project --vscode is scoped to VS Code only now (see cli.ts's wantsClaudeCodeBase);
+    // it must not also strip the Claude Code hooks the caller installed separately above.
+    const vscodeUninstall = run(['uninstall', '--project', '--vscode'], { cwd: proj })
+    expect(vscodeUninstall.status, vscodeUninstall.stderr).toBe(0)
+    expect(vscodeUninstall.stdout).toMatch(/Removed token-goat VS Code MCP integration\./)
+    expect(vscodeUninstall.stdout).not.toMatch(/Removed token-goat hooks/)
+    const r = run(['uninstall', '--project'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Removed token-goat hooks \(project\)\./)
   },

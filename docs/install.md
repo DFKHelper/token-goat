@@ -370,7 +370,9 @@ For VS Code using the token-goat MCP server (`token-goat install --vscode`), ena
 
 `token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Integrations for other harnesses are additive on the way out as well as in, so a plain uninstall does not touch one you installed with `--codex`, `--copilot`, or a sibling flag: rather than undo something you did not ask about, it names each one still present and the flag that removes it. Run `token-goat doctor` at any time to see which of these are currently present.
 
-**Claude Code integration** (`~/.claude/`)
+A bare `token-goat install` (no other flag) installs the Claude Code integration below. Passing a harness flag — `--vscode`, `--codex`, `--gemini`, and so on — installs only that harness's own files, listed in its own section further down: it never also touches `~/.claude/` on the side. If you want both, run `install` again with the other flag, or pass both flags in the same command. The one exception is `--hermes`, which delegates to `claude -p` and so genuinely needs the Claude Code hooks below; it installs them the same way a bare `install` does.
+
+**Claude Code integration** (`~/.claude/`; written by a bare `install`, or by `--hermes`)
 
 | Path | What |
 |------|------|
