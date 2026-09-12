@@ -102,6 +102,11 @@ function maskEmacsLisp(content: string): string {
           i++
           guard++
         }
+        // Plain basic escapes (`?\"`, `?\;`, `?\(`, ...) name a character that is not alnum/^/-/\
+        // and so never enter the loop above; per Basic Char Syntax, a lone `\<c>` still denotes
+        // exactly `c`, so consume that one character rather than leaving it unmasked -- otherwise
+        // e.g. `?\"` leaves the `"` to be misread as a real string opener by the branch below.
+        if (guard === 0 && i < n && content[i] !== '\n') i++
       } else if (i < n && content[i] !== '\n') {
         i++
       }
