@@ -979,6 +979,42 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
     expect(readFileSync(filePath, 'utf8')).toBe(content)
     expect(statSync(filePath).mtimeMs).toBe(mtimeBefore)
   })
+
+  // Real incident: an install --vscode run's *own* base-install scope bug (fixed separately) was
+  // compounded by this file having no recovery copy at all -- unlike writeJsonSettings's
+  // settings.json, upsertDelimitedBlock rewrote ~/.claude/CLAUDE.md in place with zero backup, so
+  // the only reason a hand-edited version survived was luck (an out-of-band verbatim copy), not a
+  // mechanism. writeJsonSettings has always called backupFile before its own overwrite -- this is
+  // the positive control proving that pattern exists and works, so the *absence* on the
+  // delimited-block path was a real asymmetry, not a false read of a consistent codebase.
+  it('upsertDelimitedBlock backs up the prior file before an in-place block replacement (regression: it used to write with no backup at all)', () => {
+    writeFileSync(filePath, `# Intro\n${BEGIN}\nold\n${END}\n# Outro\n`, 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nnew\n${END}`)).toBe(true)
+    const backups = readdirSync(dir).filter((f) => f.startsWith('CLAUDE.md.bak.'))
+    expect(backups, 'no CLAUDE.md.bak.<ISO> sibling was written before the in-place rewrite').toHaveLength(1)
+    expect(readFileSync(path.join(dir, backups[0]!), 'utf8')).toBe(`# Intro\n${BEGIN}\nold\n${END}\n# Outro\n`)
+  })
+
+  it('upsertDelimitedBlock backs up the prior file before an append, and does not back up a missing file', () => {
+    writeFileSync(filePath, '# Existing content\n', 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nblock\n${END}`)).toBe(true)
+    expect(readdirSync(dir).filter((f) => f.startsWith('CLAUDE.md.bak.'))).toHaveLength(1)
+
+    const fresh = path.join(dir, 'fresh.md')
+    expect(upsertDelimitedBlock(fresh, BEGIN, END, `${BEGIN}\nblock\n${END}`)).toBe(true)
+    expect(readdirSync(dir).filter((f) => f.startsWith('fresh.md.bak.'))).toHaveLength(0)
+  })
+
+  it('stripDelimitedBlock backs up the prior file before removing the block, and removes the backups it (and any prior install) made', () => {
+    writeFileSync(filePath, `# Intro\n${BEGIN}\nold\n${END}\n# Outro\n`, 'utf8')
+    // Simulate an earlier install-side backup this uninstall should also clean up, mirroring
+    // install.ts's uninstallHooks calling removeCreatedBackups(p) after its own uninstall write.
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nold\n${END}`)).toBe(false) // already current, no extra backup
+    expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe('# Intro\n\n# Outro\n')
+    // The strip's own backup is removed as part of the uninstall action, not left behind as litter.
+    expect(readdirSync(dir).filter((f) => f.startsWith('CLAUDE.md.bak.'))).toHaveLength(0)
+  })
 })
 
 // isCodeFenceDelimiter had zero direct test coverage anywhere in the suite -- only exercised

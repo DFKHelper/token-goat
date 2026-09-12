@@ -67,9 +67,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { recordCreatedConfig, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
-import { atomicWriteText } from '../util.js'
+import { atomicWriteText, backupFile } from '../util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -153,6 +153,7 @@ export function installCursor(opts: CursorScopeOptions = {}): CursorInstallResul
   if (!alreadyInstalled) {
     fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
     if (!fileExisted) recordCreatedConfig(mcpPath)
+    backupFile(mcpPath)
     atomicWriteText(mcpPath, nextText)
   }
 
@@ -178,8 +179,11 @@ export function uninstallCursor(opts: CursorScopeOptions = {}): boolean {
   if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) {
     fs.rmSync(mcpPath, { force: true })
   } else {
+    backupFile(mcpPath)
     atomicWriteText(mcpPath, next)
   }
+  // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
+  removeCreatedBackups(mcpPath)
   return true
 }
 

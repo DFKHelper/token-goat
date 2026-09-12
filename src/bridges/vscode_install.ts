@@ -9,11 +9,11 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
-import { recordCreatedConfig, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
@@ -262,6 +262,7 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   const mcpExisted = fs.existsSync(mcpPath)
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
   if (config.text !== next) {
+    backupFile(mcpPath)
     atomicWriteText(mcpPath, next)
     if (!mcpExisted) recordCreatedConfig(mcpPath)
   }
@@ -290,7 +291,12 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
       // Walking back the entry used to leave an empty `servers` object behind as a residue file. The sibling Visual Studio bridge already dropped the empty key and deleted what it had created; this is the same rule, including the part that matters most: a file left empty is only deleted when this install is the one that made it.
       const next = dropEmptyServers(updateConfig(config.text, undefined))
       if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) fs.rmSync(mcpPath, { force: true })
-      else atomicWriteText(mcpPath, next)
+      else {
+        backupFile(mcpPath)
+        atomicWriteText(mcpPath, next)
+      }
+      // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
+      removeCreatedBackups(mcpPath)
       removed = true
     }
   }

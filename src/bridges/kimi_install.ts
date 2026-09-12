@@ -217,7 +217,7 @@ function kimiSkillContent(): string {
  * left to hand-roll here.
  */
 function writeKimiSkill(): boolean {
-  return writeIfDifferent(kimiSkillPath(), kimiSkillContent())
+  return writeIfDifferent(kimiSkillPath(), kimiSkillContent(), true)
 }
 
 /** Outcome of an {@link installKimi} call. */
@@ -302,6 +302,9 @@ export function uninstallKimi(): boolean {
 
   try {
     if (fs.existsSync(kimiSkillDir())) {
+      // The directory removal below takes the skill file's own timestamped backups with it; this
+      // only drops the now-dangling ledger entries for them, mirroring the config cleanup below.
+      removeCreatedBackups(kimiSkillPath())
       fs.rmSync(kimiSkillDir(), { recursive: true, force: true })
       removed = true
     }
