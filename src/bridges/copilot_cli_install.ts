@@ -254,7 +254,20 @@ function hookPowershellCommandFor(scriptPath: string, event: CopilotCliHookEvent
 // Double Copilot's own default as cheap, harmless headroom.
 const HOOK_TIMEOUT_SEC = 60
 
-/** Environment variables forwarded to hook processes by Copilot CLI. */
+/**
+ * Environment variables forwarded to hook processes by Copilot CLI.
+ *
+ * **VS Code ignores this field entirely** -- measured, not inferred. A probe hook run by VS Code
+ * 1.137.0 (2026-09-12) dumped its own `process.env` with the field set to exactly this list and
+ * again with the field absent: 122 keys both times, zero difference, and variables not on this list
+ * were present in both runs. So nothing in the VS Code path may assume the child environment is
+ * confined to these names; anything a VS Code hook needs from the environment has to be set by the
+ * shim itself (see `TOKEN_GOAT_VSCODE_HOOKS_DIR` in copilot_cli.ts, which is set that way for
+ * exactly this reason).
+ *
+ * Scope limit: this was measured for VS Code only. The field was written for the standalone Copilot
+ * CLI, which is untested here -- do not read the VS Code result as evidence about Copilot CLI.
+ */
 const ALLOWED_ENV_VARS = [
   'TRACEPARENT',
   'TRACESTATE',

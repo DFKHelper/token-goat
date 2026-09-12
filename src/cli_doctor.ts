@@ -797,6 +797,45 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
  * opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is
  * correct for users who have never touched `--copilot`.
  */
+/** What `install --vscode` prints when it walked an existing user-scope install back to project scope. */
+export const VSCODE_USER_SCOPE_MIGRATED_NOTE =
+  'Moved the VS Code integration from user scope to this project. It used to live in ~/.copilot/hooks, where VS Code resolves its working directory to the FIRST folder of a multi-root workspace and nothing else, so read hints, image shrinking and edit interception were silently doing nothing for every other folder. The shared ~/.copilot/hooks files stay in place if "token-goat install --copilot" still needs them.'
+
+/** What `install --vscode` prints after a project-scope install, since it no longer covers every project. */
+export const VSCODE_PROJECT_SCOPE_COVERAGE_NOTE =
+  'This covers this project only. Run "token-goat install --vscode" once in each project you want it in, or "token-goat install --vscode --user" for one install covering every project (single-root workspaces only — see below).'
+
+/** What `install --vscode --user` prints, so the opt-out states the limitation it is opting into. */
+export const VSCODE_USER_SCOPE_MULTIROOT_NOTE =
+  'NOTE: a user-scope install works in every project, but VS Code runs it with the first folder of a multi-root workspace as its working directory, so it does nothing for the other folders. Use "token-goat install --vscode" (project scope, the default) in each folder that needs it.'
+
+/**
+ * Report a VS Code hooks install still sitting in user scope, where it cannot see past folders[0].
+ *
+ * VS Code resolves an agent hook's working directory from the hook FILE's own location
+ * (`getWorkspaceFolder(hookFile.uri) ?? folders[0]` in workbench.desktop.main.js). `~/.copilot/hooks`
+ * is inside no workspace folder, so the lookup misses and the cwd is the FIRST folder for every
+ * invocation -- captured live against 1.137.0 in a two-root workspace. Read hints, image shrinking
+ * and edit interception are therefore silently inert for every other folder, with no error to see.
+ *
+ * Two distinct findings, because the fixes differ:
+ *  - user scope only: the install works but is blind past the first folder.
+ *  - both scopes: VS Code runs EVERY hooks file it discovers (captured: two invocations of every
+ *    event inside one session id), so each hook fires twice here on top of the blindness.
+ *
+ * Returns null when only the project install is present, which is the intended state.
+ */
+export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: boolean): DoctorResult | null {
+  if (!userScope) return null
+  return {
+    name: 'VS Code hooks scope',
+    status: 'warn',
+    message: projectScope
+      ? 'token-goat VS Code hooks are installed in BOTH ~/.copilot/hooks and this project\'s .github/hooks, and VS Code runs every hooks file it finds, so each hook fires twice. The user-scope copy is also pinned to the first folder of a multi-root workspace. Run "token-goat uninstall --vscode --user" to keep only the project install.'
+      : 'token-goat VS Code hooks are installed in user scope (~/.copilot/hooks). VS Code runs them with the FIRST folder of a multi-root workspace as their working directory, so read hints, image shrinking and edit interception do nothing for any other folder. Run "token-goat install --vscode" in each project to move it to project scope.',
+  }
+}
+
 /** One-line note `install --vscode` prints when VS Code will also run the Claude Code hooks. */
 export const VSCODE_DOUBLE_FIRE_NOTE =
   'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. Turn chat.useClaudeHooks off in VS Code settings to keep only the --vscode hooks.'
@@ -1453,6 +1492,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
     vscodeHooksInstalled() || vscodeHooksInstalled({ project: true }),
   )
   if (vscodeHooksResult) results.push(vscodeHooksResult)
+  const vscodeScopeResult = checkVscodeUserScopeHooks(vscodeHooksInstalled(), vscodeHooksInstalled({ project: true }))
+  if (vscodeScopeResult) results.push(vscodeScopeResult)
   const visualStudioResult = checkVisualStudio([visualStudioUserMcpPath(), visualStudioProjectMcpPath()], [visualStudioSolutionVscodeMcpPath()])
   if (visualStudioResult) results.push(visualStudioResult)
   const zedResult = checkZed(zedSettingsPath())

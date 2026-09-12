@@ -304,6 +304,10 @@ async function tryInProcess(entryPath, tgEvent, canonical, harness) {
     if (!require('node:fs').existsSync(hookLibPath)) return undefined
     const mod = await import(pathToFileURL(hookLibPath).href)
     process.env.TOKEN_GOAT_HARNESS_OVERRIDE = harness
+    // Which hooks directory VS Code loaded this shim from is the only thing separating a
+    // user-scope copy from a project-scope one -- the two files are byte-identical and so are
+    // their payloads. vscode_duplicate.ts needs it to stand the redundant copy down.
+    if (harness === 'vscode') process.env.TOKEN_GOAT_VSCODE_HOOKS_DIR = __dirname
     return await mod.relayInProcess(tgEvent, canonical)
   } catch {
     return undefined
@@ -335,7 +339,7 @@ async function relayVscode(entryPath, tgEvent, payload) {
       timeout: 3000,
       killSignal: 'SIGKILL',
       maxBuffer: 32 * 1024 * 1024,
-      env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'vscode' }),
+      env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'vscode', TOKEN_GOAT_VSCODE_HOOKS_DIR: __dirname }),
     }
     const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent, '--harness', 'vscode'], spawnOpts)

@@ -63,11 +63,11 @@ import { installOpencode, isOpencodeInstalled, uninstallOpencode } from './bridg
 import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
-import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeScopeFromFlags, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { installCursor, isCursorInstalled, uninstallCursor } from './bridges/cursor_install.js'
 import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.js'
 import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
-import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
+import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -698,7 +698,13 @@ async function cmdInstall(opts: {
   zed?: boolean
   cursor?: boolean
   local?: boolean
+  user?: boolean
 }): Promise<void> {
+  // --user is the opt-out from the one harness whose scope default is inverted (see
+  // vscodeScopeFromFlags). Passing both scope flags is a contradiction, not a precedence puzzle.
+  if (opts.project === true && opts.user === true) {
+    throw new Error('install takes either -p/--project or --user, not both.')
+  }
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
   await import('./relay.js')
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -837,13 +843,19 @@ async function cmdInstall(opts: {
   }
 
   if (opts.vscode === true) {
-    const vscodeResult = installVscode({ project: opts.project === true })
+    const vscodeResult = installVscode(vscodeScopeFromFlags(opts))
+    if (vscodeResult.migratedFromUserScope) out(VSCODE_USER_SCOPE_MIGRATED_NOTE)
     out(
       vscodeResult.alreadyInstalled
         ? `VS Code MCP integration (${vscodeResult.scope} scope) already installed → ${displaySafePath(vscodeResult.mcpPath)}`
         : `Installed token-goat VS Code MCP integration and agent hooks (${vscodeResult.scope} scope) → ${displaySafePath(vscodeResult.mcpPath)}, ${displaySafePath(vscodeResult.hooksConfigPath)}, ${displaySafePath(vscodeResult.instructionsPath)}`,
     )
-    if (vscodeResult.scope === 'project') out(projectHooksCommitNote([vscodeResult.mcpPath, vscodeResult.hooksConfigPath], vscodeResult.hooksConfigPath))
+    if (vscodeResult.scope === 'project') {
+      out(projectHooksCommitNote([vscodeResult.mcpPath, vscodeResult.hooksConfigPath], vscodeResult.hooksConfigPath))
+      out(VSCODE_PROJECT_SCOPE_COVERAGE_NOTE)
+    } else {
+      out(VSCODE_USER_SCOPE_MULTIROOT_NOTE)
+    }
     if (vscodeUsesClaudeHooks()) out(VSCODE_DOUBLE_FIRE_NOTE)
   }
 
@@ -882,8 +894,10 @@ async function cmdInstall(opts: {
     if (cursorResult.scope === 'project') out(projectHooksCommitNote([cursorResult.mcpPath]))
   }
 
-  // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so -p installs for the two hosts overlap there.
-  if (opts.project === true && (opts.vscode === true || opts.visualstudio === true)) {
+  // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so project-scope
+  // installs for the two hosts overlap there. --vscode is project scope unless --user says
+  // otherwise, so it reaches this overlap without -p now; --visualstudio still needs -p.
+  if (((opts.vscode === true && opts.user !== true) || (opts.visualstudio === true && opts.project === true))) {
     const duplicateNote = visualStudioDuplicateNote()
     if (duplicateNote !== null) out(duplicateNote)
   }
@@ -964,8 +978,12 @@ function cmdUninstall(opts: {
   zed?: boolean
   cursor?: boolean
   local?: boolean
+  user?: boolean
   purge?: boolean
 }): void {
+  if (opts.project === true && opts.user === true) {
+    throw new Error('uninstall takes either -p/--project or --user, not both.')
+  }
   const scope: HookScope = opts.project === true ? 'project' : 'user'
 
   // Base uninstall, mirroring the base install's wantsClaudeCodeBase gate: strip the Claude Code
@@ -1005,7 +1023,7 @@ function cmdUninstall(opts: {
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
-    { flag: opts.vscode === true, run: () => uninstallVscode({ project: opts.project === true }), label: 'VS Code MCP integration' },
+    { flag: opts.vscode === true, run: () => uninstallVscode(vscodeScopeFromFlags(opts)), label: 'VS Code MCP integration' },
     { flag: opts.visualstudio === true, run: () => uninstallVisualStudio({ project: opts.project === true }), label: 'Visual Studio MCP integration' },
     { flag: opts.zed === true, run: uninstallZed, label: 'Zed MCP context-server integration' },
     { flag: opts.cursor === true, run: () => uninstallCursor({ project: opts.project === true }), label: 'Cursor MCP integration' },
@@ -1035,9 +1053,9 @@ function cmdUninstall(opts: {
   // rather than refuse: uninstall is best-effort cleanup (it already reports-not-deletes
   // stray CLAUDE.md blocks above), and refusing here would block a caller who legitimately
   // only wants to strip the requested scope.
-  if (opts.vscode === true && otherScopeHasManagedServer({ project: opts.project === true })) {
-    const otherScope = opts.project === true ? 'user' : 'project'
-    out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run "token-goat uninstall --vscode${otherScope === 'project' ? ' --project' : ''}" to remove it too.`)
+  if (opts.vscode === true && otherScopeHasManagedServer(vscodeScopeFromFlags(opts))) {
+    const otherScope = opts.user === true ? 'project' : 'user'
+    out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run "token-goat uninstall --vscode${otherScope === 'user' ? ' --user' : ''}" to remove it too.`)
   }
 
   if (opts.visualstudio === true && visualStudioOtherScopeHasManagedServer({ project: opts.project === true })) {
@@ -4070,6 +4088,7 @@ export function buildProgram(): Command {
     .command('install')
     .description('install hooks into Claude Code settings')
     .option('-p, --project', 'install into project scope instead of user scope')
+    .option('--user', 'with --vscode, install into user scope instead of this project (every project at once, but nothing past the first folder of a multi-root workspace)')
     .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
     .option('--qwen', 'also patch Qwen Code (~/.qwen/settings.json)')
@@ -4080,7 +4099,7 @@ export function buildProgram(): Command {
     .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
     .option('--copilot', 'also register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.js, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.js, <project>/.github/copilot-instructions.md)')
     .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
-    .option('--vscode', 'also configure a VS Code MCP server (user-profile mcp.json by default; -p/--project for the workspace .vscode/mcp.json) and Copilot routing guidance')
+    .option('--vscode', 'also configure a VS Code MCP server (the workspace .vscode/mcp.json by default; --user for the user-profile mcp.json) and Copilot routing guidance')
     .option('--visualstudio', 'also configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
     .option('--zed', 'also register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
     .option('--cursor', 'also register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks "token-goat install" writes to ~/.claude/settings.json')
@@ -4091,6 +4110,7 @@ export function buildProgram(): Command {
     .command('uninstall')
     .description('remove token-goat hooks from Claude Code settings')
     .option('-p, --project', 'uninstall from project scope instead of user scope')
+    .option('--user', 'with --vscode, remove the user-scope install instead of this project one')
     .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
     .option('--qwen', 'also strip the Qwen Code integration (~/.qwen/settings.json)')
@@ -4101,7 +4121,7 @@ export function buildProgram(): Command {
     .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
     .option('--copilot', 'also remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local)')
     .option('--grok', 'also remove the Grok CLI hook config and shim script')
-    .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
+    .option('--vscode', 'also remove the VS Code MCP server (project scope by default; --user for the user-profile one) and routing guidance')
     .option('--visualstudio', 'also remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
     .option('--zed', 'also remove the Zed MCP context server entry and its generated shim script')
     .option('--cursor', 'also remove the Cursor MCP server entry (user scope by default; -p/--project for the project one)')
