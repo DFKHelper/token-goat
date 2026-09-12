@@ -92,7 +92,7 @@ export const LANGUAGE_SPECS = [
   // `.env` and `.env.<suffix>` are matched by parser_types.ts's DOTENV_VARIANT_RE before this table.
   { id: 'env_file', extraction: 'regex', extensions: ['.env'], basenames: ['.envrc'], label: 'env file', ...DATA },
   { id: 'powershell', extraction: 'regex', extensions: ['.ps1', '.psm1'], label: 'PowerShell', ...CODE, fence: 'powershell' },
-  // VB.NET, VB6/VBA standard modules, VBScript and VB6 forms. A VB6 class module shares `.cls` with Apex and is told apart by content in refineLanguageByContent.
+  // VB.NET, VB6/VBA standard modules, VBScript and VB6 forms. A VB6 class module shares `.cls` with Apex (and LaTeX) and is told apart by content in refineLanguageByContent.
   { id: 'vb', extraction: 'regex', extensions: ['.vb', '.bas', '.vbs', '.frm'], label: 'Visual Basic', ...CODE, fence: 'vb', fenceByExtension: { '.vb': 'vbnet', '.vbs': 'vbscript' } },
   {
     id: 'cobol', extraction: 'own-result', extensions: ['.cbl', '.cob', '.cobol', '.cpy'], label: 'COBOL', ...CODE, fence: 'cobol',
@@ -134,7 +134,7 @@ export const LANGUAGE_SPECS = [
   { id: 'batch', extraction: 'regex', extensions: ['.bat', '.cmd'], label: 'Windows batch', ...CODE, fence: 'batch' },
   { id: 'erlang', extraction: 'regex', extensions: ['.erl', '.hrl'], label: 'Erlang', ...CODE, fence: 'erlang' },
   { id: 'vhdl', extraction: 'regex', extensions: ['.vhd', '.vhdl'], label: 'VHDL', ...CODE, fence: 'vhdl' },
-  // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
+  // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6, LaTeX) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },
   // Matched by the `-meta.xml` suffix in detectLanguage, not by an extension.

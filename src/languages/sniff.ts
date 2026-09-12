@@ -104,3 +104,19 @@ export function isPrologSource(content: string): boolean {
   if (PERL_MARKER_RE.test(head)) return false
   return /^:-/m.test(head) || /^[a-z]\w*(?:\([^()\n]*\))?[ \t]*:-/m.test(head)
 }
+
+// A LaTeX document class or package definition file (`.cls`) declares itself with one of these
+// commands near the top -- `\ProvidesClass` is the LaTeX2e-mandated self-identification a `.cls`
+// file gives (see the LaTeX2e kernel documentation, `\ProvidesClass{name}[...]`), and
+// `\documentclass` appears in the rare `.cls` that is actually a driver/example file bundled
+// alongside a class. Neither string is valid Apex or VB6 syntax, so this can never fire on those.
+const LATEX_CLASS_MARKER_RE = /\\(?:ProvidesClass|documentclass)\b/
+
+/**
+ * True when a `.cls` file is LaTeX: a positive test for LaTeX's own self-identifying commands, never a
+ * negative test for "not Apex". Apex and VB6 class files never contain a backslash-command like
+ * `\ProvidesClass` or `\documentclass`, so this cannot misfire on either.
+ */
+export function isLatexClassFile(content: string): boolean {
+  return LATEX_CLASS_MARKER_RE.test(content.slice(0, SNIFF_CHARS))
+}
