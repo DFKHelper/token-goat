@@ -516,8 +516,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     }
     result[VSCODE_TOOL_NAME_KEY] = toolName
     result['_tg_harness'] = harness
-    // VS Code does send a cwd: the shipped bundle adds it from the hook's own cwd as an fsPath, and the hook-config defaults set it to the workspace folder. This fill is the fallback for the case where it arrives absent or empty, which is why it only ever writes when there is nothing there: a real cwd from the harness is always preferred to ours. An earlier version of this comment claimed the payload carried no cwd at all, which was read off the extension source rather than a real run.
-    if (typeof result['cwd'] !== 'string' || result['cwd'] === '') result['cwd'] = process.cwd()
+    // No cwd fallback here, deliberately. VS Code sends a cwd when a workspace folder is open: it resolves the hook's cwd to that folder and the payload carries it. With no folder open it resolves none, omits the key, and spawns the hook in the HOME directory -- so process.cwd() at this point IS $HOME. Filling the key from it would convert "the harness told us nothing" into "the harness told us $HOME", and vscode_path_gate.ts would then treat the entire home directory as the workspace and let a pre-approval hook open anything inside it. Leaving the key absent is what lets vscodePathAllowed's `workspace === undefined` branch fail closed. Nothing loses a working directory by this: every getCwd consumer already supplies its own default (hooks_read.ts process.cwd(), hooks_bash.ts null). An earlier version of this comment claimed the payload carried no cwd at all, which was read off the extension source rather than a real run.
     return result
   }
 

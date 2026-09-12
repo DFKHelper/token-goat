@@ -3,7 +3,7 @@
  *
  * A UNC or device path is declined before any fs call (on Windows a stat of a UNC path opens an SMB connection to that host), and so is a path outside the workspace folder VS Code runs the hook in. node:fs is wrapped with pass-through recorders so the test can see every path handed to it; a UNC or device path throws inside the wrapper instead of reaching the real fs, so no network access happens even on the unfixed code. The no-fs-access check calls preReadImageHandler itself; the {} and ledger checks go through the full registry and serializer, and tests/vscode_pre_handler_path_gate.test.ts covers every other handler on the same tools.
  *
- * PROVENANCE: FORMAT-DERIVED. The view_image envelope is VS Code 1.136.0's, as cited in tests/vscode_hooks.test.ts; VS Code sends no cwd and runs the hook in the workspace folder, which normalizePayload's vscode branch fills from process.cwd(), so the test chdirs into the workspace rather than putting a cwd on the payload. Images are random noise generated here (HAND-DERIVED).
+ * PROVENANCE: FORMAT-DERIVED. The view_image envelope is VS Code 1.136.0's, as cited in tests/vscode_hooks.test.ts; With a workspace folder open, VS Code resolves the hook's cwd to that folder and the payload carries it; with no folder open it resolves none and spawns the hook in the home directory, and normalizePayload deliberately leaves the key absent rather than filling it, so the path gate fails closed. (Those two halves are exclusive, so the earlier claim here -- no cwd AND the workspace folder -- described a state that cannot occur. Read from VS Code 1.136.0's bundled agentHostMain.js and workbench.desktop.main.js: FORMAT-DERIVED, not CAPTURE, since no live payload was captured.) This test puts the workspace on the payload as cwd, which is the folder-open case these assertions are about, and chdirs there too so that relative targets resolve the way they would in a real run. The folderless case is tests/vscode_folderless_cwd_gate.test.ts. Images are random noise generated here (HAND-DERIVED).
  */
 import * as fsReal from 'node:fs'
 import * as os from 'node:os'
@@ -91,8 +91,10 @@ function shrinkEvents(): number {
 function viewImageEvent(filePath: string): HookEvent {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'vscode'
   process.env['TOKEN_GOAT_OFFLINE'] = '1'
+  // chdir as well as cwd: relative targets below (`../elsewhere/shot.png`) resolve against the process directory, and the workspace is where VS Code would have started the hook.
   process.chdir(workspace)
-  const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: `confine-${Math.random().toString(36).slice(2)}`, tool_name: 'view_image', tool_input: { filePath }, tool_use_id: 'tu-1' }
+  // cwd on the payload, because that is what VS Code sends when a workspace folder IS open -- the case these assertions are about. Omitting it models the folderless case instead, where the hook starts in $HOME and the gate declines everything (tests/vscode_folderless_cwd_gate.test.ts), which would make the decline cases below pass for the wrong reason.
+  const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: `confine-${Math.random().toString(36).slice(2)}`, tool_name: 'view_image', tool_input: { filePath }, tool_use_id: 'tu-1', cwd: workspace }
   return buildEvent('pre_tool_use', normalizePayload(payload, 'vscode'))
 }
 
