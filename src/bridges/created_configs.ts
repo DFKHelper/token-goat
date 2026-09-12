@@ -55,6 +55,18 @@ export function recordCreatedConfig(filePath: string): void {
   writeLedger([...entries, key])
 }
 
+/**
+ * True when token-goat on THIS machine created `filePath`, without forgetting it.
+ *
+ * Separate from {@link takeCreatedConfig} because the two questions differ: uninstall asks once and
+ * must not be able to answer twice, while a hook asks on every invocation and must keep getting the
+ * same answer. Same failure direction as everything else here -- an unreadable or purged ledger
+ * answers "not ours".
+ */
+export function hasCreatedConfig(filePath: string): boolean {
+  return readLedger().includes(keyOf(filePath))
+}
+
 /** True when token-goat created `filePath` itself, forgetting it in the same step so the answer is not reused. */
 export function takeCreatedConfig(filePath: string): boolean {
   const key = keyOf(filePath)
