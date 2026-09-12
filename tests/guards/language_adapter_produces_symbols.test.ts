@@ -121,6 +121,12 @@ const CASES: readonly AdapterCase[] = [
   { language: 'batch', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.bat'), targetBasename: 'Sample.bat' },
   { language: 'erlang', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.erl'), targetBasename: 'Sample.erl' },
   { language: 'vhdl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.vhd'), targetBasename: 'Sample.vhd' },
+  { language: 'jinja2', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.j2'), targetBasename: 'Sample.j2' },
+  { language: 'handlebars', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.hbs'), targetBasename: 'Sample.hbs' },
+  { language: 'erb', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.erb'), targetBasename: 'Sample.erb' },
+  { language: 'ejs', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.ejs'), targetBasename: 'Sample.ejs' },
+  { language: 'nunjucks', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.njk'), targetBasename: 'Sample.njk' },
+  { language: 'twig', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.twig'), targetBasename: 'Sample.twig' },
   // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
   { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
   {

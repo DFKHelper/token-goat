@@ -1,0 +1,16 @@
+<!-- FORMAT-DERIVED: Jinja2 Template Designer Documentation, jinja.palletsprojects.com/en/3.1.x/templates/
+     "Variables" section ({{ }} expressions), "List of Control Structures" ({% %} for/if), and
+     "Comments" section ({# #}); this fixture follows those forms, not this repo's extractor. -->
+<!DOCTYPE html>
+<html>
+<head><title>{{ title }}</title></head>
+<body>
+  <h1 id="page-heading">{{ heading }}</h1>
+  {# This is a comment, it will not show up in the output at all #}
+  <ul class="user-list">
+  {% for user in users %}
+    <li class="user-item">{{ user.username }}</li>
+  {% endfor %}
+  </ul>
+</body>
+</html>

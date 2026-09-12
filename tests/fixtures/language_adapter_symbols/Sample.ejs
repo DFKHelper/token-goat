@@ -1,0 +1,14 @@
+<!-- FORMAT-DERIVED: EJS documentation, ejs.co/#docs -- tag forms "<%= %>" (escaped output),
+     "<%- %>" (unescaped), "<%#" (comment), "<%_ _%>" (whitespace slurp); this fixture follows
+     those forms, not this repo's extractor. -->
+<html>
+<body>
+  <h1 id="page-title"><%= title %></h1>
+  <%# a comment %>
+  <ul class="supplies">
+    <% for(var i = 0; i < supplies.length; i++) { %>
+      <li class="supply-item"><%- supplies[i] %></li>
+    <% } %>
+  </ul>
+</body>
+</html>

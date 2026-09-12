@@ -101,6 +101,10 @@ const BATCH_D_IDS = ['asm', 'batch', 'erlang']
 // VHDL, added on its own: entity/architecture/package/function/procedure.
 const BATCH_VHDL = ['.vhd', '.vhdl']
 const BATCH_VHDL_IDS = ['vhdl']
+// Six template dialects that mask their own delimiters then hand off to the HTML extractor;
+// markup like html/liquid, so they carry no symbol-bearing/source-hint/grep/diffable flags.
+const BATCH_TEMPLATES = ['.j2', '.jinja', '.jinja2', '.hbs', '.handlebars', '.erb', '.ejs', '.njk', '.twig']
+const BATCH_TEMPLATES_IDS = ['jinja2', 'handlebars', 'erb', 'ejs', 'nunjucks', 'twig']
 const SF_MARKUP = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens', '.page', '.component', '.email']
 
 // Every extension either side knows about, so a dropped extension shows up as a removal.
@@ -122,7 +126,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('extension map: only the new mappings were added, nothing moved or dropped', () => {
     for (const [ext, lang] of Object.entries(OLD_EXTENSION_LANGUAGE)) expect(EXTENSION_LANGUAGE.get(ext), ext).toBe(lang)
     const added = [...EXTENSION_LANGUAGE.keys()].filter((e) => !(e in OLD_EXTENSION_LANGUAGE))
-    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL]))
+    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES]))
     for (const e of ['.zsh', '.ksh', '.bats']) expect(detectLanguage(`a${e}`), e).toBe('bash')
     for (const e of ['.bzl', '.star']) expect(detectLanguage(`a${e}`), e).toBe('python')
     for (const e of PLSQL) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('sql')
@@ -178,7 +182,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('labels: unchanged except Apex, which used to print as the bare id', () => {
     const ids: Language[] = [...LANGUAGE_SPECS.map((s) => s.id), 'unknown']
     const changed = ids.filter((id) => languageLabel(id) !== (OLD_LABELS[id] ?? id))
-    expect(changed).toEqual(['abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, 'abl', 'apex'])
+    expect(changed).toEqual([...BATCH_TEMPLATES_IDS, 'abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, 'abl', 'apex'])
     expect(languageLabel('apex')).toBe('Apex')
   })
 })

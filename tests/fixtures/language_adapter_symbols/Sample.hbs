@@ -1,0 +1,9 @@
+<!-- FORMAT-DERIVED: Handlebars Guide, handlebarsjs.com/guide/expressions.html ("Basic Usage" {{ }},
+     "HTML-Escaping" triple-stache {{{ }}}) and handlebarsjs.com/guide/#comments (both {{! }} and
+     {{!-- --}} comment forms); this fixture follows those forms, not this repo's extractor. -->
+<div id="entry-template" class="entry">
+  {{! This comment will not be in the output }}
+  {{!-- This comment may contain mustaches like {{ this }} --}}
+  <h1 id="entry-title">{{title}}</h1>
+  <div class="body">{{{body}}}</div>
+</div>

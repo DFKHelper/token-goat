@@ -191,7 +191,7 @@ flowchart TB
     subgraph ParserAdapters ["Parser Language Adapters"]
         TreeSitter["Inline Tree-Sitter Extractors<br/><small>TS, JS, Python, Go, Rust, Java, C/C++, Ruby</small>"]:::adapter
         RegexInline["Inline Regex Extractors<br/><small>Markdown, JSON, YAML, TOML, CSS, Dockerfile</small>"]:::adapter
-        LangAdapters["Regex Adapters, inline and src/languages/ (59 non-tree-sitter languages)<br/><small>C#, PHP, Kotlin, GraphQL, SQL, Proto, Apex, etc.</small>"]:::adapter
+        LangAdapters["Regex Adapters, inline and src/languages/ (65 non-tree-sitter languages)<br/><small>C#, PHP, Kotlin, GraphQL, SQL, Proto, Apex, etc.</small>"]:::adapter
     end
 
     Parser --> TreeSitter
