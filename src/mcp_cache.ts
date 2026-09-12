@@ -86,10 +86,17 @@ export function mcpOutputId(sessionId: string, hash: string): string {
   return `mcp_${shortFingerprint(`${sessionId}\x00${hash}`)}`
 }
 
-/** Short readable label stored as the blob's `command` for `bash-history`. */
+/**
+ * Short readable label stored as the blob's `command` for `bash-history`.
+ * Redacts BEFORE truncating: a secret in `toolInput` can straddle the 120-char
+ * cut, and slicing first can drop enough of a matched pattern's body below its
+ * minimum-length floor that redactSecrets() no longer recognizes what remains,
+ * letting a raw fragment survive. Redacting the full JSON first means only
+ * placeholder text (`[REDACTED:...]`) is ever cut, never secret bytes.
+ */
 function mcpInputPreview(toolInput: Record<string, unknown>): string {
   try {
-    return JSON.stringify(toolInput).slice(0, 120)
+    return redactSecrets(JSON.stringify(toolInput)).text.slice(0, 120)
   } catch {
     return ''
   }
