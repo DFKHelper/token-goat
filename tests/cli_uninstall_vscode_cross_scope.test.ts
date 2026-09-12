@@ -81,9 +81,11 @@ describe('token-goat uninstall --vscode cross-scope detection', () => {
     expect(fs.readFileSync(projectMcpPath, 'utf8')).toContain('token-goat')
 
     process.chdir(project)
-    // Bare `uninstall --vscode`, no `--project` -- defaults to user scope, which was
-    // never populated, mirroring the reported scenario exactly.
-    const code = await runCli(['uninstall', '--vscode'])
+    // `uninstall --vscode --user` targets the user scope, which was never populated, mirroring
+    // the reported scenario exactly. This used to be the bare command's own default; --vscode now
+    // defaults to project scope (VS Code pins a user-scope hook to folders[0]), so the opt-out
+    // flag is what selects the scope this case is about.
+    const code = await runCli(['uninstall', '--vscode', '--user'])
     expect(code).toBe(0)
 
     // The project-scope registration must still be there: uninstall only touched user scope.
@@ -91,7 +93,9 @@ describe('token-goat uninstall --vscode cross-scope detection', () => {
 
     const output = stdout.join('')
     expect(output).toMatch(/still registered in VS Code project scope/)
-    expect(output).toContain('uninstall --vscode --project')
+    // The remedy names the bare command rather than --project: project scope is now what a bare
+    // "uninstall --vscode" targets.
+    expect(output).toContain('"token-goat uninstall --vscode" to remove it too')
   })
 
   it('does not warn when only one scope was ever registered', async () => {

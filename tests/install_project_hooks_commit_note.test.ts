@@ -64,8 +64,8 @@ describe('project-scope install warns against committing the machine-specific ho
     expect(line).toContain(path.join('.github', 'hooks', 'token-goat-shim.js'))
   })
 
-  it('user-scope install --vscode and install --copilot print no such note', () => {
-    expect(install(['--vscode']).stdout).not.toMatch(NOTE)
+  it('user-scope install --vscode --user and install --copilot print no such note', () => {
+    expect(install(['--vscode', '--user']).stdout).not.toMatch(NOTE)
     expect(install(['--copilot']).stdout).not.toMatch(NOTE)
   })
 })

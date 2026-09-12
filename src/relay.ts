@@ -29,6 +29,7 @@ import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
 // Re-exported below: this was defined here until it was split out (see stdin_json.ts's own note).
 import { MAX_STDIN_BYTES, readStdinJson } from './stdin_json.js'
+import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
 
 // Side-effect imports: each registers its handlers with the hook registry.
 import './hooks_read.js'
@@ -193,6 +194,11 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
         ? normalizePayload(rawPayload, harnessForNormalization())
         : rawPayload
     const event = buildEvent(eventName, payload)
+    // VS Code runs every hooks file it discovers, so one event can arrive here two or more times
+    // (user scope alongside project scope, or once per workspace folder). Stand down when another
+    // copy is already handling this exact event; see vscode_duplicate.ts for which cases are
+    // elected here and which the path gate already settles. Fails open by construction.
+    if (shouldSuppressDuplicateVscodeHook(event, harness)) return '{}'
     // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually.
     if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
       process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId

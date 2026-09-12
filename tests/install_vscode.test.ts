@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
 import { installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
-import { checkVscodeClaudeHooks } from '../src/cli_doctor.js'
+import { checkVscodeClaudeHooks, checkVscodeUserScopeHooks } from '../src/cli_doctor.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
@@ -215,16 +215,27 @@ describe('VS Code user-scope install (default, no --project)', () => {
       expect(() => installVscode({ projectRoot: project })).toThrow(/already registered in VS Code project scope/)
       expect(fs.existsSync(vscodeUserMcpPath())).toBe(false)
 
-      // And the reverse: user scope first, then project scope should refuse too.
+      // The reverse direction is now a MIGRATION, not an error, and the assertion below was
+      // changed with the behaviour rather than around a failure. `install --vscode` defaults to
+      // project scope because VS Code pins a user-scope hooks file to folders[0] of a multi-root
+      // workspace; refusing the first post-upgrade run of the command every existing user already
+      // types would make the new default a wall instead of an upgrade. Walking the user-scope
+      // install back is also what stops the two firing twice -- VS Code runs every hooks file it
+      // discovers, in both scopes (captured live, see src/vscode_duplicate.ts).
       uninstallVscode({ project: true, projectRoot: project })
       installVscode({ projectRoot: project })
-      expect(() => installVscode({ project: true, projectRoot: project })).toThrow(/already registered in VS Code user scope/)
+      const migrated = installVscode({ project: true, projectRoot: project })
+      expect(migrated.migratedFromUserScope).toBe(true)
+      expect(migrated.scope).toBe('project')
       const projectMcpPath = path.join(project, '.vscode', 'mcp.json')
-      if (fs.existsSync(projectMcpPath)) {
-        const config = JSON.parse(fs.readFileSync(projectMcpPath, 'utf8')) as Record<string, unknown>
-        const servers = (config['servers'] as Record<string, unknown> | undefined) ?? {}
-        expect(servers['token-goat']).toBeUndefined()
+      const config = JSON.parse(fs.readFileSync(projectMcpPath, 'utf8')) as Record<string, unknown>
+      const servers = (config['servers'] as Record<string, unknown> | undefined) ?? {}
+      expect(servers['token-goat']).toBeDefined()
+      // The user-scope registration is gone, not merely superseded.
+      if (fs.existsSync(vscodeUserMcpPath())) {
+        expect(fs.readFileSync(vscodeUserMcpPath(), 'utf8')).not.toContain('token-goat')
       }
+      expect(vscodeHooksInstalled()).toBe(false)
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
       fs.rmSync(project, { recursive: true, force: true })
@@ -394,5 +405,26 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     const claudeOnly = checkVscodeClaudeHooks(true, true, false)
     expect(claudeOnly?.status).toBe('warn')
     expect(claudeOnly?.message).toContain('install --vscode')
+  })
+
+  it('checkVscodeUserScopeHooks warns on a user-scope install and names the right fix for each case', () => {
+    // Project scope alone is the intended state after the default flipped: nothing to report.
+    expect(checkVscodeUserScopeHooks(false, true)).toBeNull()
+    expect(checkVscodeUserScopeHooks(false, false)).toBeNull()
+
+    // User scope alone still works, but VS Code pins it to folders[0], so it is blind past the
+    // first folder of a multi-root workspace. The fix is to move it.
+    const userOnly = checkVscodeUserScopeHooks(true, false)
+    expect(userOnly?.status).toBe('warn')
+    expect(userOnly?.message).toContain('FIRST folder')
+    expect(userOnly?.message).toContain('token-goat install --vscode')
+    expect(userOnly?.message).not.toContain('twice')
+
+    // Both scopes: VS Code runs every hooks file it finds, so the fix is to remove one, and it must
+    // be the user-scope one -- removing the project copy would leave only the blind install.
+    const both = checkVscodeUserScopeHooks(true, true)
+    expect(both?.status).toBe('warn')
+    expect(both?.message).toContain('twice')
+    expect(both?.message).toContain('token-goat uninstall --vscode --user')
   })
 })

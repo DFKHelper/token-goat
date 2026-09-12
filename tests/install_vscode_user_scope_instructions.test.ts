@@ -101,15 +101,15 @@ describe('user-scope install --vscode', () => {
 })
 
 describe('the built CLI, run from inside a project', () => {
-  it('install --vscode then uninstall --vscode leave the project byte-identical', () => {
+  it('install --vscode --user then uninstall --vscode --user leave the project byte-identical', () => {
     const before = snapshot(project)
     const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'), XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_CONFIG_HOME: path.join(home, '.config'), COPILOT_HOME: path.join(home, '.copilot'), TOKEN_GOAT_HOME: path.join(home, '.token-goat'), TOKEN_GOAT_EMBEDDINGS_ENABLED: '0' }
-    const install = spawnSync(process.execPath, [BUNDLE, 'install', '--vscode'], { cwd: project, env, encoding: 'utf8', timeout: 120_000 })
+    const install = spawnSync(process.execPath, [BUNDLE, 'install', '--vscode', '--user'], { cwd: project, env, encoding: 'utf8', timeout: 120_000 })
     expect(install.status, install.stderr).toBe(0)
     expect(install.stdout).toContain(personalFile())
     expect(snapshot(project)).toEqual(before)
     expect(fs.existsSync(personalFile())).toBe(true)
-    const uninstall = spawnSync(process.execPath, [BUNDLE, 'uninstall', '--vscode'], { cwd: project, env, encoding: 'utf8', timeout: 120_000 })
+    const uninstall = spawnSync(process.execPath, [BUNDLE, 'uninstall', '--vscode', '--user'], { cwd: project, env, encoding: 'utf8', timeout: 120_000 })
     expect(uninstall.status, uninstall.stderr).toBe(0)
     expect(fs.existsSync(personalFile())).toBe(false)
     expect(snapshot(project)).toEqual(before)

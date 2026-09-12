@@ -119,6 +119,27 @@ export function vscodeHooksDir(opts: VscodeScopeOptions = {}): string {
     : path.join(os.homedir(), '.copilot', 'hooks')
 }
 
+/**
+ * The scope `--vscode` installs into, from the install/uninstall flags.
+ *
+ * This is the ONE harness that defaults to project scope, and the inversion is deliberate: VS Code
+ * resolves a hook's working directory as `getWorkspaceFolder(hookFile.uri) ?? folders[0]`, and a
+ * user-scope hooks file (`~/.copilot/hooks`) is inside no workspace folder, so the lookup misses on
+ * every invocation and the cwd is always the FIRST folder. Captured live against 1.137.0: in a
+ * two-root workspace the user-scope copy fired once, with `cwd` pinned to root A, while a
+ * project-scope copy in root B fired with `cwd` = root B. Since `vscode_path_gate.ts` confines
+ * every pre-approval hook to that cwd, read hints, image shrinking and edit interception were
+ * silently inert for every folder past the first -- no error, just nothing.
+ *
+ * `--user` is the explicit opt-out and keeps the old single-file, every-project behaviour, with
+ * that multi-root limitation. `-p`/`--project` remains accepted and now selects what is already
+ * the default. `tests/guards/harness_scope_defaults.test.ts` fails on any harness whose default is
+ * not classified there, so a second inversion cannot arrive unnoticed.
+ */
+export function vscodeScopeFromFlags(flags: { project?: boolean; user?: boolean }): VscodeScopeOptions {
+  return { project: flags.user !== true }
+}
+
 /** Whether `install --vscode` has put its hooks in this scope's hooks directory. */
 export function vscodeHooksInstalled(opts: VscodeScopeOptions = {}): boolean {
   return readCopilotHooksOwners(vscodeHooksDir(opts)).has('vscode')
@@ -157,7 +178,9 @@ export interface VscodeInstallResult {
   /** The shared hooks file VS Code's agent runs (also Copilot CLI's; see CopilotHooksOwner). */
   hooksConfigPath: string
   alreadyInstalled: boolean
-  /** Which scope was actually written: 'project' (`--project`) or 'user' (default). */
+  /** True when this run walked an existing user-scope install back before writing the project one. */
+  migratedFromUserScope: boolean
+  /** Which scope was actually written: 'project' (the default) or 'user' (`--user`). */
   scope: 'project' | 'user'
 }
 
@@ -240,11 +263,21 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = vscodeMcpPath(opts)
   const instructionsPath = vscodeInstructionsPath(opts)
-  if (otherScopeHasManagedServer(opts)) {
-    const otherScope = scope === 'project' ? 'user' : 'project'
+  // Migration, not an error, in the user -> project direction only. `install --vscode` defaults to
+  // project scope now, so the FIRST post-upgrade run of the same command every existing user
+  // already types lands here: refusing it would make the new default a wall rather than an
+  // upgrade. Walking the user-scope install back is also what keeps the two from double-firing --
+  // VS Code runs every hooks file it discovers, in both scopes, confirmed live (see
+  // vscode_duplicate.ts's header). uninstallVscode() is the migration: it strips the user-scope
+  // MCP entry and guidance block and releases this install's claim on the shared
+  // `~/.copilot/hooks` files, leaving them in place when `install --copilot` still owns them.
+  let migratedFromUserScope = false
+  if (scope === 'project' && (otherScopeHasManagedServer(opts) || vscodeHooksInstalled())) {
+    migratedFromUserScope = uninstallVscode()
+  } else if (otherScopeHasManagedServer(opts)) {
     const otherPath = otherScopeMcpPath(opts)
     throw new Error(
-      `token-goat is already registered in VS Code ${otherScope} scope (${otherPath}). Installing into ${scope} scope too would register it twice and duplicate its tool schemas in this workspace. Run "token-goat uninstall --vscode${otherScope === 'project' ? ' --project' : ''}" first if you want to move it, or drop --vscode from this run.`,
+      `token-goat is already registered in VS Code project scope (${otherPath}). Installing into user scope too would register it twice and duplicate its tool schemas in this workspace. Run "token-goat uninstall --vscode --project" first if you want to move it, or drop --vscode from this run.`,
     )
   }
   const config = readConfig(mcpPath)
@@ -273,8 +306,9 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
     mcpPath,
     instructionsPath,
     hooksConfigPath: hooks.configPath,
-    alreadyInstalled: config.text === next && !guidanceChanged && !hooks.changed,
+    alreadyInstalled: config.text === next && !guidanceChanged && !hooks.changed && !migratedFromUserScope,
     scope,
+    migratedFromUserScope,
   }
 }
 
