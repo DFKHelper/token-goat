@@ -120,6 +120,7 @@ const CASES: readonly AdapterCase[] = [
   { language: 'asm', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.s'), targetBasename: 'Sample.s' },
   { language: 'batch', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.bat'), targetBasename: 'Sample.bat' },
   { language: 'erlang', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.erl'), targetBasename: 'Sample.erl' },
+  { language: 'vhdl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.vhd'), targetBasename: 'Sample.vhd' },
   // A `.p` is ABL only by content, so this case is live only while the fixture's head still carries an ABL marker.
   { language: 'abl', kind: 'regex', source: path.join(HAND_FIXTURES, 'Sample.p'), targetBasename: 'Sample.p' },
   {
