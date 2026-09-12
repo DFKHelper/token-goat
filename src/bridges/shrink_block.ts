@@ -36,7 +36,8 @@ function materializeShrunkImage(context) {
     const buf = Buffer.from(match[2], "base64")
     const name = \`token-goat-shrink-\${process.pid}-\${Date.now()}-\${globalThis.crypto.randomUUID()}.\${match[1]}\`
     const file = path.join(os.tmpdir(), name)
-    fs.writeFileSync(file, buf)
+    // Owner-only: the copy is of a workspace image and sits in the shared temp dir.
+    fs.writeFileSync(file, buf, { mode: 0o600 })
     return file
   } catch {
     return undefined

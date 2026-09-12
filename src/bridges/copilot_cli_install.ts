@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
+import { hookCommandFor, hookPowershellCommand, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { loadConfig } from '../config.js'
@@ -188,9 +188,9 @@ function stripInlineCodeSpans(text: string): string {
  */
 function writeCopilotInstructionsBlock(p: string): boolean {
   const changed = upsertDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, buildCopilotInstructionsBlock())
-  // A project file shared with install --visualstudio -p: its block shrinks to an addendum now that this gate is present.
-  syncVisualStudioProjectGuidance(p)
-  return changed
+  // A project file shared with install --visualstudio -p: its block shrinks to an addendum now that this gate is present. That rewrite is a change to the file in its own right, so it has to reach the caller: dropping it reported "already installed" on a run that had just rewritten the Visual Studio block.
+  const visualStudioChanged = syncVisualStudioProjectGuidance(p)
+  return changed || visualStudioChanged
 }
 
 function stripCopilotInstructionsBlock(p: string): boolean {
@@ -237,8 +237,9 @@ function stripCopilotInstructionsBlock(p: string): boolean {
 // invoke a quoted path as a command rather than evaluate it as a string expression) fixes this;
 // 'bash' gets the same command text since POSIX shells don't need a call operator for a quoted
 // path. 'command' is kept for older Copilot CLI builds that might not read 'bash'/'powershell'.
+// Single-quoted via hookPowershellCommand rather than reusing hookCommandFor's double-quoted text: PowerShell expands `$name` and `$(...)` inside double quotes, and a dollar sign is legal in a Windows directory name, so an install run from such a directory would have that text evaluated on every hook invocation.
 function hookPowershellCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
-  return `& ${hookCommandFor(scriptPath, event)}`
+  return `& ${hookPowershellCommand(scriptPath, event)}`
 }
 
 // Copilot's own default (per its hooks reference doc) is 30s, and a killed-on-timeout

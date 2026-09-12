@@ -49,6 +49,20 @@ export const PERMISSIVE = new Set([
 
 const LICENSE_FILE_RE = /^(LICENSE|LICENCE|COPYING|NOTICE)/i
 
+/**
+ * Line endings, normalized to LF.
+ *
+ * Some bundled packages ship a CRLF LICENSE file, so the rendered document came out mixed while
+ * `.gitattributes` (`* text=auto`) normalizes the committed copy to LF. The two could never match
+ * on any platform: a Linux checkout is all-LF against a mixed render, a Windows one all-CRLF
+ * against the same mixed render. Normalizing what is written, and both sides of the `--check`
+ * comparison, is what makes the check stable. The notice text itself is untouched: a line ending
+ * is not part of what reproducing a notice verbatim obliges.
+ */
+function toLf(text) {
+  return text.replace(/\r\n?/g, '\n')
+}
+
 /** `node_modules/a/b/c` -> `a`, or `@scope/a`. Null when the input is this project's own source. */
 function packageOf(input) {
   const marker = input.replaceAll('\\', '/').lastIndexOf('node_modules/')
@@ -160,7 +174,7 @@ export async function renderNotices(repoRoot = process.cwd()) {
     '',
   ].join('\n')
 
-  return `${header}\n${sections.join('\n\n')}\n`
+  return toLf(`${header}\n${sections.join('\n\n')}\n`)
 }
 
 // `node -e` leaves argv[1] undefined, so importing this module for its exports must not crash here.
@@ -172,7 +186,7 @@ if (import.meta.url === `file://${invokedAs}` || invokedAs.endsWith('generate-th
   const rendered = await renderNotices(repoRoot)
 
   if (process.argv.includes('--check')) {
-    const onDisk = existsSync(target) ? readFileSync(target, 'utf8') : ''
+    const onDisk = existsSync(target) ? toLf(readFileSync(target, 'utf8')) : ''
     if (onDisk !== rendered) {
       console.error(`${NOTICES_FILE} is out of date. Run \`npm run notices\` and commit the result.`)
       process.exitCode = 1

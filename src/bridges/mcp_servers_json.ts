@@ -97,6 +97,26 @@ export function setTokenGoatServer(text: string, value: unknown): string {
 }
 
 /** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
+/**
+ * True when every key in the parsed config belongs to token-goat: a single server map holding only our own managed entry.
+ *
+ * This is the one content test uninstall's ownership rule is allowed to make. It is not the
+ * "is it empty" reasoning that deleted a user's file, because emptiness is reached by both cases
+ * while this shape is reached only by a file token-goat wrote end to end: there is no user data in
+ * it to lose. Anything else at all -- a second server, a comment-bearing sibling key, a user's own
+ * stub -- fails it, and the file is then never deleted.
+ */
+export function holdsOnlyManagedServer(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value)
+  if (keys.length !== 1) return false
+  const root = keys[0]
+  if (root !== 'servers' && root !== 'mcpServers') return false
+  const servers = value[root]
+  if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) return false
+  const names = Object.keys(servers as Record<string, unknown>)
+  return names.length === 1 && names[0] === 'token-goat' && isManagedServer((servers as Record<string, unknown>)['token-goat'])
+}
+
 export function dropEmptyServers(text: string): string {
   const parsed = parseObject(text)
   if (parsed === null) return text

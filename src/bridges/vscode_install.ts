@@ -13,7 +13,8 @@ import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../u
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
-import { isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { recordCreatedConfig, takeCreatedConfig } from './created_configs.js'
+import { dropEmptyServers, isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
@@ -257,8 +258,13 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
     throw new Error(`VS Code MCP JSON at ${mcpPath} already has a non-token-goat-managed server named "token-goat"`)
   }
   const next = updateConfig(config.text, managedServer())
+  // Remembered before the write, because afterwards the file exists either way and nothing in it says who made it.
+  const mcpExisted = fs.existsSync(mcpPath)
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
-  if (config.text !== next) atomicWriteText(mcpPath, next)
+  if (config.text !== next) {
+    atomicWriteText(mcpPath, next)
+    if (!mcpExisted) recordCreatedConfig(mcpPath)
+  }
   const guidanceChanged = writeGuidance(instructionsPath, scope === 'user')
   if (scope === 'project') syncVisualStudioProjectGuidance(instructionsPath)
   const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
@@ -281,7 +287,10 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
       throw new Error(`malformed VS Code MCP JSON at ${mcpPath}: servers must be an object`)
     }
     if (servers && isManagedServer((servers as Record<string, unknown>)['token-goat'])) {
-      atomicWriteText(mcpPath, updateConfig(config.text, undefined))
+      // Walking back the entry used to leave an empty `servers` object behind as a residue file. The sibling Visual Studio bridge already dropped the empty key and deleted what it had created; this is the same rule, including the part that matters most: a file left empty is only deleted when this install is the one that made it.
+      const next = dropEmptyServers(updateConfig(config.text, undefined))
+      if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) fs.rmSync(mcpPath, { force: true })
+      else atomicWriteText(mcpPath, next)
       removed = true
     }
   }
@@ -290,9 +299,9 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
     removed = true
     // The personal file is one install created: once its block is gone and only the frontmatter install wrote is left, it goes too.
     if (opts.project !== true && fs.readFileSync(instructionsPath, 'utf8').trim() === USER_INSTRUCTIONS_FRONTMATTER.trim()) fs.rmSync(instructionsPath, { force: true })
-    // A Visual Studio block that leaned on this gate now has to carry the full gate itself.
-    if (opts.project === true) syncVisualStudioProjectGuidance(instructionsPath)
   }
+  // Outside the branch above: a Visual Studio block that leaned on this gate has to carry the full gate itself, and it is stale whether or not this run found a block of ours to strip. Running it only on the success path left an uninstall that did nothing unable to heal one.
+  if (opts.project === true) syncVisualStudioProjectGuidance(instructionsPath)
   // Leaves the hooks file in place while `install --copilot` still relies on it.
   if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode')) removed = true
   return removed

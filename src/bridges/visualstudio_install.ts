@@ -14,9 +14,10 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { atomicWriteText, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { recordCreatedConfig, takeCreatedConfig } from './created_configs.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
-import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 
 const LABEL = 'Visual Studio'
 
@@ -171,7 +172,11 @@ export function installVisualStudio(opts: VisualStudioScopeOptions = {}): Visual
       `token-goat is already registered in Visual Studio ${otherScope} scope (${otherScopeMcpPath(opts)}). Visual Studio reads both files, so installing into ${scope} scope too would register it twice. Run "token-goat uninstall --visualstudio${otherScope === 'project' ? ' --project' : ''}" first if you want to move it, or drop --visualstudio from this run.`,
     )
   }
+  // Remembered before the write, because afterwards the file exists either way and nothing in it says who made it.
+  const mcpExisted = fs.existsSync(mcpPath)
   const config = readServersJson(mcpPath, LABEL)
+  // A file that already exists can still be ours: an earlier build wrote a servers-only file holding nothing but token-goat's own managed entry, and this run repairs it. That is not the content-sniffing the ledger exists to avoid, because there is no user data in such a file to lose: every key in it is one token-goat wrote.
+  const ownedAlready = mcpExisted && holdsOnlyManagedServer(config.value)
   const current = serversOf(config, mcpPath, LABEL)['token-goat']
   if (current !== undefined && !isManagedServer(current)) {
     throw new Error(`Visual Studio MCP JSON at ${mcpPath} already has a non-token-goat-managed server named "token-goat"`)
@@ -180,6 +185,7 @@ export function installVisualStudio(opts: VisualStudioScopeOptions = {}): Visual
   if (config.text !== next) {
     fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
     atomicWriteText(mcpPath, next)
+    if (!mcpExisted || ownedAlready) recordCreatedConfig(mcpPath)
   }
   const guidanceChanged = writeGuidance(instructionsPath)
   return { mcpPath, instructionsPath, alreadyInstalled: config.text === next && !guidanceChanged, scope }
@@ -193,7 +199,8 @@ export function uninstallVisualStudio(opts: VisualStudioScopeOptions = {}): bool
     const config = readServersJson(mcpPath, LABEL)
     if (isManagedServer(serversOf(config, mcpPath, LABEL)['token-goat'])) {
       const next = dropEmptyServers(setTokenGoatServer(config.text, undefined))
-      if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next))) fs.rmSync(mcpPath, { force: true })
+      // Empty is not evidence the file is ours: a user's pre-existing `{"mcpServers": {}}` project stub walks back to exactly the same bytes. Only a file this install created is deleted; anything else is left holding its empty stub.
+      if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next)) && takeCreatedConfig(mcpPath)) fs.rmSync(mcpPath, { force: true })
       else atomicWriteText(mcpPath, ensureMcpServersKey(next))
       removed = true
     }

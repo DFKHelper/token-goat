@@ -40,6 +40,45 @@ function isolateVscodeUserDir(userDir: string): void {
   process.env['USERPROFILE'] = userDir
 }
 
+describe('VS Code uninstall leaves no residue, and never deletes a file it did not create', () => {
+  // Uninstall used to write back the entry-less config and stop there, leaving behind a file whose
+  // whole content was an empty `servers` object. The sibling Visual Studio bridge already dropped the
+  // empty key and removed what it had created; this is the same rule, including the half that matters
+  // most: emptiness is not evidence of ownership, so only a file this install created is deleted.
+  // Provenance: HAND-DERIVED. The `servers` root key and entry shape are the ones the install writes
+  // and the sibling tests in this file already assert; the user-authored stub is written for this test.
+  it('removes an mcp.json it created once nothing of the user is left in it', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-residue-'))
+    try {
+      const mcpPath = path.join(project, '.vscode', 'mcp.json')
+      installVscode({ project: true, projectRoot: project })
+      expect(fs.existsSync(mcpPath)).toBe(true)
+      expect(uninstallVscode({ project: true, projectRoot: project })).toBe(true)
+      expect(fs.existsSync(mcpPath), 'uninstall left behind a file holding nothing but an empty servers object').toBe(false)
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a user-authored mcp.json even after uninstall empties it', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-userowned-'))
+    try {
+      const mcpPath = path.join(project, '.vscode', 'mcp.json')
+      fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+      fs.writeFileSync(mcpPath, '{"servers": {}}\n')
+      installVscode({ project: true, projectRoot: project })
+      expect(uninstallVscode({ project: true, projectRoot: project })).toBe(true)
+      expect(fs.existsSync(mcpPath), 'uninstall deleted a file token-goat never created').toBe(true)
+      // Survival anchor on the other half: our own entry really was removed, so this cannot pass
+      // by uninstall having done nothing at all.
+      const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>
+      expect((after['servers'] as Record<string, unknown> | undefined)?.['token-goat']).toBeUndefined()
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('VS Code project-local install', () => {
   it('merges servers and guidance without replacing unrelated content', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-test-'))
@@ -138,8 +177,10 @@ describe('VS Code user-scope install (default, no --project)', () => {
         args: [path.join(process.cwd(), 'dist', 'token-goat.mjs'), 'mcp-serve'],
       })
       expect(uninstallVscode({ projectRoot: project })).toBe(true)
-      const after = JSON.parse(fs.readFileSync(result.mcpPath, 'utf8')) as Record<string, unknown>
-      expect((after['servers'] as Record<string, unknown>)['token-goat']).toBeUndefined()
+      // Nothing of the user's was ever in this file: the install above created it, so uninstall gives
+      // the profile directory back as it found it instead of leaving an empty shell. This assertion
+      // used to read the file back and check the entry was gone, which the shell also satisfied.
+      expect(fs.existsSync(result.mcpPath)).toBe(false)
     } finally {
       fs.rmSync(userDir, { recursive: true, force: true })
       fs.rmSync(project, { recursive: true, force: true })

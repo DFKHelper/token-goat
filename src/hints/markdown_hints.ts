@@ -6,6 +6,7 @@
  */
 
 import { eachUnfencedLine } from '../markdown_lines.js'
+import { displaySafeText } from '../paths.js'
 
 /** Extract markdown headings (H1-H3 by default; H1-H6 when `limit` is Infinity) with their byte offsets */
 export interface MarkdownHeading {
@@ -123,7 +124,8 @@ export function formatHeadingTreeParts(headings: MarkdownHeading[], filePath: st
 
     const indent = h.level === 1 ? '' : h.level === 2 ? '  ' : '    '
     const marker = '#'.repeat(h.level)
-    sectionLines.push(`  ${indent}${marker} ${h.text}`)
+    // Heading text is the read file's own content, listed here outside any fence: escape it so a heading shaped like a token-goat marker cannot speak as one.
+    sectionLines.push(`  ${indent}${marker} ${displaySafeText(h.text)}`)
     headingsAdded++
   }
 

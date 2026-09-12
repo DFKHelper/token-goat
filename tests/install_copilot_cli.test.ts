@@ -32,6 +32,7 @@ import {
   uninstallCopilotCli,
 } from '../src/bridges/copilot_cli_install.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
+import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
 import { HOOK_EVENTS } from '../src/types.js'
 
 let TMP: string
@@ -149,8 +150,15 @@ describe('installCopilotCli (user scope)', () => {
     // error without a leading call operator -- two adjacent quoted string literals are not a
     // valid expression/statement in PowerShell. Confirmed live via Copilot CLI's own logged
     // ParserError: "Unexpected token '"...\token-goat-shim.js"' in expression or statement."
-    expect(entry?.powershell.startsWith('& "')).toBe(true)
-    expect(entry?.powershell).toBe(`& ${entry?.command}`)
+    // Single-quoted, not double. PowerShell expands `$` inside double quotes, so a profile path
+    // holding one was rewritten before the hook ran, and a path holding a single quote closed the
+    // argument early. The `command` field keeps cmd.exe's double quotes, so the two now differ on
+    // purpose and this no longer asserts that powershell is command with a prefix.
+    expect(entry?.powershell.startsWith("& '")).toBe(true)
+    expect(entry?.powershell).not.toContain('"')
+    // Named independently of the builder: the same two paths the command field runs.
+    expect(entry?.powershell).toContain(result.scriptPath)
+    expect(entry?.powershell).toContain(process.execPath)
     // bash doesn't need a call operator for a quoted path, so it matches command verbatim.
     expect(entry?.bash).toBe(entry?.command)
   })
@@ -219,6 +227,26 @@ describe('installCopilotCli (user scope)', () => {
     ]) {
       expect(config.hooks[event]).toHaveLength(1)
     }
+  })
+
+  // The instructions file is shared with `install --visualstudio -p`, and the Copilot install also
+  // refreshes the Visual Studio block in it. That rewrite reached the file but not the return value,
+  // so a run that had just rewritten the block still reported "already installed" and the user was
+  // told nothing had changed. Provenance: HAND-DERIVED, the stale block is written here by hand.
+  it('reports a change when it refreshed the Visual Studio guidance block, not just its own', () => {
+    installCopilotCli()
+    const settled = installCopilotCli()
+    expect(settled.alreadyInstalled, 'the install never settled, so the assertion below proves nothing').toBe(true)
+
+    const before = fs.readFileSync(settled.instructionsPath, 'utf8')
+    fs.writeFileSync(settled.instructionsPath, `${before}\n${VISUALSTUDIO_GUIDANCE_BEGIN}\nstale guidance text\n${VISUALSTUDIO_GUIDANCE_END}\n`)
+
+    const third = installCopilotCli()
+    expect(third.alreadyInstalled, 'the Visual Studio block was rewritten but the install still said nothing changed').toBe(false)
+    // Survival anchor: the rewrite really happened, so this cannot pass by the block being dropped.
+    const after = fs.readFileSync(settled.instructionsPath, 'utf8')
+    expect(after).toContain(VISUALSTUDIO_GUIDANCE_BEGIN)
+    expect(after).not.toContain('stale guidance text')
   })
 
   it('overwrites a hand-modified shim script wholesale instead of merging or warning', () => {
