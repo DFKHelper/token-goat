@@ -411,6 +411,11 @@ running in Cursor too, with no separate Cursor hooks file to maintain or risk
 clobbering. `token-goat uninstall --cursor` removes only the MCP entry. See
 [Cursor users](docs/install.md#cursor-users).
 
+**JetBrains** (WebStorm, IntelliJ, PyCharm, Rider, PhpStorm): no integration
+today — no hooks, no MCP, no terminal filter. See
+[JetBrains IDEs users](docs/install.md#jetbrains-ides-webstorm-intellij-pycharm-rider-phpstorm-users)
+for why and what a Copilot-for-JetBrains user might already get for free.
+
 The optional source-controlled extension lives in `vscode-extension/`. Build
 and install its VSIX manually; `--vscode` intentionally does not copy or
 install extensions:

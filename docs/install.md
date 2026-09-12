@@ -261,6 +261,12 @@ Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`win
 
 Windsurf gets terminal-output compression only — not the read/index hook integration Claude Code, Codex, Copilot CLI, Gemini, Qwen, Kimi, VS Code, Visual Studio and Grok get above. Windsurf's Cascade agent hooks (`cascadeHooksJson`) are configured on Windsurf's own servers, per team, not from a file on your machine, so there is no local hook config for token-goat to install into. There is no `--windsurf` flag, and none is planned unless that changes.
 
+### JetBrains IDEs (WebStorm, IntelliJ, PyCharm, Rider, PhpStorm) users
+
+There is no `--junie` or `--jetbrains` flag, and no JetBrains integration of any kind today: no hooks, no MCP registration, no terminal-output filter (JetBrains IDEs have no CLI binary for token-goat to detect on your PATH). Junie, the JetBrains ACP agent, reads guidelines from `.junie/AGENTS.md`, MCP servers from `~/.junie/mcp/mcp.json`, and — per JetBrains' own docs, not a live-verified source — hooks from `~/.junie/config.json`, but no `~/.junie` directory exists without Junie itself creating one, and no live Junie CLI was available to confirm the on-disk shape of any of those files. Writing one on documentation alone risks shipping a config Junie ignores or rejects, so token-goat writes nothing there.
+
+Separately, GitHub's Copilot-for-JetBrains plugin documents (as of its March 2026 changelog) previewing agent hooks placed in `.github/hooks/` — the same folder `--copilot` and `--vscode` already write for their own hook integrations. If that holds, a project that has already run `token-goat install --copilot` or `--vscode` may get some Copilot-for-JetBrains hook pickup for free, with no JetBrains-specific code in token-goat at all. This is unconfirmed: the real Copilot-for-JetBrains agent plugin is not installed on the machine this was checked from (only its theme jar is present), so the claim rests on GitHub's changelog, not a live run, and is not something token-goat currently relies on or tests for.
+
 ### Updating
 
 There is no auto-update mechanism — token-goat never schedules or runs anything on its own. Updating is always a manual `npm install -g token-goat@latest`.
