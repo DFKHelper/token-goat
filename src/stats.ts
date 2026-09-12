@@ -427,6 +427,31 @@ CREATE TABLE IF NOT EXISTS stats (
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
+-- Day-granularity rollup of stats rows older than STATS_RETENTION_DAYS -- see
+-- rollupAndPruneStats's doc comment for why raw rows are pruned instead of kept forever, and
+-- summarize()'s rollup merge for how a --window-days report spanning pruned days still gets a
+-- correct total. Deliberately day+kind+harness+tg_version, not day+kind alone: those are exactly
+-- the dimensions summarize() breaks totals out by, and collapsing any of them here would make an
+-- old --window-days report under-report a breakdown a recent one still shows in full.
+CREATE TABLE IF NOT EXISTS stats_daily_rollup (
+  day TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  harness TEXT NOT NULL DEFAULT '',
+  tg_version TEXT NOT NULL DEFAULT '',
+  events INTEGER NOT NULL DEFAULT 0,
+  bytes_saved INTEGER NOT NULL DEFAULT 0,
+  tokens_saved INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, kind, harness, tg_version)
+);
+CREATE INDEX IF NOT EXISTS idx_stats_daily_rollup_day ON stats_daily_rollup(day);
+-- Single-row (id=1, same pattern as embedding_provenance in db.ts) throttle so the rollup+prune
+-- pass -- an aggregate scan over the whole stats table -- runs at most once per
+-- STATS_ROLLUP_INTERVAL_MS regardless of how often recordStat() itself is called (many times a
+-- minute during active use).
+CREATE TABLE IF NOT EXISTS stats_maintenance (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_rollup_ts INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS unmapped_tools (
   harness TEXT NOT NULL,
   tool_name TEXT NOT NULL,
@@ -553,6 +578,81 @@ function getGlobalDb(homeDir?: string): SqliteDatabase {
 }
 
 /**
+ * Raw `stats` rows older than this are aggregated into `stats_daily_rollup` and deleted -- `stats`
+ * accumulates for the life of the install with no size cap of its own (411,208 rows / ~54 MB with
+ * indexes measured on one real install), and every actual consumer of raw rows either only needs
+ * day/kind/harness/tg_version totals (summarize(), which folds the rollup back in below) or only
+ * ever reads the newest few thousand rows by rowid regardless of calendar age
+ * (checkCompactionChannel in cli_doctor.ts, COMPACTION_STATS_SCAN_CEILING). `token-goat stats`
+ * defaults to --window-days 30; 180 days is 6x that default window, generous headroom for anyone
+ * who types a larger --window-days without keeping the table unbounded. Exported so a guard/test
+ * can assert against the same number the rollup actually runs with instead of a restated literal.
+ */
+export const STATS_RETENTION_DAYS = 180
+/** How often the rollup+prune pass (a full aggregate scan) is allowed to run, regardless of how often recordStat() itself fires. */
+const STATS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Aggregate every `stats` row older than `retentionDays` into `stats_daily_rollup` (summed by
+ * day/kind/harness/tg_version) and delete those rows from `stats`, in one transaction.
+ *
+ * Transactional, not two independent statements: the INSERT...ON CONFLICT accumulates onto
+ * whatever a prior rollup already summed for that day, so if the DELETE ran without the matching
+ * INSERT already having committed, the next run's aggregation over the still-present rows would
+ * double-count them into the rollup. Wrapping both in one transaction means an interruption
+ * (crash, SIGTERM) rolls back to before either ran -- the next scheduled pass sees the exact same
+ * un-rolled-up rows and redoes the same work, never double-counts, and never loses a row. Bounded
+ * by `ts < cutoff` on both statements, so it is safe to run against a database this function has
+ * never seen before (no schema-version assumption beyond the two tables this module already owns).
+ * Fail-soft, matching every other write path in this module.
+ */
+export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
+  try {
+    const cutoffTs = Math.floor(Date.now() / 1000) - retentionDays * 86400
+    const run = db.transaction((cutoff: number) => {
+      db.prepare(
+        `INSERT INTO stats_daily_rollup (day, kind, harness, tg_version, events, bytes_saved, tokens_saved)
+         SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') AS day,
+                kind,
+                COALESCE(harness, '') AS harness,
+                COALESCE(tg_version, '') AS tg_version,
+                COUNT(*), SUM(bytes_saved), SUM(tokens_saved)
+         FROM stats
+         WHERE ts < ?
+         GROUP BY day, kind, harness, tg_version
+         ON CONFLICT(day, kind, harness, tg_version) DO UPDATE SET
+           events = events + excluded.events,
+           bytes_saved = bytes_saved + excluded.bytes_saved,
+           tokens_saved = tokens_saved + excluded.tokens_saved`,
+      ).run(cutoff)
+      db.prepare(`DELETE FROM stats WHERE ts < ?`).run(cutoff)
+    })
+    run(cutoffTs)
+  } catch {
+    // Fail-soft: never block the stat write that triggers this (see recordStat's call site).
+  }
+}
+
+/** Run {@link rollupAndPruneStats} if it hasn't run in the last {@link STATS_ROLLUP_INTERVAL_MS}, recorded via the single-row `stats_maintenance` throttle. Fail-soft: any error here (including on a pre-migration database missing the throttle table) never blocks the stat write it accompanies. */
+function maybeRunStatsMaintenance(db: SqliteDatabase): void {
+  try {
+    const now = Date.now()
+    const row = db.prepare(`SELECT last_rollup_ts FROM stats_maintenance WHERE id = 1`).get() as
+      | { last_rollup_ts?: number }
+      | undefined
+    const last = row?.last_rollup_ts ?? 0
+    if (now - last < STATS_ROLLUP_INTERVAL_MS) return
+    db.prepare(
+      `INSERT INTO stats_maintenance (id, last_rollup_ts) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET last_rollup_ts = excluded.last_rollup_ts`,
+    ).run(now)
+    rollupAndPruneStats(db)
+  } catch {
+    // Fail-soft: see doc comment above.
+  }
+}
+
+/**
  * Record a stat event in the global database.
  *
  * Silently no-ops on any error so hook paths are never blocked.
@@ -566,7 +666,21 @@ function getGlobalDb(homeDir?: string): SqliteDatabase {
 function noStatsMessage(windowDays: number, homeDir?: string): string {
   if (windowDays <= 0) return 'No stats recorded yet.'
   const db = getGlobalDb(homeDir)
-  const total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
+  let total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
+  // Events rollupAndPruneStats already aggregated-and-deleted still happened -- omitting them here
+  // would silently shrink this count every time the rollup runs, which is exactly the kind of
+  // drift a self-measurement surface must not show.
+  try {
+    const rollupTable = db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stats_daily_rollup'`)
+      .get()
+    if (rollupTable !== undefined) {
+      const rolledUp = (db.prepare('SELECT COALESCE(SUM(events), 0) as c FROM stats_daily_rollup').get() as { c: number }).c
+      total += rolledUp
+    }
+  } catch {
+    // Rollup table absent or unreadable: fall back to the raw-only count above.
+  }
   if (total === 0) return 'No stats recorded yet.'
   return `No stats in the last ${countNoun(windowDays, 'day')} (${total} recorded outside this window; use --window-days 0 for all time).`
 }
@@ -604,6 +718,7 @@ export function recordStat(
     db.prepare(
       `INSERT INTO stats (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
     ).run(...vals)
+    maybeRunStatsMaintenance(db)
   } catch {
     // Best-effort — never block the hook path.
   }
@@ -756,6 +871,71 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
       byPricingVersion[pricingVersion] = zeroBucket()
     }
     incBucket(byPricingVersion[pricingVersion], bytesSaved, tokensSaved)
+  }
+
+  // Fold in stats_daily_rollup for any day this window reaches that rollupAndPruneStats already
+  // aggregated-and-deleted out of the raw `stats` table above. The two sources are disjoint by
+  // construction (rollup only ever holds rows that were literally deleted from `stats` at the
+  // moment they were summed), so adding both into the same buckets can never double-count --
+  // including the one day that can straddle the retention cutoff, where some of that day's rows
+  // are still raw (already counted above) and the rest were already rolled up (counted here).
+  try {
+    const rollupTable = db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stats_daily_rollup'`)
+      .get()
+    if (rollupTable !== undefined) {
+      const sinceDayKey = sinceTs !== null ? toLocalDateKey(new Date(sinceTs * 1000)) : null
+      const rollupRows = (
+        sinceDayKey !== null
+          ? db.prepare(`SELECT day, kind, harness, tg_version, events, bytes_saved, tokens_saved FROM stats_daily_rollup WHERE day >= ?`).all(sinceDayKey)
+          : db.prepare(`SELECT day, kind, harness, tg_version, events, bytes_saved, tokens_saved FROM stats_daily_rollup`).all()
+      ) as Array<{
+        day: string
+        kind: string
+        harness: string
+        tg_version: string
+        events: number
+        bytes_saved: number
+        tokens_saved: number
+      }>
+
+      // Adds an already-aggregated rollup row's totals onto a bucket, in contrast to incBucket
+      // (which increments events by exactly 1 per raw row).
+      const addBucket = (bucket: StatsBucket, events: number, bytesSaved: number, tokensSaved: number): void => {
+        bucket.events += events
+        bucket.bytes_saved += bytesSaved
+        bucket.tokens_saved += tokensSaved
+      }
+
+      for (const r of rollupRows) {
+        const isCount = COUNT_ONLY_KINDS.has(r.kind)
+        if (isCount) counts[r.kind] = (counts[r.kind] ?? 0) + r.tokens_saved
+        const tokensSaved = isCount ? 0 : r.tokens_saved
+        const bytesSaved = r.bytes_saved
+
+        totalEvents += r.events
+        totalBytes += bytesSaved
+        totalTokens += tokensSaved
+
+        if (!byKind[r.kind]) byKind[r.kind] = zeroBucket()
+        addBucket(byKind[r.kind]!, r.events, bytesSaved, tokensSaved)
+
+        if (!byDay[r.day]) byDay[r.day] = zeroBucket()
+        addBucket(byDay[r.day]!, r.events, bytesSaved, tokensSaved)
+
+        const harness = r.harness || HARNESS_UNRECORDED
+        if (!byHarness[harness]) byHarness[harness] = zeroBucket()
+        addBucket(byHarness[harness]!, r.events, bytesSaved, tokensSaved)
+
+        const pricingVersion = r.tg_version || PRICING_VERSION_UNRECORDED
+        if (!byPricingVersion[pricingVersion]) byPricingVersion[pricingVersion] = zeroBucket()
+        addBucket(byPricingVersion[pricingVersion]!, r.events, bytesSaved, tokensSaved)
+      }
+    }
+  } catch {
+    // The rollup table is an optimization, not a correctness requirement for a database that
+    // predates it -- a query failure here degrades to "rows pruned before rollup existed are
+    // simply gone from long-window reports", never an error out of summarize().
   }
 
   const bySourceDict: Record<string, StatsBucket> = {}
