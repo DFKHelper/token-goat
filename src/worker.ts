@@ -1390,6 +1390,29 @@ export async function runWorkerLoop(
  * duplicate) or was already stopped and superseded by a newer daemon can never clobber the
  * *current* owner's pid file on its own delayed exit.
  */
+// Upper bound on how long a SIGTERM'd daemon waits for in-flight embedding calls to settle
+// before exiting anyway. `claimWorkerPidFile` SIGTERMs a prior daemon whose heartbeat looks
+// stale and then starts a replacement immediately -- an unbounded wait here would let a wedged
+// embedding call (a hung model download, a stuck onnxruntime call) block that replacement from
+// ever starting, trading one failure mode (dropped in-flight embeddings) for a worse one (no
+// worker at all). Bounded, not zero: this is strictly better than the previous `process.exit(0)`,
+// which drained nothing regardless of how fast the in-flight work actually was.
+const SIGTERM_DRAIN_TIMEOUT_MS = 5_000
+
+/**
+ * Races {@link pendingEmbeddings} against `timeoutMs`, resolving as soon as either settles.
+ * Extracted from {@link runDetachedWorkerDaemon}'s SIGTERM handler so a test can drive it directly
+ * with a short bound: `pendingEmbeddings()` itself is never mocked here (that would be exactly the
+ * injected-seam trap CLAUDE.md's critical-path note warns this file has shipped broken behind
+ * before), only how long this function is willing to wait for it.
+ */
+export function sigtermDrainDeadline(timeoutMs: number = SIGTERM_DRAIN_TIMEOUT_MS): Promise<void> {
+  const timeout = new Promise<void>((resolve) => {
+    setTimeout(resolve, timeoutMs).unref()
+  })
+  return Promise.race([pendingEmbeddings(), timeout]).then(() => undefined)
+}
+
 export function runDetachedWorkerDaemon(): void {
   // First thing the daemon does, before any drain: this process exists to do work nobody is
   // waiting on, and it is spawned detached with stdio ignored, so it is invisible while it runs.
@@ -1397,7 +1420,19 @@ export function runDetachedWorkerDaemon(): void {
   applyIndexingPriority()
   const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
   const safeInterval = resolvePollIntervalMs()
-  process.on('SIGTERM', () => process.exit(0))
+  // A daemon replaced mid-batch (see claimWorkerPidFile's SIGTERM-a-stale-heartbeat path) used to
+  // drop every embedding call started via embedFileSerialized/indexFileEmbeddings that had not
+  // yet resolved: `pendingEmbeddings()` (tracking every such call in {@link inFlightEmbeddings})
+  // existed for exactly this and had no caller anywhere in src/ -- the daemon exited before
+  // anything drained it. Awaiting it here, bounded by SIGTERM_DRAIN_TIMEOUT_MS above, gives
+  // in-flight embeds a real chance to finish and write their rows before the process dies rather
+  // than being silently abandoned. Guarded against a second SIGTERM re-entering mid-wait.
+  let sigtermReceived = false
+  process.on('SIGTERM', () => {
+    if (sigtermReceived) return
+    sigtermReceived = true
+    void sigtermDrainDeadline().finally(() => process.exit(0))
+  })
   process.on('exit', () => {
     if (readPidFile(dir) === process.pid) {
       try {
