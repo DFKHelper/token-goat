@@ -10,6 +10,8 @@
  * walking directories.
  */
 
+import { displaySafeText } from './paths.js'
+
 const OURS_RE = /^<{7}(?:\s+(.*))?$/
 const BASE_RE = /^\|{7}(?:\s+(.*))?$/
 // Trailing whitespace is tolerated, as it already is on the other three markers: their
@@ -206,25 +208,26 @@ function indentBlock(content: string): string {
 function formatSingleFileConflicts(result: FileConflicts): string {
   const lines: string[] = []
   if (result.regions.length > 0) {
-    lines.push(`${result.filePath} -- ${result.regions.length} conflict${result.regions.length === 1 ? '' : 's'}`)
+    // The marker labels are branch names git wrote into the file, so they are repo-chosen text sitting in token-goat's own framing. The `indentBlock` bodies below are the conflicting file content itself and are deliberately left unescaped: that is the payload the reader asked to see, and escaping it would alter the very lines they have to compare.
+    lines.push(`${displaySafeText(result.filePath)} -- ${result.regions.length} conflict${result.regions.length === 1 ? '' : 's'}`)
     for (const r of result.regions) {
       lines.push(`  lines ${r.lineStart}-${r.lineEnd}`)
-      lines.push(`    <<<<<<< ${r.ours.label || '(ours)'}`)
+      lines.push(`    <<<<<<< ${displaySafeText(r.ours.label || '(ours)')}`)
       lines.push(indentBlock(r.ours.content))
       if (r.base !== null) {
-        lines.push(`    ||||||| ${r.base.label || '(base)'}`)
+        lines.push(`    ||||||| ${displaySafeText(r.base.label || '(base)')}`)
         lines.push(indentBlock(r.base.content))
       }
       lines.push('    =======')
       lines.push(indentBlock(r.theirs.content))
-      lines.push(`    >>>>>>> ${r.theirs.label || '(theirs)'}`)
+      lines.push(`    >>>>>>> ${displaySafeText(r.theirs.label || '(theirs)')}`)
     }
   } else {
-    lines.push(`${result.filePath} -- no conflicts`)
+    lines.push(`${displaySafeText(result.filePath)} -- no conflicts`)
   }
   if (result.warnings.length > 0) {
     lines.push('  warnings:')
-    for (const w of result.warnings) lines.push(`    line ${w.line}: ${w.message}`)
+    for (const w of result.warnings) lines.push(`    line ${w.line}: ${displaySafeText(w.message)}`)
   }
   return lines.join('\n')
 }
@@ -241,17 +244,18 @@ export function formatConflicts(results: FileConflicts[]): string {
 function formatSingleFileSummary(summary: FileConflictsSummary): string {
   const lines: string[] = []
   if (summary.conflictCount > 0) {
-    lines.push(`${summary.filePath} -- ${summary.conflictCount} conflict${summary.conflictCount === 1 ? '' : 's'}`)
+    lines.push(`${displaySafeText(summary.filePath)} -- ${summary.conflictCount} conflict${summary.conflictCount === 1 ? '' : 's'}`)
     for (const r of summary.regions) {
-      const baseText = r.baseLabel !== null ? ` base=${r.baseLabel || '(unlabeled)'}` : ''
-      lines.push(`  lines ${r.lineStart}-${r.lineEnd}  ours=${r.oursLabel || '(unlabeled)'}${baseText} theirs=${r.theirsLabel || '(unlabeled)'}`)
+      // Same git-written branch names as the full view, reached through the flattened summary shape. This line is entirely token-goat's own framing and carries no file content, so every label in it is escaped.
+      const baseText = r.baseLabel !== null ? ` base=${displaySafeText(r.baseLabel || '(unlabeled)')}` : ''
+      lines.push(`  lines ${r.lineStart}-${r.lineEnd}  ours=${displaySafeText(r.oursLabel || '(unlabeled)')}${baseText} theirs=${displaySafeText(r.theirsLabel || '(unlabeled)')}`)
     }
   } else {
-    lines.push(`${summary.filePath} -- no conflicts`)
+    lines.push(`${displaySafeText(summary.filePath)} -- no conflicts`)
   }
   if (summary.warnings.length > 0) {
     lines.push('  warnings:')
-    for (const w of summary.warnings) lines.push(`    line ${w.line}: ${w.message}`)
+    for (const w of summary.warnings) lines.push(`    line ${w.line}: ${displaySafeText(w.message)}`)
   }
   return lines.join('\n')
 }

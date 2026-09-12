@@ -12,7 +12,7 @@ import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
-import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
 import { supportRequestLine } from './version.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -870,7 +870,7 @@ function formatBareNameSpecError(command: string, name: string, projectRoot?: st
   if (specs.length === 0) {
     return `Invalid spec - expected "file::symbol", got: ${name}`
   }
-  const lines = [`Not a file: '${name}'. Did you mean:`]
+  const lines = [`Not a file: '${displaySafeText(name)}'. Did you mean:`]
   for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
     lines.push(`  - token-goat ${command} "${spec}"`)
   }
@@ -1614,7 +1614,8 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
   const displayRoot = getDisplayRoot(explicitRoot)
   const lines = [
-    `Ambiguous symbol '${symbol}' in '${file}': ${countNoun(candidates.length, 'definition')} match. ` +
+    // A symbol name and a file name are chosen by the repository, and this sentence is token-goat instructing the reader what to do next, so a name shaped like a marker would read as part of that instruction.
+    `Ambiguous symbol '${displaySafeText(symbol)}' in '${displaySafeText(file)}': ${countNoun(candidates.length, 'definition')} match. ` +
       `Retry with one of the qualified commands below to pick one:`,
   ]
   const fileSymCache = new Map<string, SymbolEntry[]>()
@@ -2311,7 +2312,8 @@ function refsJsonItems<T extends RefEntry>(items: T[], contextLines: number): (T
 
 function renderRefLines(ref: RefEntry, contextLines: number, indent = '  '): string[] {
   const displayPath = refsDisplayPath(ref.filePath)
-  const base = `${indent}${displayPath}:${ref.line}: ${ref.context}`
+  // The path and the one-line context are repo-chosen text quoted into token-goat's own listing row. The `-C` window below is file content and is deliberately left as it is: that is the payload the reader asked for, and this file's read output is unfenced by design.
+  const base = `${indent}${displaySafeText(displayPath)}:${ref.line}: ${displaySafeText(ref.context)}`
   const window = buildContextWindow(ref.filePath, ref.line, contextLines)
   if (window === null) return [base]
   return [base, ...renderContextWindow(displayPath, ref.line, window, '', `${indent}  `)]
@@ -2821,9 +2823,9 @@ function renderCallerGroups(refs: RefEntry[], contextLines = 0): string[] {
   const lines: string[] = []
   for (const [file, fileRefs] of byFile) {
     const displayPath = refsDisplayPath(file)
-    lines.push(`${displayPath}:`)
+    lines.push(`${displaySafeText(displayPath)}:`)
     for (const ref of fileRefs) {
-      lines.push(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)
+      lines.push(`  :${ref.line}  ${ref.context !== '' ? displaySafeText(ref.context) : '(module scope)'}`)
       const window = buildContextWindow(file, ref.line, contextLines)
       if (window !== null) lines.push(...renderContextWindow(displayPath, ref.line, window, '', '    '))
     }
@@ -3286,7 +3288,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
     if (result.header.length === 0) {
-      emit(`No data rows found in ${opts.file}`)
+      emit(`No data rows found in ${displaySafeText(opts.file)}`)
       return 0
     }
     // csv_query carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry, but
@@ -3340,7 +3342,7 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
     if (profiles.length === 0) {
-      emit(`No data rows found in ${opts.file}`)
+      emit(`No data rows found in ${displaySafeText(opts.file)}`)
       return 0
     }
     // csv_profile never had a live recordStat call, the same class of registry/producer desync
@@ -3612,7 +3614,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           emit(jsonText)
           recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
         } else {
-          emit(`No attributes matched path: '${opts.path}'`)
+          emit(`No attributes matched path: '${displaySafeText(opts.path)}'`)
         }
         return 0
       }
@@ -3652,7 +3654,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
       } else {
-        emit(`No elements matched path: '${opts.path}'`)
+        emit(`No elements matched path: '${displaySafeText(opts.path)}'`)
       }
       return 0
     }
@@ -4546,7 +4548,8 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const body = resolveBody(match)
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
-    `# ${match.name}  ${match.kind}  ${toDisplayPath(rootDir, match.filePath)}:${match.lineStart}-${match.lineEnd}`,
+    // This header is token-goat's own line quoting a repo-chosen name, kind and path, so it is escaped. `body` below it is the source the reader asked for and stays byte-for-byte.
+    `# ${displaySafeText(match.name)}  ${displaySafeText(match.kind)}  ${displaySafeText(toDisplayPath(rootDir, match.filePath))}:${match.lineStart}-${match.lineEnd}`,
     `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)`,
     body,
     '',
@@ -5113,7 +5116,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     }
     const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${toDisplayPath(projectRoot, s.filePath)}:${s.lineStart}`).join('\n')
     for (const s of allSymbols) {
-      emit(`${s.name} (${s.kind}) — ${toDisplayPath(projectRoot, s.filePath)}:${s.lineStart}`)
+      emit(`${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${displaySafeText(toDisplayPath(projectRoot, s.filePath))}:${s.lineStart}`)
     }
     recordReadStat('changed_lookup', symbolFullBytes, symbolText, ref)
     return 0
@@ -5286,7 +5289,7 @@ export function runDiff(opts: DiffOptions): number {
   }
 
   if (diffResult.stdout.trim() === '') {
-    emit(`No changes to '${match.name}' in '${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}'.`)
+    emit(`No changes to '${displaySafeText(match.name)}' in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
     return 0
   }
 
@@ -5294,7 +5297,7 @@ export function runDiff(opts: DiffOptions): number {
   const overlapping = hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
 
   if (overlapping.length === 0) {
-    emit(`No changes to '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}'.`)
+    emit(`No changes to '${displaySafeText(match.name)}' (lines ${match.lineStart}-${match.lineEnd}) in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
     return 0
   }
 
@@ -5318,7 +5321,8 @@ export function runDiff(opts: DiffOptions): number {
     return 0
   }
 
-  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}:${match.lineStart}-${match.lineEnd}`
+  // The header is token-goat's own line and quotes a repo-chosen symbol name, kind and path, so it is escaped. The bodies joined to it below are the payload the reader asked for and are left byte-for-byte: this command delivers file content unfenced by design.
+  const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}:${match.lineStart}-${match.lineEnd}`
   emit(guardText([header, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
   return 0
 }
@@ -5439,12 +5443,13 @@ export function runLog(opts: LogOptions): number {
     return 1
   }
   if (logResult.exitCode !== 0) {
-    emitErr(`git log failed: ${logResult.stderr}`)
+    // git puts the offending path into its own error text, so this is repo-supplied.
+    emitErr(`git log failed: ${displaySafeText(logResult.stderr)}`)
     return 1
   }
 
   if (logResult.stdout.trim() === '') {
-    emit(`No history for '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}'.`)
+    emit(`No history for '${displaySafeText(match.name)}' (lines ${match.lineStart}-${match.lineEnd}) in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
     return 0
   }
 
@@ -5468,7 +5473,8 @@ export function runLog(opts: LogOptions): number {
     return 0
   }
 
-  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}:${match.lineStart}-${match.lineEnd}`
+  // The header is token-goat's own line and quotes a repo-chosen symbol name, kind and path, so it is escaped. The bodies joined to it below are the payload the reader asked for and are left byte-for-byte: this command delivers file content unfenced by design.
+  const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}:${match.lineStart}-${match.lineEnd}`
   emit(guardText([header, logResult.stdout].join('\n'), 'diff'))
   return 0
 }
@@ -5745,7 +5751,8 @@ export function runGrep(opts: GrepOptions): number {
       // Same renderer `refs`/`callers` `-C` use, so the three cannot drift into different dialects.
       for (const line of renderContextWindow(hit.file, hit.line, hit.context, symbolTag)) emit(line)
     } else {
-      emit(`${hit.file}:${hit.line}: ${hit.text}${symbolTag}`)
+      // The path is token-goat's own row framing and is escaped. `hit.text` is the matched source line, the payload the reader asked for, and stays byte-for-byte.
+      emit(`${displaySafeText(hit.file)}:${hit.line}: ${hit.text}${symbolTag}`)
     }
   }
 
@@ -6107,7 +6114,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   }
 
   if (names.length === 0) {
-    emit(`No exported symbols found in '${opts.file}'`)
+    emit(`No exported symbols found in '${displaySafeText(opts.file)}'`)
     return 0
   }
 
@@ -6707,7 +6714,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   const imports = extractImports(text, importsExtensionFor(opts.file))
 
   if (imports.length === 0) {
-    emit(`No imports found in '${opts.file}'`)
+    emit(`No imports found in '${displaySafeText(opts.file)}'`)
     return 0
   }
 

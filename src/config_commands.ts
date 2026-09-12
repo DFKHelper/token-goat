@@ -24,7 +24,7 @@ import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
-import { normalizePath } from './paths.js'
+import { displaySafeText, normalizePath } from './paths.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -178,7 +178,8 @@ function flattenConfig(obj: Record<string, unknown>, prefix = ''): Array<[string
 
 /** Render a raw config value the way both the `list` key=value lines and the annotations below spell it. */
 function renderValue(v: unknown): string {
-  return JSON.stringify(v)
+  // JSON.stringify escapes control characters but leaves `[tg]` and `[token-goat` exactly as written, so a project .token-goat.toml can put either spelling inside a quoted string value and have it print verbatim in a line token-goat speaks in its own voice. Escape after stringify, not before, or the backslashes stringify produces get escaped a second time.
+  return displaySafeText(JSON.stringify(v))
 }
 
 /**
@@ -202,7 +203,7 @@ function layerAnnotation(state: ConfigKeyLayer): string {
       return `  # .token-goat.toml sets ${renderValue(state.rawValue)}${state.reason !== null ? ` (${state.reason})` : ''}, not in effect; using ${renderValue(state.effectiveValue)}`
     case 'project-unparsed':
       // smol-toml's message is multi-line (it renders the offending source with a caret). A trailing `# ...` comment is a one-line suffix by construction, and `VALUE=$(token-goat config get k)` would otherwise capture several lines of it, so flatten to one line here; the full multi-line text is still available verbatim from `--json` and from the stderr warning loadConfig already emits.
-      return `  # .token-goat.toml failed to parse (${state.parseError.replace(/\s+/g, ' ').trim()}); ignored`
+      return `  # .token-goat.toml failed to parse (${displaySafeText(state.parseError.replace(/\s+/g, ' ').trim())}); ignored`
     default: {
       const exhaustive: never = state
       return exhaustive
@@ -264,14 +265,14 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     for (const [k, v] of pairs) {
       const state = resolveConfigKeyLayer(k, v, cfg, projectInfo)
       // An unparsed project file is one fact about the whole file, not ~200 per-key facts: the footer below (and `_project_override.parse_error` above) states it once, so repeating it on every line would bury the per-key annotations it sits among. `config get` has no footer, so it renders that same state inline instead -- the states agree, only where each command has room to say it differs.
-      emit(`${k} = ${JSON.stringify(v)}${state.layer === 'project-unparsed' ? '' : layerAnnotation(state)}`)
+      emit(`${k} = ${renderValue(v)}${state.layer === 'project-unparsed' ? '' : layerAnnotation(state)}`)
     }
     if (projectInfo !== null) {
       emit('')
       emit(
         projectInfo.parseError !== null
-          ? `# project override ${projectInfo.path} failed to parse (${projectInfo.parseError}); ignored`
-          : `# project override: ${projectInfo.path}`,
+          ? `# project override ${displaySafeText(projectInfo.path)} failed to parse (${displaySafeText(projectInfo.parseError)}); ignored`
+          : `# project override: ${displaySafeText(projectInfo.path)}`,
       )
     }
     return
@@ -294,7 +295,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       return
     }
     // The bare value line stays byte-identical for globally-resolved keys, so `VALUE=$(token-goat config get k)` and every existing caller are unaffected; only a value some other layer decided gains an annotation.
-    const rendered = typeof result.value === 'string' ? result.value : JSON.stringify(result.value)
+    const rendered = displaySafeText(typeof result.value === 'string' ? result.value : JSON.stringify(result.value))
     emit(`${rendered}${layerAnnotation(getState)}`)
     return
   }

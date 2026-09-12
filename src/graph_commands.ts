@@ -16,7 +16,9 @@ import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
-import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
+import { fenceUntrusted } from './untrusted_fence.js'
+import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote } from './ref_blindness.js'
 import { detectLanguageOfFile } from './parser_types.js'
@@ -1080,7 +1082,7 @@ export function runDead(opts: DeadOptions): number {
   }
 
   for (const r of sliced) {
-    emit(`${r.name}\t${toDisplayPath(rootDir, r.file)}:${r.line}`)
+    emit(`${displaySafeText(r.name)}\t${displaySafeText(toDisplayPath(rootDir, r.file))}:${r.line}`)
   }
   return 0
 }
@@ -1493,7 +1495,7 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   for (const r of filtered) {
-    emit(`${r.name}\t${r.kind}\t${toDisplayPath(rootDir, r.filePath)}:${r.lineStart}`)
+    emit(`${displaySafeText(r.name)}\t${displaySafeText(r.kind)}\t${displaySafeText(toDisplayPath(rootDir, r.filePath))}:${r.lineStart}`)
   }
   // stderr, so a shell pipeline reading the rows is unaffected, and only when the cap bit.
   if (cappedOut > 0) {
@@ -1604,7 +1606,7 @@ export function runScope(opts: ScopeOptions): number {
   }
 
   for (const s of enclosing) {
-    emit(`${s.name}\t${s.kind}\t${toDisplayPath(scopeDisplayRoot, s.filePath)}:${s.lineStart}-${s.lineEnd}`)
+    emit(`${displaySafeText(s.name)}\t${displaySafeText(s.kind)}\t${displaySafeText(toDisplayPath(scopeDisplayRoot, s.filePath))}:${s.lineStart}-${s.lineEnd}`)
   }
   return 0
 }
@@ -1832,7 +1834,7 @@ export function runSimilar(opts: SimilarOptions): number {
     emit(JSON.stringify(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart })), null, 2))
     return 0
   }
-  for (const h of results) emit(`${h.name}\t${h.kind}\t${toDisplayPath(rootDir, h.filePath)}:${h.lineStart}`)
+  for (const h of results) emit(`${displaySafeText(h.name)}\t${displaySafeText(h.kind)}\t${displaySafeText(toDisplayPath(rootDir, h.filePath))}:${h.lineStart}`)
   return 0
 }
 
@@ -1917,7 +1919,7 @@ export function runContextFor(opts: ContextForOptions): number {
     emit(JSON.stringify(entries, null, 2))
     return 0
   }
-  for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}@${e.line}"`)
+  for (const e of entries) emit(`token-goat read "${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}"`)
   return 0
 }
 
@@ -1994,7 +1996,7 @@ export function runTestFor(opts: TestForOptions): number {
     return 0
   }
   if (results.length === 0) {
-    emit(`No test files found referencing symbols in '${opts.file}'`)
+    emit(`No test files found referencing symbols in '${displaySafeText(opts.file)}'`)
     return 0
   }
   for (const r of results) {
@@ -2060,7 +2062,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
     if (isIndexEmptyForProject(globalDbPath(), rootDir)) emit(emptyIndexMessage(rootDir))
     return 0
   }
-  for (const g of sliced) emit(`${g.name}\t${g.kind}\t${toDisplayPath(rootDir, g.file)}:${g.line}`)
+  for (const g of sliced) emit(`${displaySafeText(g.name)}\t${displaySafeText(g.kind)}\t${displaySafeText(toDisplayPath(rootDir, g.file))}:${g.line}`)
   return 0
 }
 
@@ -2136,9 +2138,9 @@ export function runArch(opts: ArchOptions): number {
   // "top N of M" when the cap bit, plain "N" when it did not -- the old header named the cap
   // unconditionally, which reads as "there are more" on a project that has fewer than N.
   emit(hubs.length < hubsTotal ? `hubs (top ${hubs.length} of ${hubsTotal} most-imported):` : `hubs (${hubsTotal} most-imported):`)
-  for (const h of hubs) emit(`  ${h.importedBy} importers\t${toDisplayPath(getDisplayRoot(opts.cwd), h.file)}`)
+  for (const h of hubs) emit(`  ${h.importedBy} importers\t${displaySafeText(toDisplayPath(getDisplayRoot(opts.cwd), h.file))}`)
   emit(entryPoints.length < entryPointsTotal ? `entry points (imported by nobody, top ${entryPoints.length} of ${entryPointsTotal}):` : `entry points (imported by nobody, ${entryPointsTotal} found):`)
-  for (const e of entryPoints) emit(`  ${toDisplayPath(getDisplayRoot(opts.cwd), e.file)}`)
+  for (const e of entryPoints) emit(`  ${displaySafeText(toDisplayPath(getDisplayRoot(opts.cwd), e.file))}`)
   emit(cyclesTruncated ? `cycles (first ${cycles.length}, truncated at the ${MAX_CYCLES}-cycle enumeration limit: more cycles exist):` : `cycles (${cycles.length} found):`)
   for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(getDisplayRoot(opts.cwd), f)).join(' -> ')}`)
   if (moduleResult !== null) for (const line of renderModules(moduleResult, top)) emit(line)
@@ -2156,7 +2158,7 @@ export interface BlameOptions {
 export function runBlame(opts: BlameOptions): number {
   const sepIdx = opts.spec.lastIndexOf('::')
   if (sepIdx < 0) {
-    emitErr(`Invalid spec - expected "file::symbol", got: ${opts.spec}`)
+    emitErr(`Invalid spec - expected "file::symbol", got: ${displaySafeText(opts.spec)}`)
     return 1
   }
   const cwd = opts.cwd ?? process.cwd()
@@ -2173,7 +2175,7 @@ export function runBlame(opts: BlameOptions): number {
   try {
     const result = runGit(['blame', '-L', `${start},${end}`, '--', filePath], { cwd })
     if (result.exitCode !== 0) {
-      emitErr(`git blame failed: ${result.stderr}`)
+      emitErr(`git blame failed: ${displaySafeText(result.stderr)}`)
       return 1
     }
     raw = result.stdout
@@ -2197,8 +2199,9 @@ export function runBlame(opts: BlameOptions): number {
   }
 
   // Label with the RESOLVED symbol's own name rather than the raw spec slice: a spec may carry a disambiguating qualifier or `@LINE` anchor (`cmdUninstall.run`, `run@3999`) which is addressing syntax, not part of the symbol's name.
-  emit(`${sym.name}\t${toDisplayPath(getDisplayRoot(opts.cwd), filePath)}:${start}-${end}`)
-  emit(raw.trim())
+  emit(`${displaySafeText(sym.name)}\t${displaySafeText(toDisplayPath(getDisplayRoot(opts.cwd), filePath))}:${start}-${end}`)
+  // Fenced rather than escaped, unlike the header line above it. This payload is a block of git metadata -- an author name and a commit summary per line, both written by whoever made the commit -- interleaved with the source lines they touched. Escaping is for a repo-chosen name quoted inside a sentence of token-goat's; this is a multi-line third-party block, which is what a fence is for, and escaping every line of it would alter the source text the reader asked to compare. The `--json` branch above is left as structured data for a caller to parse.
+  emit(fenceUntrusted(raw.trim(), UNTRUSTED_FILE_TAG))
   return 0
 }
 
@@ -2250,7 +2253,7 @@ export function runAsk(opts: AskOptions): number {
     }
     emit(`[degraded mode - ${reason}]`)
     if (extraNote !== undefined) emit(extraNote)
-    for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}@${e.line}"`)
+    for (const e of entries) emit(`token-goat read "${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}"`)
     return 0
   }
 

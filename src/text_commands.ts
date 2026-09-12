@@ -16,7 +16,7 @@ import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
 import { ALL_SYMBOLS_IN_FILE_LIMIT, enclosingSymbol } from './graph_commands.js'
 import { querySymbols } from './index_reader.js'
-import { normalizeDarwinSystemAlias, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, toDisplayPath } from './paths.js'
 import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { resolveBody } from './read_commands.js'
@@ -187,7 +187,8 @@ export function cmdTodo(
     for (const [kind, group] of byKind) {
       process.stdout.write(`\n[${kind}]\n`)
       for (const item of group) {
-        process.stdout.write(`  ${item.file}:${item.line}  ${item.text}\n`)
+        // `item.text` is whatever trails a TODO/FIXME marker in the repository's own source, and `item.file` is a path the repository chose: both are quoted here in a line token-goat speaks in its own voice, so both are escaped rather than fenced. The file content itself is never printed, only this one-line summary of it.
+        process.stdout.write(`  ${displaySafeText(item.file)}:${item.line}  ${displaySafeText(item.text)}\n`)
       }
     }
   } else {
@@ -199,7 +200,7 @@ export function cmdTodo(
     }
     for (const [file, group] of byFile) {
       for (const item of group) {
-        process.stdout.write(`${file}:${item.line}  ${item.kind}  ${item.text}\n`)
+        process.stdout.write(`${displaySafeText(file)}:${item.line}  ${displaySafeText(item.kind)}  ${displaySafeText(item.text)}\n`)
       }
     }
   }
@@ -684,14 +685,15 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
       process.stdout.write(`  ...(${droppedByKeep} more ${noun} elided; use a higher --keep to see more)\n`)
     }
     for (const f of block.frames) {
-      process.stdout.write(`  File "${f.file}", line ${f.lineNo}, in ${f.func}\n`)
+      // A traceback is third-party text reprinted inside token-goat's own report: the frame path, the function name, the source context line and the exception message are all chosen by whoever produced the log.
+      process.stdout.write(`  File "${displaySafeText(f.file)}", line ${f.lineNo}, in ${displaySafeText(f.func)}\n`)
       // parseTracebacks always assigns context a string ('' for "no context line"), never
       // leaves it undefined, so an undefined check here was always true -- printing a
       // fabricated blank indented line for every context-less frame (e.g. a stdlib frame
       // immediately followed by the next "File ..." header) that didn't have one in the
       // original traceback. Match the truthiness check already used for `block.exception`
       // below.
-      if (f.context) process.stdout.write(`    ${f.context}\n`)
+      if (f.context) process.stdout.write(`    ${displaySafeText(f.context)}\n`)
       if (opts.bodies === true) {
         for (const line of formatFrameBody(f, cwd, seenBodies)) process.stdout.write(`${line}\n`)
       }
@@ -703,7 +705,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
       const verb = preFilterCount === 1 ? 'was' : 'were'
       process.stdout.write(`  (all ${preFilterCount} ${noun} ${verb} filtered out as non-project -- this traceback runs entirely through dependency or runtime code)\n`)
     }
-    if (block.exception) process.stdout.write(`${block.exception}\n`)
+    if (block.exception) process.stdout.write(`${displaySafeText(block.exception)}\n`)
     process.stdout.write('\n')
   }
 }
@@ -836,10 +838,11 @@ export function cmdLogfold(
   }
 
   for (const item of folded) {
+    // A folded log line is third-party text, and the `(xN)` suffix beside it is token-goat's, so the two voices share a row and the line has to be escaped to stay told apart.
     if (item.count > 1) {
-      process.stdout.write(`${item.text}  (x${item.count})\n`)
+      process.stdout.write(`${displaySafeText(item.text)}  (x${item.count})\n`)
     } else {
-      process.stdout.write(`${item.text}\n`)
+      process.stdout.write(`${displaySafeText(item.text)}\n`)
     }
   }
 }
@@ -1331,20 +1334,20 @@ function cmdLockdepsPackage(lockfile: string, format: string, deps: DepEntry[], 
     return
   }
 
-  process.stdout.write(`Lockfile: ${lockfile}  (${format})\n`)
-  process.stdout.write(`Package: ${primary.name}\n`)
-  process.stdout.write(`Version: ${primary.version}${primary.kind === 'unknown' ? '' : `  (${primary.kind})`}\n`)
-  if (otherVersions.length > 0) process.stdout.write(`Other versions in lockfile: ${otherVersions.join(', ')}\n`)
+  process.stdout.write(`Lockfile: ${displaySafeText(lockfile)}  (${format})\n`)
+  process.stdout.write(`Package: ${displaySafeText(primary.name)}\n`)
+  process.stdout.write(`Version: ${displaySafeText(primary.version)}${primary.kind === 'unknown' ? '' : `  (${displaySafeText(primary.kind)})`}\n`)
+  if (otherVersions.length > 0) process.stdout.write(`Other versions in lockfile: ${otherVersions.map(displaySafeText).join(', ')}\n`)
   if (!graphAvailable) {
     process.stdout.write(`\nDependency graph not available for format '${format}' (only npm package-lock.json exposes package-to-package edges).\n`)
     return
   }
   process.stdout.write(`\nDepends on (${dependsOn.length}):\n`)
   if (dependsOn.length === 0) process.stdout.write('  (none)\n')
-  for (const n of dependsOn) process.stdout.write(`  ${n}\n`)
+  for (const n of dependsOn) process.stdout.write(`  ${displaySafeText(n)}\n`)
   process.stdout.write(`\nDepended on by direct/top-level deps (${dependedOnBy.length}):\n`)
   if (dependedOnBy.length === 0) process.stdout.write('  (none)\n')
-  for (const n of dependedOnBy) process.stdout.write(`  ${n}\n`)
+  for (const n of dependedOnBy) process.stdout.write(`  ${displaySafeText(n)}\n`)
 }
 
 export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean; package?: string }): void {
@@ -1367,12 +1370,13 @@ export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean
     return
   }
 
-  process.stdout.write(`Lockfile: ${found.file}  (${format})\n`)
-  if (others.length > 0) process.stdout.write(`Other lockfiles found (not parsed): ${others.join(', ')}\n`)
+  process.stdout.write(`Lockfile: ${displaySafeText(found.file)}  (${format})\n`)
+  if (others.length > 0) process.stdout.write(`Other lockfiles found (not parsed): ${others.map(displaySafeText).join(', ')}\n`)
   process.stdout.write(`Total: ${deps.length} packages\n\n`)
   for (const dep of deps) {
-    const kindLabel = dep.kind === 'unknown' ? '' : `  (${dep.kind})`
-    process.stdout.write(`${dep.name}  ${dep.version}${kindLabel}\n`)
+    // npm allows any string as a key in a package-lock `packages` map, newlines included, so a dependency name and version are third-party text landing in a listing row of token-goat's own.
+    const kindLabel = dep.kind === 'unknown' ? '' : `  (${displaySafeText(dep.kind)})`
+    process.stdout.write(`${displaySafeText(dep.name)}  ${displaySafeText(dep.version)}${kindLabel}\n`)
   }
 }
 
@@ -1555,7 +1559,7 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
 
   const hotDisplayRoot = getDisplayRoot()
   for (const e of entries) {
-    process.stdout.write(`${e.readCount}\t${toDisplayPath(hotDisplayRoot, e.path)}\n`)
+    process.stdout.write(`${e.readCount}\t${displaySafeText(toDisplayPath(hotDisplayRoot, e.path))}\n`)
   }
   if (truncated) {
     process.stdout.write(`...and ${eligibleCount - entries.length} more (raise --limit to see them).\n`)
@@ -1602,7 +1606,7 @@ export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): v
   for (const e of entries) {
     const edited = e.wasEdited ? '  [edited]' : ''
     const ts = new Date(e.lastReadAt).toISOString()
-    process.stdout.write(`${ts}  ${toDisplayPath(recentDisplayRoot, e.path)}${edited}\n`)
+    process.stdout.write(`${ts}  ${displaySafeText(toDisplayPath(recentDisplayRoot, e.path))}${edited}\n`)
   }
 }
 

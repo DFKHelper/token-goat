@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import * as readline from 'node:readline'
 import { buildStats } from './cli_context_stats.js'
 import { resolveProjectRoot } from './project.js'
+import { displaySafeText } from './paths.js'
 
 export interface BootstrapAuditOptions {
   project?: string
@@ -260,15 +261,16 @@ export async function runBootstrapAudit(opts: BootstrapAuditOptions = {}): Promi
     process.stdout.write(JSON.stringify(result, null, 2) + '\n')
   } else {
     process.stdout.write('# token-goat bootstrap-audit\n')
-    process.stdout.write(`Project: ${result.project}\n`)
+    process.stdout.write(`Project: ${displaySafeText(result.project)}\n`)
     process.stdout.write(`Claude context: ${result.claude_md_tokens} tok CLAUDE.md + ${result.memory_md_tokens} tok MEMORY.md\n`)
     process.stdout.write(`Agent/skill metadata: ${result.metadata_bytes} bytes (~${result.metadata_tokens} tok)\n`)
     process.stdout.write(`Total estimated startup context: ${result.total_estimated_tokens} tok\n`)
     process.stdout.write(`Entries: ${result.counts.metadata_files} (${result.counts.agents} agents, ${result.counts.skills} skills)\n\n`)
     process.stdout.write('Largest metadata entries:\n')
-    for (const entry of result.largest) process.stdout.write(`  ${entry.metadata_bytes.toString().padStart(7)} bytes  ${entry.path}\n`)
+    // These paths come from whatever is installed under ~/.claude/agents and ~/.claude/skills, which is third-party content: an agent directory named after one of token-goat's markers would otherwise print as token-goat's own line.
+    for (const entry of result.largest) process.stdout.write(`  ${entry.metadata_bytes.toString().padStart(7)} bytes  ${displaySafeText(entry.path)}\n`)
     if (result.largestTruncated) process.stdout.write(`  ...and ${result.largestTotal - result.largest.length} more (raise --top to see them).\n`)
-    for (const diagnostic of result.diagnostics) process.stderr.write(`token-goat: bootstrap-audit: skipped ${diagnostic.path} (${diagnostic.reason})\n`)
+    for (const diagnostic of result.diagnostics) process.stderr.write(`token-goat: bootstrap-audit: skipped ${displaySafeText(diagnostic.path)} (${displaySafeText(diagnostic.reason)})\n`)
     for (const warning of result.budgets.warnings) process.stderr.write(`token-goat: bootstrap-audit: warning: ${warning}\n`)
     for (const failure of result.budgets.failures) process.stderr.write(`token-goat: bootstrap-audit: failure: ${failure}\n`)
   }

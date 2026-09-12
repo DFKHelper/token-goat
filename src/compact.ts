@@ -12,6 +12,7 @@ import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { ensureDirSync, atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
+import { displaySafeText } from './paths.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import { WEB_FETCH_KEY_SEP } from './session.js'
 import type { FileEntry } from './session.js'
@@ -612,8 +613,10 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     let shownEdited = 0
     for (const entry of eligibleEdited) {
       if (sectionTokens > budgetRemaining * 0.4) break
-      lines.push(`- ${normalizePathForwardSlash(entry.path)}`)
-      sectionTokens += estimateTokens(`- ${normalizePathForwardSlash(entry.path)}\n`)
+      // The manifest is token-goat's own document and reaches the compacting model as a systemMessage, so the repo-chosen paths listed in it are escaped. Computed once so the budget accounting below measures the string actually emitted.
+      const shownPath = displaySafeText(normalizePathForwardSlash(entry.path))
+      lines.push(`- ${shownPath}`)
+      sectionTokens += estimateTokens(`- ${shownPath}\n`)
       shownEdited += 1
     }
     // This section has no row cap -- only the budget break -- and a break drops rows exactly as
@@ -635,7 +638,7 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     let shownRead = 0
     for (const entry of eligibleRead.slice(0, READ_SECTION_MAX_ROWS)) {
       if (sectionTokens > budgetRemaining * 0.3) break
-      const cleanPath = normalizePathForwardSlash(entry.path)
+      const cleanPath = displaySafeText(normalizePathForwardSlash(entry.path))
       const truncatedTag = entry.wasTruncated ? ' (truncated)' : ''
       lines.push(`- ${cleanPath}${truncatedTag}`)
       sectionTokens += estimateTokens(`- ${cleanPath}${truncatedTag}\n`)
@@ -677,8 +680,9 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     let shownUrls = 0
     for (const url of urls.slice(0, WEB_SECTION_MAX_ROWS)) {
       if (sectionTokens > budgetRemaining * 0.2) break
-      lines.push(`- ${url}`)
-      sectionTokens += estimateTokens(`- ${url}\n`)
+      const shownUrl = displaySafeText(url)
+      lines.push(`- ${shownUrl}`)
+      sectionTokens += estimateTokens(`- ${shownUrl}\n`)
       shownUrls += 1
     }
     // Same accounting as the files section above: emitted-vs-eligible, so the budget break is
