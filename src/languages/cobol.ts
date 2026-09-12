@@ -179,7 +179,8 @@ export function extractCobol(
     const first = lines[0]
     division = first !== undefined && LEVEL_RE.test(first.code) ? 'DATA' : 'PROCEDURE'
     const structural = levels.filter((n) => n >= 1 && n <= 49)
-    if (structural.length > 0) recordLevel = Math.min(...structural)
+    // Reduced, not spread: `structural` holds one entry per matching line with no cap (MAX_SYMBOLS gates `emit`, which runs later), so a large copybook spread into Math.min exceeds the engine's argument limit and throws out of the extractor.
+    if (structural.length > 0) recordLevel = structural.reduce((a, b) => (b < a ? b : a), structural[0]!)
   }
 
   const emit = (name: string, kind: string, line: number, parent: string): number | undefined => {

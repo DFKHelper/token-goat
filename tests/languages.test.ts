@@ -852,6 +852,21 @@ public int Count { get; set; }
 // ---------------------------------------------------------------------------
 
 describe('php adapter', () => {
+  // HAND-DERIVED: a `.php` file is HTML until `<?php` opens PHP and `?>` returns to markup (PHP Manual, "Language Reference" > "Basic syntax" > "Escaping from HTML"). The markup below is ordinary template text and the expected symbol list is read off this source, not off the extractor.
+  it('never indexes a function declared in the inline HTML outside the PHP tags', () => {
+    const content = ['<div class="page">', '<script>', 'function init() {', '  return 1;', '}', '</script>', '<?php', 'function realOne() {}', '?>', '<script>', 'function trailing() {', '</script>'].join('\n')
+    const names = extractPhp(content, 'page.php').symbols.map((s) => s.name)
+    // Survival anchor: the real PHP function is still indexed, so this cannot pass by the masker simply blanking the whole file.
+    expect(names).toContain('realOne')
+    expect(names).not.toContain('init')
+    expect(names).not.toContain('trailing')
+  })
+
+  it('reads a file with no opening tag as PHP, since that is a fragment rather than a template', () => {
+    const names = extractPhp('function bare() {}\n', 'frag.php').symbols.map((s) => s.name)
+    expect(names).toContain('bare')
+  })
+
   // FORMAT-DERIVED: enum body syntax from the PHP Manual, "Language Reference" > "Enumerations" > "Basics" (pure `case Hearts;`) and "Backed Enumerations" (`case Hearts = 'H';`); the `case <expr>;` switch arm from "Language Reference" > "Control Structures" > "switch", which documents `;` as an accepted alternative to `:` after a case expression. Not written from this repo's own regex.
   it('indexes enum cases and never mistakes a switch arm for one (regression: only the enum type itself was indexed, so every case was missing from symbol/read/outline)', () => {
     const content = `<?php
@@ -4729,6 +4744,14 @@ CREATE TABLE t2 (id int); # CREATE TABLE also_fake (x int)
     expect(names).toContain('t3')
   })
 
+  it('does not drop every later symbol when a string literal contains a backslash-escaped apostrophe', () => {
+    // HAND-DERIVED: `\'` inside a single-quoted literal is MySQL's default escape and Postgres's `E'...'` form, while standard-conforming Postgres reads the backslash as an ordinary character. The masker cannot tell which dialect a file is written in, so the rule under test is not "understand backslashes": it is that a quote span nothing closes is left unmasked rather than blanked through to EOF. Before that rule, the backslash ended the span early and the real closing quote opened a phantom string that blanked every later statement.
+    const content = ["INSERT INTO audit VALUES ('it\\'s fine');", 'CREATE TABLE after_insert (id int);', 'CREATE VIEW v_after AS SELECT 1;'].join('\n')
+    const names = extractSql(content, 'schema.sql').map((s) => s.name)
+    expect(names).toContain('after_insert')
+    expect(names).toContain('v_after')
+  })
+
   it('does not drop symbols after a bracket-delimited (SQL Server) identifier containing an apostrophe', () => {
     const content = `
 CREATE TABLE [user's_data] (id int);
@@ -6590,6 +6613,20 @@ AFTER_HEREDOC=ok
 })
 
 describe('Visual Basic adapter', () => {
+  /** The adapter must finish one pathological input in under 100 ms. Mirrors the helper the other adapter suites carry: VB, COBOL and Natural were the three with no timing backstop at all, so a quadratic matcher in any of them would have shown up only as a slow suite. */
+  const expectFast = (run: () => unknown, label: string): void => {
+    run()
+    const t0 = performance.now()
+    run()
+    expect(performance.now() - t0, label).toBeLessThan(100)
+  }
+
+  it('scans a pathological 50 KB single line quickly', () => {
+    // HAND-DERIVED: one very long declaration-shaped line that never terminates, the same backstop shape the other adapter suites use.
+    const line = `Public Function ${'a'.repeat(50_000)}(`
+    expectFast(() => extractVb(line, 'p.vb'), 'vb')
+  })
+
   const rows = (content: string, file = 'x.vb'): string[] =>
     extractVb(content, file).symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd} ${s.parent}`.trimEnd())
 

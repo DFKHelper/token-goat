@@ -43,6 +43,34 @@ function stripComment(line: string): string {
   return line
 }
 
+/**
+ * `code` with the contents of its single- and double-quoted strings blanked.
+ *
+ * A scan for an opening marker must not match text that is only quoted data: `my $msg = "pass <<EOF
+ * to the shell";` otherwise opens a heredoc that no later line terminates, and every sub after it
+ * disappears from the file. Length is preserved, so a match offset still lines up with `code`.
+ */
+function maskStrings(code: string): string {
+  const out = code.split('')
+  let quote = ''
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!
+    if (quote !== '') {
+      out[i] = ' '
+      if (c === '\\') {
+        if (i + 1 < code.length) out[i + 1] = ' '
+        i++
+      } else if (c === quote) {
+        out[i] = c
+        quote = ''
+      }
+    } else if (c === '"' || c === "'") {
+      quote = c
+    }
+  }
+  return out.join('')
+}
+
 /** Net open count of `open` in `s` (openers minus closers). */
 function balance(s: string, open: string): number {
   const close = CLOSER[open]!
@@ -114,14 +142,19 @@ export function extractPerl(content: string, filePath: string): PerlResult {
       if (u !== null && /[A-Z]|::/.test(u[1]!)) imports.push({ kind: 'import', target: u[1]!, line: i + 1 })
     }
 
+    // Both openers are matched against the real code and only FILTERED by the masked copy: a `<<EOF` or `q{` that is merely quoted data opens nothing, and taking it as an opener swallows the rest of the file. Matching against the masked text instead would be wrong, because a heredoc tag is very often quoted itself (`<<'EOT'`, `<<~'EOT'`), and blanking the quoted tag loses the terminator the span is looking for. `maskStrings` preserves length, so a blank at the opener's own index is the test for "this sits inside a string".
+    const scan = maskStrings(code)
+    const insideString = (index: number): boolean => scan[index] === ' ' && code[index] !== ' '
     HEREDOC_RE.lastIndex = 0
     for (let m = HEREDOC_RE.exec(code); m !== null; m = HEREDOC_RE.exec(code)) {
+      if (insideString(m.index)) continue
       heredocs.push({ term: m[2] ?? m[3] ?? m[4] ?? '', indented: m[1] === '~' })
     }
     Q_OPEN_RE.lastIndex = 0
     for (let m = Q_OPEN_RE.exec(code); m !== null; m = Q_OPEN_RE.exec(code)) {
+      if (insideString(m.index)) continue
       const open = m[1]!
-      const depth = balance(code.slice(m.index + m[0].length - 1), open)
+      const depth = balance(scan.slice(m.index + m[0].length - 1), open)
       if (depth > 0) {
         qOpen = { open, depth }
         break

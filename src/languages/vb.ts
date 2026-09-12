@@ -100,7 +100,8 @@ function stripLine(line: string): string {
     }
     if (ch === '"') { inString = true; atStatementStart = false; out += '"'; continue }
     if (ch === "'" || ch === LEFT_SINGLE_QUOTE || ch === RIGHT_SINGLE_QUOTE) break
-    if (atStatementStart && /^REM(?:\s|$)/i.test(line.slice(i))) break
+    // Bounded to the four characters the pattern can match: slicing the whole remainder here costs the rest of the line on every character, which is quadratic on one long line.
+    if (atStatementStart && /^REM(?:\s|$)/i.test(line.slice(i, i + 4))) break
     if (ch === ':') { atStatementStart = true; out += ch; continue }
     if (ch !== ' ' && ch !== '\t') atStatementStart = false
     out += ch
@@ -124,19 +125,29 @@ function splitStatements(code: string): string[] {
   let depth = 0
   let angle = 0
   let current = ''
+  // Carried along as the scan runs rather than re-read off `current` each time round. Asking the accumulated segment whether it starts with `<` costs its whole length per character, so one long line took time proportional to its length squared: a 50 KB line ran ~34x slower than a 12.5 KB one.
+  let segmentBlank = true
+  let segmentStartsWithAngle = false
   for (let i = 0; i < code.length; i++) {
     const ch = code[i]!
-    const segmentStartsWithAngle = current.trimStart().startsWith('<') || (current.trim() === '' && ch === '<')
+    const startsWithAngle = segmentStartsWithAngle || (segmentBlank && ch === '<')
     if (ch === '(' || ch === '{') depth++
     else if (ch === ')' || ch === '}') depth = Math.max(0, depth - 1)
-    else if (segmentStartsWithAngle && ch === '<') angle++
-    else if (segmentStartsWithAngle && ch === '>') angle = Math.max(0, angle - 1)
+    else if (startsWithAngle && ch === '<') angle++
+    else if (startsWithAngle && ch === '>') angle = Math.max(0, angle - 1)
     if (ch === ':' && depth === 0 && angle === 0 && code[i + 1] !== '=') {
       parts.push(current)
       current = ''
+      segmentBlank = true
+      segmentStartsWithAngle = false
       continue
     }
     current += ch
+    // `\s` rather than a space-and-tab pair, to keep the same idea of leading blank space that trimStart had.
+    if (segmentBlank && !/\s/.test(ch)) {
+      segmentBlank = false
+      segmentStartsWithAngle = ch === '<'
+    }
   }
   parts.push(current)
   return parts

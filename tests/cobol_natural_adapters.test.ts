@@ -18,7 +18,30 @@ function shape(r: Extracted): string[] {
   return r.symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd} ${s.parent}`.trimEnd())
 }
 
+/** The adapter must finish one pathological input in under 100 ms. Mirrors the helper the other adapter suites carry: COBOL, Natural and VB were the three with no timing backstop at all. */
+function expectFast(run: () => unknown, label: string): void {
+  run()
+  const t0 = performance.now()
+  run()
+  expect(performance.now() - t0, label).toBeLessThan(100)
+}
+
+const LINE_50K = 50_000
+
 describe('COBOL adapter', () => {
+  it('reads a very large copybook instead of throwing out of the extractor', () => {
+    // HAND-DERIVED: a copybook with no division header is a fragment, so the adapter takes the lowest level number it uses. That list holds one entry per data line and has no cap of its own, and spreading a list this size into Math.min exceeds the engine's argument limit -- which threw, so the file indexed to nothing at all rather than to fewer symbols.
+    const lines: string[] = []
+    for (let i = 0; i < 150_000; i++) lines.push(`       05 FIELD-${i} PIC X.`)
+    const r = extractCobol(lines.join('\n'), 'BIG.cpy')
+    expect(r.symbols.length).toBeGreaterThan(0)
+  })
+
+  it('scans a pathological 50 KB single line quickly', () => {
+    // HAND-DERIVED: one very long declaration-shaped line that never terminates, the same backstop shape the other adapter suites use.
+    expectFast(() => extractCobol(`       01 ${'A'.repeat(LINE_50K)}`, 'p.cbl'), 'cobol')
+  })
+
   it('reads the fixed-format fixture: program, file description, records, paragraphs, with exact spans', () => {
     const r = extractCobol(fs.readFileSync(path.join(FIXTURES, 'Sample.cbl'), 'utf8'), 'Sample.CBL')
     expect(shape(r)).toEqual([
@@ -131,6 +154,11 @@ describe('Natural adapter', () => {
     const r = extractNatural(src, 'c.nsp')
     expect(r.refs).toEqual([])
     expect(shape(r)).toEqual(['program c 4-4'])
+  })
+
+  it('scans a pathological 50 KB single line quickly', () => {
+    // HAND-DERIVED: one very long declaration-shaped line that never terminates, the same backstop shape the other adapter suites use.
+    expectFast(() => extractNatural(`DEFINE SUBROUTINE ${'A'.repeat(LINE_50K)}`, 'p.nsp'), 'natural')
   })
 
   it('maps every Natural source extension, in any case, and leaves maps and DDMs unmapped', () => {

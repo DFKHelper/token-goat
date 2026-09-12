@@ -110,6 +110,27 @@ const MEMBER_RE = new RegExp(`^[ \\t]*(?:(?:MAP|ORDER|MEMBER|STATIC|CONSTRUCTOR|
  * whether a string is open across line boundaries - fixes both directions: `--` and `/*` are only
  * ever treated as comment starts when the scanner is not currently inside an open string.
  */
+/**
+ * The index of the `'` closing the literal opened at `openIdx`, or -1 when nothing in the rest of the file closes it.
+ *
+ * Split out so that deciding "this really is a string" and blanking it afterwards walk one rule and cannot drift apart. Only the doubled-quote escape is honored: backslash escaping is MySQL's default and Postgres `E'...'`, while standard-conforming Postgres treats a backslash as an ordinary character, so honoring it unconditionally corrupts one dialect and ignoring it corrupts the other.
+ */
+function sqlSingleQuoteClose(text: string, openIdx: number): number {
+  let i = openIdx + 1
+  while (i < text.length) {
+    if (text[i] === "'") {
+      // Doubled quote: an escaped literal quote inside the string, not the terminator.
+      if (text[i + 1] === "'") {
+        i += 2
+        continue
+      }
+      return i
+    }
+    i++
+  }
+  return -1
+}
+
 function stripSqlStringLiterals(text: string): string {
   let out = ''
   let i = 0
@@ -140,25 +161,21 @@ function stripSqlStringLiterals(text: string): string {
       // literals - blanking them would destroy legitimate delimited names. Dynamic-SQL DDL
       // keywords that need masking (e.g. `EXECUTE 'CREATE TABLE ...'`) are always inside a
       // single-quoted string literal, never a double-quoted identifier.
-      const quote = ch
-      out += quote
+      // An opener nothing closes is evidence this masker misread the dialect, not evidence of a string running to EOF. The usual cause is a backslash-escaped apostrophe (`'it\'s fine'`): the backslash ends the span early here, and the real closing quote then opens a phantom string that blanks every later CREATE through EOF. Refusing to blank an unclosable span costs at most one stray extra symbol, which is the safer direction, and it needs no guess about which dialect the file is written in.
+      const closeIdx = sqlSingleQuoteClose(text, i)
+      if (closeIdx === -1) {
+        out += ch
+        i++
+        continue
+      }
+      out += ch
       i++
-      while (i < text.length) {
-        const c = text[i]
-        if (c === quote) {
-          if (text[i + 1] === quote) {
-            // Doubled quote: an escaped literal quote inside the string, not the terminator.
-            out += '  '
-            i += 2
-            continue
-          }
-          out += quote
-          i++
-          break
-        }
-        out += c === '\n' ? '\n' : ' '
+      while (i < closeIdx) {
+        out += text[i] === '\n' ? '\n' : ' '
         i++
       }
+      out += "'"
+      i++
       continue
     }
     if (ch === '"') {
