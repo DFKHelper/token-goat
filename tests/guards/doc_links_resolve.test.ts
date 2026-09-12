@@ -19,6 +19,7 @@
 
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,8 +39,16 @@ const LINK = /\[[^\]]*\]\(([^)\s]+)\)/g
 
 interface Broken { doc: string, line: number, target: string, trackedAs?: string }
 
-function trackedFiles(): string[] {
-  return execFileSync('git', ['-C', REPO, 'ls-files'], { encoding: 'utf8', maxBuffer: 64e6 })
+function trackedFiles(repo: string = REPO): string[] {
+  // A `git commit -- <pathspec>` hands its pre-commit hooks GIT_INDEX_FILE pointing at a
+  // temporary partial-commit index: `git ls-files` against it sees only the pathspec'd paths
+  // merged onto HEAD, so a file staged (or renamed) outside that pathspec vanishes from the
+  // listing even though it is genuinely tracked. Unsetting it here makes every call read the
+  // real `.git/index`, which already reflects everything staged for this commit, so the guard
+  // stays correct on both a full commit and a narrow pathspec one.
+  const env = { ...process.env }
+  delete env.GIT_INDEX_FILE
+  return execFileSync('git', ['-C', repo, 'ls-files'], { encoding: 'utf8', maxBuffer: 64e6, env })
     .split('\n')
     .filter((p) => p !== '')
 }
@@ -102,6 +111,58 @@ function findBrokenLinks(): { broken: Broken[], checked: number, docs: number } 
 
   return { broken, checked, docs: docs.length }
 }
+
+describe('trackedFiles under a partial-pathspec commit index', () => {
+  it('still lists a file staged for this commit but outside the pathspec being committed', () => {
+    // FORMAT-DERIVED: this rebuilds, via `git read-tree` + `git update-index`, the exact shape
+    // empirically confirmed for the real thing -- a `git commit -m msg -- a.txt` on a repo with
+    // an unrelated staged file leaves that file out of the temporary index git hands the
+    // pre-commit hook via GIT_INDEX_FILE, even though `git ls-files` (no GIT_INDEX_FILE) against
+    // the real index still reports it.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-doc-links-partial-'))
+    const savedIndexFile = process.env.GIT_INDEX_FILE
+    try {
+      const run = (args: string[], env?: NodeJS.ProcessEnv): void => {
+        execFileSync('git', args, { cwd: scratch, env: env ?? process.env })
+      }
+      run(['init', '-q'])
+      run(['config', 'user.email', 'a@b.com'])
+      run(['config', 'user.name', 'Test'])
+      fs.writeFileSync(path.join(scratch, 'a.txt'), 'a\n')
+      run(['add', 'a.txt'])
+      run(['commit', '-q', '-m', 'init'])
+
+      // Stage a second file into the REAL index -- outside the pathspec of the partial commit
+      // being simulated below.
+      fs.writeFileSync(path.join(scratch, 'readme.md'), '# doc\n')
+      run(['add', 'readme.md'])
+      fs.writeFileSync(path.join(scratch, 'a.txt'), 'a2\n')
+
+      // Build the partial-commit temp index by hand: start from HEAD, then merge in only a.txt,
+      // exactly as `git commit -- a.txt` does for its pre-commit hook.
+      const tempIndex = path.join(scratch, '.git', 'partial-index')
+      const partialEnv = { ...process.env, GIT_INDEX_FILE: tempIndex }
+      run(['read-tree', 'HEAD'], partialEnv)
+      run(['update-index', '--add', 'a.txt'], partialEnv)
+
+      // Sanity: prove the trap is real before asking whether trackedFiles() dodges it -- a raw
+      // `git ls-files` while GIT_INDEX_FILE points at the partial index misses the staged file.
+      process.env.GIT_INDEX_FILE = tempIndex
+      const seenByThisPartialIndex = execFileSync('git', ['-C', scratch, 'ls-files'], { encoding: 'utf8' })
+        .split('\n')
+        .filter((p) => p !== '')
+      expect(seenByThisPartialIndex).not.toContain('readme.md')
+
+      // The function under test, run under the same ambient GIT_INDEX_FILE a pre-commit hook
+      // would inherit, must still see it.
+      expect(trackedFiles(scratch)).toContain('readme.md')
+    } finally {
+      if (savedIndexFile === undefined) delete process.env.GIT_INDEX_FILE
+      else process.env.GIT_INDEX_FILE = savedIndexFile
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('documented file paths resolve', () => {
   it('every repo-relative link in a living document names a tracked file', () => {
