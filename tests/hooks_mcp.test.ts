@@ -385,6 +385,42 @@ describe('postMcpHandler generic compression (real runHook dispatch)', () => {
     }
   })
 
+  // Regression (HAND-DERIVED: offset computed independently against
+  // mcp_compress_packs.ts's own SNAPSHOT_NAME_MAX_CHARS=200 constant, not derived from its code):
+  // truncateSnapshotLine truncated a snapshot node's accessible-name field to 200 chars BEFORE
+  // postMcpHandler's compression step ran through redactSecrets -- compression used to consume
+  // raw resultText, so a credential straddling that 200-char cut could survive as a raw fragment
+  // (the Anthropic key pattern needs 20+ chars after `sk-ant-`; a cut mid-key can leave fewer).
+  // Asserts absence of a FRAGMENT (7+ trailing sk-ant- chars), not just the full key, per this
+  // repo's own fixture-provenance discipline: a full-key-only assertion passes even while a
+  // fragment leaks.
+  it('never leaves a raw sk-ant- fragment when a snapshot name straddles the 200-char truncation cut', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const snapshotTool = 'mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot'
+    const key = 'sk-ant-' + 'A1b2C3d4E5f6G7h8I9J0K1L2M3N4O5P6Q7R8S9T0' // sk-ant- + 40 chars, well over the 20-char floor whole
+    const name = 'x'.repeat(180) + key + 'y'.repeat(400) // 200-char cut lands inside `key`, not before/after it
+    expect(name.length).toBeGreaterThan(200)
+    const longFiller = 'z'.repeat(400)
+    const rows = [
+      `    uid=0 StaticText "${name}"`,
+      ...Array.from({ length: 19 }, (_, i) => `    uid=${i + 1} StaticText "${longFiller}"`),
+    ]
+    const text = ['uid=1 RootWebArea "Example Page"', ...rows].join('\n')
+
+    const post = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: snapshotTool,
+        tool_input: {},
+        session_id: sessionId,
+        tool_response: text,
+      }),
+    )
+    expect(post.hookType).toBe('rewriteOutput')
+    if (post.hookType === 'rewriteOutput') {
+      expect(post.updatedOutput).not.toMatch(/sk-ant-[A-Za-z0-9]{6,}/)
+    }
+  })
+
   // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile,
   // resolveMinNetSavingsBytes) is actually wired into this path, not just present
   // in bash_runner.ts: cranking the SAME config key/env var bash_runner already
