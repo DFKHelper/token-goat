@@ -13,7 +13,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { isAblSource, isMatlabSource, isObjcHeader, isObjcSource, isPascalSource, isPerlSource, isPrologSource } from './languages/sniff.js'
+import { isAblSource, isLatexClassFile, isMatlabSource, isObjcHeader, isObjcSource, isPascalSource, isPerlSource, isPrologSource } from './languages/sniff.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
@@ -107,15 +107,30 @@ function sniffHead(content: string): string {
 const ablOrUnknown = (c: string): Language | undefined => (isAblSource(c) ? 'abl' : undefined)
 
 /**
+ * A `.cls` file's content language, checked in order: VB6 header, then ABL marker, then a
+ * positive LaTeX self-identification (`\ProvidesClass`/`\documentclass`) -- never a negative test
+ * for "not Apex", which is how a real LaTeX `.cls` used to be misclaimed as Apex (there is no
+ * LaTeX language spec in this repo, so a LaTeX `.cls` becomes 'unknown' rather than a false Apex
+ * claim; see language_specs.ts's `unknown` handling for how that renders to a caller).
+ */
+const clsRefine = (c: string): Language | undefined => {
+  if (isVb6ClassModule(c)) return 'vb'
+  const abl = ablOrUnknown(c)
+  if (abl !== undefined) return abl
+  if (isLatexClassFile(c)) return 'unknown'
+  return undefined
+}
+
+/**
  * Each extension whose path language a content check can change: the path language the check applies to, and what it returns
- * instead (undefined keeps the path language). A `.cls` is VB6, then ABL, else Apex. A `.p` or `.w` is ABL only on an ABL marker;
+ * instead (undefined keeps the path language). A `.cls` is VB6, then ABL, then LaTeX (else Apex, its default). A `.p` or `.w` is ABL only on an ABL marker;
  * a Pascal or CWEB file stays unknown, as before ABL was indexed. A `.m` is Objective-C on an Objective-C marker, else MATLAB on a
  * `function` or `classdef` header, else unknown (Mathematica, Mercury); a `.pp` is Pascal only on a unit, program or library
  * header, so a Puppet manifest stays unknown; a `.h` is Objective-C only on `@interface` or `@protocol`, so a C header is unchanged. A `.pl` that reads as
  * Prolog is left unknown, and a `.t` is Perl only on a Perl marker.
  */
 const CONTENT_SNIFFS: ReadonlyMap<string, { readonly from: Language; readonly refine: (content: string) => Language | undefined }> = new Map([
-  ['.cls', { from: 'apex', refine: (c: string) => (isVb6ClassModule(c) ? 'vb' : ablOrUnknown(c)) }],
+  ['.cls', { from: 'apex', refine: clsRefine }],
   ['.p', { from: 'unknown', refine: ablOrUnknown }],
   ['.w', { from: 'unknown', refine: ablOrUnknown }],
   ['.m', { from: 'unknown', refine: (c: string) => (isObjcSource(sniffHead(c)) ? 'objc' : isMatlabSource(sniffHead(c)) ? 'matlab' : undefined) }],

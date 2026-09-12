@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { detectLanguage, isVb6ClassModule, refineLanguageByContent, unsupportedLanguageName } from '../src/parser_types.js'
+import { isLatexClassFile } from '../src/languages/sniff.js'
 
 describe('COBOL and Natural language routing', () => {
   it('maps COBOL and Natural source extensions in any case, and names Natural maps and DDMs as unsupported', () => {
@@ -35,6 +36,21 @@ describe('Visual Basic language routing', () => {
     // Only .cls is refined: VB6 header text inside another language's file changes nothing.
     expect(refineLanguageByContent('notes.md', 'markdown', vb6)).toBe('markdown')
     expect(isVb6ClassModule('VERSION 1.0 CLASS\0')).toBe(false)
+  })
+
+  it('refines a LaTeX .cls (a document class file) to unknown rather than misclaiming it as Apex', () => {
+    // FORMAT-DERIVED: the LaTeX2e kernel requires a .cls to self-identify with \ProvidesClass{name}[...]
+    // near its head; https://www.latex-project.org/help/documentation/clsguide.pdf section 2.
+    const latexCls = '\\NeedsTeXFormat{LaTeX2e}\n\\ProvidesClass{myclass}[2024/01/01 my custom class]\n\\LoadClass{article}\n'
+    expect(isLatexClassFile(latexCls)).toBe(true)
+    expect(refineLanguageByContent('styles/myclass.cls', 'apex', latexCls)).toBe('unknown')
+    // A \documentclass driver file bundled next to a .cls is also LaTeX, not Apex.
+    const latexDriver = '\\documentclass{article}\n\\usepackage{myclass}\n\\begin{document}\nHello\n\\end{document}\n'
+    expect(isLatexClassFile(latexDriver)).toBe(true)
+    expect(refineLanguageByContent('doc/driver.cls', 'apex', latexDriver)).toBe('unknown')
+    // Ordinary Apex never contains a backslash command, so it is never misdetected as LaTeX.
+    const apex = 'public with sharing class Foo {\n  public void bar() {}\n}\n'
+    expect(isLatexClassFile(apex)).toBe(false)
   })
 })
 
