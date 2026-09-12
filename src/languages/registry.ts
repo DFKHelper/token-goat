@@ -56,6 +56,11 @@ import { extractApex } from './apex.js'
 import { extractSalesforceMetadata } from './salesforce_metadata.js'
 import { extractVue, extractSvelte, extractAstro } from './sfc_idx.js'
 import { extractJinja2, extractHandlebars, extractErb, extractEjs, extractNunjucks, extractTwig } from './templates_idx.js'
+import { extractCommonLisp } from './common_lisp.js'
+import { extractScheme } from './scheme.js'
+import { extractRacket } from './racket.js'
+import { extractClojure } from './clojure.js'
+import { extractEmacsLisp } from './emacs_lisp.js'
 
 export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro }
 
@@ -173,4 +178,9 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   batch: (content, filePath) => extractBatch(content, filePath).symbols,
   erlang: (content, filePath) => extractErlang(content, filePath).symbols,
   vhdl: (content, filePath) => extractVhdl(content, filePath).symbols,
+  common_lisp: (content, filePath) => extractCommonLisp(content, filePath).symbols,
+  scheme: (content, filePath) => extractScheme(content, filePath).symbols,
+  racket: (content, filePath) => extractRacket(content, filePath).symbols,
+  clojure: (content, filePath) => extractClojure(content, filePath).symbols,
+  emacs_lisp: (content, filePath) => extractEmacsLisp(content, filePath).symbols,
 }

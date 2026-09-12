@@ -106,6 +106,12 @@ const BATCH_VHDL_IDS = ['vhdl']
 const BATCH_TEMPLATES = ['.j2', '.jinja', '.jinja2', '.hbs', '.handlebars', '.erb', '.ejs', '.njk', '.twig']
 const BATCH_TEMPLATES_IDS = ['jinja2', 'handlebars', 'erb', 'ejs', 'nunjucks', 'twig']
 const SF_MARKUP = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens', '.page', '.component', '.email']
+// Five Lisp-family dialects, each its own extractor (see src/languages/common_lisp.ts's module doc).
+const BATCH_LISP = ['.lisp', '.lsp', '.cl', '.scm', '.ss', '.rkt', '.rktl', '.clj', '.cljs', '.cljc', '.el']
+const BATCH_LISP_IDS = ['common_lisp', 'scheme', 'racket', 'clojure', 'emacs_lisp']
+// The old hand-kept grep-hook regex already matched `.clj` (no adapter existed yet); every other
+// Lisp extension is brand new to the grep set.
+const BATCH_LISP_GREP_ADDED = BATCH_LISP.filter((e) => e !== '.clj')
 
 // Every extension either side knows about, so a dropped extension shows up as a removal.
 const ALL_EXTS = [...new Set([
@@ -126,7 +132,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('extension map: only the new mappings were added, nothing moved or dropped', () => {
     for (const [ext, lang] of Object.entries(OLD_EXTENSION_LANGUAGE)) expect(EXTENSION_LANGUAGE.get(ext), ext).toBe(lang)
     const added = [...EXTENSION_LANGUAGE.keys()].filter((e) => !(e in OLD_EXTENSION_LANGUAGE))
-    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES]))
+    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES, ...BATCH_LISP]))
     for (const e of ['.zsh', '.ksh', '.bats']) expect(detectLanguage(`a${e}`), e).toBe('bash')
     for (const e of ['.bzl', '.star']) expect(detectLanguage(`a${e}`), e).toBe('python')
     for (const e of PLSQL) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('sql')
@@ -146,26 +152,26 @@ describe('language table: derived lists match the pre-refactor lists except the 
 
   it('bash hook symbol-bearing set is unchanged', () => {
     const now = LANGUAGE_SPECS.filter((s) => s.symbolBearing).map((s) => s.id)
-    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS, ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS]))
+    expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS, ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS]))
   })
 
   it('read hook source-hint set: adds the other Ruby extensions and Starlark only', () => {
-    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL]), removed: [] })
+    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP]), removed: [] })
   })
 
   it('diff-on-reread set: adds extensions of languages already covered, and the new mappings', () => {
     expect(diff((e) => OLD_DIFFABLE_SOURCE_RE.test(`x${e}`), 'diffable')).toEqual({
-      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL]),
+      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PLSQL, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP]),
       removed: [],
     })
   })
 
-  it('grep hook source set: gains the 18 indexed extensions it missed, drops clj (no Clojure adapter)', () => {
+  it('grep hook source set: gains the 18 indexed extensions it missed, plus the four Lisp dialects the old regex never knew; clj was already covered', () => {
     const missed18 = ['.mts', '.cts', '.mjs', '.cjs', '.pyi', '.kts', '.hxx', '.ps1', '.psm1', '.cls', '.trigger', '.sc', '.lua', '.ex', '.exs', '.dart', '.zig', '.r']
     expect(missed18).toHaveLength(18)
     expect(diff((e) => OLD_GREP_SOURCE_EXT_RE.test(`x${e}`), 'grepSource')).toEqual({
-      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...SF_MARKUP, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL]),
-      removed: ['.clj'],
+      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...SF_MARKUP, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP_GREP_ADDED]),
+      removed: [],
     })
   })
 
@@ -182,7 +188,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('labels: unchanged except Apex, which used to print as the bare id', () => {
     const ids: Language[] = [...LANGUAGE_SPECS.map((s) => s.id), 'unknown']
     const changed = ids.filter((id) => languageLabel(id) !== (OLD_LABELS[id] ?? id))
-    expect(changed).toEqual([...BATCH_TEMPLATES_IDS, 'abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, 'abl', 'apex'])
+    expect(changed).toEqual([...BATCH_TEMPLATES_IDS, 'abap', 'sas', 'pli', 'rpg', 'jcl', ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS, 'abl', 'apex'])
     expect(languageLabel('apex')).toBe('Apex')
   })
 })
