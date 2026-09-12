@@ -20,12 +20,15 @@ export const ENTRY_POINTS = {
  * and inlines even a dynamic `import('literal')`, so the feature only worked at runtime because a
  * matching platform package happened to be present in node_modules, not because the
  * graceful-degradation fallback ever ran.
+ *
+ * `sharp` was in this list until it stopped being a dependency at all. Nothing under `src/` imports
+ * it -- the image pipeline is pure TypeScript -- so the entry matched no import and marked nothing
+ * external, while reading as a claim the build was keeping something out that was never in.
  */
 export const EXTERNAL_NATIVE_DEPS = [
   'sqlite-vec',
   'tree-sitter',
   'tree-sitter-*',
-  'sharp',
   'puppeteer-core',
   'pdfjs-dist',
   'pdfjs-dist/*',

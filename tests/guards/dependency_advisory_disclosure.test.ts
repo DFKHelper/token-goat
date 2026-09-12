@@ -149,10 +149,17 @@ describe('dependency advisory disclosure', () => {
 
   it('names every package the table discusses, so a rename cannot orphan a row', () => {
     const declared = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})])
-    for (const name of ['sharp', 'puppeteer-core']) {
+    for (const name of ['puppeteer-core']) {
       expect(security, `${name} is discussed in SECURITY.md`).toContain(name)
       expect(declared, `${name} is still a dependency`).toContain(name)
     }
+    // sharp is the second package the document discusses at length without shipping. Nothing under
+    // src/ imports it -- the image pipeline is pure TypeScript, and the bundle resolves no `sharp`
+    // specifier at all -- so it is a devDependency the tests use, and the passage explaining why a
+    // default install carries no libvips has to keep naming it.
+    expect(security).toContain('sharp')
+    expect(Object.keys(pkg.devDependencies ?? {})).toContain('sharp')
+    expect(declared).not.toContain('sharp')
     // onnxruntime-node is the one the document discusses at length without shipping. It has to stay
     // named there, because the section is now largely about its absence and the command that brings
     // it back, and a silent rename would leave that whole passage pointing at nothing.
@@ -202,8 +209,10 @@ describe('dependency advisory disclosure', () => {
   })
 
   it('does not fall back below the versions that carry the forward fixes', () => {
-    // sharp is pre-1.0, so its patched line is a minor bump; puppeteer-core's is a major.
-    expect(minorOf(pkg.optionalDependencies?.['sharp'] ?? '')).toBeGreaterThanOrEqual(35)
+    // sharp is pre-1.0, so its patched line is a minor bump; puppeteer-core's is a major. sharp is
+    // read from devDependencies because that is where it lives now, and the floor still matters
+    // there: the repository's own `npm audit` includes development dependencies.
+    expect(minorOf(pkg.devDependencies?.['sharp'] ?? '')).toBeGreaterThanOrEqual(35)
     expect(majorOf(pkg.optionalDependencies?.['puppeteer-core'] ?? '')).toBeGreaterThanOrEqual(25)
   })
 })

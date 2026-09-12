@@ -4896,7 +4896,7 @@ export function buildProgram(): Command {
 
   program
     .command('image-meta <file>')
-    .description('dimensions, byte size, format, and what a shrink would cost -- sharp metadata only, never runs OCR')
+    .description('dimensions, byte size, format, and what a shrink would cost -- image metadata only, never runs OCR')
     .option('-j, --json', 'output as JSON')
     .action(guard(cmdImageMeta))
 
