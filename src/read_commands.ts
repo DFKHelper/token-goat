@@ -92,7 +92,7 @@ import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { loadConfig } from './config.js'
-import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG, UNTRUSTED_HTML_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
@@ -111,6 +111,14 @@ import {
   serializeXmlNode,
   type XmlOutlineSummary,
 } from './xml_query.js'
+import {
+  outlineHtml,
+  formatHtmlOutline,
+  queryHtml,
+  serializeHtmlNode,
+  extractNodeText,
+  lintHtml,
+} from './html_query.js'
 import { loadAll as loadAllYaml } from 'js-yaml'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
 import {
@@ -599,6 +607,27 @@ function guardText(text: string, command: string): string {
  */
 function fenceGithubText(text: string): string {
   return fenceUntrusted(text, UNTRUSTED_GITHUB_TAG)
+}
+
+/**
+ * Wrap `text` in an untrusted-content fence under {@link UNTRUSTED_HTML_TAG}.
+ *
+ * Used by every printed `html-query` emit site. That command reproduces the document: the default
+ * mode returns `serializeHtmlNode`'s exact slice of the original source, `--text` returns the same
+ * slice with the tags stripped, and `--attr` returns attribute values the page author wrote. All
+ * three are a payload, so they are fenced rather than escaped -- escaping would mangle the markup
+ * the reader asked to see, which is the whole output.
+ *
+ * Fenced on provenance rather than on a scan hit, matching {@link fenceGithubText}: the pattern
+ * list is small and trivially evaded, so gating on a positive match would hand an unfenced channel
+ * to anyone who phrases it differently.
+ *
+ * The fence goes INSIDE `emitGuarded`, exactly as the `pr-slice` sites do it, so the fence is part
+ * of what the budget truncator measures. Trimming first and fencing the remainder would be the
+ * same thing; fencing first and trimming after is what would cut the closing tag off the end.
+ */
+function fenceHtmlText(text: string): string {
+  return fenceUntrusted(text, UNTRUSTED_HTML_TAG)
 }
 
 /**
@@ -3698,6 +3727,206 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
     emitErr(extractErrorMessage(e))
     return 1
   }
+}
+
+export interface HtmlOutlineCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat html-outline file``: structural summary of an HTML document. */
+export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  const summary = outlineHtml(text)
+  const fullSourceBytes = sumFileSizes([opts.file])
+  if (opts.json === true) {
+    const jsonText = JSON.stringify(summary, null, 2)
+    emit(jsonText)
+    recordReadStat('html_outline', fullSourceBytes, jsonText, opts.file)
+  } else {
+    const outlineText = formatHtmlOutline(summary)
+    emitGuarded(outlineText, 'html-outline')
+    recordReadStat('html_outline', fullSourceBytes, outlineText, opts.file)
+  }
+  return 0
+}
+
+export interface HtmlQueryCliOptions {
+  file: string
+  selector: string
+  head?: string
+  json?: boolean
+  text?: boolean
+  attr?: string
+}
+
+/** Handle ``token-goat html-query file selector``: extract elements, text, or attributes from HTML by CSS selector. */
+export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+
+  try {
+    const querySelector = opts.attr ? `${opts.selector}@${opts.attr}` : opts.selector
+    const result = queryHtml(text, querySelector)
+    const fullSourceBytes = sumFileSizes([opts.file])
+
+    if (result.attributeValues !== undefined) {
+      if (result.attributeValues.length === 0) {
+        if (opts.json === true) {
+          const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+          emit(jsonText)
+          recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+        } else {
+          emit(`No attributes matched selector: '${displaySafeText(opts.selector)}'`)
+        }
+        return 0
+      }
+
+      const totalCount = result.attributeValues.length
+      const limited = head !== undefined ? result.attributeValues.slice(0, head) : result.attributeValues
+      const headTruncated = limited.length < totalCount
+
+      if (opts.json === true) {
+        const capped = guardJsonRows(limited)
+        const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+        emit(jsonText)
+        recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        const lines = limited.map((item) => item)
+        if (headTruncated) {
+          lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+        }
+        const plainText = lines.join('\n')
+        emitGuarded(fenceHtmlText(plainText), 'html-query')
+        recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
+      }
+      return 0
+    }
+
+    if (result.elements.length === 0) {
+      if (opts.json === true) {
+        const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 })
+        emit(jsonText)
+        recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+      } else {
+        emit(`No elements matched selector: '${displaySafeText(opts.selector)}'`)
+      }
+      return 0
+    }
+
+    const totalCount = result.elements.length
+    const limited = head !== undefined ? result.elements.slice(0, head) : result.elements
+    const headTruncated = limited.length < totalCount
+
+    if (opts.json === true) {
+      const jsonItems = limited.map((n) => ({
+        tag: n.tag,
+        attributes: n.attributes,
+        text: extractNodeText(n, text),
+        line: n.line,
+        endLine: n.endLine,
+      }))
+      const capped = guardJsonRows(jsonItems)
+      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, null, 2)
+      emit(jsonText)
+      recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
+    } else if (opts.text === true) {
+      const textLines = limited.map((n) => extractNodeText(n, text)).filter(Boolean)
+      if (headTruncated) {
+        textLines.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+      }
+      const plainText = textLines.join('\n\n')
+      emitGuarded(fenceHtmlText(plainText), 'html-query')
+      recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
+    } else {
+      const blocks = limited.map((node) => serializeHtmlNode(node, 0, text))
+      if (headTruncated) {
+        blocks.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+      }
+      const plainText = blocks.join('\n\n')
+      emitGuarded(fenceHtmlText(plainText), 'html-query')
+      recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+export interface HtmlLintCliOptions {
+  file: string
+  json?: boolean
+  strict?: boolean
+}
+
+/** Handle ``token-goat html-lint file``: structural HTML validator and linter. */
+export function runHtmlLint(opts: HtmlLintCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  const report = lintHtml(text)
+  const isClean = opts.strict ? (report.errors.length === 0 && report.warnings.length === 0) : report.errors.length === 0
+
+  if (opts.json === true) {
+    emit(JSON.stringify(report, null, 2))
+    return isClean ? 0 : 1
+  }
+
+  if (report.errors.length === 0 && report.warnings.length === 0) {
+    emit(`✓ ${displaySafeText(opts.file)}: HTML structure is valid (all tags balanced, no duplicate IDs, void elements respected).`)
+    return 0
+  }
+
+  const lines: string[] = []
+  if (report.errors.length > 0) {
+    lines.push(`Errors found in ${displaySafeText(opts.file)} (${report.errors.length}):`)
+    for (const err of report.errors) {
+      // The message is token-goat's own sentence with document text spliced into it: a duplicate
+      // id is quoted raw, and a malformed closing tag is quoted as the raw source slice that
+      // failed to parse. Escaped here, once per rule type, rather than at each construction site
+      // in html_query.ts, so a rule added later is covered without a second edit.
+      lines.push(`  line ${err.line}: [${err.rule}] ${displaySafeText(err.message)}`)
+    }
+  }
+
+  if (report.warnings.length > 0) {
+    if (lines.length > 0) lines.push('')
+    lines.push(`Warnings in ${displaySafeText(opts.file)} (${report.warnings.length}):`)
+    for (const warn of report.warnings) {
+      lines.push(`  line ${warn.line}: [${warn.rule}] ${displaySafeText(warn.message)}`)
+    }
+  }
+
+  const unbalanced = Object.entries(report.tagCounts).filter(([, c]) => c.diff !== 0)
+  if (unbalanced.length > 0) {
+    lines.push('', 'Unbalanced tags:')
+    for (const [tag, counts] of unbalanced) {
+      lines.push(`  <${tag}>: open=${counts.open}, close=${counts.close}, diff=${counts.diff}`)
+    }
+  }
+
+  emit(lines.join('\n'))
+  return isClean ? 0 : 1
 }
 
 export interface OpenApiOutlineCliOptions {

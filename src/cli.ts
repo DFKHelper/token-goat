@@ -105,6 +105,9 @@ import {
   runYamlQuery,
   runXmlOutline,
   runXmlQuery,
+  runHtmlOutline,
+  runHtmlQuery,
+  runHtmlLint,
   runOpenApiOutline,
   runOpenApiOp,
   runZipList,
@@ -1966,6 +1969,22 @@ function cmdXmlQuery(file: string, xmlPath: string, opts: { head?: string; json?
   process.exitCode = runXmlQuery({ file, path: xmlPath, ...opts })
 }
 
+function cmdHtmlOutline(file: string, opts: { json?: boolean }) {
+  process.exitCode = runHtmlOutline({ file, ...opts })
+}
+
+function cmdHtmlQuery(
+  file: string,
+  selector: string,
+  opts: { head?: string; json?: boolean; text?: boolean; attr?: string },
+) {
+  process.exitCode = runHtmlQuery({ file, selector, ...opts })
+}
+
+function cmdHtmlLint(file: string, opts: { json?: boolean; strict?: boolean }) {
+  process.exitCode = runHtmlLint({ file, ...opts })
+}
+
 function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
   process.exitCode = runOpenApiOutline({ file, ...opts })
 }
@@ -3547,8 +3566,8 @@ function generateCompactHelp(): string {
     '',
     'File Formats: pdf-meta, pdf-outline, pdf-extract, pdf-locate, xlsx-sheets,',
     '  xlsx-head, xlsx-query, xlsx-range, yaml-outline, yaml-query, json-outline,',
-    '  json-query, xml-outline, xml-query, docx-outline, docx-text, pptx-outline,',
-    '  pptx-slide, pptx-text, pptx-notes',
+    '  json-query, xml-outline, xml-query, html-outline, html-query, html-lint,',
+    '  docx-outline, docx-text, pptx-outline, pptx-slide, pptx-text, pptx-notes',
     '',
     'Index & Search: index, map, reconcile, doctor, commands, ask, pack, tokens,',
     '  budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
@@ -5059,6 +5078,32 @@ export function buildProgram(): Command {
     .option('--head <n>', 'limit a matching result list to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
     .action(guard(cmdXmlQuery))
+
+  program
+    .command('html-outline <file>')
+    .description('structural summary of an HTML document (title, doctype, landmarks, headings, tables, forms, scripts, styles) instead of a raw Read')
+    .option('--json', 'emit the outline as JSON instead of text')
+    .action(guard(cmdHtmlOutline))
+
+  program
+    .command('html-query <file> <selector>')
+    .description(
+      'extract elements, text, or attributes from an HTML document by CSS selector instead of a raw Read\n\n' +
+        'selector grammar: tags, #id, .class, [attr=val], child (>), descendant (space), comma-separated union, or trailing @attr. ' +
+        'Examples: #main, .inquiry-row, table > tbody > tr, a[href^="https"], div@id',
+    )
+    .option('--head <n>', 'limit a matching result list to the first N items')
+    .option('--json', 'emit the result as JSON instead of text')
+    .option('--text', 'extract only the inner text of matching elements')
+    .option('--attr <name>', 'extract the value of the specified attribute')
+    .action(guard(cmdHtmlQuery))
+
+  program
+    .command('html-lint <file>')
+    .description('validate HTML structure (unclosed tags, stray closing tags, unescaped angle brackets, duplicate IDs, tag balance)')
+    .option('--json', 'emit the lint report as JSON instead of text')
+    .option('--strict', 'treat warnings as errors (exit code 1)')
+    .action(guard(cmdHtmlLint))
 
   program
     .command('openapi-outline <file>')

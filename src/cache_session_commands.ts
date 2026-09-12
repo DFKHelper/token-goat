@@ -151,7 +151,7 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
     // displaySafeText subsumes the old `[\t\r\n]+ -> ' '` flattening: it escapes those same characters (as `\n`, `\r`, `\t`) so a multi-line command still cannot break this table's one-row-per-entry structure, and it additionally neutralizes the `[tg]` and `[token-goat` spellings, which the strip alone left verbatim.
     const flatCommand = displaySafeText(item.command)
     const preview = flatCommand.length > 80 ? flatCommand.slice(0, 77) + '...' : flatCommand
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
+    process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
   }
 }
 
@@ -185,7 +185,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
   for (const item of items) {
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${displaySafeText(item.url)}\n`)
+    process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.bytes), 8)}  ${displaySafeText(item.url)}\n`)
   }
 }
 
@@ -226,7 +226,7 @@ export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
   for (const item of items) {
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${displaySafeText(item.toolName)}\n`)
+    process.stdout.write(`${pad(displaySafeText(item.id), 18)}  ${pad(String(item.sizeBytes), 8)}  ${displaySafeText(item.toolName)}\n`)
   }
 }
 

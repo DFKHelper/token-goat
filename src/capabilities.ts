@@ -14,6 +14,7 @@
  * rather than from documentation.
  */
 import { loadConfig, type Config } from './config.js'
+import { displaySafeText } from './paths.js'
 
 /** What a capability can do with data, which is what a reviewer is actually deciding about. */
 export type CapabilityKind =
@@ -121,7 +122,7 @@ export function renderCapabilities(caps: readonly Capability[]): string {
     if (group.length === 0) continue
     lines.push(kind === 'egress' ? 'Can send data off this machine:' : 'Leaves data on this machine:')
     for (const c of group) {
-      lines.push(`  [${c.enabled ? 'ON ' : 'OFF'}] ${c.id}`)
+      lines.push(`  [${c.enabled ? 'ON ' : 'OFF'}] ${displaySafeText(c.id)}`)
       lines.push(`         ${c.what}`)
       lines.push(`         controlled by: ${c.controlledBy}`)
       lines.push(`         enforced at:   ${c.enforcedAt}`)
