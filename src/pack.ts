@@ -209,7 +209,7 @@ const CSTYLE_EXTS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.kt', '.swift', '.dart', '.mm', '.groovy', '.gvy',
   '.gradle', '.sol', '.glsl', '.vert', '.frag', '.comp', '.geom', '.tesc', '.tese', '.hlsl', '.hlsli', '.wgsl', '.metal',
 ])
-const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua', '.pm'])
+const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua', '.pm', '.nix'])
 
 /**
  * Which quote character (if any) is currently open, tracked as a single mutually-exclusive state

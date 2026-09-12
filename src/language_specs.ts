@@ -149,6 +149,13 @@ export const LANGUAGE_SPECS = [
   { id: 'racket', extraction: 'regex', extensions: ['.rkt', '.rktl'], label: 'Racket', ...CODE, fence: 'racket' },
   { id: 'clojure', extraction: 'regex', extensions: ['.clj', '.cljs', '.cljc'], label: 'Clojure', ...CODE, fence: 'clojure' },
   { id: 'emacs_lisp', extraction: 'regex', extensions: ['.el'], label: 'Emacs Lisp', ...CODE, fence: 'lisp' },
+  // `.lhs` (literate Haskell) is deliberately not claimed here -- see haskell.ts's module doc.
+  { id: 'haskell', extraction: 'regex', extensions: ['.hs'], label: 'Haskell', ...CODE, fence: 'haskell' },
+  // `.mli` interface files share `.ml`'s lexical rules (comments, strings, quoted strings) and are read with the same extractor -- see ocaml.ts's module doc.
+  { id: 'ocaml', extraction: 'regex', extensions: ['.ml', '.mli'], label: 'OCaml', ...CODE, fence: 'ocaml' },
+  // `.fsi` signature files and `.fsx` scripts share `.fs`'s lexical rules and are read with the same extractor -- see fsharp.ts's module doc.
+  { id: 'fsharp', extraction: 'regex', extensions: ['.fs', '.fsi', '.fsx'], label: 'F#', ...CODE, fence: 'fsharp' },
+  { id: 'nix', extraction: 'regex', extensions: ['.nix'], label: 'Nix', ...CODE, fence: 'nix' },
   // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6, LaTeX) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },
