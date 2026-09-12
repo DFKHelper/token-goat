@@ -41,6 +41,25 @@ export interface PinnedPopulationSpec {
    */
   readonly floor: number
   /**
+   * Optional upper bound, for a population whose size is a MEASUREMENT rather than a growing list.
+   *
+   * A floor alone cannot tell "pinned a little below the live count" from "pinned at a number the
+   * author guessed and never checked". This repo shipped the second: a call-graph closure pinned at
+   * 40 against a believed population of 45, whose real size was 111 -- so the floor could have lost
+   * 71 members, 64% of the guard's subject matter, without saying a word. Nothing was wrong with
+   * the floor's arithmetic; the belief behind it was never falsifiable.
+   *
+   * A ceiling makes it falsifiable. Pin it a little ABOVE the count you actually measured, and the
+   * author who guessed 45 gets a red test at 111 instead of a silent 64% hole. Growth past it is
+   * not a defect -- it is the prompt to re-measure and re-pin BOTH numbers together, which is the
+   * step that was skipped.
+   *
+   * Opt-in, and deliberately so: a population that is "every file under tests/" legitimately grows
+   * without bound, and a ceiling there would be noise. Use it where the number means something --
+   * a call-graph closure, a call-site set, an adapter registry.
+   */
+  readonly ceiling?: number
+  /**
    * Members that must be present, matched as substrings so callers can name a path tail
    * (`src/parser.ts`) without knowing the absolute prefix. These are the members whose absence
    * would hollow out the guard while leaving its count intact.
@@ -56,7 +75,7 @@ export interface PinnedPopulationSpec {
  * beside it.
  */
 export function pinnedPopulation(spec: PinnedPopulationSpec): readonly string[] {
-  const { what, items, floor, mustInclude = [] } = spec
+  const { what, items, floor, ceiling, mustInclude = [] } = spec
 
   // A zero floor would let the empty population this helper exists to catch pass the check, so it
   // is rejected as a spec error rather than honoured.
@@ -70,6 +89,20 @@ export function pinnedPopulation(spec: PinnedPopulationSpec): readonly string[] 
       `build artifact) or the population genuinely shrank -- if genuinely, lower the floor and say ` +
       `why in the same commit.`,
   ).toBeGreaterThanOrEqual(floor)
+
+  if (ceiling !== undefined) {
+    expect(
+      ceiling,
+      `pinnedPopulation("${what}") was given a ceiling of ${ceiling} below its floor of ${floor}`,
+    ).toBeGreaterThanOrEqual(floor)
+    expect(
+      items.length,
+      `the "${what}" population is ${items.length}, past the ${ceiling} it was measured at. This is ` +
+        `not "too many things" -- it is that the FLOOR below it is now a stale guess about a ` +
+        `population that has moved. Re-measure the live count (raise the floor to 9999 and read it ` +
+        `out of the failure), then re-pin the floor and this ceiling around it in the same commit.`,
+    ).toBeLessThanOrEqual(ceiling)
+  }
 
   for (const needle of mustInclude) {
     expect(

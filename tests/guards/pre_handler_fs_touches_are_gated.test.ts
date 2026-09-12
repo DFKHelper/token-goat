@@ -231,7 +231,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['vscode_duplicate.ts::alreadyClaimed', 'exclusive-creates one marker under markerDir() (dataDir()); its basename is a hash of (session_id, event, timestamp), not a path'],
   ['vscode_duplicate.ts::pruneMarkers', 'readdir/stat/rm inside markerDir() only'],
   ['bridges/created_configs.ts::readLedger', 'reads the created-configs ledger inside dataDir(); its whole purpose is to be a file no clone can reach'],
-  ['project.ts::isInsideRoot', 'the realpath containment primitive the path gate is itself built out of; gating it would be circular'],
+  ['project.ts::resolveThroughLinks', 'the realpath/readlink containment primitive isInsideRoot -- and therefore the path gate itself -- is built out of; gating it would be circular'],
   ['util.ts::ensureDirSync', 'generic mkdir primitive: it touches only the path its caller supplies, so the caller is where a payload path has to be classified'],
   ['util.ts::atomicWriteCore', 'generic write primitive, same reasoning as ensureDirSync'],
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],
@@ -243,7 +243,14 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'functions reachable from relayInProcess before handler dispatch',
       items: closure.map((v) => v.key),
-      floor: 40,
+      // Measured, not believed. This was pinned at 40 against a BELIEVED population of 45; the real
+      // one is 112, so the floor could have lost 72 members -- 64% of the closure -- before saying
+      // anything. The ceiling is what makes the belief falsifiable: a 45-sized belief implies a
+      // ceiling around 55, which goes red at 112 instead of passing silently. Measure both (raise
+      // the floor to 9999, read the count out of the failure) whenever the traversal or the shared
+      // parser in reachability.ts changes -- widening that parser moves this number.
+      floor: 100,
+      ceiling: 140,
       mustInclude: ['relay.ts::relayInProcess', 'relay.ts::buildEvent', 'vscode_duplicate.ts::shouldSuppressDuplicateVscodeHook', 'vscode_duplicate.ts::userScopeCopyIsRedundant'],
     })
   })
@@ -253,7 +260,8 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'pre-dispatch functions that touch fs or net',
       items: touching.map((v) => v.key),
-      floor: 8,
+      floor: 8, // measured the same way: 11 live
+      ceiling: 20,
       mustInclude: ['vscode_duplicate.ts::alreadyClaimed', 'bridges/copilot_cli_install.ts::readCopilotHooksOwners', 'constants.ts::ensureDataDirPrivate'],
     })
   })
