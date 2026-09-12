@@ -411,7 +411,7 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
 }
 
 // --- CLAUDE.md delimited-block writer ---
-// README documents this as part of the BASE Claude Code install (unconditional, not gated behind any --<harness> flag): a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
+// README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
 
 const CLAUDE_MD_BEGIN = '<!-- token-goat-begin -->'
 const CLAUDE_MD_END = '<!-- token-goat-end -->'
@@ -529,7 +529,7 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 }
 
 // --- token-goat skill writer ---
-// README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form". Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
+// README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form", run under the same wantsClaudeCodeBase gate as the CLAUDE.md block above, never by a scoped harness flag. Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
 
 // The frontmatter `description` comes from the shared skillDescriptionLine()
 // (bridges/guidance_block.ts), so the Claude Code and Kimi Code skills cannot

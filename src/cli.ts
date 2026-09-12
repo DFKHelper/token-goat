@@ -51,6 +51,7 @@ import {
   findStrayClaudeMdBlocks,
   installSkill,
   uninstallSkill,
+  settingsPath,
 } from './install.js'
 import type { HookScope } from './install.js'
 import { installCodex, isCodexInstalled, uninstallCodex } from './bridges/codex_install.js'
@@ -633,6 +634,53 @@ export function visualStudioManualSteps(scope: 'project' | 'user'): string[] {
   ]
 }
 
+/**
+ * Whether an `install`/`uninstall` invocation should touch the base Claude Code integration:
+ * the `~/.claude/settings.json` (or project `.claude/settings.json`) hooks, the user's own
+ * `~/.claude/CLAUDE.md` routing block, and `~/.claude/skills/token-goat`. A bare
+ * `install`/`uninstall` with no other harness flag always means Claude Code, so it runs.
+ * Any *other* harness flag (`--vscode`, `--codex`, `--gemini`, ...) asks for that harness's own
+ * scope only -- none of them read or write anything under `~/.claude/`, confirmed by reading
+ * each bridge's install writer (e.g. `installVscode` writes only its own `mcp.json`, an
+ * instructions file, and the shared `~/.copilot/hooks` file). Wanting both is what running the
+ * command twice, or passing both flags in one invocation, is for -- not a silent side effect of
+ * asking for one. `--hermes` is the one exception: its CLI delegates to `claude -p`, which loads
+ * these same Claude Code hooks, so its branches below genuinely depend on this base having run.
+ */
+function wantsClaudeCodeBase(opts: {
+  codex?: boolean
+  gemini?: boolean
+  qwen?: boolean
+  kimi?: boolean
+  pi?: boolean
+  opencode?: boolean
+  openclaw?: boolean
+  copilot?: boolean
+  grok?: boolean
+  vscode?: boolean
+  visualstudio?: boolean
+  zed?: boolean
+  cursor?: boolean
+  hermes?: boolean
+}): boolean {
+  const otherHarnessRequested = [
+    opts.codex,
+    opts.gemini,
+    opts.qwen,
+    opts.kimi,
+    opts.pi,
+    opts.opencode,
+    opts.openclaw,
+    opts.copilot,
+    opts.grok,
+    opts.vscode,
+    opts.visualstudio,
+    opts.zed,
+    opts.cursor,
+  ].some((v) => v === true)
+  return !otherHarnessRequested || opts.hermes === true
+}
+
 async function cmdInstall(opts: {
   project?: boolean
   codex?: boolean
@@ -654,34 +702,40 @@ async function cmdInstall(opts: {
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
   await import('./relay.js')
   const scope: HookScope = opts.project === true ? 'project' : 'user'
-  const result = installHooks(scope)
-  // Report alreadyInstalled like every other harness branch below does. installHooks has always computed it; the base Claude Code path was the one caller that discarded it and claimed a fresh install on every run.
-  out(
-    result.alreadyInstalled
-      ? `token-goat hooks (${scope}) already up to date → ${result.settingsPath}`
-      : `Installed token-goat hooks (${scope}) → ${result.settingsPath}`,
-  )
 
-  // Base install (unconditional, not gated behind any --<harness> flag): the CLAUDE.md routing block and the token-goat skill, per README's "What gets installed?" table.
-  const claudeMdResult = installClaudeMd()
-  out(
-    claudeMdResult.alreadyInstalled
-      ? `CLAUDE.md block already up to date → ${claudeMdResult.path}`
-      : `Updated CLAUDE.md → ${claudeMdResult.path}`,
-  )
+  // Base install: the Claude Code hooks, the CLAUDE.md routing block, and the token-goat skill,
+  // per README's "What gets installed?" table -- gated behind wantsClaudeCodeBase (see its doc
+  // comment) so a scoped harness flag like --vscode never silently rewrites a Claude Code file
+  // it does not need.
+  if (wantsClaudeCodeBase(opts)) {
+    const result = installHooks(scope)
+    // Report alreadyInstalled like every other harness branch below does. installHooks has always computed it; the base Claude Code path was the one caller that discarded it and claimed a fresh install on every run.
+    out(
+      result.alreadyInstalled
+        ? `token-goat hooks (${scope}) already up to date → ${result.settingsPath}`
+        : `Installed token-goat hooks (${scope}) → ${result.settingsPath}`,
+    )
 
-  // A block relocated into some other markdown file is invisible to install/uninstall, so the
-  // write above just created a second copy. Say so rather than leaving a silent duplicate.
-  for (const stray of findStrayClaudeMdBlocks()) {
-    out(`WARNING: stray token-goat block in ${stray} — not managed by install/uninstall; delete it to avoid duplicate, stale guidance.`)
+    const claudeMdResult = installClaudeMd()
+    out(
+      claudeMdResult.alreadyInstalled
+        ? `CLAUDE.md block already up to date → ${claudeMdResult.path}`
+        : `Updated CLAUDE.md → ${claudeMdResult.path}`,
+    )
+
+    // A block relocated into some other markdown file is invisible to install/uninstall, so the
+    // write above just created a second copy. Say so rather than leaving a silent duplicate.
+    for (const stray of findStrayClaudeMdBlocks()) {
+      out(`WARNING: stray token-goat block in ${stray} — not managed by install/uninstall; delete it to avoid duplicate, stale guidance.`)
+    }
+
+    const skillResult = installSkill()
+    out(
+      skillResult.alreadyInstalled
+        ? `token-goat skill already up to date → ${skillResult.path}`
+        : `Installed token-goat skill → ${skillResult.path}`,
+    )
   }
-
-  const skillResult = installSkill()
-  out(
-    skillResult.alreadyInstalled
-      ? `token-goat skill already up to date → ${skillResult.path}`
-      : `Installed token-goat skill → ${skillResult.path}`,
-  )
 
   if (opts.codex === true) {
     const codexResult = installCodex()
@@ -834,12 +888,12 @@ async function cmdInstall(opts: {
     if (duplicateNote !== null) out(duplicateNote)
   }
 
-  // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
+  // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote (forced above by wantsClaudeCodeBase, since --hermes genuinely depends on it). There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
   if (opts.hermes === true) {
     out(
       isInstalled(scope)
-        ? `Hermes integration verified: token-goat hooks are present in ${result.settingsPath}.`
-        : `Hermes integration NOT verified: token-goat hooks are missing from ${result.settingsPath}.`,
+        ? `Hermes integration verified: token-goat hooks are present in ${settingsPath(scope)}.`
+        : `Hermes integration NOT verified: token-goat hooks are missing from ${settingsPath(scope)}.`,
     )
   }
 
@@ -913,22 +967,27 @@ function cmdUninstall(opts: {
   purge?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
-  const removed = uninstallHooks(scope)
-  out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
 
-  // Base uninstall (unconditional, matching the base install above): strip
-  // the CLAUDE.md block and remove the skill directory.
-  const claudeMdRemoved = uninstallClaudeMd()
-  out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
+  // Base uninstall, mirroring the base install's wantsClaudeCodeBase gate: strip the Claude Code
+  // hooks, the CLAUDE.md block, and the skill directory only when this invocation actually means
+  // Claude Code (bare uninstall, or --hermes, which shares its hook entries). A scoped
+  // `uninstall --vscode` must not also silently strip the caller's Claude Code integration.
+  if (wantsClaudeCodeBase(opts)) {
+    const removed = uninstallHooks(scope)
+    out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
 
-  // Strays live in files token-goat doesn't own, so uninstall reports them rather than
-  // deleting: silently editing a user's own markdown is worse than leaving a line behind.
-  for (const stray of findStrayClaudeMdBlocks()) {
-    out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
+    const claudeMdRemoved = uninstallClaudeMd()
+    out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
+
+    // Strays live in files token-goat doesn't own, so uninstall reports them rather than
+    // deleting: silently editing a user's own markdown is worse than leaving a line behind.
+    for (const stray of findStrayClaudeMdBlocks()) {
+      out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
+    }
+
+    const skillRemoved = uninstallSkill()
+    out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
   }
-
-  const skillRemoved = uninstallSkill()
-  out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
 
   // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install
   // and uninstall (README: "Add --codex ... to also strip those integrations"), so they run
