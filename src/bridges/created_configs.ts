@@ -63,3 +63,54 @@ export function takeCreatedConfig(filePath: string): boolean {
   writeLedger(entries.filter((entry) => entry !== key))
   return true
 }
+
+/**
+ * Remember that token-goat wrote the backup at `backupPath`.
+ *
+ * Backups share the created-configs ledger because they pose the identical question. Once written,
+ * a `<config>.bak.<stamp>` token-goat made is indistinguishable on disk from one a user made by
+ * hand, so uninstall cannot tell them apart by name -- and a glob over `*.bak.*` would delete the
+ * user's. Creation is recorded instead, exactly as it is for a config file.
+ */
+export function recordCreatedBackup(backupPath: string): void {
+  recordCreatedConfig(backupPath)
+}
+
+/** Drop a backup from the ledger without deleting it: for when something else already unlinked it. */
+export function forgetCreatedBackup(backupPath: string): void {
+  takeCreatedConfig(backupPath)
+}
+
+/**
+ * Delete the backups token-goat created for `configPath`, and nothing else. Returns how many went.
+ *
+ * The candidate set is the ledger, not the directory: a user's own `settings.json.bak.keep` was
+ * never recorded, so it is never even considered. A missing or unreadable ledger therefore removes
+ * nothing, which leaves litter rather than deleting a file nobody can get back -- the direction
+ * every other failure in this module is read in.
+ */
+export function removeCreatedBackups(configPath: string): number {
+  const resolved = path.resolve(configPath)
+  const prefix = `${keyOf(configPath)}.bak.`
+  const entries = readLedger()
+  const ours = entries.filter((entry) => entry.startsWith(prefix))
+  if (ours.length === 0) return 0
+
+  const failed = new Set<string>()
+  let removed = 0
+  for (const key of ours) {
+    // Ledger keys are case-folded, which is right for matching and wrong for unlinking on a
+    // case-sensitive filesystem. The real name is the caller's own path plus the recorded stamp.
+    const target = `${resolved}.bak.${key.slice(prefix.length)}`
+    try {
+      if (fs.existsSync(target)) {
+        fs.rmSync(target, { force: true })
+        removed++
+      }
+    } catch {
+      failed.add(key)
+    }
+  }
+  writeLedger(entries.filter((entry) => !ours.includes(entry) || failed.has(entry)))
+  return removed
+}

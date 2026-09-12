@@ -13,6 +13,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
+import { forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
 import { ensureDataDirPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
 import type { GitResult, RunGitOptions } from './types.js'
@@ -342,7 +343,11 @@ const MAX_BACKUPS_PER_FILE = 5
 export function backupFile(p: string): void {
   if (!existsSync(p)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  copyFileSync(p, `${p}.bak.${stamp}`)
+  const backupPath = `${p}.bak.${stamp}`
+  copyFileSync(p, backupPath)
+  // Recorded at the instant it is created, so uninstall can later delete this file and no other.
+  // Nothing else identifies it: the name is one a user could have chosen too.
+  recordCreatedBackup(backupPath)
   pruneOldBackups(p)
 }
 
@@ -359,8 +364,12 @@ function pruneOldBackups(p: string): void {
   const backups = entries.filter((e) => e.startsWith(prefix)).sort()
   const excess = backups.length - MAX_BACKUPS_PER_FILE
   for (const stale of backups.slice(0, Math.max(0, excess))) {
+    const stalePath = path.join(dir, stale)
     try {
-      unlinkSync(path.join(dir, stale))
+      unlinkSync(stalePath)
+      // Keep the ledger in step: a backup this pruned is gone, and a stale entry for it would
+      // otherwise sit there forever pointing at nothing.
+      forgetCreatedBackup(stalePath)
     } catch {
       // Best-effort cleanup; a failed unlink here shouldn't fail the caller's backup.
     }

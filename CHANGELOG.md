@@ -10,6 +10,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **Uninstalling now takes the backup copies token-goat made of your config files with it.** Whenever an install rewrites a config, it first copies the old one to `<name>.bak.<timestamp>`. Those copies were never removed, so a machine that had installed a few times kept a copy of every config token-goat had ever touched, each holding whatever was in that file at the time, in a folder you had been told the product was gone from. Uninstall now deletes the ones it made, and only those: a backup counts as token-goat's only if token-goat recorded creating it, so a `.bak` file you made yourself stays put even when its name looks exactly the same. No reindex is needed.
+
 - **The demo preview image loads everywhere again.** `demo/screenshots/approval-demo.webp` was a PNG carrying a `.webp` name, which some viewers refuse to render and others only render by guessing. It is now `approval-demo.png`, and the link in [the demo README](demo/README.md) points at the new name. Three images in `assets/` that nothing linked to are gone as well, so the published site no longer carries them. No reindex is needed.
 
 - **Groovy slashy strings, Elixir sigils, and Scala symbol literals now read as the strings they are.** Each one used to look like code, or like a string that never ended, which moved or dropped the symbols around it:

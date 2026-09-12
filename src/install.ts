@@ -32,6 +32,7 @@ import { loadConfig } from './config.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import type { HookEventName } from './types.js'
+import { removeCreatedBackups } from './bridges/created_configs.js'
 import { atomicWriteText, ensureDirSync, escapeRegExp, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
@@ -381,6 +382,8 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
   }
 
   writeJsonSettings(p, settings)
+  // The timestamped backups of this file are token-goat's own litter, so they leave with it.
+  removeCreatedBackups(p)
   return true
 }
 

@@ -65,6 +65,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { removeCreatedBackups } from './created_configs.js'
 import { hookCommandFor, writeIfDifferent } from '../util.js'
 import { GROK_HOOK_SCRIPT } from './grok.js'
 
@@ -173,6 +174,8 @@ export function uninstallGrok(): boolean {
   } catch {
     // Already absent; nothing to remove.
   }
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it.
+  removeCreatedBackups(configPath)
   return removedAny
 }
 
