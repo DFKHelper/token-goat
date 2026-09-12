@@ -17,7 +17,7 @@ import { resolve } from 'path'
 import { homedir } from 'os'
 import { dataDir } from './constants.js'
 import { shortFingerprint } from './fingerprint.js'
-import { atomicWriteText, isCodeFenceDelimiter, stripLower } from './util.js'
+import { atomicWriteText, ensureDirSync, isCodeFenceDelimiter, stripLower } from './util.js'
 import { registerReset } from './reset.js'
 import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from 'node:fs'
 import { DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
@@ -88,7 +88,7 @@ function skillsSourceDir(): string {
 
 async function ensureSkillsDir(): Promise<void> {
   try {
-    await fs.mkdir(skillOutputsDir(), { recursive: true })
+    ensureDirSync(skillOutputsDir())
   } catch {
     // already exists
   }

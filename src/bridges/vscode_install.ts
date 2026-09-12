@@ -9,7 +9,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
@@ -256,7 +256,7 @@ function writeGuidance(filePath: string, userScope: boolean): boolean {
   // A new personal instructions file needs its frontmatter ahead of the block; an existing one keeps whatever the user gave it.
   let created = false
   if (userScope && !fs.existsSync(filePath)) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    ensureDirSync(path.dirname(filePath))
     atomicWriteText(filePath, USER_INSTRUCTIONS_FRONTMATTER)
     created = true
   }
@@ -329,7 +329,7 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   const next = updateConfig(config.text, managedServer())
   // Remembered before the write, because afterwards the file exists either way and nothing in it says who made it.
   const mcpExisted = fs.existsSync(mcpPath)
-  fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+  ensureDirSync(path.dirname(mcpPath))
   if (config.text !== next) {
     backupFile(mcpPath)
     atomicWriteText(mcpPath, next)

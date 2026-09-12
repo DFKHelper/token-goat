@@ -175,7 +175,7 @@ import { DEFAULT_RECONCILE_BUDGET_MS, runReconcile } from './reconcile.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, redactUrlQuery, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource, stripLower } from './util.js'
+import { isWindows, ensureDirSync, ensureNewline, extractErrorMessage, redactUrlQuery, cappedSourceBytesSaved, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun, decodeSource, detectSourceEncoding, encodeSource, stripLower } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys } from './config.js'
@@ -935,7 +935,7 @@ async function cmdInstall(opts: {
       if (skillNames.length > 0) {
         // Write pregen.json with list of pre-generated skills.
         const dir = skillOutputsDir()
-        await fs.promises.mkdir(dir, { recursive: true })
+        ensureDirSync(dir)
         const pregenPath = path.join(dir, 'pregen.json')
         const pregenData = { ts: Date.now(), names: skillNames }
         await fs.promises.writeFile(pregenPath, JSON.stringify(pregenData, null, 2))
