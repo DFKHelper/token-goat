@@ -570,6 +570,52 @@ export function healStaleIndex(resolvedPath: string): void {
   }
 }
 
+// Bound on how many of a multi-file command's own result files get a staleness check. `refs`,
+// `ask`, `semantic`, and a Python `trace --bodies` all answer from several rows at once (one per
+// file, not one file the caller named), unlike `symbol`/`read`/`skeleton`/`outline`'s single
+// `staleWarning`/`healStaleIndex` call against the one file the caller asked about. A command
+// returning a hundred hits across a hundred files would otherwise pay a hundred fingerprints (and
+// synchronous reparses) purely for this check; capped here at a number well above what any of
+// these commands' own result limits render in practice, so a normal call never bumps the cap.
+const STALE_CHECK_FILE_CAP = 25
+
+/**
+ * Self-heal AND warn for a multi-file command's own result set, the sibling of the
+ * `healStaleIndex`+`staleWarning` pair every single-file surgical-read command already runs, for
+ * the shape `refs`/`ask`/`semantic`/`trace --bodies` have instead: several distinct result files
+ * from one query, none of which the caller named directly, so there is no one file to check
+ * before the query the way `runSymbol` checks the file in its spec. This answers stale rows
+ * exactly as loudly as those commands do -- console.warn rather than folded into the JSON body,
+ * so JSON consumers get an unambiguous stdout payload while still seeing the warning on stderr --
+ * rather than the silent behavior these four commands had before: a wrong answer with no warning
+ * is worse than a slow one, and warning-then-still-answering is what every single-file command
+ * here already does.
+ *
+ * MUST be called with the files a query's results actually came from, AFTER that query already
+ * ran (mirrors `healStaleIndex`'s own contract: it does not re-fetch anything, so healing here
+ * only benefits the *next* call to this command, same as the single-file commands above).
+ */
+export function warnIfFilesStale(filePaths: readonly string[]): void {
+  const checked = new Set<string>()
+  let staleCount = 0
+  for (const raw of filePaths) {
+    if (checked.size >= STALE_CHECK_FILE_CAP) break
+    if (checked.has(raw)) continue
+    checked.add(raw)
+    if (staleWarning(raw) === '') continue
+    staleCount++
+    // healStaleIndex is best-effort for ordinary parse/I/O failures already; only a detected
+    // between-check-and-use path swap (ConfinementIdentityError) is meant to escape it, and that
+    // is a real security-relevant condition this wrapper must not paper over either.
+    healStaleIndex(raw)
+  }
+  if (staleCount > 0) {
+    console.warn(
+      `token-goat: ${countNoun(staleCount, 'file')} behind these results changed on disk since the index last saw ${staleCount === 1 ? 'it' : 'them'} -- a reindex just ran, so a repeat of this command will reflect the current version.`,
+    )
+  }
+}
+
 function emit(text: string): void {
   const out = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(out))
@@ -2555,6 +2601,7 @@ function renderRefsTargets(
       if (notice !== null) lines.push(`  token-goat: ${notice}`)
     }
   }
+  warnIfFilesStale(refRows.map((r) => r.filePath))
   const fullSourceBytes = refsSearchBaselineBytes(refRows)
   if (opts.json === true) {
     const text = displaySafeJson(jsonOut)
@@ -2741,6 +2788,7 @@ function runRefsSingle(opts: RefsOptions): number {
     return 1
   }
 
+  warnIfFilesStale(results.map((r) => r.filePath))
   const fullSourceBytes = refsSearchBaselineBytes(results)
 
   if (opts.json === true) {
@@ -7241,6 +7289,10 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   const hadDense = mergedHits.length > 0
   const hadFts = ftsRows.length > 0
   const source = hadDense && hadFts ? 'hybrid' : hadDense ? 'embeddings' : 'fts'
+
+  // Same multi-file self-heal-and-warn as runAsk/refs above -- `semantic` fuses hits across
+  // however many distinct files matched, none of which the caller named as a single spec.
+  warnIfFilesStale(hits.map((h) => h.filePath))
 
   if (hits.length > 0) {
     if (opts.json === true) {
