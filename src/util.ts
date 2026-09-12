@@ -10,7 +10,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
@@ -344,7 +344,14 @@ export function backupFile(p: string): void {
   if (!existsSync(p)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const backupPath = `${p}.bak.${stamp}`
-  copyFileSync(p, backupPath)
+  // COPYFILE_EXCL: fail rather than write through an existing destination. Without it a `.bak.<ISO>`
+  // path a repository checked in as a symlink is a write primitive -- copyFileSync follows a
+  // destination link and lands the source's bytes wherever it points. A same-millisecond collision
+  // with a real earlier backup also throws now instead of silently overwriting it; the two backups
+  // would hold the same bytes, and failing loudly is the safe direction for the link case.
+  // The source side is handled by the caller: assertProjectScopeTarget (bridges/project_scope_guard.ts)
+  // refuses a project-scope path that resolves outside the project before any read or backup runs.
+  copyFileSync(p, backupPath, fsConstants.COPYFILE_EXCL)
   // Recorded at the instant it is created, so uninstall can later delete this file and no other.
   // Nothing else identifies it: the name is one a user could have chosen too.
   recordCreatedBackup(backupPath)
@@ -671,7 +678,7 @@ export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherG
  * or the markers aren't found in order. Collapses the surrounding whitespace so removing the
  * block doesn't leave a run of blank lines behind.
  */
-export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: string): boolean {
+export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: string, keepBackups = false): boolean {
   let existing: string
   try {
     existing = readFileSync(p, 'utf8')
@@ -702,9 +709,15 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
   atomicWriteText(p, next)
   // Mirrors install.ts's uninstallHooks: the backups this path (and any earlier install-side
   // upsertDelimitedBlock call for the same file) created are token-goat's own litter, so a
-  // strip -- which is always an uninstall action -- takes them with it rather than leaving stray
+  // strip -- which is USUALLY an uninstall action -- takes them with it rather than leaving stray
   // `.bak.<ISO>` siblings behind for every one of this function's six call sites.
-  removeCreatedBackups(p)
+  //
+  // `keepBackups` is the exception a MIGRATION needs: a strip run as one step of an install still
+  // rewrites a file the user may have hand-edited, and deleting the recovery copy made seconds
+  // earlier is the one case where "back up everything we overwrite" silently does not hold. The
+  // caller says which of the two it is; ordering the calls differently would not, and that is
+  // exactly how the guarantee was lost.
+  if (!keepBackups) removeCreatedBackups(p)
   return true
 }
 

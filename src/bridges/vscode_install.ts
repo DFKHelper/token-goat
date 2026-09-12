@@ -12,7 +12,8 @@ import * as path from 'node:path'
 import { atomicWriteText, backupFile, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
-import { installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
+import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
+import { assertProjectScopeTarget } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
@@ -29,6 +30,18 @@ export interface VscodeScopeOptions {
   project?: boolean
   /** Only meaningful with `project: true`; defaults to `process.cwd()`. */
   projectRoot?: string
+  /**
+   * Keep the `.bak.<ISO>` recovery copies this run creates instead of sweeping them at the end.
+   *
+   * Only `uninstallVscode` reads it, and only the MIGRATION inside `installVscode` sets it. An
+   * uninstall sweeping its own backups is right -- the user asked for token-goat to be gone -- but
+   * the same function run as one step of an install is not an uninstall: it rewrites a user-scope
+   * file nobody asked it to touch, and deleting the recovery copy it made seconds earlier is
+   * precisely where a804e9f9's "every overwritten file has a recovery copy" guarantee failed. This
+   * is an explicit option rather than call-site ordering so the distinction cannot be lost again by
+   * moving a line.
+   */
+  keepBackups?: boolean
 }
 
 /**
@@ -259,7 +272,26 @@ function writeGuidance(filePath: string, userScope: boolean): boolean {
   return upsertDelimitedBlock(filePath, BEGIN, END, body) || created
 }
 
+/**
+ * Refuse every project-scope target that resolves outside the project, before anything is read.
+ *
+ * Runs first in both entry points below, not next to each individual write: the disclosure this
+ * closes happens on the READ (`readConfig`, `upsertDelimitedBlock`) and on `backupFile`'s copy,
+ * both of which run before the first write. Checking at the write would be too late.
+ *
+ * User scope passes everything through -- see project_scope_guard.ts for why a symlinked dotfile
+ * there is the user's own business.
+ */
+function assertProjectTargetsAreInTheProject(opts: VscodeScopeOptions): void {
+  if (opts.project !== true) return
+  const root = path.resolve(opts.projectRoot ?? process.cwd())
+  for (const target of [vscodeMcpPath(opts), vscodeInstructionsPath(opts), ...copilotHooksFilePaths(vscodeHooksDir(opts))]) {
+    assertProjectScopeTarget(target, root)
+  }
+}
+
 export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResult {
+  assertProjectTargetsAreInTheProject(opts)
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = vscodeMcpPath(opts)
   const instructionsPath = vscodeInstructionsPath(opts)
@@ -273,7 +305,11 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
   // `~/.copilot/hooks` files, leaving them in place when `install --copilot` still owns them.
   let migratedFromUserScope = false
   if (scope === 'project' && (otherScopeHasManagedServer(opts) || vscodeHooksInstalled())) {
-    migratedFromUserScope = uninstallVscode()
+    // keepBackups: this call is a migration STEP OF AN INSTALL, not an uninstall. It rewrites a
+    // user-scope file the user did not ask it to touch, so the recovery copies it makes on the way
+    // have to survive it -- uninstallVscode's own backup sweep would otherwise delete, seconds
+    // after creating it, the only copy of what that file held before this run.
+    migratedFromUserScope = uninstallVscode({ keepBackups: true })
   } else if (otherScopeHasManagedServer(opts)) {
     const otherPath = otherScopeMcpPath(opts)
     throw new Error(
@@ -313,6 +349,7 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
 }
 
 export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
+  assertProjectTargetsAreInTheProject(opts)
   const mcpPath = vscodeMcpPath(opts)
   let removed = false
   if (fs.existsSync(mcpPath)) {
@@ -329,13 +366,13 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
         backupFile(mcpPath)
         atomicWriteText(mcpPath, next)
       }
-      // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
-      removeCreatedBackups(mcpPath)
+      // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it. A migration is not a full uninstall and keeps them; see VscodeScopeOptions.keepBackups.
+      if (opts.keepBackups !== true) removeCreatedBackups(mcpPath)
       removed = true
     }
   }
   const instructionsPath = vscodeInstructionsPath(opts)
-  if (stripDelimitedBlock(instructionsPath, BEGIN, END)) {
+  if (stripDelimitedBlock(instructionsPath, BEGIN, END, opts.keepBackups === true)) {
     removed = true
     // The personal file is one install created: once its block is gone and only the frontmatter install wrote is left, it goes too.
     if (opts.project !== true && fs.readFileSync(instructionsPath, 'utf8').trim() === USER_INSTRUCTIONS_FRONTMATTER.trim()) fs.rmSync(instructionsPath, { force: true })
@@ -343,6 +380,6 @@ export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
   // Outside the branch above: a Visual Studio block that leaned on this gate has to carry the full gate itself, and it is stale whether or not this run found a block of ours to strip. Running it only on the success path left an uninstall that did nothing unable to heal one.
   if (opts.project === true) syncVisualStudioProjectGuidance(instructionsPath)
   // Leaves the hooks file in place while `install --copilot` still relies on it.
-  if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode')) removed = true
+  if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode', opts.keepBackups === true)) removed = true
   return removed
 }

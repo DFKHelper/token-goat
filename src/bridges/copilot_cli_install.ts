@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { removeCreatedBackups } from './created_configs.js'
+import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { hookCommandFor, hookPowershellCommand, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
@@ -321,6 +321,17 @@ export function copilotHooksOwnersPath(hooksDir: string): string {
   return path.join(hooksDir, HOOKS_OWNERS_FILE)
 }
 
+/**
+ * Every file this module reads or writes inside `hooksDir`.
+ *
+ * Exported so a project-scope caller can run all three past `assertProjectScopeTarget` before any
+ * of them is opened, rather than re-deriving the names and drifting from the three `path.join`
+ * call sites below.
+ */
+export function copilotHooksFilePaths(hooksDir: string): readonly string[] {
+  return [path.join(hooksDir, HOOKS_CONFIG_FILE), path.join(hooksDir, HOOKS_SCRIPT_FILE), copilotHooksOwnersPath(hooksDir)]
+}
+
 /** Owners recorded for `hooksDir`. A hooks file with no sidecar predates the sidecar, when only `install --copilot` wrote it, so it counts as Copilot's. */
 export function readCopilotHooksOwners(hooksDir: string): Set<CopilotHooksOwner> {
   const owners = new Set<CopilotHooksOwner>()
@@ -356,6 +367,12 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
   const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
   const configChanged = writeIfDifferent(configPath, desiredText, true)
+  // Recorded on every install, not only on creation: the question this answers later is "did an
+  // install on THIS machine put that hooks file there", and vscode_duplicate.ts asks it before a
+  // user-scope hook copy is allowed to stand down for a project-scope one. A repository can commit
+  // `.github/hooks/token-goat.json` itself; nothing on disk in the clone can tell the two apart,
+  // so the discriminator has to live outside the clone.
+  recordCreatedConfig(configPath)
 
   owners.add(owner)
   const ownersChanged = writeIfDifferent(copilotHooksOwnersPath(hooksDir), [...owners].sort().join('\n') + '\n')
@@ -377,7 +394,7 @@ function unlinkIfPresent(p: string): boolean {
  * Returns true when anything changed. A Copilot uninstall with no sidecar and no owner on record
  * still removes a stray config or shim, which is what uninstall did before owners were tracked.
  */
-export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): boolean {
+export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner, keepBackups = false): boolean {
   const ownersPath = copilotHooksOwnersPath(hooksDir)
   const hadSidecar = fs.existsSync(ownersPath)
   const owners = readCopilotHooksOwners(hooksDir)
@@ -388,8 +405,13 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
     return true
   }
   const configRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_CONFIG_FILE))
-  // The timestamped backups of this config are token-goat's own litter, so they leave with it.
-  removeCreatedBackups(path.join(hooksDir, HOOKS_CONFIG_FILE))
+  // The timestamped backups of this config are token-goat's own litter, so they leave with it --
+  // unless the caller is a migration, which is an install and must leave every recovery copy it
+  // just made in place. See stripDelimitedBlock's own keepBackups for the same distinction.
+  if (!keepBackups) removeCreatedBackups(path.join(hooksDir, HOOKS_CONFIG_FILE))
+  // And the ledger entry recorded at install: the file is gone, so "this machine put it there" must
+  // stop being true, or a repository could later drop its own file at that path and inherit the answer.
+  takeCreatedConfig(path.join(hooksDir, HOOKS_CONFIG_FILE))
   const scriptRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_SCRIPT_FILE))
   const ownersRemoved = unlinkIfPresent(ownersPath)
   return configRemoved || scriptRemoved || ownersRemoved
