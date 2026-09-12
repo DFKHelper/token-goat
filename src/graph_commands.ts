@@ -22,7 +22,7 @@ import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, REF_BLIND_DEF_PROBE_LIMIT, isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote } from './ref_blindness.js'
 import { detectLanguageOfFile } from './parser_types.js'
-import { symbolExtractorGap, extractImports, importsExtensionFor,fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
+import { symbolExtractorGap, extractImports, importsExtensionFor,fileConfinementRefusal, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion, warnIfFilesStale } from './read_commands.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -2232,6 +2232,10 @@ export function runAsk(opts: AskOptions): number {
   if (moreBeyondTop) {
     emitErr(`Answer is grounded in the top ${countNoun(top, 'match', 'matches')}; more matched (raise --top to widen the evidence).`)
   }
+  // `ask`'s answer is only as fresh as the rows it is grounded in, and those rows come from
+  // several files the caller never named -- there is no one file to self-heal before the query
+  // the way runSymbol/runRead heal the single file their spec names. See warnIfFilesStale's doc.
+  warnIfFilesStale(hits.map((h) => h.filePath))
 
   const BACKEND_ENV = 'TOKEN_GOAT_ASK_BACKEND'
   const backendLabel = process.env[BACKEND_ENV] ?? ''

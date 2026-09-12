@@ -19,7 +19,7 @@ import { querySymbols } from './index_reader.js'
 import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
-import { resolveBody } from './read_commands.js'
+import { resolveBody, warnIfFilesStale } from './read_commands.js'
 import { getSessionFiles } from './session.js'
 import { pushAll, decodeSource, foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
 import { detectWalkMode } from './walk_mode.js'
@@ -638,6 +638,15 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
     if (keepN > 0 && frames.length > keepN) frames = frames.slice(frames.length - keepN)
     return { ...b, frames }
   })
+
+  if (opts.bodies === true) {
+    // `--bodies` answers from the index the same way `symbol`/`read` do, and until this call it
+    // was the one such command with no staleness check at all: a frame's body could be served
+    // from rows that predate an on-disk edit with no warning and no self-heal. Batched once, up
+    // front, across every surviving frame's file (not per-frame inside resolveFrameSymbol) so a
+    // traceback that revisits the same file across several frames only warns/heals it once.
+    warnIfFilesStale(filtered.flatMap((b) => b.frames.map((f) => resolveIndexPath(f.file, cwd))))
+  }
 
   if (opts.json === true) {
     if (opts.bodies !== true) {
