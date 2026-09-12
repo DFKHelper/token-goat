@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **VHDL is now indexed**, extracting entities, architectures, packages (specification and body), functions, and procedures from `.vhd`/`.vhdl` files. A `/* ... */` delimited comment (added in VHDL-2008) is treated as non-nesting, matching IEEE Std 1076-2008 clause 15.9: the first closing `*/` ends it, however many `/*` appeared inside. A function or procedure declared without a body (a forward declaration in a package specification) is not indexed, matching this repo's existing convention elsewhere. Run `token-goat index` (or let the background worker catch up) to pick up VHDL files in an existing project: this changes what a `.vhd`/`.vhdl` file's index rows contain, so it reindexes.
+
 ### Changed
 
 - **A default install is smaller: it no longer downloads `sharp`, or the libvips image library that comes with it.** Image shrinking is built into token-goat and needs no extra package, so `sharp` was being installed and never loaded. A default install goes from 70 packages to 62, and an install without optional packages is unchanged at 2. `sharp` is now a development dependency, where the tests use it as a second opinion on token-goat's own image output. Every copyleft licence in an installed copy came in with libvips and is gone with it, leaving six packages that need a human answer instead of twenty: see [SECURITY.md](SECURITY.md#dependency-licenses). Nothing needs reindexing.

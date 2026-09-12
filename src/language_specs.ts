@@ -133,6 +133,7 @@ export const LANGUAGE_SPECS = [
   { id: 'asm', extraction: 'regex', extensions: ['.s', '.asm', '.nasm'], label: 'Assembly', ...CODE, fence: 'asm' },
   { id: 'batch', extraction: 'regex', extensions: ['.bat', '.cmd'], label: 'Windows batch', ...CODE, fence: 'batch' },
   { id: 'erlang', extraction: 'regex', extensions: ['.erl', '.hrl'], label: 'Erlang', ...CODE, fence: 'erlang' },
+  { id: 'vhdl', extraction: 'regex', extensions: ['.vhd', '.vhdl'], label: 'VHDL', ...CODE, fence: 'vhdl' },
   // OpenEdge ABL has no extension of its own: a `.p` or `.w` (Pascal and CWEB use them too) or a `.cls` (Apex, VB6) is ABL only when its head carries an ABL marker, which refineLanguageByContent in parser_types.ts checks. The path-only hooks see a `.p` or `.w` as unknown and a `.cls` as Apex.
   { id: 'abl', extraction: 'regex', extensions: [], label: 'OpenEdge ABL', ...CODE, fence: 'abl' },
   { id: 'apex', extraction: 'regex', extensions: ['.cls', '.trigger'], label: 'Apex', ...CODE, fence: 'apex' },
