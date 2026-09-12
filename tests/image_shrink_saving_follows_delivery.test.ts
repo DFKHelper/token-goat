@@ -52,8 +52,8 @@ function shrinkRow(): { events: number; bytes: number } {
 }
 
 async function viewImage(): Promise<Record<string, unknown>> {
-  const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'vs-delivery', tool_name: 'view_image', tool_input: { filePath: imgPath }, tool_use_id: 'tu-1' }
-  // VS Code sends no cwd and runs the hook in the workspace, which the normalizer fills from process.cwd(); the image has to be inside it to be shrunk.
+  // cwd is on the payload because that is what VS Code sends when a workspace folder is open, which is the case this test is about: the image has to be inside the workspace to be shrunk. Omitting it models the folderless case instead, where the hook starts in $HOME, the normalizer leaves the key absent, and the gate declines every path (tests/vscode_folderless_cwd_gate.test.ts) -- so this shrink would never run.
+  const payload = { timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PreToolUse', session_id: 'vs-delivery', tool_name: 'view_image', tool_input: { filePath: imgPath }, tool_use_id: 'tu-1', cwd: dir }
   process.chdir(dir)
   const event = buildEvent('pre_tool_use', normalizePayload(payload, 'vscode'))
   return JSON.parse(serializeOutput(await runHook(event), 'pre_tool_use', 'vscode', event)) as Record<string, unknown>

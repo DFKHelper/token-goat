@@ -17,9 +17,9 @@
  * parse/merge pattern -- there is nothing to merge into. It does, however,
  * still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw),
  * because Copilot's hooks schema supports per-entry fields token-goat writes
- * only some of (`timeoutSec` -- see HOOK_TIMEOUT_SEC below) and never touches
- * others of (`cwd`, `env`, `matcher`, `allowedEnvVars` --
- * https://docs.github.com/en/copilot/reference/hooks-reference) that a user
+ * only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and
+ * ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher`
+ * -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user
  * could plausibly hand-tune; since install always regenerates the whole file
  * from scratch, a hand-edit would otherwise be silently destroyed with no
  * recovery path.

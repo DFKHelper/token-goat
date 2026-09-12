@@ -557,8 +557,10 @@ describe('normalizePayload', () => {
       for (const name of mapped) expect(registered.has(name), `${name} has no registered tool-scoped handler`).toBe(true)
     })
 
-    it('fills in cwd from the process working directory, since VS Code sends none and runs the hook in the workspace folder', () => {
-      expect(normalizePayload(vscodePayload('run_in_terminal', NATIVE_INPUTS['run_in_terminal']!), 'vscode')['cwd']).toBe(process.cwd())
+    it('leaves cwd absent when the payload carries none, instead of standing in a directory of its own', () => {
+      // VS Code omits cwd only when no workspace folder is open, and it then starts the hook in $HOME. Filling the key from process.cwd() would hand vscode_path_gate.ts the home directory as a confinement root; absent is what makes that gate fail closed. Consumers that need a directory supply their own default.
+      expect(normalizePayload(vscodePayload('run_in_terminal', NATIVE_INPUTS['run_in_terminal']!), 'vscode')['cwd']).toBeUndefined()
+      // A cwd the harness really sent is passed through untouched, which is the distinction the gate reads.
       expect(normalizePayload({ ...vscodePayload('read_file', NATIVE_INPUTS['read_file']!), cwd: '/given' }, 'vscode')['cwd']).toBe('/given')
     })
 

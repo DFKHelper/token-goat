@@ -91,6 +91,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
   None of this needs a reindex.
 
+- **On VS Code with no folder open, hooks no longer treat your home directory as the project.** VS Code starts a hook in your home directory when no workspace folder is open, and it runs hooks before it asks you to approve the call. Token-goat used that directory as the boundary for which files a hook may open, which allowed any file under your home directory. Token-goat now marks a working directory it had to choose for itself and refuses to use one as a boundary, so these hooks open nothing until VS Code tells them where the workspace is. The rule that decides whether a path is inside the workspace is unchanged, and so is behavior when a folder is open.
+
 ### Changed
 
 - **Hooks start faster.** The language adapters that read symbols out of Fortran, COBOL, Pascal, PowerShell and the other 50-odd file types without a tree-sitter grammar now load only where files are indexed. A hook running in process, which is how the installed shim handles nearly every tool call, compiles 2.170 MB across 8 chunks and never loads the 131 KB adapter chunk at all. Hosts that shell out to `token-goat hook <event>` still compile the adapters, because token-goat's own read commands call them. Nothing about what gets indexed changes, but the first `token-goat index` after this version reparses every file once, because the extraction code moved.
