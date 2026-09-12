@@ -26,7 +26,7 @@
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 import type TsModule from 'typescript'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
@@ -394,7 +394,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
       declarations:
         declCap !== null ? { items: declCap.items, truncated: declCap.truncated, totalCount: declCap.totalCount } : null,
     }
-    const text = JSON.stringify(payload, null, 2)
+    const text = displaySafeJson(payload)
     recordDepDocsStat(fullSourceBytes, text, opts.packageName)
     return { text, code: 0 }
   }

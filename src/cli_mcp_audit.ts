@@ -14,7 +14,7 @@ import { resolveProjectRoot } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 
 export interface McpAuditCommandOptions {
   project?: string
@@ -289,7 +289,7 @@ export async function runMcpAuditCommand(opts: McpAuditCommandOptions = {}): Pro
   const report = buildMcpAuditReport(projectRoot)
 
   if (opts.json === true) {
-    process.stdout.write(`${JSON.stringify(report)}\n`)
+    process.stdout.write(`${displaySafeJson(report, 0)}\n`)
     return
   }
 

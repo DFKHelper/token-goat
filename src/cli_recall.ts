@@ -12,6 +12,7 @@ import { listRecentRecall, searchRecall, RECALL_DEFAULT_LIMIT, type RecallCacheT
 import { pad } from './util.js'
 import { fenceUntrustedContent, UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { displaySafeJson } from './paths.js'
 
 export interface RecallCommandOptions {
   type?: RecallCacheType
@@ -120,7 +121,7 @@ export function runRecallCommand(query: string | undefined, opts: RecallCommandO
     // provenance-correct, but a fence wrapped around JSON is no longer JSON, and a per-field
     // wrapper on a 160-char snippet costs a large fraction of the snippet, once per hit.
     const fenced = hits.map((hit) => ({ ...hit, snippet: fenceSnippetIfMatched(hit) }))
-    process.stdout.write(`${JSON.stringify(fenced)}\n`)
+    process.stdout.write(`${displaySafeJson(fenced, 0)}\n`)
     return
   }
 

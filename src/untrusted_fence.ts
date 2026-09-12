@@ -22,6 +22,7 @@
  */
 import { loadConfig } from './config.js'
 import { fenceUntrustedContent, scanForInjectionPatterns } from './injection_scan.js'
+import type { FenceSpan } from './injection_scan.js'
 import { recordStat } from './stats.js'
 
 /** Whether the injection subsystem is on. False only when the user set `injection.enabled=false`. */
@@ -48,6 +49,20 @@ export function fenceUntrusted(text: string, tag: string): string {
  * same text twice -- the hook handlers, which need the matches in hand to pick a return shape
  * before they know which string they are fencing. Same opt-out, same unconditional fence.
  */
+/**
+ * {@link fenceUntrusted} for a body whose spans alternate between token-goat's own narration and
+ * third-party bytes -- the interleaved shape an elision produces, which has no cut point that puts
+ * our voice outside the tag.
+ *
+ * Same opt-out and same unconditional fence. Only the untrusted spans are scanned, so a notice
+ * token-goat wrote can never be what names a pattern in the fence's own preamble.
+ */
+export function fenceUntrustedSpans(spans: readonly FenceSpan[], tag: string): string {
+  const joined = spans.map((s) => s.text).join('')
+  if (!injectionFencingEnabled()) return joined
+  return fenceUntrustedContent(spans, scanAndRecord(spans.filter((s) => s.own !== true).map((s) => s.text).join('')), tag)
+}
+
 export function fenceWithMatches(text: string, matches: readonly string[], tag?: string): string {
   if (!injectionFencingEnabled()) return text
   return tag === undefined

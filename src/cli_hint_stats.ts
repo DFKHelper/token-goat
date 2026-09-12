@@ -8,6 +8,7 @@
 
 import { getHintStatsSummary, getHintStatsTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
 import { pad } from './util.js'
+import { displaySafeJson } from './paths.js'
 
 export interface HintStatsCommandOptions {
   json?: boolean
@@ -107,7 +108,7 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
 
   const rows = getHintStatsSummary()
   if (opts.json === true) {
-    process.stdout.write(`${JSON.stringify(rows)}\n`)
+    process.stdout.write(`${displaySafeJson(rows, 0)}\n`)
     return
   }
   // Categories are registered statically, so an untouched store still renders a full table of

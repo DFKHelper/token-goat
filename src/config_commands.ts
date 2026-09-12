@@ -24,7 +24,7 @@ import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
-import { displaySafeText, normalizePath } from './paths.js'
+import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -259,7 +259,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         if (state.layer !== 'global' && state.layer !== 'project-unparsed') sources[k] = layerJson(state)
       }
       if (Object.keys(sources).length > 0) payload['_sources'] = sources
-      emit(JSON.stringify(payload, null, 2))
+      emit(displaySafeJson(payload))
       return
     }
     for (const [k, v] of pairs) {
@@ -291,7 +291,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     // Which layer this value came from, the same question `list` answers per key, resolved by the same helper so the two commands cannot drift. Without it `get` reports a bare value that silently disagrees with config.toml whenever a project .token-goat.toml or an env var is in play, and the user has no way to tell from the output that a second layer decided it.
     const getState = resolveConfigKeyLayer(opts.key, result.value, cfg, getProjectConfigInfo())
     if (opts.json === true) {
-      emit(JSON.stringify({ key: opts.key, value: result.value, ...layerJson(getState) }, null, 2))
+      emit(displaySafeJson({ key: opts.key, value: result.value, ...layerJson(getState) }))
       return
     }
     // The bare value line stays byte-identical for globally-resolved keys, so `VALUE=$(token-goat config get k)` and every existing caller are unaffected; only a value some other layer decided gains an annotation.
@@ -411,17 +411,17 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (shadowed && setState.layer === 'env') {
       emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set and overrides it at runtime — unset ${setState.envVar} for this change to take effect`)
     } else if (shadowed && setState.layer === 'env-invalid') {
-      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set to ${JSON.stringify(setState.rawValue)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it at runtime, taking effect as ${JSON.stringify(setState.effectiveValue)} — unset ${setState.envVar} for this change to take effect`)
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set to ${displaySafeJson(setState.rawValue, 0)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it at runtime, taking effect as ${displaySafeJson(setState.effectiveValue, 0)} — unset ${setState.envVar} for this change to take effect`)
     } else if (setState.layer === 'project') {
       emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} also sets it and overrides it in this project — remove it there for this change to take effect here`)
     } else if (setState.layer === 'project-invalid') {
-      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} sets it to ${JSON.stringify(setState.rawValue)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it in this project, taking effect as ${JSON.stringify(setState.effectiveValue)} — remove it there for this change to take effect here`)
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} sets it to ${displaySafeJson(setState.rawValue, 0)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it in this project, taking effect as ${displaySafeJson(setState.effectiveValue, 0)} — remove it there for this change to take effect here`)
     }
     if (opts.json === true) {
-      emit(JSON.stringify({ key, value: coerced }, null, 2))
+      emit(displaySafeJson({ key, value: coerced }))
       return
     }
-    emit(`${key} = ${JSON.stringify(coerced)}`)
+    emit(`${key} = ${displaySafeJson(coerced, 0)}`)
     return
   }
 
@@ -480,7 +480,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
           const eff = walkGet(effCfg, k.split('.'))
           const state = resolveConfigKeyLayer(k, eff.found ? eff.value : undefined, effCfg, validateProjectInfo)
           if (state.layer !== 'project-invalid') continue
-          findings.push({ kind: 'project_value_ignored', key: k, suggestion: `${JSON.stringify(state.rawValue)}${state.reason !== null ? ` is ${state.reason}` : ' is not usable'}; in effect: ${JSON.stringify(state.effectiveValue)}` })
+          findings.push({ kind: 'project_value_ignored', key: k, suggestion: `${displaySafeJson(state.rawValue, 0)}${state.reason !== null ? ` is ${state.reason}` : ' is not usable'}; in effect: ${displaySafeJson(state.effectiveValue, 0)}` })
         }
       }
     }
@@ -492,7 +492,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         const eff = walkGet(effCfg, envKey.split('.'))
         const state = resolveConfigKeyLayer(envKey, eff.found ? eff.value : undefined, effCfg, null)
         if (state.layer !== 'env-invalid') continue
-        findings.push({ kind: 'env_value_ignored', key: envKey, suggestion: `$${state.envVar} is ${JSON.stringify(state.rawValue)}${state.reason !== null ? ` (${state.reason})` : ''}; in effect: ${JSON.stringify(state.effectiveValue)}` })
+        findings.push({ kind: 'env_value_ignored', key: envKey, suggestion: `$${state.envVar} is ${displaySafeJson(state.rawValue, 0)}${state.reason !== null ? ` (${state.reason})` : ''}; in effect: ${displaySafeJson(state.effectiveValue, 0)}` })
       }
     }
 
@@ -502,7 +502,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (findings.length > 0) process.exitCode = 1
 
     if (opts.json === true) {
-      emit(JSON.stringify({ findings, ok: findings.length === 0 }, null, 2))
+      emit(displaySafeJson({ findings, ok: findings.length === 0 }))
       return
     }
     if (findings.length === 0) {
@@ -532,7 +532,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     const active = findProject(process.cwd())
     const blocked = cfg.worker.blocked_roots
     if (opts.json === true) {
-      emit(JSON.stringify({ active: active ? { root: active.root, hash: active.hash, marker: active.marker } : null, blocked_roots: blocked }, null, 2))
+      emit(displaySafeJson({ active: active ? { root: active.root, hash: active.hash, marker: active.marker } : null, blocked_roots: blocked }))
       return
     }
     if (active) {
@@ -575,7 +575,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     // which is the opposite of what someone excluding a directory of credentials is asking for.
     const purged = pruneBlockedRoot(target)
     if (opts.json === true) {
-      emit(JSON.stringify({ excluded: target, purgedFromIndex: purged.length, blocked_roots: cfg.worker.blocked_roots }, null, 2))
+      emit(displaySafeJson({ excluded: target, purgedFromIndex: purged.length, blocked_roots: cfg.worker.blocked_roots }))
       return
     }
     emit(`Excluded: ${target}`)
@@ -605,7 +605,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
 
     if (opts.dryRun === true) {
       if (opts.json === true) {
-        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, blocked_roots: before }, null, 2))
+        emit(displaySafeJson({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, wouldPruneOrphanChunkFiles: orphanChunkPaths.length, orphanChunkPaths, blocked_roots: before }))
         return
       }
       if (removed === 0) {
@@ -635,7 +635,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     const prunedTempFiles = pruneSystemTempFiles()
     const prunedOrphanChunks = pruneOrphanedChunks()
     if (opts.json === true) {
-      emit(JSON.stringify({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length }, null, 2))
+      emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length }))
       return
     }
     emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
@@ -678,7 +678,7 @@ export function cmdCompactDoc(opts: {
     }
     const legacyFullBytes = fs.statSync(resolved).size
     if (opts.json === true) {
-      const jsonText = JSON.stringify({ path: resolved, compact: result }, null, 2)
+      const jsonText = displaySafeJson({ path: resolved, compact: result })
       emit(jsonText)
       recordCompactDocStat(legacyFullBytes, jsonText, resolved)
       return
@@ -730,7 +730,7 @@ export function cmdCompactDoc(opts: {
   const extractiveFullBytes = fs.statSync(resolved).size
 
   if (opts.json === true) {
-    const jsonText = JSON.stringify({ path: resolved, compactPath, rebuilt, compact: body }, null, 2)
+    const jsonText = displaySafeJson({ path: resolved, compactPath, rebuilt, compact: body })
     emit(jsonText)
     recordCompactDocStat(extractiveFullBytes, jsonText, resolved)
     return
@@ -848,7 +848,7 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
   // takeScreenshot).
   atomicWriteBytes(finalPath, outData)
   if (opts.json === true) {
-    emit(JSON.stringify({ url: opts.url, out: finalPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
+    emit(displaySafeJson({ url: opts.url, out: finalPath, originalBytes, shrunkBytes, wasShrunk }))
     return
   }
   const savings = wasShrunk ? ` (saved ${originalBytes - shrunkBytes} bytes)` : ' (not shrunk — already small or unsupported format)'
@@ -913,7 +913,7 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
   }
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    process.stdout.write(displaySafeJson(items) + '\n')
     return
   }
   if (items.length === 0) {

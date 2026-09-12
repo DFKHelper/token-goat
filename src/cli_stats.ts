@@ -15,6 +15,7 @@ import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
+import { displaySafeJson } from './paths.js'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -138,7 +139,7 @@ const METHODOLOGY = {
 
 function renderMethodology(json = false): void {
   if (json) {
-    process.stdout.write(`${JSON.stringify({ methodology: METHODOLOGY })}\n`)
+    process.stdout.write(`${displaySafeJson({ methodology: METHODOLOGY }, 0)}\n`)
     return
   }
 
@@ -194,7 +195,7 @@ export function runStats(opts: StatsOptions = {}): void {
   const summary = summarize(window, undefined, opts.homeDir)
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(statsJsonPayload(summary)) + '\n')
+    process.stdout.write(displaySafeJson(statsJsonPayload(summary), 0) + '\n')
     return
   }
 

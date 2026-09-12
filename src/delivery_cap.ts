@@ -35,6 +35,28 @@ export function bashOutputCapBytes(harness: HarnessName = detectHarness()): numb
 }
 
 /**
+ * Cut `text` back so that it plus `reserveBytes` of framing still fits the harness delivery cap.
+ *
+ * A rewrite that overruns the cap does not merely lose its tail. The harness truncates from the
+ * END, which is exactly where a closing fence tag and a recall pointer sit, and it PERSISTS the
+ * substitute -- so an over-long rewrite ships an unterminated fence and destroys the only route
+ * back to the original. Callers therefore reserve the bytes of everything they intend to wrap
+ * around `text` and clip the payload, never the framing.
+ *
+ * The cut lands on the last complete line so the boundary is one the model can read, which also
+ * drops any multi-byte character a byte-wise slice split in half. Returns the text unchanged when
+ * the harness has no measured cap or the payload already fits.
+ */
+export function clipToDeliveryCap(text: string, reserveBytes: number): { text: string; clipped: boolean } {
+  const cap = bashOutputCapBytes()
+  const room = cap === null ? null : cap - reserveBytes
+  if (room === null || room <= 0 || Buffer.byteLength(text, 'utf-8') <= room) return { text, clipped: false }
+  const sliced = Buffer.from(text, 'utf-8').subarray(0, room).toString('utf-8')
+  const lastNewline = sliced.lastIndexOf('\n')
+  return { text: lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced, clipped: true }
+}
+
+/**
  * The portion of originalBytes the model would actually have received, given the active harness.
  *
  * This is the single definition of the counterfactual every Bash saving is measured against. Both

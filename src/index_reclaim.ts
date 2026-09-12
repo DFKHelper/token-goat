@@ -27,7 +27,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { isWorkerRunning } from './worker.js'
@@ -264,7 +264,7 @@ export function cmdReclaimIndex(opts: {
   const result = reclaimIndex(dbPath, { rebuild: opts.rebuild === true })
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ dbPath, ...result }, null, 2) + '\n')
+    process.stdout.write(displaySafeJson({ dbPath, ...result }) + '\n')
     return
   }
 

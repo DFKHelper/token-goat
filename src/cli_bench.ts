@@ -27,7 +27,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { displaySafeText } from './paths.js'
+import { displaySafeText, displaySafeJson } from './paths.js'
 import { CompressedOutput, TOOL_FILTERS, ToolFilter, combineStreams, deliverCompressed, detectFromCommand } from './tool_filters/index.js'
 import { runGit } from './util.js'
 
@@ -283,7 +283,7 @@ function renderTable(report: BenchReport, floorPercent: number): string {
   lines.push(`fidelity ${report.kept}/${report.mustKeepTotal} kept   (GUARD -- must not regress; any miss exits 1)`)
   lines.push(`coverage ${report.coveredFilters}/${report.registeredFilters} filters exercised, ${report.appliedCases}/${report.cases.length} cases compressed`)
   for (const r of report.cases) {
-    for (const needle of r.missing) lines.push(`  DROPPED  ${displaySafeText(r.id)}: ${JSON.stringify(needle)}`)
+    for (const needle of r.missing) lines.push(`  DROPPED  ${displaySafeText(r.id)}: ${displaySafeJson(needle, 0)}`)
   }
   return lines.join('\n')
 }
@@ -395,6 +395,6 @@ export function runBenchCommand(opts: BenchCommandOptions): { text: string; code
   // Scoring the corpus with a no-op filter costs one extra in-memory pass and turns the floor from
   // an assumption into a measurement.
   const floorPercent = runCorpus(cases, 'identity').ratioPercent
-  if (opts.json === true) return { text: JSON.stringify({ ...report, floorPercent }, null, 2), code }
+  if (opts.json === true) return { text: displaySafeJson({ ...report, floorPercent }), code }
   return { text: renderTable(report, floorPercent), code }
 }

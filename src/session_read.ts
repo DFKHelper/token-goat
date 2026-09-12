@@ -35,6 +35,7 @@ import * as readline from 'node:readline'
 import { estimateTokens } from './compact.js'
 import { projectTranscriptsDir, findLatestTranscript, safeStringify, extractResultText } from './waste.js'
 import { resolveProjectRoot } from './project.js'
+import { displaySafeText } from './paths.js'
 
 // ---- resolution -----------------------------------------------------------
 
@@ -270,8 +271,8 @@ export function formatSessionOutline(turns: SessionOutlineTurn[]): string {
   if (turns.length === 0) return '(no turns found)'
   const lines: string[] = []
   for (const t of turns) {
-    const tools = t.toolCalls.length > 0 ? `  [tools: ${t.toolCalls.join(', ')}]` : ''
-    lines.push(`${t.turn}. [${t.role}] ${t.preview}${tools}  (~${t.tokens} tok, ${t.bytes}B, line ${t.lineNumber})`)
+    const tools = t.toolCalls.length > 0 ? `  [tools: ${displaySafeText(t.toolCalls.join(', '))}]` : ''
+    lines.push(`${t.turn}. [${t.role}] ${displaySafeText(t.preview)}${tools}  (~${t.tokens} tok, ${t.bytes}B, line ${t.lineNumber})`)
   }
   return lines.join('\n')
 }
