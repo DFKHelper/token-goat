@@ -15,6 +15,7 @@ import {
   recordCurlDownload,
   recordFileRead,
   recordLargeFileHintPending,
+  recordOutstandingAgentSpawn,
   recordSymbolRead,
   takePendingLargeFileHint,
   type FileEntry,
@@ -785,5 +786,25 @@ describe('file cap', () => {
     expect(disk.files).toHaveLength(500)
     const minKept = Math.min(...disk.files.map((f) => f.lastReadAt))
     expect(minKept).toBe(100) // the 100 oldest (lastReadAt 0..99) are evicted
+  })
+})
+
+describe('saveSessionState redaction backstop (CLAUDE.arch.md Security Boundaries)', () => {
+  // Regression (HAND-DERIVED credential): a new SerializedSession field (outstandingAgentSpawns)
+  // shipped holding a raw, unredacted prompt with no redaction call anywhere in its path -- not a
+  // truncate-before-redact ordering bug, a field that never called redactSecrets at all. Rather
+  // than trust every future field's author to remember redaction at its own construction site,
+  // saveSessionState now sweeps the fully-serialized JSON through redactSecrets immediately before
+  // the one atomicWriteText call that ever writes this file, so a field is covered whether or not
+  // its author remembered. Reads the raw bytes actually on disk, not the parsed/re-imported
+  // object, and asserts absence of a FRAGMENT, matching this repo's own fixture-provenance
+  // discipline (a full-key-only assertion would pass even while a fragment leaks).
+  it('never leaves a raw credential fragment in the on-disk session state file', () => {
+    importSessionState(empty())
+    recordOutstandingAgentSpawn('billing key sk-ant-A1b2C3d4E5f6G7h8I9J0K1L2M3N4O5P6Q7R8S9T0 rotate it')
+    saveSessionState('sid-secret-spawn')
+    const raw = fs.readFileSync(sessionFile('sid-secret-spawn'), 'utf8')
+    expect(raw).not.toMatch(/sk-ant-[A-Za-z0-9]{4,}/)
+    expect(raw).not.toMatch(/AKIA[0-9A-Z]{4,}/)
   })
 })

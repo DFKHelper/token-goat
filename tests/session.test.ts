@@ -489,4 +489,28 @@ describe('outstanding agent spawn tracking (mutation-testing gap)', () => {
 
     expect(consumedOutstandingAgentSpawnKeys().length).toBe(1)
   })
+
+  // Regression (HAND-DERIVED credentials): recordOutstandingAgentSpawn stored the raw prompt with
+  // no redaction call at all -- not a truncate/redact ordering bug like the other three sites, a
+  // field that never called redactSecrets anywhere. A prompt carrying a live credential survived
+  // verbatim in memory, in exportSessionState()'s output (what session_store.ts persists to disk),
+  // and in the duplicate-spawn advisory display. Asserts absence of FRAGMENTS (a partial AKIA/
+  // sk-ant- match), not just the full secret, matching this repo's fixture-provenance discipline.
+  it('redacts a credential in the spawn prompt before it is ever stored', () => {
+    recordOutstandingAgentSpawn('Use this key to call the billing API: sk-ant-A1b2C3d4E5f6G7h8I9J0K1L2M3N4O5P6Q7R8S9T0 and report back')
+    const spawns = getOutstandingAgentSpawns()
+    expect(spawns.length).toBe(1)
+    expect(spawns[0]?.prompt ?? '').not.toMatch(/sk-ant-[A-Za-z0-9]{4,}/)
+    expect(spawns[0]?.prompt ?? '').not.toMatch(/AKIA[0-9A-Z]{4,}/)
+    // exportSessionState() is exactly what session_store.ts::saveSessionState serializes to disk.
+    const exported = exportSessionState()
+    const serialized = JSON.stringify(exported.outstandingAgentSpawns)
+    expect(serialized).not.toMatch(/sk-ant-[A-Za-z0-9]{4,}/)
+  })
+
+  it('redacts an AWS-shaped key (no keyword fallback, fixed-length pattern) in the spawn prompt', () => {
+    recordOutstandingAgentSpawn('deploy creds: AKIAIOSFODNN7EXAMPLE please rotate after use')
+    const spawns = getOutstandingAgentSpawns()
+    expect(spawns[0]?.prompt ?? '').not.toMatch(/AKIA[0-9A-Z]{4,}/)
+  })
 })
