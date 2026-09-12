@@ -298,6 +298,25 @@ export abstract class ToolFilter {
     let so = safeDecode(stdout)
     let se = safeDecode(stderr)
 
+    // Step 1.5: redact BEFORE any truncator/clipper/capper below ever sees the text. Every
+    // truncator in this pipeline (clampKeepingEnds, clipWideLines, capLongLines,
+    // truncateMiddleSmart, capBytes) can cut a real credential mid-value; if that happens before
+    // redaction runs, the surviving fragment can fall under a pattern's minimum-length floor (e.g.
+    // sk-ant- needs 20+ trailing chars) and the regex that would have caught the whole key no
+    // longer recognises the piece that's left, so it ships raw. Redacting the full, untruncated
+    // stream first means every truncator downstream only ever cuts placeholder text
+    // (`[REDACTED:...]`), never secret bytes. This also means the byte-accounting below (soBytes/
+    // seBytes, used as "what the command really produced" for compression-ratio reporting) is
+    // computed on the redacted text -- consistent with every other cache in this repo
+    // (bash_output_cache.ts, mcp_cache.ts) sizing off the redacted output rather than the raw
+    // pre-redaction bytes.
+    let redactedCount = 0
+    const earlySo = redactSecrets(so)
+    const earlySe = redactSecrets(se)
+    so = earlySo.text
+    se = earlySe.text
+    redactedCount += earlySo.count + earlySe.count
+
     // Step 2: pre-filter input cap, applied per-stream before normalisation so even normalisation stays O(capped_bytes).
     const maxInput = getMaxInputBytes()
     const notes: string[] = []
@@ -372,19 +391,18 @@ export abstract class ToolFilter {
     if (lines.length > maxLines) body = truncateMiddleSmart(lines, maxLines).join('\n')
     // Step 9: byte cap (backstop for pathological lines).
     body = capBytes(body, maxBytes)
-    // Step 9.5: defense-in-depth secret redaction -- every other place token-goat persists or
-    // serves tool output (bash_output_cache, disk_cache, web_cache, mcp_cache) passes it through
-    // redactSecrets() first. This `apply()` pipeline is the one exception: it is what an agent
-    // actually sees live, in the same turn (hooks_bash.ts's maybeCompressRewrite rewrites plain
-    // `env`/`printenv`/etc. Bash calls to run through this exact path by default), yet it never
-    // redacted anything -- e.g. EnvFilter's ENV_KEEP_PREFIXES intentionally keeps AWS_/GITHUB_/
-    // GITLAB_/AZURE_/GOOGLE_/TF_/PULUMI_-prefixed vars for debugging context, which also keeps
-    // any real AWS_ACCESS_KEY_ID/GITHUB_TOKEN/etc. value verbatim. Applied last (after every
-    // per-tool filter has already run) so this is a single choke point for all of them, not a
-    // per-filter patch.
+    // Step 9.5: defense-in-depth secret redaction, re-run on the final body. The primary pass now
+    // runs at Step 1.5, before any truncator in this pipeline can cut a credential below a
+    // pattern's recognition floor (see the comment there); EnvFilter's ENV_KEEP_PREFIXES
+    // intentionally keeps AWS_/GITHUB_/GITLAB_/AZURE_/GOOGLE_/TF_/PULUMI_-prefixed vars for
+    // debugging context, which also keeps any real AWS_ACCESS_KEY_ID/GITHUB_TOKEN/etc. value
+    // verbatim until redacted. This second pass is normally a no-op (redactSecrets is idempotent)
+    // but stays in place as a choke point for any redaction-shaped text a per-tool filter's own
+    // `compress()` might introduce after Step 1.5 already ran.
     const redacted = redactSecrets(body)
     body = redacted.text
-    if (redacted.count > 0) notes.push(`redacted ${redacted.count} secret-shaped value(s)`)
+    redactedCount += redacted.count
+    if (redactedCount > 0) notes.push(`redacted ${redactedCount} secret-shaped value(s)`)
     // Step 10: prepend notes.
     if (notes.length) body = `[${notes.join('; ')}]\n${body}`
 
