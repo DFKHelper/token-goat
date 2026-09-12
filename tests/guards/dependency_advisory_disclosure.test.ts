@@ -7,6 +7,7 @@
  * manifest for this. The two forward-patched majors are pinned here for the same reason: the
  * document says they were moved across a major to clear their advisories, so a revert must fail.
  */
+import { execSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -214,6 +215,54 @@ describe('dependency advisory disclosure', () => {
     // there: the repository's own `npm audit` includes development dependencies.
     expect(minorOf(pkg.devDependencies?.['sharp'] ?? '')).toBeGreaterThanOrEqual(35)
     expect(majorOf(pkg.optionalDependencies?.['puppeteer-core'] ?? '')).toBeGreaterThanOrEqual(25)
+  })
+})
+
+/**
+ * The "this repository" row is the one claim in the table no other test here re-derives: the rest
+ * check package identity and lock-file counts, which is a proxy for what `npm audit` reports, not
+ * the audit result itself. A real advisory landing in a dev-only transitive dependency (exactly what
+ * happened with adm-zip and hono) can make the row's "clean" claim false without moving anything
+ * those other checks look at. `auditReport` is computed once at module load so every test in this
+ * file pays for at most one `npm audit` call, not one per assertion.
+ */
+interface AuditReport { metadata: { vulnerabilities: { total: number } } }
+
+let auditReport: AuditReport | null = null
+try {
+  // execSync, not execFileSync: `npm` is a `.cmd` shim on Windows, and execFileSync fails to spawn
+  // one directly (EINVAL) without a shell. The command is a fixed literal with no interpolated
+  // input, so a shell string carries no injection risk here.
+  const out = execSync('npm audit --json', { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16e6 })
+  auditReport = JSON.parse(out) as AuditReport
+} catch (err) {
+  // `npm audit` exits non-zero the moment it finds anything, which execFileSync treats as a thrown
+  // error -- but the JSON report is still on stdout in that case, so try that before giving up.
+  const stdout = (err as { stdout?: Buffer | string } | null)?.stdout
+  if (stdout !== undefined) {
+    try {
+      auditReport = JSON.parse(stdout.toString()) as AuditReport
+    } catch {
+      auditReport = null
+    }
+  }
+}
+
+describe('this repository row matches a live npm audit', () => {
+  it.skipIf(auditReport === null)('never claims clean while npm audit finds something, or vice versa', () => {
+    const row = security.split('\n').find((line) => line.startsWith('| this repository |'))
+    if (row === undefined) throw new Error('SECURITY.md has no "this repository" table row')
+    const total = auditReport?.metadata.vulnerabilities.total ?? 0
+
+    if (total > 0) {
+      expect(
+        row,
+        `npm audit found ${total} vulnerabilit${total === 1 ? 'y' : 'ies'} in this repository's own ` +
+        `tree (development dependencies included), but the row still claims it is clean:\n${row}`,
+      ).not.toMatch(/\bclean\b/)
+    } else {
+      expect(row, `npm audit reports 0 vulnerabilities, so the row should say so:\n${row}`).toMatch(/\bclean\b/)
+    }
   })
 })
 
