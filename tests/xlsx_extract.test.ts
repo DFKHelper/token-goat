@@ -221,6 +221,26 @@ describe('rangeSheet', () => {
     expect(formatXlsxRange(reversed)).toBe(formatXlsxRange(forward))
     expect(formatXlsxRange(reversed)).toBe('A,B\nname,age\nAlice,30\nBob,25')
   })
+
+  // HAND-DERIVED: the cell counts below are the products of the A1 range's own corners, computed
+  // from the notation rather than from anything this repo emits. `XFD1048576` is the last cell
+  // ECMA-376 Part 1 section 18.3.1.73 allows (2^14 columns by 2^20 rows), so `A1:XFD1048576` is
+  // 16,384 x 1,048,576 = 17,179,869,184 cells.
+  //
+  // Regression: every other reader here is bounded by assertScannableExtent, but that ceiling
+  // measures the extent the FILE declares. rangeSheet's extent is declared by the CALLER, and it
+  // reached no guard at all -- it iterated the requested corners directly, appending one string
+  // per cell. Measured at 0.083 us/cell over a real 2,080,000-cell request against a two-cell
+  // file, so the far corner is ~24 minutes of CPU and an unbounded array, from one flag.
+  it('rejects a caller-supplied range past the shared scan limit instead of iterating it', async () => {
+    await expect(rangeSheet(file, 'Employees', 'A1:XFD1048576', false)).rejects.toThrow(/scan limit/)
+  })
+
+  // The negative control, and half the evidence: a guard that rejected everything would satisfy
+  // the assertion above while being broken. An ordinary range must still return its data.
+  it('still returns an ordinary bounded range once the limit exists', async () => {
+    expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'A1:B2', false))).toBe('A,B\nname,age\nAlice,30')
+  })
 })
 
 describe('querySheet', () => {

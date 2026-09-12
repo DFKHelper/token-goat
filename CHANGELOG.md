@@ -13,6 +13,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
   Run `token-goat index` to reparse: the symbols and line numbers recorded for Groovy, Elixir, and Scala files change.
 
+- **`xlsx-range` turns down a range bigger than it can scan instead of trying to read it.** Asking for `A1:XFD1048576` used to walk 17 billion cells and run out of memory. The ceiling is the same 20 million cell limit the other sheet reads already use, counted here from the range you ask for rather than the size the file declares. When a sheet is too large to scan, the message now suggests a smaller `--range` instead of pointing at a read with no limit of its own.
+
 ## [2.9.11] - 2026-09-11
 
 ### Added

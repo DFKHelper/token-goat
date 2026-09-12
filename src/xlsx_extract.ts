@@ -21,11 +21,24 @@ function requireSheet(wb: ExcelWorkbook, sheetName: string): ExcelWorksheet {
 // ws.rowCount and ws.columnCount come straight from the highest row/column number declared in any populated cell's `r="..."` attribute in the sheet XML (xlsx_reader.ts's parseSheet); OOXML allows up to 2^20 rows by 2^14 columns, and a single cell placed at that far corner is enough to declare it, cheaply, in an otherwise tiny file. A full scan of the declared range (as usedRange/headSheet/sheetToCsv all do) is then quadratic in numbers the file merely states, not in anything it actually contains. This ceiling rejects that before the scan starts rather than after it has spent seconds to minutes finding almost nothing there.
 const MAX_XLSX_SCAN_CELLS = 20_000_000
 
-function assertScannableExtent(ws: ExcelWorksheet): void {
-  const cells = (ws.rowCount || 0) * (ws.columnCount || 0)
+/**
+ * One ceiling for both extents a cell scan can be driven by, because both cost the same per cell.
+ * `assertScannableExtent` bounds the extent the FILE declares; `rangeSheet` bounds the one the
+ * CALLER asks for. Only the first existed, so `--range A1:XFD1048576` -- 17,179,869,184 cells, all
+ * of them accumulating a string -- reached no guard at all and exhausted the heap.
+ */
+function assertCellCount(cells: number, extent: string, hint: string): void {
   if (cells > MAX_XLSX_SCAN_CELLS) {
-    throw new Error(`sheet "${ws.name}" declares a used range of ${ws.rowCount} rows x ${ws.columnCount} cols (${cells.toLocaleString()} cells), over the ${MAX_XLSX_SCAN_CELLS.toLocaleString()}-cell scan limit; narrow with xlsx-range instead`)
+    throw new Error(`${extent} (${cells.toLocaleString()} cells), over the ${MAX_XLSX_SCAN_CELLS.toLocaleString()}-cell scan limit; ${hint}`)
   }
+}
+
+function assertScannableExtent(ws: ExcelWorksheet): void {
+  assertCellCount(
+    (ws.rowCount || 0) * (ws.columnCount || 0),
+    `sheet "${ws.name}" declares a used range of ${ws.rowCount} rows x ${ws.columnCount} cols`,
+    'read a bounded range with xlsx-range --range',
+  )
 }
 
 // --- A1-notation helpers (hand-rolled: ExcelJS exposes no public decode_range/encode_cell util) ---
@@ -187,6 +200,9 @@ export async function rangeSheet(filePath: string, sheetName: string, rangeSpec:
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
   const range = decodeRange(rangeSpec)
+  const rangeRows = range.e.r - range.s.r + 1
+  const rangeCols = range.e.c - range.s.c + 1
+  assertCellCount(rangeRows * rangeCols, `range ${rangeSpec} covers ${rangeRows} rows x ${rangeCols} cols`, 'ask for a smaller --range')
   const rowsOut: string[][] = []
   for (let r = range.s.r; r <= range.e.r; r++) {
     const rowOut: string[] = []
