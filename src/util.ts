@@ -340,18 +340,44 @@ export function uninstallSingleFilePlugin(filePath: string, sidecarPath: string)
 // Caps how many timestamped backups pile up per file. backupFile runs on every install/ uninstall of a harness's hook config (install.ts, codex_install.ts, copilot_cli_install.ts, gemini_install.ts, openclaw_install.ts), so a config directory a user re-installs into repeatedly would otherwise accumulate one .bak.<timestamp> file forever.
 const MAX_BACKUPS_PER_FILE = 5
 
+/**
+ * Distinct `.bak` names tried for one timestamp before the collision is reported as a real error.
+ *
+ * Each attempt is one attacker-planted link or one genuine same-millisecond backup; a handful is
+ * far more than either produces, and the bound is what keeps a directory somebody has filled with
+ * planted links from spinning here.
+ */
+const MAX_BACKUP_NAME_ATTEMPTS = 16
+
 export function backupFile(p: string): void {
   if (!existsSync(p)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const backupPath = `${p}.bak.${stamp}`
-  // COPYFILE_EXCL: fail rather than write through an existing destination. Without it a `.bak.<ISO>`
-  // path a repository checked in as a symlink is a write primitive -- copyFileSync follows a
-  // destination link and lands the source's bytes wherever it points. A same-millisecond collision
-  // with a real earlier backup also throws now instead of silently overwriting it; the two backups
-  // would hold the same bytes, and failing loudly is the safe direction for the link case.
-  // The source side is handled by the caller: assertProjectScopeTarget (bridges/project_scope_guard.ts)
-  // refuses a project-scope path that resolves outside the project before any read or backup runs.
-  copyFileSync(p, backupPath, fsConstants.COPYFILE_EXCL)
+  let backupPath: string
+  for (let attempt = 0; ; attempt++) {
+    // Suffix from the second attempt on, so the ordinary name stays exactly `<p>.bak.<ISO>` and
+    // every existing reader of that shape (pruneOldBackups' ledger, the uninstall sweep, the
+    // `.bak.\d{4}-` filters in the install tests) is unaffected.
+    backupPath = attempt === 0 ? `${p}.bak.${stamp}` : `${p}.bak.${stamp}-${attempt}`
+    try {
+      // COPYFILE_EXCL: fail rather than write through an existing destination. Without it a
+      // `.bak.<ISO>` path a repository checked in as a symlink is a write primitive --
+      // copyFileSync follows a destination link and lands the source's bytes wherever it points.
+      // The source side is handled by the caller: assertProjectScopeTarget
+      // (bridges/project_scope_guard.ts) refuses a project-scope path that resolves outside the
+      // project before any read or backup runs.
+      copyFileSync(p, backupPath, fsConstants.COPYFILE_EXCL)
+      break
+    } catch (err) {
+      // EEXIST is the ONE error retried, and retrying it never weakens the link defence: EXCL is
+      // set on every attempt, so an occupied name is skipped rather than written through. The
+      // installer needs this: `installVscode` in project scope backs up the same instructions file
+      // twice in one process (writeGuidance, then syncVisualStudioProjectGuidance ->
+      // upsertDelimitedBlock), and the two calls land 4-6 ms apart -- inside one millisecond on
+      // faster hardware, where an unhandled EEXIST would abort the install outright. Failing loudly
+      // is not the safe direction when the collision is with token-goat's own earlier backup.
+      if (!isEExist(err) || attempt >= MAX_BACKUP_NAME_ATTEMPTS - 1) throw err
+    }
+  }
   // Recorded at the instant it is created, so uninstall can later delete this file and no other.
   // Nothing else identifies it: the name is one a user could have chosen too.
   recordCreatedBackup(backupPath)
