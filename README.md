@@ -402,6 +402,15 @@ under Zed's Agent panel tools list after installing; new MCP servers start
 disabled. `token-goat uninstall --zed` removes the entry and its generated
 shim script. See [Zed users](docs/install.md#zed-users).
 
+**Cursor**: `token-goat install --cursor` registers token-goat as an MCP
+server in `~/.cursor/mcp.json` (`-p`/`--project` for
+`<project>/.cursor/mcp.json`). This never touches `~/.cursor/hooks.json`:
+Cursor already imports Claude Code's hooks from `~/.claude/settings.json` by
+default, so a plain `token-goat install` for Claude Code already gets hooks
+running in Cursor too, with no separate Cursor hooks file to maintain or risk
+clobbering. `token-goat uninstall --cursor` removes only the MCP entry. See
+[Cursor users](docs/install.md#cursor-users).
+
 The optional source-controlled extension lives in `vscode-extension/`. Build
 and install its VSIX manually; `--vscode` intentionally does not copy or
 install extensions:

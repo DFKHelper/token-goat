@@ -26,6 +26,7 @@ import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cl
 import { findStrayClaudeMdBlocks, isInstalled } from './install.js'
 import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
+import { cursorManagedEntry, cursorMcpPath } from './bridges/cursor_install.js'
 import { zedManagedEntry, zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
@@ -909,6 +910,26 @@ export function checkZed(settingsPath: string): DoctorResult | null {
   }
 }
 
+/**
+ * `mcpPath`'s token-goat MCP entry, if any. `claudeHooksInstalled` (from `../install.ts`'s
+ * `isInstalled`) decides which message to print: Cursor imports Claude Code's hooks from
+ * `~/.claude/settings.json` by default (confirmed against the installed 3.19.7 bundle -- see
+ * `../bridges/cursor_install.ts`'s header), so token-goat never writes a second copy into
+ * `~/.cursor/hooks.json`. That means whether hooks actually fire in Cursor depends entirely on
+ * whether the ordinary Claude Code install has been run, not on anything this bridge writes.
+ */
+export function checkCursor(mcpPath: string, claudeHooksInstalled: boolean): DoctorResult | null {
+  const entry = cursorManagedEntry(mcpPath)
+  if (entry === null) return null
+  return {
+    name: 'Cursor',
+    status: 'ok',
+    message: claudeHooksInstalled
+      ? `MCP server registered in ${displaySafeText(mcpPath)}. Cursor also imports the token-goat hooks already installed in ~/.claude/settings.json by default, so hooks work in Cursor too with no separate hooks.json entry.`
+      : `MCP server registered in ${displaySafeText(mcpPath)}. Cursor writes and runs no token-goat hooks here: it imports Claude Code hooks from ~/.claude/settings.json by default, but none are installed there yet -- run "token-goat install" to get hooks in Cursor too.`,
+  }
+}
+
 export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
   if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
     return null
@@ -1436,6 +1457,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (visualStudioResult) results.push(visualStudioResult)
   const zedResult = checkZed(zedSettingsPath())
   if (zedResult) results.push(zedResult)
+  const cursorResult = checkCursor(cursorMcpPath(), isInstalled('user') || isInstalled('project'))
+  if (cursorResult) results.push(cursorResult)
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 

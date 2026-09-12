@@ -229,6 +229,18 @@ Like Visual Studio, this is MCP tools only: no read dedup, no hints, no image sh
 
 `token-goat doctor` reports whether the entry is present. To remove: `token-goat uninstall --zed`, which deletes the shim and the `context_servers.token-goat` entry (and the whole `settings.json`, but only if token-goat created it and nothing else was ever added to it).
 
+### Cursor users
+
+```
+token-goat install --cursor
+```
+
+`--cursor` registers token-goat as an MCP server in `~/.cursor/mcp.json` (root `mcpServers`, confirmed against the installed Cursor 3.19.7 bundle's own JSON schema for that file). Add `-p`/`--project` to write `<project>/.cursor/mcp.json` instead — Cursor reads both. Cursor's schema rejects unknown properties on a server entry (`additionalProperties: false`) and has no `type` field, unlike VS Code's and Visual Studio's `servers` entries, so the entry token-goat writes is `command` + `args` only.
+
+`--cursor` never writes `~/.cursor/hooks.json` (or `.cursor/hooks.json`), on purpose. Cursor's own shipped code loads `~/.claude/settings.json` by default (`thirdPartyExtensibilityEnabled` defaults to on) and translates Claude Code's hook step names into its own before deduping against anything already in `hooks.json` by exact command string. So a plain `token-goat install` for Claude Code already makes those same hooks fire once inside Cursor, automatically, with no separate Cursor hooks file to install or keep in sync. Writing a second copy into `hooks.json` would only add a way for the two copies to drift and fire twice, and `~/.cursor/hooks.json` may already be a real file some other tool manages — token-goat never touches it. If you have not run a plain `token-goat install` yet, Cursor's MCP tools still work, but no hooks fire there until you do.
+
+`token-goat doctor` reports the MCP entry and whether Claude Code hooks are installed for Cursor to pick up. To remove: `token-goat uninstall --cursor` (add `-p` for the project install). It removes only token-goat's MCP entry.
+
 ### Grok CLI (xAI Grok Build) users
 
 Grok Build already reads Claude Code's `~/.claude/settings.json` as a "Harness Compatibility" source out of the box (confirmed against grok 0.2.93 and its own [hooks doc](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)), so `token-goat install` alone already gets most of the integration working — image shrinking, session hints, post-edit indexing, and bash output compression all fire. The one gap: Grok's own `PreToolUse` hook contract documents only `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`, never token-goat's harness-independent `{"decision":"block","reason":"..."}` shape (unlike Gemini CLI, whose docs explicitly confirm `"block"` as an accepted alias for `"deny"`), so re-read denial and oversized-first-read redirects don't reliably block on the Claude Code compat path alone.
@@ -245,7 +257,7 @@ To remove: `token-goat uninstall --grok`.
 
 No separate install step needed. Token-goat compresses the terminal output of these tools automatically as soon as they appear on your PATH. Run `token-goat doctor` to confirm they are detected — the "Third-party AI tools" section will show `detected — bash output compression active`.
 
-Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor`), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary — this passive output filter is separate from the `--copilot` hook bridge above; it works with no install step and covers Copilot CLI's own terminal chrome, not the hook-driven read/index integrations), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
+Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor` — this passive terminal filter is separate from the `--cursor` MCP bridge in [Cursor users](#cursor-users) above; it needs no install step), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary — this passive output filter is separate from the `--copilot` hook bridge above; it works with no install step and covers Copilot CLI's own terminal chrome, not the hook-driven read/index integrations), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
 
 Windsurf gets terminal-output compression only — not the read/index hook integration Claude Code, Codex, Copilot CLI, Gemini, Qwen, Kimi, VS Code, Visual Studio and Grok get above. Windsurf's Cascade agent hooks (`cascadeHooksJson`) are configured on Windsurf's own servers, per team, not from a file on your machine, so there is no local hook config for token-goat to install into. There is no `--windsurf` flag, and none is planned unless that changes.
 
@@ -456,6 +468,14 @@ Three things follow, and they are worth knowing before you decide. It never leav
 |------|------|
 | `%APPDATA%\Zed\settings.json` (Windows) / `~/.config/zed/settings.json` (macOS/Linux) | Merges the `token-goat` entry (`command`, `timeout` only) under Zed's `context_servers` root key, preserving unrelated keys, comments, and other context servers. Refuses to write if a non-token-goat `token-goat` entry is already there. Uninstall removes the entry, and deletes the file if nothing else is left in it. |
 | `%APPDATA%\Zed\token-goat-mcp.cmd` (Windows) / `~/.config/zed/token-goat-mcp.sh` (macOS/Linux) | The shim script the `settings.json` entry's `command` points at; runs `node <bundle path> mcp-serve`. Regenerated on every `install --zed` run. |
+
+**With `--cursor`** (Cursor MCP server; user scope by default, `-p`/`--project` for `<project>/.cursor/mcp.json`)
+
+| Path | What |
+|------|------|
+| `~/.cursor/mcp.json` (`<project>/.cursor/mcp.json` with `-p`) | Merges the `token-goat` entry (`command`, `args` only -- no `type` key) under Cursor's `mcpServers` root key, preserving unrelated keys, comments, and other servers. Refuses to write if a non-token-goat `token-goat` entry is already there. Uninstall removes the entry, and deletes the file if nothing else is left in it. |
+
+Nothing is ever written to `~/.cursor/hooks.json` by `--cursor` -- see [Cursor users](#cursor-users) above.
 
 **With `--hermes`** (Hermes Agent integration)
 

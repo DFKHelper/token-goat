@@ -63,6 +63,7 @@ import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridg
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { installCursor, isCursorInstalled, uninstallCursor } from './bridges/cursor_install.js'
 import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.js'
 import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
 import { VSCODE_DOUBLE_FIRE_NOTE } from './cli_doctor.js'
@@ -647,6 +648,7 @@ async function cmdInstall(opts: {
   vscode?: boolean
   visualstudio?: boolean
   zed?: boolean
+  cursor?: boolean
   local?: boolean
 }): Promise<void> {
   // Imported here, not at module scope, for the same startup-cost reason cmdHook does it: relay.ts side-effect-imports every hook handler module to populate the registry toolMatcherFor (hook_registry.ts) narrows PreToolUse/PostToolUse matchers against. Without this, installHooks below narrows against whichever two hook modules cli.ts happens to import for unrelated commands (hooks_index.ts, hooks_read.ts), silently dropping every other tool's hooks (Bash, Write, Edit, Glob, WebFetch, WebSearch, Agent, Skill, ...) from a fresh install, and downgrading an existing catch-all install to that same narrow set on a repeat run -- confirmed against the real built binary, which wrote "^Read$|^Grep$" for PreToolUse and "^Read$" for PostToolUse before this fix.
@@ -813,6 +815,19 @@ async function cmdInstall(opts: {
     )
   }
 
+  // Cursor imports Claude Code's hooks from ~/.claude/settings.json by default (confirmed against
+  // the installed 3.19.7 bundle), so token-goat never writes ~/.cursor/hooks.json -- see
+  // src/bridges/cursor_install.ts's header. This registers the MCP server only.
+  if (opts.cursor === true) {
+    const cursorResult = installCursor({ project: opts.project === true })
+    out(
+      cursorResult.alreadyInstalled
+        ? `Cursor MCP integration (${cursorResult.scope} scope) already installed → ${displaySafePath(cursorResult.mcpPath)}`
+        : `Installed token-goat Cursor MCP integration (${cursorResult.scope} scope) → ${displaySafePath(cursorResult.mcpPath)}. Cursor runs no token-goat hooks written by this installer: if you have also run "token-goat install" for Claude Code, Cursor already imports those hooks automatically from ~/.claude/settings.json.`,
+    )
+    if (cursorResult.scope === 'project') out(projectHooksCommitNote([cursorResult.mcpPath]))
+  }
+
   // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so -p installs for the two hosts overlap there.
   if (opts.project === true && (opts.vscode === true || opts.visualstudio === true)) {
     const duplicateNote = visualStudioDuplicateNote()
@@ -893,6 +908,7 @@ function cmdUninstall(opts: {
   vscode?: boolean
   visualstudio?: boolean
   zed?: boolean
+  cursor?: boolean
   local?: boolean
   purge?: boolean
 }): void {
@@ -933,6 +949,7 @@ function cmdUninstall(opts: {
     { flag: opts.vscode === true, run: () => uninstallVscode({ project: opts.project === true }), label: 'VS Code MCP integration' },
     { flag: opts.visualstudio === true, run: () => uninstallVisualStudio({ project: opts.project === true }), label: 'Visual Studio MCP integration' },
     { flag: opts.zed === true, run: uninstallZed, label: 'Zed MCP context-server integration' },
+    { flag: opts.cursor === true, run: () => uninstallCursor({ project: opts.project === true }), label: 'Cursor MCP integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -1004,6 +1021,7 @@ export function leftoverIntegrations(opts: {
   grok?: boolean
   visualstudio?: boolean
   zed?: boolean
+  cursor?: boolean
 }): LeftoverIntegration[] {
   const candidates: Array<{ skipped: boolean; present: () => boolean; flag: string; label: string }> = [
     { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
@@ -1027,6 +1045,12 @@ export function leftoverIntegrations(opts: {
       label: 'Visual Studio MCP integration',
     },
     { skipped: opts.zed !== true, present: isZedInstalled, flag: '--zed', label: 'Zed MCP context-server integration' },
+    {
+      skipped: opts.cursor !== true,
+      present: () => isCursorInstalled() || isCursorInstalled({ project: true }),
+      flag: '--cursor',
+      label: 'Cursor MCP integration',
+    },
   ]
   const found: LeftoverIntegration[] = []
   for (const candidate of candidates) {
@@ -4000,6 +4024,7 @@ export function buildProgram(): Command {
     .option('--vscode', 'also configure a VS Code MCP server (user-profile mcp.json by default; -p/--project for the workspace .vscode/mcp.json) and Copilot routing guidance')
     .option('--visualstudio', 'also configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
     .option('--zed', 'also register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
+    .option('--cursor', 'also register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks "token-goat install" writes to ~/.claude/settings.json')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -4020,6 +4045,7 @@ export function buildProgram(): Command {
     .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
     .option('--visualstudio', 'also remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
     .option('--zed', 'also remove the Zed MCP context server entry and its generated shim script')
+    .option('--cursor', 'also remove the Cursor MCP server entry (user scope by default; -p/--project for the project one)')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
     .action(guard(cmdUninstall))
