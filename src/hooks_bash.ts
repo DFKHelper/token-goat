@@ -15,7 +15,7 @@ import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import type { ToolFilter } from './tool_filters/index.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
-import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath, isUncOrDevicePath } from './paths.js'
+import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
@@ -35,7 +35,7 @@ import { canRunWrappedShell } from './shell.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
-import { isUnderSystemTemp } from './project.js'
+import { escapesOntoNetworkThroughLinks, isUnderSystemTemp } from './project.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -610,11 +610,12 @@ function isLargeFileOnDisk(filePath: string, floor: number): boolean {
  *
  * Answers false rather than throwing: the caller's only use for the size is deciding whether to
  * emit a hint, and declining to measure is the same outcome as measuring and finding nothing.
- * `event === undefined` still refuses a network or device path, so a caller that has no event to
- * hand -- a direct unit test of an extractor, or a future one -- does not get the weaker rule.
+ * `event === undefined` still refuses a network or device path, including one reached through a
+ * link, so a caller that has no event to hand -- a direct unit test of an extractor, or a future
+ * one -- loses only the workspace half of the rule, never the network half.
  */
 function commandPathIsTouchable(filePath: string, event: HookEvent | undefined): boolean {
-  if (event === undefined) return !isUncOrDevicePath(filePath)
+  if (event === undefined) return !escapesOntoNetworkThroughLinks(filePath)
   return !preToolPathDeclined(event, filePath)
 }
 

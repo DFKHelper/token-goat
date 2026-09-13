@@ -14,7 +14,7 @@ import { registerReset } from './reset.js';
 // Re-exported so every existing `import { canonicalize, isInsideRoot } from './project.js'`
 // keeps resolving to the same live binding. The definitions moved to a leaf module because
 // util.ts's write helpers now run isInsideRoot on every write; see path_containment.ts's header.
-export { canonicalize, isInsideRoot } from './path_containment.js';
+export { canonicalize, isInsideRoot, escapesOntoNetworkThroughLinks } from './path_containment.js';
 
 export const PROJECT_MARKERS = [
   '.git',

@@ -114,7 +114,9 @@ vi.mock('node:fs', async (importOriginal) => {
   }
 })
 
-const { isInsideRoot } = await import('../src/path_containment.js')
+const { escapesOntoNetworkThroughLinks, isInsideRoot } = await import('../src/path_containment.js')
+const { preToolPathDeclined } = await import('../src/vscode_path_gate.js')
+const { makeHookEvent } = await import('./helpers/hook-event.js')
 
 /** Whatever separator it is spelled with, a path that starts with two of them is a share or a device. */
 function isNetworkSpelling(p: string): boolean {
@@ -174,5 +176,37 @@ describe('a symlink whose target is a share', () => {
       dialed.some((p) => p.startsWith('//10.255.255.1/')),
       `a walk that started on a share was refused its link onto another one: ${dialed.join(', ')}`,
     ).toBe(true)
+  })
+})
+
+/**
+ * The same refusal, asked as the question a pre-tool gate actually asks.
+ *
+ * `isInsideRoot` needs a root, and the gate has one only on VS Code -- so on every other harness
+ * `preToolPathDeclined` stopped after the lexical UNC test and let a link-reached share through.
+ * Nothing about who gets dialled, or about the user not having approved the call yet, depends on
+ * which editor is running, so the walk is asked of all of them.
+ */
+describe('the pre-tool gate refuses a link onto a share on a harness that supplies no workspace', () => {
+  function plainEvent(target: string) {
+    const toolInput = { file_path: target }
+    return makeHookEvent({ eventName: 'pre_tool_use', toolName: 'Read', toolInput, sessionId: 'share-gate', raw: { tool_name: 'Read', tool_input: toolInput, cwd: WORKSPACE } })
+  }
+
+  it('declines a path whose local-looking spelling reaches a share through a link', () => {
+    expect(escapesOntoNetworkThroughLinks(path.join(LINK, 'x.txt')), 'a link onto a share read as staying off the network').toBe(true)
+    expect(preToolPathDeclined(plainEvent(path.join(LINK, 'x.txt')), path.join(LINK, 'x.txt')), 'the gate allowed a path that reaches a share through a link').toBe(true)
+    const dialed = touched.filter(isNetworkSpelling)
+    expect(dialed, `deciding to refuse reached the share: ${dialed.join(', ')}`).toEqual([])
+  })
+
+  it('calibration: an ordinary path inside the workspace is still allowed, and the walk really ran', () => {
+    expect(preToolPathDeclined(plainEvent(path.join(WORKSPACE, 'src', 'index.ts')), path.join(WORKSPACE, 'src', 'index.ts'))).toBe(false)
+    expect(touched.length, 'the gate answered without walking anything, so the refusal above proved nothing').toBeGreaterThan(0)
+  })
+
+  it('declines a link into the device namespace too, on the same harness', () => {
+    expect(preToolPathDeclined(plainEvent(path.join(DEVICE_LINK, 'x')), path.join(DEVICE_LINK, 'x'))).toBe(true)
+    expect(touched.filter(isNetworkSpelling), 'the gate touched the device namespace').toEqual([])
   })
 })

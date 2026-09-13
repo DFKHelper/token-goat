@@ -16,7 +16,7 @@ import * as path from 'node:path'
 import type { HookEvent } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { getCwd } from './hooks_common.js'
-import { isInsideRoot } from './project.js'
+import { escapesOntoNetworkThroughLinks, isInsideRoot } from './project.js'
 import { isUncOrDevicePath } from './paths.js'
 import { foldPathForContainment } from './util.js'
 
@@ -83,11 +83,28 @@ function isVscodeEvent(event: HookEvent): boolean {
   return event.raw['_tg_harness'] === 'vscode' || event.raw[VSCODE_TOOL_NAME_KEY] !== undefined
 }
 
-/** True when `target` is a path a pre_tool_use handler must leave alone; false when there is no path. */
+/**
+ * True when `target` is a path a pre_tool_use handler must leave alone; false when there is no path.
+ *
+ * The first two clauses read the spelling, and on their own they answer a smaller question than
+ * this one is asked: a repository can check in an ordinary-looking directory as a symlink to
+ * `\\host\share`, and then a path spelled entirely in local characters stats onto the network. On
+ * VS Code the workspace clause caught that already, because containment resolves links before it
+ * answers -- but every other harness fell out at `isVscodeEvent` with only the spelling checked,
+ * and the harness makes no difference to who is dialled or to the fact that nobody has approved the
+ * call yet. So the link walk is the answer on those harnesses.
+ *
+ * It runs LAST rather than first, and that ordering is load-bearing rather than tidy. The walk
+ * `lstat`s each segment of the path -- local, non-following, no network -- but a path VS Code has
+ * already refused lexically, for sitting outside the workspace, must not be touched at all: the
+ * sweep in `tests/vscode_pre_handler_path_gate.test.ts` asserts on ACCESS, not on the verdict, and
+ * a gate that walks a path it is about to refuse has touched it. Every harness reaches exactly one
+ * of the two, and neither loses a case: VS Code's containment already resolves links itself.
+ */
 export function preToolPathDeclined(event: HookEvent, target: string | undefined): boolean {
   if (target === undefined) return false
   const cwd = getCwd(event)
   if (isUncOrDevicePath(target) || resolvesToUncPath(target, cwd)) return true
-  if (!isVscodeEvent(event)) return false
-  return !vscodePathAllowed(target, cwd)
+  if (isVscodeEvent(event)) return !vscodePathAllowed(target, cwd)
+  return escapesOntoNetworkThroughLinks(target, cwd)
 }

@@ -371,6 +371,39 @@ function normalizeForFs(p: string): string {
 }
 
 /**
+ * Whether `target` reaches a network share once every link on it is followed -- decided WITHOUT
+ * following any of them onto the network.
+ *
+ * A pre-approval gate that reads the spelling of a path answers a smaller question than the one it
+ * is asked. `\\host\share\x` is refused by every caller of {@link isUncOrDevicePath}, but a
+ * repository can check in an ordinary-looking directory as a symlink to that share, and then a
+ * path spelled entirely in local characters -- `<repo>/vendor/notes.md` -- stats onto the network
+ * anyway. The hook is running before the user has approved the call, so the SMB session and the
+ * authentication attempt it carries are already spent by the time they say no.
+ *
+ * The walk is the same one containment uses, and it is network-free by construction: each segment
+ * is `lstat`-ed, which does not follow, and a link's own bytes are read with `readlink`, which is
+ * local -- so a link pointing at a share is recognised from the reparse point, before anything
+ * dials. An unresolvable chain (unreadable ancestor, too many hops, an oversized path) answers
+ * true: this is a gate, and "could not see" is not "safe".
+ *
+ * `cwd` resolves a relative target, and defaults to the process's own. A target already spelled as
+ * a share short-circuits, so the walk is never started standing on one.
+ */
+export function escapesOntoNetworkThroughLinks(target: string, cwd?: string): boolean {
+  if (isUncOrDevicePath(target)) return true;
+  let absolute: string;
+  try {
+    absolute = path.resolve(cwd ?? process.cwd(), target);
+  } catch {
+    return true;
+  }
+  if (isUncOrDevicePath(absolute)) return true;
+  const resolved = resolveThroughLinks(absolute);
+  return resolved === UNRESOLVABLE_PATH || isUncOrDevicePath(resolved);
+}
+
+/**
  * Is `target` the same path as `root`, or somewhere beneath it?
  *
  * Both sides are resolved through the real filesystem before comparison, then canonicalized, so
