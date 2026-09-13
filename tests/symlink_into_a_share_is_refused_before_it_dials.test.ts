@@ -34,6 +34,9 @@ const WORKSPACE = process.platform === 'win32' ? 'C:\\work' : '/work'
 const LINK = path.join(WORKSPACE, 'link')
 const SHARE = process.platform === 'win32' ? '\\\\10.255.255.1\\share' : '//10.255.255.1/share'
 const DEVICE_LINK = path.join(WORKSPACE, 'device')
+const DRIVE_RELATIVE_LINK = path.join(WORKSPACE, 'driverel')
+/** A drive letter with no separator after it: Windows resolves this against that drive's own current directory, which no Node API exposes. */
+const DRIVE_RELATIVE = 'Z:elsewhere'
 const DEVICE = '\\\\.\\pipe\\name'
 
 /** A project whose own root is a share, with a link out of it onto a DIFFERENT share. */
@@ -59,7 +62,7 @@ vi.mock('node:fs', async (importOriginal) => {
     default: real,
     lstatSync: (p: unknown, ...rest: unknown[]) => {
       record(p)
-      if (typeof p === 'string' && (same(p, LINK) || same(p, DEVICE_LINK) || same(p, SHARE_LINK))) return linkEntry
+      if (typeof p === 'string' && (same(p, LINK) || same(p, DEVICE_LINK) || same(p, DRIVE_RELATIVE_LINK) || same(p, SHARE_LINK))) return linkEntry
       if (typeof p === 'string' && same(p, WORKSPACE)) return workspaceEntry
       // Everything under either fake host answers as an ordinary directory. Falling through to the
       // real filesystem for these would have the test itself dial an unroutable address: it did,
@@ -72,6 +75,7 @@ vi.mock('node:fs', async (importOriginal) => {
       // NOT recorded: reading a link's own bytes is a local operation on the directory entry.
       if (typeof p === 'string' && same(p, LINK)) return SHARE
       if (typeof p === 'string' && same(p, DEVICE_LINK)) return DEVICE
+      if (typeof p === 'string' && same(p, DRIVE_RELATIVE_LINK)) return DRIVE_RELATIVE
       if (typeof p === 'string' && same(p, SHARE_LINK)) return SHARE
       throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' })
     },
@@ -208,5 +212,41 @@ describe('the pre-tool gate refuses a link onto a share on a harness that suppli
   it('declines a link into the device namespace too, on the same harness', () => {
     expect(preToolPathDeclined(plainEvent(path.join(DEVICE_LINK, 'x')), path.join(DEVICE_LINK, 'x'))).toBe(true)
     expect(touched.filter(isNetworkSpelling), 'the gate touched the device namespace').toEqual([])
+  })
+})
+
+/**
+ * A link target spelled as a drive letter with no separator after it.
+ *
+ * `Z:elsewhere` is neither absolute nor relative to the link's own directory: Windows resolves it
+ * against drive Z's own current directory, which is per-process state no Node API exposes. The walk
+ * read it as a segment literally NAMED `Z:elsewhere` and appended it to the directory it was
+ * standing on -- so the result stayed under the workspace, and a link leading out of the project
+ * certified the project as containing it. The verdict was the wrong way round, which is the half
+ * the sibling tests above cannot catch: they assert that a refusal touched nothing, and this one
+ * was not a refusal at all.
+ *
+ * PROVENANCE: HAND-DERIVED. The link topology is constructed here and the target spelling is the
+ * one `path.win32` and `cmd` both treat as drive-relative; nothing is read off the code under test.
+ */
+describe('a link whose target is drive-relative', () => {
+  it('is refused rather than resolved to a path inside the workspace', () => {
+    expect(
+      isInsideRoot(path.join(DRIVE_RELATIVE_LINK, 'x.txt'), WORKSPACE),
+      'a link onto another drive resolved to a path inside the workspace',
+    ).toBe(false)
+  })
+
+  it('calibration: the same fixture with an ordinary relative target IS resolved, and stays inside', () => {
+    // Without this, the refusal above could be the walk failing on the fixture rather than on the
+    // spelling -- an unreadable link answers "outside" too, and reads identically from the verdict.
+    expect(isInsideRoot(path.join(WORKSPACE, 'ordinary', 'x.txt'), WORKSPACE)).toBe(true)
+  })
+
+  it('is declined by the pre-tool gate on a harness that supplies no workspace', () => {
+    const target = path.join(DRIVE_RELATIVE_LINK, 'x.txt')
+    const toolInput = { file_path: target }
+    const event = makeHookEvent({ eventName: 'pre_tool_use', toolName: 'Read', toolInput, sessionId: 'driverel', raw: { tool_name: 'Read', tool_input: toolInput, cwd: WORKSPACE } })
+    expect(preToolPathDeclined(event, target)).toBe(true)
   })
 })

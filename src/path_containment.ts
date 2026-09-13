@@ -247,6 +247,9 @@ function parentSegment(base: string, root: string): string {
  * whatever the walk was standing on, so the device refusal downstream never saw a device. It is
  * left as written, which makes it an absolute root that `isUncOrDevicePath` recognises.
  */
+/** A drive letter with nothing after it, or with something that is not a separator: `Z:`, `Z:foo`. */
+const DRIVE_RELATIVE_PATH = /^[a-z]:(?![\\/])/i;
+
 function linkTarget(link: string): { root: string | null; segs: string[] } {
   const raw = link.replace(/\\/g, '/').replace(/^\/\/\?\/(UNC\/)?/i, (_m, unc: string | undefined) => (unc === undefined ? '' : '//'));
   if (!/^(\/\/[^/]+\/|[a-z]:\/|\/)/i.test(raw)) return { root: null, segs: raw.split('/') };
@@ -314,6 +317,14 @@ function resolveThroughLinks(p: string): string {
       continue;
     }
     if (++hops > MAX_LINK_HOPS) return UNRESOLVABLE_PATH;
+    // A DRIVE-RELATIVE target -- `Z:foo`, a drive letter with no separator after it -- is neither
+    // absolute nor relative to the link's own directory. Windows resolves it against that drive's
+    // own current directory, which is per-process state no Node API exposes, so this walk cannot
+    // say where it lands. `linkTarget` read it as a segment literally NAMED `Z:foo` and appended it
+    // to the directory the walk was standing on, which produced a path still inside the root: a
+    // link out of the project therefore certified the project as containing it. Unresolvable is the
+    // only honest answer, and every caller already fails closed on it.
+    if (DRIVE_RELATIVE_PATH.test(link)) return UNRESOLVABLE_PATH;
     const target = linkTarget(link);
     if (target.root !== null) {
       // A link inside a local directory whose target is a share is refused here, before the next
