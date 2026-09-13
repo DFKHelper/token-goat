@@ -38,6 +38,105 @@ const loadPdfjs = createLazyModuleLoader(async () => {
   return mod
 }, 'pdf-extract disabled (pdfjs-dist unavailable)')
 
+/**
+ * The most text one page-by-page read may produce, and the largest PDF that may be opened at all.
+ *
+ * A PDF content stream is Flate-compressed, so its expansion ratio is whatever its author chose. A
+ * one-page file of 200 KB decompresses to tens of millions of text-showing operators, and the same
+ * trick at 2 MB reaches gigabytes. The OOXML side of this codebase has bounded exactly this since
+ * `zip_bounds.ts`; the PDF side had nothing, and the result was not a slow read but a dead process:
+ * the heap is exhausted, the CLI aborts, and the background indexer -- which runs the same
+ * extractor over a document and discards its output -- crash-loops on a file small enough to sit
+ * under its own skip threshold. The file arrives in a repository the user has just cloned, and
+ * reading it is something the model does unprompted.
+ *
+ * The output budget is the one that holds. 8 MB of text is past any document this tool is useful
+ * on -- a 500-page book is about 1.5 MB, and 8 MB is already more tokens than any model's context
+ * accepts -- while staying far below what it takes to hurt the process. The input cap is a second
+ * fence for the shapes that cost before a page is ever read.
+ */
+export const MAX_PDF_TEXT_BYTES = 8 * 1024 * 1024
+/** @see MAX_PDF_TEXT_BYTES */
+export const MAX_PDF_INPUT_BYTES = 50 * 1024 * 1024
+
+/** Thrown when a PDF's text passes {@link MAX_PDF_TEXT_BYTES}, or the file itself passes {@link MAX_PDF_INPUT_BYTES}. */
+export class PdfTooLargeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PdfTooLargeError'
+  }
+}
+
+/** Refuse a PDF whose on-disk size alone is past the bound, before any of it is parsed. */
+export function assertPdfInputWithinBounds(byteLength: number, file: string): void {
+  if (byteLength > MAX_PDF_INPUT_BYTES) {
+    throw new PdfTooLargeError(`${file} is ${byteLength} bytes, past the ${MAX_PDF_INPUT_BYTES}-byte limit for a PDF. Split it, or extract from a smaller copy.`)
+  }
+}
+
+function pdfTextBudgetExceeded(): PdfTooLargeError {
+  return new PdfTooLargeError(`this PDF's text passes the ${MAX_PDF_TEXT_BYTES}-byte extraction limit. Narrow the read with --pages, or use a smaller document.`)
+}
+
+/**
+ * One page's text items in arrival order, read through pdfjs's STREAM rather than its whole-page
+ * accessor.
+ *
+ * `getTextContent()` materializes the entire item array before it returns, so a page carrying tens
+ * of millions of text-showing operators exhausts the heap inside pdfjs, where no budget of ours can
+ * see it. The stream hands the same items over in chunks, so a consumer can decide per chunk
+ * whether to keep them -- which is what makes a bound possible at all.
+ *
+ * Falls back to the whole-page accessor only when a pdfjs build lacks the stream method, in which
+ * case that build's own heap use is once again unbounded and only the input cap applies.
+ */
+async function* pageTextItems(page: pdfjsTypes.PDFPageProxy): AsyncGenerator<LayoutTextItem[]> {
+  const keep = (items: readonly unknown[]): LayoutTextItem[] => items.filter((item) => item !== null && typeof item === 'object' && 'str' in item) as LayoutTextItem[]
+  if (typeof page.streamTextContent !== 'function') {
+    const content = await page.getTextContent()
+    yield keep(content.items)
+    return
+  }
+  const reader = (page.streamTextContent() as ReadableStream<{ items?: readonly unknown[] }>).getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return
+    yield keep(value?.items ?? [])
+  }
+}
+
+/**
+ * One page's text items, refusing once they pass `budget` characters.
+ *
+ * The refusal drops what it has and keeps draining rather than breaking out, because breaking out
+ * is not free here: a `cancel()` closes the web-stream controller while pdfjs still believes its
+ * own is open -- pdfjs marks that only on its CLOSE message -- so a chunk already in flight calls
+ * `enqueue` on a closed controller and throws from inside pdfjs's message handler, as an uncaught
+ * exception rather than a rejection of anything a caller awaits. Abandoning the reader without
+ * cancelling instead deadlocks `loadingTask.destroy()`. Draining costs parse time, which the input
+ * cap already bounds; what it does not cost is the heap, which is the whole point -- nothing past
+ * the budget is ever retained.
+ *
+ * @see MAX_PDF_TEXT_BYTES
+ */
+async function readPageTextItems(page: pdfjsTypes.PDFPageProxy, budget: number): Promise<LayoutTextItem[]> {
+  let items: LayoutTextItem[] = []
+  let spent = 0
+  let over = false
+  for await (const chunk of pageTextItems(page)) {
+    if (over) continue
+    for (const item of chunk) spent += item.str.length
+    if (spent > budget) {
+      over = true
+      items = []
+      continue
+    }
+    items.push(...chunk)
+  }
+  if (over) throw pdfTextBudgetExceeded()
+  return items
+}
+
 /** Parses a 1-indexed inclusive page spec like "1-5" or "3". Returns null (all pages) when unset. */
 export function parsePageRange(spec: string | undefined, pageCount: number): { start: number; end: number } | null {
   if (!spec) return null
@@ -160,11 +259,12 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layou
     const end = range ? range.end : doc.numPages
 
     const pages: string[] = []
+    let spent = 0
     for (let i = start; i <= end; i++) {
       const page = await doc.getPage(i)
-      const content = await page.getTextContent()
-      const textItems = content.items.filter((item) => 'str' in item) as unknown as LayoutTextItem[]
+      const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES - spent)
       const pageText = layout ? reconstructLayout(textItems) : textItems.map((item) => item.str).join(' ')
+      spent += pageText.length
       pages.push(pageText.trim())
     }
 
@@ -219,8 +319,7 @@ export async function locatePdfPages(
     let i = start
     for (; i <= end && matches.length < maxMatches; i++) {
       const page = await doc.getPage(i)
-      const content = await page.getTextContent()
-      const textItems = content.items.filter((item) => 'str' in item) as unknown as LayoutTextItem[]
+      const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES)
       const pageText = textItems.map((item) => item.str).join(' ')
       // Non-global regex: exec always starts at 0, so reusing `re` across pages carries no lastIndex state.
       const m = re.exec(pageText)
@@ -305,8 +404,13 @@ export interface PdfMeta {
 
 async function pageHasText(doc: pdfjsTypes.PDFDocumentProxy, pageNum: number): Promise<boolean> {
   const page = await doc.getPage(pageNum)
-  const content = await page.getTextContent()
-  return content.items.some((item) => 'str' in item && item.str.trim().length > 0)
+  // Drained rather than exited on the first hit: leaving the stream unread deadlocks the document
+  // teardown, and cancelling it throws from inside pdfjs. See readPageTextItems for the mechanism.
+  let found = false
+  for await (const chunk of pageTextItems(page)) {
+    found ||= chunk.some((item) => item.str.trim().length > 0)
+  }
+  return found
 }
 
 export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {

@@ -8,7 +8,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { extractPdfText } from './pdf_extract.js'
+import { assertPdfInputWithinBounds, extractPdfText } from './pdf_extract.js'
 import { docxText } from './docx_extract.js'
 import { pptxOutline, pptxSlideText } from './pptx_extract.js'
 import { listSheets, headSheet } from './xlsx_extract.js'
@@ -29,6 +29,10 @@ export async function extractEmbeddableDocumentText(filePath: string): Promise<s
   try {
     switch (path.extname(filePath).toLowerCase()) {
       case '.pdf': {
+        // The indexer reaches this unprompted, for every PDF in a repository the user has just
+        // cloned, and discards a failure. So the bound matters more here than at the CLI: without
+        // it a single crafted file crash-loops the background worker where nobody is watching.
+        assertPdfInputWithinBounds((await fs.promises.stat(filePath)).size, filePath)
         const data = await fs.promises.readFile(filePath)
         const { text } = await extractPdfText(new Uint8Array(data))
         return text

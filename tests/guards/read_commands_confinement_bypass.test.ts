@@ -34,10 +34,7 @@ const ALLOWED_RAW_READ_FUNCTIONS = new Set([
   // tool resolves a spec to these). Pre-existing, out of scope for this guard's class -- listed
   // explicitly rather than silently excluded, so a future confinement pass covering these formats
   // has to touch this allowlist and notice it.
-  'runPdfExtractText',
-  'runPdfLocate',
-  'runPdfOutline',
-  'runPdfMeta',
+  'readPdfBytes', // the one prologue the four runPdf* wrappers now share; it also applies the PDF input cap.
   'runImageMeta',
   'runImageText',
 ])
