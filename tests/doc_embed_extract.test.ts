@@ -105,14 +105,18 @@ describe('extractEmbeddableDocumentText', () => {
     expect(text).toContain('Alice')
   })
 
-  it('returns null for a nonexistent path', async () => {
-    const text = await extractEmbeddableDocumentText(path.join(dir, 'does-not-exist.pdf'))
-    expect(text).toBeNull()
+  // Both of these used to resolve to null, and the indexer read null as "this document holds no
+  // text": a settled verdict that clears the file's embeddings and records it as done, so nothing
+  // ever read it again. A missing or corrupt file is not a verdict, it is a failure, and the two
+  // have to arrive differently for the caller to treat them differently. See
+  // tests/document_extraction_failure_is_retried.test.ts for what the indexer does with each.
+  it('throws for a nonexistent path rather than reporting an empty document', async () => {
+    await expect(extractEmbeddableDocumentText(path.join(dir, 'does-not-exist.pdf'))).rejects.toThrow()
   })
 
-  it('returns null (never throws) for a corrupt file with a .pdf extension', async () => {
+  it('throws for a corrupt file with a .pdf extension', async () => {
     const file = path.join(dir, 'garbage.pdf')
     fs.writeFileSync(file, 'this is not a real pdf, just garbage bytes')
-    await expect(extractEmbeddableDocumentText(file)).resolves.toBeNull()
+    await expect(extractEmbeddableDocumentText(file)).rejects.toThrow()
   })
 })

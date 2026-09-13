@@ -25,7 +25,7 @@ import type { IndexingConfig } from './config.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
-import { isEmbeddableDocument, extractEmbeddableDocumentText } from './doc_embed_extract.js'
+import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal } from './doc_embed_extract.js'
 import { fingerprintContent } from './fingerprint.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { pathEqClause } from './sql_path.js'
@@ -3244,11 +3244,24 @@ export async function indexFileEmbeddings(
     // otherwise reinterpret binary content as garbage text. detectLanguage() returns 'unknown'
     // for these extensions (no Language union member, no code symbols), so none of the
     // ipynb/large-file/salesforce branches above or below apply to them.
-    const extracted = await extractEmbeddableDocumentText(filePath)
+    let extracted: string | null
+    try {
+      extracted = await extractEmbeddableDocumentText(filePath)
+    } catch (err) {
+      if (!isDocumentRefusal(err)) {
+        // Left unstamped on purpose, the same way a thrown embedIndexFile is below: this file's
+        // extraction failed rather than declined, and a stamp here would be a permanent verdict
+        // recorded from a temporary condition -- pdfjs briefly missing, the file mid-write -- so
+        // the document would never be embedded again even once the cause was gone.
+        onError?.(err)
+        return
+      }
+      extracted = null
+    }
     if (extracted === null || extracted.trim().length === 0) {
-      // A failed extraction or a document with no extractable text is a terminal deliberately-
-      // never-embed state, same shape as the .profile-meta.xml skip above: stamp the real sha so
-      // an unchanged file is not re-read into extraction on every worker drain / index run.
+      // A refused document or one with no extractable text is a terminal deliberately-never-embed
+      // state, same shape as the .profile-meta.xml skip above: stamp the real sha so an unchanged
+      // file is not re-read into extraction on every worker drain / index run.
       const db = getDb(dbPath)
       deleteFileEmbeddings(db, filePath)
       stampEmbedSha(db, filePath, sha, (s) => s)

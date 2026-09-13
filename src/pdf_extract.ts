@@ -7,6 +7,8 @@
  * purely for a rendering feature this project never needs.
  */
 
+import * as fs from 'node:fs'
+
 import type * as pdfjsTypes from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 import { createLazyModuleLoader } from './lazy_module.js'
@@ -59,23 +61,144 @@ export const MAX_PDF_TEXT_BYTES = 8 * 1024 * 1024
 /** @see MAX_PDF_TEXT_BYTES */
 export const MAX_PDF_INPUT_BYTES = 50 * 1024 * 1024
 
-/** Thrown when a PDF's text passes {@link MAX_PDF_TEXT_BYTES}, or the file itself passes {@link MAX_PDF_INPUT_BYTES}. */
-export class PdfTooLargeError extends Error {
-  constructor(message: string) {
+/**
+ * The most text items one page may retain, whatever they weigh in characters.
+ *
+ * Characters are not the only thing a page can spend. Every item is an object -- a string, a
+ * direction, a width, a height, a six-number transform, a font name -- so a page of a million
+ * one-character items sits comfortably inside an 8 MB character budget while costing hundreds of
+ * megabytes to hold. The two bounds measure different things and a document has to pass both.
+ *
+ * A dense real page runs to a few thousand items; a hundred times that is not a document.
+ */
+export const MAX_PDF_TEXT_ITEMS = 200_000
+
+/**
+ * How long one document's text may take to read, whatever it costs in memory.
+ *
+ * A byte budget bounds what is retained, not what is done. This extractor cannot stop pdfjs
+ * mid-page -- cancelling the stream throws from inside its message handler and abandoning the
+ * reader deadlocks the teardown (see readPageTextItems) -- so refusing at 8 MB frees the memory and
+ * leaves the producer inflating. Under the 50 MB input cap and the expansion ratio the fixture
+ * measures, that is hours of arithmetic for a file the indexer opened without being asked. The
+ * clock is the only bound that covers it.
+ *
+ * A minute is far past any honest read (a 500-page book is a few seconds) and short enough that a
+ * crafted file costs a stall rather than a wedged worker.
+ */
+export const MAX_PDF_WORK_MILLIS = 60_000
+
+/** Refusals from this module: the text budget, the input cap, and the clock. */
+export class PdfRefusedError extends Error {
+  constructor(message: string, name: string) {
     super(message)
-    this.name = 'PdfTooLargeError'
+    this.name = name
   }
 }
 
-/** Refuse a PDF whose on-disk size alone is past the bound, before any of it is parsed. */
-export function assertPdfInputWithinBounds(byteLength: number, file: string): void {
-  if (byteLength > MAX_PDF_INPUT_BYTES) {
-    throw new PdfTooLargeError(`${file} is ${byteLength} bytes, past the ${MAX_PDF_INPUT_BYTES}-byte limit for a PDF. Split it, or extract from a smaller copy.`)
+/** Thrown when a PDF's text passes {@link MAX_PDF_TEXT_BYTES}, or the file itself passes {@link MAX_PDF_INPUT_BYTES}. */
+export class PdfTooLargeError extends PdfRefusedError {
+  constructor(message: string) {
+    super(message, 'PdfTooLargeError')
+  }
+}
+
+/** Thrown when reading one document's text passes {@link MAX_PDF_WORK_MILLIS}. */
+export class PdfTookTooLongError extends PdfRefusedError {
+  constructor(message: string) {
+    super(message, 'PdfTookTooLongError')
+  }
+}
+
+/** The instant past which this document's text work must stop. One per document, not per page. */
+export function pdfWorkDeadline(): number {
+  return Date.now() + MAX_PDF_WORK_MILLIS
+}
+
+function pdfWorkTookTooLong(): PdfTookTooLongError {
+  return new PdfTookTooLongError(`reading this PDF's text passed the ${MAX_PDF_WORK_MILLIS}ms limit. Narrow the read with --pages, or use a smaller document.`)
+}
+
+/**
+ * Refuse a PDF before any of it is parsed: one that is too large, and one whose size is not a
+ * number worth believing.
+ *
+ * The size check is only as good as its oracle. `stat` reports 0 for a character device, a FIFO,
+ * and most synthetic files, and 0 passes any ceiling -- so a repository holding `report.pdf` as a
+ * link to an endless device would take the cap's own blessing into an unbounded read. Nothing
+ * except a regular file has a length this bound can be stated against, so nothing else is read.
+ */
+export function assertPdfIsARegularFileWithinBounds(stat: { isFile(): boolean; size: number }, file: string): void {
+  if (!stat.isFile()) {
+    throw new PdfTooLargeError(`${file} is not a regular file, so its size cannot be checked before reading it.`)
+  }
+  if (stat.size > MAX_PDF_INPUT_BYTES) {
+    throw new PdfTooLargeError(`${file} is ${stat.size} bytes, past the ${MAX_PDF_INPUT_BYTES}-byte limit for a PDF. Split it, or extract from a smaller copy.`)
   }
 }
 
 function pdfTextBudgetExceeded(): PdfTooLargeError {
   return new PdfTooLargeError(`this PDF's text passes the ${MAX_PDF_TEXT_BYTES}-byte extraction limit. Narrow the read with --pages, or use a smaller document.`)
+}
+
+/**
+ * Refuse a finished document whose text passes {@link MAX_PDF_TEXT_BYTES} once encoded.
+ *
+ * The per-page budget counts UTF-16 code units, because that is what the strings cost while they
+ * are being held. What leaves this module is UTF-8, and the two differ by up to threefold: eight
+ * million accented characters clear a code-unit budget of eight million and encode to sixteen
+ * megabytes. The limit is stated in bytes, so it is checked in bytes, on the one value that is
+ * actually measured in them.
+ */
+export function assertPdfTextWithinBounds(text: string): void {
+  if (Buffer.byteLength(text, 'utf8') > MAX_PDF_TEXT_BYTES) throw pdfTextBudgetExceeded()
+}
+
+/**
+ * Read a PDF's bytes under {@link MAX_PDF_INPUT_BYTES}, from the same file the size was measured
+ * on.
+ *
+ * Statting a path and then reading it are two lookups of one name, and a working tree is not
+ * quiet between them: the file can grow, or the name can be swapped for a link to something
+ * endless, and the second lookup then gets a file the cap never blessed. So the descriptor is
+ * opened once and everything -- the regular-file test, the size, the bytes -- is taken off it.
+ */
+export async function readPdfFileWithinBounds(file: string): Promise<Uint8Array> {
+  const handle = await fs.promises.open(file, 'r')
+  try {
+    const stat = await handle.stat()
+    assertPdfIsARegularFileWithinBounds(stat, file)
+    return await readAllWithinReportedSize(handle, stat.size, file)
+  } finally {
+    await handle.close()
+  }
+}
+
+/** The part of {@link readPdfFileWithinBounds} a test can hand a descriptor that lies about its size. */
+export interface PdfReadHandle {
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
+}
+
+/**
+ * Every byte a descriptor delivers, refusing one that delivers more than it said it would.
+ *
+ * The buffer is one byte longer than the reported size, so a file that outgrows its own stat
+ * mid-read fills it and is refused rather than silently truncated to whatever the cap blessed.
+ *
+ * @see readPdfFileWithinBounds
+ */
+export async function readAllWithinReportedSize(handle: PdfReadHandle, reportedSize: number, file: string): Promise<Uint8Array> {
+  const buffer = Buffer.alloc(reportedSize + 1)
+  let read = 0
+  for (;;) {
+    const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read)
+    if (bytesRead === 0) break
+    read += bytesRead
+    if (read === buffer.length) {
+      throw new PdfTooLargeError(`${file} grew past the ${reportedSize} bytes it reported while it was being read. Extract from a copy that is not being written to.`)
+    }
+  }
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, read)
 }
 
 /**
@@ -106,7 +229,15 @@ async function* pageTextItems(page: pdfjsTypes.PDFPageProxy): AsyncGenerator<Lay
 }
 
 /**
- * One page's text items, refusing once they pass `budget` characters.
+ * One page's text items, refusing once they pass `budget` characters or {@link MAX_PDF_TEXT_ITEMS}
+ * items.
+ *
+ * `budget` is spent in UTF-16 code units plus one per item for the separator the caller will join
+ * with, which is what the retained strings actually weigh in this process. It is not a count of
+ * the UTF-8 bytes those strings encode to -- a page of accented or CJK text encodes to two or
+ * three times its code units -- so it bounds the memory here and not the size of the finished
+ * document. {@link assertPdfTextWithinBounds} is what bounds that, once there is a document to
+ * measure.
  *
  * The refusal drops what it has and keeps draining rather than breaking out, because breaking out
  * is not free here: a `cancel()` closes the web-stream controller while pdfjs still believes its
@@ -117,21 +248,35 @@ async function* pageTextItems(page: pdfjsTypes.PDFPageProxy): AsyncGenerator<Lay
  * cap already bounds; what it does not cost is the heap, which is the whole point -- nothing past
  * the budget is ever retained.
  *
+ * Draining is what makes the clock load-bearing rather than belt-and-braces: it is the only thing
+ * that stops the drain itself. Exported for the test that proves the deadline fires, which needs a
+ * producer that never ends and so cannot go through a real document.
+ *
  * @see MAX_PDF_TEXT_BYTES
+ * @see MAX_PDF_WORK_MILLIS
  */
-async function readPageTextItems(page: pdfjsTypes.PDFPageProxy, budget: number): Promise<LayoutTextItem[]> {
+export async function readPageTextItems(page: pdfjsTypes.PDFPageProxy, budget: number, deadline: number): Promise<LayoutTextItem[]> {
   let items: LayoutTextItem[] = []
   let spent = 0
+  let count = 0
   let over = false
   for await (const chunk of pageTextItems(page)) {
+    if (Date.now() > deadline) throw pdfWorkTookTooLong()
     if (over) continue
-    for (const item of chunk) spent += item.str.length
-    if (spent > budget) {
+    // One per item beyond its characters: the caller joins these with a separator, so an item that
+    // carries no text still costs a byte in the result, and a page of a million empty items would
+    // otherwise be free.
+    for (const item of chunk) spent += item.str.length + 1
+    count += chunk.length
+    if (spent > budget || count > MAX_PDF_TEXT_ITEMS) {
       over = true
       items = []
       continue
     }
-    items.push(...chunk)
+    // Appended one at a time: on the no-stream fallback below, `chunk` is a whole page's items,
+    // and spreading an array of a few hundred thousand into a call throws RangeError past V8's
+    // argument limit -- an obscure failure in place of the refusal this function exists to give.
+    for (const item of chunk) items.push(item)
   }
   if (over) throw pdfTextBudgetExceeded()
   return items
@@ -260,15 +405,18 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layou
 
     const pages: string[] = []
     let spent = 0
+    const deadline = pdfWorkDeadline()
     for (let i = start; i <= end; i++) {
       const page = await doc.getPage(i)
-      const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES - spent)
+      const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES - spent, deadline)
       const pageText = layout ? reconstructLayout(textItems) : textItems.map((item) => item.str).join(' ')
       spent += pageText.length
       pages.push(pageText.trim())
     }
 
-    return { text: pages.join('\n\n'), pageCount: doc.numPages, pagesExtracted: end - start + 1 }
+    const text = pages.join('\n\n')
+    assertPdfTextWithinBounds(text)
+    return { text, pageCount: doc.numPages, pagesExtracted: end - start + 1 }
   })
 }
 
@@ -316,10 +464,15 @@ export async function locatePdfPages(
     const end = range ? range.end : doc.numPages
 
     const matches: PdfLocateMatch[] = []
+    // The byte budget is per page here, not per document: a locate scan reads a page, keeps a
+    // snippet, and drops the rest, so a thousand-page book is not a thousand pages held at once and
+    // capping the sum would refuse documents this command exists to search. What the sum does cost
+    // is time, and that is what the deadline -- one for the whole scan -- bounds.
+    const deadline = pdfWorkDeadline()
     let i = start
     for (; i <= end && matches.length < maxMatches; i++) {
       const page = await doc.getPage(i)
-      const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES)
+      const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES, deadline)
       const pageText = textItems.map((item) => item.str).join(' ')
       // Non-global regex: exec always starts at 0, so reusing `re` across pages carries no lastIndex state.
       const m = re.exec(pageText)
@@ -402,12 +555,15 @@ export interface PdfMeta {
   hasTextLayer: boolean
 }
 
-async function pageHasText(doc: pdfjsTypes.PDFDocumentProxy, pageNum: number): Promise<boolean> {
+async function pageHasText(doc: pdfjsTypes.PDFDocumentProxy, pageNum: number, deadline: number): Promise<boolean> {
   const page = await doc.getPage(pageNum)
   // Drained rather than exited on the first hit: leaving the stream unread deadlocks the document
   // teardown, and cancelling it throws from inside pdfjs. See readPageTextItems for the mechanism.
+  // Which is exactly why this needs the deadline too -- it holds one boolean, so no byte budget
+  // would ever stop it, and the work it cannot decline to do is the whole point of the attack.
   let found = false
   for await (const chunk of pageTextItems(page)) {
+    if (Date.now() > deadline) throw pdfWorkTookTooLong()
     found ||= chunk.some((item) => item.str.trim().length > 0)
   }
   return found
@@ -427,8 +583,9 @@ export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {
     // document, to keep pdf-meta cheap on large PDFs while cutting false negatives.
     const sampleNums = Array.from(new Set([1, Math.ceil(doc.numPages / 2), doc.numPages].filter((n) => n >= 1 && n <= doc.numPages)))
     let hasTextLayer = false
+    const deadline = pdfWorkDeadline()
     for (const n of sampleNums) {
-      if (await pageHasText(doc, n)) {
+      if (await pageHasText(doc, n, deadline)) {
         hasTextLayer = true
         break
       }

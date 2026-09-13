@@ -34,7 +34,6 @@ const ALLOWED_RAW_READ_FUNCTIONS = new Set([
   // tool resolves a spec to these). Pre-existing, out of scope for this guard's class -- listed
   // explicitly rather than silently excluded, so a future confinement pass covering these formats
   // has to touch this allowlist and notice it.
-  'readPdfBytes', // the one prologue the four runPdf* wrappers now share; it also applies the PDF input cap.
   'runImageMeta',
   'runImageText',
 ])
@@ -45,7 +44,7 @@ const ALLOWED_RAW_READ_FUNCTIONS = new Set([
  * `ALLOWED_RAW_READ_FUNCTIONS`. Top-level-only tracking is enough here: every offending call in
  * this file (pre- and post-fix) sits directly in a top-level function body, not nested inside a
  * further closure with its own name. */
-function findRawReadOffenders(): string[] {
+function findRawReaders(): Map<string, string[]> {
   const src = fs.readFileSync(path.join(process.cwd(), 'src', 'read_commands.ts'), 'utf8')
   const lines = src.split('\n')
   const fnDeclRe = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/
@@ -56,16 +55,20 @@ function findRawReadOffenders(): string[] {
   // preceded by `Pinned`.
   const offenderRe = /(?<!Pinned)\bindexFileSync\(|\bfs\.readFileSync\(/
   let currentFn = ''
-  const offenders: string[] = []
+  const readers = new Map<string, string[]>()
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
     const decl = fnDeclRe.exec(line)
     if (decl !== null) currentFn = decl[1]!
-    if (offenderRe.test(line) && !ALLOWED_RAW_READ_FUNCTIONS.has(currentFn)) {
-      offenders.push(`src/read_commands.ts:${i + 1} (in ${currentFn || '<module scope>'}): ${line.trim()}`)
-    }
+    if (!offenderRe.test(line)) continue
+    const site = `src/read_commands.ts:${i + 1} (in ${currentFn || '<module scope>'}): ${line.trim()}`
+    readers.set(currentFn, [...(readers.get(currentFn) ?? []), site])
   }
-  return offenders
+  return readers
+}
+
+function findRawReadOffenders(): string[] {
+  return [...findRawReaders()].filter(([fn]) => !ALLOWED_RAW_READ_FUNCTIONS.has(fn)).flatMap(([, sites]) => sites)
 }
 
 describe('read_commands.ts confinement-reachable reads go through the pin-aware helpers', () => {
@@ -82,6 +85,20 @@ describe('read_commands.ts confinement-reachable reads go through the pin-aware 
           'confinement-bypass findings (force-refresh reindex, self-heal reindex, grep). If this is ' +
           'a genuinely new primitive, add it to ALLOWED_RAW_READ_FUNCTIONS with a reason; otherwise ' +
           'route the read through the existing helpers.',
+    ).toEqual([])
+  })
+
+  it('every allowlisted name still holds a raw read, so a stale entry cannot widen the guard', () => {
+    // An allowlist entry outlives the call it excused. The read one of these names covered moved
+    // into pdf_extract.ts, and the entry would have stayed behind: harmless on its own, but it is
+    // then a pre-approved name, and the next function to take it inherits an exemption nobody
+    // decided to grant. So each name has to keep earning its place on every run.
+    const readers = findRawReaders()
+    const stale = [...ALLOWED_RAW_READ_FUNCTIONS].filter((fn) => !readers.has(fn))
+    expect(
+      stale,
+      `ALLOWED_RAW_READ_FUNCTIONS names ${stale.join(', ')}, which no longer performs a raw read. ` +
+        'Delete the entry rather than leaving a pre-approved name for a future function to inherit.',
     ).toEqual([])
   })
 

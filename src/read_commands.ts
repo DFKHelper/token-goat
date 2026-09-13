@@ -149,7 +149,7 @@ import {
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
-import { assertPdfInputWithinBounds, extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
+import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
@@ -4565,13 +4565,12 @@ export function runConflicts(opts: ConflictsCliOptions): number {
   return 0
 }
 
-/** The bytes of a PDF the caller named, refused before the read when the file alone is past the input bound. */
-function readPdfBytes(file: string): Uint8Array {
+/** The bytes of a PDF the caller named, refused when the file alone is past the input bound. */
+async function readPdfBytes(file: string): Promise<Uint8Array> {
   if (!fileExists(file)) {
     throw new Error(`Could not read: ${file}`)
   }
-  assertPdfInputWithinBounds(fs.statSync(file).size, file)
-  return new Uint8Array(fs.readFileSync(file))
+  return readPdfFileWithinBounds(file)
 }
 
 /** Thin async wrapper: reads the PDF off disk and extracts its text. Kept
@@ -4581,18 +4580,18 @@ function readPdfBytes(file: string): Uint8Array {
  * (sync-only). Throws on error, matching this file's extractPdfText
  * contract, rather than returning an exit code. */
 export async function runPdfExtractText(file: string, pagesSpec?: string, layout = false): Promise<string> {
-  const result = await extractPdfText(readPdfBytes(file), pagesSpec, layout)
+  const result = await extractPdfText(await readPdfBytes(file), pagesSpec, layout)
   return result.text
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above). */
 export async function runPdfOutline(file: string): Promise<PdfOutlineEntry[]> {
-  return extractPdfOutline(readPdfBytes(file))
+  return extractPdfOutline(await readPdfBytes(file))
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above). */
 export async function runPdfMeta(file: string): Promise<PdfMeta> {
-  return extractPdfMeta(readPdfBytes(file))
+  return extractPdfMeta(await readPdfBytes(file))
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above). */
@@ -4601,7 +4600,7 @@ export async function runPdfLocate(
   pattern: string,
   opts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string },
 ): Promise<PdfLocateResult> {
-  return locatePdfPages(readPdfBytes(file), pattern, opts)
+  return locatePdfPages(await readPdfBytes(file), pattern, opts)
 }
 
 export interface ImageMeta {

@@ -26,7 +26,13 @@ async function withTemporaryText<T>(text: string, extension: string, action: (fi
 // Tickets and logs carry emails, phone numbers, ID numbers, and card numbers.
 // Strip them before compression so they never reach the chat input.
 const PII_PATTERNS: Array<[RegExp, string]> = [
-  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, 'email'],
+  // Every part bounded, and the dot separator kept out of the label class it sits between. The
+  // unbounded form -- `[A-Za-z0-9.-]+\.` -- lets the label run and the separator match the same
+  // character, so a long dash or dot run that never completes an address is re-tried from every
+  // position: measured quadratic, 32,000 characters of `a-` costing 1.35 s against 8 ms here, on
+  // an extension host that has nothing else to do while it waits. Lengths are the addressing
+  // limits themselves (64-character local part, 63-character labels), so nothing real is lost.
+  [/[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,8}[A-Za-z]{2,24}/g, 'email'],
   [/\b\d{3}-\d{2}-\d{4}\b/g, 'id-number'],
   [/\b(?:\d[ -]?){13,16}\b/g, 'card-number'],
   [/(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\d)/g, 'phone'],
@@ -34,7 +40,7 @@ const PII_PATTERNS: Array<[RegExp, string]> = [
 
 let lastRedactions = 0
 
-function scrubPii(text: string): string {
+export function scrubPii(text: string): string {
   lastRedactions = 0
   if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('scrubPii', true)) return text
   let out = text
@@ -71,11 +77,25 @@ export function fencePayload(payload: string): string {
 }
 
 // Single compression path for all text payloads: scrub, compress, report.
-async function compressText(text: string, extension: string): Promise<string> {
+export async function compressText(text: string, extension: string): Promise<string> {
   const scrubbed = scrubPii(text)
-  if (!await ensureDecoderSetup()) return scrubbed
+  // Fenced on both branches. Without the decoder there is no compressed payload to wrap, but the
+  // text still lands in a chat message between two sentences the composer wrote -- unfenced it
+  // runs into both, and the model is left to guess where the quoted material starts and stops.
+  // The redaction notice is owed on this branch too: the user is told what was removed on the
+  // strength of it happening, not of the compressor having been available to do it.
+  if (!await ensureDecoderSetup()) {
+    reportRedactions()
+    return fencePayload(scrubbed)
+  }
   const payload = await withTemporaryText(scrubbed, extension, (file) => runTokenGoat(['compress-text', '--file', file]))
   showStats(payload)
+  reportRedactions()
+  return fencePayload(payload)
+}
+
+/** Tell the user what scrubPii took out: once with the explanation, and after that in the status bar. */
+function reportRedactions(): void {
   if (lastRedactions > 0) {
     if (savingsContext && !savingsContext.globalState.get<boolean>('piiNoticeShown', false)) {
       void savingsContext.globalState.update('piiNoticeShown', true)
@@ -91,7 +111,6 @@ async function compressText(text: string, extension: string): Promise<string> {
       void vscode.window.setStatusBarMessage(`token-goat: removed ${lastRedactions} personal-data item(s) before sending`, 6000)
     }
   }
-  return fencePayload(payload)
 }
 
 async function openChat(query: string): Promise<void> {
