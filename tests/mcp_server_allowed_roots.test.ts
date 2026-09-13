@@ -51,8 +51,8 @@ describe('mcp allowed_roots', () => {
 
   beforeEach(() => {
     originalEnv = process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
-    allowedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-allowroots-in-')))
-    otherRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-allowroots-out-')))
+    allowedRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-allowroots-in-')))
+    otherRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-allowroots-out-')))
     fs.writeFileSync(path.join(allowedRoot, 'inside.txt'), 'INSIDE-CONTENT\n')
     fs.writeFileSync(path.join(otherRoot, 'outside.txt'), 'OUTSIDE-CONTENT\n')
     invalidateConfigCache()

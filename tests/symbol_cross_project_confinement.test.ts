@@ -49,8 +49,8 @@ function confine(): void {
 }
 
 beforeEach(() => {
-  rootA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-confine-a-')))
-  rootB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-confine-b-')))
+  rootA = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-confine-a-')))
+  rootB = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-confine-b-')))
   seedProject(rootA, 'alphaOwnSymbol', 'AAA-FROM-PROJECT-A')
   seedProject(rootB, 'betaSecretForecast', 'BBB-CONFIDENTIAL-FROM-PROJECT-B')
   cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)

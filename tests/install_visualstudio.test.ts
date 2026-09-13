@@ -42,7 +42,7 @@ beforeEach(() => {
   // This suite chdirs into the project, so the installer resolves its scope root through
   // `process.cwd()` and gets the `/private` spelling, while the paths built from `root` kept the
   // `/var` one. The two then compared unequal for a file that is the same file.
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-visualstudio-')))
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-visualstudio-')))
   home = path.join(root, 'home')
   project = path.join(root, 'project')
   fs.mkdirSync(home)

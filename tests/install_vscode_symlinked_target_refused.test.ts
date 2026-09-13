@@ -41,7 +41,7 @@ let prevUserProfile: string | undefined
 let prevAppData: string | undefined
 
 beforeEach(() => {
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-symlink-')))
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-symlink-')))
   project = path.join(root, 'project')
   outside = path.join(root, 'outside')
   fs.mkdirSync(project, { recursive: true })

@@ -58,7 +58,7 @@ describe('mcp section tool: execution base must equal the gate-validated base', 
   it('section: a relative spec is resolved against the gate-validated root, not the raw subdirectory projectRoot', async () => {
     // A real git repo, with a subdirectory as the caller-supplied projectRoot -- this is what
     // makes resolveToolRoot's git-toplevel walk diverge from the raw argument.
-    repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-section-bypass-')))
+    repoRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-section-bypass-')))
     execFileSync('git', ['init', '--quiet'], { cwd: repoRoot })
     subDir = path.join(repoRoot, 'packages', 'app')
     fs.mkdirSync(subDir, { recursive: true })

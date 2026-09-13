@@ -55,7 +55,7 @@ function expectIndexed(db: string): void {
 }
 
 beforeEach(() => {
-  TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-sniffed-count-')))
+  TMP = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-sniffed-count-')))
   dbPath = path.join(TMP, 'index.db')
 })
 
