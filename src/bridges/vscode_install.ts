@@ -13,7 +13,7 @@ import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope, stripDel
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
-import { assertProjectScopeTarget, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
+import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
@@ -208,6 +208,9 @@ export interface VscodeInstallResult {
  */
 export function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
   const otherPath = otherScopeMcpPath(opts)
+  // In a user-scope run the other scope is the PROJECT one, so this path comes out of the working
+  // tree even though nothing in this run writes to it. See {@link projectPathIsConsultable}.
+  if (opts.project !== true && !projectPathIsConsultable(otherPath, path.resolve(opts.projectRoot ?? process.cwd()))) return false
   if (!fs.existsSync(otherPath)) return false
   try {
     const config = readConfig(otherPath)
@@ -234,7 +237,14 @@ export interface VscodeDecoderStatus {
  */
 export function vscodeDecoderConfigured(opts: { projectRoot?: string } = {}): VscodeDecoderStatus {
   const checkedPaths = [vscodeUserMcpPath()]
-  if (opts.projectRoot !== undefined) checkedPaths.push(vscodeProjectMcpPath(opts.projectRoot))
+  if (opts.projectRoot !== undefined) {
+    // `mcp-status` is the command someone runs inside a repository they have just cloned, so this
+    // is the same repository-controlled path the installer consults, reached without an install.
+    // Left out of `checkedPaths` rather than listed and skipped, because that list is what was
+    // actually checked.
+    const projectPath = vscodeProjectMcpPath(opts.projectRoot)
+    if (projectPathIsConsultable(projectPath, path.resolve(opts.projectRoot))) checkedPaths.push(projectPath)
+  }
   for (const candidate of checkedPaths) {
     if (!fs.existsSync(candidate)) continue
     try {

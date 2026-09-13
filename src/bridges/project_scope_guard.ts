@@ -181,3 +181,23 @@ export function assertWriteInScope(target: string): void {
   if (isTokenGoatStorage(target)) return
   assertProjectScopeTarget(target, root)
 }
+
+/**
+ * Whether a path taken from the working tree may be looked at at all.
+ *
+ * Confinement follows the PATH, not the scope of the run, and that distinction is where the rest of
+ * this file had a hole. {@link assertProjectScopeTarget} is a no-op in user scope, which is correct
+ * for the files a user-scope install WRITES -- every one of them is under the home directory. But a
+ * user-scope install still *consults* `<cwd>/.vscode/mcp.json`, to refuse registering token-goat in
+ * both scopes at once, and so does `mcp-status`. That path is repository-controlled: checked in as
+ * a link, it made both of them `existsSync` and read whatever it pointed at, which is the same
+ * private file, or the same host on the network, that the write-side guard exists to refuse.
+ *
+ * Answers `false` instead of throwing, for two reasons. The questions asked through here are all of
+ * the form "is it already installed over there", and a link leading out of the project is not an
+ * answer to one -- declining to look is the same outcome as looking and finding nothing. And
+ * throwing would hand any repository a way to stop a user-scope install by checking in a symlink.
+ */
+export function projectPathIsConsultable(target: string, projectRoot: string): boolean {
+  return isInsideRoot(target, projectRoot)
+}

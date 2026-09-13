@@ -428,3 +428,92 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     expect(both?.message).toContain('token-goat uninstall --vscode --user')
   })
 })
+
+describe('a repository cannot make a user-scope install look at a file outside the project', () => {
+  // `install --vscode` writing only under the home directory is not the whole of user scope: the
+  // run still CONSULTS `<cwd>/.vscode/mcp.json`, to refuse registering token-goat in both scopes at
+  // once, and so does `mcp-status`. That path comes out of the working tree, so a repository can
+  // check `.vscode` in as a link and decide what those two read. The write-side guard is a no-op in
+  // user scope by design -- every file it protects is under the home directory -- so it never saw
+  // this, and the read happened before anything else could.
+  //
+  // A junction rather than a symlink: it is the one link Windows creates without elevation, and the
+  // whole point of the case is a repository doing this on the platform where UNC paths exist.
+  function projectWithEscapingVscodeDir(prefix: string): { project: string; outside: string; mcp: string } {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}outside-`))
+    const mcp = path.join(outside, 'mcp.json')
+    fs.writeFileSync(mcp, managedServerJson(), 'utf8')
+    fs.symlinkSync(outside, path.join(project, '.vscode'), 'junction')
+    return { project, outside, mcp }
+  }
+
+  // Shaped the way `isManagedServer` recognises one, or the sabotage is inert and every assertion
+  // below passes for the wrong reason.
+  function managedServerJson(): string {
+    return JSON.stringify({ servers: { 'token-goat': { type: 'stdio', command: 'node', args: [path.join('anywhere', 'token-goat.mjs'), 'mcp-serve'] } } })
+  }
+
+  // Removing the LINK, never what it points at: `rmSync(..., { recursive: true })` on a junction
+  // deletes the target's contents, which would make the cleanup the disclosure.
+  function removeDirLink(link: string): void {
+    try {
+      fs.unlinkSync(link)
+    } catch {
+      fs.rmdirSync(link)
+    }
+  }
+
+  it('installs into user scope rather than reading the file the link points at', () => {
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-escape-userdir-'))
+    const { project, outside, mcp } = projectWithEscapingVscodeDir('.tg-vscode-escape-')
+    isolateVscodeUserDir(userDir)
+    try {
+      // The bytes behind the link say token-goat is already registered in project scope, which is
+      // what the install throws on when it reads them -- so a green assertion here is the read not
+      // happening, and the calibration below shows the same file inside the project really throws.
+      expect(() => installVscode({ projectRoot: project })).not.toThrow()
+      expect(vscodeDecoderConfigured().configured).toBe(true)
+      // And the file itself is untouched, which is the half that would have been a disclosure had
+      // it been a private file rather than a plausible config.
+      expect(fs.readFileSync(mcp, 'utf8')).toBe(managedServerJson())
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+      removeDirLink(path.join(project, '.vscode'))
+      fs.rmSync(project, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('calibration: the same file INSIDE the project is read, so the refusal above is the link', () => {
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-escape-cal-userdir-'))
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-escape-cal-'))
+    isolateVscodeUserDir(userDir)
+    try {
+      fs.mkdirSync(path.join(project, '.vscode'))
+      fs.writeFileSync(path.join(project, '.vscode', 'mcp.json'), managedServerJson(), 'utf8')
+      expect(() => installVscode({ projectRoot: project })).toThrow(/already registered in VS Code project scope/)
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves an escaping workspace path out of what mcp-status says it checked', () => {
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-status-escape-userdir-'))
+    const { project, outside } = projectWithEscapingVscodeDir('.tg-vscode-status-escape-')
+    isolateVscodeUserDir(userDir)
+    try {
+      const status = vscodeDecoderConfigured({ projectRoot: project })
+      // The link's target claims a managed server. Reported configured, `mcp-status` would be
+      // answering from a file the repository wrote outside the project.
+      expect(status.configured).toBe(false)
+      expect(status.checkedPaths).toEqual([vscodeUserMcpPath()])
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+      removeDirLink(path.join(project, '.vscode'))
+      fs.rmSync(project, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
