@@ -1,0 +1,67 @@
+$ python scripts/generate-eval-capture.py
+
+Paired A/B evaluation, toolset A9
+
+  arm A baseline : read_file, grep, list_files, edit_file, run_tests
+  arm B          : the same, with read_file and grep replaced by
+                   tg_read, tg_symbol, tg_outline, tg_section,
+                   tg_semantic, tg_refs
+  task           : one real bug per repository snapshot, arms differ
+                   only in the tool surface offered to the model
+  counted        : input tokens as reported by the CLI, summed over
+                   every turn; no estimator is involved
+  data           : demo/data/eval-runs.csv, demo/data/eval-tasks.csv
+
+Outcome  : 8/8 pairs resolved in BOTH arms, 0 discordant.
+           No pair separates the arms on success, so this is a cost
+           result only. It says nothing about capability or quality.
+
+Per-pair input tokens, billing-weighted (fresh 1.0 / write 1.25 / read 0.1)
+
+  task           turns A turns B       arm A       arm B     B/A
+  1ae363680bcc         9       8      53,534      13,964   0.261
+  233a97598138        17       6      50,709       5,548   0.109
+  5d3c55d0fa73        15      33      52,778     172,014   3.259  excluded
+  73c4221a0a31        29      40     247,157     312,677   1.265
+  7c5fe186872f         9       5      22,381       5,521   0.247
+  8a3382b8d0e0        14      14      59,975      36,687   0.612
+  c7345de33a71        14       7      35,016      14,525   0.415  excluded
+  dc423b9aa854        15      13     106,703      48,984   0.459
+
+Median paired ratio B/A, by what is counted
+
+  measure                                  clean (n=6)     all (n=8)
+  total input (cache hits included)              0.393         0.424
+  fresh context (input + cache write)            0.349         0.444
+  billing-weighted                               0.360         0.437
+
+  clean billing-weighted saving: 64.0%
+  all   billing-weighted saving: 56.3%
+
+Read the spread, not only the median
+
+  clean per-pair ratios : 0.109, 0.247, 0.261, 0.459, 0.612, 1.265
+  pairs where arm B cost MORE : 1 of 6
+
+Runs that produced no result
+
+  void runs : 12 of 29 recorded, all one failure mode
+              (the driver process died mid-run, no outcome recorded)
+  arm A     : 10
+  arm B     : 2
+  the split tracks exposure, not arm: arm A runs roughly 11x longer,
+  and crashes per exposure-hour were 4.60 (A) against 5.08 (B)
+
+Limitations, all of which travel with the numbers above
+
+  - n = 6 clean pairs. A median over six pairs moves under
+    single-pair changes; the spread above is the honest picture.
+  - Every pair resolved in both arms, so no capability claim follows.
+  - 2 pairs excluded post hoc for writer contamination. The criterion
+    is mechanical and outcome-blind, but was not pre-registered.
+  - Attrition was duration-correlated: the crash destroyed long runs
+    preferentially, and 2 tasks were lost entirely.
+  - The run was truncated at n=7 with the ratios already visible.
+    Task selection stayed blind; the decision to stop did not.
+  - Single model, single repository, tasks authored by this project.
+

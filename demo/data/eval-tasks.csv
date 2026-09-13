@@ -1,0 +1,12 @@
+sha,parent_sha,subject,src_files,test_files
+1ae363680bcc67104e221da625d28571efbe8ef6,ad37ac3fc7d480908906546cc875db2610e59fc4,fix(config-get): support YAML files (colon syntax and indentation nesting),"[""src/read_commands.ts""]","[""tests/read_commands.test.ts""]"
+233a975981382d23f18bdd2a2907b3b1d2f21616,14ad53a672a6963614741920377d5ce8a5d88b16,fix(tool_filters/languages): stop PowerShell warning dedup key from truncating,"[""src/tool_filters/languages.ts""]","[""tests/tool_filters_languages.test.ts""]"
+5d3c55d0fa73cbb87165504a2970baf35cd87734,4022bee53fefe9710c176e0c0c57bee1fe821a90,fix: register context-stats command in CLI,"[""src/cli.ts""]","[""tests/cli.test.ts"", ""tests/command_matrix_e2e.test.ts""]"
+73c4221a0a318c35e9bbf1d5f5a31d804024d222,362cc075e588724bfae81ea27102ddc6d4d3bbbe,feat(hooks_bash): advisory hints for gh api scope and oversized JSON,"[""src/hooks_bash.ts""]","[""tests/hooks_bash.test.ts""]"
+7c5fe186872fa56e30fc5b96eddc449e5f48fa43,0f89dc858d739b0779d196f69c9d934d0ba40783,fix: track Python def/class nesting with an indent stack instead of a fixed 4-space divisor,"[""src/section_reader.ts""]","[""tests/section_reader.test.ts""]"
+8a3382b8d0e04d4cc682c06b284d728de5919a90,25ce3c5884c7aa414a3af7acfaf09126a213d0fb,fix: index Apex constructors that omit an access modifier,"[""src/languages/apex.ts""]","[""tests/salesforce_languages.test.ts""]"
+afdf8a5045d7ec2376ecd5a8667fb781f12e1003,0b617cca122db5379e055966bb052401ebd61e2e,feat: add --force flag to token-goat index for full reindex,"[""src/cli.ts""]","[""tests/cmdindex_unchanged_skip.test.ts""]"
+c7345de33a716ee780a45fe5d1833f8bfe8c6b4f,8a38704aba04e6ba0e9f3836336db85dd8adea3f,fix(parser): extract JSON keys from single-line and minified documents,"[""src/parser.ts""]","[""tests/parser_languages.test.ts""]"
+d41fefe5f1392f7a026db6b16558b44ec9276408,ca5bb422b9e9eb06e49217443f2eb15cbc16e07c,fix: npm lockdeps dropped root optionalDependencies from direct-dep classification,"[""src/text_commands.ts""]","[""tests/text_commands.test.ts""]"
+dc423b9aa8545ec9cdff28c53a5d28bc474cc4cc,0a9db8b283e3e30a9584eef37432b3349dc07c94,"fix: 3 live hint placeholders (Heading, sectionName, table_name) missing from KNOWN_CORRELATOR_PLACEHOLDERS","[""src/hint_stats.ts""]","[""tests/hint_stats.test.ts""]"
+fcf936afe99b8a008a6ee62af304ce9f588c75ca,1c3e1faad1dcfdee8be7b79864336756b172103a,feat(refs): add --top N grouped-by-file summary for high-fanout symbols,"[""src/cli.ts"", ""src/read_commands.ts""]","[""tests/command_matrix_e2e.test.ts"", ""tests/read_commands.test.ts""]"

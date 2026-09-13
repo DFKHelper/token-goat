@@ -15,7 +15,18 @@ const evidenceFiles = [
   "09-compact-hint.txt",
   "10-web-output.txt",
   "11-powerpoint.txt",
+  "12-eval-paired.txt",
 ];
+
+// The list above is hand-maintained, so a capture added to the directory and
+// forgotten here would silently never reach the page. Fail loudly instead.
+const onDisk = readdirSync(resolve(root, "demo", "evidence"))
+  .filter((name) => name.endsWith(".txt"))
+  .sort();
+const missing = onDisk.filter((name) => !evidenceFiles.includes(name));
+if (missing.length > 0) {
+  throw new Error(`demo/evidence captures not listed in evidenceFiles: ${missing.join(", ")}`);
+}
 
 const evidence = Object.fromEntries(
   evidenceFiles.map((file) => {
