@@ -415,21 +415,63 @@ export function isInsideRoot(target: string, root: string): boolean {
   return sameDirectory(nt.slice(0, nr.length), nr);
 }
 
-/** Whether two spellings name the same directory on disk. False if either cannot be resolved. */
-function sameDirectory(a: string, b: string): boolean {
-  // A share is not asked. Resolving one opens an SMB connection, and this runs inside a pre-tool
-  // hook -- see `vscode_path_gate.ts` for the 21.0 s that cost. A UNC root keeps the platform's
-  // answer, which is the behaviour every release before this one had everywhere.
-  if (isUncOrDevicePath(a) || isUncOrDevicePath(b)) return true;
+/**
+ * Whether `p` names a place reached over the network, rather than merely being spelled with two
+ * leading slashes. `//server/share` and its `//?/UNC/server/share` device spelling are; the local
+ * device spellings -- `//?/C:/work`, `//./C:/work`, `//?/Volume{...}/work` -- are not, and resolving
+ * one of those costs a local `realpath` and no connection to anywhere.
+ *
+ * Split out from {@link isUncOrDevicePath}, which answers the wider question its callers want (does
+ * this path need the two-leading-slash spelling handled at all). Refusing on the wider answer would
+ * have declined a differently-cased drive-letter device path that can be checked for free.
+ */
+export function isNetworkPath(p: string): boolean {
+  const device = /^[\\/]{2}([?.][\\/])?/.exec(p);
+  if (device === null) return false;
+  return device[1] === undefined || /^UNC[\\/]/i.test(p.slice(device[0].length));
+}
+
+/**
+ * Whether two spellings name the same directory on disk. False if either cannot be resolved.
+ *
+ * Exported for its tests and called from nowhere else: the share case is unreachable through
+ * {@link isInsideRoot} on Windows without a real file server, and a security predicate that only
+ * one of the three CI platforms can exercise is one that two of them certify blind.
+ */
+export function sameDirectory(a: string, b: string): boolean {
+  // Reached only when the two spellings of the root differ and the FOLD is what made them agree,
+  // so every answer here is about a name the caller did not write the way the root is written.
+  // That is a narrow enough case to fail closed in, and failing closed is the only safe direction:
+  // being wrong here discloses a file, and this runs before the user has approved the tool call.
+  //
+  // A share is not asked, because resolving one opens an SMB connection to an address the model
+  // chose -- see `vscode_path_gate.ts` for the 21.0 s that cost. Unasked means refused, not
+  // admitted: a case-sensitive SMB export really does keep `\\host\share\repo` and
+  // `\\host\share\Repo` apart, and admitting the second on the platform's say-so is the same
+  // disclosure this function exists to close, just where it cannot be checked. A UNC root spelled
+  // the way it really is never arrives here at all -- the caller returns on the exact-prefix match
+  // above -- so this refuses a differently-cased spelling of a share and nothing else.
+  if (isNetworkPath(a) || isNetworkPath(b)) return false;
+  let canonicalRoot: string;
   try {
-    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
+    canonicalRoot = fs.realpathSync.native(b);
   } catch {
-    // One of the two spellings is not on disk, so there is no second directory to be let into and
-    // nothing to ask the filesystem about. A path that does not exist yet is a WRITE target, and
-    // refusing it would decline a legitimate create under a root the caller spelled in another
-    // case -- the exact acceptance {@link foldPathForContainment} exists to keep. The platform's
-    // answer stands, which is what every release before this one did in every case.
+    // The ROOT is not on disk. There is no directory to compare against and no second directory to
+    // be let into, so there is nothing this function can learn -- a project root that has not been
+    // created yet, or a configured one that is simply gone. The platform's answer stands, which is
+    // what every release before this one did in every case.
     return true;
+  }
+  try {
+    return fs.realpathSync.native(a) === canonicalRoot;
+  } catch {
+    // The root resolves and the caller's spelling of it does not. On a case-insensitive volume it
+    // would have resolved to the same directory, so this asymmetry IS the volume saying the two
+    // names are different places -- and the one the caller wrote is not there. Admitting it would
+    // let a create put a new directory outside the project, and an `EACCES` here says nothing at
+    // all, which is the same "unreadable means inside" mistake the containment walk had removed
+    // from it earlier in this release.
+    return false;
   }
 }
 

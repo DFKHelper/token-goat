@@ -1,6 +1,5 @@
 import type { SymbolEntry } from '../parser_types.js'
 import { buildLineIndex, offsetToLine, stripCstyleComments, stripStringLiterals, type AdapterSpan, makeSpanSymbol } from './common.js'
-import { escapeRegExp } from '../util.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 // Apex is a case-insensitive language (Apex Developer Guide, "Writing Apex" > "Language Constructs": keywords, type names and identifiers all ignore case), so `Public class Foo` and `Trigger T on Account` are as legal as the lowercase spellings and appear in real org code. Matching them case-sensitively dropped the whole declaration, not just its keyword. The `i` flag here changes only the literal keywords: every capture and character class in these patterns is `[A-Za-z...]`, already case-agnostic, so nothing that was previously matched is matched differently and no name capture is folded - a declared `fooBar` still indexes as `fooBar`, exactly as written.
@@ -8,6 +7,9 @@ const CASE_INSENSITIVE_GM = 'gmi'
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*'
 const MODIFIER =
   '(?:public|private|protected|global|static|final|override|virtual|abstract|webservice|testMethod|transient|with|without|inherited|sharing)'
+
+/** A bare `Foo(...) {` line: a constructor if `Foo` is a type this file declares, nothing otherwise. */
+const CTOR_NO_MODIFIER_RE = new RegExp(`^[ \\t]*(${IDENT})[ \\t]*\\([^;{}]*\\)[ \\t]*\\{`, CASE_INSENSITIVE_GM)
 
 // Same leading-annotation allowance as METHOD_RE below (`@IsTest private class MyTestClass { ... }`
 // is a common, legal Apex idiom) - without it, an annotated type declaration line fails to match
@@ -126,21 +128,48 @@ function annotationStartLine(lines: readonly string[], line: number): number {
   return start
 }
 
+/**
+ * Where every `{` in `code` is closed, by one stack pass, held for the file being indexed.
+ *
+ * Counting depth forward from each declaration is the same answer at quadratic cost, and the cost
+ * is not hypothetical: a `.cls` whose braces do not balance -- a truncated file, or one a hostile
+ * repository simply wrote that way -- sends every declaration's count to end of file. Measured at
+ * 4,000 unclosed declarations: 481 ms, growing fourfold per doubling, and `large_file_skip_kb`
+ * admits several times that before the file is skipped at all. A balanced file pays it too, once
+ * per level of nesting.
+ *
+ * Cleared when the file is done, so the last indexed file's text is not held alive by this module.
+ */
+let braceMapCode: string | null = null
+let braceMapEntries = new Map<number, number>()
+
+function braceMap(code: string): Map<number, number> {
+  if (code === braceMapCode) return braceMapEntries
+  const entries = new Map<number, number>()
+  const open: number[] = []
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]
+    if (ch === '{') open.push(i)
+    else if (ch === '}') {
+      const start = open.pop()
+      if (start !== undefined) entries.set(start, i)
+    }
+  }
+  braceMapCode = code
+  braceMapEntries = entries
+  return entries
+}
+
+function forgetBraceMap(): void {
+  braceMapCode = null
+  braceMapEntries = new Map()
+}
+
 function findBlockEndLine(code: string, lineIndex: readonly number[], fromOffset: number): number | null {
   const open = code.indexOf('{', fromOffset)
   if (open === -1) return null
-
-  let depth = 0
-  for (let i = open; i < code.length; i++) {
-    const ch = code[i]
-    if (ch === '{') {
-      depth += 1
-    } else if (ch === '}') {
-      depth -= 1
-      if (depth === 0) return offsetToLine(lineIndex, i)
-    }
-  }
-  return null
+  const close = braceMap(code).get(open)
+  return close === undefined ? null : offsetToLine(lineIndex, close)
 }
 
 function spanForMatch(
@@ -174,12 +203,6 @@ function spanForMatch(
 // with its own container's span, would be silently dropped from the index.
 const CONTAINER_KINDS = new Set(['apex_class', 'apex_interface', 'apex_enum'])
 
-function overlapsExisting(symbols: readonly SymbolEntry[], line: number): boolean {
-  return symbols.some(
-    (s) => line >= s.lineStart && line <= s.lineEnd && !CONTAINER_KINDS.has(s.kind),
-  )
-}
-
 export function extractApex(content: string, filePath: string): { symbols: SymbolEntry[] } {
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
@@ -212,12 +235,27 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // makeSpanSymbol's lines/style params below) would never see a `/** ... */` block against it.
   const rawLines = content.split(/\r?\n/)
 
+  // Whether a line already sits inside a member -- a method, a constructor, a trigger -- rather
+  // than merely inside the class that holds it. Asked once per candidate match, and it used to be
+  // answered by scanning every symbol emitted so far, which is quadratic in the number of
+  // declarations: a file of 4,000 classes and 4,000 candidate members spent 1.4 s on that scan
+  // alone, and `indexing.large_file_skip_kb` admits several times that before a file is skipped. A
+  // flag per line answers it in constant time. Marking costs one pass per emitted symbol and no
+  // more, because a member whose lines are already covered is exactly what never gets emitted.
+  const covered = new Uint8Array(codeLines.length + 2)
+  const covers = (line: number): boolean => covered[line] === 1
+
   const emit = (name: string, kind: string, span: AdapterSpan, parent = ''): void => {
     if (!name || symbols.length >= MAX_SYMBOLS) return
     const key = `${name}\0${kind}\0${span.startLine}`
     if (seen.has(key)) return
     seen.add(key)
-    symbols.push(makeSpanSymbol(filePath, name, kind, span, parent, rawLines, 'c'))
+    const symbol = makeSpanSymbol(filePath, name, kind, span, parent, rawLines, 'c')
+    symbols.push(symbol)
+    // Read off the symbol rather than the span, so this cannot drift from what the old scan
+    // compared against if `makeSpanSymbol` ever adjusts a line.
+    if (CONTAINER_KINDS.has(kind)) return
+    for (let line = Math.max(0, symbol.lineStart); line <= symbol.lineEnd && line < covered.length; line++) covered[line] = 1
   }
 
   for (const match of code.matchAll(TRIGGER_RE)) {
@@ -238,7 +276,6 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // annotation line was silently excluded from the emitted span/body and lineStart pointed at
   // the class keyword instead of its real declaration start -- the same span-folding
   // annotationStartLine already applies to constructors/methods below, just not here.
-  const typeNames = new Set<string>()
   const typeNamesLower = new Set<string>()
   for (const match of code.matchAll(TYPE_DECL_RE)) {
     const typeKind = match[1] ?? ''
@@ -249,7 +286,6 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     // The keyword capture carries whatever case the source wrote it in, so it has to be folded before it becomes part of a kind string: `Interface Foo` would otherwise be filed under the invented kind `apex_Interface`, which no consumer matches on.
     const typeKindLower = typeKind.toLowerCase()
     const kind = typeKindLower === 'class' ? 'apex_class' : `apex_${typeKindLower}`
-    typeNames.add(name)
     typeNamesLower.add(name.toLowerCase())
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
@@ -260,17 +296,27 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // `Foo() { ... }` line. That shape is unambiguous once the type names are known: a bare
   // identifier immediately followed by parens and a `{`, matching a declared type name, cannot be
   // anything but that type's constructor - a call statement ends in `;`, never `{`. Pick it up with
-  // a second, name-anchored pass now that typeNames has been collected. `[^;{}]*` (not `[\s\S]*?`)
+  // a second pass over bare `Name(...) {` lines, now that the type names have been collected. `[^;{}]*` (not `[\s\S]*?`)
   // keeps the parameter-list match on one line so it can't lazily span into an unrelated brace on a
   // later line.
-  if (typeNames.size > 0) {
-    const namesAlt = [...typeNames].map(escapeRegExp).join('|')
-    const ctorNoModifierRe = new RegExp(`^[ \\t]*(${namesAlt})[ \\t]*\\([^;{}]*\\)[ \\t]*\\{`, CASE_INSENSITIVE_GM)
-    for (const match of code.matchAll(ctorNoModifierRe)) {
+  //
+  // The pattern names no type, and asks the set afterwards. It used to interpolate one alternation
+  // branch per declared type, which is injection-safe -- every branch had already matched `IDENT`
+  // and was escaped on top of that -- and an availability problem all the same. Nothing caps how
+  // many types a file declares: `MAX_SYMBOLS` gates `emit`, not this set, so the branch count is
+  // bounded only by `indexing.large_file_skip_kb`, 2 MB by default. V8 walks a literal alternation
+  // branch by branch, so a file whose declarations share a long prefix costs super-quadratic time:
+  // measured against a replica of this pattern, 2,000 names took 0.78 s, 4,000 took 4.87 s and
+  // 6,000 took 17.3 s, all synchronous inside the worker's drain loop, which has no per-file
+  // deadline -- so one file stalls every file queued behind it. A set lookup is the same answer in
+  // linear time, and `typeNamesLower` was already doing it for METHOD_RE below.
+  if (typeNamesLower.size > 0) {
+    for (const match of code.matchAll(CTOR_NO_MODIFIER_RE)) {
       const name = match[1] ?? ''
+      if (!typeNamesLower.has(name.toLowerCase())) continue
       const startOffset = match.index ?? 0
       const line = offsetToLine(lineIndex, startOffset)
-      if (overlapsExisting(symbols, line)) continue
+      if (covers(line)) continue
       const bodyStartLine = annotationStartLine(codeLines, line)
       emit(name, 'apex_constructor', spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
     }
@@ -282,7 +328,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     if (CONTROL_NAMES.has(name.toLowerCase())) continue
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
-    if (overlapsExisting(symbols, line)) continue
+    if (covers(line)) continue
     const bodyStartLine = annotationStartLine(codeLines, line)
     // Sharing a name with a type declared somewhere in the file is not enough to be that type's
     // constructor: `class Outer { class Inner { void Outer() {} } }` is a method of Inner, and was
@@ -295,5 +341,6 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 
+  forgetBraceMap()
   return { symbols }
 }

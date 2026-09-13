@@ -114,6 +114,9 @@ const PROBE_GROWTH_FACTOR = 12
 const PROBE_TERMINATORS = ['!', 'a', '0', ' ', '￿', '\n', ' '] as const
 const PROBE_BUDGET_MS = 25
 
+/** How many repetitions a counted quantifier is cut down to, so its gate opens inside the ladder. */
+const MAX_COUNTED_REPEAT = 8
+
 /**
  * How long one run took, and whether it matched.
  *
@@ -249,6 +252,25 @@ const CLASS_SWEEP: readonly string[] = [
   ...Array.from({ length: 0x5f }, (_, i) => String.fromCharCode(0x20 + i)),
   ...Array.from({ length: 0x400 }, (_, i) => String.fromCharCode(0xa0 + i * 0x3f)),
 ]
+
+/**
+ * Tails the ladder falls back on when nothing in {@link PROBE_TERMINATORS} makes the pattern fail.
+ *
+ * One length, one past {@link MAX_COUNTED_REPEAT}, and that is a bound rather than a guess. The
+ * guard appends a tail and an optional run swallows it, so `^(a|aa)+[\s\S]?$` needs `bb` and
+ * `^(a|aa)+[\s\S]{0,2}$` needs `bbb` -- an arms race with no end, on its own. It ends because
+ * {@link detune} clamps every counted bound to MAX_COUNTED_REPEAT before the rewrite is judged, so
+ * nothing the guard runs can swallow more than that many characters, and a tail one longer
+ * falsifies all of them at once.
+ *
+ * Shorter tails were here -- length one, then two -- and mutations removing each of them changed no
+ * verdict, which is the whole of the argument for not having them. A tail longer than a pattern
+ * needs still fails, so a shorter one can only ever reach the same answer sooner, and the sweep is
+ * walked at most {@link MAX_SWEEPS} times in the one case where it reaches no answer at all.
+ */
+const SWEEP_TAILS: readonly string[] = CLASS_SWEEP.map((c) => c.repeat(MAX_COUNTED_REPEAT + 1))
+/** Rungs per alphabet allowed to pay for a sweep that finds nothing. */
+const MAX_SWEEPS = 3
 
 /** One character the class accepts, found by asking it rather than by interpreting its contents. */
 function sampleClass(cls: string): string {
@@ -447,23 +469,55 @@ function climbsPastBudget(re: RegExp): boolean {
     // cannot become the weapon either. An ordinary pattern pays nothing for this: its calibrated
     // terminator still fails, so the first attempt is the only one.
     const candidates = [tail, ...PROBE_TERMINATORS.filter((t) => t !== tail)]
+    // A tail found by sweeping, kept for the rungs above so the sweep is paid for once, and a count
+    // of how many rungs have paid for a fruitless one.
+    let swept: string | undefined
+    let sweeps = 0
     const timings: number[] = []
     let previous: number | undefined
     for (const length of PROBE_LENGTHS) {
       let failing: Measurement | undefined
       let last: Measurement | undefined
-      for (const candidate of candidates) {
-        const attempt = timeMatch(re, body(length) + candidate)
-        last = attempt
-        if (attempt.ms > PROBE_BUDGET_MS) return true
-        if (!attempt.matched) {
-          failing = attempt
-          break
+      const attempt = (candidate: string): Measurement | 'over-budget' => {
+        const m = timeMatch(re, body(length) + candidate)
+        last = m
+        if (m.ms > PROBE_BUDGET_MS) return 'over-budget'
+        if (!m.matched) failing = m
+        return m
+      }
+      for (const candidate of swept === undefined ? candidates : [swept, ...candidates]) {
+        if (attempt(candidate) === 'over-budget') return true
+        if (failing !== undefined) break
+      }
+      // The candidate list is finite and a pattern can simply name all of it. Every terminator
+      // above sits in the optional class of `^(a|aa)+[!a0 \uFFFF\n\u2028]?$`, so no input this
+      // rung can build is capable of failing, every run matched, and the ladder read 0 ms while the
+      // pattern cost 16.7 seconds against forty-five characters -- 30.8 with `*` in place of `?`.
+      // So the fixed list is a starting point rather than the whole vocabulary: when none of it
+      // fails, the same sweep a character class is asked with is walked for one that does. Each
+      // attempt is timed and held to the budget like any other, and the fixed four-character step
+      // is what makes that safe -- the rung where a swept tail first costs anything is only four
+      // characters past the one where it cost nothing.
+      //
+      // The sweep offers each character nine times over rather than singly, because the guard
+      // appends a tail and an optional any-character tail eats exactly one of it: `^(a|aa)+[\s\S]?$`
+      // matches `aaaa` plus any single character, so every single-character tail matched it. Nine is
+      // where that stops, for the reason {@link SWEEP_TAILS} gives.
+      // And the whole sweep is capped, because a pattern that really does match everything -- the
+      // honest `^[\s\S]*$` -- would otherwise pay for all of it on all 128 rungs for no verdict.
+      if (failing === undefined && sweeps < MAX_SWEEPS) {
+        sweeps++
+        for (const candidate of SWEEP_TAILS) {
+          if (attempt(candidate) === 'over-budget') return true
+          if (failing !== undefined) {
+            swept = candidate
+            break
+          }
         }
       }
-      // Nothing this rung can say: every terminator matched, so no run backtracked. Recorded as the
-      // last timing rather than skipped, because {@link projectsPastBudget} reads the ladder by
-      // position and a hole would shift every rung above it.
+      // Still nothing this rung can say: the pattern matches everything, so no run backtracked.
+      // Recorded as the last timing rather than skipped, because {@link projectsPastBudget} reads
+      // the ladder by position and a hole would shift every rung above it.
       const elapsed = (failing ?? (last as Measurement)).ms
       // Sub-millisecond timings are noise on every platform this runs on, so a ratio between two of
       // them means nothing. Only a long run that is also disproportionate counts. This catches a
@@ -498,8 +552,6 @@ function groupEnd(source: string, start: number): number {
   return -1
 }
 
-/** How many repetitions a counted quantifier is cut down to, so its gate opens inside the ladder. */
-const MAX_COUNTED_REPEAT = 8
 
 /** A rewrite of `source` with its length gates removed, or `null` if it has none. */
 type Detuned = { readonly source: string; readonly hadLookaround: boolean; readonly negativeBodies: readonly string[] }

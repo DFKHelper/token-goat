@@ -1,6 +1,8 @@
 import * as path from 'node:path'
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
+import { escapeRegExp } from '../util.js'
+
 import { buildLineIndex, offsetToLine, stripXmlComments, type AdapterSpan, makeSpanSymbol } from './common.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 1000: matches every sibling language adapter's cap, see makeSymbolEmitter's own comment in common.ts for the measurement; a large org's CustomLabels.labels-meta.xml or a complex Flow can hold well over 1000 entries
@@ -127,7 +129,12 @@ function rootElement(content: string): string | null {
   if (root === undefined) return null
   // A self-closing root (e.g. `<CustomObjectTranslation xmlns="..."/>`) has no separate close tag to find.
   if (match[0].endsWith('/>')) return root
-  const close = new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${root}\\s*>`, 'i')
+  // `escapeRegExp`, because an XML name may legally contain `.` -- the capture above admits one --
+  // and an unescaped one compiles as a wildcard. A root of `Custom.Object` then matched the close
+  // tag `</CustomXObject>`, so a document that is not well formed was accepted and indexed. Nothing
+  // worse is constructible here (the capture admits no `(`, `|`, `*`, `+` or `{`, so no quantifier
+  // can be smuggled in), but a wildcard where a literal was meant is enough.
+  const close = new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${escapeRegExp(root)}\\s*>`, 'i')
   return close.test(content) ? root : null
 }
 

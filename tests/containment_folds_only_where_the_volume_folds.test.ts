@@ -25,9 +25,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 
-import { isInsideRoot } from '../src/path_containment.js'
+import { isInsideRoot, isNetworkPath, sameDirectory } from '../src/path_containment.js'
 
 const previous = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
 
@@ -58,6 +58,50 @@ afterAll(() => {
   if (previous === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
   else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = previous
   fs.rmSync(base, { recursive: true, force: true })
+})
+
+describe('telling a share from a path merely spelled like one', () => {
+  // PROVENANCE: HAND-DERIVED. Each spelling is classified from what reaching it would COST -- a
+  // connection to a named host, or a local `realpath` -- not from what the implementation returns.
+  // The two halves matter equally: a classifier that says "network" to everything fails closed and
+  // looks correct, while declining `\\?\C:\work` costs a real Windows caller a real path.
+  const cases: readonly (readonly [string, boolean])[] = [
+    ['//server/share/repo', true],
+    ['\\\\server\\share\\repo', true],
+    ['//?/UNC/server/share/repo', true],
+    ['\\\\?\\UNC\\server\\share\\repo', true],
+    ['//./unc/server/share/repo', true], // the device prefix is spelled either way, and matched either case
+    ['//tmp/repo', true], // POSIX: the same file as /tmp/repo, but nothing here can tell that
+    ['//?/c:/work/repo', false],
+    ['\\\\?\\C:\\work\\repo', false],
+    ['//./c:/work/repo', false],
+    ['//?/Volume{7c1b1e00-0000-0000-0000-100000000000}/work', false],
+    ['c:/work/repo', false],
+    ['/tmp/repo', false],
+  ]
+  for (const [spelling, network] of cases) {
+    it(`${network ? 'refuses to resolve' : 'resolves'} ${spelling}`, () => {
+      expect(isNetworkPath(spelling)).toBe(network)
+    })
+  }
+})
+
+describe('the same-directory check itself, on a share no runner has', () => {
+  it('refuses two spellings of a share without dialing either', () => {
+    // Called directly because `isInsideRoot` cannot reach this on Windows: the link walk refuses a
+    // path on an unreachable host several seconds earlier, and no CI runner has a real file server.
+    // Left to the integration test alone, the branch would be exercised on one of three platforms
+    // and taken on faith by the other two -- and it is the platform that skips which the branch is
+    // about.
+    const dialed = vi.spyOn(fs.realpathSync, 'native')
+    try {
+      expect(sameDirectory('//tg-no-such-host/share/Repo', '//tg-no-such-host/share/repo')).toBe(false)
+      expect(sameDirectory('\\\\tg-no-such-host\\share\\Repo', '\\\\tg-no-such-host\\share\\repo')).toBe(false)
+      expect(dialed, 'the check opened a connection to a host the caller named').not.toHaveBeenCalled()
+    } finally {
+      dialed.mockRestore()
+    }
+  })
 })
 
 describe('containment on a volume whose case sensitivity disagrees with the platform', () => {
@@ -97,7 +141,69 @@ describe('containment on a volume whose case sensitivity disagrees with the plat
     expect(isInsideRoot(path.join(base, 'Project', 'src', 'index.ts'), root)).toBe(true)
   })
 
+  // A share is spelled with two leading slashes, and on a POSIX system so is any path the caller
+  // chooses to write that way -- `//tmp/x` and `/tmp/x` are the same file. That is what makes the
+  // network branch reachable in a test at all: an unreachable host never gets this far, because the
+  // link walk reads its `UNKNOWN` lstat error as "cannot answer" and refuses several seconds
+  // earlier, so a fictional server would have certified nothing.
+  const shareSpelling = process.platform === 'win32' ? null : `/${base}`
+
+  it.runIf(shareSpelling !== null)('refuses a differently-cased spelling of a share, without dialing it', () => {
+    // A share cannot be asked: resolving one opens an SMB connection to an address the model chose,
+    // inside a hook that runs before the user has approved the tool call. Unasked has to mean
+    // refused -- a case-sensitive SMB export really does keep these two apart, and admitting the
+    // second on the platform's say-so is the disclosure this file is about, arriving where it
+    // cannot be checked.
+    const share = shareSpelling as string
+    fs.mkdirSync(path.join(base, 'share-root'), { recursive: true })
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    // `realpathSync.native` is the only thing in this module that touches the disk for a
+    // containment answer, and `sameDirectory` holds both of its call sites -- so counting it counts
+    // exactly the dial, which a wall-clock ceiling on a local directory could not.
+    const dialed = vi.spyOn(fs.realpathSync, 'native')
+    try {
+      expect(isInsideRoot(`${share}/Share-Root/secret.txt`, `${share}/share-root`)).toBe(false)
+      expect(dialed, 'the containment check contacted the file server to answer this').not.toHaveBeenCalled()
+    } finally {
+      dialed.mockRestore()
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('still resolves a drive-letter device path, which costs no connection', () => {
+    // The mirror of the case above, and the reason "two leading slashes" is not the question asked.
+    // `\\?\C:\...` is spelled like a share and is not one: it is this volume, one local `realpath`
+    // away. Refusing it on the spelling would decline a real path on an ordinary Windows machine,
+    // where these two names genuinely are one directory.
+    const root = path.join(base, 'device')
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), '')
+    const device = `\\\\?\\${base}`
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    expect(isInsideRoot(path.join(device, 'Device', 'src', 'index.ts'), path.join(device, 'device'))).toBe(!volumeIsCaseSensitive)
+  })
+
+  it.runIf(volumeIsCaseSensitive)('refuses a spelling of the root that is not on disk when the root itself is', () => {
+    // The asymmetry IS the answer. On a volume that really folds, `MISSING` would have resolved to
+    // the same directory as `missing`; that it does not resolve at all, while the root does, is the
+    // filesystem saying they are different places and that the caller's one is not there. Admitting
+    // it lets a create put a new directory beside the project rather than inside it.
+    const root = path.join(base, 'missing')
+    fs.mkdirSync(root, { recursive: true })
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    expect(isInsideRoot(path.join(base, 'MISSING', 'new.ts'), root)).toBe(false)
+  })
+
+  it('keeps the platform answer when the root itself is not on disk', () => {
+    // Nothing to compare and no second directory to be let into -- a project root that has not been
+    // created yet, or a configured one that is gone. Failing closed here would refuse a legitimate
+    // configuration for no gain, so this is the one branch that still answers from the platform.
+    const root = path.join(base, 'never-created')
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    expect(isInsideRoot(path.join(base, 'Never-Created', 'src', 'x.ts'), root)).toBe(true)
+  })
+
   it('accepts a path under the root that does not exist yet, whatever the volume', () => {
+    delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
     // A write target has no directory to compare, and refusing one would turn every "create a file
     // under the project" into a containment failure. The platform's answer stands there.
     const root = path.join(base, 'writable')

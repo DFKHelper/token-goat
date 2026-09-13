@@ -131,6 +131,21 @@ const CATASTROPHIC = [
   // group is not load-bearing -- `^(a|aa){5,}!$` is the same 20.0 s.
   '^((a|aa){5,})!$',
   '^(a|aa){5,}!$',
+  // The terminator list is finite and a pattern can name every member of it. All seven candidates
+  // sit in this optional class, so no input the ladder can build is capable of failing, every run
+  // matched, and the ladder read 0 ms. Measured raw: 16.7 s against forty-five characters, and
+  // 30.8 s for the `*` spelling.
+  '^(a|aa)+[!a0 \uFFFF\n\u2028]?$',
+  '^(a|aa)+[!a0 \uFFFF\n\u2028]*$',
+  // One level up: the guard appends A tail, and an optional any-character run swallows exactly one
+  // of it, so only `bb` falsifies the first of these and `bbb` the second. Sweeping single
+  // characters is not enough; the tail has to grow, and it stops growing at one past the bound
+  // `detune` clamps every counted quantifier to.
+  String.raw`^(a|aa)+[\s\S]?$`,
+  String.raw`^(a|aa)+[\s\S]{0,2}$`,
+  // The same shape spelled past the clamp, which is the reason the clamp is what bounds the tail
+  // rather than a number chosen to fit the cases above.
+  String.raw`^(a|aa)+[\s\S]{0,500}$`,
 ]
 
 /**
@@ -152,6 +167,10 @@ const ORDINARY = [
   '^(?:[a-z]+-)+[a-z]+$',
   // Added with the long rungs: these run against 512 characters now, and a rung that reads an
   // ordinary pattern as super-linear costs a real search.
+  // A pattern that really does match every input the sweep can build. Nothing falsifies it because
+  // nothing can, which is the honest version of the case above -- and the guard has to answer
+  // cheaply rather than paying for the whole sweep on all 128 rungs.
+  String.raw`^[\s\S]*$`,
   // The bounded sibling of the two `{5,}` patterns above, and the reason the fix had to be a
   // re-pick rather than simply distrusting a counted minimum: this one can never see more than
   // twenty characters, so it is genuinely safe and refusing it would cost a real search.
@@ -213,6 +232,25 @@ describe('the guard refuses what the engine cannot finish', () => {
     const started = Date.now()
     new RegExp('^(a+)+$').test('a'.repeat(26) + '!')
     expect(Date.now() - started, 'the engine no longer backtracks catastrophically, so this suite no longer describes the defect').toBeGreaterThan(50)
+  })
+
+  it('calibration: a pattern naming every terminator really does hang the raw engine', () => {
+    // 30 characters and a `b`, not the forty-five that took 16.7 s: the same Fibonacci curve, a
+    // fraction of a second. The `b` is the point -- it is the character the class does NOT hold,
+    // and the one no fixed candidate list could have supplied.
+    const started = Date.now()
+    new RegExp('^(a|aa)+[!a0 \\uFFFF\\n\\u2028]?$').test('a'.repeat(30) + 'b')
+    expect(Date.now() - started, 'the engine no longer backtracks here, so refusing this pattern means nothing').toBeGreaterThan(20)
+  })
+
+  it('answers a pattern that matches everything without paying for the whole sweep', () => {
+    // `^[\s\S]*$` falsifies nothing, so the sweep runs to the end and finds no tail. Without a cap
+    // that happens on every one of 128 rungs for every alphabet, and the guard becomes the cost it
+    // exists to prevent. The ceiling is generous because this is about an order of magnitude, not
+    // a stopwatch: uncapped it is seconds.
+    const started = Date.now()
+    expect(compileGuardedRegex(String.raw`^[\s\S]*$`).ok).toBe(true)
+    expect(Date.now() - started, 'the sweep is running on every rung again').toBeLessThan(400)
   })
 
   it('catches (a|a)+ by measurement, not by shape', () => {
