@@ -51,7 +51,12 @@ function textOf(result: unknown): string {
   return ((result as any).content as any[])[0].text as string
 }
 
-const REFUSAL = 'is outside the project root. The MCP tools are confined to the workspace.'
+// The refusal an unresolvable target draws is deliberately NOT the ordinary out-of-root wording:
+// both are final refusals, but one names a traversal attempt and the other names a broken path, and
+// an operator reading the wrong one goes looking for an attack instead of a symlink loop.
+const REFUSAL = 'could not be resolved to a real location'
+/** The ordinary out-of-root wording, asserted absent so the two refusals cannot silently merge. */
+const OUT_OF_ROOT = 'is outside the project root. The MCP tools are confined to the workspace.'
 
 describe('the MCP confinement gate fails closed on a target it cannot resolve', () => {
   let projectRoot: string
@@ -96,6 +101,7 @@ describe('the MCP confinement gate fails closed on a target it cannot resolve', 
     const result = await client.callTool({ name: 'read', arguments: { spec: loopA, projectRoot } })
     expect(result.isError, `a target whose realpath is ${errno} must be refused, not compared lexically`).toBe(true)
     expect(textOf(result)).toContain(REFUSAL)
+    expect(textOf(result), 'an unresolvable path was reported as a traversal attempt, which points the reader at the wrong cause').not.toContain(OUT_OF_ROOT)
   })
 
   it('still admits a file that simply does not exist yet, so absence is not treated as unresolvable', async () => {
@@ -105,6 +111,13 @@ describe('the MCP confinement gate fails closed on a target it cannot resolve', 
     const absent = path.join(projectRoot, 'not_created_yet.ts')
     const result = await client.callTool({ name: 'read', arguments: { spec: absent, projectRoot } })
     // It fails -- there is nothing to read -- but it must NOT fail as a confinement refusal.
-    expect(textOf(result), 'an absent in-root file was reported as outside the root, so ENOENT is being treated as unresolvable').not.toContain(REFUSAL)
+    expect(textOf(result), 'an absent in-root file was reported as unresolvable, so ENOENT is no longer taking the lexical branch').not.toContain(REFUSAL)
+    expect(textOf(result), 'an absent in-root file was reported as outside the root').not.toContain(OUT_OF_ROOT)
+    // The positive half. Both assertions above are negative, so on their own they are satisfied by
+    // any unrelated failure -- a renamed tool, a server that never started, confinement switched
+    // off, a reworded refusal. These pin that what came back is the ordinary read failure it should
+    // be, naming the file that was asked for.
+    expect(result.isError, 'reading a file that does not exist must still fail').toBe(true)
+    expect(textOf(result), 'the failure did not name the absent path, so it is not the ordinary read failure this case is about').toContain(path.basename(absent))
   })
 })

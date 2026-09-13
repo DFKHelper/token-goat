@@ -225,7 +225,14 @@ describe('the path-resolution walk is bounded', () => {
     // the errno is discriminated: ENAMETOOLONG is the POSIX answer and EINVAL is what Windows has
     // been observed to return for an over-long stored target, and anything else is re-thrown with
     // the rung it died on attached.
-    const LENGTH_REFUSALS = new Set(['ENAMETOOLONG', 'EINVAL'])
+    // ENAMETOOLONG is the POSIX answer and the one macOS actually gives, its PATH_MAX being 1024.
+    // ENOENT is here because the comment block above records Windows having answered it for an
+    // over-MAX_PATH stored target: that measurement was later refuted on Windows 11 / Node 24, where
+    // every length up to 3,837 bytes creates successfully and the catch never runs at all, but a
+    // runner with long-path support off or an older Node could still reproduce it, and hard-failing
+    // there would turn a fixture that used to degrade gracefully into a red build. EINVAL is kept as
+    // a defensive entry only; it is unreproduced on every platform available here.
+    const LENGTH_REFUSALS = new Set(['ENAMETOOLONG', 'ENOENT', 'EINVAL'])
     const linkPath = path.join(root, 'lnk')
     let linkTarget = ''
     for (let segments = 38; segments >= 1; segments--) {

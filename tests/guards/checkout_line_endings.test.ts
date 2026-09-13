@@ -57,7 +57,10 @@ describe('every tracked text file checks out with LF', () => {
     // The named-list case above already pins this; without it here, a `check-attr` invocation that
     // answers for a subset -- a truncated pipe, an argv limit, a path git declines to parse -- makes
     // the assertion below true of the handful it did answer for and silent about the rest.
-    expect(attrs.size, 'git check-attr answered for fewer paths than were tracked, so this guard is certifying a subset').toBe(tracked.length)
+    // Against the DEDUPED count: `git ls-files` emits one record per stage, so during an unresolved
+    // merge the same path arrives two or three times while the Map holds it once, and comparing
+    // against the raw length would tell a subset story about a merge conflict.
+    expect(attrs.size, 'git check-attr answered for fewer paths than were tracked, so this guard is certifying a subset').toBe(new Set(tracked).size)
     const unpinned = [...attrs].filter(([, v]) => v !== 'lf').map(([p]) => p)
     expect(unpinned.slice(0, 20), `${unpinned.length} tracked files are not pinned to eol=lf`).toEqual([])
   })
