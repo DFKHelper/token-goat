@@ -111,16 +111,84 @@ interface Candidate {
   readonly arrow: boolean
 }
 
+/** Index of the next non-whitespace, non-comment character at or after `from`. */
+function skipTrivia(src: string, from: number): number {
+  let i = from
+  for (;;) {
+    while (i < src.length && /\s/.test(src[i]!)) i++
+    if (src.startsWith('//', i)) {
+      const nl = src.indexOf('\n', i)
+      if (nl === -1) return src.length
+      i = nl + 1
+    } else if (src.startsWith('/*', i)) {
+      const end = src.indexOf('*/', i)
+      if (end === -1) return src.length
+      i = end + 2
+    } else return i
+  }
+}
+
+/** Start of the next line that opens a module-scope statement, or the end of `src`. */
+const STATEMENT_START_RE = /^[ \t]*(?:export\s+)?(?:const|let|var|function|class|type|interface|enum|import|async\s+function)\b/gm
+function nextStatementStart(src: string, from: number): number {
+  STATEMENT_START_RE.lastIndex = from
+  const m = STATEMENT_START_RE.exec(src)
+  return m === null ? src.length : m.index
+}
+
 /**
- * Module-scope `const`/`let`/`var` bindings whose initializer is an arrow function.
+ * Index of the `=>` belonging to the parameter list that ends at `from`, or -1 when this binding is
+ * not an arrow function after all.
+ *
+ * Only whitespace, comments and a return-type annotation can stand between `)` and `=>`, so
+ * anything else means the parentheses were not a parameter list. An UNBOUNDED `indexOf('=>', from)`
+ * was a defect rather than a shortcut: `const total = (aaa + bbb) * 2` is not a function, but the
+ * scan ran on through the rest of the file, found some LATER arrow's `=>`, and reported `total`
+ * with that arrow's body. Two phantoms were live when this was found (`webfetch.ts::ALLOW_UNRESOLVED`,
+ * a boolean, came back as a function with the body `void,`), both inert only by luck: `functionMap`
+ * keys by NAME and last write wins, so a phantom that happens to share a name with a real function
+ * silently REPLACES that function's body in twelve guards' view -- the precise silent substitution
+ * this parser exists to prevent. The search is bounded twice over: by what may legally precede the
+ * arrow, and by the start of the next module-scope statement.
+ */
+function arrowAt(src: string, from: number): number {
+  const limit = Math.max(nextStatementStart(src, from), from)
+  let i = skipTrivia(src, from)
+  if (src.startsWith('=>', i)) return i
+  if (src[i] !== ':' || i >= limit) return -1
+  // A return-type annotation. Its own arrows and delimiters are nested (`(a: number) => void`,
+  // `{ x: T }`, `Array<T>`), so the function's arrow is the first `=>` left at depth zero.
+  let depth = 0
+  for (; i < limit; i++) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === '`') {
+      for (i++; i < limit; i++) {
+        if (src[i] === '\\') i++
+        else if (src[i] === c) break
+      }
+    } else if (c === '(' || c === '[' || c === '{' || c === '<') depth++
+    else if (c === ')' || c === ']' || c === '}') depth = Math.max(0, depth - 1)
+    else if (c === '>') {
+      if (src[i - 1] === '=' && depth === 0) return i - 1
+      depth = Math.max(0, depth - 1)
+    } else if (depth === 0 && (c === ';' || (c === '=' && src[i + 1] !== '>'))) return -1
+  }
+  return -1
+}
+
+/**
+ * Module-scope `const`/`let`/`var` bindings whose initializer is a function.
  *
  * The assignment `=` is found by scanning rather than by regex, because a type annotation can
  * legally contain both parentheses and an arrow: in
  * `const f: (a: number) => void = (a) => {...}` the annotation's own `=>` must not be mistaken for
  * the assignment. Skipping any `=` immediately followed by `>` or `=`, at bracket depth zero,
  * distinguishes them without parsing types.
+ *
+ * Two initializer shapes count: an arrow, and a function expression (`const f = function (x) {}`),
+ * which is parsed exactly like a declaration once its `(` is located.
  */
-function arrowCandidates(src: string): Candidate[] {
+function initializerCandidates(src: string): Candidate[] {
   const out: Candidate[] = []
   const bindRe = /^(?:export\s+)?(?:const|let|var)\s+(\w+)/gm
   let m: RegExpExecArray | null
@@ -149,6 +217,12 @@ function arrowCandidates(src: string): Candidate[] {
       j += 5
       while (j < src.length && /\s/.test(src[j]!)) j++
     }
+    // A function expression: `function (x) {}`, `function* g() {}`, `function name<T>(x) {}`.
+    const fnExpr = /^function\s*\*?\s*(?:\w+\s*)?(?:<[^(]*>\s*)?\(/.exec(src.slice(j, j + 200))
+    if (fnExpr !== null) {
+      out.push({ name: m[1]!, index: m.index, paren: j + fnExpr[0].length - 1, bareEnd: -1, arrow: false })
+      continue
+    }
     if (src[j] === '<') {
       // A generic arrow's type parameters: `const f = <T,>(x: T) => ...`.
       const close = src.indexOf('>', j)
@@ -171,18 +245,28 @@ function arrowCandidates(src: string): Candidate[] {
  * Every top-level function in `src`, in source order, with its full body text (brace-matched, so a
  * `}` inside a string or a nested block never ends it early).
  *
- * Two shapes count: a `function name(...)` / `async function name(...)` declaration, and a
- * module-scope `const name = (...) => ...` arrow. The arrow half was missing until an audit
+ * Three shapes count: a `function name(...)` / `async function name(...)` declaration, a
+ * module-scope `const name = (...) => ...` arrow, and a `const name = function (...) {...}`
+ * expression. The arrow half was missing until an audit
  * injected both shapes into src/vscode_duplicate.ts and only the `function` one came back -- a
  * latent hole rather than a live one (there were zero module-scope arrows in the pre-dispatch
  * modules at the time), but a latent hole in EVERY guard built on this helper, since an ungated
  * pre-approval `fs` touch written as `const check = (p) => fs.existsSync(p)` would have gone green.
  *
- * Known limit, stated rather than left to be discovered: CLASS METHODS are still invisible. Adding
- * them means telling a class body apart from an object literal, and a method-shorthand pattern that
- * cannot do that would sweep every `{ replace(x) {...} }` in the repo into these populations --
- * a wrong graph is worse than a stated gap. No guard's current subject matter lives in a class
- * method; the day one does, this is the line that has to change.
+ * Known limits, stated in full rather than left to be discovered -- an earlier version of this list
+ * named class methods as the ONLY limit, which was false, and a false statement of scope reads as a
+ * settled decision where a gap would at least invite a question:
+ *
+ *  - CLASS METHODS are invisible. Adding them means telling a class body apart from an object
+ *    literal, and a method-shorthand pattern that cannot do that would sweep every
+ *    `{ replace(x) {...} }` in the repo into these populations -- a wrong graph is worse than a
+ *    stated gap. No guard's current subject matter lives in a class method.
+ *  - OBJECT-LITERAL methods and function-valued properties (`const t = { run: () => ... }`,
+ *    `obj.f = () => ...`) are invisible, for the same reason and with the same consequence.
+ *  - A function reached through a WRAPPER (`const f = memoize(() => ...)`) is invisible: only an
+ *    initializer that IS the function is parsed, never one that contains it.
+ *  - Nothing below module scope is reported, which is the point: a nested helper is part of its
+ *    enclosing function's body text, and every caller reads bodies rather than names.
  */
 export function parseTopLevelFunctions(src: string): FnInfo[] {
   const candidates: Candidate[] = []
@@ -191,7 +275,7 @@ export function parseTopLevelFunctions(src: string): FnInfo[] {
   while ((m = declRe.exec(src)) !== null) {
     candidates.push({ name: m[1]!, index: m.index, paren: m.index + m[0].length - 1, bareEnd: -1, arrow: false })
   }
-  candidates.push(...arrowCandidates(src))
+  candidates.push(...initializerCandidates(src))
   candidates.sort((a, b) => a.index - b.index)
 
   const out: FnInfo[] = []
@@ -207,7 +291,7 @@ export function parseTopLevelFunctions(src: string): FnInfo[] {
     }
     // An arrow's return type sits between the parameters and `=>`; the arrow itself is the marker
     // that the body has started, so find it rather than guessing which brace opens what.
-    const arrow = src.indexOf('=>', afterParams)
+    const arrow = arrowAt(src, afterParams)
     if (arrow === -1) continue
     let k = arrow + 2
     while (k < src.length && /\s/.test(src[k]!)) k++

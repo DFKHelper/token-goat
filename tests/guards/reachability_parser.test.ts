@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { parseTopLevelFunctions } from './reachability.js'
+import { functionMap, parseTopLevelFunctions } from './reachability.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -44,6 +44,9 @@ describe('parseTopLevelFunctions sees every top-level function shape', () => {
     ['unparenthesized single parameter', 'const a = q => q.trim()', 'q.trim()'],
     ['arrow const behind a function-typed annotation', 'const a: (q: string) => string = (q) => q.trim()', 'q.trim()'],
     ['let-bound arrow', 'let a = (q) => { return q }', 'return q'],
+    ['arrow const with an inline object return type', 'const a = (q: string): { x: number } | null => q.trim()', 'q.trim()'],
+    ['function expression const', 'const a = function (q) { return q }', 'return q'],
+    ['named async function expression', 'const a = async function inner(q: string) { return q }', 'return q'],
   ]
 
   for (const [label, source, expected] of cases) {
@@ -59,6 +62,40 @@ describe('parseTopLevelFunctions sees every top-level function shape', () => {
     // "function", which would pad every population built on it with members no guard can act on.
     const src = 'const a = new Map<string, string>()\nconst b = 1\nconst c: string[] = []\nconst d = { e: (q) => q }\n'
     expect(parseTopLevelFunctions(src).map((f) => f.name)).toEqual([])
+  })
+
+  // The negative case above is the variant that passes for free: with no later arrow in the file,
+  // an unbounded `indexOf('=>')` finds nothing and the phantom never appears. The real shape has a
+  // later arrow to scavenge, and that one was reported for three rounds.
+  it('does not attach a later arrow to a parenthesized initializer that is not a function', () => {
+    const src = 'const total = (aaa + bbb) * 2\nconst later = (q) => { unsafeCall(q) }\n'
+
+    const fns = parseTopLevelFunctions(src)
+
+    expect(fns.map((f) => f.name)).toEqual(['later'])
+    expect(fns[0]?.body).toContain('unsafeCall(q)')
+  })
+
+  it('does not let a phantom overwrite a real function of the same name', () => {
+    // Why the phantom matters at all: `functionMap` keys by name and the last write wins, so a
+    // phantom sharing a name with a real function replaces that function's body in a guard's view
+    // -- the guard then reports green about code it can no longer see. `var` because it is the one
+    // binding form that may legally redeclare a function declaration in the same scope.
+    const src = 'function check(q) { return realGate(q) }\nvar check = (aaa + bbb) * 2\nconst later = (q) => { unsafeCall(q) }\n'
+
+    const byName = functionMap(parseTopLevelFunctions(src))
+
+    expect(byName.get('check')).toContain('realGate(q)')
+    expect(byName.get('check')).not.toContain('unsafeCall')
+  })
+
+  it('reports no function for a non-function const in a real source file that has arrows after it', () => {
+    // CAPTURE: `src/webfetch.ts` as it is on disk. ALLOW_UNRESOLVED is a boolean; the unbounded
+    // scan reported it as a function whose body (`void,`) was scavenged from a later annotation.
+    const real = fs.readFileSync(path.join(SRC_DIR, 'webfetch.ts'), 'utf8')
+    expect(real).toContain('ALLOW_UNRESOLVED') // calibration: a rename must fail loudly, not pass silently
+
+    expect(parseTopLevelFunctions(real).map((f) => f.name)).not.toContain('ALLOW_UNRESOLVED')
   })
 
   it('keeps a function body brace-matched rather than stopping at the first close', () => {
