@@ -178,11 +178,30 @@ function toCallToolResultFromExitCode(fn: () => number): CallToolResult {
  * Defense in depth, not a closed hole: a caller that can reach these tools can usually also call
  * its harness's own read tool. This narrows one specific sink, it does not sandbox the agent.
  */
-function realPathOrSelf(p: string): string {
+/**
+ * The real path of `p`, or `null` when this process could not determine it.
+ *
+ * ABSENT and UNREADABLE are different answers, and collapsing them into "return the caller's own
+ * spelling" was a fail-OPEN branch on a confinement boundary: a target whose real location could
+ * not be seen was then compared LEXICALLY, so a path that merely looks like it is under the root
+ * was admitted and opened. That is the identical defect {@link isInsideRoot} documents as removed
+ * from `path_containment.ts`; this second boundary never adopted the fix, and the two failed in
+ * opposite directions.
+ *
+ * ENOENT and ENOTDIR keep the lexical answer deliberately. A spec may name a file that does not
+ * exist, and that read must fail as an ordinary "could not read" rather than as a confinement
+ * refusal; the `ABSENT_PIN` that `confineTargets` writes for exactly this case is what keeps it
+ * honest if something is created at the path between validation and the read. Every other errno --
+ * EACCES or EPERM on an untraversable ancestor, ELOOP on a symlink cycle, EIO, and on Windows the
+ * reparse points `realpathSync.native` rejects while `open` still follows them -- means the answer
+ * is unknown, and unknown is not "inside".
+ */
+function realPathForContainment(p: string): string | null {
   try {
     return fs.realpathSync.native(p)
-  } catch {
-    return p
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? p : null
   }
 }
 
@@ -276,7 +295,7 @@ function checkWithinProjectRoot(
   target: string,
   resolvedRoot: string,
 ): { readonly inside: boolean; readonly abs: string; readonly real: string; readonly identity: string | null } {
-  const root = forCompare(normalizePath(realPathOrSelf(resolvedRoot)))
+  const rootReal = realPathForContainment(resolvedRoot)
   // Relative targets resolve against the project root, not the server process's cwd -- that is what the read_commands handlers themselves do with the same projectRoot this gate was handed, so resolving against cwd here would reject a legitimate relative spec whose read would have succeeded.
   const abs = path.resolve(resolvedRoot, normalizePath(target))
   // A target that does not exist (or cannot be stat'd) yields no identity and so no pin: a spec may legitimately name a missing file, and that read must fail as an ordinary "could not read" rather than be refused as a swap.
@@ -287,7 +306,13 @@ function checkWithinProjectRoot(
     identity = null
   }
   // The realpath is computed ONCE here and handed back, so the caller can key a pin on it without a second realpathSync -- this gate's syscall cost stays at one stat plus one realpath per target.
-  const realNative = realPathOrSelf(abs)
+  const realNative = realPathForContainment(abs)
+  // Fail CLOSED when either side is unresolvable. Neither can be compared to anything: the only
+  // string available is the caller's own spelling, and admitting a path because it LOOKS like it
+  // is under the root is what this gate exists to prevent. `real` still reports the caller's
+  // spelling so the refusal message names the path the caller asked for.
+  if (rootReal === null || realNative === null) return { inside: false, abs, real: realNative ?? abs, identity }
+  const root = forCompare(normalizePath(rootReal))
   const real = forCompare(normalizePath(realNative))
   return { inside: real === root || real.startsWith(root.endsWith('/') ? root : root + '/'), abs, real: realNative, identity }
 }
