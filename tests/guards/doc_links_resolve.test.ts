@@ -15,6 +15,16 @@
  * `git ls-files` is the oracle rather than the filesystem. The filesystem here is
  * case-insensitive and would happily resolve `security.md` against `SECURITY.md`, while the
  * published site and a Linux CI checkout would not.
+ *
+ * A document can also name a repository file by its full GitHub URL rather than by a relative
+ * path, and `docs/architecture-qa.html` names most of its evidence that way. Three of those links
+ * pointed at `docs/legal.md`, which has never existed in this repository. The markdown check above
+ * is blind to both halves of that: it reads `.md` files only, and it skips anything starting
+ * `https:`. A second pass below covers absolute `blob/` URLs across `.md` and `.html` alike.
+ *
+ * What neither pass can judge is a line range. `#L663-L667` on a 715-line README resolves to five
+ * real lines whatever has since moved into them, so a citation going stale is a content question
+ * and not a link question, and no guard here claims to catch it.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -112,6 +122,47 @@ function findBrokenLinks(): { broken: Broken[], checked: number, docs: number } 
   return { broken, checked, docs: docs.length }
 }
 
+/**
+ * `https://github.com/DFKHelper/token-goat/blob/<ref>/<path>`, with an optional `#L12-L34` or
+ * query. Scoped to this repository on purpose: a link into someone else's tree names a path this
+ * checkout has no opinion about, and the captured Dependabot fixtures are full of them.
+ */
+const BLOB = /https:\/\/github\.com\/DFKHelper\/token-goat\/blob\/[^/\s"'<>]+\/([^\s"'<>)]+)/g
+
+function findBrokenBlobLinks(): { broken: Broken[], checked: number, docs: number } {
+  const tracked = trackedFiles()
+  const trackedSet = new Set(tracked)
+  const trackedLower = new Map(tracked.map((p) => [p.toLowerCase(), p]))
+  const docs = tracked.filter((p) => (p.endsWith('.md') || p.endsWith('.html')) && !HISTORICAL.has(p))
+
+  const broken: Broken[] = []
+  let checked = 0
+
+  for (const doc of docs) {
+    const lines = fs.readFileSync(path.join(REPO, doc), 'utf8').split(/\r?\n/)
+
+    lines.forEach((line, i) => {
+      BLOB.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = BLOB.exec(line)) !== null) {
+        // A blob URL is always repo-root-relative, so there is no per-document base to resolve
+        // against and no heuristic needed about whether it names a file: it does.
+        const target = normalize((m[1] ?? '').split('#')[0]?.split('?')[0] ?? '')
+        if (target === '') continue
+
+        checked++
+        if (trackedSet.has(target)) continue
+        if (tracked.some((p) => p.startsWith(`${target}/`))) continue
+
+        const caseHit = trackedLower.get(target.toLowerCase())
+        broken.push({ doc, line: i + 1, target, ...(caseHit === undefined ? {} : { trackedAs: caseHit }) })
+      }
+    })
+  }
+
+  return { broken, checked, docs: docs.length }
+}
+
 describe('trackedFiles under a partial-pathspec commit index', () => {
   it('still lists a file staged for this commit but outside the pathspec being committed', () => {
     // FORMAT-DERIVED: this rebuilds, via `git read-tree` + `git update-index`, the exact shape
@@ -193,6 +244,30 @@ describe('documented file paths resolve', () => {
       'Repoint the link at where the code actually lives, or delete the row if the file was ' +
       'retired. Case matters: this repo\'s filesystem is case-insensitive but the published docs ' +
       'site and a Linux checkout are not.',
+    ).toEqual([])
+  })
+
+  it('every GitHub blob URL in a living document names a tracked file', () => {
+    const { broken, checked, docs } = findBrokenBlobLinks()
+
+    expect(
+      docs,
+      'No living documents were found to check; this guard cannot pass on an empty population.',
+    ).toBeGreaterThan(5)
+    expect(
+      checked,
+      'No GitHub blob URLs were found. docs/architecture-qa.html cites most of its evidence that ' +
+      'way, so either that page has changed shape or the URL pattern here has stopped matching.',
+    ).toBeGreaterThan(50)
+
+    const detail = broken.map((b) => `  ${b.doc}:${b.line}  ->  ${b.target}` +
+      (b.trackedAs === undefined ? '' : `   (tracked as "${b.trackedAs}" -- wrong case)`)).join('\n')
+
+    expect(
+      broken,
+      `${broken.length} linked path(s) do not name a tracked file, out of ${checked} checked ` +
+      `across ${docs} document(s):\n${detail}\n\n` +
+      'These render as working links and 404 on click. Repoint or delete the link.',
     ).toEqual([])
   })
 })
