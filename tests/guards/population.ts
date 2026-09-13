@@ -63,8 +63,45 @@ export interface PinnedPopulationSpec {
    * Members that must be present, matched as substrings so callers can name a path tail
    * (`src/parser.ts`) without knowing the absolute prefix. These are the members whose absence
    * would hollow out the guard while leaving its count intact.
+   *
+   * SUBSTRING MATCHING IS A HAZARD FOR ANY NEEDLE ENDING IN AN IDENTIFIER, and it has already cost
+   * this repo a live near-miss. `mustInclude: ['vscode_install.ts::installVscode']` went on passing
+   * after a refactor moved every write out of `installVscode` into a new `installVscodeScoped`
+   * wrapper -- because the new name CONTAINS the old one. The anchor was pinned to a function that
+   * no longer had a single write site in it, and it would equally have survived deleting
+   * `installVscode` outright as long as any similarly-prefixed sibling remained. Use
+   * {@link mustIncludeExact} for a needle that names a symbol; keep this one for path tails, where
+   * a prefix match is what you actually want.
    */
   readonly mustInclude?: readonly string[]
+  /**
+   * Members that must be present as an EXACT equality against at least one item, or -- for an item
+   * built by joining fields with `::` -- as an exact match on a leading run of those fields.
+   *
+   * The `::`-prefix form is what makes this usable: a population of
+   * `file::fn::call` items wants to be anchored at `file::fn` without restating the call text, but
+   * "starts with `file::fn`" must not also accept `file::fnScoped`. Requiring the next character to
+   * be a `::` separator gives the prefix a boundary, so `vscode_install.ts::installVscode` matches
+   * `src/bridges/vscode_install.ts::installVscode::backupFile(mcpPath)` and does NOT match
+   * `src/bridges/vscode_install.ts::installVscodeScoped::backupFile(mcpPath)`.
+   */
+  readonly mustIncludeExact?: readonly string[]
+}
+
+/**
+ * Does `item` match `needle` exactly, or at a `::` field boundary?
+ *
+ * The trailing-separator rule is the same one `isInsideRoot` uses to stop `/srv/project-secrets`
+ * reading as inside `/srv/project`: a prefix without a boundary is not containment, it is a string
+ * coincidence waiting for a rename.
+ */
+function matchesExactly(item: string, needle: string): boolean {
+  if (item === needle) return true
+  const tail = item.startsWith(needle) ? item.slice(needle.length) : null
+  if (tail === null) return false
+  // The needle may name a path tail of a `/`-joined item, or a leading field run of a `::`-joined
+  // one; either way the character after it has to be a separator rather than more identifier.
+  return tail.startsWith('::')
 }
 
 /**
@@ -75,7 +112,20 @@ export interface PinnedPopulationSpec {
  * beside it.
  */
 export function pinnedPopulation(spec: PinnedPopulationSpec): readonly string[] {
-  const { what, items, floor, ceiling, mustInclude = [] } = spec
+  const { what, items, floor, ceiling, mustInclude = [], mustIncludeExact = [] } = spec
+
+  // "Did this guard's population shrink" has been the decisive question in two consecutive audit
+  // rounds, and answering it has meant hand-extracting the guard's own regexes into a scratch
+  // script each time -- a procedure that re-derives the population from a COPY of the rule and so
+  // can disagree with the rule actually shipping. `TG_POPULATION_REPORT=1 npx vitest run tests/guards`
+  // prints the real count and members from inside the real guard instead. It reports and does not
+  // assert: the floor/ceiling/anchors below still run, so this cannot become a way to pass.
+  if (process.env['TG_POPULATION_REPORT'] === '1') {
+    console.log(`[population] ${items.length}\t(floor ${floor}${ceiling === undefined ? '' : `, ceiling ${ceiling}`})\t${what}`)
+    for (const item of items) {
+      console.log(`[population]   ${item}`)
+    }
+  }
 
   // A zero floor would let the empty population this helper exists to catch pass the check, so it
   // is rejected as a spec error rather than honoured.
@@ -110,6 +160,17 @@ export function pinnedPopulation(spec: PinnedPopulationSpec): readonly string[] 
       `the "${what}" population no longer contains "${needle}". The count still meets its floor, so ` +
         `this is a substitution rather than a collapse: the guard is still scanning something, just ` +
         `not the member it was pinned to cover. Restore the member, or repin the anchor and say why.`,
+    ).toBe(true)
+  }
+
+  for (const needle of mustIncludeExact) {
+    expect(
+      items.some((i) => matchesExactly(i, needle)),
+      `the "${what}" population no longer contains "${needle}" as an exact member (or as a complete ` +
+        `"::"-delimited prefix of one). A SUBSTRING match would still find it -- that is precisely ` +
+        `what this anchor refuses, because a rename to a longer name containing the old one leaves ` +
+        `the substring form green while the member it was pinned to is gone. Restore the member, or ` +
+        `repin the anchor and say why.`,
     ).toBe(true)
   }
 

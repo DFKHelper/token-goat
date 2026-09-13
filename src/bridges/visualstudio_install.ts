@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
@@ -188,7 +188,12 @@ function installVisualStudioScoped(opts: VisualStudioScopeOptions): VisualStudio
   }
   const next = ensureMcpServersKey(setTokenGoatServer(config.text, managedServer()))
   if (config.text !== next) {
-    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory
+    // symlink a clone checked in, so this step is itself one of the ways an install lands outside
+    // the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw
+    // fs.mkdirSync here is outside the boundary by inspection even while the backupFile below
+    // happens to refuse. See bridges/project_scope_guard.ts.
+    ensureDirSync(path.dirname(mcpPath))
     backupFile(mcpPath)
     atomicWriteText(mcpPath, next)
     if (!mcpExisted || ownedAlready) recordCreatedConfig(mcpPath)
@@ -210,7 +215,7 @@ function uninstallVisualStudioScoped(opts: VisualStudioScopeOptions): boolean {
     if (isManagedServer(serversOf(config, mcpPath, LABEL)['token-goat'])) {
       const next = dropEmptyServers(setTokenGoatServer(config.text, undefined))
       // Empty is not evidence the file is ours: a user's pre-existing `{"mcpServers": {}}` project stub walks back to exactly the same bytes. Only a file this install created is deleted; anything else is left holding its empty stub.
-      if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next)) && takeCreatedConfig(mcpPath)) fs.rmSync(mcpPath, { force: true })
+      if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next)) && takeCreatedConfig(mcpPath)) removeFileInScope(mcpPath)
       else {
         backupFile(mcpPath)
         atomicWriteText(mcpPath, ensureMcpServersKey(next))
@@ -223,7 +228,7 @@ function uninstallVisualStudioScoped(opts: VisualStudioScopeOptions): boolean {
   const instructionsPath = visualStudioInstructionsPath(opts)
   if (stripDelimitedBlock(instructionsPath, VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END)) {
     removed = true
-    if (readText(instructionsPath).trim() === '') fs.rmSync(instructionsPath, { force: true })
+    if (readText(instructionsPath).trim() === '') removeFileInScope(instructionsPath)
   }
   return removed
 }

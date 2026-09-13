@@ -249,7 +249,15 @@ function resolveThroughLinks(p: string): string {
     // the term that made the pre-cap cost grow worse than quadratically (38.4us per segment at
     // n=1000, 403us at 20000, 6510us at 200000, which `shift()`'s quadratic term alone does not
     // explain). Same closed direction: no real file is named by a resolved path this long.
-    if (candidate.length > MAX_RESOLVE_PATH_BYTES) return UNRESOLVABLE_PATH;
+    //
+    // `Buffer.byteLength`, NOT `candidate.length`, and the two are not interchangeable: the
+    // constant is named and documented in BYTES and the entry check above measures bytes, but
+    // `String.length` counts UTF-16 code units. A resolved path of non-ASCII components therefore
+    // passed a check nominally set at 4096 bytes while really being up to ~3x that (three UTF-8
+    // bytes per BMP code unit), so the same constant meant two different bounds depending on which
+    // of its two uses you read. Not a bypass -- MAX_WALK_SEGMENTS still terminates the loop -- but
+    // the contract was wrong for one of the two, and the cheaper-looking unit was the wrong one.
+    if (Buffer.byteLength(candidate, 'utf8') > MAX_RESOLVE_PATH_BYTES) return UNRESOLVABLE_PATH;
     let link: string | null = null;
     try {
       if (fs.lstatSync(candidate).isSymbolicLink()) link = fs.readlinkSync(candidate);

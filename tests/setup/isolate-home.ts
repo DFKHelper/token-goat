@@ -91,7 +91,7 @@ if (!process.env['TOKEN_GOAT_HOME']) {
 
 // Data-dir isolation is unconditional: the system LOCALAPPDATA is always set on Windows, so a presence guard would never isolate it and tests would keep hitting the real global.db. Point both platform env vars at a per-worker temp dir before any token-goat module caches DATA_DIR (setupFiles run before the test module graph imports constants.ts, so the cached value picks this up).
 // Chrome refuses to start when HOME/USERPROFILE/LOCALAPPDATA point at the sandbox below (it cannot set up its user-data/crashpad dirs), so the real values are stashed under TG_REAL_* for the one test that must launch a real browser (screenshot_redirect_ssrf) to restore around its launch and put back afterwards. Nothing else should read these.
-for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE'] as const) {
+for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'APPDATA', 'XDG_CONFIG_HOME', 'HOME', 'USERPROFILE'] as const) {
   const real = process.env[key]
   if (real !== undefined && !process.env[`TG_REAL_${key}`]) process.env[`TG_REAL_${key}`] = real
 }
@@ -104,6 +104,20 @@ try {
 }
 process.env['LOCALAPPDATA'] = dataHome
 process.env['XDG_DATA_HOME'] = dataHome
+// APPDATA and XDG_CONFIG_HOME are the CONFIG-roots, and redirecting only the DATA-roots above left
+// a live hole in exactly the tests most able to do damage with it. Three bridges read
+// `process.env['APPDATA']` directly on Windows -- vscode_install, zed_install, opencode_install --
+// so an install probe spawned by a test wrote `%APPDATA%\Zed\settings.json` and
+// `%APPDATA%\Zed\token-goat-mcp.cmd` into the developer's REAL user profile; that was hit for
+// real during an audit, reverted by hand. The read direction is the subtler half and is why this
+// belongs here rather than in one guard: `install --vscode -p`'s clean control calls
+// `otherScopeHasManagedServer`, which reads the real `%APPDATA%\Code\User\mcp.json`. That file
+// happens not to exist on this machine, so the suite is green -- but on a machine where token-goat
+// IS registered in VS Code user scope the control throws and the guard fails for environmental
+// reasons having nothing to do with the code. Redirected here, once, so every test file and every
+// child process that inherits this env gets it rather than each spawner remembering.
+process.env['APPDATA'] = dataHome
+process.env['XDG_CONFIG_HOME'] = dataHome
 // macOS ignores LOCALAPPDATA/XDG_DATA_HOME and derives Application Support from HOME, so HOME has
 // to be redirected there for DATA_DIR to land in the sandbox at all.
 //

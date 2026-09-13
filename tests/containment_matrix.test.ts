@@ -207,17 +207,32 @@ describe('containment matrix', () => {
     it.runIf(IS_WINDOWS)('resolves the extended-length \\\\?\\ prefix the same way as the plain spelling', () => {
       const { root, outside } = scratch()
 
-      // Node's own `realpathSync` cannot answer for this spelling -- it throws
-      // `EISDIR: illegal operation on a directory, lstat 'C:'` -- so the oracle is unavailable and
-      // these two rows are HAND-DERIVED, marked as such. Win32 itself accepts the spelling
-      // (mkdir/write/exists all succeed through it), which is exactly why it has to be pinned:
-      // a containment check that answered "inside" for the prefixed spelling of an OUTSIDE path
-      // would be a bypass. Refusing the prefixed spelling of an inside path is the safe direction.
-      const why = "Node's realpathSync throws EISDIR on the \\\\?\\ spelling, so there is no independent oracle for it"
+      // THESE ROWS USED TO BE HAND-DERIVED ON A FALSE PREMISE. They were marked
+      // `unmaterializable` with the reason "Node's realpathSync throws EISDIR on the \\?\ spelling,
+      // so there is no independent oracle for it". The first half is true; the conclusion is not.
+      // `fs.realpathSync.native` hands the string to the OS instead of walking it in JS, and it
+      // answers BOTH rows -- measured on win32, resolving each to its plain spelling while
+      // `realpathSync` throws `EISDIR: ... lstat 'C:'`. So there was an oracle all along, and
+      // asserting `expect: false` for both without consulting it was a fixture restating the
+      // implementation.
+      //
+      // Consulted, the oracle AGREES with the escape row and DISAGREES with the inside row:
+      // `\\?\<root>\a.txt` genuinely names a file inside the root. The refusal is kept, because
+      // refusing the prefixed spelling of an inside path is the safe direction and accepting the
+      // prefixed spelling of an OUTSIDE path would be a bypass -- but it is now recorded as what it
+      // is, a deliberate decision to be stricter than the kernel, rather than as an absence of
+      // ground truth. `conservative` makes that a checked claim: if `isInsideRoot` ever starts
+      // accepting this row, the note goes red instead of quietly becoming stale.
       assertContainment(
         [
-          { label: 'an escape written with the \\\\?\\ prefix', target: `\\\\?\\${path.join(outside, 'stolen.txt')}`, expect: false, unmaterializable: why },
-          { label: 'an inside path written with the \\\\?\\ prefix', target: `\\\\?\\${path.join(root, 'a.txt')}`, expect: false, unmaterializable: why },
+          { label: 'an escape written with the \\\\?\\ prefix', target: `\\\\?\\${path.join(outside, 'stolen.txt')}`, expect: false },
+          {
+            label: 'an inside path written with the \\\\?\\ prefix',
+            target: `\\\\?\\${path.join(root, 'a.txt')}`,
+            expect: true,
+            conservative:
+              'realpathSync.native places this INSIDE the root, so the kernel would allow it. token-goat refuses it anyway: the extended-length spelling bypasses Win32 path normalization entirely, so accepting it means accepting a family of spellings whose canonical form this walk does not compute. Refusing an inside path costs a caller nothing (the plain spelling of the same file is accepted); accepting an outside one would be the bypass.',
+          },
         ],
         root,
       )
