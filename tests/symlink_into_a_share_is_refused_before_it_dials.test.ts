@@ -36,6 +36,10 @@ const SHARE = process.platform === 'win32' ? '\\\\10.255.255.1\\share' : '//10.2
 const DEVICE_LINK = path.join(WORKSPACE, 'device')
 const DEVICE = '\\\\.\\pipe\\name'
 
+/** A project whose own root is a share, with a link out of it onto a DIFFERENT share. */
+const SHARE_ROOT = '//10.255.255.2/proj'
+const SHARE_LINK = `${SHARE_ROOT}/link`
+
 const touched = vi.hoisted(() => [] as string[])
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -55,14 +59,20 @@ vi.mock('node:fs', async (importOriginal) => {
     default: real,
     lstatSync: (p: unknown, ...rest: unknown[]) => {
       record(p)
-      if (typeof p === 'string' && (same(p, LINK) || same(p, DEVICE_LINK))) return linkEntry
+      if (typeof p === 'string' && (same(p, LINK) || same(p, DEVICE_LINK) || same(p, SHARE_LINK))) return linkEntry
       if (typeof p === 'string' && same(p, WORKSPACE)) return workspaceEntry
+      // Everything under either fake host answers as an ordinary directory. Falling through to the
+      // real filesystem for these would have the test itself dial an unroutable address: it did,
+      // and cost 2.7 s per run locally and a failure on the CI runners that resolve `//host/...`
+      // as an ordinary POSIX path.
+      if (typeof p === 'string' && /^[\\/]{2}10\.255\.255\./.test(p.replaceAll('\\', '/'))) return workspaceEntry
       return (real.lstatSync as (...a: unknown[]) => unknown)(p, ...rest)
     },
     readlinkSync: (p: unknown) => {
       // NOT recorded: reading a link's own bytes is a local operation on the directory entry.
       if (typeof p === 'string' && same(p, LINK)) return SHARE
       if (typeof p === 'string' && same(p, DEVICE_LINK)) return DEVICE
+      if (typeof p === 'string' && same(p, SHARE_LINK)) return SHARE
       throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' })
     },
     statSync: (p: unknown, ...rest: unknown[]) => {
@@ -146,13 +156,23 @@ describe('a symlink whose target is a share', () => {
     expect(touched.filter(isNetworkSpelling), 'the walk touched the device namespace').toEqual([])
   })
 
-  it('refuses only an escape onto a share, leaving a root that is already on one alone', () => {
+  // Windows only, and not for want of trying: `path.resolve` collapses a POSIX `//host/x` to
+  // `/host/x`, so a walk standing on a share is a state that cannot be constructed off Windows at
+  // all. Asserting a boolean here on every platform is what broke the CI runners the first time.
+  it.runIf(process.platform === 'win32')('leaves a walk that is already on a share free to follow a link onto another one', () => {
     // A project opened over SMB is a legitimate setup, so the refusal is conditioned on the walk
-    // not having STARTED on a share. That branch cannot be exercised end-to-end without a real
-    // server -- an absent UNC root is unresolvable here, before and after the fix alike -- so what
-    // is pinned is that the new refusal is not what decides it: the answer is the same either way,
-    // and the walk that reaches it touches nothing under a different host.
-    expect(isInsideRoot('//host/share/proj/src', '//host/share/proj')).toBe(false)
-    expect(touched.filter((p) => isNetworkSpelling(p) && !p.includes('host'))).toEqual([])
+    // not already standing on a share. The verdict cannot show that -- a link out of the project
+    // is "outside" either way -- so what is asserted is that the walk CONTINUED: it stat'd the
+    // path under the second share, which is exactly what the refusal would have prevented.
+    //
+    // This also pins the fix for reading the caller's spelling instead of the resolved root. The
+    // question is asked of the root the walk is standing on, so it does not matter that the second
+    // share has a different host from the first.
+    expect(isInsideRoot(`${SHARE_LINK}/x.txt`, SHARE_ROOT), 'a link out of the project read as inside it').toBe(false)
+    const dialed = touched.filter(isNetworkSpelling).map((p) => p.replaceAll('\\', '/'))
+    expect(
+      dialed.some((p) => p.startsWith('//10.255.255.1/')),
+      `a walk that started on a share was refused its link onto another one: ${dialed.join(', ')}`,
+    ).toBe(true)
   })
 })
