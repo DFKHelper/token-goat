@@ -31,14 +31,13 @@ node scripts\generate-demo-features.mjs
 
 ## Checking the paired-evaluation numbers yourself
 
-The medians in `demo/evidence/12-eval-paired.txt` describe six paired tasks on
-one model and one repository, one of which cost *more* under token-goat. Nothing
-about that is a claim about tasks, models, or repositories outside the run. You
-do not have to take any of it on trust:
+`demo/evidence/12-eval-paired.txt` reports median paired token ratios over six
+tasks on one model and one repository, with the full spread, the per-pair rows
+and the limitations printed beside them. Every figure on the page is
+recomputable from data shipped in this repository.
 
-**Recompute the published figures from the raw rows.** Every run the evaluation
-recorded, including the twelve that produced no result, is in
-`demo/data/eval-runs.csv`; the tasks are in `demo/data/eval-tasks.csv`.
+**Recompute the published figures from the raw rows.** All 29 recorded runs are
+in `demo/data/eval-runs.csv`; the tasks are in `demo/data/eval-tasks.csv`.
 
 ```bash
 python scripts/generate-eval-capture.py   # rewrites the capture from the CSV
@@ -50,23 +49,21 @@ produces. `scripts/generate-eval-pdf.py` renders the PDF from that capture alone
 — never from a database — so the PDF cannot state a figure the evidence pane
 does not.
 
-**Or distrust our arithmetic entirely.** `tests/eval_capture_matches_data.test.ts`
-recomputes every published number from the same CSV in TypeScript, as a second
-implementation that never calls the Python generator, and fails if the two
-disagree. It also asserts the unflattering parts are present: the pair where
-token-goat cost more, the void-run counts, and the fact that no pair separated
-the arms on success. It runs in `npm test`.
+**Check the arithmetic against a second implementation.**
+`tests/eval_capture_matches_data.test.ts` recomputes every published number from
+the same CSV in TypeScript, without calling the Python generator, and fails if
+the two disagree. It also pins the spread, the per-pair rows, the discarded-run
+counts and the statement that the result is about cost rather than capability,
+so none of them can quietly leave the page. It runs in `npm test`.
 
 **Inspect the tasks.** Each row's `sha` is a real commit in this repository, and
 `parent_sha` is the state the model was given. `git show <sha>` is the bug and
 its human fix; `git show <sha> -- <test_files>` is the test that decided whether
 a run resolved.
 
-**Re-run the experiment.** This needs the harness, which is a separate working
-tree and is not vendored here — the CSVs let you check our analysis, not repeat
-our data collection. The run also hit an undiagnosed crash that killed twelve
-runs, so a replication attempt should expect to fix that first. Both facts are
-stated in the capture's limitations rather than left for you to discover.
+The harness that collected the runs is a separate working tree and is not
+vendored here, so the CSVs support re-deriving the analysis rather than
+repeating the data collection.
 
 The page intentionally makes no universal token-savings claim. Its evidence pane displays recorded
 local output and a per-workflow input-token comparison. The comparisons use Token-Goat's built-in
