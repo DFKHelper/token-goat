@@ -17,12 +17,13 @@ import type { HookEvent } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { getCwd } from './hooks_common.js'
 import { isInsideRoot } from './project.js'
+import { isUncOrDevicePath } from './paths.js'
 import { foldPathForContainment } from './util.js'
 
-/** A UNC or device path (`\\server\share`, `//server/share`, `\\?\`, `\\.\`). Stat'ing one can dial out. */
-export function isUncOrDevicePath(p: string): boolean {
-  return /^[\\/]{2}/.test(p)
-}
+// Re-exported rather than defined here: path_containment.ts needs the same test, to refuse a
+// symlink whose target escapes onto a share before its own walk stats the next segment, and it
+// cannot import this module. The definition moved to paths.ts, at the bottom of the import graph.
+export { isUncOrDevicePath }
 
 /**
  * The same question asked of the path Node will actually open, not just of the spelling given.
@@ -59,6 +60,23 @@ export function vscodePathAllowed(filePath: string, workspace: string | undefine
   if (target !== root && !target.startsWith(root.endsWith('/') ? root : root + '/')) return false
   return isInsideRoot(resolvedTarget, resolvedRoot)
 }
+
+/**
+ * Accepted residue: the gate resolves links, then the handler opens the pathname again.
+ *
+ * A local process that can write inside the workspace can replace an allowed symlink in the window
+ * between the two, pointing the handler somewhere the gate never saw. Closing it properly means
+ * opening a descriptor here and handing that descriptor to every handler instead of a path, which
+ * is a change to each handler's shape rather than to this file.
+ *
+ * Not closed, and the reason is the size of what is behind the window rather than its difficulty.
+ * The attacker already has local code execution as this user, which is strictly more access than
+ * the race wins them: a pre-tool handler reads a file to shrink an image or to decide a hint, and
+ * the worst outcome is that the substituted file's content reaches the model. The same attacker can
+ * simply write that content into a file the user is going to read anyway. The UNC case above is
+ * different in kind, and is why it is refused rather than accepted: it needs no local access at
+ * all, only a path in a tool call, and it reaches the network.
+ */
 
 /** Whether `event` came from VS Code, where the hook runs ahead of the approval prompt and a workspace folder bounds it. */
 function isVscodeEvent(event: HookEvent): boolean {

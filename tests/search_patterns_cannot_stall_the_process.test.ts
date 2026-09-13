@@ -25,7 +25,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { compileGuardedRegex, growsExponentially, hasNestedQuantifier } from '../src/regex_guard.js'
+import { compileGuardedRegex, growsExponentially, hasNestedQuantifier, probeAlphabets } from '../src/regex_guard.js'
 import { compileGrepMatcher } from '../src/util.js'
 import { runGrep } from '../src/read_commands.js'
 import { sliceTranscript } from '../src/transcript_extract.js'
@@ -45,6 +45,22 @@ const CATASTROPHIC = [
   // version of the probe accepted it -- and it takes 13 seconds against 44 `b` characters, doubling
   // every two after that. Only pumping the pattern's OWN literals catches it.
   '^(b|bb)+$',
+  // The same defect spelled so the literal never appears. Reading escapes as characters the probe
+  // can pump is what catches these; skipping them whole, as the first version did, accepts all
+  // three. Measured raw: 20.9 s against 40 spaces, 2.9 s against 36 `b`s, 2.9 s against 36 `b`s.
+  String.raw`^(\s|\s\s)+$`,
+  String.raw`^(\x62|\x62\x62)+$`,
+  '^([b-c]|[b-c][b-c])+$',
+  // Super-linear without being exponential, which no short measurement can see: 0.55 ms at 36
+  // characters, 50 ms at 200, 18.6 s at 800. `token-goat grep` with it against a file holding one
+  // 3000-character line -- a minified bundle, a base64 blob -- did not return in two minutes.
+  '^(a+)(a+)(a+)(a+)b$',
+  '^a*a*a*a*b$',
+  // The probe as the weapon. This multiplies by four per character and took 27.8 s at 16, which was
+  // the first length the probe tried, so the guard hung inside the measurement it was taking to
+  // decide whether the pattern could hang anything. Nothing downstream can help: the budget is only
+  // read after a synchronous `test` returns, and JavaScript cannot interrupt one.
+  '^(a|a|a|a)+$',
 ]
 
 /**
@@ -64,6 +80,12 @@ const ORDINARY = [
   '(foo|bar|baz)',
   String.raw`^\s*#{1,6}\s`,
   '^(?:[a-z]+-)+[a-z]+$',
+  // Added with the long rungs: these run against 512 characters now, and a rung that reads an
+  // ordinary pattern as super-linear costs a real search.
+  String.raw`^\d{4}-\d{2}-\d{2}$`,
+  String.raw`\berror\b.*\bat\b`,
+  '^(GET|POST|PUT|DELETE) /[a-z/]*$',
+  '[a-zA-Z0-9+/]{40,}={0,2}',
 ]
 
 let base: string
@@ -124,6 +146,29 @@ describe('the guard refuses what the engine cannot finish', () => {
     expect(hasNestedQuantifier(slug), 'the shape check no longer condemns this, so it no longer tests the override').toBe(true)
     expect(growsExponentially(new RegExp(slug)), 'the probe now condemns a pattern measured at ~1 ms on 200 KB').toBe(false)
     expect(compileGuardedRegex(slug).ok, 'the shape check is overruling the measurement again').toBe(true)
+  })
+
+  it('decides ^(a|a|a|a)+$ without ever running the input that hangs it', () => {
+    // The oracle is the clock, and it is the whole finding: the pattern is refused either way, but
+    // before the ladder started below 16 the refusal arrived after half a minute of the guard
+    // itself backtracking. A budget cannot fix that -- it is read after `test` returns.
+    const started = Date.now()
+    expect(compileGuardedRegex('^(a|a|a|a)+$').ok).toBe(false)
+    expect(Date.now() - started, 'the guard is running the input that hangs, not the ones below it').toBeLessThan(2000)
+  })
+
+  it('calibration: that pattern really does hang at the length the probe used to start from', () => {
+    const started = Date.now()
+    new RegExp('^(a|a|a|a)+$').test('a'.repeat(12) + '!')
+    expect(Date.now() - started, 'the engine no longer backtracks here, so the probe-as-weapon finding is gone').toBeGreaterThan(20)
+  })
+
+  it('seeds the probe from escapes, not just from literal characters', () => {
+    // Pinned directly because the refusal above cannot distinguish "caught by the space seed" from
+    // "caught by some other alphabet": only this says the space is there to be pumped at all.
+    expect(probeAlphabets(String.raw`^(\s|\s\s)+$`), 'whitespace escapes contribute no probe character').toContain(' ')
+    expect(probeAlphabets(String.raw`^(\x62|\x62\x62)+$`), 'a hex escape contributes no probe character').toContain('b')
+    expect(probeAlphabets('^([b-c]|[b-c][b-c])+$'), 'a character class contributes no probe character').toContain('b')
   })
 
   it.each(ORDINARY)('still accepts %s', (pattern) => {

@@ -9,6 +9,18 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { neutralizeOutsideFences, neutralizeSpokenMarkers } from './injection_scan.js'
 
+/**
+ * A UNC or device path (`\\server\share`, `//server/share`, `\\?\`, `\\.\`). Stat'ing one can dial out.
+ *
+ * Lives here, at the bottom of the import graph, because two layers need it and neither may import
+ * the other: `vscode_path_gate.ts` decides whether a pre-approval hook may touch a path at all, and
+ * `path_containment.ts` has to refuse a symlink whose target escapes onto a share before its own
+ * walk stats the next segment.
+ */
+export function isUncOrDevicePath(p: string): boolean {
+  return /^[\\/]{2}/.test(p)
+}
+
 // Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully. Exported so project.ts's cross-shell canonicalization reuses this exact pattern instead of maintaining a second, flag-divergent copy.
 export const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 

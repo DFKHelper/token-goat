@@ -53,17 +53,34 @@ const PROBE_ALPHABETS = ['a', '0', 'a0'] as const
 /**
  * The input lengths to try, shortest first, stopping at the first one that blows the budget.
  *
- * Two fixed lengths were not enough. `^(a+)+$` doubles per character and is already at 112 ms by 24,
- * but `^(b|bb)+$` grows on the Fibonacci curve -- measured 0.46 ms at 24, 3.7 ms at 28, 23.9 ms at
- * 32, 161 ms at 36, 12.0 s at 44 -- so any pair of short lengths reads it as flat. A ladder answers
- * both without paying for the long inputs on ordinary patterns, because it only climbs while the
- * pattern is still fast: the same slug matcher stays at 0.00 ms across every rung.
+ * Three separate defects shaped this list, and each one moved a different end of it.
  *
- * The step is 4 rather than 8 to bound the overshoot. The rung after a rung that came in under
- * budget can only be as slow as the worst growth over 4 characters, so a pattern that doubles per
- * character costs at most 16x the budget once -- a fifth of a second -- before it is refused.
+ * A single pair of lengths could not see the middle of the curve. `^(a+)+$` doubles per character
+ * and is already at 112 ms by 24, but `^(b|bb)+$` grows on the Fibonacci curve -- 0.46 ms at 24,
+ * 3.7 ms at 28, 23.9 ms at 32, 161 ms at 36, 12.0 s at 44 -- so any two short lengths read it as
+ * flat. Climbing in small steps answers both, and costs nothing on an ordinary pattern because the
+ * ladder only climbs while the pattern is still fast.
+ *
+ * The rungs BELOW 16 exist because the probe was itself the weapon. `^(a|a|a|a)+$` multiplies by
+ * four per character: measured 0.4 ms at 8, 6.9 ms at 10, 109 ms at 12, and 27.8 seconds at 16 --
+ * which was the first length the probe tried. The guard hung inside the measurement it was taking
+ * to decide whether the pattern could hang anything, and no budget check can help, because the
+ * budget is only read after a synchronous `test` returns and JavaScript cannot interrupt one. The
+ * only defence is to start where nothing can be slow yet and let the ladder find the wall: the same
+ * pattern is now refused at rung 12, having spent about 120 ms total.
+ *
+ * The rungs ABOVE 36 exist because super-linear is not the same as exponential. `^(a+)(a+)(a+)(a+)b$`
+ * has no nested quantifier and costs 0.55 ms at 36 -- flat, by any short measurement -- yet 50 ms at
+ * 200 and 18.6 s at 800, and `token-goat grep` with it against a file holding one 3000-character
+ * line did not return in two minutes. A minified bundle or a base64 blob supplies such a line
+ * routinely. The long rungs cost microseconds on anything genuinely linear: the slug matcher and
+ * `function\s+(\w+)` both measure 0.00 ms at 800.
+ *
+ * The small step near the bottom is what bounds the overshoot. Whatever the growth rate, the rung
+ * that blows the budget can only be as slow as two characters' worth of growth applied to a rung
+ * that came in under it.
  */
-const PROBE_LENGTHS = [16, 20, 24, 28, 32, 36] as const
+const PROBE_LENGTHS = [4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 36, 64, 128, 256, 512] as const
 const PROBE_GROWTH_FACTOR = 12
 const PROBE_BUDGET_MS = 25
 
@@ -89,35 +106,80 @@ function timeMatch(re: RegExp, input: string): number {
  * text would supply. `PROBE_BUDGET_MS` is a second floor -- a pattern already slow at 24 characters
  * is refused on that alone, without waiting for a ratio.
  */
+/** One character each escape can actually match, for seeding the probe. `\b` and `\B` match no character. */
+const ESCAPE_SAMPLES: Readonly<Record<string, string>> = {
+  s: ' ',
+  S: 'a',
+  d: '0',
+  D: 'a',
+  w: 'a',
+  W: '-',
+  t: '\t',
+  n: '\n',
+  r: '\r',
+  f: '\f',
+  v: '\v',
+  '0': '\0',
+  b: '',
+  B: '',
+}
+
 /**
- * The characters to pump, taken from the pattern itself as well as from a fixed set.
+ * One character the pattern could match, for each place in its source that names one.
  *
- * A fixed alphabet is a hole. `^(b|bb)+$` has no nested quantifier and finishes instantly against
- * `aaaa...`, `0000...` and `a0a0...`, so the probe saw nothing and the pattern was accepted --
- * measured, it takes 13 seconds against 44 `b` characters and doubles every two after that. What
- * makes a pattern explode is ambiguity over the text IT matches, so the text to try it on has to
- * come out of the pattern. Every literal word character in the source becomes an alphabet of its
- * own, and their concatenation becomes one more, which covers `(ab|abab)+` as well as `(b|bb)+`.
+ * A fixed alphabet is a hole, because what makes a pattern explode is ambiguity over the text IT
+ * matches: `^(b|bb)+$` finishes instantly against `aaaa...`, `0000...` and `a0a0...`, so a probe
+ * that only knows those three accepts it -- and it takes 13 seconds against 44 `b` characters.
+ *
+ * Skipping escapes whole was the same hole one level down. `^(\s|\s\s)+$` is the identical defect
+ * spelled with whitespace and takes 20.9 seconds against 40 spaces; `^(\x62|\x62\x62)+$` is it
+ * spelled in hex and takes 2.9 seconds against 36 `b`s. Neither contains a literal the old reader
+ * kept, so both were accepted. Every escape now contributes the character it stands for, and a
+ * numeric escape contributes the character it encodes.
+ *
+ * Character classes need no special handling: the loop reads `[b-c]` as the two ordinary characters
+ * `b` and `c`, which is exactly the seed that pattern needs.
+ */
+function sampleCharacters(source: string): string[] {
+  const out: string[] = []
+  const push = (c: string): void => {
+    if (c !== '' && !out.includes(c)) out.push(c)
+  }
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i] as string
+    if (c !== '\\') {
+      if (/[^\s()[\]{}|^$*+?.-]/.test(c)) push(c)
+      continue
+    }
+    const next = source[i + 1] ?? ''
+    i++
+    // `\xNN` and `\uNNNN` name a character by code point; an unparseable one is skipped rather than
+    // pushed as a stray `x`, which would probe with a character the pattern cannot match.
+    if (next === 'x' || next === 'u') {
+      const width = next === 'x' ? 2 : 4
+      const digits = source.slice(i + 1, i + 1 + width)
+      i += width
+      if (/^[0-9a-fA-F]+$/.test(digits) && digits.length === width) push(String.fromCharCode(parseInt(digits, 16)))
+      continue
+    }
+    const sample = ESCAPE_SAMPLES[next]
+    // An escape not in the table is an escaped literal (`\.`, `\-`, `\/`), which stands for itself.
+    push(sample ?? next)
+  }
+  return out
+}
+
+/**
+ * The alphabets to pump: the fixed set, then each character the pattern names, then all of them.
  *
  * Capped, because the alphabet count multiplies the probe's cost and a long pattern would otherwise
- * pay for dozens of runs. The literals are taken in order of appearance, so the ones that open the
+ * pay for dozens of runs. The samples are taken in order of appearance, so the ones that open the
  * pattern -- the ones a match has to get past first -- are the ones kept.
  */
 const MAX_PATTERN_ALPHABETS = 6
 
 export function probeAlphabets(source: string): string[] {
-  // Backslash escapes are skipped whole: the `d` of `\d` is not a literal `d`, and taking it as one
-  // would probe with a character the pattern cannot match.
-  const literals: string[] = []
-  for (let i = 0; i < source.length; i++) {
-    const c = source[i] as string
-    if (c === '\\') {
-      i++
-      continue
-    }
-    if (/[A-Za-z0-9_]/.test(c) && !literals.includes(c)) literals.push(c)
-  }
-  const kept = literals.slice(0, MAX_PATTERN_ALPHABETS)
+  const kept = sampleCharacters(source).slice(0, MAX_PATTERN_ALPHABETS)
   const extra = kept.length > 1 ? [kept.join('')] : []
   return [...PROBE_ALPHABETS, ...kept, ...extra]
 }
@@ -170,7 +232,7 @@ export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
       ok: false,
       reason: hasNestedQuantifier(pattern)
         ? 'repeats a group that already repeats, which can take exponential time to match'
-        : 'takes time that doubles as the text grows, which can stall on a short line',
+        : 'takes time that climbs steeply with the length of the line, which can stall on ordinary text',
     }
   }
   return { ok: true, re }

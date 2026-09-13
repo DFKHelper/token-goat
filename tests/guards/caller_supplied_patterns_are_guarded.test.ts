@@ -54,12 +54,40 @@ function tsFiles(dir: string): string[] {
   return out
 }
 
+/** A simple argument expression: a bare name or dotted path, optionally wrapped in a template literal. */
+const ARGUMENT = String.raw`(?:\`\$\{\s*)?([A-Za-z_$][\w$.]*)(?:\s*\}\`)?`
+
 /** The first argument of every `call(` in `text`, as written, when it is a simple expression. */
 function firstArguments(text: string, call: string): string[] {
   const out: string[] = []
-  const re = new RegExp(String.raw`\b${call}\(\s*([A-Za-z_$][\w$.]*)\s*[,)]`, 'g')
+  const re = new RegExp(String.raw`${call}\(\s*${ARGUMENT}\s*[,)]`, 'g')
   for (const m of text.matchAll(re)) out.push(m[1] as string)
   return out
+}
+
+/**
+ * Every way a string becomes a running regular expression, as a source-text pattern for `call`.
+ *
+ * `new RegExp` is the obvious one and was the only one the first version of this guard knew. The
+ * others are how the same defect gets reintroduced without the words `new RegExp` appearing:
+ * `RegExp(p)` without `new` returns the identical object, a template wrapper hides the argument
+ * behind an interpolation, and `String.prototype.match`, `matchAll`, `search` and `split` all
+ * COMPILE a string argument as a pattern rather than matching it literally -- `line.match(pattern)`
+ * is exactly as exposed as `new RegExp(pattern).test(line)` and reads as if it were not.
+ * `replace`/`replaceAll` with a string argument are not sinks: those match literally.
+ */
+const REGEX_SINKS = [
+  String.raw`\bnew\s+RegExp`,
+  String.raw`(?<!new\s)\bRegExp`,
+  String.raw`\.match`,
+  String.raw`\.matchAll`,
+  String.raw`\.search`,
+  String.raw`\.split`,
+] as const
+
+/** Whether `name` is bound in `text` by destructuring a table entry, which is never a caller's string. */
+function boundByDestructuring(text: string, name: string): boolean {
+  return new RegExp(String.raw`for\s*\(\s*const\s*\[\s*${name}\b`).test(text)
 }
 
 const files = pinnedPopulation({
@@ -81,8 +109,8 @@ const guardedArguments = new Set(
   pinnedPopulation({
     what: 'argument spellings passed to compileGuardedRegex',
     items: [...sources.values()].flatMap((text) => [
-      ...firstArguments(text, 'compileGuardedRegex'),
-      ...firstArguments(text, 'compileGuardedRegexCached'),
+      ...firstArguments(text, String.raw`\bcompileGuardedRegex`),
+      ...firstArguments(text, String.raw`\bcompileGuardedRegexCached`),
     ]),
     floor: 6,
   }),
@@ -93,16 +121,50 @@ describe('caller-supplied search patterns', () => {
     expect([...guardedArguments].some((a) => CALLER_SUPPLIED.test(a)), 'no guarded argument looks like a caller-supplied pattern').toBe(true)
   })
 
-  it('never reaches a bare new RegExp anywhere in src', () => {
+  it('never reaches an unguarded regex sink anywhere in src', () => {
     const offenders: string[] = []
+    const exempt: string[] = []
     for (const [rel, text] of sources) {
       const lines = text.split('\n')
-      for (const arg of firstArguments(text, 'new RegExp')) {
-        if (!guardedArguments.has(arg) && !CALLER_SUPPLIED.test(arg)) continue
-        const line = lines.findIndex((l) => new RegExp(String.raw`new RegExp\(\s*${arg.replaceAll('.', '\\.')}\s*[,)]`).test(l))
-        offenders.push(`src/${rel}:${line + 1}  new RegExp(${arg})`)
+      for (const sink of REGEX_SINKS) {
+        for (const arg of firstArguments(text, sink)) {
+          if (!guardedArguments.has(arg) && !CALLER_SUPPLIED.test(arg)) continue
+          // Already a RegExp at this point, so nothing is being compiled. `matchAll(pattern)` inside
+          // `for (const [pattern, kind] of LIQUID_TAG_IMPORTS)` reads exactly like the defect and is
+          // its opposite: the name is bound by destructuring a module-level table of compiled
+          // regexes, which no caller can reach. Narrow on purpose -- it recognises the binding form,
+          // not the file -- and counted below, so a third one has to be looked at rather than
+          // absorbed. A string argument would still be flagged even in the same file.
+          if (boundByDestructuring(text, arg)) {
+            exempt.push(`src/${rel}  ${arg}`)
+            continue
+          }
+          const at = new RegExp(String.raw`${sink}\(\s*(?:\`\$\{\s*)?${arg.replaceAll('.', String.raw`\.`)}\s*[,)}]`)
+          offenders.push(`src/${rel}:${lines.findIndex((l) => at.test(l)) + 1}  ${sink.replace(/\\b|\(\?<!new\\s\)/g, '')}(${arg})`)
+        }
       }
     }
-    expect(offenders, `these compile a caller's pattern without the ReDoS guard -- use compileGuardedRegex from src/regex_guard.ts:\n${offenders.join('\n')}`).toEqual([])
+    expect(offenders, `these compile a caller's pattern without the ReDoS guard -- route them through compileGuardedRegex in src/regex_guard.ts:\n${offenders.join('\n')}`).toEqual([])
+    // Pinned, not merely allowed: the exemption is the part of this guard that can quietly grow
+    // until it covers the defect. Two live at 2.9.11, both `matchAll` over a table of compiled
+    // regexes. A new one is a review, not a rubber stamp.
+    expect(exempt.sort(), 'the RegExp-binding exemption changed; confirm each new site really is a compiled RegExp and not a string').toEqual([
+      'src/languages/liquid.ts  pattern',
+      'src/languages/sql_idx.ts  pattern',
+    ])
+  })
+
+  it.each([
+    ['new RegExp(opts.grep)', 'the plain form'],
+    ['RegExp(opts.grep)', 'RegExp without new'],
+    ['new RegExp(`${opts.grep}`)', 'a template wrapper'],
+    ['line.match(opts.grep)', 'a String.prototype coercion sink'],
+  ])('finds %s (%s) when it is the only thing in a file', (snippet) => {
+    // The sweep above is only evidence if it can actually see each shape. Asserting that on the
+    // real tree is impossible -- the tree has none of them, which is the point -- so each shape is
+    // put in front of the same extractor here. Without this, widening the sink list to cover a
+    // shape and getting the pattern subtly wrong looks exactly like the tree being clean.
+    const found = REGEX_SINKS.flatMap((sink) => firstArguments(snippet, sink))
+    expect(found, `the extractor did not see ${snippet}`).toContain('opts.grep')
   })
 })

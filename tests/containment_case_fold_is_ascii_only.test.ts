@@ -60,7 +60,31 @@ describe('the containment fold is ASCII-only', () => {
     // Pure-string, so it runs everywhere: `isInsideRoot` resolves through the filesystem, but two
     // absent paths resolve to themselves.
     const base = path.join(os.tmpdir(), 'tg-fold-lexical')
-    expect(isInsideRoot(path.join(base, `wor${KELVIN}`, 'secret.txt'), path.join(base, 'work'))).toBe(false)
+    const sneaked = path.join(base, `wor${KELVIN}`, 'secret.txt')
+    const root = path.join(base, 'work')
+    if (process.platform === 'darwin') {
+      // Not an exemption -- a different filesystem. U+212A is CANONICALLY equivalent to `K`
+      // (`'K'.normalize('NFC')` is `'K'`, code point 4b), and APFS is normalization-
+      // insensitive, so on macOS `worK` spelled with the Kelvin sign and `worK` spelled with a
+      // plain K are not two directories that fold together -- they are one directory the OS will
+      // not let you create twice. "Inside" is then the truth, and refusing would decline a real
+      // path. The bypass this file is about needs two DISTINCT directories, which is what every
+      // other platform gives you here.
+      expect(isInsideRoot(sneaked, root), 'macOS stopped treating the Kelvin sign as the same file, so this branch is now wrong').toBe(true)
+    } else {
+      expect(isInsideRoot(sneaked, root)).toBe(false)
+    }
+
+    // The pair that is a live bypass on EVERY platform, macOS included, so the branch above is a
+    // platform difference rather than a hole in the coverage. `I` (U+0130) and `i` followed by a
+    // combining dot (U+0069 U+0307) lowercase to the identical string, yet they stay distinct under
+    // NFD -- `49 307` against `69 307` -- so a normalization-insensitive filesystem still holds them
+    // as two directories. The Unicode fold puts one inside the other; the ASCII fold does not.
+    const dotted = 'İ'
+    const decomposed = 'i̇'
+    expect(foldCase(dotted), 'toLowerCase no longer collapses these, so this pair no longer describes the defect').toBe(foldCase(decomposed))
+    expect(foldCaseForContainment(dotted), 'the containment fold collapsed a pair the filesystem keeps apart').not.toBe(foldCaseForContainment(decomposed))
+    expect(isInsideRoot(path.join(base, dotted, 'secret.txt'), path.join(base, decomposed))).toBe(false)
     // The mirror: an ordinary ASCII case difference must still be accepted on a case-insensitive
     // volume, or this fix is just a refusal.
     if (process.platform === 'win32' || process.platform === 'darwin') {

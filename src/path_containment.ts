@@ -19,7 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, WSL_PATH_RE, MSYS_PATH_RE } from './paths.js';
+import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, isUncOrDevicePath, WSL_PATH_RE, MSYS_PATH_RE } from './paths.js';
 
 /** Whether this platform's filesystem compares names case-insensitively. `TOKEN_GOAT_CASE_INSENSITIVE_FS` overrides, for tests on a platform whose default disagrees. */
 export function isCaseInsensitiveFs(): boolean {
@@ -251,6 +251,7 @@ function linkTarget(link: string): { root: string | null; segs: string[] } {
 
 function resolveThroughLinks(p: string): string {
   if (Buffer.byteLength(p, 'utf8') > MAX_RESOLVE_PATH_BYTES) return UNRESOLVABLE_PATH;
+  const startedOnUncPath = isUncOrDevicePath(p);
   const start = rootAndSegments(p);
   let root = start.root;
   let base = root;
@@ -311,6 +312,19 @@ function resolveThroughLinks(p: string): string {
     if (++hops > MAX_LINK_HOPS) return UNRESOLVABLE_PATH;
     const target = linkTarget(link);
     if (target.root !== null) {
+      // A link inside a local directory whose target is a share is refused here, before the next
+      // `lstatSync` reaches it. That call is the whole point: on Windows a stat of `\\host\share`
+      // opens an SMB connection, and this walk runs inside the pre-approval hook gate, so a link
+      // planted in the workspace would make token-goat dial an address the model named while the
+      // user was still being asked whether to allow the read -- the exact access the gate exists
+      // to prevent, reached by a path that looks entirely local. `readlinkSync` above only reads
+      // the link's own bytes, which is local, so the decision can be made before anything dials.
+      //
+      // Only an escape TO a share is refused, never a walk that started on one: a project opened
+      // over SMB is a legitimate setup, and refusing its own root would break it. Unresolvable
+      // rather than false, because that is this function's word for "cannot answer safely", and
+      // every caller already fails closed on it.
+      if (!startedOnUncPath && isUncOrDevicePath(target.root)) return UNRESOLVABLE_PATH;
       root = target.root;
       base = target.root;
     }
