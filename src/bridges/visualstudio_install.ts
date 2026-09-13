@@ -16,6 +16,7 @@ import * as path from 'node:path'
 import { atomicWriteText, backupFile, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { buildGuidanceBody } from './guidance_block.js'
+import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
 import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 
@@ -163,6 +164,10 @@ export interface VisualStudioInstallResult {
 }
 
 export function installVisualStudio(opts: VisualStudioScopeOptions = {}): VisualStudioInstallResult {
+  return withInstallScope(projectScopeRoot(opts), () => installVisualStudioScoped(opts))
+}
+
+function installVisualStudioScoped(opts: VisualStudioScopeOptions): VisualStudioInstallResult {
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = visualStudioMcpPath(opts)
   const instructionsPath = visualStudioInstructionsPath(opts)
@@ -194,6 +199,10 @@ export function installVisualStudio(opts: VisualStudioScopeOptions = {}): Visual
 
 /** Removes only token-goat's entry and block; a file left holding nothing at all (`{}`, or blank guidance) is deleted, since nothing of the user's is in it. */
 export function uninstallVisualStudio(opts: VisualStudioScopeOptions = {}): boolean {
+  return withInstallScope(projectScopeRoot(opts), () => uninstallVisualStudioScoped(opts))
+}
+
+function uninstallVisualStudioScoped(opts: VisualStudioScopeOptions): boolean {
   const mcpPath = visualStudioMcpPath(opts)
   let removed = false
   if (fs.existsSync(mcpPath)) {

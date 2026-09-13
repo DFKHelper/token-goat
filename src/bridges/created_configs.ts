@@ -18,7 +18,7 @@ import * as path from 'path'
 
 import { dataDir } from '../constants.js'
 import { normalizePath } from '../paths.js'
-import { atomicWriteText, ensureDirSync } from '../util.js'
+import { atomicWriteText, ensureDirSync, foldPath } from '../util.js'
 
 function ledgerPath(): string {
   return path.join(dataDir(), 'created-configs.json')
@@ -46,9 +46,18 @@ function keyOf(filePath: string): string {
  *
  * Matching still folds, because install and uninstall are separate runs that can spell the same
  * path with different case. Only matching: what gets unlinked is the entry as recorded.
+ *
+ * Through {@link foldPath}, which asks the platform, and NOT an unconditional `.toLowerCase()`.
+ * On a case-SENSITIVE filesystem `/home/u/Repo/.zed/settings.json` and
+ * `/home/u/repo/.zed/settings.json` are two different files that fold to one key, and this ledger
+ * answers a delete question: `uninstallZed` does `if (empty && takeCreatedConfig(settingsPath))
+ * { rm }`, so the other directory's entry answered "token-goat created this" and the caller
+ * removed a settings file the user wrote. `recordCreatedConfig` carried the mirror of it -- the
+ * second directory's entry was never recorded at all, orphaning its backups at uninstall. The
+ * codebase already had the platform-correct primitive; this module was the one bypassing it.
  */
 function foldKey(key: string): string {
-  return key.toLowerCase()
+  return foldPath(key)
 }
 
 function readLedger(): string[] {

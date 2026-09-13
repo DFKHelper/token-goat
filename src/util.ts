@@ -14,6 +14,7 @@ import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSyn
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
+import { assertWriteInScope } from './bridges/project_scope_guard.js'
 import { ensureStorageRootPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
 import type { GitResult, RunGitOptions } from './types.js'
@@ -42,17 +43,18 @@ export function noWindowCreationFlags(): number {
   return isWindows() ? 0x08000000 : 0
 }
 
-// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path; normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for deterministic cross-platform tests.
-export function isCaseInsensitiveFs(): boolean {
-  const o = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
-  if (o === '1') return true
-  if (o === '0') return false
-  return process.platform === 'win32' || process.platform === 'darwin'
-}
-
-export function foldPath(p: string): string {
-  return isCaseInsensitiveFs() ? foldCase(p) : p
-}
+// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path;
+// normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold
+// the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for
+// deterministic cross-platform tests.
+//
+// Defined in path_containment.ts and re-exported here, unchanged, so every existing
+// `import { foldPath } from './util.js'` keeps working. The definitions had to leave this file
+// because isInsideRoot needs them and isInsideRoot must be importable by util.ts without the
+// import reaching project.ts -- see path_containment.ts's header for the cycle that caused.
+export { foldCase, foldPath, isCaseInsensitiveFs } from './path_containment.js'
+// Imported as well as re-exported: this file has its own callers of foldPath below.
+import { foldPath } from './path_containment.js'
 
 /** Best-effort file size in bytes, or null when the path cannot be stat'd or isn't a regular file. */
 export function statSize(absPath: string): number | null {
@@ -62,18 +64,6 @@ export function statSize(absPath: string): number | null {
   } catch {
     return null
   }
-}
-
-/**
- * Unicode-aware case folding primitive. This is the SINGLE source of truth for how
- * token-goat folds case: `foldPath()` uses it on the JS side, and `db.ts` registers it
- * verbatim as a SQL scalar function (see `TG_LOWER` in `initConnection`) so `pathEqClause`'s
- * SQL-side folding stays byte-for-byte consistent with the JS side. SQLite's built-in
- * `LOWER()` only folds ASCII A-Z, which would silently diverge from this for non-ASCII
- * casing (e.g. `Ä` vs `ä`) — never use `LOWER()` for path comparisons, use `TG_LOWER`.
- */
-export function foldCase(s: string): string {
-  return s.toLowerCase()
 }
 
 /**
@@ -162,6 +152,11 @@ function isEExist(err: unknown): boolean {
  * — the directory exists — is already true), while propagating all other errors.
  */
 export function ensureDirSync(dir: string): void {
+  // Confinement first, before the mkdir: a recursive create walks through a directory symlink a
+  // clone checked in, so `.github` linked out of the tree makes the "create the parent" step
+  // itself land outside. See bridges/project_scope_guard.ts for why this is enforced here rather
+  // than at each installer.
+  assertWriteInScope(dir)
   // token-goat has TWO storage roots -- the data dir (cached pages, command output, index DBs) and
   // `~/.token-goat` (session snapshots, session state, OCR and image caches) -- and both are
   // created owner-only before any child lands inside them. Hardening only the data root was a live
@@ -219,6 +214,7 @@ export function withRetryOnLock(fn: () => void): void {
  * write never leaks a `.tmp` file next to `dest`.
  */
 function atomicWriteCore(dest: string, content: string | Uint8Array): void {
+  assertWriteInScope(dest)
   // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
@@ -354,6 +350,8 @@ const MAX_BACKUPS_PER_FILE = 5
 const MAX_BACKUP_NAME_ATTEMPTS = 16
 
 export function backupFile(p: string): void {
+  // Before the existsSync, so the refusal does not depend on whether the link has a live target.
+  assertWriteInScope(p)
   if (!existsSync(p)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   let backupPath: string
@@ -765,6 +763,9 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
  * copy before either write path below touches it. `backupFile` no-ops when `p` doesn't exist yet.
  */
 export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: string, block: string): boolean {
+  // Before the read, not just before the write: this is the helper that lands the routing block in
+  // `.github/copilot-instructions.md`, the exact path the SA-1 escapes went through.
+  assertWriteInScope(p)
   let existing: string
   try {
     existing = readFileSync(p, 'utf8')

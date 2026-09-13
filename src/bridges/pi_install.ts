@@ -48,6 +48,7 @@ import * as path from 'node:path'
 
 import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
 import { PI_EXTENSION_SCRIPT } from './pi.js'
+import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 
 /** Options shared by {@link installPi}, {@link uninstallPi}, and {@link isPiInstalled}. */
 export interface PiScopeOptions {
@@ -105,9 +106,11 @@ export interface PiInstallResult {
  * `alreadyInstalled: true`.
  */
 export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
-  const extensionPath = piExtensionPath(opts)
-  const { alreadyInstalled } = installSingleFilePlugin(extensionPath, piEntrySidecarPath(opts), PI_EXTENSION_SCRIPT)
-  return { extensionPath, alreadyInstalled }
+  return withInstallScope(projectScopeRoot(opts), () => {
+    const extensionPath = piExtensionPath(opts)
+    const { alreadyInstalled } = installSingleFilePlugin(extensionPath, piEntrySidecarPath(opts), PI_EXTENSION_SCRIPT)
+    return { extensionPath, alreadyInstalled }
+  })
 }
 
 /**
@@ -115,8 +118,9 @@ export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
  * was actually present and removed; false when nothing was installed (no
  * write occurs in that case).
  */
+// Scoped per sweep, not on the exported entry point below, which deliberately visits BOTH scopes.
 function uninstallPiScope(opts: PiScopeOptions): boolean {
-  return uninstallSingleFilePlugin(piExtensionPath(opts), piEntrySidecarPath(opts))
+  return withInstallScope(projectScopeRoot(opts), () => uninstallSingleFilePlugin(piExtensionPath(opts), piEntrySidecarPath(opts)))
 }
 
 // Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain

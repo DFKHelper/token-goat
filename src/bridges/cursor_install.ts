@@ -69,6 +69,7 @@ import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { atomicWriteText, backupFile } from '../util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
@@ -137,6 +138,10 @@ export interface CursorInstallResult {
  * a real user file that may already have content is never silently clobbered.
  */
 export function installCursor(opts: CursorScopeOptions = {}): CursorInstallResult {
+  return withInstallScope(projectScopeRoot(opts), () => installCursorScoped(opts))
+}
+
+function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = cursorMcpPath(opts)
 
@@ -169,6 +174,10 @@ export function installCursor(opts: CursorScopeOptions = {}): CursorInstallResul
  * installed (no write occurs in that case). Never touches `hooks.json`.
  */
 export function uninstallCursor(opts: CursorScopeOptions = {}): boolean {
+  return withInstallScope(projectScopeRoot(opts), () => uninstallCursorScoped(opts))
+}
+
+function uninstallCursorScoped(opts: CursorScopeOptions): boolean {
   const mcpPath = cursorMcpPath(opts)
   if (!fs.existsSync(mcpPath)) return false
 

@@ -13,7 +13,7 @@ import { atomicWriteText, backupFile, ensureDirSync, stripDelimitedBlock, upsert
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
-import { assertProjectScopeTarget } from './project_scope_guard.js'
+import { assertProjectScopeTarget, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, isManagedServer, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
@@ -291,6 +291,10 @@ function assertProjectTargetsAreInTheProject(opts: VscodeScopeOptions): void {
 }
 
 export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResult {
+  return withInstallScope(projectScopeRoot(opts), () => installVscodeScoped(opts))
+}
+
+function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   assertProjectTargetsAreInTheProject(opts)
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = vscodeMcpPath(opts)
@@ -349,6 +353,10 @@ export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResul
 }
 
 export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
+  return withInstallScope(projectScopeRoot(opts), () => uninstallVscodeScoped(opts))
+}
+
+function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
   assertProjectTargetsAreInTheProject(opts)
   const mcpPath = vscodeMcpPath(opts)
   let removed = false

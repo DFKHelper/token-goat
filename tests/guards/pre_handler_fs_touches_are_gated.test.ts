@@ -232,7 +232,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['vscode_duplicate.ts::alreadyClaimed', 'exclusive-creates one marker under markerDir() (dataDir()); its basename is a hash of (session_id, event, timestamp), not a path'],
   ['vscode_duplicate.ts::pruneMarkers', 'readdir/stat/rm inside markerDir() only'],
   ['bridges/created_configs.ts::readLedger', 'reads the created-configs ledger inside dataDir(); its whole purpose is to be a file no clone can reach'],
-  ['project.ts::resolveThroughLinks', 'the realpath/readlink containment primitive isInsideRoot -- and therefore the path gate itself -- is built out of; gating it would be circular'],
+  ['path_containment.ts::resolveThroughLinks', 'the realpath/readlink containment primitive isInsideRoot -- and therefore the path gate itself -- is built out of; gating it would be circular'],
   ['util.ts::ensureDirSync', 'generic mkdir primitive: it touches only the path its caller supplies, so the caller is where a payload path has to be classified'],
   ['util.ts::atomicWriteCore', 'generic write primitive, same reasoning as ensureDirSync'],
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],

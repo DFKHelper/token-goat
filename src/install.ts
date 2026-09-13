@@ -33,6 +33,7 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import type { HookEventName } from './types.js'
 import { removeCreatedBackups } from './bridges/created_configs.js'
+import { withInstallScope } from './bridges/project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
@@ -261,6 +262,19 @@ function groupHasTokenGoat(
  * `alreadyInstalled` is true when nothing had to change.
  */
 export function installHooks(scope: HookScope = 'user'): InstallResult {
+  return withInstallScope(hookScopeRoot(scope), () => installHooksScoped(scope))
+}
+
+/**
+ * The confinement root for a hook scope. `'project'` writes `<cwd>/.claude/settings.json`, so the
+ * cwd is the root; `'user'` writes under the home directory and is deliberately unconfined, for
+ * the dotfiles-symlink reason bridges/project_scope_guard.ts spells out.
+ */
+function hookScopeRoot(scope: HookScope): string | undefined {
+  return scope === 'project' ? normalizeDarwinSystemAlias(process.cwd()) : undefined
+}
+
+function installHooksScoped(scope: HookScope): InstallResult {
   const p = settingsPath(scope)
   // strict: true -- a settings file that exists but fails to parse must abort before any write (see SettingsParseError), not silently proceed as if it were empty and get clobbered below.
   const settings = readSettings(p, { strict: true })
@@ -268,8 +282,16 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
 
   // The shim is a generated, never-user-edited file: refresh it on every install call so it tracks the running token-goat version, independent of whether the settings.json wiring itself needs any change. Mirrors bridges/codex_install.ts. writeIfDifferent rather than an unconditional atomicWriteText so a genuine no-op install touches nothing on disk, and so a repaired shim (user deleted ~/.claude/hooks, or an older build left stale content) counts as a real change via `scriptChanged` -- reporting "already installed" while having just rewritten the file the hooks depend on would be a lie to anyone running install precisely to repair it.
   const scriptPath = claudeHookScriptPath()
-  ensureDirSync(path.dirname(scriptPath))
-  const scriptChanged = writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
+  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at
+  // `~/.claude/hooks/token-goat-shim.js` (see uninstallHooks' anyScopeReferencesShim) -- so this
+  // write is declared user scope explicitly rather than inheriting the project confinement, which
+  // would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the
+  // user's own directory, and a dotfiles symlink pointing it elsewhere is the setup
+  // bridges/project_scope_guard.ts deliberately allows.
+  const scriptChanged = withInstallScope(undefined, () => {
+    ensureDirSync(path.dirname(scriptPath))
+    return writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
+  })
 
   let settingsChanged = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
@@ -354,6 +376,10 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
  * none were present (no write occurs in that case).
  */
 export function uninstallHooks(scope: HookScope = 'user'): boolean {
+  return withInstallScope(hookScopeRoot(scope), () => uninstallHooksScoped(scope))
+}
+
+function uninstallHooksScoped(scope: HookScope): boolean {
   const p = settingsPath(scope)
   const settings = readSettings(p)
   const hooks = settings.hooks

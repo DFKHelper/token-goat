@@ -1,0 +1,374 @@
+/**
+ * Every project-scoped install refuses a config path that resolves outside the project, and the
+ * refusal is enforced by the write helpers rather than by each installer remembering to ask.
+ *
+ * THE FINDING. `assertProjectScopeTarget` existed, was correct, and was wired into ONE installer of
+ * five. `install --visualstudio -p`, `install --copilot --local`, `install --cursor -p` and
+ * `install --pi --local` each read, backed up and rewrote a repo-controlled config path through
+ * whatever symlink a clone had checked in -- so a repository could ship `.mcp.json` as a link to
+ * `~/.ssh/id_ed25519` or `.github/copilot-instructions.md` as a link to a private file, and the
+ * install would `copyFileSync` those bytes into `<repo>/<name>.bak.<ISO>`, an untracked file no
+ * `.gitignore` matches and `git add -A` sweeps up. Reproduced live against the built bundle at
+ * 3cd0b044: eight escapes across four flags, with `--vscode -p` refusing in-band as the control.
+ * `--copilot --local` and `--pi --local` shipped that way in v2.9.10.
+ *
+ * WHY THIS FILE IS NOT THREE MORE CALL SITES. Four of five installer authors already forgot the
+ * call. A guard you must remember to invoke is not a trust boundary, and a per-installer patch
+ * regrows the moment a sixth bridge is written. The default is inverted instead: `withInstallScope`
+ * declares the scope once per entry point and `assertWriteInScope` -- called by `backupFile`,
+ * `ensureDirSync`, `atomicWriteCore` and `upsertDelimitedBlock` themselves -- refuses anything
+ * leaving it. Omission now fails CLOSED. This file is what keeps that true, in two halves:
+ *
+ *   1. STRUCTURAL. Enumerate every installer module that both writes through a helper and builds a
+ *      path from `process.cwd()`/`projectRoot`, and require each to declare a scope. The population
+ *      is asserted non-empty and by name, because a population that silently empties is the exact
+ *      way the sibling guard next door went quiet after a rename.
+ *   2. BEHAVIOURAL. Spawn the BUILT BUNDLE against a real poisoned clone, once per install flag,
+ *      and require an actual refusal. Source-text checks cannot see a flag whose scope declaration
+ *      is present but wrong, and they cannot see a helper that stopped calling
+ *      `assertWriteInScope`. Every poisoned run is paired with the SAME flag against a CLEAN clone
+ *      that must still install: without that in-band control, "refused" is indistinguishable from
+ *      an installer broken into refusing everything, and a refusal you cannot first observe
+ *      succeeding is not evidence.
+ *
+ * The user of this repo does not run VS Code, so there is no daily-use backstop for any of this.
+ * The test IS the detection surface, not a supplement to one.
+ *
+ * PROVENANCE: CAPTURE. The structural population is read from `src/**\/*.ts` at run time; every
+ * behavioural verdict is the real exit status and stderr of the real bundle against real symlinks,
+ * with a canary counter that voids the run if the probe stopped being able to see a leak at all.
+ *
+ * I/O: spawns the built bundle under a fully redirected HOME/USERPROFILE/TOKEN_GOAT_HOME/
+ * LOCALAPPDATA, inside a scratch directory removed afterwards. It never touches the real
+ * `~/.claude`, which an audit probe did once and duplicated a section in the user's global config.
+ */
+import { execFileSync } from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { afterAll, describe, expect, it } from 'vitest'
+
+import { CAN_JUNCTION, CAN_SYMLINK } from '../helpers/can-symlink.js'
+import { pinnedPopulation } from './population.js'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const REPO = path.join(HERE, '..', '..')
+const SRC = path.join(REPO, 'src')
+const CLI = path.join(REPO, 'dist', 'token-goat.mjs')
+
+// ---------------------------------------------------------------------------------------------
+// 1. Structural: which modules must declare an install scope, and do they.
+// ---------------------------------------------------------------------------------------------
+
+/** Any of the four helpers that now enforce containment, plus the wrappers that funnel into them. */
+const WRITES = /\b(?:backupFile|upsertDelimitedBlock|atomicWriteText|atomicWriteBytes|ensureDirSync|writeJsonSettings|writeIfDifferent)\s*\(/
+/** Builds a path out of the working directory or an explicit project root -- i.e. a repo-relative path. */
+const PROJECT_RELATIVE = /project\?:\s*boolean|local\?:\s*boolean|process\.cwd\(\)|projectRoot/
+/** Declares the scope of a run. */
+const DECLARES_SCOPE = /\bwithInstallScope\s*\(/
+
+/**
+ * Modules that write a repo-relative path and are therefore required to declare a scope.
+ *
+ * Both halves over-approximate deliberately: a false member widens the population, which fails
+ * loudly and gets an exemption with a reason written beside it, rather than quietly shrinking the
+ * set the way a precise-but-brittle rule would.
+ */
+function projectScopeWriters(): string[] {
+  const out: string[] = []
+  for (const dir of [path.join(SRC, 'bridges'), SRC]) {
+    for (const name of fs.readdirSync(dir).sort()) {
+      if (!name.endsWith('.ts')) continue
+      const full = path.join(dir, name)
+      const rel = path.relative(SRC, full).replace(/\\/g, '/')
+      if (out.includes(rel)) continue
+      const code = fs.readFileSync(full, 'utf8')
+      // Installer modules only. Everything under `src/bridges/` counts, and so does any module
+      // anywhere in `src/` that exports an `install*`/`uninstall*` entry point -- so a new
+      // installer written outside the bridges directory does not escape the population by
+      // location. Modules that merely happen to write files and mention the working directory
+      // (`cli.ts`, `worker.ts`, `util.ts`) are not installs and have no scope to declare.
+      const isInstaller = rel.startsWith('bridges/') || /export\s+(?:async\s+)?function\s+(?:install|uninstall)[A-Z_]/.test(code)
+      if (!isInstaller) continue
+      if (!WRITES.test(code) || !PROJECT_RELATIVE.test(code)) continue
+      out.push(rel)
+    }
+  }
+  return out
+}
+
+function declaresScope(rel: string): boolean {
+  return DECLARES_SCOPE.test(fs.readFileSync(path.join(SRC, rel), 'utf8'))
+}
+
+/**
+ * Members that write a repo-relative-looking path but are not install-time writes into a clone.
+ *
+ * The bar is that declaring a scope would be WRONG, not merely unnecessary.
+ */
+const EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([
+  [
+    'util.ts',
+    'IS the enforcement layer, not an install run. It is here only because it exports the generic ' +
+      '`installSingleFilePlugin`/`uninstallSingleFilePlugin` helpers that the real installers call ' +
+      'while already inside their own scope. Declaring a scope here would either override the ' +
+      "caller's (silently widening it) or wrap `assertWriteInScope` in a call to itself. The four " +
+      'helpers in this file are exactly what every scoped write is required to reach.',
+  ],
+])
+
+// ---------------------------------------------------------------------------------------------
+// 2. Behavioural: does each flag actually refuse a poisoned clone, and still install a clean one.
+// ---------------------------------------------------------------------------------------------
+
+const CANARY = 'TG-CONTAINMENT-CANARY-9f3a1c'
+/** The leaf shape needs a file symlink; the dir shape needs a junction. Separate Windows privileges. */
+const CAN_LEAF = CAN_SYMLINK
+const CAN_DIR = process.platform === 'win32' ? CAN_JUNCTION : CAN_SYMLINK
+
+interface Spec {
+  readonly label: string
+  /** The repo-relative config path the installer writes. */
+  readonly rel: string
+  readonly args: readonly string[]
+}
+
+/**
+ * One entry per project-confined install flag. `--vscode -p` leads because it is the IN-BAND
+ * CONTROL: it was already covered before the inversion, so a run where it does not refuse is a run
+ * whose other refusals mean nothing.
+ *
+ * `--codex`, `--kimi`, `--zed` and `--openclaw` are absent on evidence, not oversight: none of them
+ * constructs a project-relative path at all (no `projectRoot`, no `process.cwd()`, no local flag),
+ * so they are user-scope only and have no project target to poison.
+ */
+const SPECS: readonly Spec[] = [
+  { label: 'vscode-p (in-band control)', rel: '.vscode/mcp.json', args: ['install', '--vscode', '-p'] },
+  { label: 'vscode-p github', rel: '.github/copilot-instructions.md', args: ['install', '--vscode', '-p'] },
+  { label: 'visualstudio-p', rel: '.mcp.json', args: ['install', '--visualstudio', '-p'] },
+  { label: 'visualstudio-p github', rel: '.github/copilot-instructions.md', args: ['install', '--visualstudio', '-p'] },
+  { label: 'copilot-local', rel: '.github/copilot-instructions.md', args: ['install', '--copilot', '--local'] },
+  { label: 'cursor-p', rel: '.cursor/mcp.json', args: ['install', '--cursor', '-p'] },
+  { label: 'pi-local', rel: '.pi/extensions/token-goat.ts', args: ['install', '--pi', '--local'] },
+  // Plain `install -p` writes project-scope Claude Code hooks. It is only safe to spawn here
+  // because HOME and USERPROFILE are redirected below: its CLAUDE.md upsert and skill write are
+  // USER scope and would otherwise land in the real `~/.claude`.
+  { label: 'claude-p', rel: '.claude/settings.json', args: ['install', '-p'] },
+]
+
+let BASE: string | null = null
+let PRIVATE = ''
+let ENV: NodeJS.ProcessEnv = {}
+let filesScanned = 0
+
+function ensureBase(): string {
+  if (BASE !== null) return BASE
+  BASE = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-contain-'))
+  const outside = path.join(BASE, 'outside')
+  const fakeHome = path.join(BASE, 'home')
+  for (const d of [outside, fakeHome, path.join(BASE, 'tghome'), path.join(BASE, 'localapp')]) {
+    fs.mkdirSync(d, { recursive: true })
+  }
+  PRIVATE = path.join(outside, 'private.json')
+  fs.writeFileSync(PRIVATE, `{"${CANARY}": true}\n`)
+  ENV = {
+    ...process.env,
+    HOME: fakeHome,
+    USERPROFILE: fakeHome,
+    TOKEN_GOAT_HOME: path.join(BASE, 'tghome'),
+    LOCALAPPDATA: path.join(BASE, 'localapp'),
+    XDG_DATA_HOME: path.join(BASE, 'localapp'),
+    COPILOT_HOME: path.join(fakeHome, '.copilot'),
+  }
+  return BASE
+}
+
+afterAll(() => {
+  // No early return: this hook builds nothing the tests depend on, but a bare `return` here is
+  // indistinguishable to a reader (and to tests/guards/test_bodies_assert_before_returning) from a
+  // setup hook that bailed and left its file running on state nobody built.
+  if (BASE !== null) {
+    try {
+      fs.rmSync(BASE, { recursive: true, force: true })
+    } catch {
+      // Best effort: a junction the OS still holds open is not worth failing a run over.
+    }
+  }
+})
+
+function walkFiles(dir: string, out: string[] = []): string[] {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name)
+    // The link itself reads through to the secret by definition, so following it would report a
+    // leak that is not one. The write-through case is caught by the outside-stash diff instead.
+    if (e.isSymbolicLink()) continue
+    if (e.isDirectory()) walkFiles(full, out)
+    else if (e.isFile()) out.push(full)
+  }
+  return out
+}
+
+function run(args: readonly string[], cwd: string): { code: number; output: string } {
+  try {
+    const output = execFileSync(process.execPath, [CLI, ...args], {
+      cwd,
+      env: ENV,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return { code: 0, output }
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string }
+    return { code: e.status ?? -1, output: `${e.stdout ?? ''}${e.stderr ?? ''}` }
+  }
+}
+
+interface Escape {
+  readonly verdict: 'ESCAPE' | 'REFUSED' | 'no-escape'
+  readonly detail: string
+}
+
+/** Build a poisoned clone for `spec`, run the flag against it, and report what escaped. */
+function probe(spec: Spec, shape: 'leaf' | 'dir'): Escape {
+  const base = ensureBase()
+  const clone = path.join(base, `clone-${spec.label.replace(/[^\w-]/g, '_')}-${shape}`)
+  fs.rmSync(clone, { recursive: true, force: true })
+  fs.mkdirSync(clone, { recursive: true })
+
+  const relDir = path.dirname(spec.rel)
+  const stash = path.join(base, 'outside', `stash-${path.basename(clone)}`)
+  fs.mkdirSync(stash, { recursive: true })
+  fs.copyFileSync(PRIVATE, path.join(stash, path.basename(spec.rel)))
+
+  if (shape === 'leaf') {
+    fs.mkdirSync(path.join(clone, relDir), { recursive: true })
+    fs.symlinkSync(path.join(stash, path.basename(spec.rel)), path.join(clone, spec.rel), 'file')
+  } else {
+    fs.mkdirSync(path.join(clone, path.dirname(relDir)), { recursive: true })
+    fs.symlinkSync(stash, path.join(clone, relDir), 'junction')
+  }
+  const stashBefore = new Set(fs.readdirSync(stash))
+
+  const { code, output } = run(spec.args, clone)
+
+  const inTree: string[] = []
+  for (const f of walkFiles(clone)) {
+    filesScanned++
+    try {
+      if (fs.readFileSync(f, 'latin1').includes(CANARY)) inTree.push(`in-tree:${path.relative(clone, f)}`)
+    } catch {
+      // Unreadable file: not a leak this probe can attribute.
+    }
+  }
+  // The other half of the harm: the installer wrote THROUGH the link, so a `.bak` copy of the
+  // private file appeared beside it, outside the tree entirely.
+  const outside = fs.readdirSync(stash).filter((n) => !stashBefore.has(n)).map((n) => `outside:${n}`)
+  const escaped = [...inTree, ...outside]
+
+  if (escaped.length > 0) return { verdict: 'ESCAPE', detail: escaped.join(', ') }
+  if (code !== 0 && /resolves outside the project|refusing to touch/i.test(output)) {
+    return { verdict: 'REFUSED', detail: `exit=${code}` }
+  }
+  return { verdict: 'no-escape', detail: `exit=${code} :: ${output.split('\n')[0]?.slice(0, 200) ?? ''}` }
+}
+
+/** The same flag against a CLEAN clone: it must still install, or the refusal above proves nothing. */
+function cleanControl(spec: Spec): { ok: boolean; detail: string } {
+  const base = ensureBase()
+  const clone = path.join(base, `clean-${spec.label.replace(/[^\w-]/g, '_')}`)
+  fs.rmSync(clone, { recursive: true, force: true })
+  fs.mkdirSync(clone, { recursive: true })
+  const { code, output } = run(spec.args, clone)
+  const wrote = walkFiles(clone).length
+  return {
+    ok: code === 0 && wrote > 0,
+    detail: `exit=${code} filesWritten=${wrote} :: ${output.split('\n').slice(0, 3).join(' | ').slice(0, 300)}`,
+  }
+}
+
+describe('installer writes are contained by construction', () => {
+  it('finds the modules that write repo-relative paths, so the check below is not vacuous', () => {
+    // Named individually as well as counted: a rename that drops one silently is how the sibling
+    // guard (installer_writes_are_always_backed_up) went quiet after `installHooks` became
+    // `installHooksScoped`. Measured at 6 members when this was written -- the five installers
+    // below plus `util.ts`, which is EXEMPT; the ceiling is one past that so a classifier that
+    // starts over-matching re-prompts a measurement rather than quietly widening.
+    pinnedPopulation({
+      what: 'modules under src/ that build a repo-relative path and write it through a write helper',
+      items: projectScopeWriters(),
+      floor: 5,
+      ceiling: 9,
+      mustInclude: [
+        'bridges/copilot_cli_install.ts',
+        'bridges/cursor_install.ts',
+        'bridges/visualstudio_install.ts',
+        'bridges/vscode_install.ts',
+        'install.ts',
+      ],
+    })
+  })
+
+  it('requires every one of them to declare an install scope', () => {
+    const undeclared = projectScopeWriters().filter((rel) => !declaresScope(rel) && !EXEMPT.has(rel))
+
+    expect(
+      undeclared,
+      'This module writes a path built from process.cwd()/projectRoot through a write helper, but never ' +
+        'calls withInstallScope. Its writes therefore run with NO project confinement, which is the ' +
+        'defect four of five installers shipped: a clone can check the config path in as a symlink to a ' +
+        'private file and the install copies that file into the working tree. Wrap the entry point in ' +
+        'withInstallScope(projectScopeRoot(opts), () => ...), or add it to EXEMPT here with the reason a ' +
+        'scope declaration would be wrong.',
+    ).toEqual([])
+  })
+
+  it('names no exemption that has stopped being a writer', () => {
+    const members = new Set(projectScopeWriters())
+    expect([...EXEMPT.keys()].filter((k) => !members.has(k))).toEqual([])
+  })
+
+  describe.skipIf(!CAN_LEAF && !CAN_DIR)('against a real poisoned clone', () => {
+    for (const spec of SPECS) {
+      const shapes = (['leaf', 'dir'] as const).filter(
+        (s) => (s === 'leaf' ? CAN_LEAF : CAN_DIR && path.dirname(spec.rel) !== '.'),
+      )
+      for (const shape of shapes) {
+        it(`refuses ${spec.label} when ${spec.rel} is a ${shape} link out of the tree`, { timeout: 60_000 }, () => {
+          const r = probe(spec, shape)
+
+          expect(
+            r.verdict,
+            `${spec.label}/${shape}: ${r.detail}. ESCAPE means the private file's bytes reached the working ` +
+              'tree or a backup of it appeared outside; no-escape means nothing leaked THIS TIME but the ' +
+              'install did not refuse, which is a shape away from leaking.',
+          ).toBe('REFUSED')
+        })
+      }
+
+      it(`still installs ${spec.label} into a clean clone (in-band control)`, { timeout: 60_000 }, () => {
+        const r = cleanControl(spec)
+
+        expect(
+          r.ok,
+          `${spec.label}: the containment refusal above is only evidence if the same flag succeeds on a ` +
+            `clean clone. It did not: ${r.detail}. A false refusal here is a real bug -- the shared ` +
+            'Claude hook shim is a legitimate USER-scope write made during a PROJECT-scope run, and ' +
+            'confining it broke `install -p` once already.',
+        ).toBe(true)
+      })
+    }
+
+    it('scanned something, so a clean sweep above is not a dead probe', () => {
+      expect(filesScanned, 'the leak search opened no files at all, which voids every no-escape verdict').toBeGreaterThan(0)
+      expect(fs.readFileSync(PRIVATE, 'latin1').includes(CANARY), 'the canary is no longer findable by this probe\'s own matcher, so it could not have detected a leak either').toBe(true)
+    })
+  })
+})
