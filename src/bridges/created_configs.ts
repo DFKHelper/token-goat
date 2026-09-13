@@ -24,9 +24,31 @@ function ledgerPath(): string {
   return path.join(dataDir(), 'created-configs.json')
 }
 
-/** Case-folded and separator-normalized, since the same file is named differently by the install and uninstall runs. */
+/**
+ * Separator- and drive-normalized, case PRESERVED: a ledger entry has to be able to name the file
+ * it recorded.
+ *
+ * Case folding used to happen here, which made every entry both the match key and a path that no
+ * longer existed. `backupFile` stamps a backup with `new Date().toISOString()`, so the real name
+ * carries an uppercase `T` and `Z` (`settings.json.bak.2026-09-12T00-00-00-000Z`) and the folded
+ * entry named `...t00-00-00-000z`. On Windows and a default macOS volume that resolves to the same
+ * file and nothing looked wrong; on Linux the unlink missed, `removeCreatedBackups` reported 0, and
+ * every backup token-goat wrote was orphaned in a directory the user had been told it was gone
+ * from -- the exact failure the ledger exists to prevent, on the one platform CI would have caught
+ * it on had these commits been pushed.
+ */
 function keyOf(filePath: string): string {
-  return normalizePath(path.resolve(filePath)).toLowerCase()
+  return normalizePath(path.resolve(filePath))
+}
+
+/**
+ * The comparison form of a key.
+ *
+ * Matching still folds, because install and uninstall are separate runs that can spell the same
+ * path with different case. Only matching: what gets unlinked is the entry as recorded.
+ */
+function foldKey(key: string): string {
+  return key.toLowerCase()
 }
 
 function readLedger(): string[] {
@@ -51,7 +73,7 @@ function writeLedger(entries: readonly string[]): void {
 export function recordCreatedConfig(filePath: string): void {
   const key = keyOf(filePath)
   const entries = readLedger()
-  if (entries.includes(key)) return
+  if (entries.some((entry) => foldKey(entry) === foldKey(key))) return
   writeLedger([...entries, key])
 }
 
@@ -64,15 +86,16 @@ export function recordCreatedConfig(filePath: string): void {
  * answers "not ours".
  */
 export function hasCreatedConfig(filePath: string): boolean {
-  return readLedger().includes(keyOf(filePath))
+  const key = foldKey(keyOf(filePath))
+  return readLedger().some((entry) => foldKey(entry) === key)
 }
 
 /** True when token-goat created `filePath` itself, forgetting it in the same step so the answer is not reused. */
 export function takeCreatedConfig(filePath: string): boolean {
-  const key = keyOf(filePath)
+  const key = foldKey(keyOf(filePath))
   const entries = readLedger()
-  if (!entries.includes(key)) return false
-  writeLedger(entries.filter((entry) => entry !== key))
+  if (!entries.some((entry) => foldKey(entry) === key)) return false
+  writeLedger(entries.filter((entry) => foldKey(entry) !== key))
   return true
 }
 
@@ -95,17 +118,15 @@ export function forgetCreatedBackup(backupPath: string): void {
 
 /**
  * Full paths of the backups token-goat recorded for `configPath`, oldest first (ISO-with-dashes
- * timestamps sort chronologically as strings). Rebuilt from the ledger's case-folded key plus the
- * recorded stamp, not from a directory listing: a user can name a file anything, and a prune keyed
- * on `readdirSync` + prefix match would delete a user file that merely looks like one of ours.
+ * timestamps sort chronologically as strings). Taken from the ledger, not from a directory
+ * listing: a user can name a file anything, and a prune keyed on `readdirSync` + prefix match
+ * would delete a user file that merely looks like one of ours.
  */
 export function createdBackupsFor(configPath: string): string[] {
-  const resolved = path.resolve(configPath)
-  const prefix = `${keyOf(configPath)}.bak.`
+  const prefix = foldKey(`${keyOf(configPath)}.bak.`)
   return readLedger()
-    .filter((entry) => entry.startsWith(prefix))
+    .filter((entry) => foldKey(entry).startsWith(prefix))
     .sort()
-    .map((entry) => `${resolved}.bak.${entry.slice(prefix.length)}`)
 }
 
 /**
@@ -117,25 +138,23 @@ export function createdBackupsFor(configPath: string): string[] {
  * every other failure in this module is read in.
  */
 export function removeCreatedBackups(configPath: string): number {
-  const resolved = path.resolve(configPath)
-  const prefix = `${keyOf(configPath)}.bak.`
+  const prefix = foldKey(`${keyOf(configPath)}.bak.`)
   const entries = readLedger()
-  const ours = entries.filter((entry) => entry.startsWith(prefix))
+  const ours = entries.filter((entry) => foldKey(entry).startsWith(prefix))
   if (ours.length === 0) return 0
 
   const failed = new Set<string>()
   let removed = 0
-  for (const key of ours) {
-    // Ledger keys are case-folded, which is right for matching and wrong for unlinking on a
-    // case-sensitive filesystem. The real name is the caller's own path plus the recorded stamp.
-    const target = `${resolved}.bak.${key.slice(prefix.length)}`
+  for (const target of ours) {
+    // The entry itself, not a name rebuilt out of the folded match key: rebuilding is what dropped
+    // the ISO stamp's `T` and `Z` and made every unlink miss on a case-sensitive filesystem.
     try {
       if (fs.existsSync(target)) {
         fs.rmSync(target, { force: true })
         removed++
       }
     } catch {
-      failed.add(key)
+      failed.add(target)
     }
   }
   writeLedger(entries.filter((entry) => !ours.includes(entry) || failed.has(entry)))

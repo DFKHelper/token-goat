@@ -27,7 +27,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { recordCreatedBackup, removeCreatedBackups } from '../src/bridges/created_configs.js'
+import { createdBackupsFor, recordCreatedBackup, removeCreatedBackups } from '../src/bridges/created_configs.js'
 import { dataDir } from '../src/constants.js'
 import { backupFile } from '../src/util.js'
 
@@ -63,6 +63,23 @@ describe('removeCreatedBackups', () => {
 
     expect(removeCreatedBackups(p)).toBe(1)
     expect(backupsOf(p)).toEqual([])
+  })
+
+  it('names the backup with the case it was actually written in', () => {
+    // The ledger folded case for matching AND stored the folded form, so the path handed to
+    // `rmSync`/`unlinkSync` was `settings.json.bak.2026-09-12t00-00-00-000z` while the file on disk
+    // is `...T00-00-00-000Z` -- `backupFile` stamps with `toISOString()`. Windows and a default
+    // macOS volume resolve those to the same file, so the removal test above passes here and would
+    // pass on the macOS CI leg too; on Linux nothing is removed and every backup is orphaned. The
+    // assertion is therefore on the NAME rather than on the removal count: a case-insensitive
+    // filesystem cannot tell the two apart, so a test that only counted deletions could never be
+    // red on the machine this was written on.
+    const p = configAt('settings.json')
+    backupFile(p)
+    const onDisk = backupsOf(p)[0] as string
+
+    expect(createdBackupsFor(p).map((b) => path.basename(b))).toEqual([onDisk])
+    expect(onDisk).toMatch(/\.bak\.\d{4}-\d{2}-\d{2}T[\d-]+Z$/) // calibration: the stamp really does carry upper case
   })
 
   it("leaves a backup the user wrote, even when its stamp is shaped exactly like token-goat's", () => {
@@ -125,10 +142,10 @@ describe('removeCreatedBackups', () => {
     backupFile(p)
 
     expect(fs.existsSync(`${p}.bak.${stamps[0] as string}`)).toBe(false)
-    // Ledger keys are case-folded, so the stamps are matched in lower case.
+    // Ledger entries carry the name as written, so the stamp appears with its ISO case.
     const ledger = fs.readFileSync(path.join(dataDir(), 'created-configs.json'), 'utf8')
-    expect(ledger).not.toContain((stamps[0] as string).toLowerCase())
-    expect(ledger).toContain((stamps[1] as string).toLowerCase())
+    expect(ledger).not.toContain(stamps[0] as string)
+    expect(ledger).toContain(stamps[1] as string)
   })
 
   it('never deletes a user backup that only matches the filename prefix, even when it sorts oldest', () => {
