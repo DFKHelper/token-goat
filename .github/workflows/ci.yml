@@ -29,6 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
+          # commit message. The default depth-1 checkout leaves it one commit to read, which it
+          # correctly refuses to call a history worth checking.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -80,6 +85,11 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
+          # commit message. The default depth-1 checkout leaves it one commit to read, which it
+          # correctly refuses to call a history worth checking.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -158,6 +168,11 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
+          # commit message. The default depth-1 checkout leaves it one commit to read, which it
+          # correctly refuses to call a history worth checking.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -232,6 +247,11 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tests/guards/commit_messages_carry_no_tool_attribution.test.ts scans every reachable
+          # commit message. The default depth-1 checkout leaves it one commit to read, which it
+          # correctly refuses to call a history worth checking.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'

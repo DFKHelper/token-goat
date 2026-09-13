@@ -191,7 +191,14 @@ describe('a symlink whose target is a share', () => {
  * Nothing about who gets dialled, or about the user not having approved the call yet, depends on
  * which editor is running, so the walk is asked of all of them.
  */
-describe('the pre-tool gate refuses a link onto a share on a harness that supplies no workspace', () => {
+/**
+ * Windows only, and not as a convenience: the two spellings below mean nothing anywhere else.
+ * Node's POSIX resolver collapses a leading `//` to one slash, so `//host/share` is an ordinary
+ * absolute path there and reaches no file server; `Z:elsewhere` and `\\.\pipe\name` are legal
+ * POSIX filenames. Refusing either off Windows would be refusing a file the user may legitimately
+ * own. The behaviour under test is the Windows resolver's, so the assertions are too.
+ */
+describe.runIf(process.platform === 'win32')('the pre-tool gate refuses a link onto a share on a harness that supplies no workspace', () => {
   function plainEvent(target: string) {
     const toolInput = { file_path: target }
     return makeHookEvent({ eventName: 'pre_tool_use', toolName: 'Read', toolInput, sessionId: 'share-gate', raw: { tool_name: 'Read', tool_input: toolInput, cwd: WORKSPACE } })
@@ -228,8 +235,11 @@ describe('the pre-tool gate refuses a link onto a share on a harness that suppli
  *
  * PROVENANCE: HAND-DERIVED. The link topology is constructed here and the target spelling is the
  * one `path.win32` and `cmd` both treat as drive-relative; nothing is read off the code under test.
+ *
+ * Windows only, for the reason given above the previous describe: off Windows `Z:elsewhere` is an
+ * ordinary filename and resolving it inside the workspace is the right answer.
  */
-describe('a link whose target is drive-relative', () => {
+describe.runIf(process.platform === 'win32')('a link whose target is drive-relative', () => {
   it('is refused rather than resolved to a path inside the workspace', () => {
     expect(
       isInsideRoot(path.join(DRIVE_RELATIVE_LINK, 'x.txt'), WORKSPACE),
