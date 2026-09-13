@@ -213,9 +213,85 @@ export function ensureDataDirPrivate(): void {
   }
 }
 
+/**
+ * Root for token-goat cross-process state: `~/.token-goat`, or `TOKEN_GOAT_HOME` when set.
+ *
+ * Resolved lazily on every call so an env override or a spy takes effect. Lives here rather than
+ * beside its first user (`disk_cache.ts`, which re-exports it) so that {@link ensureDirSync}'s
+ * hardening can see BOTH storage roots without importing back through the module that imports it.
+ */
+export function tokenGoatHome(): string {
+  const override = process.env['TOKEN_GOAT_HOME']
+  if (override !== undefined && override !== '') return override
+  return path.join(os.homedir(), '.token-goat')
+}
+
+/**
+ * Home roots already hardened in this process, keyed by resolved path.
+ *
+ * A Set rather than the boolean {@link dataDirHardened} uses, because `TOKEN_GOAT_HOME` is read
+ * live on every call: a single flag would skip the work after the first root and leave a second
+ * one at the umask default.
+ */
+const hardenedHomes = new Set<string>()
+
+/**
+ * Create `~/.token-goat` owner-only, mirroring {@link ensureDataDirPrivate} for the OTHER root.
+ *
+ * The two roots are not interchangeable and the split is not historical tidiness: what lands here
+ * is strictly more sensitive than what lands in the data dir. `session_snapshots/` holds verbatim
+ * copies of every file the model read (up to 150 per session, 256 KB each), `sessions/` holds
+ * session state and its pending-context sidecars, `ocr-cache/` holds text lifted out of images the
+ * user viewed, `image_shrink_cache/` copies of those images, and the blob subdirs hold fetched web
+ * bodies. On a stock Debian/Ubuntu box `$HOME` is 0755 and so was this directory, so every local
+ * user could read another user's .env files, keys and proprietary source out of the snapshots --
+ * while `saveSessionState` next door went to real lengths to redact secrets before writing into
+ * the same tree. Hardening the root makes a child's own mode stop mattering, because traversal is
+ * refused at the parent.
+ */
+export function ensureHomeDirPrivate(): void {
+  const home = tokenGoatHome()
+  if (hardenedHomes.has(home)) return
+  hardenedHomes.add(home)
+  try {
+    // Two steps for the same reason as the data root: `mode` on a recursive create applies to
+    // every level, and the parent here is `$HOME`, which is not ours to tighten.
+    fs.mkdirSync(path.dirname(home), { recursive: true })
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') {
+      const current = fs.statSync(home).mode & 0o777
+      if ((current & 0o077) !== 0) fs.chmodSync(home, 0o700)
+    }
+  } catch {
+    // Best-effort, as above: the caller's own mkdir runs next and reports the real failure.
+  }
+}
+
+/** True when `child` is `parent` or sits beneath it. */
+function isUnderRoot(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child)
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+/**
+ * Harden whichever storage root `dir` falls under, before anything is created inside it.
+ *
+ * Dispatching on the requested path rather than hardening one fixed root is the fix for a guard
+ * that was green about hardening it did not deliver: `storage_dirs_are_hardened` lists
+ * `tokenGoatHome` among its roots, but `ensureDirSync` only ever called
+ * {@link ensureDataDirPrivate}, and `dataDir() !== tokenGoatHome()`. Two of the eight sites it
+ * swept -- `image_ocr.ts`'s `ocr-cache` and `session_store.ts`'s `sessions`, the latter in the
+ * guard's own mustInclude -- resolve under the home root and got the umask default.
+ */
+export function ensureStorageRootPrivate(dir: string): void {
+  if (isUnderRoot(dir, DATA_DIR)) ensureDataDirPrivate()
+  if (isUnderRoot(dir, tokenGoatHome())) ensureHomeDirPrivate()
+}
+
 export function _resetDataDirCacheForTesting(): void {
   DATA_DIR = defaultDataDir()
   dataDirHardened = false
+  hardenedHomes.clear()
 }
 
 /** Path to the global SQLite DB. */

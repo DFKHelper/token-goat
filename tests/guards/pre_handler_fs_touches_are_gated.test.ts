@@ -226,8 +226,9 @@ function unclassifiedTouchers(): string[] {
  */
 const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['constants.ts::ensureDataDirPrivate', 'takes no argument; mkdir/chmod/stat only on dataDir(), which is derived from the environment and never from a payload'],
-  ['session_store.ts::saveSessionState', 'writes sessionPath(sessionId) under dataDir(); the session id is an opaque identifier, not a path'],
-  ['session_store.ts::readDiskState', 'reads the path saveSessionState computed, same dataDir() provenance'],
+  ['constants.ts::ensureHomeDirPrivate', 'the same helper for the other root: takes no argument, and mkdir/chmod/stat only on tokenGoatHome(), which is TOKEN_GOAT_HOME or $HOME/.token-goat and never a payload path'],
+  ['session_store.ts::saveSessionState', 'writes sessionPath(sessionId) under tokenGoatHome(), an env-derived root -- and the one payload-derived part, the session id, is sanitized to a stem and containment-checked against that directory in sessionSidecarPath before it becomes a path. NOT dataDir(), as this entry said for two rounds: the roots are different directories, and until ensureStorageRootPrivate the wording carried a false confidentiality implication too, since only dataDir() was mode-hardened'],
+  ['session_store.ts::readDiskState', 'reads the path saveSessionState computed, same tokenGoatHome() provenance and the same sanitization'],
   ['vscode_duplicate.ts::alreadyClaimed', 'exclusive-creates one marker under markerDir() (dataDir()); its basename is a hash of (session_id, event, timestamp), not a path'],
   ['vscode_duplicate.ts::pruneMarkers', 'readdir/stat/rm inside markerDir() only'],
   ['bridges/created_configs.ts::readLedger', 'reads the created-configs ledger inside dataDir(); its whole purpose is to be a file no clone can reach'],
