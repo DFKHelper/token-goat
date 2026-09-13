@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -98,7 +99,11 @@ async function setUpFakeTokenGoatOnPath(): Promise<string> {
   // resolveTokenGoatEntrypoint returns the resolved spelling -- so an un-normalized binDir puts
   // /var/... on PATH while production reports /private/var/..., and the two never compare equal.
   // Normalizing here fixes both sides at once, since binDir is what PATH and `expected` share.
-  const binDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-bin-')))
+  // `realpathSync.native` from the sync API, not `fs.realpath` from this file's promises import:
+  // the promises API has no `.native` variant, and the plain walker echoes back the spelling it was
+  // handed -- which on windows-latest is the 8.3 alias `C:\Users\RUNNER~1\...`, exactly the class of
+  // mismatch the comment above is trying to normalize away.
+  const binDir = realpathSync.native(await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-bin-')))
   if (process.platform === 'win32') {
     await fs.writeFile(path.join(binDir, 'token-goat.mjs'), '// fake entrypoint\n')
     await fs.writeFile(

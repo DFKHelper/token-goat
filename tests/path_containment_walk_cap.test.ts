@@ -218,6 +218,14 @@ describe('the path-resolution walk is bounded', () => {
     // target Linux and Windows both take -- and the whole fixture died on macOS with an error that
     // said nothing about the cap. Probing keeps the case at full strength everywhere it can be built
     // and reports honestly where it cannot, instead of inheriting one platform's limit as a belief.
+    //
+    // Only a LENGTH refusal may shorten the candidate. A bare `catch` would swallow EACCES, EEXIST,
+    // ENOENT or EPERM just as quietly, walk all 38 rungs down, and then report "the platform refused
+    // even a single 100-byte target" -- a length story told about a permission or fixture fault. So
+    // the errno is discriminated: ENAMETOOLONG is the POSIX answer and EINVAL is what Windows has
+    // been observed to return for an over-long stored target, and anything else is re-thrown with
+    // the rung it died on attached.
+    const LENGTH_REFUSALS = new Set(['ENAMETOOLONG', 'EINVAL'])
     const linkPath = path.join(root, 'lnk')
     let linkTarget = ''
     for (let segments = 38; segments >= 1; segments--) {
@@ -226,7 +234,14 @@ describe('the path-resolution walk is bounded', () => {
         fs.symlinkSync(candidate, linkPath, 'dir')
         linkTarget = candidate
         break
-      } catch {
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code ?? 'UNKNOWN'
+        if (!LENGTH_REFUSALS.has(code)) {
+          throw new Error(
+            `symlinkSync refused a ${Buffer.byteLength(candidate, 'utf8')}-byte target with ${code}, which is not a length limit. This fixture is broken, not unsupported; shortening the target would hide that.`,
+            { cause: err },
+          )
+        }
         // Too long for this platform's stored-target limit; try a shorter one.
       }
     }

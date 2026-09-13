@@ -54,6 +54,10 @@ describe('every tracked text file checks out with LF', () => {
       .filter((s) => s !== '' && !s.endsWith('.pdf'))
     expect(tracked.length, 'no tracked files found -- a vacuous pass').toBeGreaterThan(500)
     const attrs = eolAttr(tracked)
+    // The named-list case above already pins this; without it here, a `check-attr` invocation that
+    // answers for a subset -- a truncated pipe, an argv limit, a path git declines to parse -- makes
+    // the assertion below true of the handful it did answer for and silent about the rest.
+    expect(attrs.size, 'git check-attr answered for fewer paths than were tracked, so this guard is certifying a subset').toBe(tracked.length)
     const unpinned = [...attrs].filter(([, v]) => v !== 'lf').map(([p]) => p)
     expect(unpinned.slice(0, 20), `${unpinned.length} tracked files are not pinned to eol=lf`).toEqual([])
   })

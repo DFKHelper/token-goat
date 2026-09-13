@@ -61,7 +61,7 @@ async function noisePng(file: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  base = fsReal.realpathSync(fsReal.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-confine-')))
+  base = fsReal.realpathSync.native(fsReal.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-confine-')))
   workspace = path.join(base, 'workspace')
   const outside = path.join(base, 'elsewhere')
   fsReal.mkdirSync(workspace)

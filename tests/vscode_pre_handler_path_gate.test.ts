@@ -53,7 +53,7 @@ let insideFile: string
 const LINES = Array.from({ length: 200 }, (_, i) => `export const value${i} = ${i}`).join('\n') + '\n'
 
 beforeAll(() => {
-  base = fsReal.realpathSync(fsReal.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-gate-')))
+  base = fsReal.realpathSync.native(fsReal.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-gate-')))
   workspace = path.join(base, 'workspace')
   fsReal.mkdirSync(workspace)
   fsReal.mkdirSync(path.join(base, 'elsewhere'))
