@@ -239,11 +239,13 @@ describe('the guard refuses what the engine cannot finish', () => {
   })
 
   it('calibration: a pattern that swallows one terminator really does hang the raw engine', () => {
-    // 30 characters and `bb`, not the forty-five that took 16.7 s: the same Fibonacci curve, a
+    // 34 characters and `bb`, not the forty-five that took 16.7 s: the same Fibonacci curve, a
     // fraction of a second. Two trailing characters are the point -- the optional class absorbs
     // one of them, so a one-character tail can never falsify this and the ladder reads 0 ms.
+    // Thirty was too near the floor to assert against: it measured 12-14 ms here against the
+    // 83-89 ms of thirty-four, and a run of the whole suite caught it under the threshold.
     const started = Date.now()
-    new RegExp(String.raw`^(a|aa)+[\s\S]?$`).test('a'.repeat(30) + 'bb')
+    new RegExp(String.raw`^(a|aa)+[\s\S]?$`).test('a'.repeat(34) + 'bb')
     expect(Date.now() - started, 'the engine no longer backtracks here, so refusing this pattern means nothing').toBeGreaterThan(20)
   })
 
