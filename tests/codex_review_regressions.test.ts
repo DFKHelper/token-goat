@@ -75,6 +75,29 @@ describe('isInsideRoot containment', () => {
     expect(isInsideRoot(path.join(root, 'a', 'b', 'c.json'), root)).toBe(true)
   })
 
+  it.skipIf(!CAN_SYMLINK)('rejects a path that leaves the root through a link and then climbs back with ..', () => {
+    // `canonicalize` collapses `..` with path.resolve BEFORE any link is followed, so
+    // `<root>/link/../sneak.txt` erased the link lexically and answered about `<root>/sneak.txt` --
+    // a file inside the root -- while the path actually names `<outside>/../sneak.txt`. Resolving
+    // per segment, so that `..` applies to an already-resolved base, is the only order that means
+    // anything. Pre-existing and unrelated to the dangling-link fix: confirmed identical before it.
+    const root = path.join(tmp, 'project')
+    const outside = path.join(tmp, 'other-project', 'inner')
+    fs.mkdirSync(root)
+    fs.mkdirSync(outside, { recursive: true })
+    fs.symlinkSync(outside, path.join(root, 'link'), 'dir')
+
+    // Spelled by string, not path.join: join collapses `..` itself, so a test built with it would
+    // hand isInsideRoot a path with no `..` left in it and pass against the broken version too.
+    // A model-supplied or config-supplied path arrives as raw text, which is the real shape.
+    // `<outside>/../sneak.txt` is `<tmp>/other-project/sneak.txt`, which is not in the root.
+    expect(isInsideRoot(`${root.replace(/\\/g, '/')}/link/../sneak.txt`, root)).toBe(false)
+    // ...and the same shape that genuinely stays inside still resolves as inside, so this is not
+    // "reject anything containing ..".
+    fs.mkdirSync(path.join(root, 'sub'))
+    expect(isInsideRoot(`${root.replace(/\\/g, '/')}/sub/../a.ts`, root)).toBe(true)
+  })
+
   it.skipIf(!CAN_SYMLINK)('rejects a nonexistent leaf behind a directory symlink that leaves the root', () => {
     // The ENOENT half. realpathSync throws on the whole path the moment ANY component is missing,
     // and the old code answered from the merely-lexical form when it did -- so a link out of the
