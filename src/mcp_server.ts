@@ -192,9 +192,16 @@ function toCallToolResultFromExitCode(fn: () => number): CallToolResult {
  * exist, and that read must fail as an ordinary "could not read" rather than as a confinement
  * refusal; the `ABSENT_PIN` that `confineTargets` writes for exactly this case is what keeps it
  * honest if something is created at the path between validation and the read. Every other errno --
- * EACCES or EPERM on an untraversable ancestor, ELOOP on a symlink cycle, EIO, and on Windows the
- * reparse points `realpathSync.native` rejects while `open` still follows them -- means the answer
+ * EACCES or EPERM on an untraversable ancestor, ELOOP on a symlink cycle, EIO -- means the answer
  * is unknown, and unknown is not "inside".
+ *
+ * This deliberately does NOT rest on any claim that some path resolves for `open` but not for
+ * `realpathSync.native`. That divergence was asserted here for Windows reparse points and does not
+ * reproduce: measured 2026-09-13 on Windows 11 / Node 24 against three AppExecLink aliases under
+ * `%LOCALAPPDATA%\Microsoft\WindowsApps`, the likeliest candidate shape, `realpathSync.native`,
+ * `realpathSync` and `openSync` all answer EACCES alike. The rule holds without it: an errno this
+ * process cannot interpret is an answer it does not have, and a gate that guesses on one is the
+ * fail-open branch this function exists to remove.
  */
 function realPathForContainment(p: string): string | null {
   try {
@@ -298,20 +305,74 @@ function assertRootAllowed(resolvedRoot: string): void {
  */
 type ContainmentReason = 'inside' | 'outside' | 'unresolvable-root' | 'unresolvable-target'
 
-function checkWithinProjectRoot(
-  target: string,
-  resolvedRoot: string,
-): { readonly inside: boolean; readonly abs: string; readonly real: string; readonly identity: string | null; readonly reason: ContainmentReason } {
+/**
+ * The outcome of one containment check.
+ *
+ * `pins` is the complete set of `pinKey -> identity` entries the caller must install, built HERE
+ * rather than by the caller. It has to be: which spellings of the target were validated is a fact
+ * only this function knows, and a caller that reconstructs the list from a couple of returned
+ * strings will miss one the moment this function starts validating another. It did. See the
+ * pin-coverage note at the end of the function.
+ */
+type ContainmentCheck = { readonly inside: boolean; readonly reason: ContainmentReason; readonly pins: readonly (readonly [string, string])[] }
+
+/** No pins to install: every refusal path returns this, since nothing was admitted to pin. */
+const NO_CHECK_PINS: readonly (readonly [string, string])[] = []
+
+/** The `dev:ino` identity of `p`, or null when it cannot be stat'd -- absent, or on an unreadable parent. */
+function identityOf(p: string): string | null {
+  try {
+    return fileIdentity(fs.statSync(p, { bigint: true }))
+  } catch {
+    return null
+  }
+}
+
+/** Both map keys a validated spelling needs: the pre-realpath path and its realpath, since which one reaches the read helper depends on the handler. */
+function pinsFor(abs: string, real: string, identity: string | null): readonly (readonly [string, string])[] {
+  // ALWAYS pin, even when identity is null (the target couldn't be stat'd, i.e. it's absent):
+  // recording ABSENT_PIN is what stops "no map entry for this path" from meaning both "confinement
+  // is off" and "confined but unpinnable" -- without it, an in-root path validated as absent falls
+  // through to an unverified raw read the moment something is created there between validation and
+  // the read (see read_commands.ts's ABSENT_PIN and verifyStillAbsent).
+  const pinIdentity = identity ?? ABSENT_PIN
+  return [
+    [pinKey(abs), pinIdentity],
+    [pinKey(real), pinIdentity],
+  ]
+}
+
+/**
+ * Exported for `tests/mcp_server_pins_the_spelling_the_reader_opens.test.ts`, which asserts the
+ * pin-coverage invariant this function is solely responsible for. It is the production entry point
+ * `confineTargets` calls, not a parallel copy: a test against a re-implementation would agree with
+ * the bug it is meant to catch, which is how the missing raw pin survived a green suite.
+ */
+export function checkWithinProjectRoot(target: string, resolvedRoot: string): ContainmentCheck {
   const rootReal = realPathForContainment(resolvedRoot)
   // Relative targets resolve against the project root, not the server process's cwd -- that is what the read_commands handlers themselves do with the same projectRoot this gate was handed, so resolving against cwd here would reject a legitimate relative spec whose read would have succeeded.
   const abs = path.resolve(resolvedRoot, normalizePath(target))
-  // A target that does not exist (or cannot be stat'd) yields no identity and so no pin: a spec may legitimately name a missing file, and that read must fail as an ordinary "could not read" rather than be refused as a swap.
-  let identity: string | null
-  try {
-    identity = fileIdentity(fs.statSync(abs, { bigint: true }))
-  } catch {
-    identity = null
-  }
+  // The caller's spelling, resolved without normalisation. This is what the handler forwards and
+  // therefore what the read layer opens, so it is BOTH the second containment check below and the
+  // path whose identity is worth recording.
+  const absRaw = path.resolve(resolvedRoot, target)
+  // Exactly ONE stat, and it is of the raw spelling.
+  //
+  // One, because the count is load-bearing: every additional stat between this point and the read
+  // is another window an attacker can swap the target in, and the ordering argument above only
+  // holds for a stat that precedes the realpath calls. A second stat added here for the normalized
+  // spelling reopened precisely that window, and the negative-pin race tests caught it.
+  //
+  // Of the raw spelling, because that is the object the read will open. Where normalisation changed
+  // the string the two spellings can in principle name different files -- both inside the root,
+  // since both are checked -- and then the normalized key carries the raw file's identity. A read
+  // that somehow resolved to the normalized spelling would fail its identity comparison and refuse:
+  // wrong-but-closed, which is the direction a confinement gate is allowed to be wrong in.
+  //
+  // A target that does not exist (or cannot be stat'd) yields no identity: a spec may legitimately
+  // name a missing file, and that read must fail as an ordinary "could not read" rather than be
+  // refused as a swap. `pinsFor` still records it, as ABSENT.
+  const identity = identityOf(absRaw)
   // The realpath is computed ONCE here and handed back, so the caller can key a pin on it without a second realpathSync -- this gate's syscall cost stays at one stat plus one realpath per target.
   const realNative = realPathForContainment(abs)
   // Fail CLOSED when either side is unresolvable. Neither can be compared to anything: the only
@@ -322,15 +383,14 @@ function checkWithinProjectRoot(
   // out-of-root refusal tells an operator whose workspace root has become unreadable -- an
   // unmounted share, a deleted cwd, a permission change on a parent -- that the file they asked
   // for is outside their project, which sends them looking for a traversal that never happened.
-  if (rootReal === null) return { inside: false, abs, real: abs, identity, reason: 'unresolvable-root' }
-  if (realNative === null) return { inside: false, abs, real: abs, identity, reason: 'unresolvable-target' }
+  if (rootReal === null) return { inside: false, reason: 'unresolvable-root', pins: NO_CHECK_PINS }
+  if (realNative === null) return { inside: false, reason: 'unresolvable-target', pins: NO_CHECK_PINS }
   const root = forCompare(normalizePath(rootReal))
   const under = (real: string): boolean => {
     const r = forCompare(normalizePath(real))
     return r === root || r.startsWith(root.endsWith('/') ? root : root + '/')
   }
-  const inside = under(realNative)
-  if (!inside) return { inside: false, abs, real: realNative, identity, reason: 'outside' }
+  if (!under(realNative)) return { inside: false, reason: 'outside', pins: NO_CHECK_PINS }
 
   // The spelling CHECKED above is the normalized one. The spelling the handler forwards, and that
   // the read layer therefore resolves, is the caller's raw one -- `confineTargets` passes the
@@ -346,13 +406,23 @@ function checkWithinProjectRoot(
   //
   // So both spellings are required to land inside. The second resolution is skipped whenever
   // normalisation was a no-op for `path.resolve`, which is the ordinary case.
-  const absRaw = path.resolve(resolvedRoot, target)
-  if (absRaw !== abs) {
-    const realRaw = realPathForContainment(absRaw)
-    if (realRaw === null) return { inside: false, abs, real: absRaw, identity, reason: 'unresolvable-target' }
-    if (!under(realRaw)) return { inside: false, abs, real: realRaw, identity, reason: 'outside' }
-  }
-  return { inside: true, abs, real: realNative, identity, reason: 'inside' }
+  if (absRaw === abs) return { inside: true, reason: 'inside', pins: pinsFor(abs, realNative, identity) }
+
+  const realRaw = realPathForContainment(absRaw)
+  if (realRaw === null) return { inside: false, reason: 'unresolvable-target', pins: NO_CHECK_PINS }
+  if (!under(realRaw)) return { inside: false, reason: 'outside', pins: NO_CHECK_PINS }
+
+  // BOTH spellings get pinned, each with its own identity, and this is the whole reason `pins` is
+  // built here instead of by the caller. The read layer resolves the RAW target, so `pinKey(absRaw)`
+  // is the key it looks up; pinning only the normalized spelling left that lookup missing, and a
+  // miss does not fail closed -- it degrades silently to an unpinned raw read, switching off the
+  // identity check and the ABSENT_PIN race guard for the whole request while the gate still
+  // reported success. That is not a hypothetical for the WSL mount form: with a project root of
+  // `/mnt/c/workspace`, an ordinary in-root target `/mnt/c/workspace/a.txt` normalizes to the
+  // synthetic `/mnt/c/workspace/c:/workspace/a.txt`, which nothing ever opens, so EVERY read under
+  // such a root was unpinned (measured on Linux, 2026-09-13). Both share the one identity stat'd
+  // above, for the reason given there.
+  return { inside: true, reason: 'inside', pins: [...pinsFor(abs, realNative, identity), ...pinsFor(absRaw, realRaw, identity)] }
 }
 
 /**
@@ -436,10 +506,8 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
       if (!check.inside) {
         return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason), code: 1 }) }
       }
-      // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. Both spellings are recorded -- the pre-realpath absolute path and the realpath -- because which one reaches the read helper depends on the handler, and a lookup that misses degrades silently to the unpinned behaviour. ALWAYS pin, even when check.identity is null (the target couldn't be stat'd, i.e. it's absent): recording ABSENT_PIN here is what stops "no map entry for this path" from meaning both "confinement is off" and "confined but unpinnable" -- without it, an in-root path validated as absent falls through to an unverified raw read the moment something is created there between validation and the read (see read_commands.ts's ABSENT_PIN and verifyStillAbsent).
-      const pinIdentity = check.identity ?? ABSENT_PIN
-      pins.set(pinKey(check.abs), pinIdentity)
-      pins.set(pinKey(check.real), pinIdentity)
+      // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. The set of keys comes from the check itself: it is the only thing that knows which spellings of the target it resolved, and a lookup that misses degrades silently to the unpinned behaviour rather than failing closed.
+      for (const [key, identity] of check.pins) pins.set(key, identity)
     }
     checked.push(splitCommas ? parts.join(',') : parts[0]!)
   }
