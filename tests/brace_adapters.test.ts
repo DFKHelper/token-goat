@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Objective-C, Groovy, Perl, Solidity, Thrift and shader (GLSL, HLSL, WGSL, Metal) adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m`, `.h`, `.pl` or `.t` changes language. Every adapter also gets a pathological 50 KB line that must scan in under 100 ms.
+ * Unit tests for the Objective-C, Groovy, Perl, Solidity, Thrift and shader (GLSL, HLSL, WGSL, Metal) adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m`, `.h`, `.pl` or `.t` changes language. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -13,6 +13,7 @@ import { extractPerl, isPerlSource, isPrologSource } from '../src/languages/perl
 import { extractCShader, extractWgsl } from '../src/languages/shader.js'
 import { extractSolidity } from '../src/languages/solidity.js'
 import { extractThrift } from '../src/languages/thrift.js'
+import { expectFast, LINE_50K } from './helpers/pathological_scan.js'
 import { parseFile, parseSourceSymbolsTreeSitterOnly } from '../src/parser.js'
 import { detectLanguage, detectLanguageOfFile, refineLanguageByContent, type SymbolEntry } from '../src/parser_types.js'
 import { extractImports } from '../src/read_commands.js'
@@ -36,15 +37,6 @@ function imports(r: Result): string[] {
   return r.imports.map((i) => i.target)
 }
 
-/** The adapter must finish one pathological input in under 100 ms. */
-function expectFast(run: () => unknown, label: string): void {
-  run()
-  const t0 = performance.now()
-  run()
-  expect(performance.now() - t0, label).toBeLessThan(100)
-}
-
-const LINE_50K = 50_000
 
 describe('Objective-C adapter', () => {
   it('reads the fixture: C functions, the class extension, the implementation and every method by selector', () => {

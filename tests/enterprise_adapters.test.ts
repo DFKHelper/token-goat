@@ -1,5 +1,5 @@
 /**
- * Unit tests for the ABAP, SAS, PL/I, RPG, JCL and OpenEdge ABL adapters: every declaration form each reads, exact spans and parents, nothing out of strings, comments or in-stream data, the imports each emits, and the content routing that decides when a `.p`, `.w` or `.cls` is ABL. Every adapter also gets a pathological 50 KB line that must scan in under 100 ms.
+ * Unit tests for the ABAP, SAS, PL/I, RPG, JCL and OpenEdge ABL adapters: every declaration form each reads, exact spans and parents, nothing out of strings, comments or in-stream data, the imports each emits, and the content routing that decides when a `.p`, `.w` or `.cls` is ABL. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -7,6 +7,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { expectFast, LINE_50K } from './helpers/pathological_scan.js'
 import { extractAbap } from '../src/languages/abap.js'
 import { extractAbl, isAblSource } from '../src/languages/abl.js'
 import { extractApex } from '../src/languages/apex.js'
@@ -34,15 +35,6 @@ function imports(r: StatementAdapterResult): string[] {
   return r.imports.map((i) => i.target)
 }
 
-/** Median-free worst case: the adapter must finish one pathological input in under 100 ms. */
-function expectFast(run: () => unknown, label: string): void {
-  run()
-  const t0 = performance.now()
-  run()
-  expect(performance.now() - t0, label).toBeLessThan(100)
-}
-
-const LINE_50K = 50_000
 
 describe('ABAP adapter', () => {
   it('reads the fixture: program, class definition and implementation, method under its class, form, and the INCLUDE', () => {
@@ -94,7 +86,7 @@ describe('ABAP adapter', () => {
     expect(shape(extractAbap(src, 'c.abap'))).toEqual(['form real 3-4'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['CLASS '.repeat(LINE_50K / 6), "'".repeat(LINE_50K), 'a:'.repeat(LINE_50K / 2), 'x'.repeat(LINE_50K)]) {
       expectFast(() => extractAbap(line, 'p.abap'), 'abap')
     }
@@ -114,7 +106,7 @@ describe('SAS adapter', () => {
     expect(shape(extractSas(src, 'm.sas'))).toEqual(['macro outer 1-7', 'macro inner 2-6 outer', 'data_step a 3-5 inner', 'data_step b 8-8', 'data_step c 10-11'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['data '.repeat(LINE_50K / 5), '/*'.repeat(LINE_50K / 2), "'".repeat(LINE_50K), '%macro '.repeat(LINE_50K / 7)]) {
       expectFast(() => extractSas(line, 'p.sas'), 'sas')
     }
@@ -160,7 +152,7 @@ describe('PL/I adapter', () => {
     expect(shape(extractPli(src, 's.pl1'))).toEqual(['procedure A 1-3', 'procedure B 4-5'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['a: '.repeat(LINE_50K / 3), 'DO '.repeat(LINE_50K / 3), '/*'.repeat(LINE_50K / 2), 'x'.repeat(LINE_50K)]) {
       expectFast(() => extractPli(line, 'p.pli'), 'pli')
     }
@@ -205,7 +197,7 @@ describe('RPG adapter', () => {
     expect(shape(extractRpg(src, 'col.sqlrpgle'))).toEqual(['procedure helper 1-3'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['**FREE\n' + 'dcl-s '.repeat(LINE_50K / 6), '**FREE\n' + "'".repeat(LINE_50K), 'x'.repeat(LINE_50K), '**FREE\n' + '//'.repeat(LINE_50K / 2)]) {
       expectFast(() => extractRpg(line, 'p.rpgle'), 'rpg')
     }
@@ -231,7 +223,7 @@ describe('JCL adapter', () => {
     expect(shape(extractJcl(src, 'c.jcl'))).toEqual(['job J2 1-3', 'step S1 3-3 J2'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['//' + ' '.repeat(LINE_50K), '//A ' + 'DD '.repeat(LINE_50K / 3), '//'.repeat(LINE_50K / 2)]) {
       expectFast(() => extractJcl(line, 'p.jcl'), 'jcl')
     }
@@ -293,7 +285,7 @@ describe('OpenEdge ABL adapter', () => {
     expect(detectLanguage('Item.cls')).toBe('apex')
   })
 
-  it('scans a pathological 50 KB line in under 100 ms, and so does the sniff', () => {
+  it('scans a pathological 50 KB line fast, and so does the sniff', () => {
     for (const line of ['a: '.repeat(LINE_50K / 3), '/*'.repeat(LINE_50K / 2), '{'.repeat(LINE_50K), 'METHOD '.repeat(LINE_50K / 7), '"~'.repeat(LINE_50K / 2)]) {
       expectFast(() => extractAbl(line, 'p.p'), 'abl')
       expectFast(() => isAblSource(line), 'isAblSource')

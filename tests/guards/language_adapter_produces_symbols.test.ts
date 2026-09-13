@@ -24,6 +24,7 @@
  * that decision belongs in this file's exemption list, made explicitly and reviewably -- not as
  * a silent fallthrough.
  */
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -68,7 +69,11 @@ const CASES: readonly AdapterCase[] = [
   { language: 'cpp', kind: 'tree-sitter', source: path.join(HAND_FIXTURES, 'sample.cpp'), targetBasename: 'sample.cpp' },
 
   // --- regex-based extractors ---
-  { language: 'markdown', kind: 'regex', source: path.join(REPO_ROOT, 'CLAUDE.md'), targetBasename: 'CLAUDE.md' },
+  // README.md and not CLAUDE.md: CLAUDE.md is gitignored, so it exists on a developer box and on no
+  // CI checkout anywhere. `caseIsLive` then dropped markdown from the population, and the pinned
+  // membership check caught it -- on the first CI run the file ever saw. See the tracked-source
+  // assertion below, which now refuses any fixture that can go missing the same way.
+  { language: 'markdown', kind: 'regex', source: path.join(REPO_ROOT, 'README.md'), targetBasename: 'README.md' },
   { language: 'json', kind: 'regex', source: path.join(REPO_ROOT, 'package.json'), targetBasename: 'package.json' },
   { language: 'yaml', kind: 'regex', source: path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), targetBasename: 'ci.yml' },
   { language: 'toml', kind: 'regex', source: path.join(REPO_ROOT, '.gitleaks.toml'), targetBasename: 'gitleaks.toml' },
@@ -195,6 +200,23 @@ describe('every registered language adapter produces symbols on a real file, thr
       floor: 40,
       mustInclude: ['typescript', 'javascript', 'python', 'markdown', 'json'],
     })
+
+    // Every fixture source must be a TRACKED file. An untracked one is present on the machine that
+    // wrote the case and absent everywhere else, which silently shrinks the population rather than
+    // failing: markdown pointed at the gitignored CLAUDE.md and was live locally, dead on every CI
+    // runner. `git ls-files` is asked once for the whole set, and its answer is checked to be
+    // non-empty so a git failure cannot read as "all tracked".
+    const tracked = new Set(
+      execFileSync('git', ['ls-files', '-z', '--', ...CASES.map((c) => path.relative(REPO_ROOT, c.source))], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 24 })
+        .split('\0')
+        .filter((s) => s !== '')
+        .map((s) => path.resolve(REPO_ROOT, s)),
+    )
+    expect(tracked.size, 'git ls-files returned nothing, so this check would certify every source as untracked-but-unnoticed').toBeGreaterThan(0)
+    expect(
+      CASES.filter((c) => !tracked.has(path.resolve(c.source))).map((c) => `${c.language} -> ${path.relative(REPO_ROOT, c.source)}`),
+      'fixture sources that are not tracked by git: they exist on the machine that added them and on no fresh checkout',
+    ).toEqual([])
 
     // Every row of the language table needs a case here, of the matching extraction kind.
     const kindOf = { 'tree-sitter': 'tree-sitter', regex: 'regex', 'own-result': 'special' } as const

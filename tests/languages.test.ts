@@ -22,6 +22,7 @@ import { extractDart } from '../src/languages/dart.js'
 import { extractZig } from '../src/languages/zig.js'
 import { extractR } from '../src/languages/r.js'
 
+import { expectFast } from './helpers/pathological_scan.js'
 import { parseFixture } from './helpers/parse-fixture.js'
 
 // Every `?.docstring).toBe('SomeClassName' | '')` assertion in this file was updated to `?.parent`
@@ -6721,14 +6722,6 @@ AFTER_HEREDOC=ok
 })
 
 describe('Visual Basic adapter', () => {
-  /** The adapter must finish one pathological input in under 100 ms. Mirrors the helper the other adapter suites carry: VB, COBOL and Natural were the three with no timing backstop at all, so a quadratic matcher in any of them would have shown up only as a slow suite. */
-  const expectFast = (run: () => unknown, label: string): void => {
-    run()
-    const t0 = performance.now()
-    run()
-    expect(performance.now() - t0, label).toBeLessThan(100)
-  }
-
   it('scans a pathological 50 KB single line quickly', () => {
     // HAND-DERIVED: one very long declaration-shaped line that never terminates, the same backstop shape the other adapter suites use.
     const line = `Public Function ${'a'.repeat(50_000)}(`

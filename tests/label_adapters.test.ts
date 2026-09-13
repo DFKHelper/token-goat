@@ -2,7 +2,7 @@
  * Unit tests for the Assembly (GAS, NASM and IBM HLASM), Windows batch and Erlang adapters: every declaration form each one
  * reads, exact spans and parents, nothing out of a string or a comment, the imports each one emits, and the content routing
  * that decides when an `.asm` file is HLASM rather than NASM. Every adapter also gets a pathological 50 KB line that must
- * scan in under 100 ms.
+ * scan inside the shared pathological-scan budget.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -10,6 +10,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { expectFast, LINE_50K } from './helpers/pathological_scan.js'
 import { extractAsm, isHlasmSource } from '../src/languages/asm.js'
 import { extractBatch } from '../src/languages/batch.js'
 import { extractErlang } from '../src/languages/erlang.js'
@@ -40,15 +41,6 @@ function imports(r: Result): string[] {
   return r.imports.map((i) => i.target)
 }
 
-/** The adapter must finish one pathological input in under 100 ms. */
-function expectFast(run: () => unknown, label: string): void {
-  run()
-  const t0 = performance.now()
-  run()
-  expect(performance.now() - t0, label).toBeLessThan(100)
-}
-
-const LINE_50K = 50_000
 
 describe('Assembly adapter, GAS', () => {
   it('reads labels, a macro, the label nested in it, and the .include import', () => {

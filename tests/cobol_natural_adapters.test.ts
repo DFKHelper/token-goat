@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { extractCobol } from '../src/languages/cobol.js'
 import { extractNatural } from '../src/languages/natural.js'
+import { expectFast, LINE_50K } from './helpers/pathological_scan.js'
 import { detectLanguage } from '../src/parser_types.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
@@ -18,15 +19,6 @@ function shape(r: Extracted): string[] {
   return r.symbols.map((s) => `${s.kind} ${s.name} ${s.lineStart}-${s.lineEnd} ${s.parent}`.trimEnd())
 }
 
-/** The adapter must finish one pathological input in under 100 ms. Mirrors the helper the other adapter suites carry: COBOL, Natural and VB were the three with no timing backstop at all. */
-function expectFast(run: () => unknown, label: string): void {
-  run()
-  const t0 = performance.now()
-  run()
-  expect(performance.now() - t0, label).toBeLessThan(100)
-}
-
-const LINE_50K = 50_000
 
 describe('COBOL adapter', () => {
   it('reads a very large copybook instead of throwing out of the extractor', () => {

@@ -94,7 +94,12 @@ describe('install backs up a real pre-existing config before overwriting it, wit
     const project = mkIsolated('tg-behav-backup-zed-proj-')
     const env = envFor(home, dataDir)
 
-    const settingsPath = path.join(home, 'AppData', 'Roaming', 'Zed', 'settings.json')
+    // Zed's config lives at `%APPDATA%\Zed` on Windows and `$XDG_CONFIG_HOME/zed` elsewhere, and
+    // `envFor` isolates both. Hardcoding the Windows spelling meant the fixture was written where
+    // the installer never looks on Linux and macOS: install succeeded, touched a different file, and
+    // the "did it rewrite the original" control read as a failure to rewrite.
+    const settingsPath =
+      process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming', 'Zed', 'settings.json') : path.join(home, '.config', 'zed', 'settings.json')
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
     // A real Zed settings.json has plenty of unrelated user settings alongside any context_servers -- that is exactly the content a missing backup would put at risk.
     const originalContent = JSON.stringify({ theme: 'One Dark', vim_mode: true, font_size: 14 }, null, 2) + '\n'
