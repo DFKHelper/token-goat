@@ -32,6 +32,7 @@ import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './
 import { hookCommandFor, hookPowershellCommand, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
+import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
@@ -418,6 +419,10 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
 }
 
 export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCliInstallResult {
+  return withInstallScope(projectScopeRoot(opts), () => installCopilotCliScoped(opts))
+}
+
+function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstallResult {
   const instructionsPath = copilotCliInstructionsPath(opts)
   const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
@@ -430,7 +435,13 @@ export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCli
   }
 }
 
+// Scoped here rather than on the exported `uninstallCopilotCli` below, because the plain form
+// deliberately sweeps BOTH scopes in one call: each sweep has to declare its own confinement.
 function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
+  return withInstallScope(projectScopeRoot(opts), () => uninstallCopilotCliScopeInner(opts))
+}
+
+function uninstallCopilotCliScopeInner(opts: CopilotCliScopeOptions): boolean {
   // The hooks file stays while `install --vscode` still relies on it; see CopilotHooksOwner.
   let removedAny = releaseCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   // The instructions file is user-owned: strip only the delimited block and

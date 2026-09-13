@@ -253,7 +253,10 @@ describe('ts_refs — graceful fallback', () => {
 describe('ts_refs — performance sanity on this repo\'s own codebase', () => {
   it('type-resolves a real symbol (foldPath, ~20 call sites) in well under the CI-safe budget', () => {
     const repoRoot = path.resolve(__dirname, '..')
-    const defFile = path.resolve(repoRoot, 'src/util.ts')
+    // `foldPath` was defined in src/util.ts until the containment primitives were split out into
+    // their own leaf module; util.ts now re-exports it. The definition has to be the real one or
+    // resolveTypedRefs is handed a line range that does not contain the symbol.
+    const defFile = path.resolve(repoRoot, 'src/path_containment.ts')
     const defSrc = fs.readFileSync(defFile, 'utf-8')
     const defLines = defSrc.split('\n')
     const defLineIdx = defLines.findIndex((l) => l.startsWith('export function foldPath('))

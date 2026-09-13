@@ -111,7 +111,7 @@ interface WriteSite {
  *    to lose, and `backupFile` itself no-ops on a missing path for the same reason.
  */
 const EXEMPT: ReadonlyArray<{ file: string; fn: string; call: string; reason: string }> = [
-  { file: 'src/install.ts', fn: 'installHooks', call: "writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)", reason: 'generated hook shim script, byte-identical on every rebuild; nothing user-authored to lose' },
+  { file: 'src/install.ts', fn: 'installHooksScoped', call: "writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)", reason: 'generated hook shim script, byte-identical on every rebuild; nothing user-authored to lose' },
   { file: 'src/bridges/codex_install.ts', fn: 'installCodex', call: 'atomicWriteText(scriptPath, CODEX_HOOK_SCRIPT)', reason: 'generated hook shim script, same class as installHooks above' },
   { file: 'src/bridges/copilot_cli_install.ts', fn: 'installCopilotHooksFile', call: 'writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)', reason: 'generated hook shim script, same class as installHooks above' },
   { file: 'src/bridges/copilot_cli_install.ts', fn: 'installCopilotHooksFile', call: "writeIfDifferent(copilotHooksOwnersPath(hooksDir), [...owners].sort().join('\\n') + '\\n')", reason: 'internal bookkeeping: records which harnesses share the hooks file, never hand-edited or read by anything but token-goat' },
@@ -165,7 +165,7 @@ describe('every installer write site backs up the file it overwrites', () => {
     expect(jsonSettingsSite, 'no writeJsonSettings call found at all -- did every settings writer move to something else?').toBeDefined()
     expect(jsonSettingsSite?.covered).toBe(true)
 
-    const shimSite = allSites.find((s) => s.file === 'src/install.ts' && s.fn === 'installHooks' && s.call.includes('CLAUDECODE_HOOK_SCRIPT'))
+    const shimSite = allSites.find((s) => s.file === 'src/install.ts' && s.fn === 'installHooksScoped' && s.call.includes('CLAUDECODE_HOOK_SCRIPT'))
     expect(shimSite, 'installHooks no longer writes the generated Claude Code hook shim the way this guard expects').toBeDefined()
     expect(shimSite?.covered, 'the generated hook shim now backs itself up -- if intentional, drop its EXEMPT entry instead of leaving it stale').toBe(false)
   })

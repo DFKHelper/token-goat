@@ -192,7 +192,6 @@ let dataDirHardened = false
  */
 export function ensureDataDirPrivate(): void {
   if (dataDirHardened) return
-  dataDirHardened = true
   try {
     // Two steps, not one recursive call with a mode: `mode` applies to every level the call
     // creates, and the parents here are shared XDG/AppData directories owned by the user rather
@@ -207,9 +206,15 @@ export function ensureDataDirPrivate(): void {
       const current = fs.statSync(DATA_DIR).mode & 0o777
       if ((current & 0o077) !== 0) fs.chmodSync(DATA_DIR, 0o700)
     }
+    // Memoized only once the work above actually completed. Set BEFORE the try, a single
+    // transient EACCES/EBUSY marked the root hardened for the rest of the process -- which in the
+    // long-lived worker is the whole session, so every later write went into a directory left at
+    // the umask default with nothing ever retrying.
+    dataDirHardened = true
   } catch {
     // Best-effort: a read-only or otherwise unwritable home must not break every command. The
-    // caller's own mkdir runs next and reports the real failure with its own context.
+    // caller's own mkdir runs next and reports the real failure with its own context. The next
+    // call retries, because the memo above was not reached.
   }
 }
 
@@ -221,8 +226,15 @@ export function ensureDataDirPrivate(): void {
  * hardening can see BOTH storage roots without importing back through the module that imports it.
  */
 export function tokenGoatHome(): string {
-  const override = process.env['TOKEN_GOAT_HOME']
-  if (override !== undefined && override !== '') return override
+  // Through the same validator LOCALAPPDATA/XDG_DATA_HOME get in defaultDataDir(), not a bare
+  // empty-string check. A RELATIVE value used to be returned verbatim, and since ensureDirSync
+  // dispatches hardening on isUnderRoot(dir, tokenGoatHome()), a relative root silently turned
+  // the 0700 hardening off for a storage tree resolved against the cwd -- and a VS Code hook's
+  // cwd is the workspace folder, so session snapshots of every file the model read would have
+  // landed inside an untrusted clone at the umask default. Falling back to the default root on a
+  // value this function cannot honour is the closed direction.
+  const override = safeEnvDir(process.env['TOKEN_GOAT_HOME'] ?? '')
+  if (override !== undefined) return override
   return path.join(os.homedir(), '.token-goat')
 }
 
@@ -252,7 +264,6 @@ const hardenedHomes = new Set<string>()
 export function ensureHomeDirPrivate(): void {
   const home = tokenGoatHome()
   if (hardenedHomes.has(home)) return
-  hardenedHomes.add(home)
   try {
     // Two steps for the same reason as the data root: `mode` on a recursive create applies to
     // every level, and the parent here is `$HOME`, which is not ours to tighten.
@@ -262,8 +273,12 @@ export function ensureHomeDirPrivate(): void {
       const current = fs.statSync(home).mode & 0o777
       if ((current & 0o077) !== 0) fs.chmodSync(home, 0o700)
     }
+    // Recorded only on success, for the reason {@link ensureDataDirPrivate} spells out: a memo
+    // written before the attempt turns one transient failure into a permanent one.
+    hardenedHomes.add(home)
   } catch {
-    // Best-effort, as above: the caller's own mkdir runs next and reports the real failure.
+    // Best-effort, as above: the caller's own mkdir runs next and reports the real failure. The
+    // next call retries, because the memo above was not reached.
   }
 }
 
@@ -283,6 +298,19 @@ function isUnderRoot(child: string, parent: string): boolean {
  * swept -- `image_ocr.ts`'s `ocr-cache` and `session_store.ts`'s `sessions`, the latter in the
  * guard's own mustInclude -- resolve under the home root and got the umask default.
  */
+/**
+ * True when `p` lives under either storage root: the data dir, or `~/.token-goat`.
+ *
+ * Both roots are derived from the environment and never from a clone, which is what makes them
+ * safe for `assertWriteInScope` (bridges/project_scope_guard.ts) to exempt from project
+ * confinement -- an install running in project scope still journals what it created and writes
+ * its generated hook shim, and neither path can be influenced by the repository being installed
+ * into.
+ */
+export function isTokenGoatStorage(p: string): boolean {
+  return isUnderRoot(p, DATA_DIR) || isUnderRoot(p, tokenGoatHome())
+}
+
 export function ensureStorageRootPrivate(dir: string): void {
   if (isUnderRoot(dir, DATA_DIR)) ensureDataDirPrivate()
   if (isUnderRoot(dir, tokenGoatHome())) ensureHomeDirPrivate()
