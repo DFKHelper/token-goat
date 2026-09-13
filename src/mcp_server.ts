@@ -291,10 +291,17 @@ function assertRootAllowed(resolvedRoot: string): void {
  * first and every ordering is safe: a swap before the stat is seen by the verdict and refused as
  * out-of-root, a swap after it is caught by the identity comparison at open time.
  */
+/**
+ * Why a containment check came out the way it did. `outside` is the ordinary refusal; the two
+ * `unresolvable-*` cases are also refusals, but they name a broken path rather than a traversal
+ * attempt, which is the difference between "fix your workspace" and "this tool is confined".
+ */
+type ContainmentReason = 'inside' | 'outside' | 'unresolvable-root' | 'unresolvable-target'
+
 function checkWithinProjectRoot(
   target: string,
   resolvedRoot: string,
-): { readonly inside: boolean; readonly abs: string; readonly real: string; readonly identity: string | null } {
+): { readonly inside: boolean; readonly abs: string; readonly real: string; readonly identity: string | null; readonly reason: ContainmentReason } {
   const rootReal = realPathForContainment(resolvedRoot)
   // Relative targets resolve against the project root, not the server process's cwd -- that is what the read_commands handlers themselves do with the same projectRoot this gate was handed, so resolving against cwd here would reject a legitimate relative spec whose read would have succeeded.
   const abs = path.resolve(resolvedRoot, normalizePath(target))
@@ -311,10 +318,41 @@ function checkWithinProjectRoot(
   // string available is the caller's own spelling, and admitting a path because it LOOKS like it
   // is under the root is what this gate exists to prevent. `real` still reports the caller's
   // spelling so the refusal message names the path the caller asked for.
-  if (rootReal === null || realNative === null) return { inside: false, abs, real: realNative ?? abs, identity }
+  // Which side failed is reported, not just that one did. Collapsing both into the ordinary
+  // out-of-root refusal tells an operator whose workspace root has become unreadable -- an
+  // unmounted share, a deleted cwd, a permission change on a parent -- that the file they asked
+  // for is outside their project, which sends them looking for a traversal that never happened.
+  if (rootReal === null) return { inside: false, abs, real: abs, identity, reason: 'unresolvable-root' }
+  if (realNative === null) return { inside: false, abs, real: abs, identity, reason: 'unresolvable-target' }
   const root = forCompare(normalizePath(rootReal))
-  const real = forCompare(normalizePath(realNative))
-  return { inside: real === root || real.startsWith(root.endsWith('/') ? root : root + '/'), abs, real: realNative, identity }
+  const under = (real: string): boolean => {
+    const r = forCompare(normalizePath(real))
+    return r === root || r.startsWith(root.endsWith('/') ? root : root + '/')
+  }
+  const inside = under(realNative)
+  if (!inside) return { inside: false, abs, real: realNative, identity, reason: 'outside' }
+
+  // The spelling CHECKED above is the normalized one. The spelling the handler forwards, and that
+  // the read layer therefore resolves, is the caller's raw one -- `confineTargets` passes the
+  // argument through byte-for-byte on purpose, so that a normalisation step here cannot validate a
+  // different string than the one that gets read. That protects against the gate being LOOSER than
+  // the reader. It does nothing about the reverse, and the reverse is reachable: `normalizePath`
+  // rewrites the WSL mount form `/mnt/c/x` to `c:/x` on every platform, deliberately, because a WSL
+  // process emits that form on Linux (see shellMountToWindowsPath). On POSIX `c:/x` is a RELATIVE
+  // path, so the gate resolved `/mnt/c/Users/victim/.ssh/id_rsa` to `<root>/c:/Users/...` and
+  // approved it, while the reader kept the absolute original and read the real file. The identity
+  // pin did not help: it was keyed on the spelling the gate invented, so the read's lookup missed
+  // and degraded to an unpinned raw read.
+  //
+  // So both spellings are required to land inside. The second resolution is skipped whenever
+  // normalisation was a no-op for `path.resolve`, which is the ordinary case.
+  const absRaw = path.resolve(resolvedRoot, target)
+  if (absRaw !== abs) {
+    const realRaw = realPathForContainment(absRaw)
+    if (realRaw === null) return { inside: false, abs, real: absRaw, identity, reason: 'unresolvable-target' }
+    if (!under(realRaw)) return { inside: false, abs, real: realRaw, identity, reason: 'outside' }
+  }
+  return { inside: true, abs, real: realNative, identity, reason: 'inside' }
 }
 
 /**
@@ -356,6 +394,32 @@ const NO_PINS: ReadonlyMap<string, string> = new Map<string, string>()
  * `parseReadSpec`/`resolveSymbolSpec` execution layer it mirrors, never trim either, so trimming
  * here would (as it did) validate a different string than the one that gets read.
  */
+/**
+ * The refusal a failed containment check produces.
+ *
+ * All three are refusals and all three are final -- the distinction is diagnostic, not a difference
+ * in what the tool will do. A blocked read caused by an unreadable workspace root used to arrive
+ * worded as a traversal refusal, which is the one message guaranteed to send an operator hunting
+ * for an attack instead of at their mount.
+ */
+function refusalText(file: string, resolvedRoot: string, reason: ContainmentReason): string {
+  const escapeHatch = 'Set mcp.confine_reads_to_project_root = false (or TOKEN_GOAT_MCP_CONFINE_READS=0) to allow cross-root reads.'
+  if (reason === 'unresolvable-root') {
+    return (
+      `refused: the project root "${resolvedRoot}" could not be resolved, so no path can be confirmed to sit inside it. ` +
+      'This is a broken workspace root -- an unmounted share, a deleted directory, or a permission change on a parent -- not a request to read outside the project.'
+    )
+  }
+  if (reason === 'unresolvable-target') {
+    return (
+      `refused: "${file}" could not be resolved to a real location, so it cannot be confirmed to sit inside the project root. ` +
+      'A symlink loop, a permission error on a parent directory, or a path past the operating system\'s length limit all produce this. ' +
+      'The check fails closed rather than falling back to comparing the text of the path.'
+    )
+  }
+  return `refused: "${file}" is outside the project root. The MCP tools are confined to the workspace. ${escapeHatch}`
+}
+
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {
   // The allowlist is NOT checked here any more -- it moved to assertRootAllowed, called from
   // resolveToolRoot, so it applies to every tool and is independent of this setting. See its
@@ -370,15 +434,7 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
       if (file === '') continue
       const check = checkWithinProjectRoot(file, resolvedRoot)
       if (!check.inside) {
-        return {
-          ok: false,
-          refusal: toCallToolResult({
-            text:
-              `refused: "${file}" is outside the project root. The MCP tools are confined to the workspace. ` +
-              'Set mcp.confine_reads_to_project_root = false (or TOKEN_GOAT_MCP_CONFINE_READS=0) to allow cross-root reads.',
-            code: 1,
-          }),
-        }
+        return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason), code: 1 }) }
       }
       // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. Both spellings are recorded -- the pre-realpath absolute path and the realpath -- because which one reaches the read helper depends on the handler, and a lookup that misses degrades silently to the unpinned behaviour. ALWAYS pin, even when check.identity is null (the target couldn't be stat'd, i.e. it's absent): recording ABSENT_PIN here is what stops "no map entry for this path" from meaning both "confinement is off" and "confined but unpinnable" -- without it, an in-root path validated as absent falls through to an unverified raw read the moment something is created there between validation and the read (see read_commands.ts's ABSENT_PIN and verifyStillAbsent).
       const pinIdentity = check.identity ?? ABSENT_PIN

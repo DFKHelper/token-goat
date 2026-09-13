@@ -5795,12 +5795,28 @@ function foldRealpath(p: string): string {
 
 /** Handle ``token-goat grep <pattern>``. */
 export function runGrep(opts: GrepOptions): number {
+  // A relative search path must resolve against the SAME base its caller's confinement gate
+  // measured it against. The MCP `grep` handler validates each `path` entry with
+  // `path.resolve(projectRoot, normalizePath(entry))` and pins that spelling, but this function
+  // used to hand the raw string straight to the reader, which resolves it against the server
+  // process's cwd. Those two bases diverge whenever projectRoot is not the cwd, which is the
+  // ordinary case since the client supplies it per call: `grep(path: ["secret.txt"], projectRoot:
+  // "/safe")` was gated as `/safe/secret.txt` -- absent, so ABSENT_PIN -- and then opened
+  // `<cwd>/secret.txt`, whose pin key never matched, so the identity check degraded to an unpinned
+  // raw read and the file's contents came back. Anchoring here makes the value used identical to
+  // the value checked, which is the confinement invariant `confineTargets` documents. The CLI
+  // passes no projectRoot, so its paths stay cwd-relative exactly as before.
+  //
+  // Only a RELATIVE entry is anchored. An absolute one has no base to be ambiguous about, and
+  // rewriting it would change nothing but its spelling -- `normalizePath` lower-cases the drive
+  // letter, which two tests caught immediately by comparing reported paths byte for byte. An
+  // absolute entry that points outside the root is the gate's business, not this function's, and
+  // the gate refuses it before the search ever starts.
+  const anchorSearchPath = (p: string): string => (opts.projectRoot === undefined || path.isAbsolute(p) ? p : path.resolve(opts.projectRoot, p))
   const searchPaths =
     opts.path === undefined
       ? [opts.projectRoot ?? process.cwd()]
-      : Array.isArray(opts.path)
-        ? opts.path
-        : [opts.path]
+      : (Array.isArray(opts.path) ? opts.path : [opts.path]).map(anchorSearchPath)
   const maxLines = opts.maxLines ?? GREP_MAX_LINES
   const contextLines = opts.context ?? 0
 

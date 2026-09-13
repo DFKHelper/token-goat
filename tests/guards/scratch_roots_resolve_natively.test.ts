@@ -21,11 +21,13 @@
  * its on-disk casing is the casing that was asked for, and the case-folding concern that keeps
  * `expandShortPath` from running `.native` over a whole caller-supplied path does not arise.
  *
- * KNOWN LIMIT, stated rather than implied: the scan is line-local, so it cannot see the two-
- * statement form (`const d = mkdtempSync(...)` on one line, `realpathSync(d)` on the next). A
- * line-local regex is the wrong tool for that and pretending otherwise would make this header
- * read as exhaustive when it is not. What it does cover is every single-expression spelling,
- * under any namespace alias, sync or async.
+ * KNOWN LIMITS, stated rather than implied. The scan is line-local, so it cannot see the two-
+ * statement form (`const d = mkdtempSync(...)` on one line, then a resolve of `d` on the next), and
+ * it is textual, so it cannot see a wrapper function or a destructured-and-renamed import. A regex
+ * is the wrong tool for either, and pretending otherwise would make this header read as exhaustive
+ * when it is not. What it does cover is the single-expression form: both calls on one line, either
+ * API chosen independently on each side (so the mixed sync/async pairs too), under a receiver of
+ * any depth including none.
  *
  * The first version of this guard was green while three tracked files broke its rule. It matched
  * only the `fs.`-prefixed spelling of the INNER call, which happened to be the only spelling the
@@ -56,12 +58,23 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
  * negative assertion is needed. An earlier `[^.\w]` lookbehind on the OUTER call bought nothing
  * and excluded the mixed form -- namespaced outer call, bare inner call -- by construction.
  */
-const RECEIVER = String.raw`(?:[A-Za-z_$][\w$]*\s*\.\s*)?`
+// `*`, not `?`. A single optional receiver covers `fs.mkdtemp(` and the bare `mkdtemp(` and stops
+// dead at `fs.promises.mkdtemp(` -- a two-segment shape this repo already writes elsewhere, so the
+// depth limit was not hypothetical. Nesting is unbounded because there is no depth at which a
+// deeper receiver stops being the same call.
+const RECEIVER = String.raw`(?:[A-Za-z_$][\w$]*\s*\.\s*)*`
+
+// ONE needle, not one per API. Two needles -- a sync one and an async one -- are each internally
+// consistent and therefore blind to the MIXED pairs, where the outer call is taken from one API and
+// the inner from the other. Both mixes are legal JavaScript, both are wrong, and a pair of same-API
+// patterns cannot see either. Making the `Sync` suffix optional independently on each side is what
+// reaches them. (The mixes are written out as calibration cases below, where they belong: spelled
+// here they would be genuine offenders in a tracked file, and the scan would rightly report them.)
+//
+// `.native` is still excluded for free: the call text is `realpathSync.native(`, and requiring the
+// name to be followed immediately by `(` cannot match it. There is no `realpath.native`.
 const NEEDLES: readonly RegExp[] = [
-  // sync:  <recv>?realpathSync( <recv>?mkdtempSync(
-  new RegExp(String.raw`\brealpath` + String.raw`Sync\(\s*` + RECEIVER + String.raw`mkdtemp` + String.raw`Sync\(`),
-  // async: <recv>?realpath( await <recv>?mkdtemp(
-  new RegExp(String.raw`\brealpath\(\s*(?:await\s+)?` + RECEIVER + String.raw`mkdtemp\(`),
+  new RegExp(String.raw`\brealpath` + String.raw`(?:Sync)?\(\s*(?:await\s+)?` + RECEIVER + String.raw`mkdtemp` + String.raw`(?:Sync)?\(`),
 ]
 
 /** Every tracked source file in the repository, whatever directory or extension it lives under. */
@@ -91,8 +104,16 @@ describe('a scratch root is resolved the way the OS spells it', () => {
     // stops matching, or a repo that stopped using mkdtemp would each make the assertion below
     // pass while checking nothing. The floors are set well under the current counts so ordinary
     // growth does not trip them, and well over zero so a collapsed population does.
+    // The two floors do not matter equally. `scanned` counts every JS/TS file whether or not the
+    // rule can apply to it; the population the rule is actually checked against is `withMkdtemp`,
+    // and a floor near zero there does not notice a collapse. Measured 2026-09-13: scanned 1115,
+    // withMkdtemp 404. Folding scratch-dir creation into one shared helper is an ordinary refactor
+    // that would take withMkdtemp to a handful of files while leaving `scanned` untouched, and the
+    // guard would then inspect ten files, certify the repo, and stay green. So withMkdtemp is
+    // floored just under its measured count: close enough to trip on a structural collapse, far
+    // enough below to survive ordinary churn.
     expect(scanned, 'no source files were scanned, so this guard would certify an empty set').toBeGreaterThan(900)
-    expect(withMkdtemp, 'no file uses mkdtemp, so the rule under test has no population').toBeGreaterThan(50)
+    expect(withMkdtemp, 'the set of files using mkdtemp collapsed (404 when this floor was set), so the rule under test lost its population').toBeGreaterThan(300)
     expect(offenders, 'resolve these with the .native realpath: the plain one echoes the spelling it is handed, which is the 8.3 alias on windows-latest and the /var symlink on macos-latest').toEqual([])
   })
 
@@ -110,11 +131,16 @@ describe('a scratch root is resolved the way the OS spells it', () => {
       `const d = ${RP}(${MK}(dir))`,
       `const d = fs.${RP}(${MK}(dir))`,
       `const binDir = await fs.${'realpath'}(await fs.${'mkdtemp'}(path.join(os.tmpdir(), "x-")))`,
+      // Two-level receivers. A single-optional-receiver pattern misses both, and the second is the
+      // real spelling that slipped past the first version of this guard.
+      `const d = node.fs.${RP}(node.fs.${MK}(dir))`,
+      `const binDir = await fs.promises.${'realpath'}(await fs.promises.${'mkdtemp'}(dir))`,
     ]
     const shouldNotMatch = [
       `const d = fs.${RP}.native(fs.${MK}(path.join(os.tmpdir(), "x-")))`,
       `base = fsReal.${RP}.native(fsReal.${MK}(dir))`,
       `const binDir = ${RP}.native(await fs.${'mkdtemp'}(dir))`,
+      `const d = node.fs.${RP}.native(node.fs.${MK}(dir))`,
       `const d = fs.${RP}(somethingElse)`,
       `const d = fs.${MK}(prefix)`,
     ]
