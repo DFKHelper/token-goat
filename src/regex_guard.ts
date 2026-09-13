@@ -76,29 +76,72 @@ const PROBE_ALPHABETS = ['a', '0', 'a0'] as const
  * routinely. The long rungs cost microseconds on anything genuinely linear: the slug matcher and
  * `function\s+(\w+)` both measure 0.00 ms at 800.
  *
- * The small step near the bottom is what bounds the overshoot. Whatever the growth rate, the rung
- * that blows the budget can only be as slow as two characters' worth of growth applied to a rung
- * that came in under it.
+ * The step is what bounds the overshoot, and it has to be small at EVERY rung, not just near the
+ * bottom. The ladder used to finish `36, 64, 128, 256, 512`, and an adversarial review showed what
+ * those doublings cost: `^a{300}(a|aa)+$` has no lookaround and nothing nested that a short rung
+ * can see, times 0.002 ms at 256 -- the count is not satisfied yet, so the repeated group never
+ * runs -- and then gets 212 characters of ambiguous tail at 512 and does not return. Measured: no
+ * result in 38 s, and `node dist/token-goat.mjs commands --grep '^a{300}(a|aa)+$'` timed out at 25 s
+ * against the shipped bundle. The guard was the denial of service. With a fixed step of four, a
+ * count that opens between two rungs can only be handed four more characters than the rung that
+ * already came in under the budget, so the invariant the paragraph above claims is now true all the
+ * way up. The whole 128-rung ladder costs 0.8-1.5 ms per pattern on ordinary inputs, against 0.1-0.2
+ * ms for the geometric one -- the price of the guarantee, paid once per pattern and then cached.
+ *
+ * A rung cannot bound a ZERO-width gate, though: `(?=a{300})` consumes nothing, so the rung that
+ * satisfies it hands the whole string to the ambiguous part rather than four characters of it.
+ * Nothing in a ladder can answer that, and {@link detune} is what does.
  */
-// The last two rungs must be a doubling: `projectsPastBudget` reads the cost curve's exponent off
-// the ratio between them.
-const PROBE_LENGTHS = [4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 36, 64, 128, 256, 512] as const
+const PROBE_STEP = 4
+const PROBE_MAX_LENGTH = 512
+export const PROBE_LENGTHS: readonly number[] = Array.from({ length: PROBE_MAX_LENGTH / PROBE_STEP }, (_, i) => (i + 1) * PROBE_STEP)
 /** The one-line minified bundle or base64 blob the probe cannot afford to run but has to answer for. */
 const PROJECTED_LINE_LENGTH = 10_000
 const PROJECTION_BUDGET_MS = 1000
 const PROJECTION_SIGNAL_MS = 1
 const PROBE_GROWTH_FACTOR = 12
-/** Characters to end a probe input with, tried in order until one makes the pattern fail to match. */
-const PROBE_TERMINATORS = ['!', 'a', '0', ' ', '￿'] as const
+/**
+ * Characters to end a probe input with, tried in order until one makes the pattern fail to match.
+ *
+ * The line terminators at the end are not decoration. `.` matches every printable character but
+ * not a newline, so `^(.|..)+$` -- the two-branch shape spelled with a wildcard -- matched every
+ * terminator on the list, the probe never forced a failure, and the pattern was accepted while
+ * taking 9 ms against thirty characters and climbing. JavaScript's `$` without the `m` flag is
+ * end-of-input, not before-a-final-newline, so `\n` really does make it fail; with `m` it would
+ * not, which is why the terminator is chosen by trying rather than assumed. U+2028 follows it: a
+ * line terminator to `.` and to `$` under `m`, an ordinary character to a class that names neither.
+ */
+const PROBE_TERMINATORS = ['!', 'a', '0', ' ', '￿', '\n', ' '] as const
 const PROBE_BUDGET_MS = 25
 
-function timeMatch(re: RegExp, input: string): number {
+/**
+ * How long one run took, and whether it matched.
+ *
+ * The verdict travels with the timing because a run that MATCHES is not evidence of anything: the
+ * engine stops at the first successful path and never backtracks, so a catastrophic pattern reads
+ * as instant. Only the caller knows what to do about that, and it cannot tell from the number.
+ */
+type Measurement = { readonly ms: number; readonly matched: boolean }
+
+function timeMatch(re: RegExp, input: string): Measurement {
   // A fresh regex per call: a `g`-flagged pattern carries lastIndex between calls, which would make
   // the second measurement start mid-string and read as faster.
   const probe = new RegExp(re.source, re.flags.replace('g', ''))
   const started = performance.now()
-  probe.test(input)
-  return performance.now() - started
+  const matched = probe.test(input)
+  const first = performance.now() - started
+  // A 128-rung ladder takes that many measurements per alphabet, so a garbage-collection pause
+  // landing inside one of them is likely rather than rare -- and every decision this module makes
+  // keys on a timing above a millisecond, so one blip is a refusal. `"([^"\\]|\\.)*"` measures
+  // 0.00 ms at every rung and 0.0 ms against ten thousand characters, and was refused by a single
+  // 1 ms sample. Anything that clears the noise floor is therefore measured again and the smaller
+  // of the two is used. A pattern that really is slow pays one extra run of a rung that was still
+  // inside the budget; past four times the budget the answer is not in doubt and is not re-run.
+  if (first <= PROJECTION_SIGNAL_MS || first > PROBE_BUDGET_MS * 4) return { ms: first, matched }
+  const again = new RegExp(re.source, re.flags.replace('g', ''))
+  const restarted = performance.now()
+  again.test(input)
+  return { ms: Math.min(first, performance.now() - restarted), matched }
 }
 
 /**
@@ -189,16 +232,43 @@ function classEnd(source: string, start: number): number {
   return -1
 }
 
+/**
+ * Every printable ASCII character, then a stride across the BMP. Built once, walked only on the
+ * fallback path.
+ *
+ * A curated pool is a list of characters somebody thought of, and a NEGATED class is free to name
+ * exactly that list: `^([^a0 x\-!~\t\nAeaadxxxx]+)+$`, spelled with the pool's own members, left
+ * `sampleClass` returning nothing at all, so the class contributed no seed and the pattern was
+ * accepted while taking 259 ms against twenty-six characters. Sweeping instead of guessing means a
+ * class has to exclude ~1,300 code points spread over the whole BMP before it goes unsampled, and a
+ * class that excludes that many by enumeration is one whose remaining members the sweep would have
+ * to be unlucky to miss. It is still a search and not a proof -- what makes the residue tolerable
+ * is that a class matching nothing the sweep finds is a class the pattern can barely match either.
+ */
+const CLASS_SWEEP: readonly string[] = [
+  ...Array.from({ length: 0x5f }, (_, i) => String.fromCharCode(0x20 + i)),
+  ...Array.from({ length: 0x400 }, (_, i) => String.fromCharCode(0xa0 + i * 0x3f)),
+]
+
 /** One character the class accepts, found by asking it rather than by interpreting its contents. */
 function sampleClass(cls: string): string {
   // The characters it names come first, since `[b-c]` is matched by nothing in the fallback pool.
-  return firstMatch(cls, '', [...sampleCharacters(cls.slice(1, -1)), ...CLASS_CANDIDATES])
+  const named = sampleCharacters(cls.slice(1, -1))
+  return firstMatch(cls, '', [...named, ...CLASS_CANDIDATES]) || firstMatch(cls, '', CLASS_SWEEP)
 }
 
 function sampleCharacters(source: string): string[] {
   const out: string[] = []
+  // A `Set` beside the array, not `out.includes`: the linear scan made sampling quadratic in the
+  // pattern's length, and a pattern is an argument a model supplies. Measured on a long alternation
+  // of distinct characters, this term and the one `probeAlphabets` fixes together cost 4.5 s for a
+  // 438 KB pattern that was then accepted -- the guard billing the caller for a stall it did not
+  // even report.
+  const seen = new Set<string>()
   const push = (c: string): void => {
-    if (c !== '' && !out.includes(c)) out.push(c)
+    if (c === '' || seen.has(c)) return
+    seen.add(c)
+    out.push(c)
   }
   for (let i = 0; i < source.length; i++) {
     const c = source[i] as string
@@ -222,6 +292,24 @@ function sampleCharacters(source: string): string[] {
     }
     const next = source[i + 1] ?? ''
     i++
+    // `\142` is the one character 0o142 -- `b` -- and not the digits `1`, `4`, `2`. Annex B legacy
+    // octal escapes are live in every pattern without the `u` flag, and reading them character by
+    // character seeded the spelling instead of the character: `^(\142|\142\142)+$` was accepted
+    // with alphabets `a`, `0`, `a0`, `1`, `4`, `2`, `142` -- not one of which the pattern can match
+    // -- while taking 61 ms against thirty-four `b`s and climbing from there.
+    if (next >= '0' && next <= '7') {
+      let digits = (/^[0-7]{1,3}/.exec(source.slice(i)) as RegExpExecArray)[0]
+      // `\777` is `\77` followed by a literal `7`: the escape stops at 0o377.
+      if (parseInt(digits, 8) > 0o377) digits = digits.slice(0, 2)
+      push(String.fromCharCode(parseInt(digits, 8)))
+      // A lone `\1`-`\7` is a BACKREFERENCE wherever the pattern has that many groups and octal
+      // only where it does not, and which one it is cannot be read off this fragment -- `sampleClass`
+      // calls this on a class body, where it is always octal. Both readings are seeded; the wrong
+      // one is a probe alphabet the pattern never matches, which costs a rung and finds nothing.
+      if (digits.length === 1 && next !== '0') push(next)
+      i += digits.length - 1
+      continue
+    }
     // `\xNN` and `\uNNNN` name a character by code point; an unparseable one is skipped rather than
     // pushed as a stray `x`, which would probe with a character the pattern cannot match.
     if (next === 'x' || next === 'u') {
@@ -287,7 +375,13 @@ const MAX_PATTERN_ALPHABETS = 12
 
 export function probeAlphabets(source: string): string[] {
   const samples = sampleCharacters(source)
-  const counted = samples.map((c, i) => ({ c, i, n: source.split(c).length - 1 }))
+  // One pass over the source building a count per code point, not one `source.split(c)` per sample:
+  // the latter is O(samples x source) and turned a 438 KB pattern into 4.5 s of synchronous work
+  // inside a pre-approval guard. Iterating by code point rather than by index so an astral seed
+  // (`\u{1F600}`) is counted as the one character it is.
+  const counts = new Map<string, number>()
+  for (const ch of source) counts.set(ch, (counts.get(ch) ?? 0) + 1)
+  const counted = samples.map((c, i) => ({ c, i, n: counts.get(c) ?? 0 }))
   counted.sort((a, b) => b.n - a.n || a.i - b.i)
   const kept = counted.slice(0, MAX_PATTERN_ALPHABETS).map((s) => s.c)
   const extra = kept.length > 1 ? [kept.join('')] : []
@@ -295,6 +389,43 @@ export function probeAlphabets(source: string): string[] {
 }
 
 export function growsExponentially(re: RegExp): boolean {
+  const relaxed = detune(re.source)
+  // The raw pattern is run at length only when nothing in it can hold an explosion shut past a
+  // rung. A consuming gate is safe to walk into -- `^a{300}(a|aa)+$` hands the ambiguous tail only
+  // the four characters the step added -- but a ZERO-width one is not: `^(?=a{300})(a|aa)+$` costs
+  // 0.002 ms at every rung below 300 and then gives the tail the whole string. So a pattern with an
+  // assertion in it is judged on {@link detune}'s rewrite instead, which has the same parts in the
+  // same order and no gate to hide behind.
+  if (relaxed === null || !relaxed.hadLookaround) {
+    if (climbsPastBudget(re)) return true
+  }
+  if (relaxed === null) return false
+  // A negative assertion is DELETED rather than unwrapped, because unwrapping inverts it and the
+  // rest of the pattern would then only be reached by an input the original refuses. Deleting it
+  // loses its own cost, though, and the engine has to run an assertion to completion to learn that
+  // it fails: `^(?!(a+)+$)x` is catastrophic entirely inside the part that gets deleted.
+  for (const body of relaxed.negativeBodies) {
+    let inner: RegExp
+    try {
+      inner = new RegExp(body, re.flags)
+    } catch {
+      continue
+    }
+    if (growsExponentially(inner)) return true
+  }
+  let widened: RegExp
+  try {
+    widened = new RegExp(relaxed.source, re.flags)
+  } catch {
+    // Removing a group renumbers backreferences; a rewrite that no longer compiles says nothing
+    // about the original, so it is dropped rather than guessed at.
+    return false
+  }
+  return growsExponentially(widened)
+}
+
+/** The probe ladder itself: whether `re` blows the budget, or projects past it, at any rung. */
+function climbsPastBudget(re: RegExp): boolean {
   const probe = new RegExp(re.source, re.flags.replace('g', ''))
   for (const alphabet of probeAlphabets(re.source)) {
     const body = (n: number): string => alphabet.repeat(Math.ceil(n / alphabet.length)).slice(0, n)
@@ -305,13 +436,35 @@ export function growsExponentially(re: RegExp): boolean {
     // against thirty-four characters. The terminator is chosen by trying it at the shortest rung
     // and keeping the first one that does not match, so no assumption is made about what a given
     // pattern rejects.
-    const tail = PROBE_TERMINATORS.find((t) => !probe.test(body(PROBE_LENGTHS[0]) + t)) ?? PROBE_TERMINATORS[0]
-    const fill = (n: number): string => body(n) + tail
+    const tail = PROBE_TERMINATORS.find((t) => !probe.test(body(PROBE_STEP) + t)) ?? PROBE_TERMINATORS[0]
+    // Calibrating once, at the shortest rung, is not enough: a terminator that makes the pattern
+    // fail there can start MATCHING further up the ladder, and every rung after that measures a run
+    // the engine finished on its first successful path. `^((a|aa){5,})!$` cannot reach five
+    // repetitions inside four characters, so `aaaa!` fails and `!` is chosen -- and from five
+    // characters on `aaaaa!` matches, so the ladder read 0.0 ms at all 128 rungs and accepted a
+    // pattern that costs 18.2 seconds against forty-five characters. The rung re-picks instead,
+    // from the same list, and every attempt is timed and held to the same budget, so the re-pick
+    // cannot become the weapon either. An ordinary pattern pays nothing for this: its calibrated
+    // terminator still fails, so the first attempt is the only one.
+    const candidates = [tail, ...PROBE_TERMINATORS.filter((t) => t !== tail)]
     const timings: number[] = []
     let previous: number | undefined
     for (const length of PROBE_LENGTHS) {
-      const elapsed = timeMatch(re, fill(length))
-      if (elapsed > PROBE_BUDGET_MS) return true
+      let failing: Measurement | undefined
+      let last: Measurement | undefined
+      for (const candidate of candidates) {
+        const attempt = timeMatch(re, body(length) + candidate)
+        last = attempt
+        if (attempt.ms > PROBE_BUDGET_MS) return true
+        if (!attempt.matched) {
+          failing = attempt
+          break
+        }
+      }
+      // Nothing this rung can say: every terminator matched, so no run backtracked. Recorded as the
+      // last timing rather than skipped, because {@link projectsPastBudget} reads the ladder by
+      // position and a hole would shift every rung above it.
+      const elapsed = (failing ?? (last as Measurement)).ms
       // Sub-millisecond timings are noise on every platform this runs on, so a ratio between two of
       // them means nothing. Only a long run that is also disproportionate counts. This catches a
       // machine slow enough that the curve clears the budget between two rungs rather than on one.
@@ -321,24 +474,7 @@ export function growsExponentially(re: RegExp): boolean {
     }
     if (projectsPastBudget(timings)) return true
   }
-  // A lookaround can hold the catastrophic part of a pattern shut for exactly as long as the ladder
-  // is: `^(?=a{513})(a|aa)+$` fails its assertion at every rung, times zero at all of them, and
-  // then backtracks catastrophically on the first line of 513 characters. Lengthening the ladder
-  // cannot answer that -- the gate just moves, and a rung long enough to open it is a rung long
-  // enough to hang the guard. An assertion only ever removes inputs, though, so the pattern with
-  // its assertions taken out reaches strictly more of them, and the core it was gating becomes
-  // measurable at the same short lengths as everything else.
-  const bare = withoutLookarounds(re.source)
-  if (bare === null) return false
-  let stripped: RegExp
-  try {
-    stripped = new RegExp(bare, re.flags)
-  } catch {
-    // Removing a group renumbers backreferences; a stripped pattern that no longer compiles says
-    // nothing about the original, so it is dropped rather than guessed at.
-    return false
-  }
-  return growsExponentially(stripped)
+  return false
 }
 
 /** The `)` closing the group that opens at `start`, or -1 if the source never closes it. */
@@ -362,10 +498,40 @@ function groupEnd(source: string, start: number): number {
   return -1
 }
 
-/** `source` with every lookaround assertion cut out, or `null` if it has none to cut. */
-function withoutLookarounds(source: string): string | null {
+/** How many repetitions a counted quantifier is cut down to, so its gate opens inside the ladder. */
+const MAX_COUNTED_REPEAT = 8
+
+/** A rewrite of `source` with its length gates removed, or `null` if it has none. */
+type Detuned = { readonly source: string; readonly hadLookaround: boolean; readonly negativeBodies: readonly string[] }
+
+/**
+ * `source` with every length gate taken out: assertions unwrapped or dropped, big counts cut down.
+ *
+ * A gate is any construct that costs nothing until the input is long enough and then hands a long
+ * input to an ambiguous part of the pattern. Two spellings matter, and the fix for one is not the
+ * fix for the other.
+ *
+ * A POSITIVE assertion is unwrapped into an ordinary group rather than deleted. Deleting it was the
+ * first version and it refused a pattern that provably cannot stall: `^(?=.{1,8}$)(\w+\s?)+$` is
+ * the standard cap-the-length-then-parse idiom, measured at 0.07 ms against 200,000 characters
+ * because the assertion makes every long input fail at once -- and stripping the assertion leaves
+ * `^(\w+\s?)+$`, which is catastrophic, so the guard refused the very construct that made the
+ * pattern safe. Unwrapping keeps the assertion's own work AND its length cap: `^(?:.{1,8}$)(\w+\s?)+$`
+ * fails at position 0 on anything long, exactly as the original does.
+ *
+ * A NEGATIVE assertion is deleted, because unwrapping inverts it: `^(?!zzz)(a|aa)+$` would become
+ * `^(?:zzz)(a|aa)+$`, which no probe input matches, and the ambiguous tail would never be reached.
+ * Deleting only widens the set of inputs that reach it. What deletion loses is the assertion body's
+ * own cost, and {@link growsExponentially} probes `negativeBodies` separately to get it back.
+ *
+ * A COUNT is cut to {@link MAX_COUNTED_REPEAT}. `^a{300}(a|aa)+$` carries no assertion at all, so
+ * nothing above would touch it; the count alone kept the tail shut for the first 300 characters.
+ */
+function detune(source: string): Detuned | null {
   let out = ''
-  let found = false
+  let changed = false
+  let hadLookaround = false
+  const negativeBodies: string[] = []
   let inClass = false
   for (let i = 0; i < source.length; i++) {
     const c = source[i] as string
@@ -384,16 +550,35 @@ function withoutLookarounds(source: string): string | null {
       inClass = true
       continue
     }
+    if (c === '{') {
+      const counted = /^\{(\d+)(,(\d*))?\}/.exec(source.slice(i))
+      if (counted !== null) {
+        const min = Math.min(parseInt(counted[1] as string, 10), MAX_COUNTED_REPEAT)
+        const upper = counted[3]
+        const max = upper === undefined || upper === '' ? '' : String(Math.min(parseInt(upper, 10), MAX_COUNTED_REPEAT))
+        const rebuilt = counted[2] === undefined ? `{${min}}` : `{${min},${max}}`
+        if (rebuilt !== counted[0]) changed = true
+        out += rebuilt
+        i += (counted[0] as string).length - 1
+        continue
+      }
+    }
     if (c === '(' && LOOKAROUND_AT.test(source.slice(i, i + 4))) {
       const end = groupEnd(source, i)
       if (end === -1) return null
+      const behind = source[i + 2] === '<'
+      const negative = source[i + (behind ? 3 : 2)] === '!'
+      const body = source.slice(i + (behind ? 4 : 3), end)
+      if (negative) negativeBodies.push(body)
+      else out += `(?:${body})`
       i = end
-      found = true
+      changed = true
+      hadLookaround = true
       continue
     }
     out += c
   }
-  return found ? out : null
+  return changed ? { source: out, hadLookaround, negativeBodies } : null
 }
 
 /**
@@ -411,14 +596,25 @@ function withoutLookarounds(source: string): string | null {
  * real signal is extrapolated: below a millisecond the two numbers are timer noise and their ratio
  * means nothing, and a linear pattern that does clear the floor projects to a fifth of the budget.
  */
-function projectsPastBudget(timings: readonly number[]): boolean {
-  const top = timings[timings.length - 1]
-  const prior = timings[timings.length - 2]
-  if (top === undefined || prior === undefined || top <= PROJECTION_SIGNAL_MS || prior <= 0) return false
-  const exponent = Math.log2(top / prior)
-  const topLength = PROBE_LENGTHS[PROBE_LENGTHS.length - 1] as number
-  return top * (PROJECTED_LINE_LENGTH / topLength) ** exponent > PROJECTION_BUDGET_MS
+export function projectsPastBudget(timings: readonly number[]): boolean {
+  // The two rungs a doubling apart, found by length rather than by position: the ladder used to end
+  // `256, 512` so the last two entries were the doubling, and it now steps by four, where they are
+  // 508 and 512 and their ratio says nothing.
+  const hi = timings.length - 1
+  const hiLength = PROBE_LENGTHS[hi]
+  if (hiLength === undefined) return false
+  const lo = PROBE_LENGTHS.findIndex((l) => l * 2 >= hiLength)
+  const loLength = PROBE_LENGTHS[lo]
+  const top = timings[hi]
+  const prior = timings[lo]
+  if (top === undefined || prior === undefined || loLength === undefined || loLength >= hiLength) return false
+  if (top <= PROJECTION_SIGNAL_MS || prior <= 0) return false
+  const exponent = Math.log2(top / prior) / Math.log2(hiLength / loLength)
+  return top * (PROJECTED_LINE_LENGTH / hiLength) ** exponent > PROJECTION_BUDGET_MS
 }
+
+/** The longest pattern the guard will measure. Past this the measurement is the stall. */
+const MAX_PATTERN_LENGTH = 4096
 
 /** A compiled pattern, or the reason it was refused -- phrased to complete "the pattern ...". */
 export type GuardedRegex = { readonly ok: true; readonly re: RegExp } | { readonly ok: false; readonly reason: string }
@@ -432,6 +628,13 @@ export type GuardedRegex = { readonly ok: true; readonly re: RegExp } | { readon
  * ...") without the message reading twice.
  */
 export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
+  // The guard's own cost is linear in the pattern's length and it runs the pattern 1,920 times, so
+  // a long enough pattern makes the CHECK the denial of service even after both quadratic terms in
+  // the sampler were removed. A search pattern of more than a few kilobytes is outside every
+  // legitimate use of these commands, and the argument arrives from a model.
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    return { ok: false, reason: `is longer than ${MAX_PATTERN_LENGTH} characters, which is past what can be checked for a stall` }
+  }
   let re: RegExp
   try {
     re = new RegExp(pattern, flags)

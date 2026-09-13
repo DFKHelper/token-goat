@@ -25,7 +25,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { compileGuardedRegex, growsExponentially, hasNestedQuantifier, probeAlphabets } from '../src/regex_guard.js'
+import { compileGuardedRegex, growsExponentially, hasNestedQuantifier, PROBE_LENGTHS, probeAlphabets, projectsPastBudget } from '../src/regex_guard.js'
 import { compileGrepMatcher } from '../src/util.js'
 import { runGrep } from '../src/read_commands.js'
 import { sliceTranscript } from '../src/transcript_extract.js'
@@ -96,6 +96,41 @@ const CATASTROPHIC = [
   // counts put `:`, `v`, digits and a comma ahead of the `q` this pattern is ambiguous over, in
   // appearance order. Measured raw against `q`: 670 ms at 34.
   String.raw`^(?:v\d{1,3}\.\d{1,3}\.\d{1,3}-alpha/)?(q|qq)+$`,
+  // A LENGTH GATE, which is the shape the ladder itself used to detonate on. The count costs
+  // nothing until the input reaches it and then hands the ambiguous tail everything past it: with
+  // the ladder ending `256, 512`, this timed 0.002 ms at 256 and did not return at 512 -- inside
+  // the guard, so the check was the denial of service. The consuming spelling and the zero-width
+  // one need different answers: a small step for the first, a rewrite for the second.
+  '^a{300}(a|aa)+$',
+  '^(?=a{300})(a|aa)+$',
+  // The same gates placed ABOVE the whole ladder, where no rung can reach them and only cutting
+  // the count down finds the core they were hiding.
+  '^a{513}(a|aa)+$',
+  '^(?=a{513})(a|aa)+$',
+  // The two-branch shape spelled with a wildcard. Every terminator the probe had matched `.`, so
+  // the probe input always matched, nothing backtracked, and the pattern was accepted while
+  // costing 9 ms at thirty characters. Measured raw with a newline terminator: 1 ms at 26, 10 ms
+  // at 30.
+  '^(.|..)+$',
+  // A legacy octal escape: `\142` is one `b`, not the digits `1`, `4`, `2`. Reading it as its
+  // spelling seeded three alphabets the pattern cannot match. Measured raw against `b`: 3 ms at
+  // 28, 69 ms at 34.
+  String.raw`^(\142|\142\142)+$`,
+  // A negated class naming the fallback pool's own members, so asking the class produced no seed
+  // at all. Measured raw against `b`: 262 ms at 26.
+  '^([^a0 x\\-!~\\t\\nA\u00e9\u03b1\u0434\u05d0\u0627\u4e2d\u3042\u{1F600}]+)+$',
+  // The catastrophic part living INSIDE a negative assertion. That assertion is dropped rather
+  // than unwrapped, because unwrapping inverts it -- so its body has to be probed on its own, or
+  // this pattern is judged by what is left, which is `^x`.
+  String.raw`^(?!(a+)+$)x`,
+  // A minimum repeat count that the calibration rung cannot reach. The terminator is picked at
+  // four characters by keeping the first candidate the pattern REFUSES, and `{5,}` refuses `aaaa!`
+  // for the one reason that stops applying immediately: it has not got five repetitions yet. From
+  // five characters on, `aaaaa!` matches, a matching run never backtracks, and the ladder read
+  // 0.0 ms at all 128 rungs. Measured raw: 18.2 s against forty-five characters, and the outer
+  // group is not load-bearing -- `^(a|aa){5,}!$` is the same 20.0 s.
+  '^((a|aa){5,})!$',
+  '^(a|aa){5,}!$',
 ]
 
 /**
@@ -117,6 +152,10 @@ const ORDINARY = [
   '^(?:[a-z]+-)+[a-z]+$',
   // Added with the long rungs: these run against 512 characters now, and a rung that reads an
   // ordinary pattern as super-linear costs a real search.
+  // The bounded sibling of the two `{5,}` patterns above, and the reason the fix had to be a
+  // re-pick rather than simply distrusting a counted minimum: this one can never see more than
+  // twenty characters, so it is genuinely safe and refusing it would cost a real search.
+  '^((a|aa){5,10})!$',
   String.raw`^\d{4}-\d{2}-\d{2}$`,
   String.raw`\berror\b.*\bat\b`,
   '^(GET|POST|PUT|DELETE) /[a-z/]*$',
@@ -133,6 +172,14 @@ const ORDINARY = [
   // did not turn every `[^...]` into a refusal.
   String.raw`^[^,]+,[^,]+$`,
   String.raw`"([^"\\]|\\.)*"`,
+  // The cap-the-length-then-parse idiom, where the assertion is the whole reason the pattern is
+  // safe: measured at 0.07 ms against 200,000 characters, and refused while assertions were being
+  // DELETED rather than unwrapped, because `^(\w+\s?)+$` on its own is catastrophic.
+  String.raw`^(?=.{1,8}$)(\w+\s?)+$`,
+  String.raw`^(?=.{1,20}$)(\w+\s?)+$`,
+  // Cutting a big repetition count down must not turn an ordinary fixed-width matcher into a
+  // refusal: this one is a sha256 hash and its `{64}` is probed as `{8}`.
+  '^[0-9a-f]{64}$',
 ]
 
 let base: string
@@ -339,6 +386,36 @@ describe('what the probe is seeded and terminated with', () => {
     expect(probeAlphabets(String.raw`^(?:v\d{1,3}\.\d{1,3}\.\d{1,3}-alpha/)?(q|qq)+$`), 'the group prefix and the repetition counts crowded out the payload').toContain('q')
   })
 
+  it('reads a legacy octal escape as the character it names, not as its digits', () => {
+    // `\142` is one `b`. Seeded as `1`, `4`, `2` the probe ran three alphabets the pattern cannot
+    // match, and every rung came back at zero.
+    expect(probeAlphabets(String.raw`^(\142|\142\142)+$`), 'the octal escape was read as its spelling').toContain('b')
+  })
+
+  it('ends the probe with a character `.` rejects, so a wildcard alternation still has to fail', () => {
+    // `.` matches every terminator on the list except a line terminator, so the probe input for
+    // `^(.|..)+$` always MATCHED -- and a match never backtracks. The pattern was accepted.
+    const wildcard = '^(.|..)+$'
+    const started = performance.now()
+    new RegExp(wildcard).test('a'.repeat(30) + '\n')
+    expect(performance.now() - started, 'a newline no longer makes this fail, so it no longer tests the terminator').toBeGreaterThan(1)
+    expect(new RegExp(wildcard).test('a'.repeat(30) + '!'), 'every non-newline terminator matched, which is the hole').toBe(true)
+    expect(compileGuardedRegex(wildcard).ok).toBe(false)
+  })
+
+  it('sweeps for a class member when the curated pool has none, instead of giving up on the class', () => {
+    // A negated class is free to name the fallback pool's own members, and one that does left the
+    // class contributing no seed at all. The sweep is what finds a character it does match.
+    const cls = '[^a0 x\\-!~\\t\\nA\u00e9\u03b1\u0434\u05d0\u0627\u4e2d\u3042\u{1F600}]'
+    const seeds = probeAlphabets(`^(${cls}+)+$`)
+    // The surrogate pair is the fixture: the guard compiles caller patterns without the `u` flag,
+    // so the class has to be asked the same way, and naming an astral character in it is exactly
+    // what a hostile pattern would do.
+    // eslint-disable-next-line no-misleading-character-class
+    const found = seeds.filter((c) => c.length === 1 && new RegExp(cls).test(c))
+    expect(found, `no seed the class accepts: ${JSON.stringify(seeds)}`).not.toEqual([])
+  })
+
   it('calibration: the decoy pattern really does hang the raw engine', () => {
     const started = Date.now()
     new RegExp('^(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|z|zz)+$').test('z'.repeat(34) + '!')
@@ -381,9 +458,128 @@ describe('what the probe cannot run, it projects or strips', () => {
   })
 
   it('does not strip a lookaround that is what prevents the backtracking', () => {
-    // `(?=(a+))\1` is the standard way to emulate an atomic group. Cutting the assertion leaves a
-    // backreference to a group that no longer exists, so the stripped pattern is dropped rather
-    // than judged -- refusing it would break the idiom people use to make patterns SAFE.
+    // `(?=(a+))\1` is the standard way to emulate an atomic group -- refusing it would break the
+    // idiom people use to make patterns SAFE. Unwrapping the assertion into `(?:(a+))\1b` keeps
+    // the group the backreference points at, which is what lets it be judged at all.
     expect(compileGuardedRegex(String.raw`^(?=(a+))\1b$`).ok).toBe(true)
+  })
+
+  it('never hands the ambiguous part of a pattern more than one step past a gate it just opened', () => {
+    // The ladder's own detonation, in one assertion. The pattern is invisible below 300 characters
+    // and catastrophic above it, and the guard used to jump 256 -> 512, handing the tail 212
+    // characters in a single synchronous call it could not interrupt. Both halves are pinned: the
+    // gate really is shut at every length below it, and the guard answers anyway, quickly.
+    const gated = '^a{300}(a|aa)+$'
+    const shut = performance.now()
+    new RegExp(gated).test('a'.repeat(256) + '!')
+    expect(performance.now() - shut, 'the count no longer gates this, so it no longer tests the step size').toBeLessThan(5)
+    const started = performance.now()
+    const guarded = compileGuardedRegex(gated)
+    const elapsed = performance.now() - started
+    expect(guarded.ok, 'a pattern that detonates at 300 characters was accepted').toBe(false)
+    expect(elapsed, 'the guard walked into the gate instead of stepping up to it').toBeLessThan(2000)
+  })
+
+  it('calibration: four more characters past that gate is affordable and two hundred is not', () => {
+    // What makes the small step a bound rather than a preference. Same pattern, same gate, two
+    // lengths past it: the step the ladder takes, and the step it used to take.
+    const gated = new RegExp('^a{300}(a|aa)+$')
+    const step = performance.now()
+    gated.test('a'.repeat(304) + '!')
+    expect(performance.now() - step, 'one step past the gate cost real time').toBeLessThan(5)
+    const bomb = new RegExp('^a{300}(a|aa)+$')
+    const wide = performance.now()
+    bomb.test('a'.repeat(340) + '!')
+    expect(performance.now() - wide, 'forty characters past the gate is now free, so the step size proves nothing').toBeGreaterThan(20)
+  })
+
+  it('keeps a length-capping assertion instead of cutting it, and the difference is the verdict', () => {
+    // Deleting an assertion is not a safe simplification in one direction: `(?=.{1,8}$)` is the
+    // whole reason this pattern cannot backtrack, and the pattern it leaves behind is the textbook
+    // catastrophic one. Both are asserted, because accepting the first only means something if the
+    // second is refused.
+    expect(compileGuardedRegex(String.raw`^(?=.{1,8}$)(\w+\s?)+$`).ok, 'a pattern capped at eight characters was refused').toBe(true)
+    expect(compileGuardedRegex(String.raw`^(\w+\s?)+$`).ok, 'the same pattern without its cap was accepted, so the cap is not what was measured').toBe(false)
+  })
+
+  it('probes the body of a negative assertion, which is dropped rather than unwrapped', () => {
+    // Unwrapping `(?!X)` into `(?:X)` would invert it and leave the rest of the pattern reachable
+    // only by an input the original refuses, so it is deleted -- and deleting it takes the cost of
+    // running X to a failure with it. The engine pays that cost on every input.
+    const inside = '^(?!(a+)+$)x'
+    const started = performance.now()
+    new RegExp(inside).test('a'.repeat(26) + '!')
+    expect(performance.now() - started, 'the assertion body no longer backtracks, so this no longer tests it').toBeGreaterThan(20)
+    expect(compileGuardedRegex(inside).ok, 'a bomb inside a negative assertion was accepted').toBe(false)
+  })
+
+  it('refuses a pattern too long to measure rather than spending the measurement on it', () => {
+    // The guard runs the pattern about two thousand times, so its own cost is linear in the
+    // pattern's length: a 438 KB alternation of distinct characters cost 4.5 s of synchronous work
+    // in a pre-approval path and was then ACCEPTED, which is the worst of both answers. The bound
+    // is on the length, and it is a refusal with a reason rather than a silent truncation.
+    const long = `^(?:${Array.from({ length: 2000 }, (_, i) => `x${i}`).join('|')})$`
+    expect(long.length, 'the fixture is no longer past the bound it is testing').toBeGreaterThan(4096)
+    const started = performance.now()
+    const guarded = compileGuardedRegex(long)
+    expect(performance.now() - started, 'the guard measured a pattern it had already decided was too long').toBeLessThan(200)
+    expect(guarded.ok).toBe(false)
+    expect(guarded.ok === false && guarded.reason, 'the refusal did not say the length was the problem').toContain('longer than')
+  })
+
+  it('still measures a long pattern that is inside the bound, in bounded time', () => {
+    const long = `^(?:${Array.from({ length: 600 }, (_, i) => `x${i}`).join('|')})$`
+    expect(long.length).toBeLessThan(4096)
+    const started = performance.now()
+    expect(compileGuardedRegex(long).ok, 'an ordinary long alternation was refused').toBe(true)
+    expect(performance.now() - started, 'sampling a long pattern is quadratic again').toBeLessThan(500)
+  })
+})
+
+/**
+ * The extrapolation has to read two rungs a DOUBLING apart, not the last two.
+ *
+ * This is the one thing in the guard a wall-clock test cannot see. The ladder used to end
+ * `256, 512`, so "the last two rungs" and "a doubling" were the same pair; it steps by four now,
+ * where they are 508 and 512. Reverting the selection to the adjacent pair leaves every timing
+ * assertion in this file green, because on clean timings the exponent is scale-invariant and comes
+ * out the same either way -- a mutation run confirmed it: 83 passed, nothing caught. What the
+ * adjacent pair loses is noise tolerance. A ratio taken over four characters puts 0.0113 in the
+ * denominator, so a garbage-collection pause on one rung is multiplied by eighty-eight, and the
+ * verdict is then whatever the blip was. Both directions are asserted, because the dangerous one
+ * is not the missed refusal, it is the ordinary pattern refused by a hiccup.
+ *
+ * PROVENANCE: HAND-DERIVED. The ladders are computed from `t = c * length ** k` for a stated `k`,
+ * not read off a run, and the blip is inserted by hand. Nothing here is taken from the guard.
+ */
+describe('the growth projection', () => {
+  const TOP = PROBE_LENGTHS[PROBE_LENGTHS.length - 1] as number
+  const PENULTIMATE = PROBE_LENGTHS.length - 2
+
+  /** A ladder that grows exactly as `length ** k`, scaled so the top rung costs `topMs`. */
+  const ladder = (k: number, topMs: number): number[] => PROBE_LENGTHS.map((l) => topMs * (l / TOP) ** k)
+
+  it('calibration: a clean quadratic ladder projects past the budget and a clean linear one does not', () => {
+    // 10 ms at 512 characters, extrapolated to 10,000: quadratic is 10 * 19.5 ** 2 = 3.8 s, over
+    // the one-second budget; linear is 10 * 19.5 = 195 ms, under it. Without this pair the two
+    // assertions below could both pass on a projection that always answers the same way.
+    expect(projectsPastBudget(ladder(2, 10))).toBe(true)
+    expect(projectsPastBudget(ladder(1, 10))).toBe(false)
+  })
+
+  it('still sees a quadratic pattern when the second-to-last rung reads slow', () => {
+    const timings = ladder(2, 10)
+    timings[PENULTIMATE] = 12
+    // Adjacent pair: 10 ms after 12 ms reads as SHRINKING, so the exponent goes negative and the
+    // pattern is waved through. The doubling pair never looks at that rung.
+    expect(projectsPastBudget(timings)).toBe(true)
+  })
+
+  it('does not condemn an ordinary pattern when the second-to-last rung reads fast', () => {
+    const timings = ladder(1, 10)
+    timings[PENULTIMATE] = 0.1
+    // Adjacent pair: a hundredfold jump across four characters is an exponent of 587, which
+    // projects to a number with no physical meaning and refuses a linear pattern.
+    expect(projectsPastBudget(timings)).toBe(false)
   })
 })

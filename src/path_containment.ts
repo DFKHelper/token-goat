@@ -395,9 +395,41 @@ export function isInsideRoot(target: string, root: string): boolean {
   // Checked before the equality test below, which would otherwise read two unresolvable paths as
   // the same place.
   if (rt === UNRESOLVABLE_PATH || rr === UNRESOLVABLE_PATH) return false;
-  const t = foldPathForContainment(normalizeForFs(rt));
-  const r = foldPathForContainment(normalizeForFs(rr));
-  if (t === r) return true;
-  return t.startsWith(r.endsWith('/') ? r : r + '/');
+  const nt = normalizeForFs(rt);
+  const nr = normalizeForFs(rr);
+  const t = foldPathForContainment(nt);
+  const r = foldPathForContainment(nr);
+  if (t !== r && !t.startsWith(r.endsWith('/') ? r : r + '/')) return false;
+  // The fold is a claim about the FILESYSTEM, and the platform is a poor proxy for one. Windows
+  // carries a per-directory case-sensitivity flag -- `fsutil file setCaseSensitiveInfo`, which WSL
+  // sets on every directory it creates -- and macOS formats a case-sensitive APFS volume on
+  // request. There, `C:\work\Repo` and `C:\work\repo` are two different directories, and folding
+  // reads the second as the first: everything under a real, distinct, OUTSIDE directory is
+  // admitted. Same disclosure as the Kelvin-sign fold that {@link foldCaseForContainment} exists to
+  // stop, arriving by the other side of the same assumption.
+  //
+  // So the fold is trusted only where it changed nothing. Where it is what made the two sides
+  // agree, the filesystem is asked: two spellings of the root that name the same directory
+  // canonicalize to the same real path, and two that do not, do not.
+  if (nt.slice(0, nr.length) === nr) return true;
+  return sameDirectory(nt.slice(0, nr.length), nr);
+}
+
+/** Whether two spellings name the same directory on disk. False if either cannot be resolved. */
+function sameDirectory(a: string, b: string): boolean {
+  // A share is not asked. Resolving one opens an SMB connection, and this runs inside a pre-tool
+  // hook -- see `vscode_path_gate.ts` for the 21.0 s that cost. A UNC root keeps the platform's
+  // answer, which is the behaviour every release before this one had everywhere.
+  if (isUncOrDevicePath(a) || isUncOrDevicePath(b)) return true;
+  try {
+    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
+  } catch {
+    // One of the two spellings is not on disk, so there is no second directory to be let into and
+    // nothing to ask the filesystem about. A path that does not exist yet is a WRITE target, and
+    // refusing it would decline a legitimate create under a root the caller spelled in another
+    // case -- the exact acceptance {@link foldPathForContainment} exists to keep. The platform's
+    // answer stands, which is what every release before this one did in every case.
+    return true;
+  }
 }
 

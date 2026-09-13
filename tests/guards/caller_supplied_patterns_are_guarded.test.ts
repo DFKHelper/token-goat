@@ -37,12 +37,14 @@ const EXEMPT = new Set(['regex_guard.ts'])
 /**
  * Argument spellings that mean "a pattern the caller handed us".
  *
- * Deliberately loose on the leading qualifier (`opts.`, `where.`, bare) and strict on the tail, so
- * `new RegExp(escapeRegExp(name))` -- a pattern the code built itself out of a literal -- does not
- * trip it. Those are the overwhelming majority of the ~130 `new RegExp` sites here and none of them
- * are reachable by a caller's text.
+ * Deliberately loose on the leading qualifier (`opts.`, `where.`, `this.opts.`, bare) and strict on
+ * the tail, so `new RegExp(escapeRegExp(name))` -- a pattern the code built itself out of a literal
+ * -- does not trip it. Those are the overwhelming majority of the ~130 `new RegExp` sites here and
+ * none of them are reachable by a caller's text. Any number of dotted levels now, because a single
+ * one rejected `a.b.grep` and `this.opts.grep` while accepting `opts.grep`, which is a distinction
+ * about spelling and not about exposure.
  */
-const CALLER_SUPPLIED = /^(?:[A-Za-z_$][\w$]*\.)?(?:pattern|grep|regex|filter|search|query)$/i
+const CALLER_SUPPLIED = /(?:^|\.)(?:pattern|patterns|grep|regex|rx|expr|filter|search|query|needle|include|exclude)(?:$|\.)/i
 
 function tsFiles(dir: string): string[] {
   const out: string[] = []
@@ -54,15 +56,68 @@ function tsFiles(dir: string): string[] {
   return out
 }
 
-/** A simple argument expression: a bare name or dotted path, optionally wrapped in a template literal. */
-const ARGUMENT = String.raw`(?:\`\$\{\s*)?([A-Za-z_$][\w$.]*)(?:\s*\}\`)?`
-
-/** The first argument of every `call(` in `text`, as written, when it is a simple expression. */
+/**
+ * The first argument of every `call(` in `text`, as written -- the whole expression, not just a name.
+ *
+ * The first version of this matched a bare name or a single dotted level and nothing else, and an
+ * adversarial review measured what that missed: of nine ways to spell the defect, it saw one.
+ * `new RegExp(opts.grep.trim())`, `new RegExp(String(opts.grep))`, `new RegExp(opts.grep ?? '')`,
+ * `new RegExp(patterns[0])` and `new RegExp(...args)` were not extracted at all, and `a.b.grep` and
+ * `opts.include` were extracted and then rejected by the name test. None of them exist in the tree
+ * today, which is exactly why the gap was invisible: an extractor that sees nothing and a tree that
+ * contains nothing produce the same green. So the argument is taken whole, by balancing brackets to
+ * the first top-level `,` or `)`, and the NAMES INSIDE IT are what gets judged.
+ */
 function firstArguments(text: string, call: string): string[] {
   const out: string[] = []
-  const re = new RegExp(String.raw`${call}\(\s*${ARGUMENT}\s*[,)]`, 'g')
-  for (const m of text.matchAll(re)) out.push(m[1] as string)
+  const re = new RegExp(String.raw`${call}\(`, 'g')
+  for (const m of text.matchAll(re)) {
+    const arg = balancedArgument(text, m.index + m[0].length)
+    if (arg !== null) out.push(arg.trim())
+  }
   return out
+}
+
+/** The text from `start` to the first top-level `,` or `)`, or `null` if the call never closes. */
+function balancedArgument(text: string, start: number): string | null {
+  let depth = 0
+  let quote = ''
+  for (let i = start; i < text.length && i < start + 400; i++) {
+    const c = text[i] as string
+    if (quote !== '') {
+      if (c === '\\') i++
+      else if (c === quote) quote = ''
+      continue
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c
+      continue
+    }
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ']' || c === '}') depth--
+    else if (c === ')') {
+      if (depth === 0) return text.slice(start, i)
+      depth--
+    } else if (c === ',' && depth === 0) return text.slice(start, i)
+    else if (c === '\n' && depth === 0 && text.slice(start, i).trim() === '') continue
+  }
+  return null
+}
+
+/**
+ * Every bare name and dotted path written inside an argument expression, ignoring string contents.
+ *
+ * The masking is load-bearing. Reading names out of the raw text made three of the language
+ * adapters offenders on their own literals -- `new RegExp('^(?:function|filter|workflow|...')`
+ * names `filter` inside a quoted alternation, which is a word in a regex and not a variable. A
+ * template literal keeps its `${...}` holes and loses the rest, because that is exactly the split
+ * between what a caller can reach and what the file wrote itself.
+ */
+function namesIn(argument: string): string[] {
+  const masked = argument
+    .replaceAll(/`(?:[^`\\]|\\.)*`/g, (lit) => [...lit.matchAll(/\$\{([^{}]*)\}/g)].map((m) => m[1]).join(' '))
+    .replaceAll(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, ' ')
+  return [...masked.matchAll(/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/g)].map((m) => m[0])
 }
 
 /**
@@ -108,10 +163,11 @@ const sources = new Map(files.map((f) => [path.relative(SRC, f).replaceAll('\\',
 const guardedArguments = new Set(
   pinnedPopulation({
     what: 'argument spellings passed to compileGuardedRegex',
-    items: [...sources.values()].flatMap((text) => [
-      ...firstArguments(text, String.raw`\bcompileGuardedRegex`),
-      ...firstArguments(text, String.raw`\bcompileGuardedRegexCached`),
-    ]),
+    items: [...sources.values()].flatMap((text) =>
+      [...firstArguments(text, String.raw`\bcompileGuardedRegex`), ...firstArguments(text, String.raw`\bcompileGuardedRegexCached`)].flatMap(
+        namesIn,
+      ),
+    ),
     floor: 6,
   }),
 )
@@ -127,8 +183,9 @@ describe('caller-supplied search patterns', () => {
     for (const [rel, text] of sources) {
       const lines = text.split('\n')
       for (const sink of REGEX_SINKS) {
-        for (const arg of firstArguments(text, sink)) {
-          if (!guardedArguments.has(arg) && !CALLER_SUPPLIED.test(arg)) continue
+        for (const argument of firstArguments(text, sink)) {
+          const arg = namesIn(argument).find((n) => guardedArguments.has(n) || CALLER_SUPPLIED.test(n))
+          if (arg === undefined) continue
           // Already a RegExp at this point, so nothing is being compiled. `matchAll(pattern)` inside
           // `for (const [pattern, kind] of LIQUID_TAG_IMPORTS)` reads exactly like the defect and is
           // its opposite: the name is bound by destructuring a module-level table of compiled
@@ -139,8 +196,8 @@ describe('caller-supplied search patterns', () => {
             exempt.push(`src/${rel}  ${arg}`)
             continue
           }
-          const at = new RegExp(String.raw`${sink}\(\s*(?:\`\$\{\s*)?${arg.replaceAll('.', String.raw`\.`)}\s*[,)}]`)
-          offenders.push(`src/${rel}:${lines.findIndex((l) => at.test(l)) + 1}  ${sink.replace(/\\b|\(\?<!new\\s\)/g, '')}(${arg})`)
+          const at = new RegExp(String.raw`${sink}\(\s*(?:\`\$\{\s*)?${arg.replaceAll('.', String.raw`\.`)}`)
+          offenders.push(`src/${rel}:${lines.findIndex((l) => at.test(l)) + 1}  ${sink.replace(/\\b|\(\?<!new\\s\)/g, '')}(${argument})`)
         }
       }
     }
@@ -159,12 +216,20 @@ describe('caller-supplied search patterns', () => {
     ['RegExp(opts.grep)', 'RegExp without new'],
     ['new RegExp(`${opts.grep}`)', 'a template wrapper'],
     ['line.match(opts.grep)', 'a String.prototype coercion sink'],
+    // Everything below this line was missed by the extractor that shipped, and every one of them
+    // is a spelling somebody writes without thinking they have changed anything.
+    ['new RegExp(opts.grep.trim())', 'a call expression'],
+    ['new RegExp(String(opts.grep))', 'a coercion wrapper'],
+    ["new RegExp(opts.grep ?? '')", 'a default'],
+    ['new RegExp(this.opts.grep)', 'two dotted levels'],
+    ['new RegExp(opts.grep, flags)', 'a second argument'],
   ])('finds %s (%s) when it is the only thing in a file', (snippet) => {
     // The sweep above is only evidence if it can actually see each shape. Asserting that on the
     // real tree is impossible -- the tree has none of them, which is the point -- so each shape is
     // put in front of the same extractor here. Without this, widening the sink list to cover a
     // shape and getting the pattern subtly wrong looks exactly like the tree being clean.
-    const found = REGEX_SINKS.flatMap((sink) => firstArguments(snippet, sink))
-    expect(found, `the extractor did not see ${snippet}`).toContain('opts.grep')
+    const found = REGEX_SINKS.flatMap((sink) => firstArguments(snippet, sink)).flatMap(namesIn)
+    expect(found.join(' '), `the extractor did not see ${snippet}`).toContain('opts.grep')
+    expect(found.some((n) => CALLER_SUPPLIED.test(n)), `the extractor saw ${snippet} and then did not judge it caller-supplied`).toBe(true)
   })
 })
