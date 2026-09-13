@@ -267,9 +267,26 @@ const CLASS_SWEEP: readonly string[] = [
  * verdict, which is the whole of the argument for not having them. A tail longer than a pattern
  * needs still fails, so a shorter one can only ever reach the same answer sooner, and the sweep is
  * walked at most {@link MAX_SWEEPS} times in the one case where it reaches no answer at all.
+ *
+ * Length is not the only thing a pattern can name, though: every tail here was nine copies of ONE
+ * character, and that is a shape as recognisable as a length. `^(a|aa)+(?:[\s\S]?|([\s\S])\2{8})$`
+ * spells the two alternatives out -- one character, or nine identical ones -- so the fixed list
+ * matched its first branch, the whole sweep matched its second, no probe input failed, and the
+ * pattern was accepted in 11 ms while costing 286 ms against thirty-three characters and climbing
+ * by a factor near seven every four. So each character contributes a uniform tail AND a mixed one,
+ * and they are interleaved rather than appended: a pattern that rejects either is usually rejected
+ * by the first character tried, so the mixed shape costs an ordinary pattern nothing.
+ *
+ * This raises the bar rather than closing the class. Accepting because a finite set of probes all
+ * matched is not a proof, and a pattern that names every shape the sweep can build will always be
+ * constructible. What bounds the damage is that such a pattern has to match ever more of the input
+ * space to hide, and a pattern that matches everything cannot backtrack.
  */
-const SWEEP_TAILS: readonly string[] = CLASS_SWEEP.map((c) => c.repeat(MAX_COUNTED_REPEAT + 1))
-/** Rungs per alphabet allowed to pay for a sweep that finds nothing. */
+const SWEEP_TAILS: readonly string[] = CLASS_SWEEP.flatMap((c, i) => {
+  const other = CLASS_SWEEP[(i + 1) % CLASS_SWEEP.length] as string
+  return [c.repeat(MAX_COUNTED_REPEAT + 1), c.repeat(MAX_COUNTED_REPEAT) + other]
+})
+/** Rungs per PATTERN allowed to pay for a sweep that finds nothing. */
 const MAX_SWEEPS = 3
 
 /** One character the class accepts, found by asking it rather than by interpreting its contents. */
@@ -449,6 +466,11 @@ export function growsExponentially(re: RegExp): boolean {
 /** The probe ladder itself: whether `re` blows the budget, or projects past it, at any rung. */
 function climbsPastBudget(re: RegExp): boolean {
   const probe = new RegExp(re.source, re.flags.replace('g', ''))
+  // Outside the alphabet loop, because the budget is a bound on what checking ONE pattern costs.
+  // Declared per alphabet, `^(?:[\s\S]*|a|b|c|d|e|f|g|h|i|j|k|l)$` -- which builds the largest
+  // alphabet set and matches every probe -- bought three full sweeps for each of them instead of
+  // three in total, so the stated cap understated the real ceiling by the number of alphabets.
+  let sweeps = 0
   for (const alphabet of probeAlphabets(re.source)) {
     const body = (n: number): string => alphabet.repeat(Math.ceil(n / alphabet.length)).slice(0, n)
     // The input has to FAIL, or there is nothing to backtrack over: a run that matches straight
@@ -472,7 +494,6 @@ function climbsPastBudget(re: RegExp): boolean {
     // A tail found by sweeping, kept for the rungs above so the sweep is paid for once, and a count
     // of how many rungs have paid for a fruitless one.
     let swept: string | undefined
-    let sweeps = 0
     const timings: number[] = []
     let previous: number | undefined
     for (const length of PROBE_LENGTHS) {

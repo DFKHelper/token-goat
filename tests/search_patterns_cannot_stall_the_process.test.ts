@@ -131,21 +131,25 @@ const CATASTROPHIC = [
   // group is not load-bearing -- `^(a|aa){5,}!$` is the same 20.0 s.
   '^((a|aa){5,})!$',
   '^(a|aa){5,}!$',
-  // The terminator list is finite and a pattern can name every member of it. All seven candidates
-  // sit in this optional class, so no input the ladder can build is capable of failing, every run
-  // matched, and the ladder read 0 ms. Measured raw: 16.7 s against forty-five characters, and
-  // 30.8 s for the `*` spelling.
-  '^(a|aa)+[!a0 \uFFFF\n\u2028]?$',
-  '^(a|aa)+[!a0 \uFFFF\n\u2028]*$',
-  // One level up: the guard appends A tail, and an optional any-character run swallows exactly one
-  // of it, so only `bb` falsifies the first of these and `bbb` the second. Sweeping single
-  // characters is not enough; the tail has to grow, and it stops growing at one past the bound
-  // `detune` clamps every counted quantifier to.
+  // An optional trailing class swallows exactly one character of whatever tail is appended, so a
+  // single appended character can never falsify the pattern and every run matches. `[\s\S]` is the
+  // semantic spelling of "any one terminator" and covers the finite-list case without naming the
+  // list the guard happens to sweep: only `bb` falsifies the first of these and `bbb` the second.
+  // Sweeping single characters is not enough; the tail has to grow, and it stops growing at one
+  // past the bound `detune` clamps every counted quantifier to. Measured raw: 16.7 s against
+  // forty-five characters.
   String.raw`^(a|aa)+[\s\S]?$`,
   String.raw`^(a|aa)+[\s\S]{0,2}$`,
   // The same shape spelled past the clamp, which is the reason the clamp is what bounds the tail
   // rather than a number chosen to fit the cases above.
   String.raw`^(a|aa)+[\s\S]{0,500}$`,
+  // A tail is a shape, not just a length. Growing the sweep to one character past the clamp is
+  // enough only while every tail it builds is a uniform run, because a pattern can name that run
+  // and match it -- so nothing falsifies, nothing backtracks, and the whole ladder reads 0 ms. The
+  // second branch here does exactly that. The sweep answers it by also building a run whose last
+  // character differs, which no repetition of one character can absorb. Measured raw: 39 ms
+  // against thirty characters and a two-character tail.
+  String.raw`^(a|aa)+(?:[\s\S]?|([\s\S])\2{8})$`,
 ]
 
 /**
@@ -234,12 +238,12 @@ describe('the guard refuses what the engine cannot finish', () => {
     expect(Date.now() - started, 'the engine no longer backtracks catastrophically, so this suite no longer describes the defect').toBeGreaterThan(50)
   })
 
-  it('calibration: a pattern naming every terminator really does hang the raw engine', () => {
-    // 30 characters and a `b`, not the forty-five that took 16.7 s: the same Fibonacci curve, a
-    // fraction of a second. The `b` is the point -- it is the character the class does NOT hold,
-    // and the one no fixed candidate list could have supplied.
+  it('calibration: a pattern that swallows one terminator really does hang the raw engine', () => {
+    // 30 characters and `bb`, not the forty-five that took 16.7 s: the same Fibonacci curve, a
+    // fraction of a second. Two trailing characters are the point -- the optional class absorbs
+    // one of them, so a one-character tail can never falsify this and the ladder reads 0 ms.
     const started = Date.now()
-    new RegExp('^(a|aa)+[!a0 \\uFFFF\\n\\u2028]?$').test('a'.repeat(30) + 'b')
+    new RegExp(String.raw`^(a|aa)+[\s\S]?$`).test('a'.repeat(30) + 'bb')
     expect(Date.now() - started, 'the engine no longer backtracks here, so refusing this pattern means nothing').toBeGreaterThan(20)
   })
 
@@ -251,6 +255,16 @@ describe('the guard refuses what the engine cannot finish', () => {
     const started = Date.now()
     expect(compileGuardedRegex(String.raw`^[\s\S]*$`).ok).toBe(true)
     expect(Date.now() - started, 'the sweep is running on every rung again').toBeLessThan(400)
+  })
+
+  it('pays for a fruitless sweep once per pattern, not once per alphabet it names', () => {
+    // Every branch after the first names a different character, so the pattern seeds a dozen
+    // alphabets -- and the leading `[\s\S]*` means none of them can ever falsify it. A budget
+    // counted per alphabet buys the same fruitless sweep a dozen times over; counted per pattern
+    // it is bought once. Measured: 36 ms per-alphabet, 15 ms per-pattern.
+    const started = Date.now()
+    expect(compileGuardedRegex(String.raw`^(?:[\s\S]*|a|b|c|d|e|f|g|h|i|j|k|l)$`).ok).toBe(true)
+    expect(Date.now() - started, 'the sweep budget reset for each alphabet again').toBeLessThan(120)
   })
 
   it('catches (a|a)+ by measurement, not by shape', () => {
