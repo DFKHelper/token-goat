@@ -707,7 +707,7 @@ Token-Goat is licensed under the PolyForm Noncommercial License 1.0.0. See the L
 
 Individual developers may install and use Token-Goat on their own machines for personal productivity without a commercial license, provided the use does not involve providing Token-Goat as a service to others, incorporating it into a commercial product or platform, or deploying it as shared infrastructure across a team or organization. Employment at a for-profit company does not by itself make use commercial — but if your employer is the primary beneficiary of the deployment, a commercial license applies. When in doubt, email token-goat@dfkhelper.com.
 
-Commercial use is reserved. That means copying or incorporating this codebase into a product, charging for access to it, or running it as shared infrastructure across a team at a for-profit company. Commercial licensing: token-goat@dfkhelper.com.
+Commercial use is reserved. That means copying or incorporating this codebase into a product, charging for access to it, or running it as shared infrastructure across a team at a for-profit company. Commercial licenses have been issued and are agreed per organization by email; there is no price list or self-serve purchase. Commercial licensing: token-goat@dfkhelper.com.
 
 Copyright (c) 2026 DFK Helper LLC.
 
