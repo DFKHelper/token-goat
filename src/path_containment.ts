@@ -397,6 +397,14 @@ export function isInsideRoot(target: string, root: string): boolean {
   // still being asked whether to allow the read. The share the target names is compared against
   // the one the root names, so a project genuinely hosted over SMB still works and only a target
   // reaching a DIFFERENT share (or any share, from a local root) is refused.
+  //
+  // This closes the spelling, not every route to a server, and the difference is the point rather
+  // than a caveat. A drive letter mapped to a share -- `Z:` bound to `\\host\share`, or a junction
+  // pointing at one -- reads as local here and the walk below will still contact that server, and a
+  // root that is itself a share is resolved because the target is allowed to be there. A mapped
+  // letter reaches a host the person at the keyboard already mounted; `\\host\share` in a tool call
+  // reaches any host the model can name, and that is the one being refused. Telling the two apart
+  // needs a Windows call Node does not expose, so it is written down rather than claimed away.
   if (reachesForeignShare(target, root)) return false;
   const rt = resolveThroughLinks(target);
   const rr = resolveThroughLinks(root);

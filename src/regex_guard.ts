@@ -18,6 +18,19 @@
  * instead. The probe alone is not enough either: it reports that a pattern is slow, not which part
  * of it is the problem.
  *
+ * Neither check is sound, and the reason is structural rather than a gap to be closed by trying
+ * harder. The probe decides by running the pattern against inputs it builds, so it can only ever
+ * ask a finite set of questions -- and a pattern that answers all of them while staying pathological
+ * on an input the probe does not build is always constructible. Adding shapes to the probe raises
+ * the bar; it is not an argument. The two alternatives that would be sound are a linear-time engine
+ * such as RE2, which means refusing the constructs it does not implement (backreferences and
+ * lookbehind, both of which callers here use), and running the match itself under a hard wall-clock
+ * kill, which JavaScript can only do in a worker -- so every one of the nine call sites becomes
+ * asynchronous and pays a worker per search. Both are larger changes than this file, and this note
+ * is where to start if the bar stops being high enough. What bounds the damage meanwhile is that a
+ * pattern has to match ever more of the input space to hide from the probe, and a pattern that
+ * matches everything cannot backtrack.
+ *
  * This is a bound on running time, not a judgement about the pattern's author. `secret_redact.ts`
  * applies it to patterns from the machine's own config, where somebody able to set them can
  * already do worse and the point is to bound the cost of a mistake; the search commands apply it
@@ -116,6 +129,19 @@ const PROBE_BUDGET_MS = 25
 
 /** How many repetitions a counted quantifier is cut down to, so its gate opens inside the ladder. */
 const MAX_COUNTED_REPEAT = 8
+
+/**
+ * A character that stands on its own as one atom, so a run of it is a run of atoms.
+ *
+ * Everything excluded here either groups (`(`, `[`, `{` and their closers), alternates, anchors,
+ * quantifies, or escapes -- for those a repeated character is not a repeated atom and collapsing
+ * the run would rewrite the pattern's structure rather than shorten it. `.` is deliberately
+ * included: `.` six hundred times is exactly the gate this exists to cut down.
+ */
+const LITERAL_RUN_ATOM = /[^\\()[\]{}|^$*+?]/
+
+/** A quantifier binds to the atom before it, so the last character of a run under one stays put. */
+const QUANTIFIER_AT = /^[*+?{]/
 
 /**
  * How long one run took, and whether it matched.
@@ -286,8 +312,41 @@ const SWEEP_TAILS: readonly string[] = CLASS_SWEEP.flatMap((c, i) => {
   const other = CLASS_SWEEP[(i + 1) % CLASS_SWEEP.length] as string
   return [c.repeat(MAX_COUNTED_REPEAT + 1), c.repeat(MAX_COUNTED_REPEAT) + other]
 })
-/** Rungs per PATTERN allowed to pay for a sweep that finds nothing. */
+/** Rungs per ALPHABET allowed to pay for a sweep that finds nothing. */
 const MAX_SWEEPS = 3
+
+/**
+ * Total wall clock one PATTERN may spend on sweeps that find nothing.
+ *
+ * Counting the cap per pattern instead was the wrong way to bound the same cost, and it bought a
+ * false negative rather than a saving. A pattern whose first branch is `[a0][\s\S]*` and whose
+ * second is `(?:b|bb)+` closed by a class naming every fixed terminator matches
+ * every probe built from `a` or `0` on its first branch, so the first alphabets spent the pattern's
+ * whole allowance finding nothing -- and the `b` alphabet, where a nine-character tail falsifies
+ * the second branch and detonates it, was never swept at all. Accepted in 7 ms; 56.9 seconds
+ * against forty-three characters.
+ *
+ * So the count is per alphabet again, which is what makes every alphabet reachable, and the ceiling
+ * that stops that multiplying is a clock rather than a tally. It is not the same quantity: the
+ * twelve-alphabet case the per-pattern count was introduced for sweeps thirty-six times for 36 ms
+ * in total, so a budget in milliseconds leaves it alone and only bites where a sweep is genuinely
+ * expensive -- which is the case a tally cannot tell apart from a cheap one.
+ */
+const SWEEP_BUDGET_MS = 150
+
+/**
+ * A group under a repetition -- `(...)+`, `(...)*`, `(...){2,}` -- which is where ambiguity lives.
+ *
+ * Read only when the ladder never managed to falsify the pattern even once, which is the state in
+ * which its timings say nothing: every run matched, so nothing backtracked, and 0 ms on every rung
+ * is what a safe pattern and an unprobed one both look like. An honest `^[\s\S]*$` is unfalsifiable
+ * for the reason that also makes it safe -- it has no group to repeat -- so the two are told apart
+ * by shape at exactly the point where measurement has run out. Wider than
+ * {@link hasNestedQuantifier} on purpose: `(?:b|bb)+` holds no inner quantifier at all and is the
+ * shape that got through. An escaped literal `\)` before a quantifier reads as a group here, which
+ * errs towards refusing, and only for a pattern nothing could falsify.
+ */
+const QUANTIFIED_GROUP = /\)\s*(?:[*+]|\{\d+(?:,\d*)?\})/
 
 /** One character the class accepts, found by asking it rather than by interpreting its contents. */
 function sampleClass(cls: string): string {
@@ -466,12 +525,13 @@ export function growsExponentially(re: RegExp): boolean {
 /** The probe ladder itself: whether `re` blows the budget, or projects past it, at any rung. */
 function climbsPastBudget(re: RegExp): boolean {
   const probe = new RegExp(re.source, re.flags.replace('g', ''))
-  // Outside the alphabet loop, because the budget is a bound on what checking ONE pattern costs.
-  // Declared per alphabet, `^(?:[\s\S]*|a|b|c|d|e|f|g|h|i|j|k|l)$` -- which builds the largest
-  // alphabet set and matches every probe -- bought three full sweeps for each of them instead of
-  // three in total, so the stated cap understated the real ceiling by the number of alphabets.
-  let sweeps = 0
+  // What one PATTERN may spend on sweeps that find nothing, and whether any input anywhere ever
+  // made it fail. Both are outside the alphabet loop; the per-alphabet sweep tally is not, for the
+  // reason {@link SWEEP_BUDGET_MS} gives.
+  let sweptMs = 0
+  let falsified = false
   for (const alphabet of probeAlphabets(re.source)) {
+    let sweeps = 0
     const body = (n: number): string => alphabet.repeat(Math.ceil(n / alphabet.length)).slice(0, n)
     // The input has to FAIL, or there is nothing to backtrack over: a run that matches straight
     // through is linear whatever the pattern's shape. A fixed `!` was not enough. Seeding
@@ -526,8 +586,9 @@ function climbsPastBudget(re: RegExp): boolean {
       // where that stops, for the reason {@link SWEEP_TAILS} gives.
       // And the whole sweep is capped, because a pattern that really does match everything -- the
       // honest `^[\s\S]*$` -- would otherwise pay for all of it on all 128 rungs for no verdict.
-      if (failing === undefined && sweeps < MAX_SWEEPS) {
+      if (failing === undefined && sweeps < MAX_SWEEPS && sweptMs < SWEEP_BUDGET_MS) {
         sweeps++
+        const sweepStarted = Date.now()
         for (const candidate of SWEEP_TAILS) {
           if (attempt(candidate) === 'over-budget') return true
           if (failing !== undefined) {
@@ -535,7 +596,9 @@ function climbsPastBudget(re: RegExp): boolean {
             break
           }
         }
+        sweptMs += Date.now() - sweepStarted
       }
+      if (failing !== undefined) falsified = true
       // Still nothing this rung can say: the pattern matches everything, so no run backtracked.
       // Recorded as the last timing rather than skipped, because {@link projectsPastBudget} reads
       // the ladder by position and a hole would shift every rung above it.
@@ -549,6 +612,12 @@ function climbsPastBudget(re: RegExp): boolean {
     }
     if (projectsPastBudget(timings)) return true
   }
+  // Nothing the ladder built ever made this pattern fail, so none of its timings measured a
+  // backtrack and 0 ms on every rung is not evidence of anything. Certifying on that is how a
+  // pattern hides: it only has to match everything the probe can construct. Where the shape says
+  // there is a repeated group to be ambiguous about, an unfalsifiable pattern is refused rather
+  // than accepted, so running out of ways to ask means unknown rather than safe.
+  if (!falsified && QUANTIFIED_GROUP.test(re.source)) return true
   return false
 }
 
@@ -648,6 +717,28 @@ function detune(source: string): Detuned | null {
       changed = true
       hadLookaround = true
       continue
+    }
+    // A gate spelled as a run rather than as a count. The clamp above cuts `^a{600}(a|aa)+$` down
+    // so a rung can reach past the gate and find the ambiguous tail behind it, but six hundred
+    // literal `a` characters are the same gate written the other way and were copied through
+    // untouched. The ladder stops at 512, one pattern character is one input character, so no rung
+    // ever reached the tail: every rung read 0 ms and the pattern was accepted in 1 ms while
+    // costing 62 ms at thirty-four characters past the gate and doubling from there. A run is cut
+    // to the same bound a count is, which is what makes the clamp about gates rather than about
+    // brace syntax.
+    if (LITERAL_RUN_ATOM.test(c)) {
+      let run = 1
+      while (source[i + run] === c) run++
+      const quantified = QUANTIFIER_AT.test(source.slice(i + run, i + run + 1))
+      // Under a quantifier the last character of the run is the quantified atom, not part of the
+      // run, so it is left where it is and only what precedes it is cut.
+      const collapsible = quantified ? run - 1 : run
+      if (collapsible > MAX_COUNTED_REPEAT) {
+        out += c.repeat(MAX_COUNTED_REPEAT) + (quantified ? c : '')
+        i += run - 1
+        changed = true
+        continue
+      }
     }
     out += c
   }

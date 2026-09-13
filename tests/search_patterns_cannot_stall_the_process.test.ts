@@ -150,6 +150,28 @@ const CATASTROPHIC = [
   // character differs, which no repetition of one character can absorb. Measured raw: 39 ms
   // against thirty characters and a two-character tail.
   String.raw`^(a|aa)+(?:[\s\S]?|([\s\S])\2{8})$`,
+  // A gate spelled as a run rather than as a count. Cutting `{600}` down is what lets a rung reach
+  // past a gate, and six hundred literal characters are the same gate written the other way: one
+  // pattern character is one input character, the ladder stops at 512, so no rung ever reached the
+  // ambiguous tail. Every rung read 0 ms and this was accepted in 1 ms while the raw pattern cost
+  // 62 ms at thirty-four characters past the gate. 520 is the interesting number, not 600 -- it is
+  // the first length the longest rung cannot cross.
+  '^' + 'a'.repeat(520) + '(a|aa)+$',
+  '^' + 'a'.repeat(600) + '(a|aa)+$',
+  // A pattern with two branches, one of which exists only to spend the sweep budget. The first
+  // matches every probe built from the fixed alphabets, so those alphabets never falsify and each
+  // pays for a fruitless sweep; the second is the ambiguous one, reached only from a `b` alphabet
+  // whose sweep is what finds the tail that detonates it. With the budget counted per pattern the
+  // first branch drank all of it and the second was never swept: accepted in 9 ms, 56.9 seconds
+  // against forty-three characters. The class is spelled as "not the character the ladder builds
+  // from" rather than by naming the terminator list, so this stays a statement about the shape.
+  String.raw`^(?:[a0][\s\S]*|(?:b|bb)+[^b]$)`,
+  // The same trick against the sweep tails themselves: the second branch names both shapes the
+  // sweep can build -- nine identical characters, and eight identical plus one other -- by asking
+  // for eight identical characters followed by anything. It is refused because the sweep still
+  // falsifies it elsewhere, which is the honest reason and worth pinning: no set of tail shapes is
+  // a proof, and this case is here so that a future change to the tails is measured against it.
+  String.raw`^(?:[a0][\s\S]*|(?:[\s\S]|[\s\S][\s\S])+([\s\S])\1{7}[\s\S])$`,
 ]
 
 /**
@@ -249,6 +271,17 @@ describe('the guard refuses what the engine cannot finish', () => {
     expect(Date.now() - started, 'the engine no longer backtracks here, so refusing this pattern means nothing').toBeGreaterThan(20)
   })
 
+  it('calibration: a gate spelled as a literal run really does hang the raw engine behind it', () => {
+    // Six hundred literal characters and thirty-six past them, not the length that would take
+    // seconds: the same curve, a sixth of a second. The gate has to be longer than the ladder's
+    // last rung or there is nothing being hidden -- at 512 or below a rung reaches the tail and
+    // the pattern is refused on its own timings. Measured here: 60 ms at +34, 157-163 at +36,
+    // 412-524 at +38.
+    const started = Date.now()
+    new RegExp('^' + 'a'.repeat(600) + '(a|aa)+$').test('a'.repeat(636) + '!')
+    expect(Date.now() - started, 'the engine no longer backtracks behind the gate, so refusing this means nothing').toBeGreaterThan(20)
+  })
+
   it('answers a pattern that matches everything without paying for the whole sweep', () => {
     // `^[\s\S]*$` falsifies nothing, so the sweep runs to the end and finds no tail. Without a cap
     // that happens on every one of 128 rungs for every alphabet, and the guard becomes the cost it
@@ -259,14 +292,43 @@ describe('the guard refuses what the engine cannot finish', () => {
     expect(Date.now() - started, 'the sweep is running on every rung again').toBeLessThan(400)
   })
 
-  it('pays for a fruitless sweep once per pattern, not once per alphabet it names', () => {
+  it('bounds what a pattern naming a dozen alphabets can spend on sweeps that find nothing', () => {
     // Every branch after the first names a different character, so the pattern seeds a dozen
-    // alphabets -- and the leading `[\s\S]*` means none of them can ever falsify it. A budget
-    // counted per alphabet buys the same fruitless sweep a dozen times over; counted per pattern
-    // it is bought once. Measured: 36 ms per-alphabet, 15 ms per-pattern.
+    // alphabets -- and the leading `[\s\S]*` means none of them can ever falsify it, so every
+    // alphabet pays for a fruitless sweep. Each one has to be allowed to sweep, or an early
+    // alphabet can starve a later one that would have found the falsifying tail, so the ceiling is
+    // a clock rather than a tally: this measured 36 ms with a per-alphabet count and no clock,
+    // 50 ms with both. Half a second is the assertion because the point is an order of magnitude.
     const started = Date.now()
     expect(compileGuardedRegex(String.raw`^(?:[\s\S]*|a|b|c|d|e|f|g|h|i|j|k|l)$`).ok).toBe(true)
-    expect(Date.now() - started, 'the sweep budget reset for each alphabet again').toBeLessThan(120)
+    expect(Date.now() - started, 'the sweep is no longer bounded across alphabets').toBeLessThan(500)
+  })
+
+  it('reads a pattern nothing could falsify as unknown rather than as safe, where it has a group to repeat', () => {
+    // Running out of ways to ask is not an answer. If no input the ladder built ever made the
+    // pattern fail, nothing backtracked, so 0 ms on every rung is what a safe pattern and an
+    // unprobed one both look like -- and certifying on that is the whole method by which a pattern
+    // hides. Where the shape says there is a repeated group to be ambiguous about, that state is
+    // refused. `(?:b|bb)+` here is genuinely unreachable behind the branch that matches everything,
+    // so this refusal is a false positive, and it is the direction to be wrong in: the same state
+    // is indistinguishable from the pattern that took 56.9 seconds.
+    expect(compileGuardedRegex(String.raw`^(?:[\s\S]*|(?:b|bb)+)$`).ok).toBe(false)
+    // The honest unfalsifiable patterns are unfalsifiable for the reason that also makes them safe
+    // -- there is no group to repeat -- so the two are told apart by shape at exactly the point
+    // where measurement has run out, and these are still accepted.
+    expect(compileGuardedRegex(String.raw`^[\s\S]*$`).ok).toBe(true)
+    expect(compileGuardedRegex(String.raw`^(?:[\s\S]*|a|b|c|d|e|f|g|h|i|j|k|l)$`).ok).toBe(true)
+  })
+
+  it('calibration: a pattern that spends the sweep budget elsewhere really does hang the raw engine', () => {
+    // Twenty-eight characters and a nine-character tail, not the forty-three that took 56.9 s.
+    // The tail is what falsifies the ambiguous branch, and it is the shape only a sweep produces:
+    // every fixed terminator satisfies the closing class, so without the sweep this pattern is
+    // never asked a question it can fail. Measured here: 32 ms at 24, 84 at 26, 220 at 28, 580 at
+    // 30.
+    const started = Date.now()
+    new RegExp(String.raw`^(?:[a0][\s\S]*|(?:b|bb)+[^b]$)`).test('b'.repeat(28) + 'b'.repeat(9))
+    expect(Date.now() - started, 'the engine no longer backtracks here, so refusing this means nothing').toBeGreaterThan(20)
   })
 
   it('catches (a|a)+ by measurement, not by shape', () => {
