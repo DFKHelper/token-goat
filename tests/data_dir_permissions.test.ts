@@ -15,11 +15,11 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { dataDir, ensureDataDirPrivate, _resetDataDirCacheForTesting } from '../src/constants.js'
+import { dataDir, ensureDataDirPrivate, ensureHomeDirPrivate, tokenGoatHome, _resetDataDirCacheForTesting } from '../src/constants.js'
 import { ensureDirSync } from '../src/util.js'
 
 const POSIX = process.platform !== 'win32'
-const ENV_KEYS = ['XDG_DATA_HOME', 'LOCALAPPDATA', 'HOME'] as const
+const ENV_KEYS = ['XDG_DATA_HOME', 'LOCALAPPDATA', 'HOME', 'TOKEN_GOAT_HOME'] as const
 
 let saved: Record<string, string | undefined>
 let root: string
@@ -101,6 +101,18 @@ describe('data directory permissions', () => {
 
   // An unwritable home must not take down every command: the caller's own mkdir runs next and
   // reports the real failure with its own context.
+  it('hardens the data root only for a path that is actually under it', () => {
+    // The dispatch half. Hardening a root nothing is being written under would create it as a side
+    // effect of an unrelated mkdir; the point of dispatching on the requested path is that each
+    // root is created when, and only when, something is about to land in it.
+    const elsewhere = path.join(root, 'not-storage', 'x')
+
+    ensureDirSync(elsewhere)
+
+    expect(fs.existsSync(elsewhere)).toBe(true)
+    expect(fs.existsSync(dataDir())).toBe(false)
+  })
+
   it('swallows a failure to create the root', () => {
     process.env['XDG_DATA_HOME'] = path.join(root, 'a-file', 'share')
     process.env['LOCALAPPDATA'] = path.join(root, 'a-file', 'share')
@@ -108,5 +120,89 @@ describe('data directory permissions', () => {
     _resetDataDirCacheForTesting()
 
     expect(() => ensureDataDirPrivate()).not.toThrow()
+  })
+})
+
+/**
+ * The OTHER storage root. `ensureDirSync` hardened `dataDir()` and nothing else, while
+ * `dataDir() !== tokenGoatHome()` at runtime -- so `~/.token-goat` took the umask default (0755 on
+ * a stock Debian/Ubuntu $HOME) even though the guard that swept this class lists `tokenGoatHome`
+ * among its roots and names a home-root site in its own mustInclude. What sits there is the more
+ * sensitive half: `session_snapshots/` holds verbatim copies of every file the model read,
+ * `sessions/` the session state and its pending-context sidecars, `ocr-cache/` text lifted out of
+ * viewed images. Local read disclosure only -- no write access and no escalation -- and Windows is
+ * unaffected, which is why these mode assertions are honestly `runIf(POSIX)` rather than reworked
+ * into something that can pass here.
+ */
+describe('token-goat home permissions', () => {
+  let home: string
+
+  beforeEach(() => {
+    home = path.join(root, 'home', '.token-goat')
+    process.env['TOKEN_GOAT_HOME'] = home
+    _resetDataDirCacheForTesting()
+  })
+
+  // The premise the static guard assumed and never checked. If these two ever became the same
+  // directory, every assertion below would be about the data root wearing another name.
+  it('is a different directory from the data root', () => {
+    expect(path.resolve(tokenGoatHome())).not.toBe(path.resolve(dataDir()))
+  })
+
+  it.runIf(POSIX)('creates the home root owner-only', () => {
+    ensureHomeDirPrivate()
+
+    expect(mode(home)).toBe(0o700)
+  })
+
+  it.runIf(POSIX)('tightens an existing world-readable home root', () => {
+    fs.mkdirSync(home, { recursive: true })
+    fs.chmodSync(home, 0o755)
+    _resetDataDirCacheForTesting()
+
+    ensureHomeDirPrivate()
+
+    expect(mode(home)).toBe(0o700)
+  })
+
+  // The whole point: every real home-root writer reaches the filesystem through ensureDirSync, so
+  // that is where the hardening has to happen. `session_snapshots` is the worst-case child.
+  it.runIf(POSIX)('hardens the home root when ensureDirSync creates a child under it', () => {
+    ensureDirSync(path.join(tokenGoatHome(), 'session_snapshots', 'sess-1'))
+
+    expect(mode(home)).toBe(0o700)
+    expect(fs.existsSync(path.join(home, 'session_snapshots', 'sess-1'))).toBe(true)
+  })
+
+  it.runIf(POSIX)('leaves the enclosing $HOME at the umask default', () => {
+    // Same collateral-damage rule as the data root: `~` belongs to the user, not to token-goat.
+    const reference = path.join(root, 'home-reference')
+    fs.mkdirSync(reference, { recursive: true })
+
+    ensureHomeDirPrivate()
+
+    expect(mode(path.dirname(home))).toBe(mode(reference))
+  })
+
+  it('re-hardens after TOKEN_GOAT_HOME moves, rather than memoizing one boolean', () => {
+    // TOKEN_GOAT_HOME is read live on every call, so a single "already done" flag would leave every
+    // root after the first at the umask default -- and the e2e children and the test suite itself
+    // move it constantly.
+    ensureHomeDirPrivate()
+    const second = path.join(root, 'home2', '.token-goat')
+    process.env['TOKEN_GOAT_HOME'] = second
+
+    ensureHomeDirPrivate()
+
+    expect(fs.existsSync(second)).toBe(true)
+    if (POSIX) expect(mode(second)).toBe(0o700)
+  })
+
+  it('does not throw when the home root cannot be created', () => {
+    process.env['TOKEN_GOAT_HOME'] = path.join(root, 'a-home-file', 'x')
+    fs.writeFileSync(path.join(root, 'a-home-file'), 'not a directory')
+    _resetDataDirCacheForTesting()
+
+    expect(() => ensureHomeDirPrivate()).not.toThrow()
   })
 })

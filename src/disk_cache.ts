@@ -20,9 +20,9 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
+import { tokenGoatHome } from './constants.js'
 import { ensureDirSync, atomicWriteText, sanitizeIdForFilename } from './util.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat } from './stats.js'
@@ -35,15 +35,11 @@ export const DEFAULT_MAX_AGE_MS = 24 * 3600 * 1000
 /**
  * Root for token-goat cross-process state, mirroring `snapshots.ts`.
  *
- * Honors `TOKEN_GOAT_HOME` (used by tests to isolate from the real home and by
- * the cross-process e2e child) and otherwise resolves to `~/.token-goat`.
- * Resolved lazily on every call so an env override or spy takes effect.
+ * Defined in `constants.ts` and re-exported here, where every existing caller imports it from:
+ * `ensureDirSync` has to harden whichever root a path falls under, and `constants.ts` is the one
+ * module both it and this one can import without a cycle.
  */
-export function tokenGoatHome(): string {
-  const override = process.env['TOKEN_GOAT_HOME']
-  if (override !== undefined && override !== '') return override
-  return path.join(os.homedir(), '.token-goat')
-}
+export { tokenGoatHome }
 
 /** Sanitize a content id to a filesystem-safe stem (ids are already hex; this is
  * defense in depth, never trust the key). Empty result means "unusable id". */

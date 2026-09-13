@@ -14,7 +14,7 @@ import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSyn
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
-import { ensureDataDirPrivate } from './constants.js'
+import { ensureStorageRootPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
 import type { GitResult, RunGitOptions } from './types.js'
 
@@ -162,9 +162,13 @@ function isEExist(err: unknown): boolean {
  * — the directory exists — is already true), while propagating all other errors.
  */
 export function ensureDirSync(dir: string): void {
-  // The data root holds every cached page, command output, and index DB, so it is created
-  // owner-only before any child lands in it. Cheap: memoized to one syscall per process.
-  ensureDataDirPrivate()
+  // token-goat has TWO storage roots -- the data dir (cached pages, command output, index DBs) and
+  // `~/.token-goat` (session snapshots, session state, OCR and image caches) -- and both are
+  // created owner-only before any child lands inside them. Hardening only the data root was a live
+  // hole: half the sites a sweep had already visited resolve under the home root instead. Cheap:
+  // memoized to one syscall per root per process, and the root that does not contain `dir` is not
+  // touched at all.
+  ensureStorageRootPrivate(dir)
   try {
     mkdirSync(dir, { recursive: true })
   } catch (err) {
