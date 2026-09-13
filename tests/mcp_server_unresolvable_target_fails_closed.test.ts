@@ -56,7 +56,7 @@ function textOf(result: unknown): string {
 // an operator reading the wrong one goes looking for an attack instead of a symlink loop.
 const REFUSAL = 'could not be resolved to a real location'
 /** The ordinary out-of-root wording, asserted absent so the two refusals cannot silently merge. */
-const OUT_OF_ROOT = 'is outside the project root. The MCP tools are confined to the workspace.'
+const OUT_OF_ROOT = 'is outside the project root "'
 
 describe('the MCP confinement gate fails closed on a target it cannot resolve', () => {
   let projectRoot: string

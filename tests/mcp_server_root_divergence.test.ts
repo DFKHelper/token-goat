@@ -119,7 +119,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
       arguments: { spec: path.join(serverCwd, 'secret.txt'), projectRoot: root },
     })
     expect(result.isError).toBe(true)
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
   })
 
@@ -162,7 +162,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
       arguments: { spec: `${path.join(serverCwd, 'secret.txt')}::Foo`, projectRoot: root },
     })
     expect(result.isError).toBe(true)
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
   })
 
@@ -199,7 +199,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
       name: 'imports',
       arguments: { file: path.join(serverCwd, 'secret.txt'), projectRoot: root },
     })
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
     expect(result.isError).toBe(true)
   })
@@ -212,7 +212,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
       name: 'exports',
       arguments: { file: path.join(serverCwd, 'secret.txt'), projectRoot: root },
     })
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
     expect(result.isError).toBe(true)
   })
@@ -252,7 +252,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
       arguments: { spec: `${path.join(serverCwd, 'secret.txt')}::Foo`, projectRoot: root },
     })
     expect(result.isError).toBe(true)
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
   })
 })

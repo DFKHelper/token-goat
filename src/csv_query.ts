@@ -6,6 +6,7 @@
  */
 
 import { displaySafeText } from './paths.js'
+import { compileGuardedRegexCached } from './regex_guard.js'
 
 import { parse } from 'csv-parse/sync'
 
@@ -113,6 +114,13 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
     if ((op === '>' || op === '<' || op === '>=' || op === '<=') && value.trim() === '') {
       throw new Error(`invalid --where spec: ${spec} (missing comparison value after '${op}')`)
     }
+    // Up front, so a pattern that cannot compile or that would stall says so once with a reason,
+    // rather than silently matching no row once per row. matchesWhere re-checks because it is the
+    // only place the value is actually used, and a CsvWhere can be built without going through here.
+    if (op === '~=') {
+      const guarded = compileGuardedRegexCached(value)
+      if (!guarded.ok) throw new Error(`invalid --where spec: ${spec} (the pattern ${guarded.reason})`)
+    }
     return { column: (m[1] as string).trim(), op, value }
   })
 }
@@ -152,8 +160,14 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
       return cell === where.value
     case '!=':
       return cell !== where.value
-    case '~=':
-      return new RegExp(where.value).test(cell)
+    case '~=': {
+      // Guarded rather than compiled directly: `--where` comes off a command line, and a pattern
+      // that backtracks unboundedly would run once per row with no way to interrupt it. A refused
+      // pattern matches nothing rather than stalling; runCsvQuery rejects it up front, so this is
+      // the belt to that braces.
+      const guarded = compileGuardedRegexCached(where.value)
+      return guarded.ok && guarded.re.test(cell)
+    }
     case '>':
     case '<':
     case '>=':

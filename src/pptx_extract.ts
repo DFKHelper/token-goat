@@ -8,6 +8,7 @@
  */
 
 import { collectElements, collectTextRuns, decodeZipEntry, parseOoxmlPart, readOoxmlZip, sortNumberedParts } from './ooxml_extract.js'
+import { compileGuardedRegex } from './regex_guard.js'
 
 export interface SlideOutlineEntry {
   slide: number
@@ -230,7 +231,9 @@ export interface PptxTextMatch {
 
 export async function pptxTextGrep(filePath: string, pattern: string): Promise<PptxTextMatch[]> {
   const { entries, slidePaths } = await listSlideParts(filePath)
-  const re = new RegExp(pattern, 'i')
+  const guarded = compileGuardedRegex(pattern, 'i')
+  if (!guarded.ok) throw new Error(`invalid --grep pattern: ${pattern} -- the pattern ${guarded.reason}`)
+  const re = guarded.re
   const out: PptxTextMatch[] = []
   for (let i = 0; i < slidePaths.length; i++) {
     const parsed = await parseSlide(entries, slidePaths[i] as string)

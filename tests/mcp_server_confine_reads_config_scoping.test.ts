@@ -95,7 +95,7 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
       arguments: { spec: path.join(outsideDir, 'secret.txt'), projectRoot },
     })
     expect(result.isError).toBe(true)
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
   })
 
@@ -116,7 +116,7 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
       name: 'read',
       arguments: { spec: path.join(outsideDir, 'secret.txt'), projectRoot },
     })
-    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).toContain('is outside the project root "')
     expect(textOf(result)).not.toContain(SECRET)
   })
 

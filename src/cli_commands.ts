@@ -13,6 +13,7 @@
  */
 
 import type { Command } from 'commander'
+import { compileGuardedRegex } from './regex_guard.js'
 
 export interface CommandManifestOption {
   readonly flags: string
@@ -77,12 +78,10 @@ function entryMatches(entry: CommandManifestEntry, re: RegExp | null, pattern: s
  * dropped.
  */
 export function filterCommandManifest(manifest: readonly CommandManifestEntry[], pattern: string): CommandManifestEntry[] {
-  let re: RegExp | null
-  try {
-    re = new RegExp(pattern)
-  } catch {
-    re = null
-  }
+  // A pattern that cannot compile, or that would stall, falls back to the literal substring match
+  // `entryMatches` already applies when `re` is null.
+  const guarded = compileGuardedRegex(pattern)
+  const re: RegExp | null = guarded.ok ? guarded.re : null
   const result: CommandManifestEntry[] = []
   for (const entry of manifest) {
     if (entryMatches(entry, re, pattern)) {

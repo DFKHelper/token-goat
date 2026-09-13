@@ -57,7 +57,7 @@ import { getDirtyPathsFor, isWorkerRunning } from './worker.js'
 import { getDb } from './db.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { loadConfig } from './config.js'
-import { extractErrorMessage } from './util.js'
+import { extractErrorMessage, foldCaseForContainment } from './util.js'
 import { normalizePath, displaySafeJson } from './paths.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level
@@ -212,9 +212,9 @@ function realPathForContainment(p: string): string | null {
   }
 }
 
-/** Case-folded on Windows, where the same directory has many valid spellings and a case-sensitive compare would reject legitimate in-root reads. */
+/** Case-folded on Windows, where the same directory has many valid spellings and a case-sensitive compare would reject legitimate in-root reads. ASCII only -- `toLowerCase()` folds pairs NTFS keeps apart, and that admits a real outside directory as the root; see {@link foldCaseForContainment}. */
 function forCompare(p: string): string {
-  return process.platform === 'win32' ? p.toLowerCase() : p
+  return process.platform === 'win32' ? foldCaseForContainment(p) : p
 }
 
 /**
@@ -487,7 +487,17 @@ function refusalText(file: string, resolvedRoot: string, reason: ContainmentReas
       'The check fails closed rather than falling back to comparing the text of the path.'
     )
   }
-  return `refused: "${file}" is outside the project root. The MCP tools are confined to the workspace. ${escapeHatch}`
+  // Names the root rather than saying "the workspace", and says whose choice it was. The old
+  // wording -- "the MCP tools are confined to the workspace" -- described a boundary that only
+  // exists once an operator sets `mcp.allowed_roots`, which defaults to empty (config.ts). Until
+  // then the caller picks the root per call, so what this refusal proves is that the target did not
+  // sit inside the root THIS call named, not that the tools cannot reach outside some workspace. An
+  // operator reading the old sentence in a log would have taken the stronger guarantee from it.
+  const rootScope =
+    loadConfig().mcp.allowed_roots.length === 0
+      ? 'Each call is confined to the projectRoot it names, and that root comes from the caller: set mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to pin which roots may be named at all.'
+      : 'Each call is confined to the projectRoot it names, which must itself sit inside mcp.allowed_roots.'
+  return `refused: "${file}" is outside the project root "${resolvedRoot}". ${rootScope} ${escapeHatch}`
 }
 
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {

@@ -9,6 +9,7 @@
  */
 
 import * as fs from 'node:fs'
+import { compileGuardedRegex } from './regex_guard.js'
 
 export interface TranscriptCue {
   index: number
@@ -161,7 +162,14 @@ export function parseSliceOptions(opts: { speaker?: string; from?: string; to?: 
 }
 
 export function sliceTranscript(cues: TranscriptCue[], opts: TranscriptSliceOptions): TranscriptCue[] {
-  const re = opts.grep !== undefined ? new RegExp(opts.grep, 'i') : undefined
+  // Guarded, not merely compiled: see regex_guard.ts. A refused pattern throws here rather than
+  // silently matching nothing, because a --grep that quietly returns no cue reads as an empty file.
+  let re: RegExp | undefined
+  if (opts.grep !== undefined) {
+    const guarded = compileGuardedRegex(opts.grep, 'i')
+    if (!guarded.ok) throw new Error(`invalid --grep pattern: ${opts.grep} (${guarded.reason})`)
+    re = guarded.re
+  }
   return cues.filter((cue) => {
     if (opts.speaker !== undefined && cue.speaker?.toLowerCase() !== opts.speaker.toLowerCase()) return false
     if (opts.fromSeconds !== undefined && cue.startSeconds < opts.fromSeconds) return false

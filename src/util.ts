@@ -17,6 +17,7 @@ import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCrea
 import { assertWriteInScope } from './bridges/project_scope_guard.js'
 import { ensureStorageRootPrivate } from './constants.js'
 import { normalizePath } from './paths.js'
+import { compileGuardedRegex } from './regex_guard.js'
 import type { GitResult, RunGitOptions } from './types.js'
 
 export { normalizePath }
@@ -52,7 +53,7 @@ export function noWindowCreationFlags(): number {
 // `import { foldPath } from './util.js'` keeps working. The definitions had to leave this file
 // because isInsideRoot needs them and isInsideRoot must be importable by util.ts without the
 // import reaching project.ts -- see path_containment.ts's header for the cycle that caused.
-export { foldCase, foldPath, isCaseInsensitiveFs } from './path_containment.js'
+export { foldCase, foldPath, foldCaseForContainment, foldPathForContainment, isCaseInsensitiveFs } from './path_containment.js'
 // Imported as well as re-exported: this file has its own callers of foldPath below.
 import { foldPath } from './path_containment.js'
 
@@ -908,14 +909,17 @@ export function toKB(bytes: number): number {
  * not a syntax error, and erroring there would cost a round trip to learn nothing useful.
  * Case-sensitive, matching the other `--grep` flags -- callers wanting otherwise pass an
  * inline `(?i)`-style alternation or a broader pattern.
+ *
+ * A pattern that would stall the process takes the same fallback, for the same reason and by the
+ * same route: this returns a predicate and has no channel to report a problem through, and a
+ * substring match is both safe and closer to what the caller meant than a hang. `compileGuardedRegex`
+ * decides that; see `regex_guard.ts` for why a shape check alone does not.
  */
 export function compileGrepMatcher(pattern: string): (candidate: string) => boolean {
-  try {
-    const re = new RegExp(pattern)
-    return (candidate) => re.test(candidate)
-  } catch {
-    return (candidate) => candidate.includes(pattern)
-  }
+  const guarded = compileGuardedRegex(pattern)
+  if (!guarded.ok) return (candidate) => candidate.includes(pattern)
+  const re = guarded.re
+  return (candidate) => re.test(candidate)
 }
 
 /**

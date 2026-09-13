@@ -37,7 +37,7 @@ import {
 } from './image_engine.js'
 import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
-import { vscodePathDeclined } from './vscode_path_gate.js'
+import { preToolPathDeclined } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
@@ -669,8 +669,8 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   if (!isImagePath(filePath)) return passOutput()
-  // Before any stat or read of the path: see vscodePathDeclined.
-  if (vscodePathDeclined(event, filePath)) return passOutput()
+  // Before any stat or read of the path: see preToolPathDeclined.
+  if (preToolPathDeclined(event, filePath)) return passOutput()
 
   pruneShrinkCache()
 

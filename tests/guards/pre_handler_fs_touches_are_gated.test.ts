@@ -189,7 +189,7 @@ function preDispatchClosure(mods: Map<string, Module>): Visited[] {
 
 /** Routed through the shared VS Code path gate, or through its UNC/device rejection directly. */
 function isGated(body: string): boolean {
-  return /vscodePathDeclined|vscodePathAllowed/.test(body)
+  return /preToolPathDeclined|vscodePathAllowed|isUncOrDevicePath/.test(body)
 }
 
 /**
@@ -274,7 +274,7 @@ describe('every pre-dispatch fs/net touch is gated or named', () => {
       unclassifiedTouchers(),
       'These run BEFORE VS Code asks the user to approve the tool call, and the registry sweep in ' +
         'tests/vscode_pre_handler_path_gate.test.ts cannot see them. Route the path through ' +
-        'vscodePathDeclined (or reject a UNC/device root outright), or add the function to EXEMPT ' +
+        'preToolPathDeclined (or reject a UNC/device root outright), or add the function to EXEMPT ' +
         'in this file with the reason its path cannot come from the payload.',
     ).toEqual([])
   })

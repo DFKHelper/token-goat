@@ -40,6 +40,37 @@ export function foldCase(s: string): string {
 }
 
 /**
+ * The case fold used to decide CONTAINMENT, and only that. ASCII A-Z, nothing else.
+ *
+ * `foldCase` is `toLowerCase()`, which folds by Unicode's rules. NTFS folds by its own `$UpCase`
+ * table, and the two disagree. `U+212A` KELVIN SIGN lowercases to ASCII `k` in JavaScript, while
+ * NTFS keeps `worK`(U+212A) and `work` as two different directories on disk. A containment check
+ * that folds with Unicode therefore reads a real, distinct, OUTSIDE directory as the root itself
+ * and admits everything under it -- reproduced 2026-09-13 on Windows 11 / NTFS, where an MCP `read`
+ * with `projectRoot` = `<base>/work` returned the contents of `<base>/wor`+U+212A+`/secret.txt`,
+ * and `grep` leaked the same file. There are ~100 other characters in this class (the long s, the
+ * Kelvin sign, dotless and dotted I, various fullwidth and mathematical forms).
+ *
+ * Folding ASCII-only cannot create that error, because it makes strictly FEWER pairs of strings
+ * compare equal than either table does: every pair it calls equal, both Unicode and `$UpCase` also
+ * call equal. What it can do is refuse a legitimate read whose root and target differ in the case
+ * of a non-ASCII letter (`/srv/Ärger` against a root spelled `/srv/ärger`), which is a refusal and
+ * not a disclosure -- the direction a containment boundary is allowed to be wrong in.
+ *
+ * Deliberately NOT a change to `foldCase` itself: `db.ts` mirrors that one into SQL as `TG_LOWER`,
+ * and the two must stay byte-identical or every stored path key silently stops matching its own
+ * row. See `sql_path.ts`. This fold never touches an index key.
+ */
+export function foldCaseForContainment(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/** {@link foldCaseForContainment}, applied only where the filesystem itself folds case. */
+export function foldPathForContainment(p: string): string {
+  return isCaseInsensitiveFs() ? foldCaseForContainment(p) : p;
+}
+
+/**
  * Windows drive prefixes that resolve to the same NTFS location.
  * Cross-shell normalization (Git Bash, WSL, Cygwin, cmd.exe/PowerShell).
  */
@@ -321,9 +352,10 @@ function normalizeForFs(p: string): string {
  * giving up on the whole path -- see that function for why the giving-up version was a hole.
  *
  * The trailing-separator guard is what stops `/srv/project-secrets` from reading as inside
- * `/srv/project`. Case is folded via foldPath, which asks the platform rather than assuming
- * Windows: a default macOS APFS volume is case-insensitive too, and folding only on Windows
- * rejected `--file /Users/alice/repo/x.ts` under a root git reports as `/Users/alice/Repo`.
+ * `/srv/project`. Case is folded via {@link foldPathForContainment}, which asks the platform rather
+ * than assuming Windows -- a default macOS APFS volume is case-insensitive too, and folding only on
+ * Windows rejected `--file /Users/alice/repo/x.ts` under a root git reports as `/Users/alice/Repo`
+ * -- and which folds ASCII only, for the reason given on that function.
  */
 
 export function isInsideRoot(target: string, root: string): boolean {
@@ -332,8 +364,8 @@ export function isInsideRoot(target: string, root: string): boolean {
   // Checked before the equality test below, which would otherwise read two unresolvable paths as
   // the same place.
   if (rt === UNRESOLVABLE_PATH || rr === UNRESOLVABLE_PATH) return false;
-  const t = foldPath(normalizeForFs(rt));
-  const r = foldPath(normalizeForFs(rr));
+  const t = foldPathForContainment(normalizeForFs(rt));
+  const r = foldPathForContainment(normalizeForFs(rr));
   if (t === r) return true;
   return t.startsWith(r.endsWith('/') ? r : r + '/');
 }

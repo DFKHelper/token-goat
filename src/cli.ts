@@ -26,6 +26,7 @@ import { formatLocalTimestamp, recordStat, savedTokensFromBytes, _useRichStats }
 import { fenceUntrustedContent, fenceUntrustedOcrText, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { fenceUntrusted, scanAndRecord, injectionFencingEnabled } from './untrusted_fence.js'
 import { redactSecrets } from './secret_redact.js'
+import { compileGuardedRegex } from './regex_guard.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -1418,14 +1419,18 @@ function _applyFiltersAndPrint(
     if (pattern.startsWith('-E ') || pattern.startsWith('--extended-regexp ')) {
       pattern = pattern.replace(/^(?:-E\s+|--extended-regexp\s+)/, '')
     }
-    try {
-      const re = new RegExp(pattern)
+    // Guarded, not just compiled: a pattern that backtracks unboundedly cannot be interrupted, and
+    // this filter runs over cached command output a line at a time. A refused pattern takes the
+    // same literal-substring path an uncompilable one already takes.
+    const guarded = compileGuardedRegex(pattern)
+    if (guarded.ok) {
+      const re = guarded.re
       content = content
         .split(/\r?\n/)
         .filter((line) => re.test(line))
         .map((line) => clipLongMatchLine(line, pattern))
         .join('\n')
-    } catch {
+    } else {
       content = content
         .split(/\r?\n/)
         .filter((line) => line.includes(pattern))

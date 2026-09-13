@@ -14,6 +14,7 @@ import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
+import { compileGuardedRegex } from './regex_guard.js'
 import { supportRequestLine } from './version.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
@@ -86,7 +87,7 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isA
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, filtersFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, foldCaseForContainment, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, filtersFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -5250,6 +5251,12 @@ function buildChangedRefHint(cwd: string, ref: string): string | null {
  * lived inline in runChanged, and `diff` and `log` -- which build the same argv shape from the same
  * untrusted string -- were each written without it. One helper means the next ref-taking command
  * cannot omit it by being written the same way.
+ *
+ * `--end-of-options` was considered and not used. It is the more general instrument, but it has to
+ * sit after the subcommand's own flags and before the revision, so adopting it means reordering
+ * every argv here rather than adding one element -- and it needs git 2.24, a floor this repo does
+ * not otherwise impose. It would buy nothing on top: git's own check-ref-format forbids a revision
+ * starting with `-`, so refusing that shape already rejects every option and no legitimate ref.
  */
 function refIsSafe(ref: string): boolean {
   return !ref.startsWith('-')
@@ -5787,10 +5794,10 @@ interface GrepHit {
   symbol?: { name: string; kind: string; lineStart: number; lineEnd: number } | null
 }
 
-/** Normalizes a realpath to one comparable spelling: forward slashes via {@link normalizePath}, plus a case fold on win32 where the filesystem is case-insensitive. */
+/** Normalizes a realpath to one comparable spelling: forward slashes via {@link normalizePath}, plus a case fold on win32 where the filesystem is case-insensitive. The fold is ASCII-only -- `toLowerCase()` folds character pairs NTFS keeps apart, which lets a genuinely separate directory compare equal to the root; see `foldCaseForContainment`. */
 function foldRealpath(p: string): string {
   const n = normalizePath(p)
-  return process.platform === 'win32' ? n.toLowerCase() : n
+  return process.platform === 'win32' ? foldCaseForContainment(n) : n
 }
 
 /** Handle ``token-goat grep <pattern>``. */
@@ -5820,13 +5827,15 @@ export function runGrep(opts: GrepOptions): number {
   const maxLines = opts.maxLines ?? GREP_MAX_LINES
   const contextLines = opts.context ?? 0
 
-  let regex: RegExp
-  try {
-    regex = new RegExp(opts.pattern)
-  } catch {
-    emitErr(`Invalid regex: ${opts.pattern}`)
+  // Refused, not merely reported: an unbounded backtracking pattern cannot be interrupted once
+  // `test` has started, and the MCP server that reaches here is single-threaded, so one line of
+  // ordinary-looking text would take every other tool down with it. See regex_guard.ts.
+  const guarded = compileGuardedRegex(opts.pattern)
+  if (!guarded.ok) {
+    emitErr(`Invalid regex: ${opts.pattern} -- ${guarded.reason}`)
     return 1
   }
+  const regex = guarded.re
 
   const hits: GrepHit[] = []
 

@@ -10,6 +10,7 @@
 import type * as pdfjsTypes from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 import { createLazyModuleLoader } from './lazy_module.js'
+import { compileGuardedRegex } from './regex_guard.js'
 
 export interface PdfExtractResult {
   text: string
@@ -195,15 +196,13 @@ export async function locatePdfPages(
   pattern: string,
   opts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string },
 ): Promise<PdfLocateResult> {
-  // Compile up front so an invalid pattern fails with a message naming it,
-  // rather than leaking a bare SyntaxError with no indication of which input
-  // caused it (or paying pdfjs's document load only to throw afterwards).
-  let re: RegExp
-  try {
-    re = new RegExp(pattern, opts.ignoreCase === true ? 'i' : '')
-  } catch (e) {
-    throw new Error(`invalid regex pattern: ${pattern} (${e instanceof Error ? e.message : String(e)})`, { cause: e })
-  }
+  // Compile up front so an invalid pattern fails with a message naming it, rather than leaking a
+  // bare SyntaxError with no indication of which input caused it (or paying pdfjs's document load
+  // only to throw afterwards). Guarded rather than compiled: this then runs per page over text the
+  // caller does not control, and a backtracking pattern cannot be interrupted. See regex_guard.ts.
+  const guarded = compileGuardedRegex(pattern, opts.ignoreCase === true ? 'i' : '')
+  if (!guarded.ok) throw new Error(`invalid regex pattern: ${pattern} (${guarded.reason})`)
+  const re = guarded.re
 
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-extract')

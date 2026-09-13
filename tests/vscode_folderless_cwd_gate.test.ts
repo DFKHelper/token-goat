@@ -4,7 +4,7 @@
  * WHY THIS WAS OPEN. VS Code resolves a hook's `cwd` to the workspace folder when one is open, and
  * the payload carries it. With NO folder open it resolves none, omits the key entirely, and spawns
  * the hook process in the user's home directory. `normalizePayload` filled the missing key from
- * `process.cwd()` -- which in that situation IS the home directory -- and `vscodePathDeclined` then
+ * `process.cwd()` -- which in that situation IS the home directory -- and `preToolPathDeclined` then
  * took it as the confinement root, so every path under `$HOME` was permitted. VS Code runs
  * PreToolUse hooks BEFORE asking the user to approve the call, so a model-named `~/.ssh/id_rsa`
  * would have been stat'd and read without approval.
@@ -41,7 +41,7 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { normalizePayload } from '../src/hooks_cli.js'
-import { vscodePathDeclined } from '../src/vscode_path_gate.js'
+import { preToolPathDeclined } from '../src/vscode_path_gate.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -79,13 +79,13 @@ describe('the VS Code path gate with no workspace folder open', () => {
     // unfixed code for entirely the wrong reason.
     process.chdir(os.homedir())
     const target = path.join(os.homedir(), 'tg-no-such-secret.txt')
-    expect(vscodePathDeclined(vscodeEvent(target, undefined), target)).toBe(true)
+    expect(preToolPathDeclined(vscodeEvent(target, undefined), target)).toBe(true)
   })
 
   it('still declines an unrelated absolute path in the same folderless state', () => {
     process.chdir(os.homedir())
     const target = path.join(os.homedir(), '.ssh', 'tg-no-such-key')
-    expect(vscodePathDeclined(vscodeEvent(target, undefined), target)).toBe(true)
+    expect(preToolPathDeclined(vscodeEvent(target, undefined), target)).toBe(true)
   })
 
   it('CALIBRATION: allows an in-workspace path when the harness really sent a cwd', () => {
@@ -93,12 +93,12 @@ describe('the VS Code path gate with no workspace folder open', () => {
     // malformed event -- would satisfy the two assertions above while proving nothing.
     process.chdir(savedCwd)
     const target = path.join(workspace, 'module.ts')
-    expect(vscodePathDeclined(vscodeEvent(target, workspace), target)).toBe(false)
+    expect(preToolPathDeclined(vscodeEvent(target, workspace), target)).toBe(false)
   })
 
   it('still declines a path outside a real harness-supplied workspace', () => {
     process.chdir(savedCwd)
     const target = path.join(os.tmpdir(), 'tg-no-such-elsewhere', 'module.ts')
-    expect(vscodePathDeclined(vscodeEvent(target, workspace), target)).toBe(true)
+    expect(preToolPathDeclined(vscodeEvent(target, workspace), target)).toBe(true)
   })
 })

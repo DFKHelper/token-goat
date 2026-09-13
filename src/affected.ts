@@ -25,6 +25,7 @@ import * as path from 'node:path'
 import { buildImportGraph } from './import_graph.js'
 import { normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
 import { getDisplayRoot } from './project.js'
+import { compileGuardedRegex } from './regex_guard.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { countNoun, ensureNewline, foldPath, isTestFile } from './util.js'
 
@@ -75,6 +76,13 @@ function emitErr(text: string): void {
  * differently from the tracked entry on a case-insensitive filesystem, and an unmatched seed
  * would otherwise be silently reported as affecting nothing.
  */
+/** The one place `--filter` becomes a RegExp. Shared so the check and the use cannot drift apart. */
+function guardedFilter(filter: string): RegExp {
+  const guarded = compileGuardedRegex(filter)
+  if (!guarded.ok) throw new Error(`--filter is not usable as a regular expression: ${guarded.reason}`)
+  return guarded.re
+}
+
 export function computeAffected(opts: AffectedOptions): AffectedResult {
   const cwd = opts.cwd ?? process.cwd()
   const depth = opts.depth ?? DEFAULT_AFFECTED_DEPTH
@@ -130,7 +138,12 @@ export function computeAffected(opts: AffectedOptions): AffectedResult {
   // which tests a CI run executes, so a typo quietly matching a different set than intended is
   // the kind of confident wrong answer this command exists to prevent. runAffected validates the
   // pattern up front and refuses instead.
-  const matcher = opts.filter === undefined ? null : new RegExp(opts.filter)
+  // Guarded here and not only in runAffected: computeAffected is exported, so the up-front check
+  // there is not on the path of every caller, and a gate that measures one compile while a second
+  // compile does the work is the shape this repo keeps shipping. It throws rather than returning a
+  // code because a refusal cannot reach it through the CLI -- runAffected has already printed and
+  // exited 1 -- so this is the direct-caller backstop, not the user-facing message.
+  const matcher = opts.filter === undefined ? null : guardedFilter(opts.filter)
   const isAffectedTest = (f: string): boolean => (matcher === null ? isTestFile(f) : matcher.test(f))
 
   const root = getDisplayRoot(cwd)
@@ -160,10 +173,9 @@ export function runAffected(opts: AffectedOptions): number {
     return 1
   }
   if (opts.filter !== undefined) {
-    try {
-      new RegExp(opts.filter)
-    } catch (err) {
-      emitErr(`--filter is not a valid regular expression: ${err instanceof Error ? err.message : String(err)}`)
+    const guarded = compileGuardedRegex(opts.filter)
+    if (!guarded.ok) {
+      emitErr(`--filter is not usable as a regular expression: ${guarded.reason}`)
       return 1
     }
   }
