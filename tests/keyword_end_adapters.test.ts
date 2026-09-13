@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Fortran, Pascal (with Delphi forms), MATLAB/Octave and CMake adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m` is MATLAB and a `.pp` is Pascal. Every adapter also gets a pathological 50 KB line that must scan in under 100 ms.
+ * Unit tests for the Fortran, Pascal (with Delphi forms), MATLAB/Octave and CMake adapters: every declaration form each reads, exact spans and parents, nothing out of strings or comments, the imports each emits, and the content routing that decides when a `.m` is MATLAB and a `.pp` is Pascal. Every adapter also gets a pathological 50 KB line that must scan inside the shared pathological-scan budget.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -7,6 +7,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { expectFast, LINE_50K } from './helpers/pathological_scan.js'
 import { extractCmake } from '../src/languages/cmake.js'
 import { extractFortran } from '../src/languages/fortran.js'
 import { extractMatlab, isMatlabSource } from '../src/languages/matlab.js'
@@ -35,15 +36,6 @@ function imports(r: Result): string[] {
   return r.imports.map((i) => i.target)
 }
 
-/** The adapter must finish one pathological input in under 100 ms. */
-function expectFast(run: () => unknown, label: string): void {
-  run()
-  const t0 = performance.now()
-  run()
-  expect(performance.now() - t0, label).toBeLessThan(100)
-}
-
-const LINE_50K = 50_000
 
 describe('Fortran adapter', () => {
   it('reads the free-form fixture: module, derived type, contained procedures and the program, skipping the abstract interface body', () => {
@@ -158,7 +150,7 @@ describe('Fortran adapter', () => {
     expect(extractImports(fixture('Sample.f90'), '.f90')).toEqual(['my_mod'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['subroutine '.repeat(LINE_50K / 11), '&'.repeat(LINE_50K), "'".repeat(LINE_50K), '('.repeat(LINE_50K), 'end '.repeat(LINE_50K / 4), 'type, '.repeat(LINE_50K / 6)]) {
       expectFast(() => extractFortran(line, 'p.f90'), 'fortran free form')
       expectFast(() => extractFortran(`      ${line}`, 'p.f'), 'fortran fixed form')
@@ -303,7 +295,7 @@ describe('Pascal adapter', () => {
     expect(extractImports('unit Foo;\ninterface\nuses Bar in \'bar.pp\', Baz;\nimplementation\nend.\n', '.pp')).toEqual(['Bar', 'Baz'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['{'.repeat(LINE_50K), '(*'.repeat(LINE_50K / 2), "'".repeat(LINE_50K), 'procedure a;'.repeat(LINE_50K / 12), 'begin '.repeat(LINE_50K / 6), 'type a = class '.repeat(LINE_50K / 15), 'record '.repeat(LINE_50K / 7), 'type a<'.repeat(LINE_50K / 7), '#'.repeat(LINE_50K)]) {
       expectFast(() => extractPascal(line, 'p.pas'), 'pascal')
       expectFast(() => extractPascal(line, 'p.dfm'), 'dfm')
@@ -355,7 +347,7 @@ describe('MATLAB adapter', () => {
     expect(extractImports('function f\nimport pkg.Thing\nend\n', '.m')).toEqual(['pkg.Thing'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['function '.repeat(LINE_50K / 9), '['.repeat(LINE_50K), "'".repeat(LINE_50K), '.'.repeat(LINE_50K), 'if '.repeat(LINE_50K / 3), 'end '.repeat(LINE_50K / 4), 'a'.repeat(LINE_50K), 'x(end)'.repeat(LINE_50K / 6)]) {
       expectFast(() => extractMatlab(line, 'p.m'), 'matlab')
     }
@@ -389,7 +381,7 @@ describe('CMake adapter', () => {
     expect(extractImports(fixture('Sample.cmake'), importsExtensionFor('proj/CMakeLists.txt'))).toEqual(['CTest', 'Threads', 'MathFunctions'])
   })
 
-  it('scans a pathological 50 KB line in under 100 ms', () => {
+  it('scans a pathological 50 KB line fast', () => {
     for (const line of ['#[['.repeat(LINE_50K / 3), '#[='.repeat(LINE_50K / 3), 'function('.repeat(LINE_50K / 9), '"'.repeat(LINE_50K), '('.repeat(LINE_50K), '[=['.repeat(LINE_50K / 3), 'a('.repeat(LINE_50K / 2), 'a '.repeat(LINE_50K / 2), '\\'.repeat(LINE_50K)]) {
       expectFast(() => extractCmake(line, 'p.cmake'), 'cmake')
     }

@@ -78,8 +78,7 @@ function realpathOracle(target: string, root: string): boolean | null {
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true })
     if (!fs.existsSync(target)) fs.writeFileSync(target, 'containment-matrix-probe\n')
-    const rt = resolveRealpath(target)
-    const rr = resolveRealpath(root)
+    const { rt, rr } = resolveBoth(target, root)
     const rel = path.relative(rr, rt)
     return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
   } catch {
@@ -88,26 +87,30 @@ function realpathOracle(target: string, root: string): boolean | null {
 }
 
 /**
- * `fs.realpathSync`, falling back to `fs.realpathSync.native` for the spellings it cannot parse.
+ * Resolve target and root through the SAME resolver, preferring the native one.
  *
- * The JS implementation walks the path itself and chokes on the Win32 extended-length prefix --
- * `\\?\C:\...` makes it `lstat('C:')` and throw `EISDIR` -- while the native one hands the whole
- * string to the OS and answers correctly. That difference had a real cost: two `\\?\` rows in the
- * matrix were marked `unmaterializable` with the reason "there is no independent oracle for it",
- * which made them HAND-DERIVED fixtures restating the implementation, and the premise was simply
- * untrue. Measured on win32: `realpathSync` throws EISDIR on both spellings while
- * `realpathSync.native` resolves both to their plain form. One of the two answers then contradicted
- * what the matrix asserted -- see the `\\?\` rows for what that changed.
+ * `fs.realpathSync` is a JS walker: it replaces symlinks but otherwise hands back the spelling it
+ * was given. That is not the kernel's answer, and the difference is invisible on a developer box
+ * while being decisive on a CI runner:
  *
- * Native is the FALLBACK rather than the default deliberately. `realpathSync` is what the rest of
- * this repo (and `path_containment.ts` itself) uses, so keeping it first means the oracle disagrees
- * with the implementation for real reasons rather than because the two ask different questions.
+ *   - Win32 extended-length prefix. `\\?\C:\...` makes the JS walker `lstat('C:')` and throw
+ *     `EISDIR`; the native call resolves it to its plain form.
+ *   - Win32 8.3 alias. GitHub's windows runner has `os.tmpdir()` under `C:\Users\RUNNER~1\...`. The
+ *     JS walker preserves `RUNNER~1`, the native one expands it. Resolving one side each way put
+ *     the same file "outside" its own root.
+ *   - Darwin normalization. APFS is normalization-insensitive, so `cafe\u0301` and `caf\u00e9` name
+ *     one directory. The JS walker echoes whichever spelling it was handed; the native call returns
+ *     the on-disk one.
+ *
+ * `fs.realpathSync.native` asks the OS, which is what this oracle claims to be reporting. The JS
+ * walker stays as the fallback for a platform or shape the native call refuses. Both sides always
+ * go through the same one: a mixed pair compares two different questions and answers neither.
  */
-function resolveRealpath(p: string): string {
+function resolveBoth(target: string, root: string): { rt: string; rr: string } {
   try {
-    return fs.realpathSync(p)
+    return { rt: fs.realpathSync.native(target), rr: fs.realpathSync.native(root) }
   } catch {
-    return fs.realpathSync.native(p)
+    return { rt: fs.realpathSync(target), rr: fs.realpathSync(root) }
   }
 }
 
@@ -202,9 +205,20 @@ export const link = {
   },
 }
 
-/** A fresh scratch root plus a sibling "outside" directory, both real and both cleaned by the caller. */
-export function scratchPair(prefix: string): { base: string; root: string; outside: string; cleanup: () => void } {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
+/**
+ * A fresh scratch root plus a sibling "outside" directory, both real and both cleaned by the caller.
+ *
+ * `parent` defaults to the OS temp root. The one caller that overrides it needs the fixture on the
+ * same volume as `process.cwd()`, which the temp root is not on GitHub's windows runner (workspace
+ * on `D:`, temp on `C:`) -- and `path.relative` across volumes returns an absolute path, so a
+ * "relative root" fixture built there is not relative at all.
+ *
+ * Resolved with `realpathSync.native` rather than the JS walker so the base is already the OS's own
+ * spelling: that runner's temp root is `C:\Users\RUNNER~1\...`, and an 8.3 alias left in the root
+ * makes the oracle and the implementation disagree about a path that is plainly inside it.
+ */
+export function scratchPair(prefix: string, parent: string = os.tmpdir()): { base: string; root: string; outside: string; cleanup: () => void } {
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(parent, prefix)))
   const root = path.join(base, 'root')
   const outside = path.join(base, 'outside')
   fs.mkdirSync(root, { recursive: true })

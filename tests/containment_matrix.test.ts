@@ -53,8 +53,8 @@ function raw(...parts: readonly string[]): string {
   return parts.join(path.sep)
 }
 
-function scratch(): { base: string; root: string; outside: string } {
-  const s = scratchPair('tg-containment-')
+function scratch(parent?: string): { base: string; root: string; outside: string } {
+  const s = scratchPair('tg-containment-', parent)
   cleanups.push(s.cleanup)
   return { base: s.base, root: s.root, outside: s.outside }
 }
@@ -126,7 +126,13 @@ describe('containment matrix', () => {
   })
 
   it('accepts a root given as a RELATIVE path', () => {
-    const { root, outside } = scratch()
+    // Built under the repo's gitignored `.tmp/`, not under the OS temp root: on GitHub's windows
+    // runner the workspace is on `D:` and the temp root on `C:`, and `path.relative` between volumes
+    // returns an ABSOLUTE path, so the fixture silently stopped being the shape this case is named
+    // for. Same volume as cwd is the only property that matters here.
+    const sameVolume = path.join(process.cwd(), '.tmp')
+    fs.mkdirSync(sameVolume, { recursive: true })
+    const { root, outside } = scratch(sameVolume)
     // Relative to the process cwd, which vitest leaves at the repo root. A caller passing
     // `process.cwd()`-relative roots is not hypothetical: `projectScopeRoot` resolves `opts.projectRoot`
     // exactly because a bridge may hand one in unresolved.

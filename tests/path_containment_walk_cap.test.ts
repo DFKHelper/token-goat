@@ -81,6 +81,19 @@ function scratch(): string {
  * Eight-character segments, so that n=200,000 reproduces the ~1.89 MB shape of the measured
  * 1,301,906 ms row above rather than a shorter path that would understate it.
  */
+/**
+ * Exactly `bytes` bytes of `ch`, broken into `<= 200`-byte components separated by `path.sep`.
+ *
+ * The separators are part of the count, so the caller's byte budget is honoured exactly and the
+ * cap-straddling pair stays a pair.
+ */
+function segmented(ch: string, bytes: number): string {
+  const chars = Array.from({ length: bytes }, (_, i) => (i > 0 && i % 201 === 200 ? path.sep : ch))
+  // Never end on a separator: a trailing one changes what the path names.
+  if (chars[bytes - 1] === path.sep) chars[bytes - 1] = ch
+  return chars.join('')
+}
+
 function longPath(root: string, n: number): string {
   return root + path.sep + Array.from({ length: n }, (_, i) => `seg${i % 10}xxxx`).join(path.sep)
 }
@@ -111,7 +124,7 @@ describe('the path-resolution walk is bounded', () => {
     expect(answer).toBe(false)
   })
 
-  it('refuses a path one byte over the cap and accepts the same shape one byte under it', () => {
+  it('refuses a path one byte over the cap and accepts the same shape one byte under it', (ctx) => {
     // The behavioural statement of the cap, independent of any clock. Both of these are LEXICALLY
     // inside the root and differ only in length, so a passing pair can only mean the length itself
     // is what decided -- which is what makes this the assertion that survives a fast machine.
@@ -119,13 +132,36 @@ describe('the path-resolution walk is bounded', () => {
     const pad = MAX_BYTES - Buffer.byteLength(root, 'utf8') - 2
     expect(pad, 'the scratch root is too long for this fixture to straddle the cap').toBeGreaterThan(16)
 
-    const under = `${root}${path.sep}${'u'.repeat(pad)}`
-    const over = `${root}${path.sep}${'o'.repeat(pad + 8)}`
+    // Spread over 200-byte components rather than one giant one. `NAME_MAX` is 255 bytes per
+    // component on ext4 and APFS, so a single 3,900-byte name is ENAMETOOLONG at the first `lstat`
+    // and the walk fails for a reason that has nothing to do with the cap under test. Windows has no
+    // such per-component limit, which is why this only ever failed on the two platforms no one runs
+    // the suite on locally. The total byte length -- the thing the cap measures -- is unchanged.
+    const under = `${root}${path.sep}${segmented('u', pad)}`
+    const over = `${root}${path.sep}${segmented('o', pad + 8)}`
     expect(Buffer.byteLength(under, 'utf8')).toBeLessThanOrEqual(MAX_BYTES)
     expect(Buffer.byteLength(over, 'utf8')).toBeGreaterThan(MAX_BYTES)
 
-    expect(isInsideRoot(under, root), 'a legitimate path under the cap must still resolve').toBe(true)
+    // The positive half needs the OS to answer ENOENT for an absent component, which is what tells
+    // `resolveThroughLinks` the segment provably is not a link. Every other errno fails closed by
+    // design, so a platform that answers ENAMETOOLONG here would make `under` false for a reason
+    // that is not the cap. Probed rather than assumed: the single-component version of this fixture
+    // was ENAMETOOLONG on ext4 and APFS and nobody knew, because the only machine that ran it was a
+    // Windows box where the same shape is ENOENT.
+    const errno = ((): string => {
+      try {
+        fs.lstatSync(under)
+        return 'EXISTS'
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code ?? 'UNKNOWN'
+      }
+    })()
     expect(isInsideRoot(over, root), 'a path over the cap is unresolvable, and unresolvable fails closed').toBe(false)
+    if (errno !== 'ENOENT') {
+      ctx.skip(`the over-the-cap half above passed; the under-the-cap half cannot be asked here, because this platform answers ${errno}, not ENOENT, for an absent ${Buffer.byteLength(under, 'utf8')}-byte path, so the walk fails closed for a reason that is not the cap.`)
+      return
+    }
+    expect(isInsideRoot(under, root), 'a legitimate path under the cap must still resolve').toBe(true)
   })
 
   // NOT POSIX-gated, and the gate that used to be here was justified by a measurement that is
@@ -139,7 +175,7 @@ describe('the path-resolution walk is bounded', () => {
   // commits behind and no CI has ever seen this file. CAN_SYMLINK still gates it, because an
   // unprivileged Windows account without Developer Mode genuinely cannot create one; that is a
   // permission fact, checked at run time, rather than an inherited belief about path lengths.
-  it.runIf(CAN_SYMLINK)('refuses a SHORT path whose link expansion pushes the resolved form over the cap', () => {
+  it.runIf(CAN_SYMLINK)('refuses a SHORT path whose link expansion pushes the resolved form over the cap', (ctx) => {
     // The second cap earns its place here and only here. The entry cap measures the INPUT, and this
     // input is 60-odd bytes. A link target is spliced into the remaining work, so the walk can
     // outgrow whatever arrived: without the in-loop check on the growing `base`, the resolved form
@@ -159,10 +195,31 @@ describe('the path-resolution walk is bounded', () => {
       root = path.join(root, 'd'.repeat(60))
       fs.mkdirSync(root, { recursive: true })
     }
-    const linkTarget = Array.from({ length: 38 }, () => segment).join('/')
-    expect(Buffer.byteLength(linkTarget, 'utf8'), 'the stored link target must be under PATH_MAX or the OS refuses to create it').toBeLessThan(MAX_BYTES)
-    expect(root.length + linkTarget.length, 'the RESOLVED form has to cross the cap, or this case proves nothing').toBeGreaterThan(MAX_BYTES)
-    fs.symlinkSync(linkTarget, path.join(root, 'lnk'), 'dir')
+    // How long a stored target the platform will actually accept, MEASURED rather than assumed.
+    // Darwin's PATH_MAX is 1024, so `symlinkSync` there answers ENAMETOOLONG for the 3,837-byte
+    // target Linux and Windows both take -- and the whole fixture died on macOS with an error that
+    // said nothing about the cap. Probing keeps the case at full strength everywhere it can be built
+    // and reports honestly where it cannot, instead of inheriting one platform's limit as a belief.
+    const linkPath = path.join(root, 'lnk')
+    let linkTarget = ''
+    for (let segments = 38; segments >= 1; segments--) {
+      const candidate = Array.from({ length: segments }, () => segment).join('/')
+      try {
+        fs.symlinkSync(candidate, linkPath, 'dir')
+        linkTarget = candidate
+        break
+      } catch {
+        // Too long for this platform's stored-target limit; try a shorter one.
+      }
+    }
+    expect(linkTarget, 'the platform refused even a single 100-byte link target, which is not a length limit but a broken fixture').not.toBe('')
+    expect(Buffer.byteLength(linkTarget, 'utf8'), 'the stored link target must be under the cap, or the entry check is what decides this case').toBeLessThan(MAX_BYTES)
+    if (root.length + linkTarget.length <= MAX_BYTES) {
+      ctx.skip(
+        `this platform stores at most a ${linkTarget.length}-byte symlink target, and its PATH_MAX also bounds how deep the root can be dug, so root (${root.length}) + target (${linkTarget.length}) cannot reach the ${MAX_BYTES}-byte cap. The in-loop cap is unreachable here by construction, not untested by choice: Linux and Windows both build this case at full size.`,
+      )
+      return
+    }
 
     const target = path.join(root, 'lnk', 'y'.repeat(64))
     expect(Buffer.byteLength(target, 'utf8'), 'the INPUT must be comfortably under the cap, or the entry check decides this').toBeLessThan(MAX_BYTES)
