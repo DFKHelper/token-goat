@@ -39,7 +39,7 @@ let prevTestCwd = ''
 let cwdSandbox = ''
 beforeEach(() => {
   prevTestCwd = process.cwd()
-  cwdSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-copilot-')))
+  cwdSandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-copilot-')))
   process.chdir(cwdSandbox)
 })
 afterEach(() => {

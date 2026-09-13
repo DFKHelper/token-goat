@@ -49,7 +49,7 @@ async function captureIndex(opts: Parameters<typeof cmdIndex>[1]): Promise<strin
 }
 
 beforeEach(() => {
-  TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-vanished-')))
+  TMP = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-vanished-')))
   dbPath = path.join(TMP, 'index.db')
   git('init', '-q', '.')
   git('config', 'user.email', 'test@example.com')

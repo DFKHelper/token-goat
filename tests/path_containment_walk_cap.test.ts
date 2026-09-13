@@ -69,8 +69,20 @@ afterEach(() => {
   }
 })
 
+/**
+ * A scratch root in the spelling the implementation will canonicalize it to.
+ *
+ * `.native`, not the plain `fs.realpathSync`: the latter is a JS walker that follows symlinks and
+ * otherwise echoes back the spelling it was handed. Ask the OS instead. The difference is invisible
+ * on a developer box and decisive on GitHub's `windows-latest`, whose temp root is the 8.3 alias
+ * `C:\Users\RUNNER~1\...`. `canonicalize` expands such a segment, and expansion makes the path
+ * LONGER (`RUNNER~1` -> `runneradmin`, +3 bytes), so a fixture sized against the short spelling to
+ * sit one byte under the 4096-byte cap arrives three bytes over it. The under-the-cap half then
+ * fails for the expansion rather than for the cap under test. Same class on macOS, where
+ * `/var/folders/...` canonicalizes to `/private/var/folders/...`, +8 bytes.
+ */
 function scratch(): string {
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walkcap-')))
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walkcap-')))
   scratches.push(d)
   return d
 }
@@ -129,6 +141,12 @@ describe('the path-resolution walk is bounded', () => {
     // inside the root and differ only in length, so a passing pair can only mean the length itself
     // is what decided -- which is what makes this the assertion that survives a fast machine.
     const root = scratch()
+    // The premise every length below rests on: the implementation measures the cap against the
+    // CANONICAL spelling of the path, so a root that canonicalizes to something else makes the
+    // arithmetic here wrong by exactly the difference in length. Stated as its own assertion
+    // because when it broke it broke as a bare `expected false to be true` twenty lines down, on
+    // one CI runner, saying nothing about spellings or about length.
+    expect(fs.realpathSync.native(root), 'the scratch root is not in its canonical spelling, so the byte budget below is computed against a path the implementation never sees').toBe(root)
     const pad = MAX_BYTES - Buffer.byteLength(root, 'utf8') - 2
     expect(pad, 'the scratch root is too long for this fixture to straddle the cap').toBeGreaterThan(16)
 

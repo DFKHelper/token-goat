@@ -118,7 +118,7 @@ let prevTestCwd = ''
 let cwdSandbox = ''
 beforeEach(() => {
   prevTestCwd = process.cwd()
-  cwdSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-')))
+  cwdSandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-')))
   process.chdir(cwdSandbox)
 })
 afterEach(() => {
@@ -1160,7 +1160,7 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
 
   // Every other test here passes `roots` explicitly, which is the injected-seam trap: the argument the test supplies is the one the shipping call omits, so the DEFAULT root set was covered by nothing. It was home-only, and a repo's own .claude/agents went unread; this drives findRestrictedAgentNames() with no argument, the way buildUnrestrictedSpawnAdvisory calls it.
   it('scans the project roster too when called with no roots, the way the shipping caller invokes it', () => {
-    const proj = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-roster-')))
+    const proj = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-roster-')))
     const prevCwd = process.cwd()
     try {
       fs.mkdirSync(path.join(proj, '.claude', 'agents'), { recursive: true })
@@ -1182,7 +1182,7 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
   // escaping links" and "rejects an external agents root link" cases) -- a nested symlink inside
   // a repository-authored .claude/agents pointing at a directory elsewhere on the machine.
   it.skipIf(!CAN_JUNCTION)('does not follow a nested symlink out of the project roster into the rest of the filesystem', () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-escape-')))
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-escape-')))
     const proj = path.join(root, 'proj')
     const outside = path.join(root, 'outside')
     const prevCwd = process.cwd()
@@ -1201,7 +1201,7 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
   })
 
   it.skipIf(!CAN_JUNCTION)('does not follow the project roster itself when .claude/agents is a symlink out of the project', () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-root-escape-')))
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-root-escape-')))
     const proj = path.join(root, 'proj')
     const outside = path.join(root, 'outside-agents')
     const prevCwd = process.cwd()

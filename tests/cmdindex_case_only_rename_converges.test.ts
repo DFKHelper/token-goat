@@ -61,7 +61,7 @@ function hostFsIsCaseInsensitive(): boolean {
 }
 
 beforeEach(() => {
-  TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-caseconv-')))
+  TMP = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-caseconv-')))
   dbPath = path.join(TMP, 'index.db')
   git('init', '-q', '.')
   git('config', 'user.email', 'test@example.com')

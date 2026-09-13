@@ -95,7 +95,7 @@ describe('the install scope depends on installers being synchronous, and that is
   })
 
   it('refuses at run time a scoped function that returns a thenable', () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-sync-')))
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-sync-')))
     try {
       // POSITIVE CONTROL, first: the same call shape with a synchronous body must work, or the
       // refusal below is indistinguishable from withInstallScope being broken outright.
@@ -114,8 +114,8 @@ describe('the install scope depends on installers being synchronous, and that is
     // The refusal runs inside the `try`, so the `finally` still restores. If it did not, one thrown
     // error would leave a project root latched for the rest of the process and every later
     // user-scope write in the same run would start failing.
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-restore-')))
-    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-outside-')))
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-restore-')))
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-outside-')))
     try {
       // In-band positive control: inside the scope, an outside target really is refused. Without
       // this, the "allowed" assertion after it could pass on a guard that never refuses anything.

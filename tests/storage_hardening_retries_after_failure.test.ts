@@ -48,7 +48,7 @@ let base: string
 
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
-  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-reharden-')))
+  base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-reharden-')))
 })
 
 afterEach(() => {

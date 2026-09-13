@@ -23,7 +23,7 @@ let home: string
 let project: string
 
 beforeEach(() => {
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-user-instr-')))
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-user-instr-')))
   home = path.join(root, 'home')
   project = path.join(root, 'project')
   fs.mkdirSync(home)

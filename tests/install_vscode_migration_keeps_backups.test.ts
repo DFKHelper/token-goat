@@ -39,7 +39,7 @@ const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_DATA_HO
 beforeEach(() => {
   saved = {}
   for (const k of ENV_KEYS) saved[k] = process.env[k]
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-migrate-')))
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-migrate-')))
   project = path.join(root, 'project')
   home = path.join(root, 'home')
   fs.mkdirSync(project, { recursive: true })

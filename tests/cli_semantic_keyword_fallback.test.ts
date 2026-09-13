@@ -66,7 +66,7 @@ const { globalDbPath } = await import('../src/constants.js')
 // puts the root through -- which is what makes the two sides agree by construction rather than by
 // coincidence on whichever platform happens to be running. tests/cli_context_stats.test.ts records
 // this repository hitting exactly this on macOS and Windows CI before.
-const TMP = canonicalize(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-semfallback-'))))
+const TMP = canonicalize(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-semfallback-'))))
 // posix.join, not path.join: the project-scoped SQL compares a normalized (forward-slash) root
 // against the stored path as-is, and canonicalizeIndexPath keeps whichever separator its caller
 // used. The production walk indexes with forward slashes, so a backslash path here would store a

@@ -68,8 +68,8 @@ describe('mcp confinement: gate base must equal execution base', () => {
     originalCwd = process.cwd()
     // fs.realpathSync: macOS's os.tmpdir() is a symlink (/var -> /private/var), and the gate
     // compares REAL paths -- an unrealpath'd root would not match the realpath'd target.
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-div-root-')))
-    serverCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-div-cwd-')))
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-div-root-')))
+    serverCwd = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-div-cwd-')))
     // Same RELATIVE names in both directories: the gate validates the copy under `root`, the
     // buggy execution layer reads the copy under the server's cwd.
     fs.writeFileSync(path.join(root, 'inside.txt'), `${IN_ROOT}\n`)

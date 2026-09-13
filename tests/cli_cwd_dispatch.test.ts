@@ -39,8 +39,8 @@ let stdoutSpy: WriteSpy
 
 beforeEach(() => {
   originalCwd = process.cwd()
-  target = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-target-')))
-  elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-elsewhere-')))
+  target = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-target-')))
+  elsewhere = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-elsewhere-')))
   stderr = []
   stdout = []
   stderrSpy = spyOnWrite(process.stderr, stderr)

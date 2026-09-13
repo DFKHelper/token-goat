@@ -64,7 +64,7 @@ let CASE_SENSITIVE = false
 
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
-  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ledgercase-')))
+  base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ledgercase-')))
   CASE_SENSITIVE = caseSensitiveHere(base)
   process.env['XDG_DATA_HOME'] = path.join(base, 'share')
   process.env['LOCALAPPDATA'] = path.join(base, 'share')

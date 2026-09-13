@@ -43,8 +43,8 @@ function seedProject(root: string, marker: string): void {
 }
 
 beforeEach(() => {
-  rootA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-xproj-a-')))
-  rootB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-xproj-b-')))
+  rootA = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-xproj-a-')))
+  rootB = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-xproj-b-')))
   seedProject(rootA, 'AAA-FROM-PROJECT-A')
   seedProject(rootB, 'BBB-FROM-PROJECT-B')
   cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
