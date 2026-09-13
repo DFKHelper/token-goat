@@ -15,7 +15,7 @@ import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import type { ToolFilter } from './tool_filters/index.js'
 import { getBashOutputId, getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
-import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
+import { resolveIndexPath, normalizePath, toDisplayPath, displaySafePath, isUncOrDevicePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
@@ -36,6 +36,7 @@ import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 import { statSync, existsSync, openSync, readSync, closeSync } from 'node:fs'
 import { isUnderSystemTemp } from './project.js'
+import { preToolPathDeclined } from './vscode_path_gate.js'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
@@ -491,7 +492,11 @@ function isTempPath(fp: string): boolean {
   return (
     /^\/tmp\//i.test(norm) ||
     /\/var\/folders\//i.test(norm) ||
-    /AppData\/Local\/Temp\//i.test(norm) ||
+    // Anchored to a local drive root on purpose. Unanchored, this clause said yes to
+    // `//host/share/AppData/Local/Temp/x.md`, and the caller's answer to yes is to stat the path --
+    // which on Windows opens an SMB session to whatever host a command named. A temp directory is
+    // somewhere on a local volume; nothing that starts with two separators is one.
+    /^[a-z]:\/(?:[^/]+\/)*AppData\/Local\/Temp\//i.test(norm) ||
     (norm.startsWith('/c/Users/') && norm.includes('/AppData/Local/Temp/')) ||
     isUnderSystemTemp(fp)
   )
@@ -592,8 +597,29 @@ function isLargeFileOnDisk(filePath: string, floor: number): boolean {
   }
 }
 
+/**
+ * Whether a path this hook parsed OUT OF a command may be touched on disk before the user has
+ * approved that command.
+ *
+ * Every other pre_tool_use handler asks {@link preToolPathDeclined} before its first fs call,
+ * because the harness fires the hook before the approval prompt and the path is the model's
+ * choice until then -- and on Windows a `statSync` of `\\host\share\...` opens an SMB session,
+ * carrying an authentication attempt, to a host a repository named. This handler was outside that
+ * discipline for one reason that reads plausible and is wrong: its tool carries a command rather
+ * than a path. It carries about twenty paths, extracted from the command, and stats two of them.
+ *
+ * Answers false rather than throwing: the caller's only use for the size is deciding whether to
+ * emit a hint, and declining to measure is the same outcome as measuring and finding nothing.
+ * `event === undefined` still refuses a network or device path, so a caller that has no event to
+ * hand -- a direct unit test of an extractor, or a future one -- does not get the weaker rule.
+ */
+function commandPathIsTouchable(filePath: string, event: HookEvent | undefined): boolean {
+  if (event === undefined) return !isUncOrDevicePath(filePath)
+  return !preToolPathDeclined(event, filePath)
+}
+
 /** Extracts the read path from a `powershell -Command "Get-Content '<path>' -Raw"` (or pwsh/cat/type) wrapper, which otherwise bypasses every Get-Content/cat extractor because the command token is `powershell`. Tolerates a trailing `-Raw`/`-Encoding` that bare extractCatFile rejects. Temp paths are size-gated: a small scratch read stays silent, a large one still earns a recall hint. */
-export function extractPowerShellWrappedGetContent(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractPowerShellWrappedGetContent(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
   const w = POWERSHELL_WRAP_RE.exec(cmd)
   if (!w) return null
   const inner = (w[1] ?? w[2] ?? '').trim()
@@ -605,7 +631,10 @@ export function extractPowerShellWrappedGetContent(cmd: string): { filePath: str
   const flags = classifyFileExtensions(filePath)
   if (flags === null) return null
   // Temp reads are normally scratch and skipped, but a large one still floods context; gate on size rather than excluding unconditionally.
-  if (isTempPath(filePath) && !isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
+  if (isTempPath(filePath)) {
+    if (!commandPathIsTouchable(filePath, event)) return null
+    if (!isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
+  }
   return { filePath, ...flags }
 }
 
@@ -614,7 +643,7 @@ export function extractPowerShellWrappedGetContent(cmd: string): { filePath: str
  * `[System.IO.File]::ReadAllText(...)`, `[IO.File]::ReadAllLines(...)`,
  * `[IO.File]::ReadAllBytes(...)`, `[IO.File]::ReadLines(...)`, etc.
  */
-export function extractPowerShellFileMethodRead(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
   let inner = cmd.trim()
   const w = POWERSHELL_WRAP_RE.exec(inner)
   if (w) {
@@ -624,7 +653,10 @@ export function extractPowerShellFileMethodRead(cmd: string): { filePath: string
   if (!m?.[1]) return null
   const filePath = m[1]
   if (isOrchestratorStateFile(filePath)) return null
-  if (isTempPath(filePath) && !isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
+  if (isTempPath(filePath)) {
+    if (!commandPathIsTouchable(filePath, event)) return null
+    if (!isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
+  }
   const flags = classifyFileExtensions(filePath)
   if (flags === null) {
     const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
@@ -2960,7 +2992,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return cdStripped ? contextOutput(msg) : denyOutput(msg)
   }
 
-  const psGetContentResult = extractPowerShellWrappedGetContent(cmd)
+  const psGetContentResult = extractPowerShellWrappedGetContent(cmd, event)
   if (psGetContentResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql } = psGetContentResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
@@ -3065,7 +3097,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
-  const psMethodRead = extractPowerShellFileMethodRead(cmd)
+  const psMethodRead = extractPowerShellFileMethodRead(cmd, event)
   if (psMethodRead !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql } = psMethodRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
@@ -3153,7 +3185,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const curlDl = extractCurlDownload(cmd)
   if (curlDl !== null) {
     const prevPath = getCurlDownloadPath(curlDl.url)
-    const prevResolvedPath = prevPath !== null ? resolveIndexPath(prevPath, preHookCwd ?? process.cwd()) : null
+    const prevResolvedPath = prevPath !== null && commandPathIsTouchable(prevPath, event)
+      ? resolveIndexPath(prevPath, preHookCwd ?? process.cwd())
+      : null
     if (prevPath !== null && prevResolvedPath !== null && !existsSync(prevResolvedPath)) {
       // The previously downloaded file is gone (deleted/moved since). Forget the
       // stale session record and let the re-download proceed instead of denying.

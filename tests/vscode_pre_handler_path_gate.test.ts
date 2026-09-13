@@ -67,13 +67,28 @@ afterAll(() => {
   fsReal.rmSync(base, { recursive: true, force: true })
 })
 
-/** Every canonical tool a VS Code built-in tool maps to, except Bash: run_in_terminal carries a command, not a path. */
-const TOOLS = [...new Set(Object.values(VSCODE_TOOL_NAME_MAP))].filter((t) => t !== 'Bash').sort()
+/**
+ * Every canonical tool a VS Code built-in tool maps to, Bash included.
+ *
+ * Bash used to be filtered out of this population, with the rationale that `run_in_terminal`
+ * carries a command rather than a path. It carries about twenty paths, which `hooks_bash.ts`
+ * extracts OUT OF the command and two of which it stats -- so the one tool excluded from the sweep
+ * was the one whose handler had never been brought inside the rule. A sweep whose population is
+ * built by a filter is only as good as the filter, and this one narrowed itself by tool name in a
+ * line nothing else pointed at.
+ */
+const TOOLS = [...new Set(Object.values(VSCODE_TOOL_NAME_MAP))].sort()
 const NATIVE_FOR: Record<string, string> = Object.fromEntries(Object.entries(VSCODE_TOOL_NAME_MAP).map(([native, canonical]) => [canonical, native]))
 
 function vscodeEvent(toolName: string, target: string): HookEvent {
   // Every path key any of these tools' handlers reads, so each handler is offered the target whichever key it looks at.
-  const toolInput = { file_path: target, path: target, notebook_path: target, pattern: 'value1', content: LINES.replace('value1 = 1', 'value1 = 2'), old_string: 'a', new_string: 'b' }
+  // Bash reads none of them: it takes `command`, so the target is spelled into the two command
+  // shapes whose extractors reach the filesystem -- a `powershell -Command` Get-Content wrapper and
+  // a .NET static file read. Both are on one line because the handler stops at its first match, and
+  // the second is asserted by its own case below.
+  const toolInput = toolName === 'Bash'
+    ? { command: `powershell -Command "Get-Content '${target}'"` }
+    : { file_path: target, path: target, notebook_path: target, pattern: 'value1', content: LINES.replace('value1 = 1', 'value1 = 2'), old_string: 'a', new_string: 'b' }
   return makeHookEvent({ eventName: 'pre_tool_use', toolName, toolInput, sessionId: `gate-${Math.random().toString(36).slice(2)}`, raw: { tool_name: toolName, tool_input: toolInput, cwd: workspace, _tg_harness: 'vscode', [VSCODE_TOOL_NAME_KEY]: NATIVE_FOR[toolName] } })
 }
 
@@ -93,10 +108,10 @@ const DECLINED: ReadonlyArray<[string, () => string]> = [
 
 describe('the sweep finds the handlers it is meant to cover', () => {
   it('has at least the six path-carrying registrations for these tools', () => {
-    expect(TOOLS).toEqual(['Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write'])
-    // Read: preReadHandler + preReadImageHandler; Grep: preReadHandler + preGrepHandler; Glob: preGlobHandler; Write: preWriteRewriteHandler (toolName-filtered ones only; unfiltered handlers such as the MCP ones add to every tool).
+    expect(TOOLS).toEqual(['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write'])
+    // Read: preReadHandler + preReadImageHandler; Grep: preReadHandler + preGrepHandler; Glob: preGlobHandler; Write: preWriteRewriteHandler; Bash: preBashHandler (toolName-filtered ones only; unfiltered handlers such as the MCP ones add to every tool).
     const filtered = TOOLS.reduce((n, t) => n + handlersFor('pre_tool_use', t).length, 0) - TOOLS.length * handlersFor('pre_tool_use', 'tg-no-such-tool').length
-    expect(filtered).toBeGreaterThanOrEqual(6)
+    expect(filtered).toBeGreaterThanOrEqual(7)
   })
 })
 
@@ -113,7 +128,11 @@ describe.each(TOOLS)('every pre_tool_use handler for %s on VS Code', (tool) => {
       expect(hitsOf(target(), touched), `handler #${i} (${handler.name || 'anonymous'}) for ${tool}`).toEqual([])
     }
     touched.length = 0
-    expect(await runHook(vscodeEvent(tool, target()))).toEqual({ hookType: 'pass' })
+    const full = await runHook(vscodeEvent(tool, target()))
+    // Bash is the one tool whose refusal is not a pass. Declining to TOUCH the path does not stop
+    // it emitting the surgical-read hint that names it, which costs no fs call and is the whole
+    // point of the handler; every other tool here has nothing left to say once the path is out.
+    if (tool !== 'Bash') expect(full).toEqual({ hookType: 'pass' })
     expect(hitsOf(target(), touched), `the full registry for ${tool}`).toEqual([])
   })
 })
@@ -133,5 +152,47 @@ describe('an in-workspace path is still looked at', () => {
     const claude = { ...event, raw: { tool_name: 'Write', tool_input: event.toolInput, cwd: workspace } }
     const out = await runHook(claude)
     expect(out.hookType).toBe('context')
+  })
+})
+
+/**
+ * The two command shapes in `hooks_bash.ts` that reach the filesystem, each against the payload
+ * that used to get through: a path under a network share spelled so it ends in `AppData/Local/Temp`.
+ *
+ * The sweep above proves the handler makes no fs call. These two prove WHICH gate stops it, and the
+ * third is the calibration: the identical command naming a real local temp file is measured, so a
+ * green pair above cannot be the extractors having quietly stopped matching.
+ *
+ * PROVENANCE: HAND-DERIVED. The commands are the two shapes `extractPowerShellWrappedGetContent`
+ * and `extractPowerShellFileMethodRead` document; the share path is composed by hand to satisfy the
+ * substring test the temp-path check used to apply, and names a host that does not resolve.
+ */
+describe('a command naming a path on a network share is never stat-ed before approval', () => {
+  const SHARE = String.raw`\\tg-no-such-host\share\AppData\Local\Temp\notes.md`
+
+  function bashEvent(command: string): HookEvent {
+    const toolInput = { command }
+    return makeHookEvent({ eventName: 'pre_tool_use', toolName: 'Bash', toolInput, sessionId: `bash-${Math.random().toString(36).slice(2)}`, raw: { tool_name: 'Bash', tool_input: toolInput, cwd: workspace } })
+  }
+
+  it.each([
+    ['a powershell -Command Get-Content wrapper', `powershell -Command "Get-Content '${SHARE}'"`],
+    ['a .NET static file read', `[IO.File]::ReadAllText('${SHARE}')`],
+  ])('makes no fs call for %s', async (_label, command) => {
+    touched.length = 0
+    await runHook(bashEvent(command))
+    expect(touched.filter((t) => t.includes('tg-no-such-host'))).toEqual([])
+  })
+
+  it('calibration: the same command naming a local temp file IS measured, so the refusal above is the share', async () => {
+    const localTemp = path.join(fsReal.realpathSync(os.tmpdir()), `tg-gate-${process.pid}-notes.md`)
+    fsReal.writeFileSync(localTemp, LINES)
+    try {
+      touched.length = 0
+      await runHook(bashEvent(`powershell -Command "Get-Content '${localTemp}'"`))
+      expect(touched.some((t) => normalizePath(t) === normalizePath(localTemp))).toBe(true)
+    } finally {
+      fsReal.rmSync(localTemp, { force: true })
+    }
   })
 })
