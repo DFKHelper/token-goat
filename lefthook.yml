@@ -25,6 +25,13 @@ pre-commit:
       run: bash .lefthook-scripts/run-guards.sh
       glob: "**/*.ts"
 
+commit-msg:
+  commands:
+    no-tool-attribution:
+      # Runs on the message, not on files, so it has no glob: every commit is
+      # checked. See the script's header for why this cannot be left to memory.
+      run: bash .lefthook-scripts/check-commit-msg.sh {1}
+
 pre-push:
   commands:
     all-checks:
