@@ -27,7 +27,7 @@ import * as path from 'node:path'
 
 import { afterAll, describe, expect, it, vi } from 'vitest'
 
-import { isInsideRoot, isNetworkPath, sameDirectory } from '../src/path_containment.js'
+import { isInsideRoot, isNetworkPath, reachesForeignShare, sameDirectory } from '../src/path_containment.js'
 
 const previous = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
 
@@ -71,7 +71,6 @@ describe('telling a share from a path merely spelled like one', () => {
     ['//?/UNC/server/share/repo', true],
     ['\\\\?\\UNC\\server\\share\\repo', true],
     ['//./unc/server/share/repo', true], // the device prefix is spelled either way, and matched either case
-    ['//tmp/repo', true], // POSIX: the same file as /tmp/repo, but nothing here can tell that
     ['//?/c:/work/repo', false],
     ['\\\\?\\C:\\work\\repo', false],
     ['//./c:/work/repo', false],
@@ -81,9 +80,39 @@ describe('telling a share from a path merely spelled like one', () => {
   ]
   for (const [spelling, network] of cases) {
     it(`${network ? 'refuses to resolve' : 'resolves'} ${spelling}`, () => {
-      expect(isNetworkPath(spelling)).toBe(network)
+      expect(isNetworkPath(spelling, 'win32')).toBe(network)
     })
   }
+
+  it.each([
+    // PROVENANCE: HAND-DERIVED. Which pairs may start a walk, reasoned from where the two paths
+    // live rather than from what the function returns. The `true` rows are the ones that must
+    // refuse before any filesystem call.
+    { target: '\\\\host\\share\\f', root: 'C:\\work', foreign: true, why: 'a share from a local root' },
+    { target: '\\\\?\\UNC\\host\\share\\f', root: 'C:\\work', foreign: true, why: 'the device spelling of one' },
+    { target: '\\\\other\\share\\f', root: '\\\\host\\share', foreign: true, why: 'a second host' },
+    { target: '\\\\host\\other\\f', root: '\\\\host\\share', foreign: true, why: 'a second share on the same host' },
+    { target: '\\\\host\\share\\f', root: '\\\\host\\share', foreign: false, why: 'the project is hosted there' },
+    { target: '\\\\HOST\\Share\\f', root: '\\\\host\\share', foreign: false, why: 'a host name is not case-sensitive' },
+    { target: '\\\\?\\UNC\\host\\share\\f', root: '\\\\host\\share', foreign: false, why: 'the same share, spelled twice' },
+    { target: '\\\\?\\C:\\work\\f', root: 'C:\\work', foreign: false, why: 'a device path is this volume' },
+    { target: 'C:\\work\\f', root: 'C:\\work', foreign: false, why: 'neither is a share' },
+  ])('$why: reachesForeignShare is $foreign', ({ target, root, foreign }) => {
+    expect(reachesForeignShare(target, root, 'win32')).toBe(foreign)
+  })
+
+  it('reads no path as a share off Windows', () => {
+    // Two leading slashes mean a host there and nothing anywhere else: POSIX leaves a leading `//`
+    // implementation-defined and Linux and macOS both resolve it to `/`, which is why
+    // `path.posix.normalize('//tmp/repo')` is `/tmp/repo`. Classifying it as a share refused an
+    // ordinary local directory, and an SMB mount on those systems is at a path like `/mnt/share`
+    // with nothing in the spelling to find.
+    expect(path.posix.normalize('//tmp/repo'), 'the premise this test rests on').toBe('/tmp/repo')
+    for (const spelling of ['//tmp/repo', '//server/share/repo', '\\\\server\\share\\repo']) {
+      expect(isNetworkPath(spelling, 'linux'), spelling).toBe(false)
+      expect(isNetworkPath(spelling, 'darwin'), spelling).toBe(false)
+    }
+  })
 })
 
 describe('the same-directory check itself, on a share no runner has', () => {
@@ -95,8 +124,8 @@ describe('the same-directory check itself, on a share no runner has', () => {
     // about.
     const dialed = vi.spyOn(fs.realpathSync, 'native')
     try {
-      expect(sameDirectory('//tg-no-such-host/share/Repo', '//tg-no-such-host/share/repo')).toBe(false)
-      expect(sameDirectory('\\\\tg-no-such-host\\share\\Repo', '\\\\tg-no-such-host\\share\\repo')).toBe(false)
+      expect(sameDirectory('//tg-no-such-host/share/Repo', '//tg-no-such-host/share/repo', 'win32')).toBe(false)
+      expect(sameDirectory('\\\\tg-no-such-host\\share\\Repo', '\\\\tg-no-such-host\\share\\repo', 'win32')).toBe(false)
       expect(dialed, 'the check opened a connection to a host the caller named').not.toHaveBeenCalled()
     } finally {
       dialed.mockRestore()
@@ -141,29 +170,25 @@ describe('containment on a volume whose case sensitivity disagrees with the plat
     expect(isInsideRoot(path.join(base, 'Project', 'src', 'index.ts'), root)).toBe(true)
   })
 
-  // A share is spelled with two leading slashes, and on a POSIX system so is any path the caller
-  // chooses to write that way -- `//tmp/x` and `/tmp/x` are the same file. That is what makes the
-  // network branch reachable in a test at all: an unreachable host never gets this far, because the
-  // link walk reads its `UNKNOWN` lstat error as "cannot answer" and refuses several seconds
-  // earlier, so a fictional server would have certified nothing.
-  const shareSpelling = process.platform === 'win32' ? null : `/${base}`
-
-  it.runIf(shareSpelling !== null)('refuses a differently-cased spelling of a share, without dialing it', () => {
-    // A share cannot be asked: resolving one opens an SMB connection to an address the model chose,
-    // inside a hook that runs before the user has approved the tool call. Unasked has to mean
-    // refused -- a case-sensitive SMB export really does keep these two apart, and admitting the
-    // second on the platform's say-so is the disclosure this file is about, arriving where it
-    // cannot be checked.
-    const share = shareSpelling as string
-    fs.mkdirSync(path.join(base, 'share-root'), { recursive: true })
-    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
-    // `realpathSync.native` is the only thing in this module that touches the disk for a
-    // containment answer, and `sameDirectory` holds both of its call sites -- so counting it counts
-    // exactly the dial, which a wall-clock ceiling on a local directory could not.
+  it.runIf(process.platform === 'win32')('refuses a share target from a local root before anything can dial', () => {
+    // The refusal has to happen BEFORE the link walk, not inside `sameDirectory` at the end of it.
+    // The walk refuses a link that escapes onto a share and refuses it without dialling, but a
+    // target the caller simply spelled as a share arrives with that share already as its root, so
+    // the walk's first `lstatSync` opens the connection -- to an address the model named, inside a
+    // hook that runs before the user has approved the tool call. This is a real Windows assertion
+    // and costs no connection precisely because the answer is reached first; a fictional host is
+    // safe to name here for the same reason.
     const dialed = vi.spyOn(fs.realpathSync, 'native')
     try {
-      expect(isInsideRoot(`${share}/Share-Root/secret.txt`, `${share}/share-root`)).toBe(false)
-      expect(dialed, 'the containment check contacted the file server to answer this').not.toHaveBeenCalled()
+      const started = Date.now()
+      expect(isInsideRoot('\\\\tg-no-such-host\\share\\secret.txt', base)).toBe(false)
+      const elapsed = Date.now() - started
+      expect(dialed, 'the check resolved a path on a host the caller named').not.toHaveBeenCalled()
+      // The link walk is what would dial, and `lstatSync` cannot be spied on (its property is not
+      // configurable), so the clock stands in for it. This is not a performance assertion and the
+      // ceiling is nowhere near the real timings: refusing costs microseconds, while an `lstat` on
+      // an unreachable host measured 2,739 ms here and a link walk onto a real one 21.0 s.
+      expect(elapsed, 'the walk started before the share was refused').toBeLessThan(1_000)
     } finally {
       dialed.mockRestore()
     }

@@ -390,6 +390,14 @@ function normalizeForFs(p: string): string {
  */
 
 export function isInsideRoot(target: string, root: string): boolean {
+  // Before the walk, not inside it. `resolveThroughLinks` refuses a LINK that escapes onto a
+  // share, and refuses it without dialling, but a target the caller simply spelled as a share
+  // arrives with that share already as its root -- so the walk's first `lstatSync` opened the SMB
+  // connection the refusal exists to prevent, to an address the model named, while the user was
+  // still being asked whether to allow the read. The share the target names is compared against
+  // the one the root names, so a project genuinely hosted over SMB still works and only a target
+  // reaching a DIFFERENT share (or any share, from a local root) is refused.
+  if (reachesForeignShare(target, root)) return false;
   const rt = resolveThroughLinks(target);
   const rr = resolveThroughLinks(root);
   // Checked before the equality test below, which would otherwise read two unresolvable paths as
@@ -425,10 +433,48 @@ export function isInsideRoot(target: string, root: string): boolean {
  * this path need the two-leading-slash spelling handled at all). Refusing on the wider answer would
  * have declined a differently-cased drive-letter device path that can be checked for free.
  */
-export function isNetworkPath(p: string): boolean {
+export function isNetworkPath(p: string, platform: string = process.platform): boolean {
+  return networkShareRoot(p, platform) !== null;
+}
+
+/**
+ * `\\host\share` for a path that names one, folded for comparison; `null` for anything else.
+ *
+ * Windows only, and that is a correctness bound rather than an optimisation. Two leading slashes
+ * mean a share on Windows and nothing at all on Linux or macOS: POSIX leaves a leading `//`
+ * implementation-defined and both of those resolve it to `/`, which Node agrees with --
+ * `path.posix.normalize('//tmp/repo')` is `/tmp/repo`. Reading `//tmp/repo` as a share therefore
+ * refused an ordinary local directory, and the platform is not detectable from the spelling on
+ * those systems anyway: an SMB mount there sits at a perfectly ordinary path like `/mnt/share`.
+ * The parameter exists so a test can ask the Windows question from any runner, which is the only
+ * way the branch gets exercised on more than one of the three CI platforms.
+ */
+export function networkShareRoot(p: string, platform: string = process.platform): string | null {
+  if (platform !== 'win32') return null;
   const device = /^[\\/]{2}([?.][\\/])?/.exec(p);
-  if (device === null) return false;
-  return device[1] === undefined || /^UNC[\\/]/i.test(p.slice(device[0].length));
+  if (device === null) return null;
+  let rest = p.slice(device[0].length);
+  if (device[1] !== undefined) {
+    // `\\?\C:\work` is spelled like a share and is this volume, one local resolve away. Only the
+    // `\\?\UNC\` spelling of a device path names a host.
+    const unc = /^UNC[\\/]/i.exec(rest);
+    if (unc === null) return null;
+    rest = rest.slice(unc[0].length);
+  }
+  const [host = '', share = ''] = rest.split(/[\\/]/);
+  return `//${foldCase(host)}/${foldCase(share)}`;
+}
+
+/**
+ * Whether `target` names a share that `root` does not, which is the one case no walk may start on.
+ *
+ * Separate and exported so the decision can be asked of the Windows rules from a Linux or macOS
+ * runner. Left inline it would be checked on one CI platform of three, and it is the platform that
+ * skips which the whole branch is about.
+ */
+export function reachesForeignShare(target: string, root: string, platform: string = process.platform): boolean {
+  const share = networkShareRoot(target, platform);
+  return share !== null && share !== networkShareRoot(root, platform);
 }
 
 /**
@@ -438,7 +484,7 @@ export function isNetworkPath(p: string): boolean {
  * {@link isInsideRoot} on Windows without a real file server, and a security predicate that only
  * one of the three CI platforms can exercise is one that two of them certify blind.
  */
-export function sameDirectory(a: string, b: string): boolean {
+export function sameDirectory(a: string, b: string, platform: string = process.platform): boolean {
   // Reached only when the two spellings of the root differ and the FOLD is what made them agree,
   // so every answer here is about a name the caller did not write the way the root is written.
   // That is a narrow enough case to fail closed in, and failing closed is the only safe direction:
@@ -451,7 +497,9 @@ export function sameDirectory(a: string, b: string): boolean {
   // disclosure this function exists to close, just where it cannot be checked. A UNC root spelled
   // the way it really is never arrives here at all -- the caller returns on the exact-prefix match
   // above -- so this refuses a differently-cased spelling of a share and nothing else.
-  if (isNetworkPath(a) || isNetworkPath(b)) return false;
+  // `platform` is threaded from the caller for one reason: the branch is Windows-only and no CI
+  // runner has a file server, so without it this line is exercised on one platform of three.
+  if (isNetworkPath(a, platform) || isNetworkPath(b, platform)) return false;
   let canonicalRoot: string;
   try {
     canonicalRoot = fs.realpathSync.native(b);
