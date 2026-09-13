@@ -314,22 +314,43 @@ export function installSingleFilePlugin(filePath: string, sidecarPath: string, t
 }
 
 /**
+ * Delete one file, refusing it if the running install declared a project scope this path leaves.
+ *
+ * The write half of containment was made a property of the helpers (`backupFile`, `ensureDirSync`,
+ * `atomicWriteCore`, `upsertDelimitedBlock`); the DESTRUCTIVE half was not, and "the write helpers
+ * themselves refuse a write the declared root does not contain" reads as a completed boundary while
+ * an unlink walks straight through it. `unlinkSync` removes the LINK rather than its target, so a
+ * leaf symlink is harmless here -- but a DIRECTORY symlink above the leaf is not: `uninstall --pi
+ * --local` on a clone that checked `.pi/extensions` in as a junction deletes the real file at the
+ * junction target, outside the tree entirely. Fixed leaf names bound the harm to files token-goat
+ * chose the names of; they do not bound WHERE those names resolve, which is the whole point of
+ * resolving through links before deciding.
+ *
+ * Returns true when a file was actually removed, so callers keep the `unlinkSync`-in-a-try
+ * semantics they had. A refusal THROWS rather than returning false: a caller that cannot tell
+ * "there was nothing to delete" from "I was refused" would report a clean uninstall of a file still
+ * sitting outside the tree.
+ */
+export function removeFileInScope(p: string): boolean {
+  assertWriteInScope(p)
+  try {
+    unlinkSync(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Remove a single-file plugin/extension and its entry sidecar (see
  * {@link installSingleFilePlugin}). Returns true when the main file was actually
  * present and removed; false when nothing was installed (no write occurs either way).
  */
 export function uninstallSingleFilePlugin(filePath: string, sidecarPath: string): boolean {
-  try {
-    unlinkSync(sidecarPath)
-  } catch {
-    // no sidecar to remove -- fine, e.g. an install predating the sidecar
-  }
-  try {
-    unlinkSync(filePath)
-    return true
-  } catch {
-    return false
-  }
+  // The sidecar's removal is best-effort (an install predating it has none), but it is still
+  // scope-checked: it sits in the same attacker-choosable directory as the plugin file.
+  removeFileInScope(sidecarPath)
+  return removeFileInScope(filePath)
 }
 
 /**
@@ -393,7 +414,7 @@ function pruneOldBackups(p: string): void {
   const excess = backups.length - MAX_BACKUPS_PER_FILE
   for (const stalePath of backups.slice(0, Math.max(0, excess))) {
     try {
-      unlinkSync(stalePath)
+      removeFileInScope(stalePath)
       // Keep the ledger in step: a backup this pruned is gone, and a stale entry for it would
       // otherwise sit there forever pointing at nothing.
       forgetCreatedBackup(stalePath)

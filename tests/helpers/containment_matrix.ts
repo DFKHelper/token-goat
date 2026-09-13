@@ -78,12 +78,36 @@ function realpathOracle(target: string, root: string): boolean | null {
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true })
     if (!fs.existsSync(target)) fs.writeFileSync(target, 'containment-matrix-probe\n')
-    const rt = fs.realpathSync(target)
-    const rr = fs.realpathSync(root)
+    const rt = resolveRealpath(target)
+    const rr = resolveRealpath(root)
     const rel = path.relative(rr, rt)
     return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
   } catch {
     return null
+  }
+}
+
+/**
+ * `fs.realpathSync`, falling back to `fs.realpathSync.native` for the spellings it cannot parse.
+ *
+ * The JS implementation walks the path itself and chokes on the Win32 extended-length prefix --
+ * `\\?\C:\...` makes it `lstat('C:')` and throw `EISDIR` -- while the native one hands the whole
+ * string to the OS and answers correctly. That difference had a real cost: two `\\?\` rows in the
+ * matrix were marked `unmaterializable` with the reason "there is no independent oracle for it",
+ * which made them HAND-DERIVED fixtures restating the implementation, and the premise was simply
+ * untrue. Measured on win32: `realpathSync` throws EISDIR on both spellings while
+ * `realpathSync.native` resolves both to their plain form. One of the two answers then contradicted
+ * what the matrix asserted -- see the `\\?\` rows for what that changed.
+ *
+ * Native is the FALLBACK rather than the default deliberately. `realpathSync` is what the rest of
+ * this repo (and `path_containment.ts` itself) uses, so keeping it first means the oracle disagrees
+ * with the implementation for real reasons rather than because the two ask different questions.
+ */
+function resolveRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return fs.realpathSync.native(p)
   }
 }
 

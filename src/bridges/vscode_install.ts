@@ -9,7 +9,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
@@ -369,7 +369,7 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
     if (servers && isManagedServer((servers as Record<string, unknown>)['token-goat'])) {
       // Walking back the entry used to leave an empty `servers` object behind as a residue file. The sibling Visual Studio bridge already dropped the empty key and deleted what it had created; this is the same rule, including the part that matters most: a file left empty is only deleted when this install is the one that made it.
       const next = dropEmptyServers(updateConfig(config.text, undefined))
-      if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) fs.rmSync(mcpPath, { force: true })
+      if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) removeFileInScope(mcpPath)
       else {
         backupFile(mcpPath)
         atomicWriteText(mcpPath, next)
@@ -383,7 +383,7 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
   if (stripDelimitedBlock(instructionsPath, BEGIN, END, opts.keepBackups === true)) {
     removed = true
     // The personal file is one install created: once its block is gone and only the frontmatter install wrote is left, it goes too.
-    if (opts.project !== true && fs.readFileSync(instructionsPath, 'utf8').trim() === USER_INSTRUCTIONS_FRONTMATTER.trim()) fs.rmSync(instructionsPath, { force: true })
+    if (opts.project !== true && fs.readFileSync(instructionsPath, 'utf8').trim() === USER_INSTRUCTIONS_FRONTMATTER.trim()) removeFileInScope(instructionsPath)
   }
   // Outside the branch above: a Visual Studio block that leaned on this gate has to carry the full gate itself, and it is stale whether or not this run found a block of ours to strip. Running it only on the success path left an uninstall that did nothing unable to heal one.
   if (opts.project === true) syncVisualStudioProjectGuidance(instructionsPath)

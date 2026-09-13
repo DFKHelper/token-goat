@@ -56,6 +56,16 @@ export function assertProjectScopeTarget(target: string, projectRoot: string | u
  * The project root the install or uninstall currently running is confined to, or `undefined` when
  * it is a user-scope run. Module-level rather than an AsyncLocalStorage because every installer
  * here is synchronous end to end.
+ *
+ * That "synchronous end to end" is a real precondition, not a stylistic note, and until now it was
+ * stated here and pinned by nothing. A module-level variable restored in a `finally` is restored at
+ * the first SUSPENSION point, not at the logical end of the run: make one installer `async` and
+ * `withInstallScope` returns its promise immediately, runs the `finally`, and sets the scope back
+ * to `undefined` while every write the installer has not reached yet is still to come -- silently
+ * disabling containment for the rest of the run, with no error and no failing test. It is pinned in
+ * two places now: {@link withInstallScope} refuses a thenable at runtime (below), and
+ * `tests/guards/install_scope_is_synchronous.test.ts` refuses one structurally, so the hazard is
+ * caught whether or not the new installer's path is ever executed.
  */
 let installProjectRoot: string | undefined
 
@@ -74,10 +84,16 @@ let installProjectRoot: string | undefined
  * declaration per installer entry point, and the enforcement moves into `backupFile`,
  * `ensureDirSync`, `atomicWriteCore` and `upsertDelimitedBlock` -- the four helpers every
  * installer write already funnels through. A new installer that computes `<root>/.foo/config`
- * and writes it through any of them is confined with no further code, and one that forgets to
- * declare its scope at all is caught by `tests/guards/installer_writes_are_contained.test.ts`,
- * which does not read the source for a call: it runs each entry point against a real
- * symlink-escape fixture and requires a refusal.
+ * and writes it through any of them is confined with no further code.
+ *
+ * One that forgets to declare its scope at all is NOT confined at runtime -- see
+ * {@link assertWriteInScope} for why the undeclared default cannot be flipped -- and is caught
+ * instead by `tests/guards/installer_writes_are_contained.test.ts`, in two halves that cover
+ * different failure modes. Its STRUCTURAL half DOES read the source for the call, which is what
+ * catches a bridge whose entry point no behavioural case exercises; its BEHAVIOURAL half runs a
+ * hand-maintained list of flags against a real symlink-escape fixture, which is what catches a
+ * declaration that is present but wrong. Neither alone is sufficient, and an earlier version of
+ * this paragraph credited the behavioural half with the structural half's coverage.
  *
  * `undefined` means user scope and is an explicit, non-defaulting answer: a user-scope config
  * path is routinely a symlink into a dotfiles repository the user owns both ends of, and
@@ -89,7 +105,21 @@ export function withInstallScope<T>(projectRoot: string | undefined, fn: () => T
   const previous = installProjectRoot
   installProjectRoot = projectRoot === undefined ? undefined : path.resolve(projectRoot)
   try {
-    return fn()
+    const result = fn()
+    // The scope is a module-level variable restored by the `finally` below, so it is only correct
+    // while `fn` finishes before returning. An async `fn` returns a promise at its first `await`,
+    // the `finally` fires there, and every write after that point runs with the scope already put
+    // back -- containment silently off for the remainder of the run. Refusing the promise here
+    // turns that into a loud failure at the first execution instead of a quiet hole. Checked on the
+    // RESULT rather than on `fn` itself so a plain function that merely returns a promise is caught
+    // too. If an installer genuinely has to become async, the fix is AsyncLocalStorage, not
+    // deleting this.
+    if (typeof (result as { then?: unknown } | null | undefined)?.then === 'function') {
+      throw new Error(
+        'withInstallScope was given a function that returned a thenable. The install scope is held in a module-level variable and restored synchronously, so an async installer would run every write after its first await with containment already switched off. Make the installer synchronous, or move the scope to AsyncLocalStorage first.',
+      )
+    }
+    return result
   } finally {
     installProjectRoot = previous
   }
@@ -111,9 +141,32 @@ export function projectScopeRoot(opts: { readonly project?: boolean; readonly lo
 /**
  * Refuse a write that would leave the project the running install declared itself confined to.
  *
- * Called by the write helpers themselves, so omission fails CLOSED: a path an installer never
- * thought to list is checked anyway, and the only way to write outside the root is to have
- * declared user scope in the first place.
+ * WHAT THIS DOES AND DOES NOT INVERT. Called by the write helpers themselves, so within a run that
+ * HAS declared a project scope, omission fails closed: a path the installer never thought to list
+ * is checked anyway, and there is no write site left to forget. What it does NOT do -- and an
+ * earlier version of this comment and of the CHANGELOG both claimed it did -- is fail closed when
+ * no scope was declared at all. `root === undefined` returns early and permits everything. Measured
+ * with in-band positive controls in one run: scope-declared + outside target REFUSED,
+ * scope-declared + inside ALLOWED, NO scope declared + outside target ALLOWED, nested-undefined +
+ * outside ALLOWED, after nested restore REFUSED.
+ *
+ * So the honest statement is that the unit of forgetting moved from ~20 write sites to ~10 entry
+ * points -- a real and large reduction, and a smaller-surface version of the same defect class,
+ * NOT an inversion of the default. The permissive default cannot simply be flipped: these four
+ * helpers are the whole codebase's write path, not the installers'. `atomicWriteCore` alone backs
+ * the worker, the indexer, snapshots, the created-configs ledger and `write-file`, none of which
+ * has an install run to declare anything, so "refuse unless a root was declared" would refuse
+ * essentially every write token-goat makes outside its own storage. Nor can the install dispatcher
+ * declare a user root on their behalf: an install run legitimately makes USER-scope writes during a
+ * PROJECT-scope run (`~/.claude/CLAUDE.md`, the skill, the shared hook shim), and confining those
+ * broke `install -p` once already -- which is why the containment guard pairs every refusal with an
+ * in-band clean-clone control.
+ *
+ * The control that actually covers the undeclared case is therefore structural, and it is named
+ * rather than implied: `tests/guards/installer_writes_are_contained.test.ts` enumerates every
+ * module that builds a repo-relative path and writes it through a helper, and fails if one of them
+ * does not declare a scope. That guard is load-bearing, not supplementary. Its population is pinned
+ * by count, by ceiling and by exact member name for the same reason.
  *
  * token-goat's own storage roots are exempt, and that exemption is not a hole: an install running
  * in project scope still has to journal what it created (`created-configs.json`) and write its

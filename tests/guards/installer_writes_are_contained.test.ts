@@ -14,10 +14,20 @@
  *
  * WHY THIS FILE IS NOT THREE MORE CALL SITES. Four of five installer authors already forgot the
  * call. A guard you must remember to invoke is not a trust boundary, and a per-installer patch
- * regrows the moment a sixth bridge is written. The default is inverted instead: `withInstallScope`
- * declares the scope once per entry point and `assertWriteInScope` -- called by `backupFile`,
- * `ensureDirSync`, `atomicWriteCore` and `upsertDelimitedBlock` themselves -- refuses anything
- * leaving it. Omission now fails CLOSED. This file is what keeps that true, in two halves:
+ * regrows the moment a sixth bridge is written. The unit of remembering is moved instead:
+ * `withInstallScope` declares the scope once per entry point and `assertWriteInScope` -- called by
+ * `backupFile`, `ensureDirSync`, `atomicWriteCore`, `upsertDelimitedBlock` and `removeFileInScope`
+ * themselves -- refuses anything leaving it.
+ *
+ * AND THAT IS WHY THIS FILE IS LOAD-BEARING RATHER THAN SUPPLEMENTARY. An earlier version of this
+ * paragraph said "omission now fails CLOSED", and it is not true: `assertWriteInScope` returns early
+ * when no scope was declared, so an installer that never calls `withInstallScope` is not confined at
+ * all. Measured, with in-band positive controls in one run -- scope-declared + outside REFUSED,
+ * scope-declared + inside ALLOWED, NO scope declared + outside ALLOWED, nested-undefined + outside
+ * ALLOWED, after nested restore REFUSED. The permissive default cannot simply be flipped, because
+ * those helpers are the whole codebase's write path and not the installers' (see
+ * `bridges/project_scope_guard.ts::assertWriteInScope` for the full argument). So what covers the
+ * undeclared case is THIS TEST, and nothing else. Its two halves cover different failure modes:
  *
  *   1. STRUCTURAL. Enumerate every installer module that both writes through a helper and builds a
  *      path from `process.cwd()`/`projectRoot`, and require each to declare a scope. The population
@@ -39,8 +49,10 @@
  * with a canary counter that voids the run if the probe stopped being able to see a leak at all.
  *
  * I/O: spawns the built bundle under a fully redirected HOME/USERPROFILE/TOKEN_GOAT_HOME/
- * LOCALAPPDATA, inside a scratch directory removed afterwards. It never touches the real
- * `~/.claude`, which an audit probe did once and duplicated a section in the user's global config.
+ * LOCALAPPDATA/APPDATA/XDG_DATA_HOME/XDG_CONFIG_HOME, inside a scratch directory removed
+ * afterwards. It never touches the real `~/.claude`, which an audit probe did once and duplicated a
+ * section in the user's global config. APPDATA and XDG_CONFIG_HOME were missing from that list
+ * while this sentence still claimed "fully redirected" -- see `ensureBase` for what it cost.
  */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -62,8 +74,24 @@ const CLI = path.join(REPO, 'dist', 'token-goat.mjs')
 // 1. Structural: which modules must declare an install scope, and do they.
 // ---------------------------------------------------------------------------------------------
 
-/** Any of the four helpers that now enforce containment, plus the wrappers that funnel into them. */
-const WRITES = /\b(?:backupFile|upsertDelimitedBlock|atomicWriteText|atomicWriteBytes|ensureDirSync|writeJsonSettings|writeIfDifferent)\s*\(/
+/**
+ * Any of the helpers that now enforce containment, plus the wrappers that funnel into them.
+ *
+ * `installSingleFilePlugin`/`uninstallSingleFilePlugin` are in this list because leaving them out
+ * put a HOLE IN THE POPULATION SHAPED EXACTLY LIKE THE NEXT REGRESSION. `bridges/pi_install.ts`
+ * writes exclusively through them and so was classified a non-member (writes=false,
+ * projectRelative=true, declaresScope=true) -- meaning `--pi --local`, one of the flags that
+ * SHIPPED vulnerable, had no structural regression guard at all, and `mustInclude` listed five
+ * installers with pi absent, baking the omission in. Since `installSingleFilePlugin` is the obvious
+ * template for the next single-file-plugin harness, a sixth installer written on it and forgetting
+ * `withInstallScope` was caught by NEITHER half: the structural regex could not see it, and the
+ * behavioural SPECS list below is hand-maintained.
+ *
+ * `removeFileInScope` is here for the same reason one step later: the destructive half of
+ * containment now funnels through it, and a module whose only project-relative touch is a delete is
+ * still a module that has to declare a scope.
+ */
+const WRITES = /\b(?:backupFile|upsertDelimitedBlock|atomicWriteText|atomicWriteBytes|ensureDirSync|writeJsonSettings|writeIfDifferent|installSingleFilePlugin|uninstallSingleFilePlugin|removeFileInScope)\s*\(/
 /** Builds a path out of the working directory or an explicit project root -- i.e. a repo-relative path. */
 const PROJECT_RELATIVE = /project\?:\s*boolean|local\?:\s*boolean|process\.cwd\(\)|projectRoot/
 /** Declares the scope of a run. */
@@ -180,6 +208,17 @@ function ensureBase(): string {
     TOKEN_GOAT_HOME: path.join(BASE, 'tghome'),
     LOCALAPPDATA: path.join(BASE, 'localapp'),
     XDG_DATA_HOME: path.join(BASE, 'localapp'),
+    // The CONFIG roots, not just the DATA roots. `vscode_install.ts`, `zed_install.ts` and
+    // `opencode_install.ts` read `process.env['APPDATA']` directly on Windows, and this set did not
+    // redirect it: a probe using this very allowlist wrote `%APPDATA%\Zed\settings.json` into the
+    // real user profile during an audit. The read direction bites here too -- `install --vscode -p`'s
+    // clean control below calls `otherScopeHasManagedServer`, which reads the real
+    // `%APPDATA%\Code\User\mcp.json`, so on a machine where token-goat IS registered in VS Code user
+    // scope this guard would fail environmentally. `tests/setup/isolate-home.ts` now redirects both
+    // process-wide as well; this stays explicit because the spread above is the contract THIS file's
+    // header claims, and a redirection set that names four of six keys is how the gap opened.
+    APPDATA: path.join(BASE, 'localapp'),
+    XDG_CONFIG_HOME: path.join(BASE, 'localapp'),
     COPILOT_HOME: path.join(fakeHome, '.copilot'),
   }
   return BASE
@@ -298,17 +337,34 @@ describe('installer writes are contained by construction', () => {
   it('finds the modules that write repo-relative paths, so the check below is not vacuous', () => {
     // Named individually as well as counted: a rename that drops one silently is how the sibling
     // guard (installer_writes_are_always_backed_up) went quiet after `installHooks` became
-    // `installHooksScoped`. Measured at 6 members when this was written -- the five installers
-    // below plus `util.ts`, which is EXEMPT; the ceiling is one past that so a classifier that
-    // starts over-matching re-prompts a measurement rather than quietly widening.
+    // `installHooksScoped`.
+    //
+    // RE-MEASURED at 7 members after `installSingleFilePlugin`/`uninstallSingleFilePlugin` and
+    // `removeFileInScope` joined WRITES: the six installers below plus `util.ts`, which is EXEMPT.
+    // It was 6 before, with `bridges/pi_install.ts` wrongly excluded -- see WRITES for why that
+    // omission was the shape of the next regression. Floor at 6 (one below live, so a single
+    // legitimate deletion does not fire an unrelated guard) and ceiling at 10 (one past the widest
+    // this classifier has been measured at), re-pinned together as the helper requires.
+    //
+    // `bridges/opencode_install.ts` shares pi's `installSingleFilePlugin` template and is STILL
+    // correctly absent, which is worth stating because it looks like a second omission: it has no
+    // project-relative path at all -- no `process.cwd()`, no `projectRoot`, no local flag -- because
+    // its target is `%APPDATA%`/XDG-rooted and therefore user scope only. It fails
+    // PROJECT_RELATIVE, not WRITES. Give it a `--local` flag and it joins the population
+    // automatically, which is the property this widening bought.
+    //
+    // The anchors are EXACT. As substrings, `install.ts` also matches `pi_install.ts`,
+    // `vscode_install.ts` and every other member, so the anchor meant to pin `src/install.ts`
+    // specifically would have survived that file's deletion outright.
     pinnedPopulation({
       what: 'modules under src/ that build a repo-relative path and write it through a write helper',
       items: projectScopeWriters(),
-      floor: 5,
-      ceiling: 9,
-      mustInclude: [
+      floor: 6,
+      ceiling: 10,
+      mustIncludeExact: [
         'bridges/copilot_cli_install.ts',
         'bridges/cursor_install.ts',
+        'bridges/pi_install.ts',
         'bridges/visualstudio_install.ts',
         'bridges/vscode_install.ts',
         'install.ts',
@@ -327,6 +383,62 @@ describe('installer writes are contained by construction', () => {
         'private file and the install copies that file into the working tree. Wrap the entry point in ' +
         'withInstallScope(projectScopeRoot(opts), () => ...), or add it to EXEMPT here with the reason a ' +
         'scope declaration would be wrong.',
+    ).toEqual([])
+  })
+
+  it('routes every filesystem mutation in an installer through a helper that checks containment', () => {
+    // The boundary is only where the primitives are. Two installers reached PAST it with a raw
+    // `fs.mkdirSync(dir, { recursive: true })` -- and a recursive create is exactly the hazard
+    // `ensureDirSync`'s own comment names as the reason containment moved into it, because it walks
+    // THROUGH a directory symlink a clone checked in. The impact was bounded then, only because the
+    // `backupFile`/`atomicWriteText` on the next line did refuse; the primitive was outside the
+    // boundary by inspection, and the bound was luck about ordering rather than a property.
+    //
+    // Deletes are here for the reason they were missing: the inversion covered writes and left
+    // `unlinkSync`/`rmSync` unguarded, so "the write helpers themselves refuse a write the declared
+    // root does not contain" read as a completed boundary while the destructive half walked
+    // straight through it.
+    // Scoped to the project-relative population above, NOT to every bridge. A user-scope-only
+    // bridge unlinking `~/.codex/hooks/token-goat.json` is outside the threat model on purpose:
+    // this file's own header records that a user-scope config path is routinely a symlink into a
+    // dotfiles repository the user owns both ends of, and refusing those buys nothing. What makes
+    // the narrow scope sufficient is that the population is COMPUTED rather than listed -- give any
+    // of those bridges a `--local` flag and it joins the population, and this rule starts applying
+    // to it in the same commit that introduces the hazard.
+    const RAW_FS_MUTATION = /(?:\bfs\.)?\b(?:mkdirSync|rmSync|unlinkSync|rmdirSync|writeFileSync|renameSync|copyFileSync|symlinkSync)\s*\(/g
+    const offenders: string[] = []
+    for (const rel of pinnedPopulation({
+      what: 'project-relative installer modules scanned for raw filesystem mutations',
+      items: projectScopeWriters(),
+      floor: 6,
+      ceiling: 10,
+      mustIncludeExact: ['bridges/cursor_install.ts', 'bridges/visualstudio_install.ts', 'bridges/pi_install.ts', 'install.ts'],
+    })) {
+      if (EXEMPT.has(rel)) continue
+      const code = fs.readFileSync(path.join(SRC, rel), 'utf8')
+      // Comments and doc blocks name these primitives constantly -- that is how the hazard gets
+      // explained -- so only real code counts. Block comments are blanked rather than deleted so
+      // the reported line numbers stay true.
+      const codeOnly = code.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+      for (const m of codeOnly.matchAll(RAW_FS_MUTATION)) {
+        // An explicit `assertWriteInScope` just above the call is the escape hatch, and the only
+        // one: it is the same containment check the helpers make, written out where no helper fits
+        // -- a recursive DIRECTORY removal, which the file-only `removeFileInScope` cannot express.
+        // Same idiom as the sibling backup guard, which accepts a `backupFile` earlier in the body.
+        const before = codeOnly.slice(0, m.index).split('\n').slice(-4).join('\n')
+        if (/\bassertWriteInScope\s*\(/.test(before)) continue
+        offenders.push(`${rel}:${codeOnly.slice(0, m.index).split('\n').length}: ${m[0]}`)
+      }
+    }
+
+    expect(
+      offenders,
+      'These installer modules mutate the filesystem through a raw node:fs primitive instead of a ' +
+        'containment-checking helper (ensureDirSync / atomicWriteText / backupFile / ' +
+        'upsertDelimitedBlock / removeFileInScope). A raw call is outside the trust boundary by ' +
+        'construction: a recursive mkdir walks through a checked-in directory symlink, and an unlink ' +
+        'below one deletes the file at its target. Route it through the helper, which is the only ' +
+        'place assertWriteInScope is called.',
     ).toEqual([])
   })
 

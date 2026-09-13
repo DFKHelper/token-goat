@@ -29,7 +29,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { hookCommandFor, hookPowershellCommand, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
+import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
@@ -380,15 +380,6 @@ export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   return { configPath, scriptPath, changed: scriptChanged || configChanged || ownersChanged }
 }
 
-function unlinkIfPresent(p: string): boolean {
-  try {
-    fs.unlinkSync(p)
-    return true
-  } catch {
-    return false
-  }
-}
-
 /**
  * Drop `owner` from `hooksDir`, deleting the config and shim once no owner is left.
  *
@@ -405,7 +396,7 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
     writeIfDifferent(ownersPath, [...owners].sort().join('\n') + '\n')
     return true
   }
-  const configRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_CONFIG_FILE))
+  const configRemoved = removeFileInScope(path.join(hooksDir, HOOKS_CONFIG_FILE))
   // The timestamped backups of this config are token-goat's own litter, so they leave with it --
   // unless the caller is a migration, which is an install and must leave every recovery copy it
   // just made in place. See stripDelimitedBlock's own keepBackups for the same distinction.
@@ -413,8 +404,8 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   // And the ledger entry recorded at install: the file is gone, so "this machine put it there" must
   // stop being true, or a repository could later drop its own file at that path and inherit the answer.
   takeCreatedConfig(path.join(hooksDir, HOOKS_CONFIG_FILE))
-  const scriptRemoved = unlinkIfPresent(path.join(hooksDir, HOOKS_SCRIPT_FILE))
-  const ownersRemoved = unlinkIfPresent(ownersPath)
+  const scriptRemoved = removeFileInScope(path.join(hooksDir, HOOKS_SCRIPT_FILE))
+  const ownersRemoved = removeFileInScope(ownersPath)
   return configRemoved || scriptRemoved || ownersRemoved
 }
 

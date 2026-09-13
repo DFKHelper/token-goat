@@ -70,7 +70,7 @@ import * as path from 'node:path'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
-import { atomicWriteText, backupFile } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -156,7 +156,12 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   const nextText = setTokenGoatServer(config.text, desired, MCP_SERVERS_KEY)
   const alreadyInstalled = config.text === nextText
   if (!alreadyInstalled) {
-    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory
+    // symlink a clone checked in, so this step is itself one of the ways an install lands outside
+    // the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw
+    // fs.mkdirSync here is outside the boundary by inspection even while the backupFile below
+    // happens to refuse. See bridges/project_scope_guard.ts.
+    ensureDirSync(path.dirname(mcpPath))
     if (!fileExisted) recordCreatedConfig(mcpPath)
     backupFile(mcpPath)
     atomicWriteText(mcpPath, nextText)
@@ -186,7 +191,7 @@ function uninstallCursorScoped(opts: CursorScopeOptions): boolean {
 
   const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, MCP_SERVERS_KEY), MCP_SERVERS_KEY)
   if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) {
-    fs.rmSync(mcpPath, { force: true })
+    removeFileInScope(mcpPath)
   } else {
     backupFile(mcpPath)
     atomicWriteText(mcpPath, next)

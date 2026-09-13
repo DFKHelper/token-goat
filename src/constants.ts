@@ -21,11 +21,31 @@ export { VERSION }
  * Accepts only non-empty absolute paths so a crafted env var
  * (`LOCALAPPDATA=../../etc`) cannot redirect the data directory. Returns the
  * trimmed path on success, or undefined to signal the home-based fallback.
+ * Surrounding whitespace is stripped before both checks and from the returned
+ * value; that is deliberate and long-standing (unchanged since v2.9.10), so a
+ * value a shell profile indented does not silently fall back.
+ *
+ * `path.isAbsolute` ALONE is not the absoluteness this needs on win32, and the
+ * gap is the same cwd-dependence class the rest of this validation exists to
+ * close. `path.isAbsolute('/tmp/tg')` is TRUE on win32 -- a leading separator
+ * with no drive is "absolute" there in the rooted-but-drive-relative sense --
+ * and `path.resolve` then completes it against the CURRENT DRIVE, so
+ * `TOKEN_GOAT_HOME=/tmp/tg` yields `C:\tmp\tg` from one drive and `D:\tmp\tg`
+ * from another. Measured on win32: `/tmp/tg` and `\tmp\tg` both report
+ * isAbsolute=true with `path.parse().root` of `/` and `\` respectively, while a
+ * genuinely anchored value parses to a `C:\`-shaped or `//server/share/`-shaped
+ * root. So the win32 clause tests the ROOT's shape, not merely that one exists:
+ * a bare-separator root is rejected. (Testing `path.parse(x).root !== ''` would
+ * NOT close this -- `/tmp/tg` has a non-empty root of `/`.)
  */
 function safeEnvDir(value: string): string | undefined {
   const stripped = value.trim()
   if (stripped === '') return undefined
   if (!path.isAbsolute(stripped)) return undefined
+  if (process.platform === 'win32') {
+    const root = path.parse(stripped).root
+    if (root === '' || root === '\\' || root === '/') return undefined
+  }
   return stripped
 }
 

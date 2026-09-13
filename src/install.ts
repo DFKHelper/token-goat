@@ -33,8 +33,8 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import type { HookEventName } from './types.js'
 import { removeCreatedBackups } from './bridges/created_configs.js'
-import { withInstallScope } from './bridges/project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -391,12 +391,14 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   const scriptPath = claudeHookScriptPath()
   let removedScript = false
   if (!anyScopeReferencesShim(scriptPath, scope, hooks)) {
-    try {
-      fs.unlinkSync(scriptPath)
-      removedScript = true
-    } catch {
-      // Already absent; nothing to remove.
-    }
+    // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the
+    // shim lives at `~/.claude/hooks/token-goat-shim.js` and is shared by both scopes, so under a
+    // project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be
+    // symmetric with the write or `uninstall --project` leaves the file it installed behind --
+    // which is what the built-bundle matrix caught the first time this was routed through the
+    // scope-checked helper without the wrapper.
+    // Already-absent is not an error, which is exactly removeFileInScope's contract.
+    removedScript = withInstallScope(undefined, () => removeFileInScope(scriptPath))
   }
 
   if (!removed) return removedScript
@@ -631,6 +633,12 @@ export function uninstallSkill(): boolean {
   // The directory removal below takes SKILL.md's own timestamped backups with it; this only
   // drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
   removeCreatedBackups(skillPath())
+  // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE
+  // DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one
+  // the write helpers make. It is a no-op in the user scope this path actually runs in, and that is
+  // the point -- it stops a future project-scoped skill directory being deleted through a
+  // checked-in directory symlink without anyone having to notice this line again.
+  assertWriteInScope(dir)
   fs.rmSync(dir, { recursive: true, force: true })
   return true
 }

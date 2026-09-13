@@ -128,11 +128,18 @@ describe('the path-resolution walk is bounded', () => {
     expect(isInsideRoot(over, root), 'a path over the cap is unresolvable, and unresolvable fails closed').toBe(false)
   })
 
-  // POSIX-only, and honestly skipped rather than weakened: Windows refuses to CREATE a symlink
-  // whose stored target exceeds MAX_PATH, absolute or relative (measured -- ENOENT from
-  // symlinkSync, both spellings), so the fixture cannot be built there at all. The behaviour under
-  // test is platform-independent; only the fixture is not.
-  it.runIf(POSIX && CAN_SYMLINK)('refuses a SHORT path whose link expansion pushes the resolved form over the cap', () => {
+  // NOT POSIX-gated, and the gate that used to be here was justified by a measurement that is
+  // false. The comment claimed "Windows refuses to CREATE a symlink whose stored target exceeds
+  // MAX_PATH, absolute or relative (measured -- ENOENT from symlinkSync, both spellings)". Re-run
+  // on win32 (Windows 11, Node 24): a 3,837-byte RELATIVE dir target, the same 3,837-byte target as
+  // a file symlink, a 3,082-byte ABSOLUTE dir target and a 3,082-byte junction all created
+  // successfully and read back at their full stored length. So the gate was stricter than its own
+  // stated reason, and it was costing the ONLY case that discriminates cap 2 its only automated
+  // execution -- on the one machine anyone actually runs this suite on, since `origin/main` is 167
+  // commits behind and no CI has ever seen this file. CAN_SYMLINK still gates it, because an
+  // unprivileged Windows account without Developer Mode genuinely cannot create one; that is a
+  // permission fact, checked at run time, rather than an inherited belief about path lengths.
+  it.runIf(CAN_SYMLINK)('refuses a SHORT path whose link expansion pushes the resolved form over the cap', () => {
     // The second cap earns its place here and only here. The entry cap measures the INPUT, and this
     // input is 60-odd bytes. A link target is spliced into the remaining work, so the walk can
     // outgrow whatever arrived: without the in-loop check on the growing `base`, the resolved form
@@ -165,6 +172,47 @@ describe('the path-resolution walk is bounded', () => {
       'the resolved path exceeds the cap even though the input did not, so it is unresolvable and ' +
         'unresolvable fails closed. Note it is lexically inside the root, so a permissive answer here ' +
         'is what an unbounded walk would return.',
+    ).toBe(false)
+  })
+
+  it('refuses an over-cap INPUT whose resolved form would collapse back under the cap', () => {
+    // THE CASE THAT DISCRIMINATES CAP 1, which nothing did until this was written. The two caps
+    // are not redundant, but the assertions around them could not tell them apart: comment out the
+    // entry check `Buffer.byteLength(p) > MAX_RESOLVE_PATH_BYTES` and the whole of
+    // path_containment_walk_cap + containment_matrix + pre_handler_fs_touches_are_gated stayed at
+    // 19 passed / 3 skipped / 0 failed (reproduced on this machine before writing this). The
+    // over-the-cap pair above cannot see it because the in-loop cap 2 catches that input too and
+    // returns the same verdict, and the 1.89 MB timing case is pinned at a budget the uncapped path
+    // fits inside (measured 217 ms against a 500 ms budget).
+    //
+    // The discriminator is an input that is over the cap in BYTES while its RESOLVED form never is:
+    // ~900 `ab/..` pairs collapse to nothing, so `candidate` never grows past `<root>/ab` and cap 2
+    // is never reached. Cap 1 present -> unresolvable -> false. Cap 1 removed -> the walk runs to
+    // completion and answers TRUE, i.e. a 5,465-byte attacker-chosen path reads as CONTAINED.
+    //
+    // Preferred over a timing assertion deliberately: this is a CORRECTNESS difference, not a
+    // performance one, so it needs no clock, no budget, and no headroom argument, and it says
+    // something stronger than "cap 1 makes it fast" -- it says cap 1 is what makes the answer
+    // right. Measured both ways on win32: false with the cap, true without it.
+    const root = scratch()
+    const target = root + path.sep + Array.from({ length: 900 }, () => `ab${path.sep}..`).join(path.sep) + `${path.sep}ab`
+    expect(
+      Buffer.byteLength(target, 'utf8'),
+      'the INPUT has to exceed the cap or the entry check is not what this case is asking about',
+    ).toBeGreaterThan(MAX_BYTES)
+    // Calibration for the other half: the same shape, short enough to be under the cap, must still
+    // answer TRUE. Without it, a `false` above is indistinguishable from a walk that simply cannot
+    // handle `..` at all.
+    const shortSame = root + path.sep + Array.from({ length: 3 }, () => `ab${path.sep}..`).join(path.sep) + `${path.sep}ab`
+    expect(Buffer.byteLength(shortSame, 'utf8')).toBeLessThan(MAX_BYTES)
+    expect(isInsideRoot(shortSame, root), 'the dotdot-pair shape resolves to <root>/ab, which IS inside the root').toBe(true)
+
+    expect(
+      isInsideRoot(target, root),
+      'an input over the byte cap is unresolvable and unresolvable fails closed. Without the ENTRY ' +
+        'cap this answers true: the dotdot pairs collapse, the resolved form never grows, the in-loop ' +
+        'cap never fires, and a 5.4 KB model-chosen path on the pre-approval hook path reads as ' +
+        'contained. Cap 1 is a correctness control, not only a cost one.',
     ).toBe(false)
   })
 

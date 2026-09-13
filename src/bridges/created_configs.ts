@@ -18,7 +18,7 @@ import * as path from 'path'
 
 import { dataDir } from '../constants.js'
 import { normalizePath } from '../paths.js'
-import { atomicWriteText, ensureDirSync, foldPath } from '../util.js'
+import { atomicWriteText, ensureDirSync, foldPath, removeFileInScope } from '../util.js'
 
 function ledgerPath(): string {
   return path.join(dataDir(), 'created-configs.json')
@@ -158,8 +158,7 @@ export function removeCreatedBackups(configPath: string): number {
     // The entry itself, not a name rebuilt out of the folded match key: rebuilding is what dropped
     // the ISO stamp's `T` and `Z` and made every unlink miss on a case-sensitive filesystem.
     try {
-      if (fs.existsSync(target)) {
-        fs.rmSync(target, { force: true })
+      if (fs.existsSync(target) && removeFileInScope(target)) {
         removed++
       }
     } catch {

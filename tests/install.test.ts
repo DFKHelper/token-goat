@@ -445,6 +445,41 @@ describe('generated hook shim (the shipping wiring, not a standalone script test
     expect(fs.existsSync(claudeHookScriptPath())).toBe(false)
   })
 
+  it('installs AND removes the home-scoped shim under a project scope whose root does not contain the home directory', () => {
+    // EVERY other case in this file has `HOME` at `{TMP}/home` and the project root at `{TMP}`, so
+    // the shim is INSIDE the project root and no containment check can ever refuse it. That layout
+    // is not the real one, and it made the whole suite blind: routing the uninstall's shim removal
+    // through the scope-checked `removeFileInScope` without re-declaring user scope broke
+    // `uninstall --project` outright, and only the built-bundle matrix noticed. This case puts home
+    // where it actually is -- a sibling of the project, not a child -- so both the write and the
+    // delete have to declare user scope explicitly to pass.
+    //
+    // PROVENANCE: CAPTURE. The paths are real directories and the assertions read real `existsSync`
+    // results from the real installer, not a restatement of its rules.
+    const outsideHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-install-home-'))
+    const prevHome = process.env['HOME']
+    const prevUserProfile = process.env['USERPROFILE']
+    process.env['HOME'] = outsideHome
+    process.env['USERPROFILE'] = outsideHome
+    try {
+      // The premise of the case, asserted rather than assumed: if a future refactor moved the shim
+      // under the project root, the two assertions below would go on passing while testing nothing.
+      expect(path.relative(process.cwd(), claudeHookScriptPath()).startsWith('..')).toBe(true)
+
+      expect(installHooks('project').alreadyInstalled).toBe(false)
+      expect(fs.existsSync(claudeHookScriptPath())).toBe(true)
+
+      expect(uninstallHooks('project')).toBe(true)
+      expect(fs.existsSync(claudeHookScriptPath())).toBe(false)
+    } finally {
+      if (prevHome === undefined) delete process.env['HOME']
+      else process.env['HOME'] = prevHome
+      if (prevUserProfile === undefined) delete process.env['USERPROFILE']
+      else process.env['USERPROFILE'] = prevUserProfile
+      fs.rmSync(outsideHome, { recursive: true, force: true })
+    }
+  })
+
   it('writes a shim that actually runs: spawning the exact installed command returns parseable hook JSON on stdout', () => {
     installHooks('project')
     const command = commandsFor(settingsPath('project'), 'PreToolUse')[0]
