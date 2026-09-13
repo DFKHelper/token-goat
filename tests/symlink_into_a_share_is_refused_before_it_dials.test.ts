@@ -33,6 +33,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const WORKSPACE = process.platform === 'win32' ? 'C:\\work' : '/work'
 const LINK = path.join(WORKSPACE, 'link')
 const SHARE = process.platform === 'win32' ? '\\\\10.255.255.1\\share' : '//10.255.255.1/share'
+const DEVICE_LINK = path.join(WORKSPACE, 'device')
+const DEVICE = '\\\\.\\pipe\\name'
 
 const touched = vi.hoisted(() => [] as string[])
 
@@ -53,19 +55,45 @@ vi.mock('node:fs', async (importOriginal) => {
     default: real,
     lstatSync: (p: unknown, ...rest: unknown[]) => {
       record(p)
-      if (typeof p === 'string' && same(p, LINK)) return linkEntry
+      if (typeof p === 'string' && (same(p, LINK) || same(p, DEVICE_LINK))) return linkEntry
       if (typeof p === 'string' && same(p, WORKSPACE)) return workspaceEntry
       return (real.lstatSync as (...a: unknown[]) => unknown)(p, ...rest)
     },
     readlinkSync: (p: unknown) => {
       // NOT recorded: reading a link's own bytes is a local operation on the directory entry.
       if (typeof p === 'string' && same(p, LINK)) return SHARE
+      if (typeof p === 'string' && same(p, DEVICE_LINK)) return DEVICE
       throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' })
     },
     statSync: (p: unknown, ...rest: unknown[]) => {
       record(p)
       return (real.statSync as (...a: unknown[]) => unknown)(p, ...rest)
     },
+    // The walk uses `lstatSync` and `readlinkSync` today, and an adversarial review pointed out
+    // that recording only what it uses makes the claim above ("nothing is handed to the
+    // filesystem") narrower than it reads: a later refactor onto any other entry point would dial
+    // the share and still pass. Every call that takes a path and touches it is wrapped, so the
+    // recorder outlives the current implementation rather than describing it.
+    ...(Object.fromEntries(
+      (['accessSync', 'openSync', 'readdirSync', 'opendirSync', 'readFileSync', 'existsSync'] as const).map((name) => [
+        name,
+        (p: unknown, ...rest: unknown[]) => {
+          record(p)
+          return (real[name] as (...a: unknown[]) => unknown)(p, ...rest)
+        },
+      ]),
+    ) as Partial<typeof Fs>),
+    promises: Object.fromEntries(
+      Object.entries(real.promises).map(([name, fn]) => [
+        name,
+        typeof fn === 'function'
+          ? (p: unknown, ...rest: unknown[]) => {
+              record(p)
+              return (fn as (...a: unknown[]) => unknown)(p, ...rest)
+            }
+          : fn,
+      ]),
+    ),
     realpathSync: Object.assign(
       (p: unknown, ...rest: unknown[]) => {
         record(p)
@@ -108,6 +136,14 @@ describe('a symlink whose target is a share', () => {
 
   it('still allows an ordinary path inside the workspace', () => {
     expect(isInsideRoot(path.join(WORKSPACE, 'src', 'index.ts'), WORKSPACE)).toBe(true)
+  })
+
+  it('refuses a link into the device namespace instead of reading it as a relative path', () => {
+    // `\\.\pipe\name` was normalized the same way a `\\?\` junction target is, which left the
+    // relative `pipe/name` -- joined onto whatever the walk was standing on, so the refusal that
+    // exists for device paths never saw a device and the answer was an ordinary local directory.
+    expect(isInsideRoot(path.join(DEVICE_LINK, 'x'), WORKSPACE), 'a link into the device namespace resolved to a local path').toBe(false)
+    expect(touched.filter(isNetworkSpelling), 'the walk touched the device namespace').toEqual([])
   })
 
   it('refuses only an escape onto a share, leaving a root that is already on one alone', () => {

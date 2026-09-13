@@ -241,9 +241,14 @@ function parentSegment(base: string, root: string): string {
  *
  * Windows junctions read back namespaced (`\\?\C:\target`, `\\?\UNC\server\share`), which no other
  * layer here strips, and an unstripped `//?/` prefix would be walked as if `?` were a directory.
+ *
+ * Only `\\?\` is stripped. `\\.\` is the device namespace, not a spelling of an ordinary path, and
+ * stripping it turned `\\.\pipe\name` into the relative `pipe/name` -- which then got joined onto
+ * whatever the walk was standing on, so the device refusal downstream never saw a device. It is
+ * left as written, which makes it an absolute root that `isUncOrDevicePath` recognises.
  */
 function linkTarget(link: string): { root: string | null; segs: string[] } {
-  const raw = link.replace(/\\/g, '/').replace(/^\/\/[?.]\/(UNC\/)?/i, (_m, unc: string | undefined) => (unc === undefined ? '' : '//'));
+  const raw = link.replace(/\\/g, '/').replace(/^\/\/\?\/(UNC\/)?/i, (_m, unc: string | undefined) => (unc === undefined ? '' : '//'));
   if (!/^(\/\/[^/]+\/|[a-z]:\/|\/)/i.test(raw)) return { root: null, segs: raw.split('/') };
   const abs = rootAndSegments(raw);
   return { root: abs.root, segs: abs.segs };
@@ -251,7 +256,6 @@ function linkTarget(link: string): { root: string | null; segs: string[] } {
 
 function resolveThroughLinks(p: string): string {
   if (Buffer.byteLength(p, 'utf8') > MAX_RESOLVE_PATH_BYTES) return UNRESOLVABLE_PATH;
-  const startedOnUncPath = isUncOrDevicePath(p);
   const start = rootAndSegments(p);
   let root = start.root;
   let base = root;
@@ -320,11 +324,24 @@ function resolveThroughLinks(p: string): string {
       // to prevent, reached by a path that looks entirely local. `readlinkSync` above only reads
       // the link's own bytes, which is local, so the decision can be made before anything dials.
       //
-      // Only an escape TO a share is refused, never a walk that started on one: a project opened
-      // over SMB is a legitimate setup, and refusing its own root would break it. Unresolvable
-      // rather than false, because that is this function's word for "cannot answer safely", and
-      // every caller already fails closed on it.
-      if (!startedOnUncPath && isUncOrDevicePath(target.root)) return UNRESOLVABLE_PATH;
+      // Only an escape TO a share is refused, never a walk already on one: a project opened over
+      // SMB is a legitimate setup, and refusing its own root would break it. Unresolvable rather
+      // than false, because that is this function's word for "cannot answer safely", and every
+      // caller already fails closed on it.
+      //
+      // The question is asked of `root`, the root the walk is standing on, not of the path as the
+      // caller spelled it. Reading the spelling was wrong twice over: a relative path under a UNC
+      // working directory is not spelled with a share and would have had a legitimate second share
+      // refused, and a walk that has already followed a link onto a share would have kept refusing
+      // afterwards. `root` is the resolved answer to both.
+      //
+      // A link onto a mapped drive letter -- `Z:\dir` where `Z:` is an SMB mapping -- is NOT
+      // refused, and that is a decision rather than an oversight. Telling a mapped letter from a
+      // local one needs a call that touches the drive, which is the thing being avoided, and the
+      // threat is materially smaller: `\\host\share` lets a planted link name the host it dials,
+      // while `Z:` reaches only wherever the user already chose to mount, so the worst case is a
+      // slow stat of the user's own share rather than a connection to an attacker's address.
+      if (!isUncOrDevicePath(root) && isUncOrDevicePath(target.root)) return UNRESOLVABLE_PATH;
       root = target.root;
       base = target.root;
     }
