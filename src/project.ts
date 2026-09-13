@@ -403,13 +403,23 @@ export function resolveProjectRoot(opts?: { project?: string }): string {
  * (With the leaf present, realpath succeeded and the install was correctly refused -- the coverage
  * asymmetry was the bug.)
  *
- * So: resolve the nearest ancestor that DOES exist, then re-append the segments that do not. One
- * subtlety keeps that from being enough on its own -- the first missing segment can be a DANGLING
- * symlink, which realpath refuses but `readlink` answers exactly, so it is followed by hand and the
- * walk repeats from where it points.
+ * So: walk the path one segment at a time from the filesystem root, following any segment that
+ * `readlink` answers for and appending any that it does not. A per-segment walk rather than
+ * "realpath the existing ancestor, re-append the rest" because the shortcut version was wrong in
+ * two ways that a green suite did not see:
  *
- * Falls back to the lexical form only when nothing on the path resolves at all (an unreachable
- * drive), and to {@link UNRESOLVABLE_PATH} when the link chain does not terminate -- which fails
+ *  - It walked UP with `path.posix.dirname`, and `path.posix.dirname('x:/dangfile')` is `'x:'` --
+ *    slashless, so the loop exited before the DRIVE ROOT was ever tried and a dangling link sitting
+ *    directly in `x:/` took the lexical fallback, reporting a target outside the root as inside it.
+ *    POSIX was unaffected (`dirname('/dangfile')` is `'/'`), which is why it survived CI.
+ *  - It handed the whole path to `canonicalize` first, which collapses `..` with `path.resolve`
+ *    BEFORE any link is followed, so `<root>/link/../sneak.txt` with `link` a junction out of the
+ *    root erased the link lexically and read as inside. Here `..` is applied to a base that is
+ *    already fully link-resolved, which is the only order that means anything.
+ *
+ * Only the leading `..`-free part of the input goes through {@link canonicalize} (for the drive
+ * form, shell-mount spellings and 8.3 short names); everything after the first `..` is walked
+ * verbatim. Returns {@link UNRESOLVABLE_PATH} when the link chain does not terminate, which fails
  * every containment test in both directions rather than handing a cycle a lexical answer.
  */
 const UNRESOLVABLE_PATH = 'unresolvable-link-chain'; // slashless, so no canonicalized path can equal it
@@ -417,40 +427,79 @@ const UNRESOLVABLE_PATH = 'unresolvable-link-chain'; // slashless, so no canonic
 /** Symlink hops followed before a chain is called a cycle. Mirrors a typical kernel ELOOP limit. */
 const MAX_LINK_HOPS = 40;
 
+/** Absolute root of `p` (`/`, `c:/`, `//server/share`) and its segments, with `..` PRESERVED. */
+function rootAndSegments(p: string): { root: string; segs: string[] } {
+  const parts = p.replace(/\\/g, '/').split('/');
+  const up = parts.indexOf('..');
+  const head = up === -1 ? parts.join('/') : parts.slice(0, up).join('/');
+  const canon = canonicalize(head === '' ? '.' : head);
+  const m = /^(\/\/[^/]+\/[^/]+|[a-z]:\/|\/)/i.exec(canon);
+  const root = m === null ? '/' : (m[1] as string);
+  const rest = canon.slice(root.length).split('/');
+  return { root, segs: up === -1 ? rest : [...rest, ...parts.slice(up)] };
+}
+
+/** `base` with `seg` appended, tolerating a root that already ends in a slash. */
+function joinSegment(base: string, seg: string): string {
+  return base.endsWith('/') ? base + seg : `${base}/${seg}`;
+}
+
+/** `base`'s parent, clamped at `root` so `..` can never climb above the filesystem root. */
+function parentSegment(base: string, root: string): string {
+  const cut = base.lastIndexOf('/');
+  return cut < root.length ? root : base.slice(0, cut);
+}
+
+/**
+ * A `readlink` answer as a root (absolute targets) plus segments to walk.
+ *
+ * Windows junctions read back namespaced (`\\?\C:\target`, `\\?\UNC\server\share`), which no other
+ * layer here strips, and an unstripped `//?/` prefix would be walked as if `?` were a directory.
+ */
+function linkTarget(link: string): { root: string | null; segs: string[] } {
+  const raw = link.replace(/\\/g, '/').replace(/^\/\/[?.]\/(UNC\/)?/i, (_m, unc: string | undefined) => (unc === undefined ? '' : '//'));
+  if (!/^(\/\/[^/]+\/|[a-z]:\/|\/)/i.test(raw)) return { root: null, segs: raw.split('/') };
+  const abs = rootAndSegments(raw);
+  return { root: abs.root, segs: abs.segs };
+}
+
 function resolveThroughLinks(p: string): string {
-  let c = canonicalize(p); // always forward-slash, hence path.posix below
-  for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
-    const missing: string[] = [];
-    let cur = c;
-    let real: string | null = null;
-    // A bare `c:` (or any slashless remnant) is NOT a filesystem root: realpathSync would resolve
-    // it to that drive's current directory, silently answering about somewhere else entirely.
-    while (cur.includes('/')) {
-      try {
-        real = fs.realpathSync(cur);
-        break;
-      } catch {
-        missing.unshift(path.posix.basename(cur));
-        const parent = path.posix.dirname(cur);
-        if (parent === cur) break;
-        cur = parent;
-      }
+  const start = rootAndSegments(p);
+  let root = start.root;
+  let base = root;
+  const queue = start.segs;
+  let hops = 0;
+  while (queue.length > 0) {
+    const seg = queue.shift() as string;
+    if (seg === '' || seg === '.') continue;
+    // Safe lexically only because `base` is already resolved: every segment behind it was either
+    // not a link or has been followed, so there is no link left for `..` to skip over.
+    if (seg === '..') {
+      base = parentSegment(base, root);
+      continue;
     }
-    if (real === null) return c;
-    if (missing.length === 0) return canonicalize(real);
-    const first = path.join(real, missing[0] as string);
+    const candidate = joinSegment(base, seg);
     let link: string | null = null;
     try {
-      if (fs.lstatSync(first).isSymbolicLink()) link = fs.readlinkSync(first);
+      if (fs.lstatSync(candidate).isSymbolicLink()) link = fs.readlinkSync(candidate);
     } catch {
+      // Missing, or unreadable: either way not a link this process can follow, so it is appended
+      // verbatim. A path that does not exist yet is the installer's ordinary case, not an error.
       link = null;
     }
-    // Nothing below `real` exists, and the first absent segment is not a link, so no component of
-    // the remainder can be one either: re-appending it is exact, not a guess.
-    if (link === null) return canonicalize(path.join(real, ...missing));
-    c = canonicalize(path.resolve(real, link, ...missing.slice(1)));
+    if (link === null) {
+      base = candidate;
+      continue;
+    }
+    if (++hops > MAX_LINK_HOPS) return UNRESOLVABLE_PATH;
+    const target = linkTarget(link);
+    if (target.root !== null) {
+      root = target.root;
+      base = target.root;
+    }
+    queue.unshift(...target.segs);
   }
-  return UNRESOLVABLE_PATH;
+  return base;
 }
 
 /**
