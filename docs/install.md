@@ -356,6 +356,16 @@ For VS Code using the token-goat MCP server (`token-goat install --vscode`), ena
 }
 ```
 
+## Supported languages
+
+One table in `src/language_specs.ts` drives every per-language list token-goat uses, so this is the whole set. **Symbols** means `symbol`, `read "file::Name"`, `skeleton` and `outline` return named declarations from the file. **Structure only** means the file is indexed for headings, keys or sections rather than code symbols.
+
+**Symbols:** ABAP (`.abap`), Apex (`.cls`, `.trigger`), Assembly (`.s`, `.asm`, `.nasm`), Bash and compatible shells (`.sh`, `.bash`, `.zsh`, `.ksh`, `.bats`), C (`.c`, `.h`), C# (`.cs`), C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`), Clojure (`.clj`, `.cljs`, `.cljc`), CMake (`.cmake`, `CMakeLists.txt`), COBOL (`.cbl`, `.cob`, `.cobol`, `.cpy`), Common Lisp (`.lisp`, `.lsp`, `.cl`), Dart (`.dart`), Elixir (`.ex`, `.exs`), Emacs Lisp (`.el`), Erlang (`.erl`, `.hrl`), F# (`.fs`, `.fsi`, `.fsx`), Fortran (`.f`, `.for`, `.f77`, `.f90`, `.f95`, `.f03`, `.f08`), GLSL (`.glsl`, `.vert`, `.frag`, `.comp`, `.geom`, `.tesc`, `.tese`), Go (`.go`), GraphQL (`.graphql`, `.gql`), Groovy (`.groovy`, `.gvy`, `.gradle`, `Jenkinsfile`), Haskell (`.hs`), HLSL (`.hlsl`, `.hlsli`), Java (`.java`), JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`), JCL (`.jcl`), Kotlin (`.kt`, `.kts`), Lua (`.lua`), MATLAB, Metal (`.metal`), Natural (`.nsp`, `.nsn`, `.nss`, `.nsa`, `.nsl`, `.nsg`, `.nsc`, `.nsh`), Nix (`.nix`), Objective-C (`.mm`, and a `.h` that declares an `@interface` or `@protocol`), OCaml (`.ml`, `.mli`), OpenEdge ABL, Pascal (`.pas`, `.dpr`, `.dpk`, `.lpr`, `.dfm`), Perl (`.pl`, `.pm`), PHP (`.php`), PL/I (`.pli`, `.pl1`), PowerShell (`.ps1`, `.psm1`), Protocol Buffers (`.proto`), Python and Starlark (`.py`, `.pyi`, `.bzl`, `.star`, `BUILD`, `WORKSPACE`, `MODULE.bazel`), R (`.r`), Racket (`.rkt`, `.rktl`), RPG (`.rpgle`, `.sqlrpgle`), Ruby (`.rb`, `.ruby`, `.rake`, `Gemfile`, `Rakefile`, and the other extensionless Ruby DSL files), Rust (`.rs`), Salesforce markup (`.cmp`, `.app`, `.evt`, `.intf`, `.design`, `.auradoc`, `.tokens`, `.page`, `.component`, `.email`), Salesforce metadata, SAS (`.sas`), Scala (`.scala`, `.sc`), Scheme (`.scm`, `.ss`), Solidity (`.sol`), SQL and PL/SQL (`.sql`, `.pks`, `.pkb`, `.pls`, `.plsql`, `.pck`, `.prc`, `.fnc`, `.trg`, `.tps`, `.tpb`), Swift (`.swift`), Terraform (`.tf`, `.tfvars`, `.hcl`), Thrift (`.thrift`), TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`), VHDL (`.vhd`, `.vhdl`), Visual Basic (`.vb`, `.bas`, `.vbs`, `.frm`), WGSL (`.wgsl`), Windows batch (`.bat`, `.cmd`), Zig (`.zig`).
+
+**Structure only:** Astro (`.astro`), CSS and its preprocessors (`.css`, `.scss`, `.sass`, `.less`), Dockerfile, environment files (`.env`, `.envrc`), HTML (`.html`, `.htm`), INI (`.ini`, `.cfg`, `.conf`), JSON including JSON with comments and Avro schemas (`.json`, `.jsonc`, `.avsc`), Jupyter notebooks (`.ipynb`), Makefiles (`.mk`, `Makefile`), Markdown (`.md`, `.markdown`, `.mdx`), Svelte (`.svelte`), TOML (`.toml`), Vue (`.vue`), YAML (`.yaml`, `.yml`), and seven template-engine dialects read as HTML: Liquid (`.liquid`), Jinja2 (`.j2`, `.jinja`, `.jinja2`), Handlebars (`.hbs`, `.handlebars`), ERB (`.erb`), EJS (`.ejs`), Nunjucks (`.njk`), Twig (`.twig`).
+
+MATLAB, OpenEdge ABL and Salesforce metadata share their file extensions with other languages, so token-goat picks them by looking at the file's contents rather than its name.
+
 ## Troubleshooting
 
 ### tree-sitter unavailable
@@ -368,7 +378,7 @@ For VS Code using the token-goat MCP server (`token-goat install --vscode`), ena
 
 ### A file type shows no symbols
 
-`outline`, `skeleton` and `read "file::Name"` say when token-goat has no symbol extractor for a file type (for example Fortran, PL/I, RPG, JCL, or an extension it does not know). Grep and plain reads still work on those files. To ask for support for another file type, [open an issue](https://github.com/DFKHelper/token-goat/issues) or email token-goat@dfkhelper.com.
+`outline`, `skeleton` and `read "file::Name"` say when token-goat has no symbol extractor for a file type. The [supported languages](#supported-languages) list above says which file types are indexed; anything outside it, and any extension token-goat does not recognize, has no extractor. Grep and plain reads still work on those files. To ask for support for another file type, [open an issue](https://github.com/DFKHelper/token-goat/issues) or email token-goat@dfkhelper.com.
 
 ## What gets installed?
 

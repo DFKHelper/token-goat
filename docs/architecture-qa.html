@@ -419,7 +419,7 @@
                         <div class="sub-answer-text">
                             <p>The index runs automatically in the background in your local development environment whenever files are saved or modified, just like VS Code's local search index. It does not send your code to any cloud API; it uses a small local model (<code>bge-small-en-v1.5</code>, ~30 MB).</p>
 <ul>
-    <li><strong>What is indexed:</strong> Function signatures, class definitions, method bodies, type declarations, docstrings, and markdown docs across 27+ languages.</li>
+    <li><strong>What is indexed:</strong> Function signatures, class definitions, method bodies, type declarations, docstrings, and markdown docs across 80+ languages.</li>
     <li><strong>What is strictly ignored:</strong> Your <code>node_modules/</code> folder, build output folders (<code>dist/</code>, <code>target/</code>), compiled binaries, and <code>.git</code> internals.</li>
 </ul>
 <div class="example-box">
@@ -680,7 +680,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
                             <td><span class="author-badge">Principal Systems Architect</span></td>
                             <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">VS Code Index Comparison</td>
                             <td class="field-name">VS Code copilot keeps semantic index of each code repo. token-goat does the same? Isn&#x27;t it adding overhead?</td>
-                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#what-gets-installed" target="_blank" title="View section in public GitHub README">GitHub README: ## What gets installed?</a><span class="check">✓</span> VS Code finds files to open, but Copilot logs entire unredacted files and session histories in plain text. Token-goat filters out the 95% noise before it hits the prompt, storing only compact, secret-redacted symbol slices with near-zero overhead.</td>
+                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#what-gets-installed" target="_blank" title="View section in public GitHub README">GitHub README: ## What gets installed?</a><span class="check">✓</span> VS Code finds files to open, but Copilot logs entire unredacted files and session histories in plain text. Token-goat filters that bulk out before it hits the prompt, storing only compact, secret-redacted symbol slices with near-zero overhead.</td>
                             <td><a href="https://github.com/DFKHelper/token-goat/blob/main/src/parser.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/parser.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_read.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/hooks_read.ts</code></a></td>
                         </tr>
 
@@ -710,7 +710,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
                             <p>No. They serve completely different purposes in the developer workflow:</p>
                             <ul style="margin-left:20px; margin-bottom:8px;">
                                 <li><strong>VS Code Copilot's index is a search tool:</strong> It indexes files to help the agent <em>find</em> which file might be relevant when you type <code>@workspace</code>. But once VS Code finds the file, it has no mechanism to control context: it dumps the entire file into the conversation prompt.</li>
-                                <li><strong>Token-goat is a runtime execution gatekeeper:</strong> It builds an AST symbol and call graph using Tree-sitter across 27+ languages to locate exact function, class, and method boundaries. When the agent attempts to read a 2,500-line file, token-goat intercepts the call and serves only the 30-line function needed.</li>
+                                <li><strong>Token-goat is a runtime execution gatekeeper:</strong> It builds an AST symbol and call graph using Tree-sitter across 80+ languages to locate exact function, class, and method boundaries. When the agent attempts to read a 2,500-line file, token-goat intercepts the call and serves only the 30-line function needed.</li>
                             </ul>
                             <p>VS Code helps the model find the file; token-goat prevents that file from flooding your context window.</p>
                         </div>
@@ -782,7 +782,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
                             <ol style="margin-left:20px; margin-bottom:12px;">
                                 <li><strong>The Provider Incentive Conflict:</strong> Model providers (Anthropic, OpenAI, hyperscalers) generate revenue by billing for ingested tokens. A model provider's harness has no business incentive to slash billable token volume by 85% to 98% across your organization. Token-goat works exclusively for the customer.</li>
                                 <li><strong>Cross-Harness Portability:</strong> Engineering teams never use a single tool. If Copilot in VS Code adds a feature, it does not help engineers running Claude Code in the CLI, Cursor, Windsurf, or automated CI pipelines. Token-goat provides a unified, cross-harness context engine with one shared index, security boundary, and configuration across every tool you run.</li>
-                                <li><strong>Full-Stack Scope Beyond Raw Code:</strong> Harnesses treat files as generic text. Token-goat is a multi-format context engine: AST symbol slicing across 27+ languages, token-aware PDF/Excel/Word extraction, automated image downsampling, and sub-0.2ms local SQLite caching.</li>
+                                <li><strong>Full-Stack Scope Beyond Raw Code:</strong> Harnesses treat files as generic text. Token-goat is a multi-format context engine: AST symbol slicing across 80+ languages, token-aware PDF/Excel/Word extraction, automated image downsampling, and sub-0.2ms local SQLite caching.</li>
                             </ol>
                         </div>
                     </div>
@@ -794,7 +794,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
                         </div>
                         <div class="sub-answer-text">
                             <p>Token-goat is built on proprietary patented intellectual property covering runtime AST surgical extraction, execution interception hooks, and cross-session context compaction. It is not an ad-hoc bash wrapper or a short-lived monkey patch.</p>
-                            <p>The patent protects the core pipeline: using in-process Tree-sitter AST parsing to map exact function and class boundaries across 27+ languages, intercepting runtime file reads before disk I/O, and substituting precise symbol slices without model drift. This architecture delivers deterministic, byte-accurate code extraction that generalist harnesses cannot replicate without licensing protected IP.</p>
+                            <p>The patent protects the core pipeline: using in-process Tree-sitter AST parsing to map exact function and class boundaries across 80+ languages, intercepting runtime file reads before disk I/O, and substituting precise symbol slices without model drift. This architecture delivers deterministic, byte-accurate code extraction that generalist harnesses cannot replicate without licensing protected IP.</p>
                         </div>
                     </div>
 
@@ -806,10 +806,10 @@ If you want to estimate net dollar savings on your company invoice, account for 
                         <div class="sub-answer-text">
                             <p>Even with 1M+ token context windows standard across frontier models, putting 100,000 lines of code into a prompt degrades model quality. Research across SWE-bench and frontier model evals proves that LLMs suffer from 'lost in the middle' syndrome: when given too much noise, they hallucinate, miss subtle bugs, or edit the wrong file.</p>
 <div class="example-box">
-<div class="example-header">Benchmark Accuracy vs Context Noise</div>
-• <strong>Focused context (500 lines):</strong> Model solves the issue on Turn 1 (~92% pass rate).<br>
-• <strong>Bloated context (25,000 lines):</strong> Model hallucinates or touches wrong files (~62% pass rate).<br>
-<em>Keeping context clean is a permanent law of AI quality, not a temporary hack.</em>
+<div class="example-header">What the published research reports</div>
+• <strong>Position matters:</strong> accuracy is highest when the needed passage sits at the start or end of the context, and drops when it sits in the middle.<br>
+• <strong>More context is not free:</strong> adding retrieved documents past a point stops helping and starts hurting, even on models that accept the longer input.<br>
+<em>Token-goat has not measured pass rate against context length. The figures above are the external findings cited on this page, not a token-goat result.</em>
 </div>
                         </div>
                     </div>
@@ -948,7 +948,7 @@ offline = true
                             <td><span class="author-badge">Code Intelligence & AST Lead</span></td>
                             <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">MCP &amp; Memory Integration</td>
                             <td class="field-name">Could Token-Goat be paired with something like MCP codebase-memory, where codebase-memory maps out the relationships and Token-Goat pulls and compresses just the relevant code before it reaches the LLM?</td>
-                          <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#mcp-server" target="_blank" title="View section in public GitHub README">GitHub README: ## MCP server · ## CLI</a><span class="check">✓</span> Yes, but generic MCP memory tools waste 800+ tokens/turn on schema and JSON bloat. Token-goat-mem proves pointer-based memory is 94% leaner (separate personal OSS project, pending IT review).</td>
+                          <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#mcp-server" target="_blank" title="View section in public GitHub README">GitHub README: ## MCP server · ## CLI</a><span class="check">✓</span> Generic MCP memory tools carry schema and JSON overhead per turn. Token-goat-mem is a separate personal OSS project exploring pointer-based memory instead; no comparative measurement between the two has been run or is claimed here (it is also pending IT review, so it is not part of this deployment).</td>
                           <td><a href="https://github.com/DFKHelper/token-goat/blob/main/src/mcp/server.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/mcp/server.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_compact.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/hooks_compact.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/read_commands.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/read_commands.ts</code></a></td>
                         </tr>
 
@@ -1014,15 +1014,13 @@ offline = true
                           <p>Rather than burning thousands of tokens on external MCP JSON overhead, <strong>token-goat-mem</strong> was designed specifically around token-first discipline:</p>
                           <ol style="margin-left:20px; margin-bottom:12px;">
                               <li><strong>Symbol Pointers Instead of Inlined Code:</strong> <code>token-goat-mem</code> never stores raw code blobs. It stores surgical pointers (e.g. <code>src/billing/stripe_webhook.ts::handleInvoicePayment</code>). When the agent needs the code, it resolves the pointer live via AST slice. You get 100% current code with zero stale context bloat.</li>
-                              <li><strong>Zero MCP Schema Tax:</strong> Integrated through native hooks and local CLI rather than bloated JSON-RPC schemas, eliminating the 1,280-token per-turn tool declaration penalty.</li>
+                              <li><strong>Zero MCP Schema Tax:</strong> Integrated through native hooks and local CLI rather than bloated JSON-RPC schemas, so no per-turn tool-declaration schema is re-sent with every request.</li>
                               <li><strong>Compaction-Resilient Epoch Tracking:</strong> Deeply wired into token-goat's compaction engine (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_compact.ts" target="_blank" class="github-inline-ref"><code>src/hooks_compact.ts</code></a>). During long-running sessions, memory state tracks across <code>mem epoch</code> counters, ensuring durable state survives agent context compaction without dumping sprawling history transcripts.</li>
-                              <li><strong>Sub-200 Token Output Footprint:</strong> Returns high-density, structured facts in plain text rather than multi-kilobyte JSON-RPC trees, cutting memory retrieval costs by over 95%.</li>
+                              <li><strong>Sub-200 Token Output Footprint:</strong> Designed to return structured facts in plain text rather than multi-kilobyte JSON-RPC trees, aiming to keep memory retrieval cheap.</li>
                           </ol>
 <div class="example-box">
-<div class="example-header">Real-World Context Comparison (Single Architecture Query)</div>
-• <strong>Generic MCP Codebase-Memory:</strong> 1,280 tokens (turn schema) + 2,400 tokens (JSON payload with stale snippet) + 2,500 tokens (emergency full file re-read) = <strong>6,180 tokens burned</strong>.<br>
-• <strong>Token-Goat-Mem + Surgical Read:</strong> 0 tokens (native hook) + 38 tokens (pointer: <code>auth::AuthService.refreshSession</code>) + 112 tokens (AST slice: lines 42-65) = <strong>150 tokens total</strong>.<br>
-<strong style="color:#15803d;">Net Result: 97.6% context reduction with guaranteed 100% live code accuracy.</strong>
+<div class="example-header">Illustrative Context Comparison (Single Architecture Query, Not a Measured Result)</div>
+This is a worked illustration of the design intent, not a benchmark: a generic MCP memory tool pays a turn-schema cost plus a JSON payload plus, if the returned snippet is stale, a full-file re-read. A pointer-based design pays only for the pointer and the AST slice it resolves to. No head-to-head token count between the two approaches has been measured for this project.
 </div>
                       </div>
                   </div>
@@ -1178,7 +1176,7 @@ token-goat --version
                             <td><span class="author-badge">Principal Systems Architect</span></td>
                             <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">Output Quality &amp; Model Evals</td>
                             <td class="field-name">It&#x27;s clear that there are evals on tokens saved. Are there evals on model outputs, e.g. generated code quality, with and w/o token-goat?</td>
-                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#token-savings-measured" target="_blank" title="View section in public GitHub README">GitHub README: ## Token savings, measured</a><span class="check">✓</span> Prevents attention dilution and diff sprawl. Empirical head-to-head testing shows higher first-pass completion (83.9% vs. 61.3%), 98% less collateral diff noise, and zero neighboring helper hallucinations.</td>
+                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#token-savings-measured" target="_blank" title="View section in public GitHub README">GitHub README: ## Token savings, measured</a><span class="check">✓</span> No code-quality eval has been run. The one head-to-head evaluation this project has published is a cost measurement (paired A/B, n=6 clean pairs, 64.0% median billing-weighted saving); every pair resolved in both arms, so it says nothing about output quality.</td>
                             <td><a href="https://github.com/DFKHelper/token-goat/blob/main/src/parser.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/parser.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/tests/command_matrix_e2e.test.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">tests/command_matrix_e2e.test.ts</code></a></td>
                         </tr>
 
@@ -1213,127 +1211,85 @@ token-goat --version
                             <span>Head-to-head empirical eval: Generated code quality with vs. without Token-Goat</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>To measure the direct impact of Token-Goat on generated code quality, we conducted a controlled head-to-head evaluation modeled on the Aider and SWE-bench testing methodologies. Identical frontier models (Claude 3.7 Sonnet+, GPT-5.6 Terra, and Gemini 3.7) solved 62 real-world bug-fixing and refactoring tasks across TypeScript, Python, and C# repositories under two execution modes:</p>
+                            <p>The one head-to-head evaluation this project has actually run is a cost measurement, not a code-quality study. It is a paired A/B design: one real bug per repository snapshot, a single model (<code>claude-sonnet-5</code>), a single repository (this one), with the two arms differing only in the tool surface offered to the model:</p>
                             <p style="margin-top:6px; font-size:12px; color:var(--text-dim);">
-                                <strong>Evaluation Setup:</strong> In Mode A (Baseline), the agent used standard whole-file reads (<code>view</code>) and uncompressed terminal logs. In Mode B (With Token-Goat), the agent used Tree-sitter AST surgical reads (<code>token-goat read</code>), terminal output compression (<code>token-goat compress</code>), and read deduplication.
+                                <strong>Evaluation Setup:</strong> In Arm A (Baseline), the agent used conventional whole-file reads and text search (<code>read_file</code>, <code>grep</code>, <code>list_files</code>) alongside <code>edit_file</code> and <code>run_tests</code>. In Arm B (With Token-Goat), <code>read_file</code> and <code>grep</code> were replaced with token-goat's surgical read commands (<code>tg_read</code>, <code>tg_symbol</code>, <code>tg_outline</code>, <code>tg_section</code>, <code>tg_semantic</code>, <code>tg_refs</code>), keeping the same <code>edit_file</code> and <code>run_tests</code>. Cost is counted as billing-weighted input tokens (fresh 1.0x, cache write 1.25x, cache read 0.1x), summed over every turn, with no estimator involved. Raw data: <a href="https://github.com/DFKHelper/token-goat/blob/main/demo/data/eval-runs.csv" target="_blank" class="github-inline-ref"><code>demo/data/eval-runs.csv</code></a> and <a href="https://github.com/DFKHelper/token-goat/blob/main/demo/data/eval-tasks.csv" target="_blank" class="github-inline-ref"><code>demo/data/eval-tasks.csv</code></a>. Full capture: <a href="https://github.com/DFKHelper/token-goat/blob/main/demo/evidence/12-eval-paired.txt" target="_blank" class="github-inline-ref"><code>demo/evidence/12-eval-paired.txt</code></a>, whose figures <a href="https://github.com/DFKHelper/token-goat/blob/main/tests/eval_capture_matches_data.test.ts" target="_blank" class="github-inline-ref"><code>tests/eval_capture_matches_data.test.ts</code></a> recomputes independently from the CSVs on every <code>npm test</code> run.
                             </p>
 
 <div style="overflow-x:auto; margin:12px 0;">
     <table style="width:100%; border-collapse:collapse; font-size:12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);">
         <thead>
             <tr style="background:var(--surface-2); text-align:left;">
-                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-faint); border-bottom:1px solid var(--border);">Quality Dimension</th>
-                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:#991b1b; border-bottom:1px solid var(--border);">Without Token-Goat (Raw Files)</th>
-                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:#166534; border-bottom:1px solid var(--border);">With Token-Goat (Surgical AST)</th>
-                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--accent); border-bottom:1px solid var(--border);">Measured Impact</th>
+                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-faint); border-bottom:1px solid var(--border);">Measure</th>
+                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-faint); border-bottom:1px solid var(--border);">Clean set (n=6)</th>
+                <th style="padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-faint); border-bottom:1px solid var(--border);">All recorded pairs (n=8)</th>
             </tr>
         </thead>
         <tbody>
             <tr>
-                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">First-Pass Test Pass Rate</td>
-                <td style="padding:9px 12px; color:#991b1b; border-bottom:1px solid var(--border);"><strong>61.3%</strong> (38 / 62 passed on turn 1)</td>
-                <td style="padding:9px 12px; color:#166534; border-bottom:1px solid var(--border);"><strong>83.9%</strong> (52 / 62 passed on turn 1)</td>
-                <td style="padding:9px 12px; font-weight:600; color:#15803d; border-bottom:1px solid var(--border);">+22.6 percentage points</td>
+                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Median billing-weighted saving</td>
+                <td style="padding:9px 12px; border-bottom:1px solid var(--border);"><strong>64.0%</strong></td>
+                <td style="padding:9px 12px; border-bottom:1px solid var(--border);"><strong>56.3%</strong></td>
             </tr>
             <tr>
-                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Collateral Diff Sprawl</td>
-                <td style="padding:9px 12px; color:#991b1b; border-bottom:1px solid var(--border);"><strong>68.4 lines average</strong> (reformatted spacing, modified adjacent comments, reordered imports)</td>
-                <td style="padding:9px 12px; color:#166534; border-bottom:1px solid var(--border);"><strong>1.2 lines average</strong> (strictly isolated to the targeted function body)</td>
-                <td style="padding:9px 12px; font-weight:600; color:#15803d; border-bottom:1px solid var(--border);">-98.2% diff churn</td>
+                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Pairs resolved in both arms</td>
+                <td style="padding:9px 12px; border-bottom:1px solid var(--border);" colspan="2">8 of 8 recorded pairs, 0 discordant. No pair separated the arms on success.</td>
             </tr>
             <tr>
-                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Neighboring Helper Hallucination</td>
-                <td style="padding:9px 12px; color:#991b1b; border-bottom:1px solid var(--border);"><strong>17.7% of failure modes</strong> (model confused parameters with adjacent helpers in 1,200-line file)</td>
-                <td style="padding:9px 12px; color:#166534; border-bottom:1px solid var(--border);"><strong>0.0% of failure modes</strong> (distracting neighboring code was never injected into context)</td>
-                <td style="padding:9px 12px; font-weight:600; color:#15803d; border-bottom:1px solid var(--border);">Zero distractor confusion</td>
+                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Pairs where Arm B cost more</td>
+                <td style="padding:9px 12px; border-bottom:1px solid var(--border);" colspan="2">1 of 6 clean pairs (ratio 1.265 vs. Arm A on that pair)</td>
             </tr>
             <tr>
-                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Instruction Drift (Turn 5+)</td>
-                <td style="padding:9px 12px; color:#991b1b; border-bottom:1px solid var(--border);"><strong>35.5% violation rate</strong> (forgot initial rules like "preserve backward compatibility" as context grew past 45k)</td>
-                <td style="padding:9px 12px; color:#166534; border-bottom:1px solid var(--border);"><strong>1.6% violation rate</strong> (system constraints remain in high-attention focus at &lt;5k tokens)</td>
-                <td style="padding:9px 12px; font-weight:600; color:#15803d; border-bottom:1px solid var(--border);">-95.5% instruction loss</td>
+                <td style="padding:9px 12px; font-weight:600;">Runs with no result (driver crash)</td>
+                <td style="padding:9px 12px;" colspan="2">12 of 29 recorded runs (10 in Arm A, 2 in Arm B; the split tracks Arm A's longer exposure, not the arm itself)</td>
             </tr>
-            <tr>
-                <td style="padding:9px 12px; font-weight:600; border-bottom:1px solid var(--border);">Average Ingested Context</td>
-                <td style="padding:9px 12px; color:#991b1b; border-bottom:1px solid var(--border);"><strong>44,800 tokens / task</strong> (3.5-5.5s prefill latency)</td>
-                <td style="padding:9px 12px; color:#166534; border-bottom:1px solid var(--border);"><strong>3,850 tokens / task</strong> (&lt;1.2s prefill latency)</td>
-                <td style="padding:9px 12px; font-weight:600; color:#15803d; border-bottom:1px solid var(--border);">-91.4% context load</td>
-            </tr>
-            <tr>
-                <td style="padding:9px 12px; font-weight:600;">Build &amp; Test Log Ingestion</td>
-                <td style="padding:9px 12px; color:#991b1b;"><strong>22,800 tokens average</strong> (hundreds of passing tests, raw ANSI escape sequences)</td>
-                <td style="padding:9px 12px; color:#166534;"><strong>320 tokens average</strong> (collapsed passing suites, isolated error lines)</td>
-                <td style="padding:9px 12px; font-weight:600; color:#15803d;">-98.6% terminal noise</td>
-            </tr>
-        
-                        </tbody>
+        </tbody>
     </table>
 </div>
 
 <p style="margin:8px 0 14px 0; font-size:12px; color:var(--text-dim); line-height:1.5;">
-<strong>Alignment with Aider's Published Benchmark:</strong> In Paul Gauthier's original Aider benchmark (133 exercises), introducing Tree-sitter repo-maps lifted benchmark pass rates from ~61% to ~81% (+20 percentage points) while reducing context by ~70%. Our evaluation shows a virtually identical +22.6 percentage point pass rate lift (61.3% to 83.9%), but achieves significantly higher context reduction (91.4%) because Token-Goat performs <em>sub-file AST symbol slicing</em> (reading just the target function rather than whole files) and intercepts noisy terminal test and build logs.
+<strong>This is a cost result only.</strong> Every one of the 8 recorded pairs resolved in both arms, so the evaluation says nothing about output quality, capability, or correctness, only about how many billed tokens each arm consumed reaching the same outcome. It also carries real limitations: n=6 is small enough that the median moves under single-pair changes (the clean per-pair ratios run 0.109, 0.247, 0.261, 0.459, 0.612, 1.265), two pairs were excluded post hoc for writer contamination using a mechanical but not pre-registered criterion, and the run is single-model, single-repository, with tasks authored by this project rather than an independent benchmark.
 </p>
 
 <div class="example-box" style="margin-top:14px; margin-bottom:14px;">
-<div class="example-header">Study Case Walkthrough: Refactoring PricingEngine.ts</div>
+<div class="example-header">Real Pair From the Capture: config-get YAML support</div>
 <div style="font-size:12px; color:var(--text); line-height:1.55;">
-<p style="margin:0 0 6px 0;"><strong>Task Prompt:</strong> <code>"In PricingEngine.ts, update calculateTierDiscount so enterprise accounts with over 500 seats receive a 25% discount instead of 20%. Preserve backward compatibility and do not touch exported signatures."</code></p>
-
-<strong>1. Without Token-Goat (Failure Mode):</strong><br>
-• <strong>Turn 1:</strong> Agent calls <code>view "PricingEngine.ts"</code> (1,240 lines, 4,800 tokens) and runs <code>npm test</code> (34 passing tests, 1 failure, 2,400 tokens). Context starts at 7,200 tokens.<br>
-• <strong>The Output Defect:</strong> While updating the logic, the model observes an adjacent private method <code>calculatePartnerDiscount</code> 35 lines above. It inadvertently renames the internal variable <code>discountRate</code> to <code>partnerRate</code>, reformats the indentation of two unrelated helper functions, and alters an exported parameter type.<br>
-• <strong>Result:</strong> <code>git diff</code> shows 68 lines changed across 3 methods. Build fails on exported type mismatch. First-pass pass rate: <strong>Failed</strong>.<br><br>
-
-<strong>2. With Token-Goat (Clean Pass):</strong><br>
-• <strong>Turn 1:</strong> Agent calls <code>token-goat read "PricingEngine.ts::calculateTierDiscount"</code> (lines 142-168, <strong>185 tokens</strong>) and runs <code>token-goat compress -f vitest -- npm test</code> (collapses 34 passing tests, shows only the 4-line assertion failure, <strong>48 tokens</strong>). Context starts at <strong>233 tokens</strong>.<br>
-• <strong>The Output Quality:</strong> The model never sees the neighboring partner discount method or unrelated class boilerplates. 100% of self-attention heads evaluate <code>calculateTierDiscount</code>. It emits a surgical 3-line patch updating the tier threshold.<br>
-• <strong>Result:</strong> <code>git diff</code> shows exactly 3 lines changed. Zero collateral diff churn. Tests pass immediately. First-pass pass rate: <strong>Passed</strong>.
+<p style="margin:0 0 6px 0;">One of the six clean pairs is task <code>1ae363680bcc</code>, the real commit <a href="https://github.com/DFKHelper/token-goat/blob/main/src/read_commands.ts" target="_blank" class="github-inline-ref"><code>fix(config-get): support YAML files (colon syntax and indentation nesting)</code></a>, touching <code>src/read_commands.ts</code> and <code>tests/read_commands.test.ts</code>.</p>
+<strong>Arm A (whole-file reads and grep):</strong> 9 turns, 53,534 billing-weighted input tokens, task resolved.<br>
+<strong>Arm B (token-goat surgical reads):</strong> 8 turns, 13,964 billing-weighted input tokens, task resolved.<br>
+<strong>Ratio:</strong> 0.261, a 73.9% reduction on this pair. Both arms produced a passing fix; the difference recorded is cost, not correctness.
 </div>
 </div>
 
 <div class="example-box" style="margin-top:14px; margin-bottom:14px;">
-<div class="example-header">The Transformer Mechanics: Why Token-Goat Produces Measurably Better Code</div>
+<div class="example-header">What This Does Not Show</div>
 <div style="font-size:12px; color:var(--text); line-height:1.55;">
-1. <strong>Attention Focus vs. Attention Dispersion:</strong><br>
-Transformers compute pairwise self-attention across every token in the prompt ($O(N^2)$ dot-product operations). When a prompt contains 4,000 lines of irrelevant imports, CSS, and unrelated methods, attention weights disperse across distractor tokens. By supplying only the targeted method AST and its interfaces, virtually 100% of the model's self-attention heads focus directly on the target algorithm and variable types.<br><br>
-
-2. <strong>Physical Bounding of the Diff Surface:</strong><br>
-When an agent reads an entire 1,400-line class to modify a 10-line calculation, the edit tool must rewrite or replace sections across the whole file. Models frequently reformat tabs, alter comments in adjacent functions, or drop decorators. When Token-Goat serves only <code>PricingEngine.ts::calculateTierDiscount</code>, the model's edit is physically bounded to that single method. Diff sprawl drops to near zero.<br><br>
-
-3. <strong>Preventing "Lost in the Middle" Instruction Eviction:</strong><br>
-In extended debugging workflows without Token-Goat, token accumulation forces earlier instructions into the middle of the context window. As demonstrated by Stanford research and the Needle In A Haystack test suite, retrieval accuracy degrades sharply in the middle third of large contexts. Keeping context under 5,000 tokens ensures system prompts, architecture constraints, and edge-case requirements remain in pristine, high-attention working memory.
+This project has not run a code-quality evaluation of diff sprawl, hallucination rate, or instruction drift, with or without token-goat, and makes no claim about any of them. The mechanism argument for why narrower context <em>should</em> help output quality is covered by the external "Lost in the Middle" citation below; it is external research about long-context degradation in general, not a result token-goat produced. Any specific per-head attention behavior is not something this project has measured and is not claimed here.
 </div>
 </div>
 
 <div class="example-box" style="margin-top:14px; margin-bottom:14px;">
-<div class="example-header">What About Modern Frontier Models (Gemini 3.7, GPT-5.6 Terra, Claude 3.7 Sonnet+)?</div>
+<div class="example-header">Do Frontier Models Make This Unnecessary?</div>
 <div style="font-size:12px; color:var(--text); line-height:1.55;">
-A common developer question is: <em>"Modern frontier models have 1M to 2M context windows and native reasoning chains. Doesn't that make Token-Goat obsolete?"</em><br><br>
-When evaluating modern reasoning architectures (Gemini 3.7 Flash, GPT-5.6 Terra, Claude 3.7 Sonnet+), Token-Goat actually becomes <strong>more impactful</strong>, for three architectural reasons:
-<ul style="margin:6px 0 6px 18px; padding:0;">
-    <li><strong>Reasoning Token Waste:</strong> Modern reasoning models generate internal chain-of-thought before emitting code. When fed a 1,200-line file with 14 methods, the model spends hundreds of expensive "thinking tokens" analyzing and ruling out unrelated helper logic. With Token-Goat, thinking tokens are spent 100% on the target algorithm, reducing reasoning latency from 18 seconds to 3 seconds.</li>
-    <li><strong>The 1M Context Window Fallacy:</strong> While Gemini 3.7 and GPT-5.6 Terra can <em>retrieve</em> a needle from a 1M-token haystack, multi-turn code refactoring requires active cross-attention across all tokens. Ingesting 50,000 tokens of raw file dumps and test outputs on every turn compounds prefill latency (3-5s per turn) and rapidly triggers corporate Tokens-Per-Minute (TPM) rate limits.</li>
-    <li><strong>First-Pass Pass Rate Elevation:</strong> On modern models, baseline pass rates improve from 61.3% to ~74.2% on raw files, but adding Token-Goat elevates pass rates to <strong>91.8%</strong>. Collateral diff churn remains a physics problem: giving a model 1,400 lines of code to edit a 5-line logic bug inevitably produces reformatted whitespace and diff noise unless the input context is surgically bounded.</li>
-</ul>
+A common developer question is: <em>"Modern frontier models have 1M+ token context windows. Doesn't that make token-goat obsolete?"</em><br><br>
+Token-goat's own paired evaluation used a current frontier model (<code>claude-sonnet-5</code>) on both arms and still measured a cost difference, because a larger context window changes what a model <em>can</em> hold, not what it is billed for or how much of it it must sift through per turn. Two things this project has not measured and does not claim: any specific pass-rate uplift for large-context models, or a number for how much "thinking token" waste a bigger window causes. What the capture does show is that the saving held on the model this project tested, and the underlying attention-degradation research cited below is model-agnostic in its own claims.
 </div>
 </div>
 
 <div class="example-box">
-<div class="example-header">How to Run Your Own Verification (Step-by-Step Protocol)</div>
+<div class="example-header">How to Run Your Own Verification</div>
 <p style="margin:0 0 8px 0; font-size:12px; color:var(--text); line-height:1.45;">
-You do not have to take our numbers on faith. Verify Token-Goat directly on your workstation in three steps:
+You do not have to take these numbers on faith. Verify token-goat directly on your workstation:
 </p>
 <div style="font-size:12px; color:var(--text-dim); line-height:1.5;">
 <strong>Step 1: Verify Command Compression &amp; Fidelity (Automated Suite):</strong><br>
-Run <code>node dist/token-goat.mjs bench</code> in your terminal. This executes our compression benchmark against real git logs and test suites, proving a <strong>96.2% token reduction</strong> while asserting a strict 100% fidelity guard (6/6 required assertions preserved with zero dropped lines).<br><br>
+Run <code>node dist/token-goat.mjs bench</code> in your terminal. This replays a corpus of captured command output through the compressors and prints the byte-savings ratio plus a fidelity check (it exits 1 if a must-keep line is dropped). At the time of writing this ran at 96.1% saved with 6/6 fidelity checks kept; the ratio is not a fixed guarantee, only a floor the corpus must clear on every run.<br><br>
 
-<strong>Step 2: Verify Polyglot AST Extraction (Unit Benchmark):</strong><br>
-Run <code>npx vitest run <a href="https://github.com/DFKHelper/token-goat/blob/main/tests/token_savings_benchmark.test.ts" target="_blank" class="github-inline-ref">tests/token_savings_benchmark.test.ts</a></code>. This parses real multi-language fixtures (TypeScript, Python, Go, and Markdown) and verifies an average <strong>80.7% surgical reduction</strong> over raw file reads.<br><br>
+<strong>Step 2: Verify Polyglot Surgical-Read Savings (Unit Benchmark):</strong><br>
+Run <code>npx vitest run <a href="https://github.com/DFKHelper/token-goat/blob/main/tests/token_savings_benchmark.test.ts" target="_blank" class="github-inline-ref">tests/token_savings_benchmark.test.ts</a></code>. This measures real TypeScript, Python, Go, and Markdown fixtures and enforces a floor (60% average, with a documented per-case exception at 50% for Go's doc-comment-preserving outline) below the README's claimed 85-97% range; the measured average at the time of writing was 80.2%, and the test prints the actual per-case numbers rather than asserting a fixed figure.<br><br>
 
 <strong>Step 3: Run an A/B Comparison on Your Own Codebase:</strong><br>
-Pick any 1,000+ line file in your repository with multiple methods. Create two temporary git branches:<br>
-• <strong>Branch A (Baseline):</strong> Prompt your AI assistant: <code>"Read path/to/file.ts and update [functionName] to [change]."</code> Run <code>git diff --stat</code>. Note the total lines modified, reformatted comments, and adjacent whitespace touched.<br>
-• <strong>Branch B (With Token-Goat):</strong> On a clean branch, prompt: <code>"Run token-goat read 'path/to/file.ts::functionName' and update it to [change]."</code> Run <code>git diff --stat</code>. Compare the two diffs: the Token-Goat run isolates edits strictly to the target function with zero collateral noise.
+This mirrors the methodology behind the paired evaluation above. Pick a real bug or task in your own repository. Run it once with an agent restricted to plain file reads and grep, and once with token-goat's surgical read commands available, keeping everything else (model, prompt, edit and test tools) the same. Compare total input tokens billed across both runs, the same accounting <code>scripts/generate-eval-capture.py</code> uses.
 </div>
 </div>
                         </div>
@@ -1355,7 +1311,7 @@ Pick any 1,000+ line file in your repository with multiple methods. Create two t
                                     </div>
                                     <p style="margin:6px 0 0 0; font-size:12px; color:var(--text-dim); line-height:1.45;">
                                         <em>Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, Percy Liang (TACL 2024).</em><br>
-                                        <strong>Core finding:</strong> LLM reasoning and retrieval accuracy degrade substantially (by up to 30%) when relevant facts are surrounded by long context windows. Surgical pruning outperforms massive context dumps on factual recall and multi-hop reasoning.
+                                        <strong>Core finding:</strong> Model performance on long-context tasks is highest when relevant information sits at the beginning or end of the input, and degrades significantly when it must be retrieved from the middle of a long context (a "U-shaped" performance curve). The paper does not give a single across-the-board percentage; see the paper for task-specific figures.
                                     </p>
                                 </div>
 
@@ -1372,12 +1328,12 @@ Pick any 1,000+ line file in your repository with multiple methods. Create two t
 
                                 <div style="background:var(--surface); border:1px solid var(--border); border-left:3px solid #8b5cf6; border-radius:4px; padding:12px 14px;">
                                     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
-                                        <strong style="color:var(--text); font-size:13px;">Aider Benchmark: AST Repo-Maps and Surgical Context vs. Whole-File Context</strong>
-                                        <a href="https://aider.chat/docs/leaderboards/" target="_blank" rel="noopener noreferrer" style="font-family:var(--font-mono); font-size:11px; color:#8b5cf6; text-decoration:none; font-weight:600; padding:2px 6px; background:var(--surface-2); border-radius:3px; border:1px solid var(--border);">aider.chat/leaderboards ↗</a>
+                                        <strong style="color:var(--text); font-size:13px;">Aider: "How Aider Creates a Map of Your Codebase" (Repo Map)</strong>
+                                        <a href="https://aider.chat/2023/10/22/repomap.html" target="_blank" rel="noopener noreferrer" style="font-family:var(--font-mono); font-size:11px; color:#8b5cf6; text-decoration:none; font-weight:600; padding:2px 6px; background:var(--surface-2); border-radius:3px; border:1px solid var(--border);">aider.chat/repomap ↗</a>
                                     </div>
                                     <p style="margin:6px 0 0 0; font-size:12px; color:var(--text-dim); line-height:1.45;">
-                                        <em>Paul Gauthier (Aider benchmark empirical evals).</em><br>
-                                        <strong>Core finding:</strong> Supplying concise AST symbol maps and surgical function slices yields 15% to 25% higher benchmark scores on multi-file code editing compared to supplying full file bodies, while slashing token burn by over 70%.
+                                        <em>Paul Gauthier.</em><br>
+                                        <strong>Core finding:</strong> Sending whole files wastes context window space the model does not need; a tags-based repo map showing classes, methods, and signatures across the repository lets the model infer usage and architecture without full implementations, and lets it decide for itself which files need a closer look. The article does not publish a specific pass-rate or token-reduction percentage for this technique.
                                     </p>
                                 </div>
 
@@ -1405,7 +1361,7 @@ Pick any 1,000+ line file in your repository with multiple methods. Create two t
                             <td><span class="author-badge">Compiler & Language Tooling Lead</span></td>
                             <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">LSP &amp; Roslyn Comparison</td>
                             <td class="field-name">token-goat seems to build something like AST / semantic search index over repositories. Is it similar to LSP approach? See https://github.com/dotnet/roslyn/blob/main/docs/roslyn-language-server-copilot-plugin.md</td>
-                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#what-gets-installed" target="_blank" title="View section in public GitHub README">GitHub README: ## What gets installed?</a><span class="check">✓</span> Roslyn is a heavy, compiler-hosted .NET-only engine. Token-goat is a lightweight (&lt;40 MB RAM) polyglot runtime gatekeeper covering 27+ languages.</td>
+                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#what-gets-installed" target="_blank" title="View section in public GitHub README">GitHub README: ## What gets installed?</a><span class="check">✓</span> Roslyn is a heavy, compiler-hosted .NET-only engine. Token-goat is a lightweight polyglot runtime gatekeeper covering 80+ languages.</td>
                             <td><a href="https://github.com/DFKHelper/token-goat/blob/main/src/parser.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/parser.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/tree/main/src/languages" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/languages/</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/graph_commands.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/graph_commands.ts</code></a></td>
                         </tr>
 
@@ -1429,7 +1385,7 @@ Pick any 1,000+ line file in your repository with multiple methods. Create two t
                         </div>
                         <div class="sub-answer-text">
                             <p>Roslyn is Microsoft's C# compiler platform. It is hosted in IDEs like Visual Studio to provide complete semantic type-checking, cross-assembly symbol binding, refactoring analyzers, and compiler diagnostics. However, Roslyn has strict structural constraints: it requires a valid, buildable project (<code>.sln</code> or <code>.csproj</code>), consumes 500 MB to 1.5 GB of memory, and only supports C# and VB.NET.</p>
-                            <p style="margin-top:8px;">Token-Goat is not an LSP replacement; it is a <strong>runtime context gatekeeper</strong>. It operates at less than 40 MB of RAM, parses source code using Tree-sitter AST and SQLite across 27+ languages without compiling anything, and functions reliably even when the codebase is in a broken or unbuildable state.</p>
+                            <p style="margin-top:8px;">Token-Goat is not an LSP replacement; it is a <strong>runtime context gatekeeper</strong>. It operates at less than 40 MB of RAM, parses source code using Tree-sitter AST and SQLite across 80+ languages without compiling anything, and functions reliably even when the codebase is in a broken or unbuildable state.</p>
                         </div>
                     </div>
 
@@ -1905,7 +1861,7 @@ embeddings_enabled = false</pre>
                         </div>
                         <div class="sub-answer-text">
                             <p style="background:var(--surface-2); border-left:3px solid var(--accent); padding:8px 12px; margin-bottom:10px; font-size:12px; border-radius:0 var(--radius) var(--radius) 0;">
-                                <strong>Prior Inquiry Cross-Reference:</strong> This question was previously asked and answered in <strong><a href="#Q-11" style="color:var(--accent); text-decoration:underline; font-weight:600;" onclick="expandQuestion('Q-11');">Q-11 (Principal Systems Architect)</a></strong>: <em>"It's clear that there are evals on tokens saved. Are there evals on model outputs, e.g. generated code quality, with and w/o token-goat?"</em> Refer to Q-11's deep dive for empirical task completion data (83.9% vs. 61.3%), collateral diff noise reduction, and the four peer-reviewed research papers on context attention degradation.
+                                <strong>Prior Inquiry Cross-Reference:</strong> This question was previously asked and answered in <strong><a href="#Q-11" style="color:var(--accent); text-decoration:underline; font-weight:600;" onclick="expandQuestion('Q-11');">Q-11 (Principal Systems Architect)</a></strong>: <em>"It's clear that there are evals on tokens saved. Are there evals on model outputs, e.g. generated code quality, with and w/o token-goat?"</em> Refer to Q-11's deep dive for the actual cost-only paired evaluation (64.0% median billing-weighted saving, n=6) and the cited external research on context attention degradation.
                             </p>
                             <p>As established in Q-11, token-goat's automated benchmarks test <strong>context volume reduction and structural invariants</strong> (capping symbol body sizes, preserving function signatures in folded ASTs, and compressing passing suites without dropping error lines). They do not evaluate model reasoning output quality because token-goat is an infrastructure governor, not an LLM model provider.</p>
 <p>However, from cognitive architecture research, pruning context bloat empirically <strong>improves</strong> model output quality:</p>
@@ -1919,8 +1875,8 @@ embeddings_enabled = false</pre>
         <br><a href="https://arxiv.org/abs/2310.06770" target="_blank" rel="noopener noreferrer" style="color:var(--accent); text-decoration:underline; font-weight:600; font-family:var(--font-mono); font-size:11.5px;">Read Paper: Jimenez et al., "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?" (ICLR 2024 / arXiv:2310.06770) ↗</a>
     </li>
     <li style="margin-bottom:8px;">
-        <strong>Surgical AST Slices vs. Whole-File Context:</strong> Rigorous benchmarking demonstrates that providing targeted AST symbol slices and concise code maps boosts multi-file editing pass rates by 15% to 25% compared to full-file dumps, while cutting token usage by over 70%.
-        <br><a href="https://aider.chat/docs/leaderboards/" target="_blank" rel="noopener noreferrer" style="color:var(--accent); text-decoration:underline; font-weight:600; font-family:var(--font-mono); font-size:11.5px;">View Benchmark: Paul Gauthier, "Aider Leaderboards: AST Code Maps &amp; Context Benchmark" ↗</a>
+        <strong>Repo Maps vs. Whole-File Context:</strong> Aider's own writeup argues that sending whole files wastes context window space, and that a tags-based repo map (classes, methods, and signatures across the repo) lets a model infer usage and architecture, and choose which files to look at more closely, without needing every implementation body. No specific pass-rate or token-reduction percentage is published in that source.
+        <br><a href="https://aider.chat/2023/10/22/repomap.html" target="_blank" rel="noopener noreferrer" style="color:var(--accent); text-decoration:underline; font-weight:600; font-family:var(--font-mono); font-size:11.5px;">Read: Paul Gauthier, "How Aider Creates a Map of Your Codebase" ↗</a>
     </li>
     <li style="margin-bottom:8px;">
         <strong>Long-Context Attention Dilution (NIAH):</strong> Empirical context pressure testing confirms that even modern 1M+ token frontier models exhibit attention degradation and hallucination as prompt noise and distracting tokens accumulate.
@@ -2838,7 +2794,7 @@ embed = false</pre>
                             <p>Why doesn't token-goat run OpenAI's <code>tiktoken</code> or Anthropic's exact BPE tokenizer on every intercepted read?</p>
 <ul>
     <li><strong>Runtime Hook Latency:</strong> Token-goat hooks execute in <strong>5 to 15 milliseconds</strong>. Initializing and running a 100,000-vocabulary BPE tokenizer against a 2,000-line file would add <strong>50 to 120 milliseconds</strong> of latency to every single file read and command execution.</li>
-    <li><strong>Harness &amp; Model Agnosticism:</strong> An engineer may switch between Claude 3.7 Sonnet+, GPT-5.6 Luna, Gemini 2.5, and DeepSeek in the same workday. Each model family uses a completely different tokenizer vocabulary. Computing model-specific tokens would require massive dependencies.</li>
+    <li><strong>Harness &amp; Model Agnosticism:</strong> An engineer may switch between several different model vendors in the same workday. Each model family uses a completely different tokenizer vocabulary. Computing model-specific tokens would require massive dependencies.</li>
     <li><strong>The 4 Bytes/Token Proxy:</strong> In software engineering benchmarks across JavaScript, C#, Python, and JSON, character-to-token ratios consistently hover between 3.6 and 4.2 bytes per token. The <code>bytes / 4</code> formula provides a remarkably accurate proxy at zero compute cost.</li>
 </ul>
                         </div>
@@ -2892,7 +2848,7 @@ embed = false</pre>
                                     </div>
                                     <div class="qa-answer-body" id="ans-Q-29">
 <div class="developer-callout">
-    <strong>Developer Takeaway — Accuracy Over Token Pennies:</strong> Small models like Luna are fast and cheap, but they are <strong>uniquely susceptible to providing bad outputs, hallucinations, and broken patches</strong> the moment their context gets noisy. When flooded with thousands of lines of irrelevant codebase boilerplate, small models lose focus: they edit the wrong functions, hallucinate missing parameters, and break builds. Surgical context trimming keeps Luna's prompt clean and high-signal, preventing bad outputs and multi-turn debug spirals (see the <strong><a href="#Q-11" style="color:#1e3a8a; text-decoration:underline; font-weight:700;" onclick="expandQuestion('Q-11');">Q-11 Aider benchmark simulation</a></strong> showing a +20% jump in task success).
+    <strong>Developer Takeaway — Accuracy Over Token Pennies:</strong> Small, fast models are cheap, but general context-degradation research suggests they are more sensitive to noisy context, not less. When flooded with thousands of lines of irrelevant codebase boilerplate, a model can lose focus: edit the wrong functions, hallucinate missing parameters, or break builds. Surgical context trimming keeps the prompt clean and high-signal. This project has not measured that effect directly; see <strong><a href="#Q-11" style="color:#1e3a8a; text-decoration:underline; font-weight:700;" onclick="expandQuestion('Q-11');">Q-11's paired evaluation</a></strong> for what it has actually measured, a 64.0% median token-cost saving.
 </div>
                                     
                     <div class="sub-qa-block">
@@ -2927,13 +2883,13 @@ embed = false</pre>
                     <div class="sub-qa-block">
                         <div class="sub-question-title">
                             <span class="sub-question-badge">PART 2</span>
-                            <span>Why Lightweight Models (Like GPT-5.6 Luna) Experience Slowness</span>
+                            <span>Why Lightweight, Fast Models Experience Slowness</span>
                         </div>
                         <div class="sub-answer-text">
                             <p>Why is Platform Engineer noticing high slowness specifically in Luna queries?</p>
 <ul>
-    <li><strong>Model Architecture Difference:</strong> Frontier models (Claude 3.7 Sonnet+, Opus 4.8+) have superior spatial reasoning and execute decisive lookups in 1 turn (e.g. <code>token-goat read "src/auth.ts::loginUser"</code>).</li>
-    <li><strong>Exploratory Churn in Smaller Models:</strong> Lightweight models like GPT-5.6 Luna generate text at 100+ tokens/sec, but often lack architectural precision. Luna may execute:
+    <li><strong>Model Architecture Difference:</strong> Larger frontier models tend to have stronger spatial reasoning and execute decisive lookups in 1 turn (e.g. <code>token-goat read "src/auth.ts::loginUser"</code>).</li>
+    <li><strong>Exploratory Churn in Smaller Models:</strong> Lightweight, fast models generate text quickly but often lack architectural precision. A model like the one you're calling Luna may execute:
         <br><code>semantic "login"</code> &rarr; <em>Wait for tool return</em> &rarr; <code>symbol loginUser</code> &rarr; <em>Wait for tool return</em> &rarr; <code>read "src/auth.ts::loginUser"</code>.</li>
     <li>Each tool call requires an API roundtrip (HTTP request &rarr; inference &rarr; response &rarr; local execution &rarr; return HTTP request). Even though each tool execution takes only 5ms, 4 sequential API roundtrips over corporate VPN add <strong>4 to 8 seconds of pure network latency</strong>.</li>
 </ul>
@@ -2961,13 +2917,12 @@ embed = false</pre>
                             <span>"Luna Is Dirt Cheap, So Why Care About Tokens?" — Slashing Hallucinations & Broken Patches</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>Platform Engineer's question hits a common developer intuition: <em>if small models like GPT-5.6 Luna cost pennies per million tokens and generate output fast, why should anyone care about trimming files?</em></p>
+                            <p>Platform Engineer's question hits a common developer intuition: <em>if small, fast models cost pennies per million tokens and generate output fast, why should anyone care about trimming files?</em></p>
                             <p>The answer has very little to do with token pricing and everything to do with <strong>output correctness</strong>:</p>
 <ul>
-    <li><strong>Small Models Are Uniquely Susceptible to Bad Outputs:</strong> Frontier giants (like Claude 3.7 Sonnet+ or Opus 5) possess the sheer parameter depth to ignore irrelevant context. Lightweight models like Luna do not. When drowned in thousands of lines of unneeded boilerplate and helper utilities, small models hit an attention cliff: they miss type contracts, hallucinate parameters, and provide subtly incorrect code. Context noise is the number one cause of bad outputs in smaller models.</li>
-    <li><strong>The Cost of a Hallucinated Patch:</strong> If Luna reads a bloated 3,000-line file and hallucinates a non-existent method signature, the build fails. The agent then spins into a multi-turn retry loop trying to debug its own broken code, burning 5 to 10 minutes of developer time. The "cheap" model suddenly becomes very expensive in human friction.</li>
-    <li><strong>Surgical Context Boosts Luna's Reasoning:</strong> By serving Luna <em>only</em> the target function body (~300 tokens) alongside its docstring and direct callers, token-goat boosts the signal-to-noise ratio to nearly 100%. Luna operates within its peak attention sweet spot, producing clean, working code on turn 1 without hallucination spirals.</li>
-    <li><strong>Empirical Evidence from the Aider Benchmark Simulation:</strong> As documented in <strong><a href="#Q-11" style="color:var(--accent); text-decoration:underline; font-weight:600;" onclick="expandQuestion('Q-11');">Q-11 (Output Quality &amp; Model Evals)</a></strong>, our controlled study modeled on the <strong>Aider / SWE-bench evaluation methodology</strong> proved that surgical AST context directly raises task completion rates. In Paul Gauthier's published Aider benchmark across 133 coding tasks, replacing whole-file dumps with surgical AST slices boosted task success from <strong>61% to 81% (+20 percentage points)</strong>. For distilled models like Luna that suffer sharply from long-context attention dilution, trimming context is what keeps the model capable of generating valid, test-passing patches.</li>
+    <li><strong>Small Models Are More Sensitive to Bad Context, in General:</strong> Larger frontier models tend to tolerate irrelevant context better than smaller, faster ones. This project has not measured that difference directly, but it follows from the same context-degradation research cited in Q-11 (Liu et al., "Lost in the Middle"), which is not specific to any one model size.</li>
+    <li><strong>The Cost of a Hallucinated Patch:</strong> If a lightweight model reads a bloated 3,000-line file and hallucinates a non-existent method signature, the build fails. The agent then spins into a multi-turn retry loop trying to debug its own broken code, burning developer time. The "cheap" model can become expensive in human friction, independent of its token price.</li>
+    <li><strong>What Token-Goat Actually Measured:</strong> This project's own evaluation (see <strong><a href="#Q-11" style="color:var(--accent); text-decoration:underline; font-weight:600;" onclick="expandQuestion('Q-11');">Q-11</a></strong>) is a cost comparison, not a quality comparison: a paired A/B test showing a 64.0% median billing-weighted token saving on the clean set. It used one frontier model on both arms and does not speak to how a smaller or faster model would behave; no task-completion-rate claim is made here for any model.</li>
 </ul>
                         </div>
                     </div>
@@ -2982,7 +2937,7 @@ embed = false</pre>
                             <td><span class="author-badge">Cross-Platform Systems Engineer</span></td>
                             <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">Token Economics & Single-Turn Overhead</td>
                             <td class="field-name">The answer so far seems to suggest token-goat has an initial token overhead in the first turn that pays for itself in turn 2+ ? Is this true? Using something like Opus 5 for 1 single turn using architect to breakdown a ticket for implementation from an issue tracker would be more expensive with token-goat? I am also noticing a lot of calls to token-goat semantic which are not free.</td>
-                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#the-problem" target="_blank" title="View section in public GitHub README">GitHub README: ## The problem · ## What changes</a><span class="check">✓</span> <strong>Saves ~20,000+ tokens on average, even for single-turn ticket architecting.</strong> Real enterprise ticket breakdowns require web-fetching specs, checking policy docs, and grounding against repo interfaces. Token-goat slices those inputs, turning a 27,000-token prompt into ~3,500 tokens on Turn 1. Furthermore, <code>token-goat semantic</code> runs 100% offline via local ONNX vectors ($0 API cost), saving 1,500–10,000 tokens per search by replacing massive grep dumps.</td>
+                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#the-problem" target="_blank" title="View section in public GitHub README">GitHub README: ## The problem · ## What changes</a><span class="check">✓</span> No dedicated measurement exists for single-turn ticket architecting specifically; see Q-11's paired evaluation for the measured saving on bug-fix tasks (64.0% median billing-weighted, n=6). <code>token-goat semantic</code> runs entirely offline via local ONNX vectors, so a semantic search costs no API tokens for the search itself, only the cost of what it returns.</td>
                             <td><a href="https://github.com/DFKHelper/token-goat/blob/main/src/install.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/install.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_session_start.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/hooks_session_start.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/tests/token_savings_benchmark.test.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">tests/token_savings_benchmark.test.ts</code></a></td>
                         </tr>
 
@@ -3071,28 +3026,15 @@ embed = false</pre>
                             <span>Expected Value Analysis: Why Ticket Breakdown Sessions Save Tokens on Average</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>Can we truthfully claim that using token-goat for single-turn ticket breakdown on Opus 5 provides net savings <em>on average</em> across actual engineering usage? <strong>Yes, mathematically and empirically.</strong></p>
-                            
-                            <p>The reason lies in the fundamental requirements of enterprise software architecture:</p>
+                            <p>Does using token-goat for single-turn ticket breakdown provide net savings <em>on average</em>? No dedicated evaluation of ticket-breakdown sessions specifically has been run, so no percentage or dollar figure is claimed here for that workflow. The general argument for why it should help follows from the same mechanism as Q-11's measured result.</p>
+
+                            <p>The reason lies in how grounded a real ticket decomposition tends to be:</p>
                             <ul>
-                                <li><strong>Ungrounded Decompositions Are Useless:</strong> If an architect asks Opus 5 to decompose a issue ticket without repo grounding, the model hallucinates non-existent service boundaries, invents incompatible DTO contracts, and writes acceptance criteria that violate repo conventions. Senior leads and developers then spend hours rewriting the stories.</li>
-                                <li><strong>Real Architecting Is Inherently Grounded:</strong> In practice, a proper ticket decomposition requires 3 to 6 targeted context lookups: reading the linked ticket or PRD specs, checking architectural standards, and inspecting existing domain interfaces and database schemas.</li>
+                                <li><strong>Ungrounded Decompositions Are Risky:</strong> Asking a model to decompose an issue ticket without repo grounding invites hallucinated service boundaries or DTO contracts that do not match the codebase, and acceptance criteria that violate repo conventions.</li>
+                                <li><strong>Real Architecting Is Inherently Grounded:</strong> In practice, a ticket decomposition typically needs several targeted context lookups: the linked ticket or spec, architectural standards, and existing domain interfaces or schemas.</li>
                             </ul>
 
-                            <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 14px; margin:12px 0;">
-                                <div style="font-weight:600; color:var(--accent); font-size:12.5px; margin-bottom:6px;">MATHEMATICAL EXPECTED VALUE (E[Net Savings]) ACROSS ENTERPRISE SESSIONS:</div>
-                                <div style="font-size:12px; line-height:1.5;">
-                                    Based on real engineering workflows across development teams:
-                                    <ul style="margin:6px 0 6px 18px; padding:0;">
-                                        <li><strong>~95% of breakdown sessions</strong> require grounding (fetching ticket specs, checking policy docs, or reading service interfaces). Average net savings with token-goat: <strong>+21,000 tokens per session</strong>.</li>
-                                        <li><strong>~5% of sessions</strong> are pure abstract prose rewrites with zero repo inspection. Net cost with token-goat: <strong>-400 tokens</strong> (~$0.006 on Opus 5).</li>
-                                    </ul>
-                                    <strong>Expected Value Calculation:</strong><br>
-                                    <code style="font-family:var(--font-mono); font-size:11.5px; background:var(--surface-2); padding:3px 8px; border-radius:4px; display:inline-block; margin-top:4px;">E[Savings] = (0.95 × +21,000 tokens) + (0.05 × -400 tokens) = +19,930 tokens net savings per session</code>
-                                </div>
-                            </div>
-
-                            <p><strong>The Bottom Line:</strong> On average, using Token-Goat for ticket breakdown with Opus 5 <strong>slashes token consumption by over 80%</strong>, lowers per-turn API costs from ~$0.40 down to ~$0.05, and produces significantly higher-quality, hallucination-free user stories because the model's attention is focused on surgical code contracts rather than bloated context noise.</p>
+                            <p><strong>The Bottom Line:</strong> Grounding a ticket breakdown requires reading real code either way; token-goat's surgical reads make each of those lookups cheaper than a whole-file read would be, for the same reason Q-11's paired evaluation measured a token saving on bug-fix tasks. No separate measurement exists yet for ticket-breakdown sessions specifically, and none is claimed.</p>
                         </div>
                     </div>
 
@@ -3936,7 +3878,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                                 <td><strong>Language Support</strong></td>
                                 <td>C# and Visual Basic only</td>
                                 <td>Polyglot across active VS Code workspace</td>
-                                <td>Polyglot across 27+ languages via Tree-sitter</td>
+                                <td>Polyglot across 80+ languages via Tree-sitter</td>
                             </tr>
                             <tr>
                                 <td><strong>Compilation Dependency</strong></td>
@@ -3948,7 +3890,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                                 <td><strong>Memory Footprint</strong></td>
                                 <td>Heavy (350 MB - 1.5 GB per instance)</td>
                                 <td>Integrated into VS Code Electron process</td>
-                                <td>Lightweight (&lt;40 MB RAM in SQLite WAL)</td>
+                                <td>Lightweight (a local SQLite index, no resident server)</td>
                             </tr>
                             <tr>
                                 <td><strong>Read Interception</strong></td>
@@ -4001,7 +3943,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                         <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px;">
                             <div style="font-weight:700; font-size:12.5px; color:var(--accent); margin-bottom:4px;">4. Fault-Tolerant Polyglot (Zero Build Required)</div>
                             <p style="font-size:11.5px; color:var(--text-dim); line-height:1.45; margin:0;">
-                                Roslyn is tightly coupled to the .NET compiler and dies if project references are broken or if the solution fails to build. Token-Goat uses fault-tolerant Tree-sitter AST grammars across 27+ languages (TypeScript, Python, C#, Rust, Go, Apex, SQL), parsing even broken code without compiling.
+                                Roslyn is tightly coupled to the .NET compiler and dies if project references are broken or if the solution fails to build. Token-Goat uses fault-tolerant Tree-sitter AST grammars across 80+ languages (TypeScript, Python, C#, Rust, Go, Apex, SQL), parsing even broken code without compiling.
                             </p>
                         </div>
 
@@ -4044,7 +3986,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                                 <td><strong>Context Reduction Impact</strong></td>
                                 <td><strong>0%</strong> (does not manage LLM prompt tokens)</td>
                                 <td><strong>0%</strong> (dumps un-pruned files into context)</td>
-                                <td><strong style="color:#16a34a;">88% to 92% net reduction</strong> across full multi-turn sessions</td>
+                                <td><strong style="color:#16a34a;">Measured</strong> (see Q-11's paired evaluation: 64.0% median billing-weighted token saving, n=6 clean pairs)</td>
                             </tr>
                             <tr>
                                 <td><strong>Sub-File AST Slicing</strong></td>
@@ -4062,13 +4004,13 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                                 <td><strong>Read Deduplication</strong></td>
                                 <td>None</td>
                                 <td>None (re-reads dump duplicate tokens)</td>
-                                <td><span style="color:#16a34a; font-weight:700;">Yes</span> (SHA hash checks block redundant reads in 0.05ms)</td>
+                                <td><span style="color:#16a34a; font-weight:700;">Yes</span> (SHA hash checks block redundant reads before they hit the model)</td>
                             </tr>
                             <tr>
                                 <td><strong>Language Support</strong></td>
                                 <td>C# and Visual Basic only</td>
                                 <td>Polyglot across active VS Code workspace</td>
-                                <td><span style="color:#16a34a; font-weight:700;">Polyglot across 27+ languages</span> via Tree-sitter grammars</td>
+                                <td><span style="color:#16a34a; font-weight:700;">Polyglot across 80+ languages</span> via Tree-sitter grammars</td>
                             </tr>
                             <tr>
                                 <td><strong>Build Prerequisite</strong></td>
@@ -4080,7 +4022,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                                 <td><strong>RAM &amp; System Overhead</strong></td>
                                 <td>Heavy (350 MB to 1.5 GB per Roslyn instance)</td>
                                 <td>Embedded in VS Code Electron process</td>
-                                <td><span style="color:#16a34a; font-weight:700;">Ultra-lightweight</span> (&lt;40 MB RAM in SQLite WAL)</td>
+                                <td><span style="color:#16a34a; font-weight:700;">Ultra-lightweight</span> (a local SQLite index, no resident server)</td>
                             </tr>
                             <tr>
                                 <td><strong>Supported Agent Harnesses</strong></td>
@@ -4102,7 +4044,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                         <li><strong>Discovery (VS Code Index):</strong> When you ask an agent <em>"Where is refund processing handled?"</em>, the VS Code Index searches the workspace and identifies <code>src/Billing/PaymentService.cs</code>.</li>
                         <li><strong>Diagnostic Precision (Roslyn LSP):</strong> The C# compiler flags error <code>CS0103: The name 'RefundValidator' does not exist in the current context</code> on line 412.</li>
                         <li><strong>Context Governance (Token-Goat):</strong> Instead of letting the agent dump all 1,200 lines of <code>PaymentService.cs</code> and 2,500 lines of terminal logs into the prompt, Token-Goat extracts only the 24-line <code>ProcessRefund</code> AST slice and folds the build stream to the exact compiler line.</li>
-                        <li><strong>Synthesis (LLM):</strong> The frontier model (Claude 3.7 Sonnet+, GPT-5.6 Terra, Gemini 3.7) fixes the missing import in 1.5 seconds with zero diff sprawl, saving 98% of the token cost.</li>
+                        <li><strong>Synthesis (LLM):</strong> The agent's model fixes the missing import from that 24-line slice instead of the full 1,200-line file, with the diff bounded to the lines that actually changed.</li>
                     </ol>
                 </div>
 
