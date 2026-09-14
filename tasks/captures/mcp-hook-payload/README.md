@@ -1,6 +1,6 @@
 # MCP PostToolUse payload shape, and whether a block array can replace a tool result
 
-Answers the two questions `tasks/***REMOVED***-mining-plan.md` Task 0 is blocked on. Task 0 asks them of
+Answers the two questions the claude-in-chrome handling plan's Task 0 is blocked on. Task 0 asks them of
 `mcp__claude-in-chrome__*`, whose tools were not available in the capturing session. Neither question
 is specific to that server, so both were put to a connected one instead (`plugin:github:github`).
 
