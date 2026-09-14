@@ -160,13 +160,10 @@ function timeMatch(re: RegExp, input: string): Measurement {
   const matched = probe.test(input)
   const first = performance.now() - started
   // A 128-rung ladder takes that many measurements per alphabet, so a garbage-collection pause
-  // landing inside one of them is likely rather than rare -- and every decision this module makes
-  // keys on a timing above a millisecond, so one blip is a refusal. `"([^"\\]|\\.)*"` measures
-  // 0.00 ms at every rung and 0.0 ms against ten thousand characters, and was refused by a single
-  // 1 ms sample. Anything that clears the noise floor is therefore measured again and the smaller
-  // of the two is used. A pattern that really is slow pays one extra run of a rung that was still
-  // inside the budget; past four times the budget the answer is not in doubt and is not re-run.
-  if (first <= PROJECTION_SIGNAL_MS || first > PROBE_BUDGET_MS * 4) return { ms: first, matched }
+  // or thread-scheduling jitter landing inside one of them is likely rather than rare -- and every
+  // decision this module makes keys on a timing above a millisecond, so one blip is a refusal.
+  // Anything that clears the noise floor is therefore measured again and the smaller of the two is used.
+  if (first <= PROJECTION_SIGNAL_MS) return { ms: first, matched }
   const again = new RegExp(re.source, re.flags.replace('g', ''))
   const restarted = performance.now()
   again.test(input)
