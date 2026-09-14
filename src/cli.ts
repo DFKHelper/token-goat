@@ -1918,7 +1918,12 @@ async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?: strin
   const maxRows = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 100
   const result = await xlsxColumns(file, opts.sheet, maxRows)
   if (opts.json === true) {
-    const text = displaySafeJson(result)
+    // A column header and every sample value under it are spreadsheet text, so they get the same per-field, match-gated treatment xlsx-sheets and docx-outline already give theirs -- see fenceFileFieldIfMatched. Without it this branch was the only route by which the redaction its own printed form applies was skipped: measured, `--json` emitted an `sk-ant-api03-` key and an `AKIA` key verbatim out of cells the printed form had already masked.
+    const text = displaySafeJson({
+      ...result,
+      sheetName: fenceFileFieldIfMatched(result.sheetName),
+      columns: result.columns.map((c) => ({ ...c, name: fenceFileFieldIfMatched(c.name), sampleValues: c.sampleValues.map(fenceFileFieldIfMatched) })),
+    })
     out(text)
     recordXlsxStat('xlsx_columns', file, text)
   } else {
@@ -1949,7 +1954,8 @@ async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns?: stri
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
   if (opts.json === true) {
-    const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
+    // Every cell is spreadsheet text, treated the same way xlsx-sheets treats a sheet name: match-gated per field, so the envelope stays parseable and a value the printed form would have masked is not handed over whole. See fenceFileFieldIfMatched. Values only, not the header names they key: a key that came back as a 125-byte fence would not be usable as a key by any caller, and displaySafeJson already neutralizes token-goat's own markers in it.
+    const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, fenceFileFieldIfMatched(r[i] ?? '')])))
     const headTruncated = result.rows.length < result.totalRows
     const capped = guardJsonRows(rowsJson)
     const text = displaySafeJson(
@@ -2066,8 +2072,11 @@ async function cmdDocxTables(file: string, opts: { table?: string; json?: boolea
   }
 
   if (opts.json === true) {
-    out(displaySafeJson(tableIdx !== undefined ? selected[0] : selected))
-    recordDocStat('docx_tables', file, displaySafeJson(selected))
+    // Every cell is document text, fenced per field and match-gated the same way docx-outline fences a heading -- see fenceFileFieldIfMatched. Without it this branch was the only route by which the redaction its own printed form applies was skipped: measured, `--json` emitted an `sk-ant-api03-` key verbatim out of a cell the printed form had already masked.
+    const fenced = selected.map((t) => ({ ...t, rows: t.rows.map((r) => r.map(fenceFileFieldIfMatched)) }))
+    const text = displaySafeJson(tableIdx !== undefined ? fenced[0] : fenced)
+    out(text)
+    recordDocStat('docx_tables', file, text)
     return
   }
 
