@@ -25,7 +25,8 @@ import type { IndexingConfig } from './config.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
-import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal } from './doc_embed_extract.js'
+import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal, isTransientDocumentRefusal } from './doc_embed_extract.js'
+import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { fingerprintContent } from './fingerprint.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { pathEqClause } from './sql_path.js'
@@ -3037,6 +3038,26 @@ export function oversizeEmbedSha(sha: string, symbolOnlyKb: number): string {
 }
 
 /**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} gave up on a document
+ * because its extraction ran past {@link MAX_DOCUMENT_WORK_MILLIS}. Fourth instance of the shape
+ * {@link OVERSIZE_EMBED_SHA_PREFIX} introduced, and it exists for the same reason: the skip was
+ * conditional on a value that can change, so a bare sha would record it as terminal and the
+ * document would never be embedded again. A clock refusal is the weakest of all these conditions,
+ * because the value it is conditional on is not even a setting -- it is how busy this machine was
+ * for one minute. Stamping a bare sha for it, which is what this branch used to do, is exactly the
+ * "permanent verdict recorded from a temporary condition" the extraction-*failure* branch a few
+ * lines below refuses to do, applied to a case that only looked settled because the error happened
+ * to extend {@link DocumentRefusedError}. The bound in force is encoded so that raising the clock
+ * in a later release re-examines every document a lower one refused; see {@link isEmbedFresh}.
+ */
+export const TIMEOUT_EMBED_SHA_PREFIX = 'timeout:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when extraction passed `workMillis`. */
+export function timeoutEmbedSha(sha: string, workMillis: number): string {
+  return `${TIMEOUT_EMBED_SHA_PREFIX}${workMillis}:${sha}`
+}
+
+/**
  * Return `absPath` with its final segment spelled the way the filesystem actually spells it.
  *
  * The companion of `indexedPathSpellingIsStale`. That guard notices when a stored row's spelling
@@ -3204,6 +3225,8 @@ export function isEmbedFresh(
   if (storedEmbedSha === sha) return true
   if (!depsAvailable && storedEmbedSha === unavailableEmbedSha(sha)) return true
   if (storedEmbedSha === oversizeEmbedSha(sha, symbolOnlyKb)) return true
+  // Not a parameter the way symbolOnlyKb is: the document work clock is a compiled-in constant, not a config value, so there is no caller who could know a different one. It is compared rather than ignored so that changing it in a later release invalidates every stamp taken under the old one.
+  if (storedEmbedSha === timeoutEmbedSha(sha, MAX_DOCUMENT_WORK_MILLIS)) return true
   return false
 }
 
@@ -3245,6 +3268,7 @@ export async function indexFileEmbeddings(
     // for these extensions (no Language union member, no code symbols), so none of the
     // ipynb/large-file/salesforce branches above or below apply to them.
     let extracted: string | null
+    let refusedOnTheClock = false
     try {
       extracted = await extractEmbeddableDocumentText(filePath)
     } catch (err) {
@@ -3256,15 +3280,14 @@ export async function indexFileEmbeddings(
         onError?.(err)
         return
       }
+      refusedOnTheClock = isTransientDocumentRefusal(err)
       extracted = null
     }
     if (extracted === null || extracted.trim().length === 0) {
-      // A refused document or one with no extractable text is a terminal deliberately-never-embed
-      // state, same shape as the .profile-meta.xml skip above: stamp the real sha so an unchanged
-      // file is not re-read into extraction on every worker drain / index run.
+      // A refused document or one with no extractable text is a terminal deliberately-never-embed state, same shape as the .profile-meta.xml skip above: stamp the real sha so an unchanged file is not re-read into extraction on every worker drain / index run. Except when the refusal was the work clock, which is terminal in neither direction: re-reading it every drain would re-spend the whole minute the clock exists to cap, and a bare sha would bury the document forever over one busy minute. The clock-bearing marker is the middle: settled for as long as this clock is, re-examined the moment it moves.
       const db = getDb(dbPath)
       deleteFileEmbeddings(db, filePath)
-      stampEmbedSha(db, filePath, sha, (s) => s)
+      stampEmbedSha(db, filePath, sha, (s) => (refusedOnTheClock ? timeoutEmbedSha(s, MAX_DOCUMENT_WORK_MILLIS) : s))
       return
     }
     if (extracted.length > ixCfg.large_file_symbol_only_kb * 1024) {

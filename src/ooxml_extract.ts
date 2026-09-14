@@ -2,19 +2,19 @@
 
 import * as fs from 'node:fs'
 
-import { DocumentRefusedError } from './document_refusal.js'
+import { DocumentRefusedError, MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
 import { parseXml } from './xml_parser.js'
 import { MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, unzipBounded, ZipInputTooLargeError, ZipOutputTooLargeError, type ZipStreamModule } from './zip_bounds.js'
 
 // Every per-call bound on the pptx/xlsx path (MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, MAX_XLSX_SCAN_CELLS) is a bound on ONE call, and a document can choose how many times a bounded operation runs: extractEmbeddableDocumentText used to call pptxSlideText/headSheet once per slide/sheet, each of which re-reads and re-inflates the WHOLE archive from scratch (pptxOutline plus an N-slide loop cost N+1 full archive reads for an N-slide deck; a slide/sheet count is exactly the kind of thing an attacker or just a large real document controls). pptxAllSlidesText and allSheetsHeadText fix the re-read by loading the archive once and reusing the parsed entries, but a document can still be wide enough that even O(1)-per-slide work adds up -- there is otherwise no wall clock anywhere on this path, unlike pdf_extract.ts's MAX_PDF_WORK_MILLIS. This mirrors that: one clock per document, checked before each slide/sheet iteration, so a crafted or just very large deck/workbook costs a bounded stall instead of a worker that never returns.
-export const MAX_OOXML_WORK_MILLIS = 60_000
+export const MAX_OOXML_WORK_MILLIS = MAX_DOCUMENT_WORK_MILLIS
 
-/** Thrown when iterating a document's slides/sheets passes {@link MAX_OOXML_WORK_MILLIS}. A DocumentRefusedError, not a plain one, for the same reason the zip size caps are: the slide/sheet count is a property of the file, so refusing it is the same verdict on every future pass, and a plain Error would have the indexer re-open and re-time-out on this file forever. */
+/** Thrown when iterating a document's slides/sheets passes {@link MAX_OOXML_WORK_MILLIS}. A DocumentRefusedError, not a plain one, so the indexer does not re-open and re-time-out on this file on every drain -- but a transient one, because what the clock measured is this machine under this load and not the bytes: the same deck can pass the clock once the disk is quiet, so the refusal is recorded against the bound that produced it rather than as a settled verdict. */
 export class OoxmlTookTooLongError extends DocumentRefusedError {
   constructor(message: string) {
-    super(message, 'OoxmlTookTooLongError')
+    super(message, 'OoxmlTookTooLongError', true)
   }
 }
 

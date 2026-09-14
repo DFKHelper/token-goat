@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 
 import type * as pdfjsTypes from 'pdfjs-dist/legacy/build/pdf.mjs'
 
-import { DocumentRefusedError } from './document_refusal.js'
+import { DocumentRefusedError, MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { compileGuardedRegex } from './regex_guard.js'
 
@@ -48,7 +48,7 @@ export const MAX_LOCATE_MATCHES = 1_000
 export const MAX_LOCATE_CONTEXT_CHARS = 4_000
 
 /** How long one document's text may take to read, whatever it costs in memory. A byte budget bounds what is retained, not what is done. This extractor cannot stop pdfjs mid-page -- cancelling the stream throws from inside its message handler, and abandoning the reader can leave the teardown unable to settle (see readPageTextItems) -- so refusing at 8 MB frees the memory and leaves the producer inflating. Under the 50 MB input cap and the expansion ratio the fixture measures, that is hours of arithmetic for a file the indexer opened without being asked. The clock is the only bound that covers it. A minute is far past any honest read (a 500-page book is a few seconds) and short enough that a crafted file costs a stall rather than a wedged worker. */
-export const MAX_PDF_WORK_MILLIS = 60_000
+export const MAX_PDF_WORK_MILLIS = MAX_DOCUMENT_WORK_MILLIS
 
 /** Refusals from this module: the text budget, the input cap, and the clock. */
 export class PdfRefusedError extends DocumentRefusedError {}
@@ -60,10 +60,10 @@ export class PdfTooLargeError extends PdfRefusedError {
   }
 }
 
-/** Thrown when reading one document's text passes {@link MAX_PDF_WORK_MILLIS}. */
+/** Thrown when reading one document's text passes {@link MAX_PDF_WORK_MILLIS}. Transient, unlike its siblings here: the clock measures this machine under this load, not the bytes, so the indexer must not record it as a settled verdict. */
 export class PdfTookTooLongError extends PdfRefusedError {
   constructor(message: string) {
-    super(message, 'PdfTookTooLongError')
+    super(message, 'PdfTookTooLongError', true)
   }
 }
 

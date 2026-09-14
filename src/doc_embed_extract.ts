@@ -21,6 +21,11 @@ export function isDocumentRefusal(err: unknown): boolean {
   return err instanceof DocumentRefusedError
 }
 
+/** Whether a refusal is a verdict on the bytes or on the clock. {@link isDocumentRefusal} tells a refusal apart from a failure; this tells the two kinds of refusal apart. A size or count bound is past on every run forever, so recording it as settled is free and correct. A clock bound is not: it measured one machine under one load, and the same document can extract fine on the next pass, so recording it as settled is the permanent-verdict-from-a-temporary-condition mistake the failure branch exists to avoid. Reads the flag the error class declares rather than matching names, so a format added later cannot be forgotten by a list. */
+export function isTransientDocumentRefusal(err: unknown): boolean {
+  return err instanceof DocumentRefusedError && err.transient
+}
+
 /** One document's text, or null when the extension carries none. Throws on anything that went wrong: see {@link isDocumentRefusal} for why the caller has to tell the two kinds apart. */
 export async function extractEmbeddableDocumentText(filePath: string): Promise<string | null> {
   switch (path.extname(filePath).toLowerCase()) {
