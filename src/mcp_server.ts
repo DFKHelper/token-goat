@@ -637,6 +637,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { name, limit, file, kind, json, projectRoot } = args
@@ -677,6 +678,8 @@ export async function createMcpServer(): Promise<McpServer> {
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
       },
+      // readOnlyHint describes the caller's environment -- the files and data the caller owns; forceRefresh reparses those files into token-goat's own derived index, which is not a modification of them.
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { spec, json, forceRefresh, stats, projectRoot } = args
@@ -706,6 +709,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { spec, json, projectRoot } = args
@@ -736,6 +740,7 @@ export async function createMcpServer(): Promise<McpServer> {
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { file, json, minLines, forceRefresh, stats, projectRoot } = args
@@ -769,6 +774,7 @@ export async function createMcpServer(): Promise<McpServer> {
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { file, json, minLines, forceRefresh, stats, projectRoot } = args
@@ -805,6 +811,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: makeProjectRootField('search'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
       const { query, limit, grep, excludeTests, json, projectRoot } = args
@@ -834,6 +841,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         projectRoot: makeProjectRootField('check'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { projectRoot } = args
@@ -907,6 +915,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { spec, callers, limit, top, json, projectRoot } = args
@@ -948,6 +957,7 @@ export async function createMcpServer(): Promise<McpServer> {
         grep: z.string().optional().describe('only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)'),
         projectRoot: makeProjectRootField('orient'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { spec, limit, json, context, excludeTests, grep, projectRoot } = args
@@ -978,6 +988,7 @@ export async function createMcpServer(): Promise<McpServer> {
         compact: z.boolean().optional().describe('compact, low-token summary'),
         projectRoot: makeProjectRootField('overview'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { compact, projectRoot } = args
@@ -1006,6 +1017,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { ref, symbolMode, json, projectRoot } = args
@@ -1034,6 +1046,7 @@ export async function createMcpServer(): Promise<McpServer> {
         // runGrep takes no projectRoot of its own (its `path` array is its scope), so this field only names the root the confinement check is made against -- without it, a search rooted anywhere but the server process's cwd is refused.
         projectRoot: makeProjectRootField('search'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { pattern, path: searchPath, maxLines, json, recursive, context, projectRoot } = args
@@ -1072,6 +1085,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { file, json, projectRoot } = args
@@ -1095,6 +1109,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: projectRootField,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const { file, json, projectRoot } = args
@@ -1116,6 +1131,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('text to compress'),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     (args) => toCallToolResult({ text: displaySafeJson(compressionPayload(compressText(args.text))), code: 0 }),
   )
@@ -1127,6 +1143,7 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         id: z.string().regex(/^tg_[0-9a-f]{16}$/).describe('opaque token-goat content ID'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const text = retrieveText(args.id)
@@ -1145,6 +1162,7 @@ export async function createMcpServer(): Promise<McpServer> {
         text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('handoff text'),
         projectRoot: makeProjectRootField('scope'),
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     (args) =>
       toCallToolResult({
@@ -1162,6 +1180,7 @@ export async function createMcpServer(): Promise<McpServer> {
         full: z.boolean().optional().describe('return full text instead of a compact payload'),
         projectRoot: makeProjectRootField('scope'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
       const result = resolveHandoff(args.name, {

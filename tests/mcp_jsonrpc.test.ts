@@ -81,7 +81,8 @@ async function connect(server: { connect: (t: any) => Promise<void>; close: () =
 
 /** Registers the same three tools on either implementation, so the two are compared like for like. */
 function registerFixtureTools(server: { registerTool: (n: string, d: any, h: any) => void }): void {
-  server.registerTool('with_schema', { description: 'a tool with every shape', inputSchema: SHAPE }, (args: any) =>
+  // One tool carries annotations and one carries none, so the comparison covers both what an advertised hint looks like on the wire and that an unadvertised one is absent rather than an empty object.
+  server.registerTool('with_schema', { description: 'a tool with every shape', inputSchema: SHAPE, annotations: { title: 'Every shape', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, (args: any) =>
     textResult(`ok:${String(args.name)}`),
   )
   server.registerTool('no_schema', { description: 'a tool that takes nothing' }, () => textResult('nothing'))

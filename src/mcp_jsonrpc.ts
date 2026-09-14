@@ -125,9 +125,25 @@ export interface CallToolResult {
 /** A zod object shape, the same thing the SDK's `registerTool` takes as `inputSchema`. */
 export type ToolInputShape = Record<string, z.ZodType>
 
+/**
+ * The behavioural hints a tool may advertise. Spelled out here rather than imported from `@modelcontextprotocol/sdk`, which is a devDependency and must stay off the shipping path; the field names and their meanings are the protocol's `Tool.annotations`, and tests/mcp_jsonrpc.test.ts compares the whole `tools/list` payload byte-for-byte against the SDK building the same registrations, so a field spelled differently from the protocol fails there rather than reaching a client that silently ignores it. Every field is a hint from an untrusted server, so a client must not treat any of them as a guarantee -- which is exactly why they are optional and why omitting one says nothing.
+ */
+export interface ToolAnnotations {
+  title?: string
+  /** The tool does not modify its environment. */
+  readOnlyHint?: boolean
+  /** The tool may perform destructive updates. Meaningless unless `readOnlyHint` is false. */
+  destructiveHint?: boolean
+  /** Calling the tool again with the same arguments adds nothing. Meaningless unless `readOnlyHint` is false. */
+  idempotentHint?: boolean
+  /** The tool touches an open world, such as the web, rather than a closed one. */
+  openWorldHint?: boolean
+}
+
 export interface ToolDefinition<Shape extends ToolInputShape = ToolInputShape> {
   description?: string
   inputSchema?: Shape
+  annotations?: ToolAnnotations
 }
 
 /** The argument object a handler receives, inferred from the shape it registered. */
@@ -146,6 +162,7 @@ interface RegisteredTool {
   /** Pre-built so `tools/list` never pays for schema generation, however often it is called. */
   jsonSchema: Record<string, unknown>
   validator: z.ZodType
+  annotations: ToolAnnotations | undefined
 }
 
 /**
@@ -240,6 +257,7 @@ export class McpServer {
       // An absent shape still needs a validator, so an argumentless tool called with arguments is
       // not silently handed them.
       validator: z.object(shape ?? {}),
+      annotations: definition.annotations,
     })
     this.handlers.set(name, handler as ErasedHandler)
   }
@@ -348,6 +366,8 @@ export class McpServer {
       name: tool.name,
       ...(tool.description !== undefined ? { description: tool.description } : {}),
       inputSchema: tool.jsonSchema,
+      // Omitted entirely when the tool registered none, rather than sent as an empty object: the SDK does the same, and a client reading an empty object cannot tell it from a tool that declined to answer.
+      ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
       // The SDK emits this for every tool it registers, and it is literally true of ours: we do
       // not implement task augmentation, so a client that asks for it gets refused. Emitting the
       // same thing keeps `tools/list` byte-identical to what token-goat sent before, which is what
