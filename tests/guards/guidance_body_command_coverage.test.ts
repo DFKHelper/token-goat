@@ -51,6 +51,7 @@ const OMISSIONS: readonly Omission[] = [
   // Lifecycle / operator
   { command: 'install', reason: LIFECYCLE_REASON },
   { command: 'uninstall', reason: LIFECYCLE_REASON },
+  { command: 'upgrade', reason: LIFECYCLE_REASON },
   { command: 'worker', reason: LIFECYCLE_REASON },
   { command: 'worker start', reason: LIFECYCLE_REASON },
   { command: 'worker stop', reason: LIFECYCLE_REASON },

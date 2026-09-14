@@ -2347,26 +2347,40 @@ function emitExtraFileArgsNote(command: string, first: string, extras: string[] 
 
 // Sets process.exitCode to the wrapped command's exit code (NOT via `guard`, which forces 0 on success — compress must propagate the real code so shell chaining still sees the original failure/success signal).
 async function cmdCompress(opts: {
-  cmd: string
+  cmd?: string
+  cmdB64?: string
   filter?: string
   timeout?: string
   compress?: boolean
   profile?: string
   maxTokens?: string
+  quietSuccess?: boolean
+  native?: boolean
 }): Promise<void> {
   try {
+    let command = opts.cmd
+    if (opts.cmdB64 !== undefined) {
+      command = Buffer.from(opts.cmdB64, 'base64').toString('utf8')
+    }
+    if (!command || command.trim() === '') {
+      err(`token-goat: either -c/--cmd or --cmd-b64 is required`)
+      process.exitCode = 1
+      return
+    }
     const bashRunner = await import('./bash_runner.js')
     if (opts.compress === false) {
       // Commander maps `--no-compress` to `opts.compress === false`.
-      process.exitCode = bashRunner.runRaw(opts.cmd, parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS))
+      process.exitCode = bashRunner.runRaw(command, parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS))
       return
     }
     const maxTokens = opts.maxTokens !== undefined ? requireNonNegativeInt('--max-tokens', opts.maxTokens) : 0
-    process.exitCode = bashRunner.run(opts.cmd, {
+    process.exitCode = bashRunner.run(command, {
       filterName: opts.filter,
       timeout: parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
       maxTokens,
       ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
+      ...(opts.quietSuccess === true ? { quietSuccess: true } : {}),
+      ...(opts.native === true ? { nativeShell: true } : {}),
     })
   } catch (e) {
     err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
@@ -3806,7 +3820,7 @@ function generateCompactHelp(): string {
     '  compress, recall, bash-output, web-output, mcp-output, compress-text,',
     '  compress, bench',
     '',
-    'Config & Integration: install, uninstall, mcp-serve, mcp-status, hook,',
+    'Config & Integration: install, uninstall, upgrade, mcp-serve, mcp-status, hook,',
     '  bridges-status, worker, statusline, version, config, config-get,',
     '  capabilities, help',
     '',
@@ -5525,13 +5539,29 @@ export function buildProgram(): Command {
     .alias('bash')
     .alias('run')
     .description('run a shell command (under a POSIX shell / bash) and emit a compressed view of its output')
-    .requiredOption('-c, --cmd <command>', 'the shell command to run, as one string (use / for paths across platforms)')
+    .option('-c, --cmd <command>', 'the shell command to run, as one string (use / for paths across platforms)')
+    .option('--cmd-b64 <payload>', 'the shell command as a base64-encoded string (preserves quotes, backslashes, and symbols across platforms)')
     .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')
     .option('--timeout <seconds>', 'wall-clock timeout in seconds (0 = built-in default)')
     .option('--no-compress', 'stream output raw without compression (debug the wrapper)')
     .option('--profile <name>', 'compression profile: aggressive | balanced | minimal')
     .option('--max-tokens <n>', 'post-compress token cap (0 = no cap)')
+    .option('-q, --quiet-success', 'on exit code 0, emit only [tg: ok] summary and store full output for recall via bash-output')
+    .option('--native', 'use native platform shell (e.g. cmd.exe on Windows) instead of bash, preserving Windows path backslashes')
     .action(cmdCompress)
+
+  program
+    .command('upgrade')
+    .alias('update')
+    .description('check for updates and upgrade token-goat to the latest version')
+    .option('--check', 'check whether an update is available without installing')
+    .option('-j, --json', 'emit version check status as JSON')
+    .action((opts: { check?: boolean; json?: boolean }) =>
+      guard(async () => {
+        const { cmdUpgrade } = await import('./cli_upgrade.js')
+        await cmdUpgrade(opts, () => cmdInstall({}))
+      })(),
+    )
 
   program
     .command('version')

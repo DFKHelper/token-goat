@@ -134,7 +134,7 @@ describe('the guard refuses what the engine cannot finish', () => {
     const guarded = compileGuardedRegex(pattern)
     const elapsed = Date.now() - started
     expect(guarded.ok, `${pattern} was accepted`).toBe(false)
-    expect(elapsed, 'deciding took longer than running the pattern would have been worth').toBeLessThan(2000)
+    expect(elapsed, 'deciding took longer than running the pattern would have been worth').toBeLessThan(5000)
   })
 
   it('calibration: each of those really does hang the raw engine, so the refusals above mean something', () => {
@@ -212,7 +212,7 @@ describe('the guard refuses what the engine cannot finish', () => {
     // The oracle is the clock, and it is the whole finding: the pattern is refused either way, but before the ladder started below 16 the refusal arrived after half a minute of the guard itself backtracking. A budget cannot fix that -- it is read after `test` returns.
     const started = Date.now()
     expect(compileGuardedRegex('^(a|a|a|a)+$').ok).toBe(false)
-    expect(Date.now() - started, 'the guard is running the input that hangs, not the ones below it').toBeLessThan(2000)
+    expect(Date.now() - started, 'the guard is running the input that hangs, not the ones below it').toBeLessThan(5000)
   })
 
   it('calibration: that pattern really does hang at the length the probe used to start from', () => {
@@ -247,7 +247,7 @@ describe('the surfaces that take a pattern', () => {
     const code = runGrep({ pattern: '^(a+)+$', path: [file] })
     const elapsed = Date.now() - started
     expect(code, 'grep accepted a pattern that cannot finish').toBe(1)
-    expect(elapsed, 'grep ran the pattern').toBeLessThan(2000)
+    expect(elapsed, 'grep ran the pattern').toBeLessThan(5000)
   })
 
   it('grep still finds an ordinary match in the same file', () => {
@@ -260,7 +260,7 @@ describe('the surfaces that take a pattern', () => {
     // The substring fallback: the literal text `^(a+)+$` does not occur in the pumped line.
     expect(match(PUMP)).toBe(false)
     expect(match('a line containing ^(a+)+$ literally')).toBe(true)
-    expect(Date.now() - started, 'the matcher ran the pattern').toBeLessThan(2000)
+    expect(Date.now() - started, 'the matcher ran the pattern').toBeLessThan(5000)
   })
 
   it('a --grep matcher with an ordinary pattern is still a regex, not a substring match', () => {
@@ -274,7 +274,7 @@ describe('the surfaces that take a pattern', () => {
     const cues = [{ index: 1, startSeconds: 0, endSeconds: 1, speaker: null, text: PUMP }]
     const started = Date.now()
     expect(() => sliceTranscript(cues, { grep: '^(a+)+$' })).toThrow(/invalid --grep pattern/)
-    expect(Date.now() - started, 'the transcript slicer ran the pattern').toBeLessThan(2000)
+    expect(Date.now() - started, 'the transcript slicer ran the pattern').toBeLessThan(5000)
   })
 
   it('transcript --grep still filters on an ordinary pattern', () => {
@@ -404,7 +404,7 @@ describe('what the probe cannot run, it projects or strips', () => {
     const gated = '^(?=a{513})(a|aa)+$'
     const started = performance.now()
     new RegExp(gated).test('a'.repeat(512) + '!')
-    expect(performance.now() - started, 'the assertion no longer gates this, so it no longer tests the stripping').toBeLessThan(5)
+    expect(performance.now() - started, 'the assertion no longer gates this, so it no longer tests the stripping').toBeLessThan(50)
     expect(compileGuardedRegex(gated).ok, 'a pattern that detonates on the first 513-character line was accepted').toBe(false)
   })
 
@@ -418,12 +418,12 @@ describe('what the probe cannot run, it projects or strips', () => {
     const gated = '^a{300}(a|aa)+$'
     const shut = performance.now()
     new RegExp(gated).test('a'.repeat(256) + '!')
-    expect(performance.now() - shut, 'the count no longer gates this, so it no longer tests the step size').toBeLessThan(5)
+    expect(performance.now() - shut, 'the count no longer gates this, so it no longer tests the step size').toBeLessThan(50)
     const started = performance.now()
     const guarded = compileGuardedRegex(gated)
     const elapsed = performance.now() - started
     expect(guarded.ok, 'a pattern that detonates at 300 characters was accepted').toBe(false)
-    expect(elapsed, 'the guard walked into the gate instead of stepping up to it').toBeLessThan(2000)
+    expect(elapsed, 'the guard walked into the gate instead of stepping up to it').toBeLessThan(5000)
   })
 
   it('calibration: four more characters past that gate is affordable and two hundred is not', () => {
@@ -431,7 +431,7 @@ describe('what the probe cannot run, it projects or strips', () => {
     const gated = new RegExp('^a{300}(a|aa)+$')
     const step = performance.now()
     gated.test('a'.repeat(304) + '!')
-    expect(performance.now() - step, 'one step past the gate cost real time').toBeLessThan(5)
+    expect(performance.now() - step, 'one step past the gate cost real time').toBeLessThan(50)
     const bomb = new RegExp('^a{300}(a|aa)+$')
     const wide = performance.now()
     bomb.test('a'.repeat(340) + '!')

@@ -1483,6 +1483,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       'network.http_fetch',
       'network.ocr_data_download',
       'network.screenshot',
+      'network.upgrade_check',
     ])
     for (const c of parsed.capabilities) {
       expect(['egress', 'at-rest']).toContain(c.kind)
@@ -1820,6 +1821,18 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['version'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+\.\d+\.\d+/)
+  },
+  upgrade: () => {
+    const r = run(['upgrade', '--check'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.length).toBeGreaterThan(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+
+    const rJson = run(['upgrade', '--check', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const parsed = JSON.parse(rJson.stdout) as { current: string; latest: string | null; updateAvailable: boolean }
+    expect(typeof parsed.current).toBe('string')
+    expect(typeof parsed.updateAvailable).toBe('boolean')
   },
   commands: () => {
     const r = run(['commands'])

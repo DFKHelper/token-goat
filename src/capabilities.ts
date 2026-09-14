@@ -47,7 +47,7 @@ export interface Capability {
  * new feature that reaches the network cannot ship without being classified here first. That is
  * the difference between an inventory and a list somebody remembered to update.
  */
-export const EGRESS_MODULES: readonly string[] = ['webfetch.ts', 'embed_model.ts', 'image_ocr.ts', 'screenshot.ts']
+export const EGRESS_MODULES: readonly string[] = ['webfetch.ts', 'embed_model.ts', 'image_ocr.ts', 'screenshot.ts', 'cli_upgrade.ts']
 
 export function collectCapabilities(config: Config = loadConfig()): Capability[] {
   const online = !config.network.offline
@@ -92,6 +92,14 @@ export function collectCapabilities(config: Config = loadConfig()): Capability[]
       enabled: online,
       controlledBy: 'network.offline',
       enforcedAt: 'src/screenshot.ts',
+    },
+    {
+      id: 'network.upgrade_check',
+      kind: 'egress',
+      what: 'Checks the npm registry for token-goat updates.',
+      enabled: online,
+      controlledBy: 'network.offline',
+      enforcedAt: 'src/cli_upgrade.ts::fetchLatestVersion',
     },
     {
       id: 'at_rest.symbol_index',

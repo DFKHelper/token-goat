@@ -79,7 +79,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
       'install', 'uninstall', 'worker', 'worker start', 'worker status', 'worker stop', 'hook',
       'index', 'write-file', 'sharepoint-resolve', 'retrieve', 'handoff-create',
       'handoff-resolve', 'screenshot', 'fetch-image', 'prune-cache', 'reclaim-index',
-      'clean-cache', 'mcp-serve'],
+      'clean-cache', 'mcp-serve', 'upgrade'],
     'reads a per-invocation session/transcript/cache slice scoped to one caller-named session or ID, not a shared filterable store':
       ['session-outline', 'session-slice', 'session-summary', 'bash-history', 'web-history',
         'mcp-history', 'recall', 'resume', 'mcp-output', 'bash-output', 'web-output', 'pr-slice',

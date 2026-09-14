@@ -1603,5 +1603,16 @@ export async function runDoctorAndExit(opts?: {
     }
   }
 
+  try {
+    const { checkUpdateStatus } = await import('./cli_upgrade.js')
+    const update = await checkUpdateStatus(1500)
+    if (update.updateAvailable && update.latest) {
+      console.log(`\n[!] Update available: token-goat v${displaySafeText(update.current)} -> v${displaySafeText(update.latest)}`)
+      console.log(`    Run 'token-goat upgrade' to update.\n`)
+    }
+  } catch {
+    // Silent fail if network unreachable or offline
+  }
+
   return results.some((r) => r.status === 'fail') ? 1 : 0
 }

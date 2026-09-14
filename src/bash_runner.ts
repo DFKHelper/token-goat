@@ -7,6 +7,7 @@
 import { spawnSync } from 'node:child_process'
 import * as os from 'node:os'
 
+import { storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { wrappedShell } from './shell.js'
@@ -53,6 +54,8 @@ export interface RunOptions {
   maxTokens?: number
   writeStdout?: (s: string) => void
   writeStderr?: (s: string) => void
+  quietSuccess?: boolean | undefined
+  nativeShell?: boolean | undefined
 }
 
 /**
@@ -90,8 +93,9 @@ function baseSpawnOptions(
   timeout: number,
   cwd: string | undefined,
   env: NodeJS.ProcessEnv | undefined,
+  nativeShell?: boolean,
 ) {
-  return { shell: wrappedShell(), timeout: timeout * 1000, cwd, env }
+  return { shell: nativeShell ? true : wrappedShell(), timeout: timeout * 1000, cwd, env }
 }
 
 /** Map a Node signal name to `128 + signum`, the shell exit convention. */
@@ -137,14 +141,14 @@ export function run(command: string, opts: RunOptions = {}): number {
   if (filter === null) {
     // No tool filter matches this command. Ordinarily that means streaming it
     // through raw is cheapest (one subprocess fork, no capture). But when the
-    // caller asked for a `--max-tokens` cap, raw passthrough would silently
-    // ignore it — `passthrough()` uses `stdio: 'inherit'` and never sees the
-    // output to cap. Route through the capture-and-compress path with an
-    // identity filter instead, so the cap still applies.
-    if ((opts.maxTokens ?? 0) > 0) {
+    // caller asked for a `--max-tokens` cap or `--quiet-success`, raw passthrough
+    // would silently bypass it — `passthrough()` uses `stdio: 'inherit'` and
+    // never sees the output. Route through the capture-and-compress path with
+    // an identity filter instead, so the options apply.
+    if ((opts.maxTokens ?? 0) > 0 || opts.quietSuccess) {
       return wrapAndCompress(command, argv, new IdentityFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
     }
-    return passthrough(command, timeout, opts.cwd, opts.env)
+    return passthrough(command, timeout, opts.cwd, opts.env, opts.nativeShell)
   }
   return wrapAndCompress(command, argv, filter, timeout, resolveProfile(opts.compressionProfile), opts)
 }
@@ -164,8 +168,9 @@ function passthrough(
   timeout: number,
   cwd: string | undefined,
   env: NodeJS.ProcessEnv | undefined,
+  nativeShell?: boolean,
 ): number {
-  const result = spawnSync(command, { ...baseSpawnOptions(timeout, cwd, env), stdio: 'inherit' })
+  const result = spawnSync(command, { ...baseSpawnOptions(timeout, cwd, env, nativeShell), stdio: 'inherit' })
   if (isTimeout(result.error)) return 124
   if (result.status !== null) return result.status
   if (result.signal) return signalExitCode(result.signal)
@@ -193,8 +198,9 @@ function wrapAndCompress(
   opts: RunOptions,
 ): number {
   const writeStdout = opts.writeStdout ?? ((s: string) => process.stdout.write(s))
+  const startTime = Date.now()
   const result = spawnSync(command, {
-    ...baseSpawnOptions(timeout, opts.cwd, opts.env),
+    ...baseSpawnOptions(timeout, opts.cwd, opts.env, opts.nativeShell),
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: MAX_CAPTURE_BYTES,
   })
@@ -217,6 +223,15 @@ function wrapAndCompress(
     exitCode = signalExitCode(result.signal)
   } else {
     exitCode = 0
+  }
+
+  if (opts.quietSuccess && exitCode === 0) {
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1) + 's'
+    const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
+    const id = storeBashOutputSync(command, fullRaw, 0, opts.cwd ?? null)
+    const summary = `[tg: ok] ${command} (${duration}, recall: token-goat bash-output ${id})\n`
+    writeStdout(summary)
+    return 0
   }
 
   const limits = resolveCompressLimits()

@@ -434,21 +434,48 @@ function isDispatchedFileType(basename: string): boolean {
   return DISPATCHED_FILE_TYPE_EXTS.has(path.extname(basename).slice(1).toLowerCase())
 }
 
+/**
+ * Extract quick top-level symbol names from source text without heavy parser dependencies.
+ */
+function extractQuickSymbolSamples(content: string): string[] {
+  const symbols: string[] = []
+  const fnRegex = /(?:(?:export\s+(?:default\s+)?(?:async\s+)?)?(?:function\s+|class\s+|(?:const|let|var)\s+)|def\s+|func(?:\s*\([^)]*\))?\s+|fn\s+)([A-Za-z0-9_$]+)/g
+  let match: RegExpExecArray | null
+  while ((match = fnRegex.exec(content)) !== null) {
+    const name = match[1]
+    if (name && !symbols.includes(name)) {
+      symbols.push(name)
+      if (symbols.length >= 3) break
+    }
+  }
+  return symbols
+}
+
 /** Generate extension-aware surgical-read hint for a file, gated on
  *  hints.min_file_lines_for_hint — files below the threshold return '' since a surgical-read
  *  suggestion isn't worth the noise for a file that's already small enough to read whole. */
-function surgicalHint(filePath: string, basename: string, lineCount: number): string {
+function surgicalHint(filePath: string, basename: string, lineCount: number, fileContent?: string): string {
   if (lineCount < loadConfig().hints.min_file_lines_for_hint) return ''
 
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
 
   if (isDocFile) {
-    return 'Use `token-goat section "' + filePath + '::HeadingName"` to extract a part.'
+    if (fileContent && /\.(md|mdx)$/i.test(basename)) {
+      const headings = extractMarkdownHeadings(fileContent)
+      if (headings.length > 0) {
+        const top = headings.slice(0, 3).map((h) => h.text.trim())
+        return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
+      }
+    }
+    return `Use \`token-goat section "${filePath}::HeadingName"\` to extract a part.`
   } else if (isSectionFile) {
-    return 'Use `token-goat section "' + filePath + '::name"` to extract a part.'
+    return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
   } else {
-    return 'Use `token-goat read "' + filePath + '::SymbolName"` for one function or `token-goat skeleton "' + filePath + '"` for structure.'
+    const samples = fileContent ? extractQuickSymbolSamples(fileContent) : []
+    const sym = samples[0] || 'SymbolName'
+    const avail = samples.length > 0 ? ` (available: ${samples.join(', ')})` : ''
+    return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
   }
 }
 
@@ -1166,7 +1193,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
       return denyOutput(
         (basename + ' is unchanged since last read. ' +
-        surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+        surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
       )
     }
 
@@ -1181,7 +1208,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(
           ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
           fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
-          surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+          surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
         )
       }
       // Diff is not a good savings — fall through to generic deny block below
