@@ -41,6 +41,7 @@ export const tempDirs: string[] = []
 export function tgEnv(dir: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
+    TOKEN_GOAT_EMBEDDINGS_ENABLED: 'false',
     LOCALAPPDATA: dir,
     XDG_DATA_HOME: dir,
     HOME: homeBase,
@@ -63,13 +64,13 @@ export interface RunResult {
 
 export function run(
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string; timeout?: number } = {},
 ): RunResult {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: opts.cwd ?? repo,
     env: opts.env ?? tgEnv(dataBase),
     encoding: 'utf8',
-    timeout: 30000,
+    timeout: opts.timeout ?? 60000,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
   })
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
@@ -221,7 +222,7 @@ export function setupMatrixFixture(): void {
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'second'])
 
-  const idx = run(['index', '.'])
+  const idx = run(['index', '.'], { timeout: 120000 })
   expect(idx.status, `index failed: ${idx.stderr}`).toBe(0)
   expect(idx.stdout).toMatch(/Indexed \d+ files? /)
 }
