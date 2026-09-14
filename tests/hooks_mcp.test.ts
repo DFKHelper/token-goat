@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // Importing relay registers EVERY hook module (including hooks_mcp) for its side-effects, so runHook dispatches through the real production registry — not a test-only handler reference. buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does on stdin. Do NOT call clearModuleCaches() here: it runs hook_registry's reset, which drops every registered handler and would make runHook a no-op. Isolation comes from a per-test TOKEN_GOAT_HOME temp dir plus a per-test session id (so blob ids never collide across tests in the shared in-memory map).
 import { buildEvent } from '../src/relay.js'
-import { runHook } from '../src/hook_registry.js'
+import { runHook, serializeOutput } from '../src/hook_registry.js'
 import { extractToolResultText as extractMcpResultText } from '../src/hooks_common.js'
 import { BARE_ARRAY_LIST_TAGS, BARE_ARRAY_LIST_TAGS_TEXT } from './fixtures/mcp_bare_array_payloads.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -625,5 +625,77 @@ describe('MCP secret redaction on the live post hook', () => {
       expect(out.updatedOutput).not.toContain(AWS_KEY)
       expect(out.updatedOutput).toContain('[REDACTED:aws_access_key]')
     }
+  })
+})
+
+/**
+ * Two blocks of the MCP ContentBlock union carried content no surface here ever looked at.
+ * PROVENANCE for both shapes: FORMAT-DERIVED from the ContentBlock union (TextContent,
+ * ImageContent, AudioContent, EmbeddedResource, ResourceLink) at modelcontextprotocol.io/specification;
+ * PROVENANCE for the array being an accepted `updatedToolOutput`: CAPTURE, the live probe recorded in
+ * tasks/captures/mcp-hook-payload/README.md (b).
+ */
+describe('MCP content blocks a string rewrite cannot carry', () => {
+  const toolName = 'mcp__evil_server__fetch_doc'
+  const AWS_KEY = 'AKIAABCDEFGHIJKLMNOP'
+  const IMAGE_BLOCK = { type: 'image', data: 'iVBORw0KGgoAAAANSUhEUg==', mimeType: 'image/png' }
+
+  function post(response: unknown, id: string): Record<string, unknown> {
+    return { tool_name: toolName, tool_input: { id }, session_id: sessionId, tool_response: response }
+  }
+
+  it('reads a resource_link, whose name, uri and description are the only words it has', () => {
+    const text = extractMcpResultText({
+      tool_response: { content: [{ type: 'resource_link', uri: 'file:///etc/app.conf', name: 'app config', description: 'the deploy settings' }] },
+    })
+    expect(text).toContain('the deploy settings')
+    // The link's target travels with the description rather than being left behind, because the rewrite below replaces the block outright and the model would otherwise lose what the link points at.
+    expect(text).toContain('file:///etc/app.conf')
+    expect(text).toContain('app config')
+  })
+
+  it('redacts and fences a credential sitting in a resource_link description', async () => {
+    // Measured before the fix: the block carries no `text` and no `resource`, so the extractor returned '' for the whole result, the handler read that as "nothing to do here" and passed -- shipping the description to the model with no redaction, no scan and no fence.
+    const response = { content: [{ type: 'resource_link', uri: 'https://example.invalid/k', name: 'key', description: `aws_access_key=${AWS_KEY}` }] }
+    const out = await runHook(buildEvent('post_tool_use', post(response, 'rl-secret')))
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
+    expect(out.updatedOutput).not.toContain(AWS_KEY)
+    expect(out.updatedOutput).toContain('[REDACTED:aws_access_key]')
+    expect(out.updatedOutput).toContain('<untrusted-tool-output>')
+    // And no verbatim copy of the block travels alongside the fenced one: an unredacted duplicate in updatedBlocks would hand the model the very credential the line above proves was stripped.
+    expect(JSON.stringify(out.updatedBlocks ?? [])).not.toContain(AWS_KEY)
+  })
+
+  it('keeps the image block of a mixed text+image result instead of collapsing it to a string', async () => {
+    const response = { content: [{ type: 'text', text: 'chart of the quarterly numbers' }, IMAGE_BLOCK] }
+    const out = await runHook(buildEvent('post_tool_use', post(response, 'mixed')))
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
+    expect(unfence(out.updatedOutput)).toBe('chart of the quarterly numbers')
+    // Measured before the fix: this same call returned a bare string and the image was simply gone.
+    expect(out.updatedBlocks).toEqual([{ type: 'text', text: out.updatedOutput }, IMAGE_BLOCK])
+  })
+
+  it('emits that array to Claude Code and the plain string to every other harness', () => {
+    const out: HookOutput = { hookType: 'rewriteOutput', updatedOutput: 'fenced words', updatedBlocks: [{ type: 'text', text: 'fenced words' }, IMAGE_BLOCK] }
+    const emitted = (harness: 'claudecode' | 'opencode'): unknown =>
+      (JSON.parse(serializeOutput(out, 'post_tool_use', harness)) as { hookSpecificOutput: { updatedToolOutput: unknown } }).hookSpecificOutput.updatedToolOutput
+    expect(emitted('claudecode')).toEqual(out.updatedBlocks)
+    // opencode and the pi extension read this field straight into a text block of their own, so an array there breaks them exactly the way a bare string breaks a built-in Claude Code tool.
+    expect(emitted('opencode')).toBe('fenced words')
+  })
+
+  it('leaves a text-only result as a plain string, so nothing reshapes a payload that needs no reshaping', async () => {
+    const out = await runHook(buildEvent('post_tool_use', post({ content: [{ type: 'text', text: 'just prose' }] }, 'text-only')))
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
+    expect(out.updatedBlocks).toBeUndefined()
+  })
+
+  it('leaves an image-only result entirely alone rather than answering with an empty rewrite', async () => {
+    // The extractor returns '' for a recognised block array carrying no text, and the handler treats that as final. Pinned here because the alternative -- falling through to the JSON.stringify terminal -- ships tens of kilobytes of base64 to the model in place of the picture.
+    const out = await runHook(buildEvent('post_tool_use', post({ content: [IMAGE_BLOCK] }, 'image-only')))
+    expect(out.hookType).toBe('pass')
   })
 })

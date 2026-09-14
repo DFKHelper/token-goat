@@ -385,7 +385,11 @@ const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre
  *   cloned and only its text-bearing field is replaced — never rebuilt from a
  *   key whitelist, which would drop Bash's optional `persistedOutputPath` and
  *   friends. When no field resolves, the bare string is emitted as before: a
- *   rejected rewrite beats one injected into the wrong field.
+ *   rejected rewrite beats one injected into the wrong field. Those figures are
+ *   about BUILT-IN tools and say nothing about what else an MCP tool accepts:
+ *   an array of MCP content blocks is taken verbatim there (PROVENANCE:
+ *   CAPTURE, `tasks/captures/mcp-hook-payload/README.md` (b)), which is what
+ *   `updatedBlocks` emits so a rewritten mixed result keeps its image.
  * - `pass`    → `{}` (no-op; the call proceeds unchanged)
  *
  * The `switch` is exhaustive over the `hookType` union; adding a variant to
@@ -462,7 +466,11 @@ export function serializeOutput(
       return JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          updatedToolOutput: shapedUpdatedToolOutput(output.updatedOutput, harness, event),
+          // A block array is emitted only when the handler built one, and only for Claude Code: every other harness token-goat bridges to reads this field as a plain string into a text block of its own, so handing it an array there is the same mistake in the other direction. See HookOutput's `updatedBlocks` for the capture that proves Claude Code takes the array.
+          updatedToolOutput:
+            output.updatedBlocks !== undefined && harness === 'claudecode'
+              ? output.updatedBlocks
+              : shapedUpdatedToolOutput(output.updatedOutput, harness, event),
         },
       })
     case 'pass':

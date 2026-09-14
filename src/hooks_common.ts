@@ -129,6 +129,12 @@ function blocksToText(blocks: unknown): string | null {
     if (resource !== null && typeof resource === 'object') {
       const nested = (resource as Record<string, unknown>)['text']
       if (typeof nested === 'string') parts.push(nested)
+      continue
+    }
+    // A ResourceLink has no `text` and no `resource`: everything it says to the model is in `name`, `uri` and the optional `description`, and all three are the remote server's own words. Read as textless, the whole block made a link-only result extract to '' -- which every caller treats as "nothing to do here" -- so a credential sitting in a description, or an instruction aimed at the model, reached it with no redaction, no injection scan and no fence. `name` and `uri` are pulled in beside the description rather than left behind because {@link isTextualContentBlock} then reports this block as fully represented by the extracted text, and a rewrite that dropped the link's target would be trading one silent loss for another.
+    if (rec['type'] === 'resource_link') {
+      const link = ['name', 'uri', 'description'].map((k) => rec[k]).filter((v): v is string => typeof v === 'string' && v !== '')
+      if (link.length > 0) parts.push(link.join(' '))
     }
   }
   if (parts.length > 0) return parts.join('\n')
@@ -155,6 +161,37 @@ export function extractToolResultText(raw: Record<string, unknown>): string {
   } catch {
     return ''
   }
+}
+
+/** The array itself when `value` is an MCP content-block array, else null. Deliberately stricter than {@link blocksToText}'s acceptance, which also answers for an untyped `[{text}]` so no text is ever missed: this one gates a rewrite that RESHAPES the payload, and reshaping something that merely resembles a content array would corrupt it. At least one member must carry a type from {@link MCP_CONTENT_BLOCK_TYPES}. */
+function asContentBlocks(value: unknown): Record<string, unknown>[] | null {
+  if (!Array.isArray(value)) return null
+  const blocks = value.filter((b): b is Record<string, unknown> => b !== null && typeof b === 'object')
+  const typed = blocks.some((b) => typeof b['type'] === 'string' && MCP_CONTENT_BLOCK_TYPES.has(b['type']))
+  return typed ? blocks : null
+}
+
+/** The MCP content blocks a tool_response carries, whether delivered bare or wrapped under `content` (both shapes arrive in practice -- see `tasks/captures/mcp-hook-payload/`), or null when the response is not block-shaped at all. */
+export function mcpContentBlocks(raw: Record<string, unknown>): Record<string, unknown>[] | null {
+  const tr = raw['tool_response']
+  if (tr === null || typeof tr !== 'object') return null
+  return asContentBlocks(tr) ?? asContentBlocks((tr as Record<string, unknown>)['content'])
+}
+
+/** True when everything a block says to the model is words {@link blocksToText} already extracted -- a text block, an EmbeddedResource holding `text`, or a ResourceLink. A rewrite carrying that extracted text represents such a block completely, so it must NOT also ship the block verbatim: an unfenced, unredacted copy of the remote server's words sitting beside the fenced one defeats the fence entirely. Everything else -- image, audio, a blob-only resource -- carries a payload no string can stand in for, and is preserved untouched by {@link withPreservedBlocks}. */
+export function isTextualContentBlock(block: unknown): boolean {
+  if (block === null || typeof block !== 'object') return false
+  const rec = block as Record<string, unknown>
+  if (typeof rec['text'] === 'string') return true
+  if (rec['type'] === 'resource_link') return true
+  const resource = rec['resource']
+  return resource !== null && typeof resource === 'object' && typeof (resource as Record<string, unknown>)['text'] === 'string'
+}
+
+/** Attach to a string rewrite the blocks that string cannot carry, so a mixed text+image MCP result keeps its picture. Without this the rewrite collapsed the whole content array to a bare string and every image, audio and blob block in it was simply gone -- a 220 KB image silently dropped in exchange for fencing the text beside it. Returns `output` untouched for anything that is not a rewrite and when there is nothing non-textual to preserve, so callers wrap unconditionally rather than re-deriving the condition per branch (the per-branch pattern is how the redaction bypass shipped seven times). */
+export function withPreservedBlocks(output: HookOutput, blocks: readonly Record<string, unknown>[]): HookOutput {
+  if (output.hookType !== 'rewriteOutput' || blocks.length === 0) return output
+  return { ...output, updatedBlocks: [{ type: 'text', text: output.updatedOutput }, ...blocks] }
 }
 
 /** Build a `pass` output — let the tool call proceed unchanged. */

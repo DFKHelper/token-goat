@@ -13,7 +13,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, emitRewrite, emitRewriteIfChanged } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, emitRewrite, emitRewriteIfChanged, mcpContentBlocks, isTextualContentBlock, withPreservedBlocks } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, mcpOutputBytes, storeMcpOutput } from './mcp_cache.js'
 import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
@@ -56,11 +56,16 @@ function postMcpHandler(event: HookEvent): HookOutput {
   const injectionMatches = scanAndRecord(resultText)
   // Redact secrets on this same live path, computed once here ahead of every early-return guard below -- an MCP result carrying a bare credential (an API key in an env-dump tool's output, a PAT sitting in a commit message) trips no injection pattern at all, so gating redaction on injectionMatches (as fenced() alone used to) would leave every non-fenced return -- no session id, an in-band MCP error, a dedup cache hit, and the terminal "compression did not fire or did not pay off" return below -- shipping it unredacted. Mirrors postWebSearchHandler's and postFetchHandler's fix for the same gap.
   const redactedResult = redactSecrets(resultText)
+  // Every block whose payload no string can stand in for. The rewrite below replaces the tool result with one fenced text block, which represents each textual block completely (see isTextualContentBlock) but would drop an image, an audio clip or a blob resource outright -- measured: a mixed text+image MCP result came back as a bare string with its 220 KB picture simply gone. Computed once here, beside the text every branch shares, so a branch added later inherits it rather than forgetting it.
+  const preserved = (mcpContentBlocks(event.raw) ?? []).filter((b) => !isTextualContentBlock(b))
+  const preserve = (output: HookOutput): HookOutput => withPreservedBlocks(output, preserved)
   const fenced = (): HookOutput =>
-    emitRewriteIfChanged(
-      resultText,
-      fenceWithMatches(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
-      'mcp',
+    preserve(
+      emitRewriteIfChanged(
+        resultText,
+        fenceWithMatches(redactedResult.text, injectionMatches, UNTRUSTED_TOOL_TAG),
+        'mcp',
+      ),
     )
   // Unconditional: an MCP result is a remote server's output by provenance, so it is fenced
   // whether or not the eight deliberately-narrow patterns matched. It used to pass through
@@ -112,10 +117,12 @@ function postMcpHandler(event: HookEvent): HookOutput {
           // MCP compression shipped for releases without recording anything, so the whole mechanism was invisible in `token-goat stats` even though the `mcp:` prefix was already registered in KIND_TO_SOURCE. Credited through emitRewrite's savings parameter rather than a hand-written recordStat beside the emit, because that parameter measures the emitted string itself -- notice, fence and redaction placeholders included -- which is the only figure that describes what the model was actually spared. A recordStat here would have to re-derive that per branch and would drift the moment either branch changed, which is exactly how the WebFetch over-report happened.
           // Fenced on the same unconditional provenance rule as passOrFence above: a compressed
           // result is still the remote server's text, and a clean scan is not evidence it is safe.
-          return emitRewrite(
-            `${notice}${fenceWithMatches(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
-            'mcp',
-            { kind: 'mcp:compress', originalBytes },
+          return preserve(
+            emitRewrite(
+              `${notice}${fenceWithMatches(redactedBody, injectionMatches, UNTRUSTED_TOOL_TAG)}`,
+              'mcp',
+              { kind: 'mcp:compress', originalBytes },
+            ),
           )
         }
       }

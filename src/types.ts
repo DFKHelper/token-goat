@@ -30,7 +30,19 @@
  *   original. Measured on the recorded session corpus: 412 of 412 built-in-tool
  *   emissions rejected, 0 accepted, on every version present; 13 MCP rewrites
  *   accepted. `serializeOutput` (hook_registry.ts) therefore clones the original
- *   `tool_response` and replaces only its text-bearing field.
+ *   `tool_response` and replaces only its text-bearing field. A string is not
+ *   the only accepted MCP shape, though, and reading the above as if it were is
+ *   what kept image and audio blocks getting dropped: an ARRAY of MCP content
+ *   blocks is accepted verbatim for an MCP tool (PROVENANCE: CAPTURE, live
+ *   probe recorded in `tasks/captures/mcp-hook-payload/README.md` (b), where
+ *   `updatedToolOutput: [{type:'text',...}]` reached the model unchanged).
+ *   `updatedBlocks` carries that shape: when set, it is emitted in place of the
+ *   string for Claude Code, so a rewrite of a mixed text+image result can put
+ *   the rewritten words in a text block and still hand back the picture. Other
+ *   harnesses read `updatedOutput` into a text block themselves and never see
+ *   it. Only `postMcpHandler` sets it -- a blanket rebuild in `serializeOutput`
+ *   would restore the original image blocks behind `postBrowserImageHandler`,
+ *   whose whole job is to replace them with shrunk ones.
  *   token-goat emits this for MCP tools (`hooks_mcp.ts`'s `postMcpHandler`,
  *   unconditional aside from the `TOKEN_GOAT_MCP_COMPRESS=0` opt-out) and for
  *   WebFetch (`hooks_fetch.ts`'s `postFetchHandler`, the injection-scan fence).
@@ -40,7 +52,11 @@ export type HookOutput =
   | { readonly hookType: 'deny'; readonly message: string }
   | { readonly hookType: 'context'; readonly context: string }
   | { readonly hookType: 'rewriteInput'; readonly updatedInput: Record<string, unknown> }
-  | { readonly hookType: 'rewriteOutput'; readonly updatedOutput: string }
+  | {
+      readonly hookType: 'rewriteOutput'
+      readonly updatedOutput: string
+      readonly updatedBlocks?: readonly Record<string, unknown>[]
+    }
   | { readonly hookType: 'pass' }
 
 /**

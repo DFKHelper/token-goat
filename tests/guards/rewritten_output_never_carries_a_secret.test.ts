@@ -189,7 +189,9 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
           if (result.hookType !== 'rewriteOutput') continue
           rewrote++
           rewroteTools.add(toolName)
-          if (result.updatedOutput.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
+          // updatedBlocks is scanned beside updatedOutput, not instead of it: a rewrite that emits blocks ships them in place of the string, so reading only the string would certify a payload the model never receives while the one it does receive goes unread. The blocks are copied out of the tool's own result, which is exactly where a live credential would be.
+          const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? [])
+          if (emitted.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
         }
       }
     }
