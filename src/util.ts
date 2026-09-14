@@ -9,64 +9,46 @@
  * spawn patterns outside this file and fails if any are found.
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
 import { assertWriteInScope } from './bridges/project_scope_guard.js'
 import { ensureStorageRootPrivate } from './constants.js'
 import { indexedSourceText } from './indexed_source.js'
+import { spawnSync } from 'node:child_process'
+
 import { normalizePath } from './paths.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import type { GitResult, RunGitOptions } from './types.js'
 
 export { normalizePath }
+export type { GitResult, RunGitOptions }
 
-/**
- * Block the calling thread for `ms` milliseconds without spawning a process.
- *
- * Uses `Atomics.wait` on a throwaway SharedArrayBuffer: the wait never resolves
- * (no other thread writes to it), so it always times out after `ms`. This is a
- * true synchronous sleep, unlike a busy-loop, and burns no CPU.
- */
-export function sleepSync(ms: number): void {
-  if (ms <= 0) return
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-}
+export {
+  sleepSync,
+  isWindows,
+  noWindowCreationFlags,
+  windowsCmdQuoteArg,
+  quoteShellPath,
+  quotePowershellPath,
+  resolveOnPath,
+  installEpipeGuard,
+} from './process_util.js'
+import {
+  quoteShellPath,
+  quotePowershellPath,
+  sleepSync,
+} from './process_util.js'
 
-/** Check if running on Windows. */
-export function isWindows(): boolean {
-  return process.platform === 'win32'
-}
-
-/** Windows creation flags for suppressing console windows (CREATE_NO_WINDOW). */
-export function noWindowCreationFlags(): number {
-  return isWindows() ? 0x08000000 : 0
-}
-
-// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path;
-// normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold
-// the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for
-// deterministic cross-platform tests.
-//
-// Defined in path_containment.ts and re-exported here, unchanged, so every existing
-// `import { foldPath } from './util.js'` keeps working. The definitions had to leave this file
-// because isInsideRoot needs them and isInsideRoot must be importable by util.ts without the
-// import reaching project.ts -- see path_containment.ts's header for the cycle that caused.
-export { foldCase, foldPath, foldCaseForContainment, foldPathForContainment, isCaseInsensitiveFs } from './path_containment.js'
-// Imported as well as re-exported: this file has its own callers of foldPath below.
-import { foldPath } from './path_containment.js'
-
-/** Best-effort file size in bytes, or null when the path cannot be stat'd or isn't a regular file. */
-export function statSize(absPath: string): number | null {
-  try {
-    const st = statSync(absPath)
-    return st.isFile() ? st.size : null
-  } catch {
-    return null
-  }
-}
+export type { SourceEncoding } from './encoding.js'
+export {
+  stripBom,
+  detectSourceEncoding,
+  decodeSource,
+  encodeSource,
+} from './encoding.js'
 
 /**
  * Run git and return its captured output.
@@ -93,14 +75,6 @@ export function statSize(absPath: string): number | null {
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
   const fullArgs = [
-    // Never take an optional lock. Every git call here is on someone else's
-    // working repo, and a `status` that refreshes the index writes
-    // `.git/index.lock`; if this process is killed mid-call -- which the hint
-    // paths deliberately invite, since they spawn under a short timeout -- the
-    // orphaned lock blocks every subsequent commit in that repo until a human
-    // deletes it. Observed doing exactly that on 2026-08-05. `--no-optional-
-    // locks` suppresses only locks git considers optional, so write commands
-    // that genuinely need one are unaffected.
     '--no-optional-locks',
     '-c', 'core.fsmonitor=',
     '-c', 'core.quotepath=false',
@@ -111,10 +85,9 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     encoding: 'utf-8',
     windowsHide: true,
-    maxBuffer: 200 * 1024 * 1024, // 200 MB - allow large git outputs (ls-files, log, diff on large repos)
+    maxBuffer: 200 * 1024 * 1024,
   })
 
-  // A timed-out spawnSync sets result.error (ETIMEDOUT) with a null status -- already handled by the existing error branch below, so a caller that opted into timeoutMs just sees a non-zero exitCode and fails soft, exactly like any other git failure.
   if (result.error) {
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1 }
   }
@@ -122,8 +95,30 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    // status is null when the process was terminated by a signal; treat as -1.
-    exitCode: result.status ?? -1,
+    exitCode: result.status ?? 1,
+  }
+}
+
+// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path;
+// normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold
+// the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for
+// deterministic cross-platform tests.
+//
+// Defined in path_containment.ts and re-exported here, unchanged, so every existing
+// `import { foldPath } from './util.js'` keeps working. The definitions had to leave this file
+// because isInsideRoot needs them and isInsideRoot must be importable by util.ts without the
+// import reaching project.ts -- see path_containment.ts's header for the cycle that caused.
+export { foldCase, foldPath, foldCaseForContainment, foldPathForContainment, isCaseInsensitiveFs } from './path_containment.js'
+// Imported as well as re-exported: this file has its own callers of foldPath below.
+import { foldPath } from './path_containment.js'
+
+/** Best-effort file size in bytes, or null when the path cannot be stat'd or isn't a regular file. */
+export function statSize(absPath: string): number | null {
+  try {
+    const st = statSync(absPath)
+    return st.isFile() ? st.size : null
+  } catch {
+    return null
   }
 }
 
@@ -291,6 +286,11 @@ export interface SingleFilePluginInstallResult {
  * plugin): write `template` to `filePath` unless it's already byte-identical, and
  * unconditionally refresh the `{entryPath: process.argv[1]}` sidecar next to it so a
  * stale sidecar gets fixed even when the plugin file itself needs no update.
+ */
+/**
+ * Generic single-file plugin installer for harnesses (Grok, Kimi, etc.) that load a plugin from
+ * a single path. Writes the template if missing, and writes a sidecar JSON recording the entryPath.
+ * Confined within projectRoot when writing project-scoped configs.
  */
 export function installSingleFilePlugin(filePath: string, sidecarPath: string, template: string): SingleFilePluginInstallResult {
   let existing: string | undefined
@@ -1019,78 +1019,6 @@ export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-// Encodes a single argument for inclusion inside a `cmd.exe /d /s /c "<command>"` command line built by joining a program path and its arguments -- the standard way Node itself must invoke a .cmd/.bat wrapper when spawnSync's shell:true is required (there is no separate .exe for most Node-based CLIs on Windows, and spawnSync cannot exec .cmd/.bat directly). This replaces a naive "quote only if it contains whitespace" approach, which let a metacharacter-bearing-but-space-free arg (& | < > ^ ( )) pass through raw and never escaped an embedded `"`, so a quoted arg could be terminated early by its own content.
-//
-// Ordinary characters are wrapped in a cmd.exe-recognized double-quoted span, which neutralizes & | < > ^ ( ) for cmd's own tokenizer (cmd does not re-tokenize inside "..."). Two character classes, though, are NOT neutralized by quoting and need the opposite treatment -- emitted OUTSIDE any quoted span, caret-escaped:
-//   - `%` (and, defensively, `!` for delayed expansion) -- cmd.exe's percent/delayed-expansion variable substitution scans the raw command line before quote state is considered, so `"%WINDIR%"` still expands inside quotes; only `^%` (caret, unquoted) suppresses it, and a caret written *inside* a quoted span is left as a literal character in the final argument instead of being stripped, so quoting and caret-escaping can never be combined on the same character.
-//   - an embedded `"` -- cmd.exe's own quote-state tracking flips on every literal `"` it sees, oblivious to backslash-escaping, so a naive `\"` emitted inside a quoted span silently closes that span early and exposes the remainder of the argument to cmd's tokenizer. The safe encoding for a literal quote is `\^"` (backslash + caret-escaped quote) emitted outside any quoted span: cmd consumes the caret (without flipping its quote-state) and passes `\"` through, which the underlying CRT/CommandLineToArgvW argv parser used by the wrapper's target executable (node.exe, npm-cli.js, etc.) then decodes as one literal `"` with no phantom quote-toggle.
-// Everywhere else, backslash/quote escaping follows the CommandLineToArgvW argv-splitting convention (a run of backslashes immediately before a real quote-span boundary is doubled so the CRT parser reconstructs it exactly). All of the classes above -- embedded quote, cmd metacharacter with no adjacent whitespace, `%`/`!`, empty string, and combinations of these -- were verified against a real `cmd.exe /d /s /c` invocation of a `.cmd` wrapper forwarding to node.exe (the exact shape of the npm-shim target this function exists for) before being ported into this function; see windowsCmdQuoteArg's test file for the individual cases.
-// This corrects a defect in the escaping shipped by 31a60efd: `CommandLineToArgvW` halves a run of backslashes that immediately precedes a real `"`, so every code path that emits a `"` must double whatever backslash run is pending right before it, but the original code only did that doubling on one of the three call sites that emit a quote (the in-quote branch of the close-quote helper), leaving the close-quote else-branch and the open-quote helper to emit their `"` after an undoubled run -- `%\"` round-tripped back out as `%\` and `!\"` as `!\`, silently dropping the embedded quote. flushBackslashesDoubled/flushBackslashesPlain are now the single choke point every quote-emitting branch routes through, so the doubling can't again be wired to only one of them.
-export function windowsCmdQuoteArg(arg: string): string {
-  if (arg === '') return '""'
-  // An argument that both starts and ends with a literal `"` (e.g. `"&calc&"`) cannot be faithfully round-tripped through cmd.exe even though the encoding below is correct: cmd's own `/s` first-token scan toggles a naive quote-state per literal `"` it sees (it does not honor the caret this function uses to escape one), so the back-to-back quotes this shape emits at the very start of the token reset that naive parity to "unquoted" for the rest of the string, and cmd then treats a later metacharacter as ending the program name instead of the neutralized character it actually is -- reject here, at the single point that encodes every argument, rather than let the caller silently hand cmd a command line it will misexecute.
-  if (arg[0] === '"' && arg[arg.length - 1] === '"') {
-    throw new Error(`windowsCmdQuoteArg: cannot faithfully encode an argument that both starts and ends with a literal double quote for cmd.exe: ${JSON.stringify(arg)}`)
-  }
-  let out = ''
-  let inQuote = false
-  let backslashes = 0
-
-  const flushBackslashesPlain = (): void => {
-    if (backslashes > 0) {
-      out += '\\'.repeat(backslashes)
-      backslashes = 0
-    }
-  }
-  const flushBackslashesDoubled = (): void => {
-    out += '\\'.repeat(backslashes * 2)
-    backslashes = 0
-  }
-  const ensureQuoteOpen = (): void => {
-    if (!inQuote) {
-      flushBackslashesDoubled()
-      out += '"'
-      inQuote = true
-    } else {
-      flushBackslashesPlain()
-    }
-  }
-  const ensureQuoteClosed = (): void => {
-    if (inQuote) {
-      flushBackslashesDoubled()
-      out += '"'
-      inQuote = false
-    } else {
-      flushBackslashesPlain()
-    }
-  }
-
-  for (const ch of arg) {
-    if (ch === '\\') {
-      backslashes++
-      continue
-    }
-    if (ch === '"') {
-      flushBackslashesDoubled()
-      if (inQuote) {
-        out += '"'
-        inQuote = false
-      }
-      out += '\\^"'
-      continue
-    }
-    if (ch === '%' || ch === '!') {
-      ensureQuoteClosed()
-      out += `^${ch}`
-      continue
-    }
-    ensureQuoteOpen()
-    out += ch
-  }
-  ensureQuoteClosed()
-  return out
-}
-
 /** Strips everything from the first `?` onward, so a signed or tokenized URL can't leak its
  * access material (SAS tokens, share signatures) into stderr and from there into model context
  * via an error message. String truncation rather than `new URL().origin` on purpose: the callers
@@ -1104,14 +1032,6 @@ export function redactUrlQuery(raw: string): string {
 /** Basename of a path, mirroring Python's os.path.basename for convenience. */
 export function basename(p: string): string {
   return path.basename(p)
-}
-
-/** Strip a leading UTF-8 BOM (U+FEFF) if present -- some editors (notably Windows ones) save
- * text files with this prefix, which is valid content but trips up a strict JSON.parse. Mirrors
- * parser.ts's parseContent and section_reader.ts's inline BOM strips; this is the shared copy for
- * callers (openapi_query.ts, coverage_query.ts) that don't otherwise share a module with those two. */
-export function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 }
 
 /**
@@ -1177,22 +1097,6 @@ export function isCodeFenceDelimiter(line: string): boolean {
  * byte-identical private copies in cache_session_commands.ts, cli_hint_stats.ts, cli_recall.ts. */
 export function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
-}
-
-/** Swallow EPIPE on the process's stdio streams so piping into an early-closing consumer (`| head -2`, `| grep -q`, a pager the user quits) ends quietly instead of crashing. Without this, Node's default `error` handling on the stream throws an unhandled 'error' event and the CLI dies with a stack trace and a nonzero exit -- `token-goat grep ... | head -2` was a hard crash, and piping to `head` is one of the most common agent invocation shapes. Only EPIPE is absorbed: any other stream error still surfaces. Returns the streams it attached to so a test can assert the wiring. */
-export function installEpipeGuard(streams?: Array<NodeJS.WriteStream | undefined>): Array<NodeJS.WriteStream> {
-  const targets = (streams ?? [process.stdout, process.stderr]).filter((s): s is NodeJS.WriteStream => s !== undefined)
-  for (const stream of targets) {
-    stream.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EPIPE') {
-        // The consumer is gone; there is nothing left to write and nothing to report to.
-        process.exitCode = 0
-        return
-      }
-      throw err
-    })
-  }
-  return targets
 }
 
 /** Normalize path and convert backslashes to forward slashes. Extracted from 3 call sites in compact.ts. */
@@ -1275,17 +1179,6 @@ export function isWithinQuietHours(spec: string, now: Date = new Date()): boolea
  * unavailable (should never happen under a real `node <script>` invocation) rather than
  * baking in something wrong; the shim's inner call falls back to its old PATH-based lookup.
  */
-// Wraps a path in double quotes for embedding in a generated hook command line that an external harness (Claude Code, Grok, Kimi, Gemini CLI, Qwen Code) later parses through its own shell, escaping the characters a POSIX shell treats as special inside a double-quoted string (backslash, dollar, backtick, double quote) so an embedded one of those cannot break out of the quoting or trigger command substitution or variable expansion; Windows paths cannot legally contain a double quote at all, so no escaping is applied on win32, since prefixing every backslash in an ordinary `C:\` path would corrupt it under cmd.exe and PowerShell, neither of which treats backslash as an escape character inside a double-quoted string.
-export function quoteShellPath(value: string): string {
-  if (process.platform === 'win32') return `"${value}"`
-  return `"${value.replace(/[\\$`"]/g, '\\$&')}"`
-}
-
-// Wraps a path in single quotes for embedding in a generated PowerShell command, doubling any inner single quote. A PowerShell field is not a cmd.exe command line: PowerShell expands `$name` and `$(...)` inside a double-quoted string, and a dollar sign is a legal character in a Windows directory name, so the double-quoted form quoteShellPath emits on win32 (which escapes nothing) would have that text evaluated every time the hook fires. A single-quoted PowerShell string is literal, which is why this is a separate helper rather than a branch inside quoteShellPath: the correct quoting depends on the shell the field is read by, not on the platform.
-export function quotePowershellPath(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`
-}
-
 export function hookCommandFor(scriptPath: string, event: string): string {
   const entryPath = process.argv[1]
   const entryArg = entryPath ? ` ${quoteShellPath(entryPath)}` : ''
@@ -1324,161 +1217,5 @@ export function suggestPackageNames(query: string, names: string[]): string[] {
     .sort((a, b) => a.d - b.d)
     .slice(0, 5)
     .map((x) => x.n)
-}
-
-/** The encodings {@link decodeSource} recognizes from a leading byte-order mark. `utf8` means no mark was found. */
-export type SourceEncoding = 'utf8' | 'utf8-bom' | 'utf16le' | 'utf16be' | 'utf32le' | 'utf32be'
-
-/**
- * Which encoding `buf` declares through its leading byte-order mark.
- *
- * Order matters: UTF-32LE begins `FF FE 00 00`, whose first two bytes are exactly the UTF-16LE
- * mark, so the four-byte forms have to be tested first or a UTF-32 file decodes as UTF-16 and
- * comes back interleaved with NULs -- the same failure this whole helper exists to remove.
- *
- * A file with no mark is reported as `utf8` and decoded as UTF-8 exactly as before. Mark-less
- * UTF-16 is not guessed at: heuristics on byte distribution misfire on binary, and a wrong guess
- * is worse than the honest empty result.
- */
-export function detectSourceEncoding(buf: Buffer): SourceEncoding {
-  if (buf.length >= 4) {
-    if (buf[0] === 0xff && buf[1] === 0xfe && buf[2] === 0x00 && buf[3] === 0x00) return 'utf32le'
-    if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0xfe && buf[3] === 0xff) return 'utf32be'
-  }
-  if (buf.length >= 2) {
-    if (buf[0] === 0xff && buf[1] === 0xfe) return 'utf16le'
-    if (buf[0] === 0xfe && buf[1] === 0xff) return 'utf16be'
-  }
-  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return 'utf8-bom'
-  return 'utf8'
-}
-
-/**
- * Decode a source file's bytes to text, honoring a byte-order mark.
- *
- * `buf.toString('utf8')` is right for almost every file and wrong for the ones Windows produces by
- * accident: PowerShell 5.1 writes UTF-16LE for `>` redirection and `Out-File`, so a script, log, or
- * generated document created that way is UTF-16 with a BOM. Decoded as UTF-8 those bytes become the
- * text interleaved with NULs, which parses to nothing at all -- the file indexes with zero symbols
- * and is reported as indexed, and `read` on it emits the doubled, NUL-laced mojibake into the
- * model's context.
- *
- * The mark itself is never part of the returned text, including for UTF-8: U+FEFF at the head of a
- * file is an encoding marker, not content, and leaving it in shifts every column on the first line
- * and stops a heading or shebang from matching at position 0.
- */
-export function decodeSource(buf: Buffer): string {
-  switch (detectSourceEncoding(buf)) {
-    case 'utf32le':
-      return decodeUtf32(buf.subarray(4), true)
-    case 'utf32be':
-      return decodeUtf32(buf.subarray(4), false)
-    case 'utf16le':
-      return buf.subarray(2).toString('utf16le')
-    case 'utf16be':
-      return swap16(buf.subarray(2)).toString('utf16le')
-    case 'utf8-bom':
-      return buf.subarray(3).toString('utf8')
-    default:
-      return buf.toString('utf8')
-  }
-}
-
-/**
- * Re-encode `text` in `encoding`, mark included, so a command that rewrites a file puts it back the
- * way it found it.
- *
- * Without this, reading a UTF-16 file correctly and writing it back as UTF-8 would silently convert
- * it -- worse than never having read it, since the caller asked to edit one section and got the
- * whole file re-encoded.
- */
-export function encodeSource(text: string, encoding: SourceEncoding): Buffer {
-  switch (encoding) {
-    case 'utf32le':
-      return Buffer.concat([Buffer.from([0xff, 0xfe, 0x00, 0x00]), encodeUtf32(text, true)])
-    case 'utf32be':
-      return Buffer.concat([Buffer.from([0x00, 0x00, 0xfe, 0xff]), encodeUtf32(text, false)])
-    case 'utf16le':
-      return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')])
-    case 'utf16be':
-      return Buffer.concat([Buffer.from([0xfe, 0xff]), swap16(Buffer.from(text, 'utf16le'))])
-    case 'utf8-bom':
-      return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, 'utf8')])
-    default:
-      return Buffer.from(text, 'utf8')
-  }
-}
-
-/** Byte-swapped copy, for big-endian UTF-16: Node decodes only the little-endian form. Copies rather than swapping in place, because the input may be a view onto a buffer a caller still holds. */
-function swap16(buf: Buffer): Buffer {
-  const out = Buffer.from(buf)
-  // An odd trailing byte cannot form a code unit; dropping it loses nothing a decoder could have used.
-  return out.subarray(0, out.length - (out.length % 2)).swap16()
-}
-
-/** UTF-32 has no Node decoder, so its code points are read one 4-byte unit at a time. A trailing partial unit is dropped, and a unit outside the Unicode range becomes U+FFFD rather than throwing on a truncated or corrupt file. */
-function decodeUtf32(buf: Buffer, littleEndian: boolean): string {
-  const points: number[] = []
-  for (let i = 0; i + 4 <= buf.length; i += 4) {
-    const cp = littleEndian ? buf.readUInt32LE(i) : buf.readUInt32BE(i)
-    points.push(cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? 0xfffd : cp)
-  }
-  return String.fromCodePoint(...points)
-}
-
-/** Counterpart to {@link decodeUtf32}. */
-function encodeUtf32(text: string, littleEndian: boolean): Buffer {
-  const points = [...text]
-  const out = Buffer.alloc(points.length * 4)
-  points.forEach((ch, i) => {
-    const cp = ch.codePointAt(0) ?? 0xfffd
-    if (littleEndian) out.writeUInt32LE(cp, i * 4)
-    else out.writeUInt32BE(cp, i * 4)
-  })
-  return out
-}
-
-/**
- * Resolve `label` to an executable **on PATH**, never one sitting in the current directory.
- *
- * This used to shell out to `where.exe` and take its first line. `where.exe` searches the current
- * directory before PATH and reports it first, so any repository could ship a `claude.bat` at its
- * root and have `token-goat ask` run it -- with the operator's entire environment inherited and
- * the question on its stdin, and its stdout printed back as the model's answer. Arbitrary code
- * execution from cloning a repo and running a read command in it. `NoDefaultCurrentDirectoryInExePath`,
- * which does stop `cmd.exe` resolving a bare name from the current directory, has no effect on
- * `where.exe`: measured on Windows 11, the cwd hit still comes back first with it set.
- *
- * POSIX `which` does not search the current directory, so only Windows was exploitable, but this
- * walks PATH directly on both platforms rather than keeping one behaviour that is safe by design
- * and another that is safe by accident.
- *
- * A PATH entry that is empty, `.`, or resolves to the current directory is skipped: those are the
- * spellings that put the current directory back on the search path. An absolute label is taken as
- * given -- an operator naming a specific binary in `TOKEN_GOAT_ASK_BACKEND` is the case this
- * protects, not the case it guards against -- while a relative label containing a separator is
- * refused outright, that being the cwd-relative shape.
- */
-export function resolveOnPath(label: string): string | null {
-  if (path.isAbsolute(label)) return existsSync(label) ? label : null
-  if (label.includes('/') || label.includes('\\')) return null
-
-  const onWindows = process.platform === 'win32'
-  const exts = onWindows ? (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((e) => e.trim() !== '') : ['']
-  let cwd: string
-  try { cwd = realpathSync(process.cwd()) } catch { cwd = path.resolve(process.cwd()) }
-
-  for (const rawDir of (process.env['PATH'] ?? '').split(path.delimiter)) {
-    const dir = rawDir.trim().replace(/^"|"$/g, '')
-    if (dir === '' || dir === '.') continue
-    let resolvedDir: string
-    try { resolvedDir = realpathSync(path.resolve(dir)) } catch { continue }
-    if (foldPath(resolvedDir) === foldPath(cwd)) continue
-    for (const ext of exts) {
-      const candidate = path.join(resolvedDir, label + ext)
-      try { if (statSync(candidate).isFile()) return candidate } catch { /* try the next extension */ }
-    }
-  }
-  return null
 }
 

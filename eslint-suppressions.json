@@ -1,4 +1,9 @@
 {
+  "src/bash_extractors.ts": {
+    "regexp/no-super-linear-backtracking": {
+      "count": 19
+    }
+  },
   "src/cli_bootstrap_audit.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 1
@@ -47,9 +52,9 @@
       "count": 2
     }
   },
-  "src/hooks_bash.ts": {
+  "src/import_export_extract.ts": {
     "regexp/no-super-linear-backtracking": {
-      "count": 20
+      "count": 11
     }
   },
   "src/languages/apex.ts": {
@@ -105,11 +110,6 @@
   "src/parser.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 7
-    }
-  },
-  "src/read_commands.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 11
     }
   },
   "src/resident_context.ts": {
