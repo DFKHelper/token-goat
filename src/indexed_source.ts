@@ -17,6 +17,11 @@ export function isVirtualIndexedPath(filePath: string): boolean {
   return filePath.toLowerCase().endsWith('.ipynb')
 }
 
+/** The line a command prints when it pairs a stored symbol range with git's own line numbers and the path is virtual-indexed, so the two are different coordinate systems and the only honest scope left is the whole file. Shared by every such command rather than restated at each, because each of the four that needed it had already answered confidently wrong in its own way: `log` followed `-L9,10:nb.ipynb` into two markdown lines and printed their history under the header `# helper (function)`; `diff` found no hunk overlapping the virtual range and said "No changes" about a symbol that had just changed; `grep --symbol` labelled nothing; `changed --symbol` omitted the notebook's changed symbol entirely. Three of those four are silent, and a note is what makes the fourth answer legible rather than merely less wrong. `consequence` completes the sentence, so each command states what its own answer does instead of leaving the reader to infer it. */
+export function virtualIndexedScopeNote(displayPath: string, consequence: string): string {
+  return `[${displayPath} is a notebook: its indexed line numbers address the flattened cell source, not the JSON in the file, so ${consequence}.]`
+}
+
 /** Shared by {@link formatSymbolLocation} and outline's path-less columnar row (which has no `path:` prefix to hang the check on, only the bare `sym.filePath` it renders alongside), so the wording naming a virtual-indexed location can never drift between the two surfaces. */
 export const NOTEBOOK_CELL_LINES_SUFFIX = ' (notebook cell lines)'
 

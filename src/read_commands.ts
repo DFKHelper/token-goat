@@ -12,7 +12,7 @@ import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
-import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
+import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -5416,8 +5416,9 @@ export function runChanged(opts: ChangedOptions = {}): number {
       const hunks = hunksByFile.get(f)
       // No hunks parsed for this file (rename, binary, or the diff call failed) —
       // fall back to every symbol in the file rather than silently dropping it.
+      // A virtual-indexed file joins the no-hunks case for the same reason: its symbol ranges address the flattened cell source while every hunk range addresses the JSON, so the overlap test below answers about two different documents. Measured, it answered false for every symbol in a notebook whose code had just changed, and the notebook simply vanished from the report while the equivalent .py appeared. The rows carry a `(notebook cell lines)` marker already, so widening to the whole file is legible rather than silent.
       const scoped =
-        hunks === undefined
+        hunks === undefined || isVirtualIndexedPath(f)
           ? fileSymbols
           : fileSymbols.filter((s) => hunks.some((h) => h.start <= s.lineEnd && h.end >= s.lineStart))
       allSymbols.push(...scoped)
@@ -5615,7 +5616,9 @@ export function runDiff(opts: DiffOptions): number {
   }
 
   const { hunks } = splitDiffHunks(diffResult.stdout)
-  const overlapping = hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
+  // A hunk's line range addresses the file on disk; a virtual-indexed symbol's addresses the flattened document. Overlapping them compares two coordinate systems, and what comes out is a false negative rather than a visibly wrong answer -- measured, `diff nb.ipynb::helper` printed "No changes to 'helper'" for a symbol that had just changed, while the equivalent .py reported the edit. Report every hunk in the file instead, with a note saying that is what happened.
+  const diffFileScoped = isVirtualIndexedPath(match.filePath)
+  const overlapping = diffFileScoped ? hunks : hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
 
   if (overlapping.length === 0) {
     emit(`No changes to '${displaySafeText(match.name)}' (lines ${match.lineStart}-${match.lineEnd}) in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
@@ -5641,7 +5644,8 @@ export function runDiff(opts: DiffOptions): number {
 
   // The header is token-goat's own line and quotes a repo-chosen symbol name, kind and path, so it is escaped. The bodies joined to it below are the payload the reader asked for and are left byte-for-byte: this command delivers file content unfenced by design.
   const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)), match.lineStart, match.lineEnd)}`
-  emit(guardText([header, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
+  const diffNote = diffFileScoped ? [virtualIndexedScopeNote(displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)), 'these hunks cover the whole file rather than this symbol alone')] : []
+  emit(guardText([header, ...diffNote, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
   return 0
 }
 
@@ -5745,14 +5749,18 @@ export function runLog(opts: LogOptions): number {
   const cwd = opts.projectRoot ?? process.cwd()
   const maxCount = opts.maxCount ?? DEFAULT_LOG_MAX_COUNT
 
-  // No `--` pathspec separator here (unlike runDiff's `git diff`) -- `-L<range>:<file>` already
+  // `-L<range>:<file>` hands the stored range straight to git, which reads it as a range of lines in the file on disk. For a virtual-indexed path those are two different coordinate systems, and git follows whatever happens to sit at those JSON lines: measured, `log nb.ipynb::helper` printed the history of two markdown lines under the header `# helper (function)`. Fall back to the file's own history, which is true, and say so.
+  const fileScoped = isVirtualIndexedPath(match.filePath)
+  // No `--` pathspec separator on the `-L` form (unlike runDiff's `git diff`) -- `-L<range>:<file>` already
   // embeds the file, and git log rejects a `-L<range>:<file>` combined with a separate pathspec.
-  const logArgs = [
-    'log',
-    `-L${match.lineStart},${match.lineEnd}:${match.filePath}`,
-    `--max-count=${maxCount}`,
-    ...(opts.ref !== undefined ? [opts.ref] : []),
-  ]
+  const logArgs = fileScoped
+    ? ['log', `--max-count=${maxCount}`, ...(opts.ref !== undefined ? [opts.ref] : []), '--', match.filePath]
+    : [
+        'log',
+        `-L${match.lineStart},${match.lineEnd}:${match.filePath}`,
+        `--max-count=${maxCount}`,
+        ...(opts.ref !== undefined ? [opts.ref] : []),
+      ]
   let logResult
   try {
     logResult = runGit(logArgs, { cwd })
@@ -5790,7 +5798,8 @@ export function runLog(opts: LogOptions): number {
 
   // The header is token-goat's own line and quotes a repo-chosen symbol name, kind and path, so it is escaped. The bodies joined to it below are the payload the reader asked for and are left byte-for-byte: this command delivers file content unfenced by design.
   const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)), match.lineStart, match.lineEnd)}`
-  emit(guardText([header, logResult.stdout].join('\n'), 'diff'))
+  const logNote = fileScoped ? [virtualIndexedScopeNote(displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)), 'this history covers the whole file rather than this symbol alone')] : []
+  emit(guardText([header, ...logNote, logResult.stdout].join('\n'), 'diff'))
   return 0
 }
 
@@ -6063,8 +6072,13 @@ export function runGrep(opts: GrepOptions): number {
         syms = querySymbols({ filePath: resolveIndexPath(hit.file), limit: ALL_SYMBOLS_IN_FILE_LIMIT })
         symbolsByFile.set(hit.file, syms)
       }
-      const enc = enclosingSymbol(syms, hit.line)
+      // `hit.line` is a line in the file the search read; a virtual-indexed file's symbol ranges are lines in the flattened cell source. Asking which symbol encloses a JSON line is asking the question in the wrong document: it answered null for every notebook hit, and could as easily have named whichever symbol happened to span that number. Refused explicitly, with one note per file below, so the blank label is an answer rather than an absence.
+      const enc = isVirtualIndexedPath(hit.file) ? null : enclosingSymbol(syms, hit.line)
       hit.symbol = enc === null ? null : { name: enc.name, kind: enc.kind, lineStart: enc.lineStart, lineEnd: enc.lineEnd }
+    }
+    // One line per affected file rather than a tag on every hit: a notebook with fifty matches would otherwise repeat the same sentence fifty times.
+    for (const file of new Set(truncated.map((h) => h.file).filter(isVirtualIndexedPath))) {
+      emit(virtualIndexedScopeNote(displaySafeText(file), 'a match in it cannot be attributed to a symbol and these hits carry no label'))
     }
   }
 
