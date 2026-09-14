@@ -154,9 +154,7 @@ async function* pageTextItems(page: pdfjsTypes.PDFPageProxy, deadline: number): 
   }
 }
 
-/**
- * `doc`'s page `pageNum`, refusing if the document's clock has already run out. Every command here walks pages in a loop of its own, and the cost of one page is not bounded by the cost of the last: a scan that has already spent its minute must not fetch a further page. Going through one function is what keeps that true of a command written later.
- */
+/** `doc`'s page `pageNum`, refusing if the document's clock has already run out. Every command here walks pages in a loop of its own, and the cost of one page is not bounded by the cost of the last: a scan that has already spent its minute must not fetch a further page. Going through one function is what keeps that true of a command written later. */
 async function getPageWithinDeadline(doc: pdfjsTypes.PDFDocumentProxy, pageNum: number, deadline: number): Promise<pdfjsTypes.PDFPageProxy> {
   if (Date.now() > deadline) throw pdfWorkTookTooLong()
   return raceDeadline(doc.getPage(pageNum), deadline)

@@ -1,17 +1,34 @@
-/**
- * Shared ZIP+XML core for OOXML formats (.pptx, .docx are both a ZIP container of XML parts).
- * pptx_extract.ts and docx_extract.ts both build on this rather than each reimplementing
- * zip-reading and text-run collection. Uses `createLazyModuleLoader` (see lazy_module.ts) for
- * the optional-dependency imports: cached lazy load, graceful "not installed" error on first
- * real use.
- */
+/** Shared ZIP+XML core for OOXML formats (.pptx, .docx are both a ZIP container of XML parts). pptx_extract.ts and docx_extract.ts both build on this rather than each reimplementing zip-reading and text-run collection. Uses `createLazyModuleLoader` (see lazy_module.ts) for the optional-dependency imports: cached lazy load, graceful "not installed" error on first real use. */
 
 import * as fs from 'node:fs'
 
+import { DocumentRefusedError } from './document_refusal.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
 import { parseXml } from './xml_parser.js'
 import { MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, unzipBounded, ZipInputTooLargeError, ZipOutputTooLargeError, type ZipStreamModule } from './zip_bounds.js'
+
+// Every per-call bound on the pptx/xlsx path (MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, MAX_XLSX_SCAN_CELLS) is a bound on ONE call, and a document can choose how many times a bounded operation runs: extractEmbeddableDocumentText used to call pptxSlideText/headSheet once per slide/sheet, each of which re-reads and re-inflates the WHOLE archive from scratch (pptxOutline plus an N-slide loop cost N+1 full archive reads for an N-slide deck; a slide/sheet count is exactly the kind of thing an attacker or just a large real document controls). pptxAllSlidesText and allSheetsHeadText fix the re-read by loading the archive once and reusing the parsed entries, but a document can still be wide enough that even O(1)-per-slide work adds up -- there is otherwise no wall clock anywhere on this path, unlike pdf_extract.ts's MAX_PDF_WORK_MILLIS. This mirrors that: one clock per document, checked before each slide/sheet iteration, so a crafted or just very large deck/workbook costs a bounded stall instead of a worker that never returns.
+export const MAX_OOXML_WORK_MILLIS = 60_000
+
+/** Thrown when iterating a document's slides/sheets passes {@link MAX_OOXML_WORK_MILLIS}. A DocumentRefusedError, not a plain one, for the same reason the zip size caps are: the slide/sheet count is a property of the file, so refusing it is the same verdict on every future pass, and a plain Error would have the indexer re-open and re-time-out on this file forever. */
+export class OoxmlTookTooLongError extends DocumentRefusedError {
+  constructor(message: string) {
+    super(message, 'OoxmlTookTooLongError')
+  }
+}
+
+/** The instant past which a bulk slide/sheet walk over one document must stop. One per document, not per slide/sheet -- opened once by the caller that starts the walk, the same way pdf_extract.ts's pdfWorkDeadline is opened once per PDF. */
+export function ooxmlWorkDeadline(): number {
+  return Date.now() + MAX_OOXML_WORK_MILLIS
+}
+
+/** Checked before processing each slide/sheet in a bulk walk; throws {@link OoxmlTookTooLongError} once `deadline` has passed. */
+export function assertOoxmlWithinDeadline(deadline: number, hint: string): void {
+  if (Date.now() > deadline) {
+    throw new OoxmlTookTooLongError(`reading this document's slides/sheets passed the ${MAX_OOXML_WORK_MILLIS}ms limit. ${hint}`)
+  }
+}
 
 type FflateModule = ZipStreamModule
 
@@ -21,14 +38,7 @@ const loadFflate = createLazyModuleLoader(
 )
 
 /** Reads a .pptx/.docx/.xlsx file and returns its ZIP entries as path -> decompressed bytes. */
-/**
- * Which of the two answers a failed open deserves. Only a genuinely absent file is "not found":
- * mapping every errno to that message told someone hitting a permission error to go looking for a
- * file that was sitting right where they left it. Kept as a function because the alternative is
- * untestable: node:fs is a frozen namespace, so the non-ENOENT branch cannot be reached by mocking,
- * and no real probe produces the same errno on every platform (a path leading through a regular
- * file is ENOTDIR on Linux and ENOENT on Windows; chmod does not deny the owner on Windows at all).
- */
+/** Which of the two answers a failed open deserves. Only a genuinely absent file is "not found": mapping every errno to that message told someone hitting a permission error to go looking for a file that was sitting right where they left it. Kept as a function because the alternative is untestable: node:fs is a frozen namespace, so the non-ENOENT branch cannot be reached by mocking, and no real probe produces the same errno on every platform (a path leading through a regular file is ENOTDIR on Linux and ENOENT on Windows; chmod does not deny the owner on Windows at all). */
 export function accessFailureMessage(err: unknown, filePath: string): string {
   const code = (err as NodeJS.ErrnoException | undefined)?.code
   if (code === 'ENOENT') return `File not found: ${filePath}`
@@ -85,19 +95,7 @@ export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: s
   return new TextDecoder('utf-8').decode(bytes)
 }
 
-/**
- * Parses one XML part's text into a plain object tree.
- *
- * Stays `async` although `parseXml` is synchronous: every caller already awaits it, and the two
- * pptx call sites parse a part and its `.rels` sibling concurrently. Dropping the promise would be
- * a signature change rippling through docx_extract, pptx_extract and xlsx_reader for no gain.
- *
- * The parser used to be `fast-xml-parser`, loaded lazily as an optional dependency. It is now
- * `src/xml_parser.ts`, which produces the identical shape for the options that were passed; see
- * that file's header for why, and tests/xml_parser.test.ts for the differential test that holds the
- * two to the same output. The historical notes below are kept because they record why those
- * options were chosen, and the local parser is built to the same two decisions:
- */
+/** Parses one XML part's text into a plain object tree. Stays `async` although `parseXml` is synchronous: every caller already awaits it, and the two pptx call sites parse a part and its `.rels` sibling concurrently. Dropping the promise would be a signature change rippling through docx_extract, pptx_extract and xlsx_reader for no gain. The parser used to be `fast-xml-parser`, loaded lazily as an optional dependency. It is now `src/xml_parser.ts`, which produces the identical shape for the options that were passed; see that file's header for why, and tests/xml_parser.test.ts for the differential test that holds the two to the same output. The historical notes below are kept because they record why those options were chosen, and the local parser is built to the same two decisions: */
 export async function parseOoxmlPart(xmlText: string): Promise<unknown> {
   // trimValues defaulted to true in fast-xml-parser, which collapses a whitespace-only
   // <w:t xml:space="preserve"> </w:t> run (Word's own way of holding just the space between
@@ -131,12 +129,7 @@ function pushTextValue(runs: string[], val: unknown): void {
   }
 }
 
-/**
- * Collects every text-run value under `tag` (e.g. `a:t` for pptx, `w:t` for docx) anywhere in
- * the parsed XML tree, in document order. Handles both a single run (`{tag: "text"}`) and
- * repeated sibling runs (`{tag: ["a", "b"]}`, how fast-xml-parser folds consecutive same-name
- * elements) since OOXML text is split across many short runs by most editors/exporters.
- */
+/** Collects every text-run value under `tag` (e.g. `a:t` for pptx, `w:t` for docx) anywhere in the parsed XML tree, in document order. Handles both a single run (`{tag: "text"}`) and repeated sibling runs (`{tag: ["a", "b"]}`, how fast-xml-parser folds consecutive same-name elements) since OOXML text is split across many short runs by most editors/exporters. */
 export function collectTextRuns(node: unknown, tag: string): string[] {
   const runs: string[] = []
   function walk(n: unknown): void {
@@ -159,12 +152,7 @@ export function collectTextRuns(node: unknown, tag: string): string[] {
   return runs
 }
 
-/**
- * Collects every element named `tag` anywhere in the parsed XML tree, in document order,
- * without descending further into a match's own subtree search for the same tag (OOXML
- * paragraph/run elements never nest inside themselves, so this is safe and avoids the
- * complexity of a full generic tree-diff).
- */
+/** Collects every element named `tag` anywhere in the parsed XML tree, in document order, without descending further into a match's own subtree search for the same tag (OOXML paragraph/run elements never nest inside themselves, so this is safe and avoids the complexity of a full generic tree-diff). */
 export function collectElements(node: unknown, tag: string): unknown[] {
   const out: unknown[] = []
   function walk(n: unknown): void {

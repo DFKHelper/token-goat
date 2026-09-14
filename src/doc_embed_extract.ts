@@ -4,8 +4,8 @@ import * as path from 'node:path'
 import { DocumentRefusedError } from './document_refusal.js'
 import { extractPdfText, readPdfFileWithinBounds } from './pdf_extract.js'
 import { docxText } from './docx_extract.js'
-import { pptxOutline, pptxSlideText } from './pptx_extract.js'
-import { listSheets, headSheet } from './xlsx_extract.js'
+import { pptxAllSlidesText } from './pptx_extract.js'
+import { allSheetsHeadText } from './xlsx_extract.js'
 
 const EMBEDDABLE_DOCUMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx'])
 
@@ -31,23 +31,12 @@ export async function extractEmbeddableDocumentText(filePath: string): Promise<s
     }
     case '.docx':
       return await docxText(filePath)
-    case '.pptx': {
-      const outline = await pptxOutline(filePath)
-      const slideTexts: string[] = []
-      for (let i = 1; i <= outline.length; i++) {
-        slideTexts.push(await pptxSlideText(filePath, i, true))
-      }
-      return slideTexts.join('\n\n')
-    }
-    case '.xlsx': {
-      const sheets = await listSheets(filePath)
-      const sheetTexts: string[] = []
-      for (const sheet of sheets) {
-        const body = await headSheet(filePath, sheet.name, XLSX_SHEET_ROW_CAP)
-        sheetTexts.push(`# Sheet: ${sheet.name}\n${body}`)
-      }
-      return sheetTexts.join('\n\n')
-    }
+    case '.pptx':
+      // pptxAllSlidesText reads the archive once and reuses it across every slide, rather than looping pptxSlideText (one full archive read+reinflate per call) once per slide -- see its own doc comment for why that used to cost N+1 reads for an N-slide deck.
+      return await pptxAllSlidesText(filePath, true)
+    case '.xlsx':
+      // Same shape as the pptx case above: allSheetsHeadText loads the workbook once and reuses it across every sheet, rather than looping headSheet (one full archive read+reparse of every sheet, per sheet requested).
+      return await allSheetsHeadText(filePath, XLSX_SHEET_ROW_CAP)
     default:
       return null
   }

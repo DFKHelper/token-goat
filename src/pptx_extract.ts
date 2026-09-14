@@ -1,13 +1,6 @@
-/**
- * PowerPoint (.pptx) narrow-slice reader. Slide XML lives at `ppt/slides/slideN.xml`, one file
- * per slide, each a `p:sld > p:cSld > p:spTree` tree of shapes (`p:sp`); each shape has an
- * optional `p:txBody` of paragraphs (`a:p`) of runs (`a:r`) of text (`a:t`). A slide's title
- * placeholder is the shape whose `p:nvSpPr.p:nvPr.p:ph.@_type` is `title`/`ctrTitle`. Speaker
- * notes live in a sibling `ppt/notesSlides/notesSlideN.xml` part, in the shape whose
- * `p:ph.@_type` is `body` (the other notes-slide shape is a non-text slide-image placeholder).
- */
+/** PowerPoint (.pptx) narrow-slice reader. Slide XML lives at `ppt/slides/slideN.xml`, one file per slide, each a `p:sld > p:cSld > p:spTree` tree of shapes (`p:sp`); each shape has an optional `p:txBody` of paragraphs (`a:p`) of runs (`a:r`) of text (`a:t`). A slide's title placeholder is the shape whose `p:nvSpPr.p:nvPr.p:ph.@_type` is `title`/`ctrTitle`. Speaker notes live in a sibling `ppt/notesSlides/notesSlideN.xml` part, in the shape whose `p:ph.@_type` is `body` (the other notes-slide shape is a non-text slide-image placeholder). */
 
-import { collectElements, collectTextRuns, decodeZipEntry, parseOoxmlPart, readOoxmlZip, sortNumberedParts } from './ooxml_extract.js'
+import { assertOoxmlWithinDeadline, collectElements, collectTextRuns, decodeZipEntry, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts } from './ooxml_extract.js'
 import { compileGuardedRegex } from './regex_guard.js'
 
 export interface SlideOutlineEntry {
@@ -34,16 +27,7 @@ function shapeText(shape: unknown): string {
   return collectTextRuns(shape, 'a:t').join(' ').trim()
 }
 
-/**
- * Text blocks from every table on a slide, one block per row (cells joined with ` | `). A
- * PowerPoint table (`p:graphicFrame` > `a:graphic` > `a:graphicData` > `a:tbl` > `a:tr` > `a:tc`)
- * never uses `p:sp` at all -- slideShapes()'s p:sp-only collection silently drops every table's
- * cell text, even though pptxOutline's bodyChars and pptxTextGrep both already see it (they scan
- * the whole parsed slide tree via collectTextRuns, not slideShapes()). Without this, a real,
- * common slide shape (comparison tables, data grids) is completely absent from pptxSlideText's
- * output -- the one command whose job is showing a slide's actual text -- even though
- * pptx-text-grep can find a match inside it.
- */
+/** Text blocks from every table on a slide, one block per row (cells joined with ` | `). A PowerPoint table (`p:graphicFrame` > `a:graphic` > `a:graphicData` > `a:tbl` > `a:tr` > `a:tc`) never uses `p:sp` at all -- slideShapes()'s p:sp-only collection silently drops every table's cell text, even though pptxOutline's bodyChars and pptxTextGrep both already see it (they scan the whole parsed slide tree via collectTextRuns, not slideShapes()). Without this, a real, common slide shape (comparison tables, data grids) is completely absent from pptxSlideText's output -- the one command whose job is showing a slide's actual text -- even though pptx-text-grep can find a match inside it. */
 function tableRowBlocks(parsedSlide: unknown): string[] {
   const blocks: string[] = []
   for (const tbl of collectElements(parsedSlide, 'a:tbl')) {
@@ -66,14 +50,7 @@ interface SldIdLike {
   '@_r:id'?: string
 }
 
-/**
- * Resolves the deck's actual display order (`ppt/presentation.xml`'s `<p:sldIdLst>`,
- * a list of `r:id` references, resolved to file paths via `ppt/_rels/presentation.xml.rels`)
- * rather than trusting `slideN.xml` filenames, which reflect insertion order and go stale
- * the moment a slide is reordered, duplicated, or deleted -- both very common PowerPoint
- * operations. Returns null when either part is missing/unparseable so the caller can fall
- * back to filename order (e.g. a hand-built or non-standard .pptx).
- */
+/** Resolves the deck's actual display order (`ppt/presentation.xml`'s `<p:sldIdLst>`, a list of `r:id` references, resolved to file paths via `ppt/_rels/presentation.xml.rels`) rather than trusting `slideN.xml` filenames, which reflect insertion order and go stale the moment a slide is reordered, duplicated, or deleted -- both very common PowerPoint operations. Returns null when either part is missing/unparseable so the caller can fall back to filename order (e.g. a hand-built or non-standard .pptx). */
 async function slidePathsInPresentationOrder(entries: Record<string, Uint8Array>): Promise<string[] | null> {
   const presXml = decodeZipEntry(entries, 'ppt/presentation.xml')
   const relsXml = decodeZipEntry(entries, 'ppt/_rels/presentation.xml.rels')
@@ -131,14 +108,7 @@ function resolveRelativeTarget(basePath: string, target: string): string {
   return resolved.join('/')
 }
 
-/**
- * Resolves a slide's notes part via its own relationship file
- * (`ppt/slides/_rels/slideN.xml.rels`, a `notesSlide` relationship pointing at the actual
- * notes target) rather than assuming `slideN.xml` pairs with `notesSlideN.xml` -- notes-slide
- * numbering is a separate counter from slide numbering, so duplicating, deleting, or
- * reordering slides can decouple the two. Returns null when the slide has no notesSlide
- * relationship (no notes part exists for it).
- */
+/** Resolves a slide's notes part via its own relationship file (`ppt/slides/_rels/slideN.xml.rels`, a `notesSlide` relationship pointing at the actual notes target) rather than assuming `slideN.xml` pairs with `notesSlideN.xml` -- notes-slide numbering is a separate counter from slide numbering, so duplicating, deleting, or reordering slides can decouple the two. Returns null when the slide has no notesSlide relationship (no notes part exists for it). */
 async function notesPathFor(entries: Record<string, Uint8Array>, slidePath: string): Promise<string | null> {
   const relsXml = decodeZipEntry(entries, relsPathFor(slidePath))
   if (relsXml === null) return null
@@ -157,13 +127,7 @@ async function parseSlide(entries: Record<string, Uint8Array>, path: string): Pr
   return parseOoxmlPart(xml)
 }
 
-/**
- * PowerPoint auto-creates a notesSlideN.xml part for essentially every slide as soon as a
- * deck is saved, whether or not the user ever typed anything into the notes pane -- so mere
- * presence of the ZIP part is not a reliable "this slide has notes" signal. Returns the
- * actual extracted notes body text (empty string if the part is absent or its body
- * placeholder has no text), so callers can check length instead of presence.
- */
+/** PowerPoint auto-creates a notesSlideN.xml part for essentially every slide as soon as a deck is saved, whether or not the user ever typed anything into the notes pane -- so mere presence of the ZIP part is not a reliable "this slide has notes" signal. Returns the actual extracted notes body text (empty string if the part is absent or its body placeholder has no text), so callers can check length instead of presence. */
 async function notesTextFor(entries: Record<string, Uint8Array>, notesPath: string | null): Promise<string> {
   if (notesPath === null) return ''
   const xml = decodeZipEntry(entries, notesPath)
@@ -194,8 +158,8 @@ export async function pptxOutline(filePath: string): Promise<SlideOutlineEntry[]
   return out
 }
 
-export async function pptxSlideText(filePath: string, slideNumber: number, includeNotes: boolean): Promise<string> {
-  const { entries, slidePaths } = await listSlideParts(filePath)
+/** The actual per-slide extraction, given an archive already opened by the caller (listSlideParts's `entries`/`slidePaths`). Split out of pptxSlideText so a bulk walk over every slide (pptxAllSlidesText) can reuse one already-decompressed archive instead of each slide re-triggering listSlideParts's own readOoxmlZip. */
+async function slideTextFromParts(entries: Record<string, Uint8Array>, slidePaths: string[], slideNumber: number, includeNotes: boolean): Promise<string> {
   if (slideNumber < 1 || slideNumber > slidePaths.length) {
     throw new Error(`slide ${slideNumber} out of range (this deck has ${slidePaths.length} slides)`)
   }
@@ -209,6 +173,22 @@ export async function pptxSlideText(filePath: string, slideNumber: number, inclu
     if (notes.length > 0) lines.push('', '## Speaker notes', notes)
   }
   return lines.join('\n\n')
+}
+
+export async function pptxSlideText(filePath: string, slideNumber: number, includeNotes: boolean): Promise<string> {
+  const { entries, slidePaths } = await listSlideParts(filePath)
+  return slideTextFromParts(entries, slidePaths, slideNumber, includeNotes)
+}
+
+/** Every slide's text from one archive read, for callers that need the whole deck rather than one slide at a time (the embeddings pipeline via doc_embed_extract.ts). Looping pptxSlideText itself N times used to cost N+1 full archive reads for an N-slide deck -- pptxOutline's own read plus one per slide, each re-running readOoxmlZip's fs.readFileSync-and-unzipBounded from scratch -- because listSlideParts has no cache and nothing bounded how many times a document could make it run. `deadline` defaults to a fresh {@link ooxmlWorkDeadline} so a caller can pass one down across several documents (or its own remaining budget) but doesn't have to. */
+export async function pptxAllSlidesText(filePath: string, includeNotes: boolean, deadline: number = ooxmlWorkDeadline()): Promise<string> {
+  const { entries, slidePaths } = await listSlideParts(filePath)
+  const slideTexts: string[] = []
+  for (let i = 1; i <= slidePaths.length; i++) {
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific slides with pptx-slide, or use a smaller deck.')
+    slideTexts.push(await slideTextFromParts(entries, slidePaths, i, includeNotes))
+  }
+  return slideTexts.join('\n\n')
 }
 
 export async function pptxNotesText(filePath: string, slideNumber?: number): Promise<string> {

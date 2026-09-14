@@ -1,6 +1,7 @@
 /** Excel (.xlsx) narrow-slice reader. Reads the OOXML container directly through `xlsx_reader.ts`, which shares the zip+XML core in `ooxml_extract.ts` with the .docx and .pptx readers -- so the size cap, the not-a-file guard and the path-leak-safe error messages are one implementation rather than three. */
 
 import { DocumentRefusedError } from './document_refusal.js'
+import { assertOoxmlWithinDeadline, ooxmlWorkDeadline } from './ooxml_extract.js'
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
 import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
 
@@ -153,9 +154,8 @@ export async function listSheets(filePath: string): Promise<SheetInfo[]> {
   })
 }
 
-export async function headSheet(filePath: string, sheetName: string, rows: number): Promise<string> {
-  const wb = await loadWorkbook(filePath)
-  const ws = requireSheet(wb, sheetName)
+/** The actual per-sheet head extraction, given a worksheet the caller already has (from a workbook it may be reusing across sheets). Split out of headSheet so a bulk walk over every sheet (allSheetsHeadText) can load the workbook once instead of each sheet re-triggering loadWorkbook's own full archive read and re-parse of every other sheet in the file. */
+function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number): string {
   assertScannableExtent(ws)
   const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
@@ -185,6 +185,23 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
     lines.push(`...(${aoa.length - 1 - dataRows.length} more rows elided; use --rows to see more, or xlsx-query for filtering)`)
   }
   return lines.join('\n')
+}
+
+export async function headSheet(filePath: string, sheetName: string, rows: number): Promise<string> {
+  const wb = await loadWorkbook(filePath)
+  const ws = requireSheet(wb, sheetName)
+  return headSheetFromWorksheet(ws, rows)
+}
+
+/** Every sheet's head text from one archive read, for callers that need the whole workbook rather than one sheet at a time (the embeddings pipeline via doc_embed_extract.ts). Looping headSheet itself once per sheet used to cost one full archive read-and-reparse of EVERY sheet per sheet requested -- listSheets's own workbook load plus one more per sheet, none of it cached -- because loadWorkbook has no cache and nothing bounded how many sheets a workbook could make it run for. `deadline` defaults to a fresh {@link ooxmlWorkDeadline} so a caller can pass one down across several documents (or its own remaining budget) but doesn't have to. */
+export async function allSheetsHeadText(filePath: string, rows: number, deadline: number = ooxmlWorkDeadline()): Promise<string> {
+  const wb = await loadWorkbook(filePath)
+  const sheetTexts: string[] = []
+  for (const ws of wb.worksheets) {
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific sheets with xlsx-head, or use a smaller workbook.')
+    sheetTexts.push(`# Sheet: ${ws.name}\n${headSheetFromWorksheet(ws, rows)}`)
+  }
+  return sheetTexts.join('\n\n')
 }
 
 export interface XlsxRangeResult {
