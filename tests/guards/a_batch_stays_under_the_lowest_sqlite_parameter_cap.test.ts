@@ -34,6 +34,13 @@ describe('a batch stays under the lowest SQLite parameter cap', () => {
     expect(width + extraParams, `${constant} + ${String(extraParams)} scope parameters is past the ${String(PRE_3_32_DEFAULT_CAP)} a pre-3.32 SQLite compiles in, so this query throws "too many SQL variables" on such a build and returns nothing at all`).toBeLessThanOrEqual(PRE_3_32_DEFAULT_CAP)
   })
 
+  it.each(BATCHED_WIDTHS)('$constant is actually read by the query it bounds, not just declared beside it', ({ file, constant }) => {
+    // Arithmetic on a number the query never consults is arithmetic about nothing: the width could be 900 and the statement still built over every name at once. This asks only that the constant is used somewhere past its declaration; that it is used *correctly* is what the over-the-cap regression test in tests/index_reader.test.ts proves, by asking for more names than this build will bind and expecting an answer rather than a throw.
+    const src = fs.readFileSync(path.join(SRC, file), 'utf8')
+    const uses = src.split(constant).length - 1
+    expect(uses, `${constant} appears only where it is declared in ${file}, so nothing is bounded by it`).toBeGreaterThan(1)
+  })
+
   it('the project-root scope really does add the two parameters the widths budget for', () => {
     // If the scope ever grows a third bound, every width above is budgeted one short and the guard has to be told. Counting the placeholders in the clause is what notices.
     const { clause, params } = projectScopeClause('file_path')

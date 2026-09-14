@@ -1,11 +1,4 @@
-/**
- * Shared helpers for hook handlers (Layers 5+).
- *
- * Ports the small accessor surface of Python's `hooks_common.py`: read tool
- * name / input / file path off a {@link HookEvent}, and build the four
- * {@link HookOutput} variants. The heavier `hooks_common.py` machinery
- * (watchdog, session mutation, stat recording) belongs to later layers.
- */
+/** Shared helpers for hook handlers (Layers 5+). Ports the small accessor surface of Python's `hooks_common.py`: read tool name / input / file path off a {@link HookEvent}, and build the four {@link HookOutput} variants. The heavier `hooks_common.py` machinery (watchdog, session mutation, stat recording) belongs to later layers. */
 
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
@@ -26,15 +19,7 @@ export function getToolInput(event: HookEvent): Record<string, unknown> {
   return event.toolInput
 }
 
-/**
- * Extract the edited/read file path from the tool input.
- *
- * Checks `file_path` first (Read/Edit/Write and most other tools), then
- * falls back to `notebook_path` (NotebookEdit's actual tool-input key) when
- * `file_path` is absent. Returns the string value when present and
- * non-empty, otherwise `undefined`. A non-string value (malformed payload)
- * is treated as absent rather than coerced.
- */
+/** Extract the edited/read file path from the tool input. Checks `file_path` first (Read/Edit/Write and most other tools), then falls back to `notebook_path` (NotebookEdit's actual tool-input key) when `file_path` is absent. Returns the string value when present and non-empty, otherwise `undefined`. A non-string value (malformed payload) is treated as absent rather than coerced. */
 export function getFilePath(event: HookEvent): string | undefined {
   const value = event.toolInput['file_path']
   if (typeof value === 'string' && value !== '') return value
@@ -48,22 +33,7 @@ export function getCwd(event: HookEvent): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
-/**
- * Extract a string body from a raw hook event's `tool_response`, trying
- * `keys` in order and returning the first string value found.
- *
- * `tool_response` shapes vary by tool and harness (`output`, `body`, `text`,
- * `content` are all used by different tools) -- callers pass their own
- * priority order rather than this helper guessing one, since a shared
- * default order could silently change which field wins for a caller that
- * genuinely depends on its own priority.
- *
- * A present-but-EMPTY string does not win. Claude Code always sends both `stdout` and `stderr` for
- * Bash, so a command that wrote only to stderr arrives as `{stdout: '', stderr: '...'}`; stopping at
- * the empty `stdout` returned '' and every output-gated post-Bash path did nothing. Measured on
- * recorded harness traffic: 24 of 186,335 real Bash results. Empty means "this field carried no
- * output", which is exactly the case a later key should be allowed to answer.
- */
+/** Extract a string body from a raw hook event's `tool_response`, trying `keys` in order and returning the first string value found. `tool_response` shapes vary by tool and harness (`output`, `body`, `text`, `content` are all used by different tools) -- callers pass their own priority order rather than this helper guessing one, since a shared default order could silently change which field wins for a caller that genuinely depends on its own priority. A present-but-EMPTY string does not win. Claude Code always sends both `stdout` and `stderr` for Bash, so a command that wrote only to stderr arrives as `{stdout: '', stderr: '...'}`; stopping at the empty `stdout` returned '' and every output-gated post-Bash path did nothing. Measured on recorded harness traffic: 24 of 186,335 real Bash results. Empty means "this field carried no output", which is exactly the case a later key should be allowed to answer. */
 export function extractToolResponseField(raw: Record<string, unknown>, keys: readonly string[]): string {
   const resp = raw['tool_response']
   if (typeof resp === 'string') return resp
@@ -75,15 +45,7 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   return ''
 }
 
-/**
- * Nested paths probed after the flat key walk fails, in order.
- *
- * Claude Code's `Read` result is `{type: 'text', file: {filePath, content, numLines, startLine,
- * totalLines}}` -- CAPTURE, 13,324 of 13,324 object-shaped Read results in the recorded session
- * corpus. Neither `type` nor `file` appears in any key list, and the body lives one level down at
- * `file.content`, so a flat walk resolved nothing and every Read-shaped consumer read the empty
- * string. That is why `read:served_elide` never fired on the wire.
- */
+/** Nested paths probed after the flat key walk fails, in order. Claude Code's `Read` result is `{type: 'text', file: {filePath, content, numLines, startLine, totalLines}}` -- CAPTURE, 13,324 of 13,324 object-shaped Read results in the recorded session corpus. Neither `type` nor `file` appears in any key list, and the body lives one level down at `file.content`, so a flat walk resolved nothing and every Read-shaped consumer read the empty string. That is why `read:served_elide` never fired on the wire. */
 const NESTED_TOOL_RESPONSE_PATHS: readonly (readonly string[])[] = [['file', 'content']]
 
 /** Read the string at `path` in `resp`; '' when the path does not land on a string. */
@@ -96,16 +58,7 @@ function readAtPath(resp: Record<string, unknown>, path: readonly string[]): str
   return typeof cur === 'string' ? cur : ''
 }
 
-/**
- * The single field-selection rule shared by {@link extractToolResponseField} (which reads the
- * resolved field) and {@link replaceToolResponseField} (which replaces it). Returns the path to
- * the first non-empty string field, or null when nothing resolves.
- *
- * These two must never be parallel loops. A rewrite that lands in a different field than the one
- * the handler read the body from silently corrupts the result the model sees: the original body
- * survives in its own field and the replacement appears somewhere the tool's schema never meant
- * to carry it. One resolver, two consumers.
- */
+/** The single field-selection rule shared by {@link extractToolResponseField} (which reads the resolved field) and {@link replaceToolResponseField} (which replaces it). Returns the path to the first non-empty string field, or null when nothing resolves. These two must never be parallel loops. A rewrite that lands in a different field than the one the handler read the body from silently corrupts the result the model sees: the original body survives in its own field and the replacement appears somewhere the tool's schema never meant to carry it. One resolver, two consumers. */
 export function resolveToolResponseFieldPath(
   resp: Record<string, unknown>,
   keys: readonly string[],
@@ -119,17 +72,7 @@ export function resolveToolResponseFieldPath(
   return null
 }
 
-/**
- * Shallow-clone `resp` with the one text-bearing field replaced by `newText`. Returns null when
- * {@link resolveToolResponseFieldPath} resolves nothing, so the caller can fall back.
- *
- * The clone is deliberate, and building a fresh object from a per-tool key map is the bug this
- * function exists to avoid. Claude Code's Bash result carries at least seven optional extra keys
- * beyond its base shape (CAPTURE, recorded session corpus): `gitOperation`, `returnCodeInterpretation`,
- * `backgroundTaskId`, `backgroundCwdHint`, `persistedOutputPath`, `persistedOutputSize`,
- * `staleReadFileStateHint`, `timedOutAfterMs`. A whitelist drops every one of them, and dropping
- * `persistedOutputPath` in particular takes away the model's only handle on a capped output.
- */
+/** Shallow-clone `resp` with the one text-bearing field replaced by `newText`. Returns null when {@link resolveToolResponseFieldPath} resolves nothing, so the caller can fall back. The clone is deliberate, and building a fresh object from a per-tool key map is the bug this function exists to avoid. Claude Code's Bash result carries at least seven optional extra keys beyond its base shape (CAPTURE, recorded session corpus): `gitOperation`, `returnCodeInterpretation`, `backgroundTaskId`, `backgroundCwdHint`, `persistedOutputPath`, `persistedOutputSize`, `staleReadFileStateHint`, `timedOutAfterMs`. A whitelist drops every one of them, and dropping `persistedOutputPath` in particular takes away the model's only handle on a capped output. */
 export function replaceToolResponseField(
   resp: Record<string, unknown>,
   keys: readonly string[],
@@ -151,68 +94,45 @@ export function replaceToolResponseField(
   return root
 }
 
-/**
- * Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`.
- *
- * `stdout` is last but is the key Claude Code itself actually uses: its Bash `tool_response` is
- * `{stdout, stderr, interrupted, isImage, noOutputExpected}`, carrying none of the four names ahead
- * of it. Without it every post-Bash path that needs the command's output (the bash-output cache,
- * the `gh api` scope/`--jq` hints, the failing-test-runner advisory, compound-command compression)
- * read an empty string and did nothing on the harness token-goat primarily targets. It is appended
- * rather than promoted so no harness that does send `output`/`content`/`text`/`body` changes which
- * field wins.
- *
- * `stderr` is last of all, so it only answers when every earlier field is missing or empty. A
- * command that writes only to stderr (a compiler diagnostic, a linter that reports on the error
- * stream) still produced real output the post-Bash paths should see; without this the whole result
- * read as empty.
- */
+/** Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`. `stdout` is last but is the key Claude Code itself actually uses: its Bash `tool_response` is `{stdout, stderr, interrupted, isImage, noOutputExpected}`, carrying none of the four names ahead of it. Without it every post-Bash path that needs the command's output (the bash-output cache, the `gh api` scope/`--jq` hints, the failing-test-runner advisory, compound-command compression) read an empty string and did nothing on the harness token-goat primarily targets. It is appended rather than promoted so no harness that does send `output`/`content`/`text`/`body` changes which field wins. `stderr` is last of all, so it only answers when every earlier field is missing or empty. A command that writes only to stderr (a compiler diagnostic, a linter that reports on the error stream) still produced real output the post-Bash paths should see; without this the whole result read as empty. */
 export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body', 'stdout', 'stderr']
 
-/**
- * Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`.
- *
- * `result` is appended for the same reason `stdout` is above: Claude Code's WebFetch `tool_response`
- * is `{result, url, code, codeText, bytes, durationMs}`, so the fetched page body arrives under
- * `result` and nothing else. Without it the injection scan, the secret redaction and the body cache
- * all ran against an empty string on every real fetch.
- */
+/** Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`. `result` is appended for the same reason `stdout` is above: Claude Code's WebFetch `tool_response` is `{result, url, code, codeText, bytes, durationMs}`, so the fetched page body arrives under `result` and nothing else. Without it the injection scan, the secret redaction and the body cache all ran against an empty string on every real fetch. */
 export const BODY_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'body', 'text', 'content', 'result']
 
-/**
- * Return true when a tool_response is an MCP `CallToolResult` carrying an in-band `isError: true`
- * -- a genuine tool-level failure ("tool not found", bad params, a downstream API error surfaced
- * through MCP) rather than a hard transport failure. Such a response is still a normal, successful
- * protocol round trip, so {@link extractToolResultText} happily returns its text; every caller
- * that caches into the session dedup store must exclude it, or a one-off or transient error is
- * served back to every identical retry until the dedup window ages out.
- *
- * Lives beside extractToolResultText, not in the one hook that first needed it: the rule is a
- * condition on that function's output, and hooks_websearch.ts cached past it into the same store
- * for exactly as long as the rule lived somewhere a second caller would not think to look.
- */
+/** Return true when a tool_response is an MCP `CallToolResult` carrying an in-band `isError: true` -- a genuine tool-level failure ("tool not found", bad params, a downstream API error surfaced through MCP) rather than a hard transport failure. Such a response is still a normal, successful protocol round trip, so {@link extractToolResultText} happily returns its text; every caller that caches into the session dedup store must exclude it, or a one-off or transient error is served back to every identical retry until the dedup window ages out. Lives beside extractToolResultText, not in the one hook that first needed it: the rule is a condition on that function's output, and hooks_websearch.ts cached past it into the same store for exactly as long as the rule lived somewhere a second caller would not think to look. */
 export function isMcpErrorResponse(raw: Record<string, unknown>): boolean {
   const tr = raw['tool_response']
   if (!tr || typeof tr !== 'object') return false
   return (tr as Record<string, unknown>)['isError'] === true
 }
 
-/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. */
+/** Join the `text` field of every block in an MCP content array, skipping blocks that carry none (an image block, say). Returns '' when nothing textual is there, which both callers treat as "keep looking". */
+function blocksToText(blocks: readonly unknown[]): string {
+  const parts: string[] = []
+  for (const block of blocks) {
+    if (block && typeof block === 'object') {
+      const text = (block as Record<string, unknown>)['text']
+      if (typeof text === 'string') parts.push(text)
+    }
+  }
+  return parts.join('\n')
+}
+
+/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the same array delivered bare with no `content` wrapper (which is how several MCP servers' PostToolUse payloads actually arrive -- see `tasks/captures/mcp-hook-payload/`), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. */
 export function extractToolResultText(raw: Record<string, unknown>): string {
   const tr = raw['tool_response']
   if (typeof tr === 'string') return tr
   if (!tr || typeof tr !== 'object') return ''
+  if (Array.isArray(tr)) {
+    const bare = blocksToText(tr)
+    if (bare.length > 0) return bare
+  }
   const resp = tr as Record<string, unknown>
   const content = resp['content']
   if (Array.isArray(content)) {
-    const parts: string[] = []
-    for (const block of content) {
-      if (block && typeof block === 'object') {
-        const text = (block as Record<string, unknown>)['text']
-        if (typeof text === 'string') parts.push(text)
-      }
-    }
-    if (parts.length > 0) return parts.join('\n')
+    const joined = blocksToText(content)
+    if (joined.length > 0) return joined
   }
   for (const key of ['output', 'text', 'body']) {
     if (typeof resp[key] === 'string') return resp[key] as string
@@ -230,22 +150,7 @@ export function passOutput(): HookOutput {
   return { hookType: 'pass' }
 }
 
-/**
- * Build a `deny` output — block the tool call and surface `message`.
- *
- * A deny is the one message token-goat sends that is shaped as an instruction the model is meant
- * to obey, so the `[tg]` prefix is authority: everything after it reads as token-goat speaking.
- * Deny messages routinely interpolate file-derived text -- a basename, a path, a symbol name --
- * and a repository chooses those. Two consequences, both closed here rather than at the ~45 call
- * sites, since a call site added later would not know to do it:
- *
- * The message is neutralized so an interpolated `[tg]`/`[token-goat: ...]` cannot forge a second
- * marker mid-message, and the prefix is now unconditional. It used to be skipped when the message
- * already began with `[tg]`, which was meant to avoid doubling token-goat's own prefix -- but no
- * caller passes one, and a file named `[tg] ...` did begin with it, so the check handed the
- * attacker the prefix itself: the marker the model saw was the repository's bytes, not ours. A
- * doubled prefix is a cosmetic defect; a forged one is not.
- */
+/** Build a `deny` output — block the tool call and surface `message`. A deny is the one message token-goat sends that is shaped as an instruction the model is meant to obey, so the `[tg]` prefix is authority: everything after it reads as token-goat speaking. Deny messages routinely interpolate file-derived text -- a basename, a path, a symbol name -- and a repository chooses those. Two consequences, both closed here rather than at the ~45 call sites, since a call site added later would not know to do it: The message is neutralized so an interpolated `[tg]`/`[token-goat: ...]` cannot forge a second marker mid-message, and the prefix is now unconditional. It used to be skipped when the message already began with `[tg]`, which was meant to avoid doubling token-goat's own prefix -- but no caller passes one, and a file named `[tg] ...` did begin with it, so the check handed the attacker the prefix itself: the marker the model saw was the repository's bytes, not ours. A doubled prefix is a cosmetic defect; a forged one is not. */
 export function denyOutput(message: string): HookOutput {
   return { hookType: 'deny', message: `[tg] ${neutralizeOutsideFences(message)}` }
 }
@@ -255,13 +160,7 @@ export function contextOutput(context: string): HookOutput {
   return { hookType: 'context', context }
 }
 
-/**
- * What a rewrite saved, for callers that replace tool output with something smaller.
- *
- * `originalBytes` is the size of the text the model WOULD have received; the helper subtracts the
- * emitted size itself rather than trusting a caller-computed delta, so the recorded saving can
- * never disagree with the string actually returned.
- */
+/** What a rewrite saved, for callers that replace tool output with something smaller. `originalBytes` is the size of the text the model WOULD have received; the helper subtracts the emitted size itself rather than trusting a caller-computed delta, so the recorded saving can never disagree with the string actually returned. */
 export interface RewriteSavings {
   /** Registered stat kind. Must appear in `stats.ts`'s KIND_TO_SOURCE or it silently files as `other`. */
   kind: string
@@ -270,44 +169,10 @@ export interface RewriteSavings {
   detail?: string
 }
 
-/**
- * Whether this emit is the place that books its `secret_redacted` count.
- *
- * `'count-here'` is the default and what nearly every caller wants: the placeholders in the text
- * being emitted are counted and recorded now. `'counted-elsewhere'` exists because two handlers
- * book the same count at a point that covers branches this emit does not, and counting again here
- * would double-book the identical placeholders into a number the project asks readers to believe.
- * A caller passing it must say in a comment where the count is booked instead, because a silent
- * opt-out is indistinguishable from a forgotten one.
- */
+/** Whether this emit is the place that books its `secret_redacted` count. `'count-here'` is the default and what nearly every caller wants: the placeholders in the text being emitted are counted and recorded now. `'counted-elsewhere'` exists because two handlers book the same count at a point that covers branches this emit does not, and counting again here would double-book the identical placeholders into a number the project asks readers to believe. A caller passing it must say in a comment where the count is booked instead, because a silent opt-out is indistinguishable from a forgotten one. */
 export type RedactionAccounting = 'count-here' | 'counted-elsewhere'
 
-/**
- * Emit a `rewriteOutput` and record its accounting -- both the secrets the redaction stripped from
- * the emitted text and, when the caller passes `savings`, the bytes the rewrite removed.
- *
- * Both live here for the same reason. `postBashOutputHandler` has two rewrite returns and
- * `postTaskOutputHandler` three, and a hand-written `recordStat` beside each is the same
- * per-branch fragility in the accounting that the redaction-bypass class is in the security: the
- * branch someone adds next is the one that forgets. Routing every emit through one function means
- * a new branch accounts for itself. Both poll-diff handlers shipped with literally zero stat calls
- * of any kind, so their entire savings were invisible -- exactly that failure, already realised.
- *
- * The two halves belong in different places and this is the second one. The redaction itself goes
- * at the point the risky value ARRIVES, so a later branch inherits it -- placing it beside a single
- * emit is how the same leak has shipped seven times. But the COUNT belongs at the emit, because
- * whether a redaction protected anything is branch-dependent in a way the redaction is not: on a
- * `pass` the harness's own raw output is what reaches the model, so crediting a redaction there
- * would report a protection that did not apply to what was actually shown.
- *
- * The count comes from the emitted text rather than from the redaction's own return value, because
- * most of these branches emit only part of it -- a suffix delta, a truncated prefix, or a notice
- * that replaces the output outright. See `countRedactionPlaceholders` for why that is the honest
- * number and what it deliberately gets wrong.
- *
- * `detail` is the stat's source label (`'bashoutput'`, `'taskoutput'`, ...), matching the `subdir`
- * argument the disk-cache path passes so both surfaces group the same way in `token-goat stats`.
- */
+/** Emit a `rewriteOutput` and record its accounting -- both the secrets the redaction stripped from the emitted text and, when the caller passes `savings`, the bytes the rewrite removed. Both live here for the same reason. `postBashOutputHandler` has two rewrite returns and `postTaskOutputHandler` three, and a hand-written `recordStat` beside each is the same per-branch fragility in the accounting that the redaction-bypass class is in the security: the branch someone adds next is the one that forgets. Routing every emit through one function means a new branch accounts for itself. Both poll-diff handlers shipped with literally zero stat calls of any kind, so their entire savings were invisible -- exactly that failure, already realised. The two halves belong in different places and this is the second one. The redaction itself goes at the point the risky value ARRIVES, so a later branch inherits it -- placing it beside a single emit is how the same leak has shipped seven times. But the COUNT belongs at the emit, because whether a redaction protected anything is branch-dependent in a way the redaction is not: on a `pass` the harness's own raw output is what reaches the model, so crediting a redaction there would report a protection that did not apply to what was actually shown. The count comes from the emitted text rather than from the redaction's own return value, because most of these branches emit only part of it -- a suffix delta, a truncated prefix, or a notice that replaces the output outright. See `countRedactionPlaceholders` for why that is the honest number and what it deliberately gets wrong. `detail` is the stat's source label (`'bashoutput'`, `'taskoutput'`, ...), matching the `subdir` argument the disk-cache path passes so both surfaces group the same way in `token-goat stats`. */
 export function emitRewrite(
   updatedOutput: string,
   detail: string,
@@ -328,45 +193,18 @@ export function emitRewrite(
   return { hookType: 'rewriteOutput', updatedOutput }
 }
 
-/**
- * {@link emitRewrite}, except a rewrite that would emit exactly `original` passes through instead.
- *
- * The fence and the redaction are both unconditional now, so the third-party-content hooks build
- * their emitted string first and only then know whether anything actually changed. Rewriting the
- * harness's output with a byte-identical copy is not free: it makes a larger hook response, it
- * stops `hookType` distinguishing "we changed this" from "we looked at this", and it would defeat
- * the `injection.enabled` opt-out, whose whole point is that a user who switches the subsystem off
- * gets the untouched output back.
- */
+/** {@link emitRewrite}, except a rewrite that would emit exactly `original` passes through instead. The fence and the redaction are both unconditional now, so the third-party-content hooks build their emitted string first and only then know whether anything actually changed. Rewriting the harness's output with a byte-identical copy is not free: it makes a larger hook response, it stops `hookType` distinguishing "we changed this" from "we looked at this", and it would defeat the `injection.enabled` opt-out, whose whole point is that a user who switches the subsystem off gets the untouched output back. */
 export function emitRewriteIfChanged(original: string, emitted: string, detail: string): HookOutput {
   if (emitted === original) return passOutput()
   return emitRewrite(emitted, detail)
 }
 
-/** Non-empty lines in `text`, used as a match-count proxy for tools whose output is a flat
- *  newline-separated list (one line per matched file/line/path). Shared by Grep and Glob's
- *  dedup-hint handlers via {@link makeDedupHintHandlers}. */
+/** Non-empty lines in `text`, used as a match-count proxy for tools whose output is a flat newline-separated list (one line per matched file/line/path). Shared by Grep and Glob's dedup-hint handlers via {@link makeDedupHintHandlers}. */
 export function countNonEmptyLines(text: string): number {
   return text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length
 }
 
-/**
- * Estimate the number of results (files/matches) in a Grep/Glob tool_response body, for the
- * session dedup-hint recall count (see {@link makeDedupHintHandlers}).
- *
- * Claude Code's Grep tool prefixes `files_with_matches`-mode output with a `Found N file(s)` /
- * `No files found` summary line -- confirmed against real transcript logs, e.g. `"Found 4
- * files\nsrc\\a.ts\nsrc\\b.ts\n..."` and `"No files found"`/`"Found 1 file\nsrc\\a.ts"`. That
- * summary line is not itself a match: counting it via {@link countNonEmptyLines} silently
- * inflated every non-empty `files_with_matches` result by exactly one, and misreported a
- * genuinely empty result ("No files found", one line) as "1 match" -- the tests backing this
- * dedup hint only ever fed it a synthetic bare file list with no header line, so the mismatch
- * with Claude Code's real wire format went uncaught (the same injected-seam trap CLAUDE.md's
- * "Critical path" section warns about). When present, the summary line's own count is
- * authoritative and used directly, immune to any other line Claude Code adds after it;
- * everything else (Grep's `content`/`count`-mode output, Glob's plain path list -- neither has
- * this header) falls back to {@link countNonEmptyLines} unchanged.
- */
+/** Estimate the number of results (files/matches) in a Grep/Glob tool_response body, for the session dedup-hint recall count (see {@link makeDedupHintHandlers}). Claude Code's Grep tool prefixes `files_with_matches`-mode output with a `Found N file(s)` / `No files found` summary line -- confirmed against real transcript logs, e.g. `"Found 4 files\nsrc\\a.ts\nsrc\\b.ts\n..."` and `"No files found"`/`"Found 1 file\nsrc\\a.ts"`. That summary line is not itself a match: counting it via {@link countNonEmptyLines} silently inflated every non-empty `files_with_matches` result by exactly one, and misreported a genuinely empty result ("No files found", one line) as "1 match" -- the tests backing this dedup hint only ever fed it a synthetic bare file list with no header line, so the mismatch with Claude Code's real wire format went uncaught (the same injected-seam trap CLAUDE.md's "Critical path" section warns about). When present, the summary line's own count is authoritative and used directly, immune to any other line Claude Code adds after it; everything else (Grep's `content`/`count`-mode output, Glob's plain path list -- neither has this header) falls back to {@link countNonEmptyLines} unchanged. */
 export function estimateResultCount(text: string): number {
   const firstLine = text.split(/\r\n|\r|\n/).find((line) => line.trim().length > 0)
   if (firstLine !== undefined) {
@@ -378,16 +216,7 @@ export function estimateResultCount(text: string): number {
   return countNonEmptyLines(text)
 }
 
-/**
- * Build the `post_tool_use` / `pre_tool_use` handler pair backing a tool's session-scoped
- * "you already ran this exact query, here's the recall count" advisory hint.
- *
- * Factors out the identical handler bodies shared by Grep and Glob (see hooks_grep.ts /
- * hooks_glob.ts): both record each call's match count keyed by a tool-specific signature, then on
- * a later identical call whose recorded match count meets a tool-specific config threshold, emit
- * a context advisory instead of letting the call silently re-run. The signature shape itself
- * (`buildSignature`) stays genuinely tool-specific and is supplied by the caller, not shared.
- */
+/** Build the `post_tool_use` / `pre_tool_use` handler pair backing a tool's session-scoped "you already ran this exact query, here's the recall count" advisory hint. Factors out the identical handler bodies shared by Grep and Glob (see hooks_grep.ts / hooks_glob.ts): both record each call's match count keyed by a tool-specific signature, then on a later identical call whose recorded match count meets a tool-specific config threshold, emit a context advisory instead of letting the call silently re-run. The signature shape itself (`buildSignature`) stays genuinely tool-specific and is supplied by the caller, not shared. */
 export function makeDedupHintHandlers(opts: {
   toolName: string
   buildSignature: (toolInput: Record<string, unknown>) => string | null

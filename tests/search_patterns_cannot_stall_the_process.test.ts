@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { compileGuardedRegex, growsExponentially, hasNestedQuantifier, PROBE_GROWTH_FACTOR, PROBE_LENGTHS, probeAlphabets, projectsPastBudget } from '../src/regex_guard.js'
+import { climbsBetweenRungs, compileGuardedRegex, growsExponentially, hasNestedQuantifier, PROBE_GROWTH_FACTOR, PROBE_LENGTHS, probeAlphabets, projectsPastBudget } from '../src/regex_guard.js'
 import { compileGrepMatcher } from '../src/util.js'
 import { runGrep } from '../src/read_commands.js'
 import { sliceTranscript } from '../src/transcript_extract.js'
@@ -364,11 +364,18 @@ describe('what the probe cannot run, it projects or strips', () => {
     const TOP_RUNG_MS = 20
     const top = PROBE_LENGTHS.at(-1) as number
     const ladder = PROBE_LENGTHS.map((n) => (n * n * TOP_RUNG_MS) / (top * top))
-    let steepest = 0
-    for (let i = 1; i < ladder.length; i++) steepest = Math.max(steepest, (ladder[i] as number) / (ladder[i - 1] as number))
+    const refusingRung = ladder.findIndex((ms, i) => i > 0 && climbsBetweenRungs(ladder[i - 1], ms))
 
-    expect(steepest, 'this ladder is steep enough for the rung-to-rung check to refuse it, so it no longer isolates the projection').toBeLessThan(PROBE_GROWTH_FACTOR)
+    expect(refusingRung, 'this ladder is steep enough for the rung-to-rung check to refuse it, so it no longer isolates the projection').toBe(-1)
     expect(projectsPastBudget(ladder), 'a ladder that reaches 20 ms at 512 characters by squaring is over a second on a 10,000-character line, and the projection is the only check that can see that').toBe(true)
+  })
+
+  it('refuses a rung that jumps clear of the one below it, and only once there is a timing to believe', () => {
+    // The other measuring check, stated as numbers so a machine's load cannot decide the outcome. Nothing else asserts that `'ratio'` is reachable at all: every end-to-end refusal is allowed to arrive by any of the four causes, so a broken comparison here would simply never fire and no test would notice. PROVENANCE: HAND-DERIVED, from the rule's two clauses -- a climb past the factor, and a timing above the sub-millisecond noise floor.
+    expect(climbsBetweenRungs(1.5, 1.5 * PROBE_GROWTH_FACTOR + 0.1), 'a rung that climbs past the growth factor over a believable timing is exactly what the ratio check is for').toBe(true)
+    expect(climbsBetweenRungs(1.5, 1.5 * PROBE_GROWTH_FACTOR), 'the climb has to be past the factor, not merely equal to it').toBe(false)
+    expect(climbsBetweenRungs(0.01, 0.9), 'both timings are under a millisecond, so their ratio is scheduler noise and refusing on it would be a coin flip').toBe(false)
+    expect(climbsBetweenRungs(undefined, 10_000), 'the first rung has nothing below it to climb away from').toBe(false)
   })
 
   it('refuses the quadratic pattern the projection was built for, whichever check gets there first', () => {

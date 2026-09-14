@@ -61,6 +61,10 @@ the tool input is an owner, a repo and a page size, and the reply is two public 
 commit hashes. `cwd`, `session_id`, `transcript_path`, `tool_use_id` and `prompt_id` were removed;
 nothing else was altered. Captured 2026-09-14 by the same temporary hook described above.
 
+`tests/fixtures/mcp_bare_array_payloads.ts` reads this file off disk rather than inlining a copy of
+it, so the fixture cannot quietly drift from the artifact it claims to be; deleting or editing the
+JSON breaks the tests that depend on it, which is the intended coupling.
+
 Note for anyone re-running Task 0 against `mcp__claude-in-chrome__*`: those tools were unavailable in
 the 2026-09-14 session too, a second time. The bare-array shape is not specific to a server, so the
 capture above answers the shape question; what is still uncaptured is a payload carrying an IMAGE

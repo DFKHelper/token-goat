@@ -14,6 +14,7 @@ import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.
 import { lastTabContextMatches } from '../src/session.js'
 import { summarize } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { bareArrayImagePayload } from './fixtures/mcp_bare_array_payloads.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
 // Random noise resists compression, guaranteeing a >512KB encoded size at 3000x3000 so the shrink path (downscale to 1568) has real bytes to save — same construction as tests/image_shrink.test.ts's largeJpeg fixture.
@@ -38,9 +39,7 @@ beforeAll(async () => {
     .toBuffer()
   smallPngB64 = smallPng.toString('base64')
 
-  // What a real screenshot actually looks like: flat colour, so it compresses to a few kilobytes
-  // on the wire, while still decoding to 1920 on its longest edge -- well past the 1568 vision
-  // optimum the model is billed against. Small in bytes and oversized in pixels at the same time.
+  // What a real screenshot actually looks like: flat colour, so it compresses to a few kilobytes on the wire, while still decoding to 1920 on its longest edge -- well past the 1568 vision optimum the model is billed against. Small in bytes and oversized in pixels at the same time.
   const flatScreenshot = await sharp({
     create: { width: 1920, height: 1080, channels: 3, background: { r: 250, g: 250, b: 250 } },
   })
@@ -94,9 +93,23 @@ describe('postBrowserImageHandler', () => {
     }
   })
 
+  it('shrinks a screenshot delivered as a bare block array, with no content wrapper around it', async () => {
+    // A bare `tool_response` array is a shape real MCP servers send (see tests/fixtures/mcp_bare_array_payloads.ts for the captured one). It passes a `typeof tr === 'object'` check and then has no `.content`, so reading only the wrapped shape returned null here and skipped image handling for the whole result without erroring.
+    const raw = bareArrayImagePayload('mcp__claude-in-chrome__computer', largeJpegB64)
+    const event = makeHookEvent({ eventName: 'post_tool_use', toolName: 'mcp__claude-in-chrome__computer', toolInput: {}, sessionId: 'test', raw })
+    const result = await postBrowserImageHandler(event)
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).toContain('token-goat shrank an inline browser screenshot')
+      expect(result.updatedOutput).toContain('Took a screenshot of the current page')
+      const dataUrlMatch = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(result.updatedOutput)
+      expect(dataUrlMatch).not.toBeNull()
+      expect(dataUrlMatch![1]!.length).toBeLessThan(largeJpegB64.length)
+    }
+  })
+
   it('replaces a screenshot it has already shown this session instead of sending the same pixels twice', async () => {
-    // The second screenshot of an unchanged page is the one case where no image beats a smaller
-    // image: the notice answers the question the screenshot was taken to ask, in a hundred bytes.
+    // The second screenshot of an unchanged page is the one case where no image beats a smaller image: the notice answers the question the screenshot was taken to ask, in a hundred bytes.
     const first = await postBrowserImageHandler(imageEvent(largeJpegB64))
     expect(first.hookType).toBe('rewriteOutput')
     if (first.hookType === 'rewriteOutput') {
@@ -112,11 +125,7 @@ describe('postBrowserImageHandler', () => {
     }
   })
 
-  // Provenance for the token figures below: HAND-DERIVED from Anthropic's published patch rule,
-  // computed here rather than read out of visionTokens. The fixture is 3000x3000. On the standard
-  // tier the API caps it at the largest square whose grid fits 1568 tokens, 39x39 = 1521, so 1521 is
-  // what withholding it saves before the replacement notice is paid for. tests/vision_tokens.test.ts
-  // pins the same arithmetic against the published table.
+  // Provenance for the token figures below: HAND-DERIVED from Anthropic's published patch rule, computed here rather than read out of visionTokens. The fixture is 3000x3000. On the standard tier the API caps it at the largest square whose grid fits 1568 tokens, 39x39 = 1521, so 1521 is what withholding it saves before the replacement notice is paid for. tests/vision_tokens.test.ts pins the same arithmetic against the published table.
   it('credits a withheld repeat screenshot with the whole billed cost of the image, less the notice standing in for it', async () => {
     await postBrowserImageHandler(imageEvent(largeJpegB64))
 
@@ -126,14 +135,11 @@ describe('postBrowserImageHandler', () => {
     if (second.hookType !== 'rewriteOutput') return
     const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
 
-    // The replacement notice is 121 bytes, which this repository's text-token approximation prices at
-    // round(121 / 4) = 30. Pixels go out and text comes back on this branch, so the two sides are
-    // priced by their own rules rather than one rule applied to both.
+    // The replacement notice is 121 bytes, which this repository's text-token approximation prices at round(121 / 4) = 30. Pixels go out and text comes back on this branch, so the two sides are priced by their own rules rather than one rule applied to both.
     expect(second.updatedOutput).toContain('not re-sent')
     expect(delta).toBe(1521 - 30)
 
-    // A guard against silently returning to a bytes-shaped figure: this fixture is megabytes of
-    // incompressible noise, so bytes/4 books over a million tokens for the same event.
+    // A guard against silently returning to a bytes-shaped figure: this fixture is megabytes of incompressible noise, so bytes/4 books over a million tokens for the same event.
     expect(delta).toBeLessThan(2000)
   })
 
@@ -146,14 +152,12 @@ describe('postBrowserImageHandler', () => {
     expect(out.hookType).toBe('rewriteOutput')
     const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
 
-    // 3000x3000 is capped at 69x69 = 4761 on the high-resolution tier; the 1568x1568 resize fits
-    // that tier untouched at 56x56 = 3136.
+    // 3000x3000 is capped at 69x69 = 4761 on the high-resolution tier; the 1568x1568 resize fits that tier untouched at 56x56 = 3136.
     expect(delta).toBe(4761 - 3136)
   })
 
   it('still sends a genuinely different screenshot after one it has already shown', async () => {
-    // The failure this rules out is a dedup keyed on something every screenshot shares -- it would
-    // pass the test above and silently blind the model to every page it visited afterwards.
+    // The failure this rules out is a dedup keyed on something every screenshot shares -- it would pass the test above and silently blind the model to every page it visited afterwards.
     await postBrowserImageHandler(imageEvent(largeJpegB64))
 
     const other = await postBrowserImageHandler(imageEvent(flatScreenshotB64))
@@ -182,10 +186,7 @@ describe('postBrowserImageHandler', () => {
   })
 
   it('shrinks a screenshot that is small in bytes but oversized in pixels, which the byte threshold alone would skip', async () => {
-    // The regression this pins: shrinkImageBlock used to call shrinkImage with no options, so the
-    // 512 KB byte gate decided on its own and a 1920px screenshot at a few KB went through at full
-    // size. Vision bills pixels, not bytes, so that is the whole cost of the image left unpaid for.
-    // The file-Read path had a dimension probe for exactly this and the browser path did not.
+    // The regression this pins: shrinkImageBlock used to call shrinkImage with no options, so the 512 KB byte gate decided on its own and a 1920px screenshot at a few KB went through at full size. Vision bills pixels, not bytes, so that is the whole cost of the image left unpaid for. The file-Read path had a dimension probe for exactly this and the browser path did not.
     expect(flatScreenshotBytes).toBeLessThan(512 * 1024)
 
     const result = await postBrowserImageHandler(imageEvent(flatScreenshotB64))
@@ -225,11 +226,7 @@ describe('postBrowserImageHandler', () => {
   })
 
   describe('Tab Context dedup', () => {
-    // Big enough (comfortably over the default min_net_savings_bytes=100 floor
-    // once the ~34-byte placeholder notice is subtracted) so the dedup rewrite
-    // clears the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile).
-    // A dedicated pair of tests further down covers the below-floor (untouched)
-    // and above-floor (rewritten) boundary explicitly with small/large lists.
+    // Big enough (comfortably over the default min_net_savings_bytes=100 floor once the ~34-byte placeholder notice is subtracted) so the dedup rewrite clears the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile). A dedicated pair of tests further down covers the below-floor (untouched) and above-floor (rewritten) boundary explicitly with small/large lists.
     const tabContextText =
       '\n\nTab Context:\n- Available tabs:\n' +
       Array.from({ length: 6 }, (_, i) => `  • tabId ${i + 1}: "Tab number ${i + 1}" (https://example.com/page-${i + 1})`).join('\n')
@@ -263,18 +260,14 @@ describe('postBrowserImageHandler', () => {
     })
 
     it('leaves a below-floor repeated Tab Context untouched -- the placeholder would not clear the net-savings floor', async () => {
-      // A tiny one-tab list: shrinking it to the ~34-byte placeholder saves too
-      // few bytes to clear the default min_net_savings_bytes=100 floor.
+      // A tiny one-tab list: shrinking it to the ~34-byte placeholder saves too few bytes to clear the default min_net_savings_bytes=100 floor.
       const tinyTabContext = '\n\nTab Context:\n- Available tabs:\n  • tabId 1: "New Tab" (chrome://newtab/)'
       await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
       const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
       expect(result.hookType).toBe('pass')
     })
 
-    // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile,
-    // resolveMinNetSavingsBytes) is actually wired into this path: cranking the same
-    // config key/env var bash_runner already used (TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES)
-    // to an impossible floor flips an otherwise-rewritable repeat back to a pass-through.
+    // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, resolveMinNetSavingsBytes) is actually wired into this path: cranking the same config key/env var bash_runner already used (TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES) to an impossible floor flips an otherwise-rewritable repeat back to a pass-through.
     it('leaves an otherwise-shortenable repeated Tab Context untouched when TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES is set impossibly high', async () => {
       const prevFloor = process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
       process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = '10000000'

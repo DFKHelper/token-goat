@@ -1,36 +1,4 @@
-/**
- * post_tool_use handler for browser-automation MCP tools whose results embed
- * an inline base64 screenshot with no destination-file option.
- *
- * `hooks_screenshot.ts::preScreenshotHandler` already covers any MCP tool
- * named `*screenshot` by denying the call and redirecting it to a
- * destination-file variant, whose subsequent Read gets shrunk by
- * `image_shrink.ts`'s existing pipeline. That pattern cannot cover
- * `mcp__claude-in-chrome__computer` or `mcp__claude-in-chrome__browser_batch`:
- * neither tool name matches `*screenshot`, and neither exposes a
- * destination-file parameter to redirect to — a `computer(screenshot)` or a
- * batched screenshot action always returns its image in-band, full
- * resolution, uncompressed. Measured against real session transcripts, these
- * two tools alone accounted for the large majority of all browser-automation
- * payload bytes in a heavy-Playwright/Claude-in-Chrome project.
- *
- * This handler runs after the call, so it cannot prevent the tool from
- * generating the image — but `rewriteOutput`'s `updatedToolOutput` replaces
- * the tool result text the model actually receives (see hook_registry.ts's
- * `serializeOutput` doc comment), so the raw image never reaches context.
- * Each embedded image block is decoded and passed through
- * `image_shrink.ts::shrinkImage` (the same resize/re-encode function
- * `preReadImageHandler` already uses for Read-intercepted images) and
- * replaced with a much smaller re-encoded data URL, following that same
- * handler's `summary\ndataUrl` convention.
- *
- * A second, unrelated duplication in the same tool family is fixed here too:
- * claude-in-chrome appends a `Tab Context:` text block listing every open tab
- * to nearly every `computer`/`browser_batch` result, resent verbatim even
- * when the tab list hasn't changed since the last call. An identical repeat
- * this session is shortened to a placeholder; a first-seen or changed one
- * passes through unchanged.
- */
+/** post_tool_use handler for browser-automation MCP tools whose results embed an inline base64 screenshot with no destination-file option. `hooks_screenshot.ts::preScreenshotHandler` already covers any MCP tool named `*screenshot` by denying the call and redirecting it to a destination-file variant, whose subsequent Read gets shrunk by `image_shrink.ts`'s existing pipeline. That pattern cannot cover `mcp__claude-in-chrome__computer` or `mcp__claude-in-chrome__browser_batch`: neither tool name matches `*screenshot`, and neither exposes a destination-file parameter to redirect to — a `computer(screenshot)` or a batched screenshot action always returns its image in-band, full resolution, uncompressed. Measured against real session transcripts, these two tools alone accounted for the large majority of all browser-automation payload bytes in a heavy-Playwright/Claude-in-Chrome project. This handler runs after the call, so it cannot prevent the tool from generating the image — but `rewriteOutput`'s `updatedToolOutput` replaces the tool result text the model actually receives (see hook_registry.ts's `serializeOutput` doc comment), so the raw image never reaches context. Each embedded image block is decoded and passed through `image_shrink.ts::shrinkImage` (the same resize/re-encode function `preReadImageHandler` already uses for Read-intercepted images) and replaced with a much smaller re-encoded data URL, following that same handler's `summary\ndataUrl` convention. A second, unrelated duplication in the same tool family is fixed here too: claude-in-chrome appends a `Tab Context:` text block listing every open tab to nearly every `computer`/`browser_batch` result, resent verbatim even when the tab list hasn't changed since the last call. An identical repeat this session is shortened to a placeholder; a first-seen or changed one passes through unchanged. */
 
 import { createHash } from 'node:crypto'
 import { registerHook, type HookEvent } from './hook_registry.js'
@@ -49,10 +17,11 @@ interface ContentBlock {
   readonly source?: { readonly type?: unknown; readonly media_type?: unknown; readonly data?: unknown }
 }
 
-/** Pulls the MCP `tool_response.content` block array out of a raw post_tool_use payload, or null if the shape doesn't match. */
+/** Pulls the MCP content block array out of a raw post_tool_use payload, or null if the shape doesn't match. Two shapes reach here: the wrapped `tool_response.content`, and `tool_response` as the bare block array with no wrapper, which is what several MCP servers send (captured under `tasks/captures/mcp-hook-payload/`). Reading only the wrapped one skipped image handling entirely for the bare form, since a bare array passes the `typeof` check and then finds no `content`. */
 function getResponseContentBlocks(raw: Record<string, unknown>): ContentBlock[] | null {
   const tr = raw['tool_response']
   if (!tr || typeof tr !== 'object') return null
+  if (Array.isArray(tr)) return tr as ContentBlock[]
   const content = (tr as Record<string, unknown>)['content']
   return Array.isArray(content) ? (content as ContentBlock[]) : null
 }
@@ -64,13 +33,7 @@ const TAB_CONTEXT_RE = /^\n*Tab Context:/
 const SCREENSHOT_REPEAT_NOTICE =
   '[token-goat: screenshot identical to one already shown this session; not re-sent. Nothing on the page has changed since.]'
 
-/**
- * Fingerprint of a screenshot's decoded bytes.
- *
- * Taken on the bytes as they arrived, before any shrink, so two identical arrivals match no matter
- * what the re-encode would have done to either of them -- and a repeat costs one hash instead of a
- * second decode and encode.
- */
+/** Fingerprint of a screenshot's decoded bytes. Taken on the bytes as they arrived, before any shrink, so two identical arrivals match no matter what the re-encode would have done to either of them -- and a repeat costs one hash instead of a second decode and encode. */
 function screenshotFingerprint(data: string): string {
   return createHash('sha256').update(data).digest('hex').slice(0, 32)
 }
@@ -89,12 +52,7 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
     return { text: originalDataUrl, changed: false, savedBytes: 0, savedTokens: 0 }
   }
 
-  // A screenshot the model has already been shown is the one case where the cheapest thing to
-  // send is no image at all. "Identical to the last one" is not a lossy summary of those pixels --
-  // it is strictly more informative than the pixels, because it answers the question the second
-  // screenshot was taken to ask. Same shape as dedupTabContext below, on the block beside this one.
-  // Decoded once here rather than inside each branch below: the repeat-screenshot notice and the
-  // resize both price their saving from the original's dimensions, and this is a header-only read.
+  // A screenshot the model has already been shown is the one case where the cheapest thing to send is no image at all. "Identical to the last one" is not a lossy summary of those pixels -- it is strictly more informative than the pixels, because it answers the question the second screenshot was taken to ask. Same shape as dedupTabContext below, on the block beside this one. Decoded once here rather than inside each branch below: the repeat-screenshot notice and the resize both price their saving from the original's dimensions, and this is a header-only read.
   const meta = await probeImageMeta(buffer)
   const tier = loadConfig().image_shrink.vision_tier
 
@@ -114,29 +72,19 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
         changed: true,
         // Decoded image bytes, not base64 characters. Both branches of this function file under the same `image_shrink` kind, and the shrink branch below credits `result.originalBytes - result.shrunkBytes` -- decoded bytes, the convention documented at image_shrink.ts's own recordStat call. Base64 inflates by 4/3, so crediting `originalDataUrl.length` here booked roughly 33% more for a repeat screenshot than an identical shrink of the same image, and the ledger summed the two units into one row. The gate above deliberately still measures the data URL: it decides whether the rewrite pays off on the wire, where base64 characters are what is actually sent.
         savedBytes: buffer.length - Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8'),
-        // The whole image is withheld here rather than resized, so the visual tokens saved are its
-        // entire billed cost less the notice standing in for it. Billed cost, not raw patch count:
-        // an oversized screenshot would have been capped by the API's own downscale, so pricing the
-        // untouched dimensions would credit a bill that was never going to be sent.
+        // The whole image is withheld here rather than resized, so the visual tokens saved are its entire billed cost less the notice standing in for it. Billed cost, not raw patch count: an oversized screenshot would have been capped by the API's own downscale, so pricing the untouched dimensions would credit a bill that was never going to be sent.
         savedTokens: Math.max(0, visionTokens(meta?.width ?? 0, meta?.height ?? 0, tier) - savedTokensFromBytes(Buffer.byteLength(SCREENSHOT_REPEAT_NOTICE, 'utf-8'))),
       }
     }
   }
 
-  // sizeThresholdBytes: 0 because imageQualifiesForShrink has already applied the byte test, and
-  // applying it a second time inside shrinkImage would throw away every screenshot that qualified
-  // on dimensions instead -- which is most of them, since a screenshot is flat colour and
-  // compresses far below the byte threshold while still decoding well past the vision optimum.
+  // sizeThresholdBytes: 0 because imageQualifiesForShrink has already applied the byte test, and applying it a second time inside shrinkImage would throw away every screenshot that qualified on dimensions instead -- which is most of them, since a screenshot is flat colour and compresses far below the byte threshold while still decoding well past the vision optimum.
   const result = (await imageQualifiesForShrink(buffer)) ? await shrinkImage(buffer, { sizeThresholdBytes: 0 }) : null
   if (result === null) return { text: originalDataUrl, changed: false, savedBytes: 0, savedTokens: 0 }
 
   const saved = result.originalBytes - result.shrunkBytes
   const { summary, dataUrl } = formatShrinkSummary(result, 'an inline browser screenshot')
-  // A browser tool_result image is the one case the API does NOT downscale: it rejects an oversized
-  // one with a validation error instead. So where the original is past the tier limits, the true
-  // counterfactual is a failed request rather than a bigger bill, and that is not a token quantity
-  // at all. Pricing it at the capped cost is the conservative reading: it under-credits a resize
-  // that actually rescued the call, and never over-credits one that did not.
+  // A browser tool_result image is the one case the API does NOT downscale: it rejects an oversized one with a validation error instead. So where the original is past the tier limits, the true counterfactual is a failed request rather than a bigger bill, and that is not a token quantity at all. Pricing it at the capped cost is the conservative reading: it under-credits a resize that actually rescued the call, and never over-credits one that did not.
   const savedTokens = visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier)
   return { text: `${summary}\n${dataUrl}`, changed: true, savedBytes: saved, savedTokens }
 }
@@ -148,10 +96,7 @@ function dedupTabContext(text: string): { text: string; changed: boolean } {
   const isRepeat = lastTabContextMatches(text)
   setLastTabContext(text)
   if (!isRepeat) return { text, changed: false }
-  // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
-  // bash_runner's filter pipeline): a short tab list repeated verbatim could
-  // be smaller than the placeholder itself, in which case shipping the
-  // original tab list untouched beats "shrinking" it into something bigger.
+  // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with bash_runner's filter pipeline): a short tab list repeated verbatim could be smaller than the placeholder itself, in which case shipping the original tab list untouched beats "shrinking" it into something bigger.
   const worthwhile = isRewriteWorthwhile({
     originalBytes: Buffer.byteLength(text, 'utf-8'),
     rewrittenBytes: 0,
@@ -208,6 +153,5 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
   }
 }
 
-// BROWSER_TOOL_RE is anchored at `^mcp__`, so that prefix is a safe (wider)
-// matcher fragment for installHooks -- the handler's own regex still decides.
+// BROWSER_TOOL_RE is anchored at `^mcp__`, so that prefix is a safe (wider) matcher fragment for installHooks -- the handler's own regex still decides.
 registerHook('post_tool_use', postBrowserImageHandler, { toolPattern: '^mcp__' })
