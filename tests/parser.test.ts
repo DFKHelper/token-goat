@@ -1336,6 +1336,23 @@ describe('parseFile reference extraction', () => {
     expect(refNames).not.toContain('meth<int>')
   })
 
+  it('records a C++ constructor reached through new, the way it already does for TypeScript and Java', async () => {
+    const cppFile = write(
+      'tnew.cpp',
+      ['void f() {', '  auto a = new Bar(7);', '  auto b = new Ns::Qux();', '  auto c = new Foo<int>(1);', '}'].join('\n'),
+    )
+    const result = await parseFile(cppFile)
+    expect(result.language).toBe('cpp')
+    const refNames = result.refs.map((r) => r.name)
+    // Fixture provenance: HAND-DERIVED. Three ordinary `new` forms written by hand; the expected names are the source-level type identifiers, not anything read off calleeName. Their node shapes (new_expression whose `type` field is a type_identifier, a qualified_identifier, and a template_type wrapping the identifier) were confirmed by parsing this exact text with tree-sitter-cpp. `new_expression` was absent from the cpp entry of CALL_TYPES_BY_LANG, so all three recorded nothing at all while the same construct in TypeScript recorded a ref -- and the empty-result note the refs command prints tells the reader that `new` IS indexed, which made the gap read as an honest no-match.
+    expect(refNames).toContain('Bar')
+    expect(refNames).toContain('Qux')
+    expect(refNames).toContain('Foo')
+    // The qualifier and the template argument list must never be glued onto the recorded name, or no lookup of the real type can match it.
+    expect(refNames).not.toContain('Ns::Qux')
+    expect(refNames).not.toContain('Foo<int>')
+  })
+
   // Regression: REF_NOISE_BY_LANG only defined a builtin-noise filter for typescript/python, so
   // go/rust/c/cpp/ruby's bare-identifier stdlib/language builtins (fmt-adjacent bare calls like
   // Go's len/println, Rust's println!/vec! macros, C's printf/malloc) were never filtered out of

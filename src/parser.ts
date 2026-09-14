@@ -1323,7 +1323,7 @@ const CALL_TYPES_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
   ['rust', new Set(['call_expression', 'macro_invocation'])],
   ['java', new Set(['method_invocation', 'object_creation_expression'])],
   ['c', new Set(['call_expression'])],
-  ['cpp', new Set(['call_expression'])],
+  ['cpp', new Set(['call_expression', 'new_expression'])],
   ['ruby', new Set(['call'])],
 ])
 
@@ -1554,9 +1554,11 @@ function cppCalleeName(node: TsNode): string | null {
   switch (node.type) {
     case 'identifier':
     case 'field_identifier':
+    case 'type_identifier':
       return node.text
     case 'template_function':
-    case 'template_method': {
+    case 'template_method':
+    case 'template_type': {
       const name = node.childForFieldName('name')
       return name !== null ? cppCalleeName(name) : null
     }
@@ -1627,7 +1629,8 @@ function calleeName(call: TsNode, language: Language): string | null {
     }
     case 'c':
     case 'cpp': {
-      const fn = call.childForFieldName('function')
+      // A `new` carries the constructed type on `type` rather than a callee on `function`, and it is a call in every sense the refs index cares about: TypeScript and Java have always recorded theirs.
+      const fn = call.type === 'new_expression' ? call.childForFieldName('type') : call.childForFieldName('function')
       if (fn === null) return null
       return cppCalleeName(fn)
     }
