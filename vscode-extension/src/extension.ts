@@ -23,55 +23,41 @@ async function withTemporaryText<T>(text: string, extension: string, action: (fi
   }
 }
 
-// Tickets and logs carry emails, phone numbers, ID numbers, and card numbers.
-// Strip them before compression so they never reach the chat input.
+// Tickets and logs carry emails, phone numbers, ID numbers, and card numbers. Strip them before compression so they never reach the chat input.
 const PII_PATTERNS: Array<[RegExp, string]> = [
-  // Every part bounded, and the dot separator kept out of the label class it sits between. The
-  // unbounded form -- `[A-Za-z0-9.-]+\.` -- lets the label run and the separator match the same
-  // character, so a long dash or dot run that never completes an address is re-tried from every
-  // position: measured quadratic, 32,000 characters of `a-` costing 1.35 s against 8 ms here, on
-  // an extension host that has nothing else to do while it waits. Lengths are the addressing
-  // limits themselves (64-character local part, 63-character labels), so nothing real is lost.
-  [/[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,8}[A-Za-z]{2,24}/g, 'email'],
+  // Every part bounded, and the dot separator kept out of the label class it sits between. The unbounded form -- `[A-Za-z0-9.-]+\.` -- lets the label run and the separator match the same character, so a long dash or dot run that never completes an address is re-tried from every position: measured quadratic, 32,000 characters of `a-` costing 1.35 s against 8 ms here, on an extension host that has nothing else to do while it waits. The label and TLD lengths are the addressing limits themselves (63-character labels), so nothing real is lost. Both ends are guarded so a run longer than a bound cannot match a piece of itself. Without the leading guard, a local part past its limit matched only its last 64 characters and the rest shipped intact, immediately left of the marker saying the address had been removed -- worse than no match at all, because it reads as done. The local part is then allowed well past the 64 characters addressing permits, so that an over-long one is redacted rather than skipped: what is bounded here is the scan, and a run that long is not an address whichever way it goes.
+  [/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,255}@(?:[A-Za-z0-9-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![A-Za-z])/g, 'email'],
   [/\b\d{3}-\d{2}-\d{4}\b/g, 'id-number'],
   [/\b(?:\d[ -]?){13,16}\b/g, 'card-number'],
   [/(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\d)/g, 'phone'],
 ]
 
-let lastRedactions = 0
+/** The scrubbed text and how many items came out of it, returned together. A module-level counter written by one call and read by another is only correct while exactly one compression is in flight. Two selections compressed at once both await a decoder check and a subprocess, so the second overwrites the first's count and the user is told the wrong number of items was removed from the wrong text. The count belongs to the call that produced it. */
+export interface ScrubResult {
+  text: string
+  redactions: number
+}
 
-export function scrubPii(text: string): string {
-  lastRedactions = 0
-  if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('scrubPii', true)) return text
+export function scrubPii(text: string): ScrubResult {
+  if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('scrubPii', true)) return { text, redactions: 0 }
+  let redactions = 0
   let out = text
   for (const [pattern, label] of PII_PATTERNS) {
     out = out.replace(pattern, () => {
-      lastRedactions++
+      redactions++
       return `[${label} removed]`
     })
   }
-  return out
+  return { text: out, redactions }
 }
 
-/**
- * Wrap a compressed payload in a fenced block so the chat model sees where the payload ends and
- * the surrounding instruction begins. Every composer prepends a sentence of its own ("Use this
- * local token-goat compressed selection when useful:") and `openChat` appends a decoding hint, so
- * unfenced the payload runs straight into prose on both sides and the model has to guess the
- * boundary. The `recovery: token-goat retrieve <id>` line stays inside the fence untouched, which
- * is the line copilot-instructions.md tells the model to key on.
- *
- * The fence is sized to the payload's own longest backtick run rather than hard-coded to three.
- * Today nothing inside it can contain a backtick -- `compress-text` emits fixed headers plus, at
- * most, a `deflate-raw-base64url` body, and base64url's alphabet has no backtick in it (when
- * compression is not a net win the body is withheld entirely rather than passed through raw). The
- * composers' own prose stays outside the fence. So this is defensive, not currently load-bearing:
- * the failure it prevents is silent -- a fence closed early by its own content truncates the
- * payload with no error anywhere -- and the payload format is not frozen, so paying two lines to
- * make the fence self-sizing is cheaper than depending on that alphabet staying backtick-free.
- */
+/** Wrap a compressed payload in a fenced block so the chat model sees where the payload ends and the surrounding instruction begins. Every composer prepends a sentence of its own ("Use this local token-goat compressed selection when useful:") and `openChat` appends a decoding hint, so unfenced the payload runs straight into prose on both sides and the model has to guess the boundary. The `recovery: token-goat retrieve <id>` line stays inside the fence untouched, which is the line copilot-instructions.md tells the model to key on. The fence is sized to the payload's own longest backtick run rather than hard-coded to three. Today nothing inside it can contain a backtick -- `compress-text` emits fixed headers plus, at most, a `deflate-raw-base64url` body, and base64url's alphabet has no backtick in it (when compression is not a net win the body is withheld entirely rather than passed through raw). The composers' own prose stays outside the fence. So this is defensive, not currently load-bearing: the failure it prevents is silent -- a fence closed early by its own content truncates the payload with no error anywhere -- and the payload format is not frozen, so paying two lines to make the fence self-sizing is cheaper than depending on that alphabet staying backtick-free. */
 export function fencePayload(payload: string): string {
-  const longestRun = Math.max(0, ...[...payload.matchAll(/`+/g)].map((m) => m[0].length))
+  // Scanned rather than spread: `Math.max(0, ...runs)` passes one argument per backtick run, and a selection of ~125,000 separated backticks is enough to RangeError on the argument count -- the same limit the PDF extractor avoids by pushing items one at a time. A selection is user text, so this is reachable by pasting, not only by malice.
+  let longestRun = 0
+  for (const m of payload.matchAll(/`+/g)) {
+    if (m[0].length > longestRun) longestRun = m[0].length
+  }
   const fence = '`'.repeat(Math.max(3, longestRun + 1))
   return `${fence}\n${payload}\n${fence}`
 }
@@ -79,23 +65,20 @@ export function fencePayload(payload: string): string {
 // Single compression path for all text payloads: scrub, compress, report.
 export async function compressText(text: string, extension: string): Promise<string> {
   const scrubbed = scrubPii(text)
-  // Fenced on both branches. Without the decoder there is no compressed payload to wrap, but the
-  // text still lands in a chat message between two sentences the composer wrote -- unfenced it
-  // runs into both, and the model is left to guess where the quoted material starts and stops.
-  // The redaction notice is owed on this branch too: the user is told what was removed on the
-  // strength of it happening, not of the compressor having been available to do it.
+  const { redactions } = scrubbed
+  // Fenced on both branches. Without the decoder there is no compressed payload to wrap, but the text still lands in a chat message between two sentences the composer wrote -- unfenced it runs into both, and the model is left to guess where the quoted material starts and stops. The redaction notice is owed on this branch too: the user is told what was removed on the strength of it happening, not of the compressor having been available to do it.
   if (!await ensureDecoderSetup()) {
-    reportRedactions()
-    return fencePayload(scrubbed)
+    reportRedactions(redactions)
+    return fencePayload(scrubbed.text)
   }
-  const payload = await withTemporaryText(scrubbed, extension, (file) => runTokenGoat(['compress-text', '--file', file]))
+  const payload = await withTemporaryText(scrubbed.text, extension, (file) => runTokenGoat(['compress-text', '--file', file]))
   showStats(payload)
-  reportRedactions()
+  reportRedactions(redactions)
   return fencePayload(payload)
 }
 
 /** Tell the user what scrubPii took out: once with the explanation, and after that in the status bar. */
-function reportRedactions(): void {
+function reportRedactions(lastRedactions: number): void {
   if (lastRedactions > 0) {
     if (savingsContext && !savingsContext.globalState.get<boolean>('piiNoticeShown', false)) {
       void savingsContext.globalState.update('piiNoticeShown', true)
@@ -120,34 +103,14 @@ async function openChat(query: string): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.chat.open', { query: query + hint })
 }
 
-// The payload is only readable by the chat model when the workspace has
-// token-goat's MCP decoder (token-goat install --vscode). Check once per
-// session and offer to set it up instead of leaving the user staring at a
-// base64 blob.
+// The payload is only readable by the chat model when the workspace has token-goat's MCP decoder (token-goat install --vscode). Check once per session and offer to set it up instead of leaving the user staring at a base64 blob.
 let decoderChecked = false
 let decoderAvailable = false
 
 // True once `activate` has registered this extension as VS Code's provider of the token-goat MCP server, which is what lets ensureDecoderSetup skip the whole install-and-reload prompt.
 let mcpProviderRegistered = false
 
-/**
- * Ship the decoder as an extension-provided MCP server instead of asking the user to run
- * `token-goat install --vscode`, reload the window, and start the server by hand. VS Code owns the
- * lifecycle from here, starting the server on demand when the chat model calls `retrieve_text`.
- *
- * `process.execPath` is the editor's own Node, which is what lets the resolved JS entrypoint be
- * launched directly -- no shell and no `.cmd` shim, the same way `runTokenGoat` already launches
- * it, and for the same reason (a `.cmd` target is routed through cmd.exe even with `shell: false`).
- *
- * `ELECTRON_RUN_AS_NODE` is not optional here. In an extension host `process.execPath` is the
- * Electron binary VS Code itself runs as, so without it the "command" relaunches the editor
- * instead of running the CLI and the decoder never starts. `runTokenGoat` sets the same variable
- * for the same reason. It is passed alone rather than spread over `process.env` because these two
- * call sites differ: `execFile`'s `env` replaces the child environment wholesale, while VS Code
- * merges this one over the extension host's own environment.
- *
- * Split out of `activate` so it is reachable from a test: nothing else in `activate` is.
- */
+/** Ship the decoder as an extension-provided MCP server instead of asking the user to run `token-goat install --vscode`, reload the window, and start the server by hand. VS Code owns the lifecycle from here, starting the server on demand when the chat model calls `retrieve_text`. `process.execPath` is the editor's own Node, which is what lets the resolved JS entrypoint be launched directly -- no shell and no `.cmd` shim, the same way `runTokenGoat` already launches it, and for the same reason (a `.cmd` target is routed through cmd.exe even with `shell: false`). `ELECTRON_RUN_AS_NODE` is not optional here. In an extension host `process.execPath` is the Electron binary VS Code itself runs as, so without it the "command" relaunches the editor instead of running the CLI and the decoder never starts. `runTokenGoat` sets the same variable for the same reason. It is passed alone rather than spread over `process.env` because these two call sites differ: `execFile`'s `env` replaces the child environment wholesale, while VS Code merges this one over the extension host's own environment. Split out of `activate` so it is reachable from a test: nothing else in `activate` is. */
 export function registerMcpDecoderProvider(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.lm.registerMcpServerDefinitionProvider('token-goat', {
@@ -161,8 +124,7 @@ export function registerMcpDecoderProvider(context: vscode.ExtensionContext): vo
   mcpProviderRegistered = true
 }
 
-// Exposed for tests only: resets the module-level once-per-session cache so a test can
-// call ensureDecoderSetup more than once without an activate()/new extension host.
+// Exposed for tests only: resets the module-level once-per-session cache so a test can call ensureDecoderSetup more than once without an activate()/new extension host.
 export function resetDecoderCheckedForTests(): void {
   decoderChecked = false
   decoderAvailable = false
@@ -173,10 +135,7 @@ export function resetMcpProviderRegisteredForTests(): void {
   mcpProviderRegistered = false
 }
 
-// Commander's own wording for a command the installed CLI doesn't know about. The extension
-// (marketplace) and the CLI (npm) ship and update independently, so a user can easily have an
-// older global token-goat with no `mcp-status` command yet -- this is not a genuine failure of
-// the check itself, just a version mismatch between the two halves of the install.
+// Commander's own wording for a command the installed CLI doesn't know about. The extension (marketplace) and the CLI (npm) ship and update independently, so a user can easily have an older global token-goat with no `mcp-status` command yet -- this is not a genuine failure of the check itself, just a version mismatch between the two halves of the install.
 function isUnknownMcpStatusCommandError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /unknown command ['"]mcp-status['"]/i.test(message)
@@ -188,12 +147,7 @@ export async function ensureDecoderSetup(): Promise<boolean> {
   // Registering the MCP server definition makes the decoder exist by construction: VS Code starts the server from that definition on demand, so there is no mcp.json to write, no window reload, and nothing for the user to set up. Everything below this line exists only to arrange what registration already guarantees, so asking the user to run `install --vscode` here would be asking them to fix a problem they do not have.
   if (mcpProviderRegistered) return decoderAvailable = true
   const folder = vscode.workspace.workspaceFolders?.[0]
-  // Shell out to `mcp-status` rather than reading mcp.json here directly: a user-scope
-  // install (the default since 9c220be7) has no workspace .vscode/mcp.json at all, so
-  // reading only that file made this prompt fire every session for a correctly-installed
-  // user. The CLI's vscodeDecoderConfigured is the single source of truth the installer
-  // itself writes against, so this can never drift from what "installed" actually means --
-  // and it works with no folder open, since a user-scope install is workspace-independent.
+  // Shell out to `mcp-status` rather than reading mcp.json here directly: a user-scope install (the default since 9c220be7) has no workspace .vscode/mcp.json at all, so reading only that file made this prompt fire every session for a correctly-installed user. The CLI's vscodeDecoderConfigured is the single source of truth the installer itself writes against, so this can never drift from what "installed" actually means -- and it works with no folder open, since a user-scope install is workspace-independent.
   try {
     const args = folder ? ['mcp-status', '--vscode', '--project'] : ['mcp-status', '--vscode']
     const stdout = await runTokenGoat(args, folder?.uri.fsPath)
@@ -201,12 +155,7 @@ export async function ensureDecoderSetup(): Promise<boolean> {
     if (status.configured) return decoderAvailable = true
   } catch (error) {
     if (isUnknownMcpStatusCommandError(error)) {
-      // Deliberately no fallback to reading mcp.json directly here: that was the exact
-      // per-scope-assumption bug `mcp-status` replaced (9c220be7 / 71bf3fea), so resurrecting
-      // it as a "just in case" path would reintroduce the same drift for a stale CLI, which
-      // is precisely when the version information from that old logic is least trustworthy.
-      // Telling the user to update the one thing that's actually out of date is both simpler
-      // and correct.
+      // Deliberately no fallback to reading mcp.json directly here: that was the exact per-scope-assumption bug `mcp-status` replaced (9c220be7 / 71bf3fea), so resurrecting it as a "just in case" path would reintroduce the same drift for a stale CLI, which is precisely when the version information from that old logic is least trustworthy. Telling the user to update the one thing that's actually out of date is both simpler and correct.
       void vscode.window.showWarningMessage(
         'token-goat: the installed CLI is older than this extension and does not support the decoder check yet. Run `npm install -g token-goat` to update, then reload the window.',
       )
@@ -393,10 +342,7 @@ async function compressSurgicalPayload(): Promise<string> {
   return `Surgical ${start + 1}-${end} line excerpt from ${sourceName}:\n${payload}`
 }
 
-// Resolve the symbol under the cursor via the token-goat index
-// (`scope "file:line"` prints "name\tkind\tfile:start-end", innermost first),
-// then pull its full body. Falls back to the cursor-window excerpt when the
-// project is not indexed or the cursor sits outside any symbol.
+// Resolve the symbol under the cursor via the token-goat index (`scope "file:line"` prints "name\tkind\tfile:start-end", innermost first), then pull its full body. Falls back to the cursor-window excerpt when the project is not indexed or the cursor sits outside any symbol.
 async function compressSymbolPayload(): Promise<string> {
   requireTrustedWorkspace('Sending a symbol')
   const editor = vscode.window.activeTextEditor
@@ -426,8 +372,7 @@ async function compressSymbolPayload(): Promise<string> {
 async function compressFilePayload(target?: vscode.Uri): Promise<string> {
   const editor = vscode.window.activeTextEditor
   if (target && editor && editor.document.uri.fsPath === target.fsPath) {
-    // The target is open in the editor: compress the in-memory text so
-    // unsaved changes are included.
+    // The target is open in the editor: compress the in-memory text so unsaved changes are included.
     const sourceName = path.basename(target.fsPath)
     const payload = await compressText(editor.document.getText(), path.extname(target.fsPath) || '.txt')
     return `Whole file ${sourceName}:\n${payload}`
@@ -445,8 +390,7 @@ async function compressClipboardPayload(): Promise<string> {
   return `Compressed clipboard contents (${text.length} characters):\n${payload}`
 }
 
-// Keep signal lines (errors, failures, warnings, exceptions) plus two lines of
-// surrounding context so a multi-megabyte log becomes its actionable core.
+// Keep signal lines (errors, failures, warnings, exceptions) plus two lines of surrounding context so a multi-megabyte log becomes its actionable core.
 const LOG_SIGNAL = /error|fail|exception|warn|critical|fatal|denied|timeout|refused|unauthorized/i
 
 function extractLogSignal(text: string): string {
@@ -484,8 +428,7 @@ async function zipListPayload(target?: vscode.Uri): Promise<string> {
   return `Contents of ${path.basename(file)} (listed without extracting):\n${await runTokenGoat(['zip-list', file])}`
 }
 
-// Ticket attachments arrive as PDFs and Word documents; extract their text
-// with the CLI's document readers, then compress like any other payload.
+// Ticket attachments arrive as PDFs and Word documents; extract their text with the CLI's document readers, then compress like any other payload.
 async function compressDocumentPayload(target?: vscode.Uri): Promise<string> {
   requireTrustedWorkspace('Extracting a document')
   const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
@@ -499,9 +442,7 @@ async function compressDocumentPayload(target?: vscode.Uri): Promise<string> {
   return `Text extracted from ${path.basename(file)}:\n${payload}`
 }
 
-// Right-click a folder of exported tickets/documents and ask one question
-// across all of them. Capped at 20 text-like files so a stray folder pick
-// can't launch a hundred CLI invocations.
+// Right-click a folder of exported tickets/documents and ask one question across all of them. Capped at 20 text-like files so a stray folder pick can't launch a hundred CLI invocations.
 const BATCHABLE = /\.(txt|log|md|csv|json|ya?ml|xml|html?|eml)$/i
 const BATCH_LIMIT = 20
 
@@ -520,9 +461,7 @@ async function analyzeFolderPayload(target?: vscode.Uri): Promise<string> {
   return `These are ${names.length} documents from the folder "${path.basename(target.fsPath)}". What are the top recurring issues or themes across them?\n${payload}`
 }
 
-// Canned plain-language prompts: the source is the selection if one exists,
-// otherwise the clipboard (tickets usually arrive via copy-paste), otherwise
-// the active file.
+// Canned plain-language prompts: the source is the selection if one exists, otherwise the clipboard (tickets usually arrive via copy-paste), otherwise the active file.
 const PLAIN_STYLE = 'Rules for your answer: use short sentences; no jargon or acronyms without a one-line plain-English explanation; put the single most important point first; numbered steps for anything the person must do; under 150 words unless the content truly needs more.'
 
 const CANNED_PROMPTS: Record<string, string> = {

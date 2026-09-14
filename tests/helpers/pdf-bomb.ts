@@ -1,39 +1,38 @@
-/**
- * A synthetic single-page PDF whose text-showing operators expand far past the compressed size.
- *
- * Provenance: HAND-DERIVED. The file layout (header, indirect objects, `xref` table, trailer) is
- * written from the PDF 1.7 object/cross-reference structure and the content stream from the
- * `BT`/`Tf`/`Tm`/`Tj`/`ET` text operators, independently of anything in `src/`. Nothing here is
- * read off token-goat's own extractor, so a build that agrees with this fixture is agreeing with
- * the format rather than with itself.
- */
+/** A synthetic PDF whose text-showing operators expand far past the compressed size. Provenance: HAND-DERIVED. The file layout (header, indirect objects, `xref` table, trailer) is written from the PDF 1.7 object/cross-reference structure and the content stream from the `BT`/`Tf`/`Tm`/`Tj`/`ET` text operators, independently of anything in `src/`. Nothing here is read off token-goat's own extractor, so a build that agrees with this fixture is agreeing with the format rather than with itself. */
 import * as zlib from 'node:zlib'
 
 export interface PdfBombShape {
   /** How many text-showing operators the decompressed content stream holds. */
   ops: number
-  /**
-   * How many characters each operator shows. Total extracted text is about `ops * (charsPerOp + 1)`.
-   *
-   * Keep it under ~76: each operator resets the text matrix to the same origin, and a renderer drops
-   * the glyphs that then run off the 612pt-wide page, so a longer string yields no more text.
-   */
+  /** How many characters each operator shows. Total extracted text is about `ops * (charsPerOp + 1)`. Keep it under ~76: each operator resets the text matrix to the same origin, and a renderer drops the glyphs that then run off the 612pt-wide page, so a longer string yields no more text. */
   charsPerOp: number
+  /** How many pages carry that content stream. Defaults to 1. The pages are distinct objects, as ISO 32000-1 7.7.3.3 requires (each carries its own `/Parent`), but they all name the same content stream, so a hundred pages cost a hundred short dictionaries rather than a hundred copies of the text. */
+  pages?: number
+  /**
+   * How many graphics operators precede the text, on every page. Defaults to 0. These cost parse time and produce no text, so a page carrying them yields no chunk from pdfjs's text stream: a bound checked only inside that stream's loop never sees them.
+   */
+  graphicsOps?: number
 }
 
-/** A one-page PDF whose FlateDecode content stream decompresses to `ops` lines of `charsPerOp` characters. */
-export function pdfBomb({ ops, charsPerOp }: PdfBombShape): Buffer {
+/** A PDF whose FlateDecode content stream decompresses to `ops` lines of `charsPerOp` characters, on each of `pages` pages. */
+export function pdfBomb({ ops, charsPerOp, pages = 1, graphicsOps = 0 }: PdfBombShape): Buffer {
   // Each operator re-places the text at the same origin, so every one of them yields its own line.
   const op = `1 0 0 1 10 700 Tm (${'A'.repeat(charsPerOp)}) Tj\n`
-  const raw = Buffer.from(`BT /F1 12 Tf\n${op.repeat(ops)}ET\n`, 'latin1')
+  // A save/transform/rectangle/no-op/restore group: parsed in full, shows nothing (ISO 32000-1 8.4, 8.5).
+  const paint = 'q 1 0 0 1 1 1 cm 0 0 1 1 re n Q\n'.repeat(graphicsOps)
+  const raw = Buffer.from(`${paint}BT /F1 12 Tf\n${op.repeat(ops)}ET\n`, 'latin1')
   const deflated = zlib.deflateSync(raw, { level: 9 })
-  // Each object is one or more byte runs; the content stream's body is binary, so it rides as a Buffer.
+  // Each object is one or more byte runs; the content stream's body is binary, so it rides as a Buffer. 1 catalog, 2 page tree, 3 content stream, 4 font, then one object per page from 5 on.
+  const firstPage = 5
+  const kids = Array.from({ length: pages }, (_, i) => `${firstPage + i} 0 R`).join(' ')
   const objects: (string | Buffer)[][] = [
     ['1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'],
-    ['2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n'],
-    ['3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n'],
-    [`4 0 obj\n<< /Length ${deflated.length} /Filter /FlateDecode >>\nstream\n`, deflated, '\nendstream\nendobj\n'],
-    ['5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'],
+    [`2 0 obj\n<< /Type /Pages /Kids [${kids}] /Count ${pages} >>\nendobj\n`],
+    [`3 0 obj\n<< /Length ${deflated.length} /Filter /FlateDecode >>\nstream\n`, deflated, '\nendstream\nendobj\n'],
+    ['4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'],
+    ...Array.from({ length: pages }, (_, i) => [
+      `${firstPage + i} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 3 0 R >>\nendobj\n`,
+    ]),
   ]
   const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n', 'latin1')]
   const offsets: number[] = []
@@ -46,7 +45,8 @@ export function pdfBomb({ ops, charsPerOp }: PdfBombShape): Buffer {
       at += bytes.length
     }
   }
-  const xref = ['xref\n0 6\n0000000000 65535 f \n', ...offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`)].join('')
-  chunks.push(Buffer.from(`${xref}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${at}\n%%EOF\n`, 'latin1'))
+  const size = objects.length + 1
+  const xref = [`xref\n0 ${size}\n0000000000 65535 f \n`, ...offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`)].join('')
+  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${at}\n%%EOF\n`, 'latin1'))
   return Buffer.concat(chunks)
 }
