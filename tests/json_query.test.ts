@@ -397,4 +397,35 @@ describe('recursive descent and quoted filter expressions in json_query', () => 
     const res = queryJson(circular, '..key')
     expect(res.items).toEqual(['root'])
   })
+
+  it('supports nested dot-path fields in filter expressions', () => {
+    const data = {
+      chunks: [
+        { id: 'c1', metadata: { level: 1, type: 'section' } },
+        { id: 'c2', metadata: { level: 2, type: 'subsection' } },
+        { id: 'c3', metadata: { level: 1, type: 'section' } },
+      ],
+    }
+
+    const res1 = queryJson(data, 'chunks[metadata.level=1].id')
+    expect(res1.items).toEqual(['c1', 'c3'])
+
+    const res2 = queryJson(data, 'chunks[metadata.type="subsection"].id')
+    expect(res2.items).toEqual(['c2'])
+  })
+
+  it('supports JSONPath filter syntax with ?(@.field==val) and @.field=val', () => {
+    const data = {
+      chunks: [
+        { id: 'c1', metadata: { level: 1, type: 'section' } },
+        { id: 'c2', metadata: { level: 2, type: 'subsection' } },
+      ],
+    }
+
+    const res1 = queryJson(data, 'chunks[?(@.metadata.level==1)].id')
+    expect(res1.items).toEqual(['c1'])
+
+    const res2 = queryJson(data, "chunks[@.metadata.type=='subsection'].id")
+    expect(res2.items).toEqual(['c2'])
+  })
 })

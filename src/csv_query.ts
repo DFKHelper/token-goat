@@ -28,19 +28,46 @@ export interface CsvQueryOptions {
   noHeader?: boolean
 }
 
+/**
+ * Sniffs field delimiter from the first non-empty line when not explicitly provided.
+ * Checks candidate delimiters (',', '\t', ';', '|') and selects the one with the
+ * highest count. Defaults to ',' if no candidate appears.
+ */
+export function detectDelimiter(content: string): string {
+  const slice = content.slice(0, 10_000)
+  const lines = slice.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0)
+  if (lines.length === 0) return ','
+
+  const firstLine = lines[0]!
+  const candidates = [',', '\t', ';', '|']
+  let bestDelim = ','
+  let maxCount = 0
+
+  for (const cand of candidates) {
+    const count = firstLine.split(cand).length - 1
+    if (count > maxCount) {
+      maxCount = count
+      bestDelim = cand
+    }
+  }
+
+  return bestDelim
+}
+
 function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
-  const delimiter = opts.delimiter ?? ','
+  const delimiter = opts.delimiter ?? detectDelimiter(content)
   if (opts.noHeader === true) {
     // relax_column_count so a single short or long row is filled/trimmed to the widest shape
     // rather than aborting the whole file (the default CSV_RECORD_INCONSISTENT_FIELDS_LENGTH).
-    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true }) as string[][]
+    // relax_quotes preserves unescaped quotes in field values (e.g. 16" wheels).
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as string[][]
     return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
   }
   // Two columns sharing a header name collapse to one key under `columns: true`, and the profile
   // then reads as complete with a column silently gone. The tool's object-keyed model genuinely
   // cannot carry both, so refuse and name the collision rather than drop it. Detected from the raw
   // header before parsing, so it fires on a header-only file too.
-  const header = csvHeader(content, opts)
+  const header = csvHeader(content, { ...opts, delimiter })
   const dupes = header.filter((name, i) => name !== '' && header.indexOf(name) !== i)
   if (dupes.length > 0) {
     const unique = [...new Set(dupes)]
@@ -51,7 +78,8 @@ function parseRecords(content: string, opts: { delimiter?: string; noHeader?: bo
   }
   // relax_column_count: a ragged row omits its missing trailing keys (read back as '') instead of
   // aborting the file; an over-long row's extra fields past the header are dropped.
-  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true }) as Array<Record<string, string>>
+  // relax_quotes: unescaped quotes inside values are preserved instead of failing with Invalid Opening Quote.
+  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as Array<Record<string, string>>
 }
 
 /**
@@ -73,9 +101,9 @@ function parseRecords(content: string, opts: { delimiter?: string; noHeader?: bo
  */
 function csvHeader(content: string, opts: { delimiter?: string; noHeader?: boolean }): string[] {
   if (opts.noHeader === true) return []
-  const delimiter = opts.delimiter ?? ','
+  const delimiter = opts.delimiter ?? detectDelimiter(content)
   try {
-    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, to: 1 }) as string[][]
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, to: 1, relax_quotes: true }) as string[][]
     return rows[0] ?? []
   } catch {
     return []

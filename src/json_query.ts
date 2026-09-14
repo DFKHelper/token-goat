@@ -172,6 +172,20 @@ function collectRecursiveKey(root: unknown, keyName: string, out: unknown[]): vo
  * arrays. An empty spec means "the whole document". Examples: `data.items[3].name`,
  * `items[*].id`, `items[status=active]`, `items[status="active"][0].name`, `..raw`, `..request.url.raw`.
  */
+function getNestedField(obj: unknown, fieldPath: string): unknown {
+  if (obj === null || typeof obj !== 'object') return undefined
+  if (fieldPath in (obj as Record<string, unknown>)) {
+    return (obj as Record<string, unknown>)[fieldPath]
+  }
+  const parts = fieldPath.split('.')
+  let cur: unknown = obj
+  for (const part of parts) {
+    if (cur === null || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  return cur
+}
+
 export function parseJsonPath(spec: string): PathOp[] {
   const ops: PathOp[] = []
   const n = spec.length
@@ -218,9 +232,17 @@ export function parseJsonPath(spec: string): PathOp[] {
       } else if (/^-?\d+$/.test(inner)) {
         ops.push({ kind: 'index', index: Number(inner) })
       } else {
-        const m = /^([^=]+)=(.*)$/.exec(inner)
+        let expr = inner.trim()
+        if (expr.startsWith('?(') && expr.endsWith(')')) {
+          expr = expr.slice(2, -1).trim()
+        }
+        if (expr.startsWith('@.')) {
+          expr = expr.slice(2).trim()
+        }
+        const m = /^([^=]+)==?(.*)$/.exec(expr)
         if (!m) throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], or [field=value])`)
-        const field = (m[1] as string).trim()
+        let field = (m[1] as string).trim()
+        if (field.startsWith('@.')) field = field.slice(2).trim()
         let rawVal = (m[2] as string).trim()
         if (
           (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
@@ -301,13 +323,11 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
         fanned = true
         if (Array.isArray(item)) {
           for (const el of item) {
-            if (
-              typeof el === 'object' &&
-              el !== null &&
-              !Array.isArray(el) &&
-              String((el as Record<string, unknown>)[op.field]) === op.value
-            ) {
-              next.push(el)
+            if (typeof el === 'object' && el !== null && !Array.isArray(el)) {
+              const val = getNestedField(el, op.field)
+              if (val !== undefined && String(val) === op.value) {
+                next.push(el)
+              }
             }
           }
         }

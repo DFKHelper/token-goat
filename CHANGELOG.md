@@ -4,10 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
-## [Unreleased]
-
 ### Added
 
+- **`token-goat docx-tables <file> [--table <n>] [--json]`**: Extracts tables from Word documents (`.docx`) and formats them as clean Markdown tables, preserving row/column relations that were previously lost when flattened into disjointed lines by `docx-text`. Supports selecting individual tables by 1-based index and JSON output.
+- **CSV quote relaxation and delimiter sniffing**: `csv-query` and `csv-profile` now tolerate unescaped quotes within fields (common with inch marks or hardware specs like `16" alloy wheels`) via `relax_quotes: true`, and automatically sniff delimiters (`,`, `\t`, `;`, `|`) so pipe-separated or tab-separated data can be queried immediately without manual `--delimiter` specification.
+- **JSONPath nested property filters**: `json-query` and `yaml-query` now support filtering by nested dot-path properties (e.g. `[?(@.metadata.level == 1)]` or `[metadata.level == 1]`), making it easy to filter large structured document manifests or RAG chunks without loading the entire JSON into context.
 - **`token-goat sqlite-tables <db> [--json]`**: Ultra-compact overview of SQLite tables and views, reporting row counts and column counts (e.g. `sra_vehicles (table, 981 rows, 27 cols)`) in under 50 tokens, cutting schema discovery cost by over 90% compared to `sqlite-schema`.
 - **`token-goat xlsx-columns <file> [--sheet <name>] [--head <n>] [--json]`**: Profiles column names, letters, fill rates, and sample values across wide multi-column spreadsheets without dumping thousands of tokens of wide CSV rows into context.
 - **`token-goat xlsx-head --columns <a,b,c>`**: Projects only specific comma-separated column names or letters, avoiding wide-column token dumps on large spreadsheets.

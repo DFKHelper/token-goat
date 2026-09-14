@@ -288,6 +288,7 @@ export function handleDocx(filePath: string): FileTypeResult {
     message: [
       `Word file — Read cannot return document content; this is not retryable with different Read parameters.`,
       `See headings: token-goat docx-outline "${filePath}"`,
+      `Extract tables: token-goat docx-tables "${filePath}"`,
       `Read full text: token-goat docx-text "${filePath}"`,
     ].join('\n'),
   }

@@ -70,6 +70,28 @@ export function buildDocxFixture(paragraphs: FixtureParagraph[]): Uint8Array {
   return zipSync({ 'word/document.xml': strToU8(xml) })
 }
 
+function tableXml(table: string[][]): string {
+  const rowsXml = table
+    .map((row) => {
+      const cellsXml = row
+        .map((cell) => {
+          const escaped = cell.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          return `<w:tc><w:p><w:r><w:t>${escaped}</w:t></w:r></w:p></w:tc>`
+        })
+        .join('')
+      return `<w:tr>${cellsXml}</w:tr>`
+    })
+    .join('')
+  return `<w:tbl>${rowsXml}</w:tbl>`
+}
+
+export function buildDocxWithTableFixture(tables: string[][][], paragraphs: FixtureParagraph[] = []): Uint8Array {
+  const pXml = paragraphs.map(paragraphXml).join('')
+  const tblXml = tables.map(tableXml).join('')
+  const xml = `<?xml version="1.0"?><w:document><w:body>${pXml}${tblXml}</w:body></w:document>`
+  return zipSync({ 'word/document.xml': strToU8(xml) })
+}
+
 /** A valid .xlsx whose one sheet declares a populated cell at `cellRef`, so the worksheet's reported extent is the rectangle from A1 to there while the file itself stays tiny. Provenance: FORMAT-DERIVED from ECMA-376 part 1 -- the package parts (`[Content_Types].xml`, the two `.rels`, `xl/workbook.xml`, `xl/worksheets/sheet1.xml`) and the cell `r="..."` reference that declares the extent. At the default far corner the declared range is 1,048,576 x 16,384 = 17,179,869,184 cells in about 1.5 KB on disk, which is the whole point: the cost of scanning it is quadratic in numbers the file merely states, not in anything it contains. */
 export function buildFarCornerXlsxFixture(cellRef = 'XFD1048576'): Uint8Array {
   const row = cellRef.replace(/^[A-Z]+/, '')

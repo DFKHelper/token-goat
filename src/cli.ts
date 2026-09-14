@@ -150,7 +150,7 @@ import type { HarnessName } from './bridges/types.js'
 import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet, xlsxColumns, formatXlsxColumns } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
-import { docxOutline, docxText } from './docx_extract.js'
+import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
 import { extractVideoChapters } from './video_chapters.js'
@@ -2042,6 +2042,40 @@ async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
   recordDocStat('docx_outline', file, text)
 }
 
+async function cmdDocxTables(file: string, opts: { table?: string; json?: boolean }) {
+  const tableIdx = opts.table !== undefined ? parseInt(opts.table, 10) : undefined
+  if (tableIdx !== undefined && (Number.isNaN(tableIdx) || tableIdx < 1)) {
+    throw new CliError(`--table must be a positive integer, got: ${opts.table}`)
+  }
+  const tables = await docxTables(file)
+  if (tables.length === 0) {
+    if (opts.json === true) {
+      out(displaySafeJson([]))
+    } else {
+      out('no tables found in document')
+    }
+    return
+  }
+
+  const selected = tableIdx !== undefined
+    ? tables.filter((t) => t.tableIndex === tableIdx)
+    : tables
+
+  if (selected.length === 0) {
+    throw new CliError(`table ${tableIdx} not found (document has ${tables.length} table${tables.length === 1 ? '' : 's'})`)
+  }
+
+  if (opts.json === true) {
+    out(displaySafeJson(tableIdx !== undefined ? selected[0] : selected))
+    recordDocStat('docx_tables', file, displaySafeJson(selected))
+    return
+  }
+
+  const text = fenceFileText(formatDocxTables(tables, tableIdx !== undefined ? { tableIndex: tableIdx } : undefined))
+  out(text)
+  recordDocStat('docx_tables', file, text)
+}
+
 async function cmdDocxText(
   file: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
@@ -3736,7 +3770,7 @@ function generateCompactHelp(): string {
     'File Formats: pdf-meta, pdf-outline, pdf-extract, pdf-locate, xlsx-sheets,',
     '  xlsx-head, xlsx-columns, xlsx-query, xlsx-range, yaml-outline, yaml-query,',
     '  json-outline, json-query, xml-outline, xml-query, html-outline, html-query,',
-    '  html-lint, docx-outline, docx-text, pptx-outline, pptx-slide, pptx-text,',
+    '  html-lint, docx-outline, docx-tables, docx-text, pptx-outline, pptx-slide, pptx-text,',
     '  pptx-notes',
     '',
     'Index & Search: index, map, reconcile, doctor, commands, ask, pack, tokens,',
@@ -5161,6 +5195,13 @@ export function buildProgram(): Command {
     .description('heading tree of a Word document instead of a raw Read')
     .option('-j, --json', 'output as JSON')
     .action(guard(cmdDocxOutline))
+
+  program
+    .command('docx-tables <file>')
+    .description('extract tables from a Word document instead of a raw Read')
+    .option('--table <n>', 'show only the Nth table (1-based index)')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdDocxTables))
 
   program
     .command('docx-text <file>')

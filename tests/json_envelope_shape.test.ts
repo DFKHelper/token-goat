@@ -61,7 +61,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'affected', 'reconcile',
   'compact-doc', 'fetch-image', 'history', 'changed', 'diff', 'log', 'pdf-locate', 'pdf-outline', 'pdf-meta',
   'image-meta', 'image-text',
-  'xlsx-sheets', 'xlsx-columns', 'xlsx-query', 'pptx-outline', 'docx-outline', 'transcript-outline', 'csv-query',
+  'xlsx-sheets', 'xlsx-columns', 'xlsx-query', 'pptx-outline', 'docx-outline', 'docx-tables', 'transcript-outline', 'csv-query',
   'json-outline', 'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'html-outline', 'html-query', 'html-lint', 'openapi-outline', 'openapi-op',
   'zip-list', 'zip-read', 'pr-slice', 'sqlite-tables', 'sqlite-schema', 'sqlite-query', 'coverage-report-gaps',
   'conflicts', 'note-get', 'note-list', 'capabilities', 'bench',

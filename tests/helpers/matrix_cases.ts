@@ -30,7 +30,7 @@ import { zipSync, strToU8 } from 'fflate'
 import sharp from 'sharp'
 
 import { BUNDLE, ROOT } from './bundle.js'
-import { buildDocxFixture, buildPptxFixture } from './ooxml_fixtures.js'
+import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './ooxml_fixtures.js'
 
 export let repo: string // indexed fixture; default cwd for read commands
 export let dataBase: string // isolated data dir holding the shared index
@@ -1298,6 +1298,15 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['docx-outline', docxPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Overview')
+  },
+  'docx-tables': () => {
+    const dir = mkIsolated('tg-matrix-docxtbl-')
+    const docxPath = path.join(dir, 'doc.docx')
+    fs.writeFileSync(docxPath, buildDocxWithTableFixture([[['Header1', 'Header2'], ['Val1', 'Val2']]]))
+    const r = run(['docx-tables', docxPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Header1')
+    expect(r.stdout).toContain('Val1')
   },
   'docx-text': () => {
     const dir = mkIsolated('tg-matrix-docxt-')

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile, quoteCsvCell } from '../src/csv_query.js';
+import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile, quoteCsvCell, detectDelimiter } from '../src/csv_query.js';
 
 const CSV = `id,name,status
 1,Alice,active
@@ -350,5 +350,28 @@ Line 2"`;
   // RFC 4180 parsers (CR alone is a valid line break under the spec).
   it('quotes a cell containing a bare carriage return with no accompanying newline', () => {
     expect(quoteCsvCell('line1\rline2')).toBe('"line1\rline2"');
+  });
+
+  it('sniffs delimiter from header line and parses pipe/tab/semicolon delimited files without explicit delimiter', () => {
+    expect(detectDelimiter('a|b|c\n1|2|3')).toBe('|');
+    expect(detectDelimiter('a\tb\tc\n1\t2\t3')).toBe('\t');
+    expect(detectDelimiter('a;b;c\n1;2;3')).toBe(';');
+    expect(detectDelimiter('a,b,c\n1,2,3')).toBe(',');
+
+    const pipeCsv = 'id|name|wheels\n1|Abarth|16" alloy\n2|Fiat|15" steel\n';
+    const result = queryCsv(pipeCsv, {});
+    expect(result.header).toEqual(['id', 'name', 'wheels']);
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows[0]).toEqual(['1', 'Abarth', '16" alloy']);
+
+    const profiles = profileCsv(pipeCsv);
+    expect(profiles.map((p) => p.name)).toEqual(['id', 'name', 'wheels']);
+  });
+
+  it('preserves unescaped quotes inside values with relax_quotes instead of throwing Invalid Opening Quote', () => {
+    const unescapedCsv = 'id,product,size\n1,Monitor,27" 4K\n2,Laptop,15.6" OLED\n';
+    const result = queryCsv(unescapedCsv, {});
+    expect(result.rows[0]).toEqual(['1', 'Monitor', '27" 4K']);
+    expect(result.rows[1]).toEqual(['2', 'Laptop', '15.6" OLED']);
   });
 });

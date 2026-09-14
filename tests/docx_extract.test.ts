@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { docxOutline, docxText } from '../src/docx_extract.js'
-import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
+import { docxOutline, docxTables, docxText, formatDocxTables } from '../src/docx_extract.js'
+import { buildDocxFixture, buildDocxWithTableFixture } from './helpers/ooxml_fixtures.js'
 
 let dir: string
 let file: string
@@ -64,5 +64,53 @@ describe('docxText', () => {
       buildDocxFixture([{ text: 'Order 007' }, { text: '007' }, { text: '1.50' }, { text: '0x1A' }, { text: '1e5' }]),
     )
     expect(await docxText(f)).toBe('Order 007\n\n007\n\n1.50\n\n0x1A\n\n1e5')
+  })
+})
+
+describe('docxTables and formatDocxTables', () => {
+  it('extracts table rows and formats as markdown table', async () => {
+    const tableFile = path.join(dir, 'table.docx')
+    const tableData = [
+      ['NvdManufacturer', 'OEMOptionCode', 'Description'],
+      ['FORD', 'MO44', 'Winter pack'],
+      ['FIAT', 'COLINT#205', 'Eco-Leather'],
+    ]
+    fs.writeFileSync(tableFile, buildDocxWithTableFixture([tableData]))
+
+    const tables = await docxTables(tableFile)
+    expect(tables).toHaveLength(1)
+    expect(tables[0]).toEqual({
+      tableIndex: 1,
+      rowCount: 3,
+      colCount: 3,
+      rows: tableData,
+    })
+
+    const formatted = formatDocxTables(tables)
+    expect(formatted).toContain('Table 1 (3 rows x 3 cols):')
+    expect(formatted).toContain('| NvdManufacturer | OEMOptionCode | Description |')
+    expect(formatted).toContain('| --- | --- | --- |')
+    expect(formatted).toContain('| FORD | MO44 | Winter pack |')
+  })
+
+  it('filters table by index when requested', async () => {
+    const multiFile = path.join(dir, 'multi-table.docx')
+    const t1 = [['A', 'B'], ['1', '2']]
+    const t2 = [['C', 'D'], ['3', '4']]
+    fs.writeFileSync(multiFile, buildDocxWithTableFixture([t1, t2]))
+
+    const tables = await docxTables(multiFile)
+    expect(tables).toHaveLength(2)
+
+    const formattedT2 = formatDocxTables(tables, { tableIndex: 2 })
+    expect(formattedT2).toContain('Table 2')
+    expect(formattedT2).toContain('| C | D |')
+    expect(formattedT2).not.toContain('Table 1')
+  })
+
+  it('returns friendly notice when no tables found', async () => {
+    const tables = await docxTables(file)
+    expect(tables).toEqual([])
+    expect(formatDocxTables(tables)).toBe('no tables found in document')
   })
 })

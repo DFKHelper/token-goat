@@ -492,6 +492,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'csv_profile',
       'compact_doc',
       'docx_outline',
+      'docx_tables',
       'docx_text',
       'gdrive_sections',
       'image_meta',

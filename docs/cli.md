@@ -139,6 +139,7 @@ token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 | `token-goat pptx-notes <file>` | Speaker notes for one slide (`--slide <n>`) or all slides, instead of a raw Read. |
 | `token-goat pptx-text <file> --grep <pattern>` | Find slides whose text matches a pattern instead of a raw Read. |
 | `token-goat docx-outline <file>` | Heading tree of a Word document instead of a raw Read. |
+| `token-goat docx-tables <file>` | Extract tables from a Word document as Markdown tables instead of a raw Read; `--table <n>` selects a specific table (1-based), `--json` outputs structured table data. |
 | `token-goat docx-text <file>` | Full body text of a Word document instead of a raw Read; `--head`/`--tail`/`--grep`/`--section`/`--max-matches` slice it the same way `pdf-extract` does. |
 | `token-goat transcript-outline <file>` | Speaker list, duration, and time-bucketed markers for a WebVTT/SRT transcript instead of a raw Read. |
 | `token-goat transcript <file>` | Slice a WebVTT/SRT transcript by `--speaker <name>`, `--from`/`--to <hh:mm:ss>`, and/or `--grep <pattern>` instead of a raw Read. |

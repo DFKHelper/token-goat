@@ -64,7 +64,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
     'operates on a caller-supplied file/input given fresh each invocation, not a token-goat-maintained persistent store -- there is no "was this ever indexed" state to distinguish':
       ['csv-profile', 'csv-query', 'pdf-extract', 'pdf-locate', 'pdf-meta', 'pdf-outline', 'image-meta', 'image-text', 'xlsx-head',
         'xlsx-query', 'xlsx-range', 'xlsx-sheets', 'pptx-notes', 'pptx-outline', 'pptx-slide',
-        'pptx-text', 'docx-outline', 'docx-text', 'zip-list', 'zip-read', 'json-outline',
+        'pptx-text', 'docx-outline', 'docx-tables', 'docx-text', 'zip-list', 'zip-read', 'json-outline',
         'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'html-outline', 'html-query', 'html-lint', 'openapi-op', 'openapi-outline',
         'sqlite-query', 'sqlite-schema', 'sqlite-tables', 'coverage-report-gaps', 'transcript',
         'transcript-outline', 'video-chapters', 'logfold', 'trace', 'todo', 'lockdeps',

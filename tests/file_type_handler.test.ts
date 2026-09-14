@@ -344,10 +344,11 @@ describe('handlePptx', () => {
 })
 
 describe('handleDocx', () => {
-  it('blocks .docx and redirects to docx-outline/docx-text', () => {
+  it('blocks .docx and redirects to docx-outline/docx-tables/docx-text', () => {
     const result = handleDocx('/path/to/doc.docx')
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('docx-outline')
+    expect(result.message).toContain('docx-tables')
     expect(result.message).toContain('docx-text')
   })
 })
