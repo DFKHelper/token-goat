@@ -362,3 +362,54 @@ describe('ts_refs — scoped program skips JSDoc parsing it never reads', () => 
     expect(calls[0]?.host).toBeUndefined()
   })
 })
+
+describe('ts_refs — a shorthand property is a use of the value, not just a property name', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ts-shorthand-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** In `{ widget }` the one identifier is both a property name and a read of the value, and getSymbolAtLocation answers with the PROPERTY symbol -- which matches no definition, so the filter dropped the ref. Measured against the built binary: `refs m.ts::widget` printed "No references found" for a file that plainly references it, while the byte-identical JavaScript answered correctly, because only .ts paths route through this checker. PROVENANCE: FORMAT-DERIVED from the TypeScript compiler API, whose `getShorthandAssignmentValueSymbol` exists for precisely this distinction (typescriptlang.org TypeChecker interface). */
+  it('keeps a reference written as an object shorthand', () => {
+    const defSrc = ['export const widget = 1', '', 'export function make(): { widget: number } {', '  return { widget }', '}', ''].join('\n')
+    const file = path.join(dir, 'm.ts')
+    fs.writeFileSync(file, defSrc)
+
+    const result = resolveTypedRefs({
+      defFile: file,
+      defLineStart: 1,
+      defLineEnd: 1,
+      symbolName: 'widget',
+      candidates: [ref(file, 4, colOf(defSrc, 4, 'widget'), 'widget', 'make')],
+    })
+
+    expect(result, 'the resolver declined entirely, so this is not measuring the shorthand').not.toBeNull()
+    expect(result, 'a shorthand reference was dropped as if it named a different symbol').toHaveLength(1)
+  })
+
+  /** The counterpart, so the fix is not just "keep everything": a shorthand naming an unrelated local of the same name must still be dropped, which is the whole reason this filter exists. */
+  it('still drops a shorthand that names a different symbol of the same name', () => {
+    const defSrc = ['export const widget = 1', ''].join('\n')
+    const otherSrc = ['const widget = 2', 'export const bag = { widget }', ''].join('\n')
+    const defFile = path.join(dir, 'def.ts')
+    const otherFile = path.join(dir, 'other.ts')
+    fs.writeFileSync(defFile, defSrc)
+    fs.writeFileSync(otherFile, otherSrc)
+
+    const result = resolveTypedRefs({
+      defFile,
+      defLineStart: 1,
+      defLineEnd: 1,
+      symbolName: 'widget',
+      candidates: [ref(otherFile, 2, colOf(otherSrc, 2, 'widget'), 'widget', 'bag')],
+    })
+
+    expect(result).not.toBeNull()
+    expect(result, 'a shorthand naming an unrelated local was accepted, which is the false positive this filter exists to remove').toHaveLength(0)
+  })
+})

@@ -309,7 +309,9 @@ function refMatchesDefinition(
   const node = findIdentifierNearPosition(ts, sourceFile, line0, position, symbolName)
   if (node === null) return null
 
-  let symbol = checker.getSymbolAtLocation(node)
+  // In `return { widget, other }` the identifier `widget` is both a property name and a use of the value, and getSymbolAtLocation hands back the PROPERTY symbol, which matches no definition and so drops the ref. Measured: `refs m.ts::widget` answered "No references found" for a file that plainly references it, while the byte-identical JavaScript answered correctly -- only .ts paths route through this checker (isTsPath in read_commands.ts), so the two languages disagreed about the same construct. getShorthandAssignmentValueSymbol is the TypeScript API's own answer to exactly this question.
+  let symbol =
+    ts.isShorthandPropertyAssignment(node.parent) ? checker.getShorthandAssignmentValueSymbol(node.parent) : checker.getSymbolAtLocation(node)
   if (symbol === undefined) return null
   if (symbol.flags & ts.SymbolFlags.Alias) {
     try {

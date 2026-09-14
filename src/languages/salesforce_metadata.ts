@@ -233,7 +233,8 @@ function addFlowElements(
   const lineIndex = buildLineIndex(content)
   const tagAlternation = Object.keys(FLOW_TAG_KIND).join('|')
   // `\s*>` on the close for the same XML 1.0 reason as xmlText: a `</variables >` that failed to close here merged this flow element with the next one of the same tag, so the second element lost its symbol and the first's span swallowed it.
-  const re = new RegExp(`<(${tagAlternation})>\\s*([\\s\\S]*?)\\s*</\\1\\s*>`, 'g')
+  // The opening tag carries the same namespace prefix and attribute allowance as the close, and as both sibling matchers (xmlText, elementBlocks) already did. Without them this one required a bare `<variables>`: measured, a flow whose element was written `<variables xsi:type="VariableDef">` or `<md:variables>` indexed the flow itself and not one of its elements, so every `symbol`, `read` and `refs` against those elements answered as if the flow were empty. The backreference is to group 1, which is still the bare tag name, so a prefixed open must be closed by a tag with the same local name -- prefix mismatches are a well-formedness error the indexer does not need to adjudicate.
+  const re = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?(${tagAlternation})(?:\\s[^>]*)?>\\s*([\\s\\S]*?)\\s*</(?:[A-Za-z_][\\w.-]*:)?\\1\\s*>`, 'g')
 
   for (const match of content.matchAll(re)) {
     if (symbols.length >= MAX_SYMBOLS) return

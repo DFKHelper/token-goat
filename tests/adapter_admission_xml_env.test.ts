@@ -136,6 +136,39 @@ describe('Salesforce metadata admission: whitespace before an end tag bracket', 
     ])
   })
 
+  // The close tag carried a namespace-prefix and attribute allowance the OPEN tag did not, though both sibling matchers in the same file (xmlText, elementBlocks) had carried it for as long as they existed. Measured against the built binary: each of the two flows below indexed the flow itself and no element of it, so `symbol`, `read` and `refs` all answered as if it were empty, while the byte-equivalent plain flow indexed normally.
+  it('indexes a flow element whose opening tag carries an attribute', () => {
+    const { dbPath } = indexed(
+      path.join('flows', 'Attr.flow-meta.xml'),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<Flow xmlns="http://soap.sforce.com/2006/04/metadata">',
+        '    <variables xsi:type="VariableDef">',
+        '        <name>GammaVar</name>',
+        '    </variables>',
+        '</Flow>',
+        '',
+      ].join('\n'),
+    )
+    expect(querySymbols({ kind: 'sf_flow_variable' }, dbPath).map((s) => s.name)).toEqual(['GammaVar'])
+  })
+
+  it('indexes a flow element written with a namespace prefix', () => {
+    const { dbPath } = indexed(
+      path.join('flows', 'Ns.flow-meta.xml'),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<md:Flow xmlns:md="http://soap.sforce.com/2006/04/metadata">',
+        '    <md:variables>',
+        '        <md:name>DeltaVar</md:name>',
+        '    </md:variables>',
+        '</md:Flow>',
+        '',
+      ].join('\n'),
+    )
+    expect(querySymbols({ kind: 'sf_flow_variable' }, dbPath).map((s) => s.name)).toEqual(['DeltaVar'])
+  })
+
   it('non-firing: ordinary end tags with no whitespace still index every flow element', () => {
     const { dbPath } = indexed(
       path.join('flows', 'Plain.flow-meta.xml'),
