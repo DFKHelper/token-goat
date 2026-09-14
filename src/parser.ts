@@ -1556,6 +1556,9 @@ function cppCalleeName(node: TsNode): string | null {
     case 'field_identifier':
     case 'type_identifier':
       return node.text
+    // An overloaded operator's name is its own node type, and it is the spelling the extractor gives the operator's definition too, so returning the text here is what makes the two match. Measured: `r.template operator()<int>(3)` parses as `dependent_name(template, template_method(operator_name "operator()", template_argument_list "<int>"))`, so without this case the name resolved to null and the field_expression fallback below recorded `template operator()<int>` -- a spelling no symbol row ever holds, leaving the call permanently unresolvable.
+    case 'operator_name':
+      return node.text
     case 'template_function':
     case 'template_method':
     case 'template_type': {

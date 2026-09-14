@@ -11,7 +11,7 @@
  * index one small notebook and require that nothing which claims to show a symbol's source ever
  * answers with a line of the file's JSON.
  */
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -21,6 +21,7 @@ import { indexFileSync } from '../../src/parser.js'
 import { buildContextWindow } from '../../src/util.js'
 import { normalizePath } from '../../src/paths.js'
 import { foldDelivery } from '../../src/fold_delivery.js'
+import { indexedSourceText } from '../../src/indexed_source.js'
 import { querySymbols } from '../../src/index_reader.js'
 import { runRead } from '../../src/read_commands.js'
 
@@ -98,6 +99,27 @@ describe('a notebook surface never answers with the JSON on disk', () => {
       expect(nb.callerLine, 'the virtual and file coordinates coincide in this fixture').not.toBe(jsonLine)
     } finally {
       nb.cleanup()
+    }
+  })
+
+  it('a notebook saved with a byte order mark still yields its cell source, so the window is not silently empty', () => {
+    // The indexer decodes through decodeSource and never sees the mark, so the notebook indexes normally and every other surface reads it back correctly. The read-side helper is handed bytes its callers read themselves, and JSON.parse rejects a leading mark, so the flattened document came back as '' and buildContextWindow returned null for every symbol in the file. A control without the mark sits beside it because "returned null" and "there was nothing there" are the same observation.
+    const root = mkdtempSync(join(tmpdir(), 'tg-nbbom-'))
+    try {
+      const body = notebookJson()
+      const withMark = normalizePath(join(root, 'mark.ipynb'))
+      const without = normalizePath(join(root, 'nomark.ipynb'))
+      // Written as the escape rather than the literal character: a bare U+FEFF in source is both lint-flagged and invisible to a reviewer, which is exactly how one ends up in a file by accident.
+      writeFileSync(withMark, `\uFEFF${body}`, 'utf-8')
+      writeFileSync(without, body, 'utf-8')
+      expect(indexedSourceText(without, readFileSync(without, 'utf-8')), 'the control produced no virtual document, so the assertion below measures nothing').toContain('def caller()')
+      expect(indexedSourceText(withMark, readFileSync(withMark, 'utf-8')), 'a byte order mark emptied the flattened document').toContain('def caller()')
+    } finally {
+      try {
+        rmSync(root, { recursive: true, force: true })
+      } catch {
+        // best-effort cleanup
+      }
     }
   })
 

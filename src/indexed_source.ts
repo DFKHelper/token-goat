@@ -4,7 +4,12 @@ import { ipynbToVirtualSource } from './languages/ipynb_idx.js'
 
 /** The document a stored `line_start`/`line_end` pair addresses, given the file's raw source text. A `.ipynb` is parsed through the flattened virtual Python document parser.ts's ipynb branch builds, never the JSON bytes on disk, so every line number recorded for a notebook symbol indexes that virtual document. A reader re-deriving a symbol's text from source (the empty-stored-body fallback in read_commands.ts and notes.ts, which fires for any symbol over MAX_SYMBOL_BODY_CHARS) must therefore slice the same document the indexer measured -- slicing the raw JSON hands back notebook markup under the symbol's name, or nothing at all when the notebook is minified onto one line. Every other file is its own source and comes back unchanged. */
 export function indexedSourceText(filePath: string, raw: string): string {
-  return isVirtualIndexedPath(filePath) ? ipynbToVirtualSource(raw).content : raw
+  return isVirtualIndexedPath(filePath) ? ipynbToVirtualSource(stripBom(raw)).content : raw
+}
+
+/** Drops a leading UTF-8 byte order mark. The indexer never needs this -- it decodes through decodeSource, which strips the mark before the parser sees it -- but this function's callers hand it the bytes they read themselves, and `JSON.parse` rejects a BOM. A notebook saved with one therefore flattened to the empty string here, and buildContextWindow returned null for every symbol in it while the very same notebook read back correctly through every other surface. Left as a leading-character test rather than a regex so it cannot touch a mark occurring anywhere else in the document. */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 }
 
 /** True when this path is indexed from a document the bytes on disk do not contain, so a stored line range and the file's own lines are two different coordinate systems. A caller holding text it did not get from {@link indexedSourceText} -- the rows a Read or a `cat` delivered, say -- must not cross index coordinates with them: the body-fold path did, and cut a notebook's JSON mid-array under a notice naming a symbol whose span was measured somewhere else entirely. Shares its extension test with {@link indexedSourceText} so the two can never disagree about which files convert. */

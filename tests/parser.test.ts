@@ -1352,6 +1352,20 @@ describe('parseFile reference extraction', () => {
     expect(result.symbols.map((s) => s.name)).toContain('~Foo')
   })
 
+  it('records a C++ dependent operator call under the name the operator is defined as', async () => {
+    const cppFile = write(
+      'topr.cpp',
+      ['struct Fun { template<class U> U operator()(U); };', 'template<class U> U Fun::operator()(U) { return U{}; }', 'template<class T> void f(T& r) { r.template operator()<int>(3); }'].join('\n'),
+    )
+    const result = await parseFile(cppFile)
+    // Fixture provenance: HAND-DERIVED. Dumping this exact text through tree-sitter-cpp gives field_expression -> dependent_name(template, template_method(operator_name "operator()", template_argument_list "<int>")); the operator_name node had no case, so the name resolved to null and the field text was recorded whole.
+    const refNames = result.refs.map((r) => r.name)
+    expect(refNames).toContain('operator()')
+    expect(refNames).not.toContain('template operator()<int>')
+    // The assertion above is only worth anything if the definition is indexed under the same spelling, which is what makes the ref resolvable rather than merely tidier.
+    expect(result.symbols.map((s) => s.name)).toContain('operator()')
+  })
+
   it('records a C++ constructor reached through new, the way it already does for TypeScript and Java', async () => {
     const cppFile = write(
       'tnew.cpp',
