@@ -184,6 +184,9 @@ coverage/
 # stays narrow rather than blanket-ignoring real .webp files if any are added)
 .webp
 
+# Local agent tasks, session mining, transcripts, and scratchpads
+tasks/
+
 vscode-extension/*.vsix
 
 # Scratch directory for the generated flaky probe in tests/retry_visibility_reporter.test.ts.

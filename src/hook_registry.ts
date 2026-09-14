@@ -387,8 +387,8 @@ const EVENTS_WITH_RAW_STDOUT_CONTEXT: ReadonlySet<HookEventName> = new Set(['pre
  *   friends. When no field resolves, the bare string is emitted as before: a
  *   rejected rewrite beats one injected into the wrong field. Those figures are
  *   about BUILT-IN tools and say nothing about what else an MCP tool accepts:
- *   an array of MCP content blocks is taken verbatim there (PROVENANCE:
- *   CAPTURE, `tasks/captures/mcp-hook-payload/README.md` (b)), which is what
+ *   an array of MCP content blocks is taken verbatim there (see
+ *   `tests/fixtures/mcp_bare_array_payloads.ts`), which is what
  *   `updatedBlocks` emits so a rewritten mixed result keeps its image.
  * - `pass`    → `{}` (no-op; the call proceeds unchanged)
  *

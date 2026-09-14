@@ -67,7 +67,7 @@ describe('extractMcpResultText', () => {
   })
 
   it('reports no text for a block array with nothing textual in it, rather than stringifying the blocks', () => {
-    // A recognised block array carrying only an image is decoded, not unrecognised. Stringifying it turned the picture into its own base64 payload as text -- measured at 60,301 bytes of updatedToolOutput for a 60 KB image -- so every caller must see '' and leave the result alone. PROVENANCE: HAND-DERIVED, in the block shape tasks/captures/mcp-hook-payload/ establishes.
+    // A recognised block array carrying only an image is decoded, not unrecognised. Stringifying it turned the picture into its own base64 payload as text -- measured at 60,301 bytes of updatedToolOutput for a 60 KB image -- so every caller must see '' and leave the result alone. PROVENANCE: HAND-DERIVED, in the block shape tests/fixtures/mcp_bare_array_payloads.ts establishes.
     expect(extractMcpResultText({ tool_response: [{ type: 'image', source: { data: 'x' } }] })).toBe('')
     expect(extractMcpResultText({ tool_response: { content: [{ type: 'image', source: { data: 'x' } }] } })).toBe('')
   })
@@ -115,7 +115,7 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
     ['bare block array', (block: unknown) => [block]],
     ['content-wrapped block array', (block: unknown) => ({ content: [block] })],
   ])('leaves an image-only MCP result alone instead of shipping its base64 as text (%s)', async (_shape, wrap) => {
-    // Measured before the fix, against the built bundle: a 60 KB image came back as 60,301 bytes of updatedToolOutput whose body was the block JSON with the base64 inline. The model lost the picture and paid for it twice. PROVENANCE: HAND-DERIVED payload in the block shape tasks/captures/mcp-hook-payload/ establishes.
+    // Measured before the fix, against the built bundle: a 60 KB image came back as 60,301 bytes of updatedToolOutput whose body was the block JSON with the base64 inline. The model lost the picture and paid for it twice. PROVENANCE: HAND-DERIVED payload in the block shape tests/fixtures/mcp_bare_array_payloads.ts establishes.
     const data = 'A'.repeat(60000)
     const block = { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }
     const post = await runHook(buildEvent('post_tool_use', postPayload(wrap(block))))
@@ -632,8 +632,7 @@ describe('MCP secret redaction on the live post hook', () => {
  * Two blocks of the MCP ContentBlock union carried content no surface here ever looked at.
  * PROVENANCE for both shapes: FORMAT-DERIVED from the ContentBlock union (TextContent,
  * ImageContent, AudioContent, EmbeddedResource, ResourceLink) at modelcontextprotocol.io/specification;
- * PROVENANCE for the array being an accepted `updatedToolOutput`: CAPTURE, the live probe recorded in
- * tasks/captures/mcp-hook-payload/README.md (b).
+ * PROVENANCE for the array being an accepted `updatedToolOutput`: see tests/fixtures/mcp_bare_array_payloads.ts.
  */
 describe('MCP content blocks a string rewrite cannot carry', () => {
   const toolName = 'mcp__evil_server__fetch_doc'

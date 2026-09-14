@@ -15,7 +15,7 @@ Mined by an Opus agent on 2026-06-14 with two Sonnet sub-agents reading the enco
 **What happened.** Five times (transcript lines **7074, 7141, 7147, 7703, 7709**; 7147 & 7709 fail twice — main JSON plus a temp sidecar) the `PostToolUse:Bash` hook emitted to stderr:
 
 ```
-atomic write failed for 3342a3ae-81d9-49d9-b66a-ba8f2861c4db.json: 'utf-8' codec can't encode character '\udc8f' in position 90727: surrogates not allowed
+atomic write failed for <session-id>.json: 'utf-8' codec can't encode character '\udc8f' in position 90727: surrogates not allowed
 ```
 
 The crash fires while caching Bash output that contains `🛠️` (U+1F6E0 U+FE0F — the dotenv/jest tip glyph). On Windows the piped command output reaches token-goat already mis-decoded (cp1252 instead of UTF-8), so U+FE0F's final byte `\x8f` survives as the lone UTF-16 surrogate `\udc8f`. When `post_bash` folds that string into the session manifest and `atomic_write_text` opens the temp file with `encoding="utf-8"` and **no error handler**, `fh.write()` raises, the write is aborted, and **the touched-file / line-range state for that turn is never persisted** — exitCode is still 0, so nothing surfaces to the user. This directly undermines the read-dedup and pre-compact-manifest features that depend on that state.

@@ -17,7 +17,7 @@ interface ContentBlock {
   readonly source?: { readonly type?: unknown; readonly media_type?: unknown; readonly data?: unknown }
 }
 
-/** Pulls the MCP content block array out of a raw post_tool_use payload, or null if the shape doesn't match. Two shapes reach here: the wrapped `tool_response.content`, and `tool_response` as the bare block array with no wrapper, which is what several MCP servers send (captured under `tasks/captures/mcp-hook-payload/`). Reading only the wrapped one skipped image handling entirely for the bare form, since a bare array passes the `typeof` check and then finds no `content`. */
+/** Pulls the MCP content block array out of a raw post_tool_use payload, or null if the shape doesn't match. Two shapes reach here: the wrapped `tool_response.content`, and `tool_response` as the bare block array with no wrapper, which is what several MCP servers send (see `tests/fixtures/mcp_bare_array_payloads.ts`). Reading only the wrapped one skipped image handling entirely for the bare form, since a bare array passes the `typeof` check and then finds no `content`. */
 function getResponseContentBlocks(raw: Record<string, unknown>): ContentBlock[] | null {
   const tr = raw['tool_response']
   if (!tr || typeof tr !== 'object') return null

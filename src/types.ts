@@ -33,8 +33,8 @@
  *   `tool_response` and replaces only its text-bearing field. A string is not
  *   the only accepted MCP shape, though, and reading the above as if it were is
  *   what kept image and audio blocks getting dropped: an ARRAY of MCP content
- *   blocks is accepted verbatim for an MCP tool (PROVENANCE: CAPTURE, live
- *   probe recorded in `tasks/captures/mcp-hook-payload/README.md` (b), where
+ *   blocks is accepted verbatim for an MCP tool (see
+ *   `tests/fixtures/mcp_bare_array_payloads.ts`, where
  *   `updatedToolOutput: [{type:'text',...}]` reached the model unchanged).
  *   `updatedBlocks` carries that shape: when set, it is emitted in place of the
  *   string for Claude Code, so a rewrite of a mixed text+image result can put

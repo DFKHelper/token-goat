@@ -141,7 +141,7 @@ function blocksToText(blocks: unknown): string | null {
   return recognised ? '' : null
 }
 
-/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the same array delivered bare with no `content` wrapper (which is how several MCP servers' PostToolUse payloads actually arrive -- see `tasks/captures/mcp-hook-payload/`), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. A block array that carries no text at all returns '' rather than reaching that fallback: every caller reads '' as "nothing to do here" and leaves the payload alone, which is what an image-only result needs. */
+/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the same array delivered bare with no `content` wrapper (which is how several MCP servers' PostToolUse payloads actually arrive -- see `tests/fixtures/mcp_bare_array_payloads.ts`), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. A block array that carries no text at all returns '' rather than reaching that fallback: every caller reads '' as "nothing to do here" and leaves the payload alone, which is what an image-only result needs. */
 export function extractToolResultText(raw: Record<string, unknown>): string {
   const tr = raw['tool_response']
   if (typeof tr === 'string') return tr
@@ -171,7 +171,7 @@ function asContentBlocks(value: unknown): Record<string, unknown>[] | null {
   return typed ? blocks : null
 }
 
-/** The MCP content blocks a tool_response carries, whether delivered bare or wrapped under `content` (both shapes arrive in practice -- see `tasks/captures/mcp-hook-payload/`), or null when the response is not block-shaped at all. */
+/** The MCP content blocks a tool_response carries, whether delivered bare or wrapped under `content` (both shapes arrive in practice -- see `tests/fixtures/mcp_bare_array_payloads.ts`), or null when the response is not block-shaped at all. */
 export function mcpContentBlocks(raw: Record<string, unknown>): Record<string, unknown>[] | null {
   const tr = raw['tool_response']
   if (tr === null || typeof tr !== 'object') return null

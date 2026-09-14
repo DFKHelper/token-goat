@@ -14,7 +14,7 @@ function listPath(): string {
   const candidates = [
     join(userInfo().homedir, '.token-goat', 'confidential-names.txt'),
     ...(process.platform === 'win32' && process.env['USERPROFILE'] ? [join(process.env['USERPROFILE'], '.token-goat', 'confidential-names.txt')] : []),
-    ...(process.platform === 'win32' ? [join('C:', 'Users', 'Gabriel.Grillo', '.token-goat', 'confidential-names.txt')] : []),
+    ...(process.platform === 'win32' && process.env['HOMEDRIVE'] && process.env['HOMEPATH'] ? [join(process.env['HOMEDRIVE'], process.env['HOMEPATH'], '.token-goat', 'confidential-names.txt')] : []),
   ]
   for (const c of candidates) {
     if (existsSync(c)) return c
