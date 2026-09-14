@@ -92,6 +92,56 @@ describe('symbols.body storage cap (real pipeline)', () => {
     }
   })
 
+  it('re-slices an over-cap notebook body from the virtual source, not the JSON on disk', () => {
+    // A `.ipynb` is indexed through parser.ts's ipynb branch, which flattens its code cells into a
+    // virtual Python document and parses THAT -- so every stored line_start/line_end addresses the
+    // virtual document, never the JSON file on disk. The empty-body fallback above therefore has to
+    // re-slice the same virtual document; slicing the raw JSON returns notebook markup under the
+    // symbol's name, which is both wrong and larger than the file the read was meant to avoid.
+    // Notebook fixture shape: FORMAT-DERIVED from the nbformat v4 schema
+    // (https://nbformat.readthedocs.io/en/latest/format_description.html) -- `cells[].cell_type`,
+    // `cells[].source` as a list of newline-terminated lines, and `metadata.kernelspec.language`.
+    // Expected output: HAND-DERIVED -- the Python text below is written by this test, so what a
+    // correct read must return is known without consulting the extractor.
+    const root = mkdtempSync(join(tmpdir(), 'tg-bodycap-nb-'))
+    try {
+      const file = join(root, 'huge.ipynb')
+      const cell = ['def hugeNotebookFn():\n']
+      for (let i = 0; i < 6000; i++) cell.push(`    notebookLocalNumber${i} = ${i} + 1\n`)
+      cell.push('    return 0\n')
+      // Indent 1, matching what nbformat itself writes to disk, so the JSON has many lines for the
+      // stale line range to slice into -- a minified notebook hides the same defect as an empty body.
+      writeFileSync(
+        file,
+        JSON.stringify(
+          {
+            cells: [{ cell_type: 'code', source: cell }],
+            metadata: { kernelspec: { language: 'python' } },
+            nbformat: 4,
+            nbformat_minor: 5,
+          },
+          null,
+          1,
+        ),
+      )
+      indexFileSync(normalizePath(file))
+
+      const stored = querySymbols({ filePath: normalizePath(file), name: 'hugeNotebookFn' })
+      expect(stored.length).toBeGreaterThan(0)
+      expect(stored[0]!.body).toBe('')
+
+      const { text, code } = runRead({ spec: `${file}::hugeNotebookFn`, json: true })
+      expect(code).toBe(0)
+      expect(text).toContain('notebookLocalNumber0 = 0 + 1')
+      expect(text).toContain('notebookLocalNumber5999 = 5999 + 1')
+      // The tell for the defect: raw notebook JSON served as though it were the function body.
+      expect(text).not.toContain('cell_type')
+      expect(text).not.toContain('nbformat')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('leaves an ordinary under-cap body stored verbatim', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-bodycap-small-'))
     try {

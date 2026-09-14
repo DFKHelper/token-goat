@@ -12,6 +12,7 @@ import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
+import { indexedSourceText } from './indexed_source.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -446,7 +447,7 @@ export function resolveBody(entry: { body: string; filePath: string; lineStart: 
   if (entry.body !== '') return entry.body
   const source = readFileText(entry.filePath)
   if (source === null) return entry.body
-  return source
+  return indexedSourceText(entry.filePath, source)
     .split(/\r?\n/)
     .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
     .join('\n')

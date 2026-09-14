@@ -22,6 +22,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { fingerprintContent } from './fingerprint.js'
 import { querySymbols } from './index_reader.js'
+import { indexedSourceText } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
 import { pathEqClause as pathEq } from './sql_path.js'
 import { foldPath } from './util.js'
@@ -112,8 +113,7 @@ export function resolveSymbolMatch(
 /** Source text over `entry`'s line range, or '' when the file is unreadable (deleted, permissions). */
 function bodyFromSource(entry: SymbolEntry): string {
   try {
-    return fs
-      .readFileSync(entry.filePath, 'utf8')
+    return indexedSourceText(entry.filePath, fs.readFileSync(entry.filePath, 'utf8'))
       .split(/\r?\n/)
       .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
       .join('\n')
