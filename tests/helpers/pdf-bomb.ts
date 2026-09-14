@@ -33,7 +33,12 @@ function assemble(objects: (string | Buffer)[][]): Buffer {
 
 /** A one-glyph PDF placing its text at `y` user-space units up the page, on a `/MediaBox` tall enough to hold it. Provenance: HAND-DERIVED from ISO 32000-1 (`Tm`, 9.4.2; `/MediaBox`, 7.7.3.3), then CAPTURE-confirmed: pdfjs reports `item.transform[5] === y` verbatim for each value used here, with no clamp. The tall box is load-bearing rather than decoration -- at the default 792pt height pdfjs culls the off-page glyph and reports no text item at all, so a fixture that omits it silently tests nothing. PDF reals have no exponent syntax, so `y` must be written in full decimal digits. */
 export function pdfTextAtY(y: string): Buffer {
-  const content = `BT /F1 12 Tf 1 0 0 1 10 ${y} Tm (A) Tj ET\n`
+  return pdfTextItemsAtY(y, 1)
+}
+
+/** `ops` one-glyph text items, every one of them placed at `y` by its own `Tm`, with `d` as the vertical scale that `Tm` sets alongside it. Same provenance as {@link pdfTextAtY}. `d` is a parameter because it is how a document reaches NaN: a `y` of 10^310 written in full decimal digits overflows `transform[5]` to Infinity on its own, and an equally overflowing `d` beside it makes the product of the two NaN instead. Many items rather than one because what a non-finite `y` costs is quadratic in how many of them share it -- a single item never showed the cost at all. */
+export function pdfTextItemsAtY(y: string, ops: number, d = '1'): Buffer {
+  const content = `BT /F1 12 Tf ${`1 0 0 ${d} 10 ${y} Tm (A) Tj `.repeat(ops)}ET\n`
   return assemble([
     ['1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'],
     ['2 0 obj\n<< /Type /Pages /Kids [5 0 R] /Count 1 >>\nendobj\n'],

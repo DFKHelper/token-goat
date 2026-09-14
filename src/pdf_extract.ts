@@ -225,6 +225,11 @@ export function reconstructLayout(items: LayoutTextItem[], deadline: number): st
   for (const item of items) {
     if ((checked++ & 0x3ff) === 0 && Date.now() > deadline) throw pdfWorkTookTooLong()
     const y = item.transform[5] as number
+    // A non-finite y never enters the index. The three-bucket lookup is O(1) only while `Math.abs(a - b) < Y_EPSILON` partitions, and for NaN or either infinity that comparison is always false -- `Infinity - Infinity` is NaN too -- so no row ever matches, every item lands in the one bucket `bucketOf` maps them all to, and the lookup walks every row created so far: exactly the quadratic scan the index was introduced to remove. Measured through the shipping path at 66 s for a 412 KB file of 60,000 items, which buys the whole per-document budget. A document reaches this: PDF real literals have no exponent syntax, so `1e310` lexes as `1` and an unknown operator, but a plain 311-digit integer in a `Tm` overflows to Infinity in `transform[5]`, and combining two of them yields NaN. Since nothing can ever be within Y_EPSILON of such an item, its own row is the answer the scan would have reached anyway, and skipping the index gets there in constant time.
+    if (!Number.isFinite(y)) {
+      rows.push([item])
+      continue
+    }
     const home = bucketOf(y)
     // Compare against the row's MOST RECENTLY added item, not its first -- a row is a proximity chain (each item within Y_EPSILON of the item right before it), not a fixed band around the first item's y. A smoothly y-drifting line (baseline jitter from a scanned/rotated PDF, or justified text) where each adjacent pair is within Y_EPSILON but the cumulative drift across the whole line exceeds it would otherwise get wrongly split into multiple rows once compared only against the first item.
     let found = -1
@@ -249,7 +254,17 @@ export function reconstructLayout(items: LayoutTextItem[], deadline: number): st
       place(home, found)
     }
   }
-  rows.sort((a, b) => ((b[0] as LayoutTextItem).transform[5] as number) - ((a[0] as LayoutTextItem).transform[5] as number))
+  // Top of the page first, with the non-finite rows admitted above kept together at the end in the order the document gave them. Subtracting straight through would return NaN for every comparison involving one, and a comparator that answers NaN leaves the whole ordering up to the sort implementation -- including the ordering of the ordinary rows beside it.
+  rows.sort((a, b) => {
+    const ya = (a[0] as LayoutTextItem).transform[5] as number
+    const yb = (b[0] as LayoutTextItem).transform[5] as number
+    const finiteA = Number.isFinite(ya)
+    const finiteB = Number.isFinite(yb)
+    if (finiteA && finiteB) return yb - ya
+    if (finiteA) return -1
+    if (finiteB) return 1
+    return 0
+  })
 
   const lines: string[] = []
   for (const row of rows) {
@@ -466,7 +481,7 @@ export async function extractPdfOutline(data: Uint8Array): Promise<PdfOutlineEnt
         items: OutlineNode[]
       }
       // Depth was bounded here; breadth, title length and wall clock were not. A tree one level deep with a million siblings never reaches MAX_OUTLINE_DEPTH, and each sibling costs a destination resolution as well as its own attacker-chosen title.
-        async function walk(items: OutlineNode[], level: number): Promise<void> {
+      async function walk(items: OutlineNode[], level: number): Promise<void> {
         if (level >= MAX_OUTLINE_DEPTH) return
 
         for (const item of items) {

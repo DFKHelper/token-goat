@@ -38,7 +38,7 @@ import { extractEmbeddableDocumentText, isDocumentRefusal } from '../src/doc_emb
 import { runPdfExtractText, runPdfLocate, runPdfMeta, runPdfOutline } from '../src/read_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError, ZipOutputTooLargeError } from '../src/zip_bounds.js'
 import { BUNDLE } from './helpers/bundle.js'
-import { pdfBomb, pdfTextAtY } from './helpers/pdf-bomb.js'
+import { pdfBomb, pdfTextAtY, pdfTextItemsAtY } from './helpers/pdf-bomb.js'
 
 const BOMB_OPS = 130_000
 const BOMB_CHARS_PER_OP = 70
@@ -568,6 +568,41 @@ describe('a bookmark tree that is wide rather than deep', () => {
     const entries = await extractPdfOutline(wideOutlinePdfBytes(3, 6))
     expect(entries.map((e) => e.title)).toEqual(['TTTTTT0', 'TTTTTT1', 'TTTTTT2'])
   })
+})
+
+describe('a text y that is not a number the bucket index can partition', () => {
+  // The 2^53 fix made this loop terminate. It did not make it fast: the three-bucket lookup replaced a quadratic scan, and it is O(1) only while `Math.abs(a - b) < Y_EPSILON` partitions. For NaN or either infinity that comparison is always false -- `Infinity - Infinity` is NaN too -- so no row ever matches, every item becomes a new row in the single bucket they all map to, and the lookup walks all of them: the scan is back. Measured before the fix at 62.7s for 200,000 NaN items and 60.5s for Infinity, against 0.1s for the same count of ordinary ones, so the whole per-document budget is spent by a file small enough to ignore.
+  const HAND_DERIVED_ITEMS = (n: number, y: number): { str: string; width: number; transform: number[] }[] =>
+    Array.from({ length: n }, (_, i) => ({ str: 'x', width: 1, transform: [1, 0, 0, 1, i, y] }))
+
+  for (const [label, y] of [['NaN', NaN], ['Infinity', Infinity], ['-Infinity', -Infinity]] as const) {
+    it(`groups ${label} items in linear time rather than falling back to the scan the index replaced`, () => {
+      // Five seconds against a measured 0.3s post-fix and 62s pre-fix: far enough above the real cost to survive a loaded machine, far enough below the pre-fix cost that the clock inside the loop fires instead.
+      const items = HAND_DERIVED_ITEMS(MAX_PDF_TEXT_ITEMS, y) as unknown as Parameters<typeof reconstructLayout>[0]
+      const out = reconstructLayout(items, Date.now() + 5_000)
+      // Nothing is within Y_EPSILON of a non-finite y, not even another item sharing it, so each one is its own row -- which is the answer the scan reached too, just without walking every prior row to get there.
+      expect(out.split('\n')).toHaveLength(MAX_PDF_TEXT_ITEMS)
+    }, 30_000)
+  }
+
+  it('still puts ordinary rows in page order when a non-finite row sits among them', () => {
+    const items = [
+      { str: 'low', width: 1, transform: [1, 0, 0, 1, 0, 100] },
+      { str: 'nan', width: 1, transform: [1, 0, 0, 1, 0, NaN] },
+      { str: 'high', width: 1, transform: [1, 0, 0, 1, 0, 700] },
+    ] as unknown as Parameters<typeof reconstructLayout>[0]
+    // Subtracting straight through would answer NaN for every comparison touching the middle row, and a comparator that answers NaN leaves the ordering of the other two up to the sort implementation as well.
+    expect(reconstructLayout(items, Date.now() + 5_000).split('\n')).toEqual(['high', 'low', 'nan'])
+  })
+
+  it('is reachable from a real file, which is what makes the cost above an attack rather than an oddity', async () => {
+    // CAPTURE: these two fixtures through pdfjs-dist report transform[5] as Infinity and NaN respectively, confirmed by probe before this test was written. PDF reals have no exponent syntax, so the overflow has to be spelled out in full decimal digits; `1e310` would lex as `1` followed by an unknown operator and place the text at no y at all.
+    const overflowing = `1${'0'.repeat(310)}`
+    for (const [label, d] of [['Infinity', '1'], ['NaN', overflowing]] as const) {
+      const result = await extractPdfText(new Uint8Array(pdfTextItemsAtY(overflowing, 2_000, d)), undefined, true)
+      expect(result.text.length, label).toBeGreaterThan(0)
+    }
+  }, 60_000)
 })
 
 describe('the two destination lookups one bookmark entry makes', () => {
