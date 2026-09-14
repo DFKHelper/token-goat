@@ -50,7 +50,7 @@ interface SldIdLike {
   '@_r:id'?: string
 }
 
-/** Resolves the deck's actual display order (`ppt/presentation.xml`'s `<p:sldIdLst>`, a list of `r:id` references, resolved to file paths via `ppt/_rels/presentation.xml.rels`) rather than trusting `slideN.xml` filenames, which reflect insertion order and go stale the moment a slide is reordered, duplicated, or deleted -- both very common PowerPoint operations. Returns null when either part is missing/unparseable so the caller can fall back to filename order (e.g. a hand-built or non-standard .pptx). */
+/** Resolves the deck's actual display order (`ppt/presentation.xml`'s `<p:sldIdLst>`, a list of `r:id` references, resolved to file paths via `ppt/_rels/presentation.xml.rels`) rather than trusting `slideN.xml` filenames, which reflect insertion order and go stale the moment a slide is reordered, duplicated, or deleted -- both very common PowerPoint operations. Returns null when either part is missing/unparseable so the caller can fall back to filename order (e.g. a hand-built or non-standard .pptx). Deduplicates on the resolved target rather than the raw `r:id`: under ECMA-376 each `<p:sldId>` addresses a distinct slide part, so the same resolved part naming a second `<p:sldId>` is not something an authoring tool produces -- it is a hand-built or corrupted `sldIdLst` amplifying every downstream per-slide parse (parseSlide has no cache) by however many times the list repeats it, with no cap on the list length otherwise. First appearance wins, so display order for the parts that do appear once is unaffected. */
 async function slidePathsInPresentationOrder(entries: Record<string, Uint8Array>): Promise<string[] | null> {
   const presXml = decodeZipEntry(entries, 'ppt/presentation.xml')
   const relsXml = decodeZipEntry(entries, 'ppt/_rels/presentation.xml.rels')
@@ -67,13 +67,16 @@ async function slidePathsInPresentationOrder(entries: Record<string, Uint8Array>
   }
 
   const ordered: string[] = []
+  const seen = new Set<string>()
   for (const sldId of collectElements(presParsed, 'p:sldId') as SldIdLike[]) {
     const rid = sldId['@_r:id']
     if (rid === undefined) continue
     const target = ridToTarget.get(rid)
     if (target === undefined) continue
     const normalized = target.startsWith('slides/') ? `ppt/${target}` : `ppt/slides/${target}`
-    if (entries[normalized] !== undefined) ordered.push(normalized)
+    if (entries[normalized] === undefined || seen.has(normalized)) continue
+    seen.add(normalized)
+    ordered.push(normalized)
   }
 
   return ordered.length > 0 ? ordered : null
@@ -138,10 +141,11 @@ async function notesTextFor(entries: Record<string, Uint8Array>, notesPath: stri
   return bodyShape !== undefined ? shapeText(bodyShape) : collectTextRuns(parsed, 'a:t').join(' ').trim()
 }
 
-export async function pptxOutline(filePath: string): Promise<SlideOutlineEntry[]> {
+export async function pptxOutline(filePath: string, deadline: number = ooxmlWorkDeadline()): Promise<SlideOutlineEntry[]> {
   const { entries, slidePaths } = await listSlideParts(filePath)
   const out: SlideOutlineEntry[] = []
   for (let i = 0; i < slidePaths.length; i++) {
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific slides with pptx-slide, or use a smaller deck.')
     const path = slidePaths[i] as string
     const parsed = await parseSlide(entries, path)
     const shapes = slideShapes(parsed)
@@ -191,11 +195,12 @@ export async function pptxAllSlidesText(filePath: string, includeNotes: boolean,
   return slideTexts.join('\n\n')
 }
 
-export async function pptxNotesText(filePath: string, slideNumber?: number): Promise<string> {
+export async function pptxNotesText(filePath: string, slideNumber?: number, deadline: number = ooxmlWorkDeadline()): Promise<string> {
   const { entries, slidePaths } = await listSlideParts(filePath)
   const targets = slideNumber !== undefined ? [slideNumber] : slidePaths.map((_, i) => i + 1)
   const sections: string[] = []
   for (const n of targets) {
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to one slide with the slide-number argument, or use a smaller deck.')
     if (n < 1 || n > slidePaths.length) throw new Error(`slide ${n} out of range (this deck has ${slidePaths.length} slides)`)
     const notesPath = await notesPathFor(entries, slidePaths[n - 1] as string)
     const text = await notesTextFor(entries, notesPath)
@@ -209,13 +214,14 @@ export interface PptxTextMatch {
   snippet: string
 }
 
-export async function pptxTextGrep(filePath: string, pattern: string): Promise<PptxTextMatch[]> {
+export async function pptxTextGrep(filePath: string, pattern: string, deadline: number = ooxmlWorkDeadline()): Promise<PptxTextMatch[]> {
   const { entries, slidePaths } = await listSlideParts(filePath)
   const guarded = compileGuardedRegex(pattern, 'i')
   if (!guarded.ok) throw new Error(`invalid --grep pattern: ${pattern} -- the pattern ${guarded.reason}`)
   const re = guarded.re
   const out: PptxTextMatch[] = []
   for (let i = 0; i < slidePaths.length; i++) {
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific slides with pptx-slide, or use a smaller deck.')
     const parsed = await parseSlide(entries, slidePaths[i] as string)
     const text = collectTextRuns(parsed, 'a:t').join(' ')
     if (re.test(text)) {

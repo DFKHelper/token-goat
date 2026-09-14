@@ -154,9 +154,10 @@ export interface SheetInfo {
   cols: number
 }
 
-export async function listSheets(filePath: string): Promise<SheetInfo[]> {
+export async function listSheets(filePath: string, deadline: number = ooxmlWorkDeadline()): Promise<SheetInfo[]> {
   const wb = await loadWorkbook(filePath)
   return wb.worksheets.map((ws) => {
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific sheets with xlsx-head, or use a smaller workbook.')
     const { ref, rows, cols } = usedRange(ws)
     return { name: ws.name, ref, rows, cols }
   })

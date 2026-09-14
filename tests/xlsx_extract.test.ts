@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { formatXlsxColumns, formatXlsxRange, headSheet, listSheets, querySheet, rangeSheet, xlsxColumns } from '../src/xlsx_extract.js'
+import { isDocumentRefusal } from '../src/doc_embed_extract.js'
 
 let dir: string
 let file: string
@@ -342,5 +343,25 @@ describe('xlsx ergonomic improvements: sheet defaulting, column projection, xlsx
   it('querySheet works with defaulted sheetName', async () => {
     const result = await querySheet(file, undefined, { columns: ['name'] })
     expect(result.rows).toEqual([['Alice'], ['Bob'], ['Carol']])
+  })
+})
+
+// listSheets walks every worksheet with no wall clock at all, unlike allSheetsHeadText which already takes the deadline/assertOoxmlWithinDeadline pair from ooxml_extract.ts. Mirrors doc_embed_extract.test.ts's allSheetsHeadText deadline coverage: force the deadline already-expired so the test doesn't depend on wall-clock timing to be slow enough to trip the real default.
+describe('listSheets refuses past its deadline as a DocumentRefusedError', () => {
+  it('throws a document refusal once the deadline has passed, not a plain Error', async () => {
+    const expiredDeadline = Date.now() - 1
+    let caught: unknown
+    try {
+      await listSheets(file, expiredDeadline)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect(isDocumentRefusal(caught)).toBe(true)
+  })
+
+  it('an ordinary call with no expired deadline still returns every sheet', async () => {
+    const sheets = await listSheets(file)
+    expect(sheets).toHaveLength(8)
   })
 })

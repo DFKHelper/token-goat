@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { strToU8, zipSync } from 'fflate'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from '../src/pptx_extract.js'
+import { isDocumentRefusal } from '../src/doc_embed_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 let dir: string
@@ -202,5 +203,97 @@ describe('slide numbering follows presentation display order, not slideN.xml fil
     const matches = await pptxTextGrep(reorderedFile, 'Intro')
     expect(matches).toHaveLength(1)
     expect(matches[0]?.slide).toBe(3)
+  })
+})
+
+describe('a repeated r:id resolving to the same slide part is deduplicated, not re-listed once per repeat', () => {
+  // FORMAT-DERIVED: ECMA-376 addresses each <p:sldId> to a distinct slide part via its r:id; the
+  // same resolved part naming a second <p:sldId> is not something an authoring tool produces --
+  // it is the exact shape an adversarial deck uses to force N reparses of one part for O(1)
+  // bytes on disk, since parseSlide has no cache and nothing else bounded the list length.
+  let dupDir: string
+  let dupFile: string
+
+  beforeAll(() => {
+    dupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-dup-'))
+    dupFile = path.join(dupDir, 'dup.pptx')
+    // order=[1, 1, 2] emits three distinct <p:sldId>/r:id pairs, but the first two both resolve
+    // (via presentation.xml.rels) to physical slide1.xml -- the same-target-twice shape.
+    const bytes = buildPptxFixture(
+      [{ title: 'Repeated' }, { title: 'Other' }],
+      [1, 1, 2],
+    )
+    fs.writeFileSync(dupFile, bytes)
+  })
+
+  afterAll(() => {
+    fs.rmSync(dupDir, { recursive: true, force: true })
+  })
+
+  it('pptxOutline lists each distinct slide part once, in first-appearance order', async () => {
+    const slides = await pptxOutline(dupFile)
+    expect(slides.map((s) => s.title)).toEqual(['Repeated', 'Other'])
+    expect(slides.map((s) => s.slide)).toEqual([1, 2])
+  })
+
+  it('an ordinary deck whose display-order refs are already distinct is unaffected by the dedup', async () => {
+    const okDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-nodup-'))
+    const okFile = path.join(okDir, 'ok.pptx')
+    fs.writeFileSync(okFile, buildPptxFixture([{ title: 'First' }, { title: 'Second' }], [2, 1]))
+    const slides = await pptxOutline(okFile)
+    expect(slides.map((s) => s.title)).toEqual(['Second', 'First'])
+    fs.rmSync(okDir, { recursive: true, force: true })
+  })
+})
+
+// pptxOutline/pptxNotesText/pptxTextGrep each walk every slide with no wall clock at all, unlike
+// pptxAllSlidesText/allSheetsHeadText which already take the deadline/assertOoxmlWithinDeadline
+// pair from ooxml_extract.ts. Mirrors doc_embed_extract.test.ts's pptxAllSlidesText/
+// allSheetsHeadText deadline coverage: force the deadline already-expired so the test doesn't
+// depend on wall-clock timing to be slow enough to trip the real default.
+describe('pptxOutline / pptxNotesText / pptxTextGrep refuse past their deadline as a DocumentRefusedError', () => {
+  it('pptxOutline throws a document refusal once the deadline has passed, not a plain Error', async () => {
+    const expiredDeadline = Date.now() - 1
+    let caught: unknown
+    try {
+      await pptxOutline(file, expiredDeadline)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect(isDocumentRefusal(caught)).toBe(true)
+  })
+
+  it('pptxNotesText throws a document refusal once the deadline has passed, not a plain Error', async () => {
+    const expiredDeadline = Date.now() - 1
+    let caught: unknown
+    try {
+      await pptxNotesText(file, undefined, expiredDeadline)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect(isDocumentRefusal(caught)).toBe(true)
+  })
+
+  it('pptxTextGrep throws a document refusal once the deadline has passed, not a plain Error', async () => {
+    const expiredDeadline = Date.now() - 1
+    let caught: unknown
+    try {
+      await pptxTextGrep(file, 'Revenue', expiredDeadline)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect(isDocumentRefusal(caught)).toBe(true)
+  })
+
+  it('an ordinary call with no expired deadline still returns the full result', async () => {
+    const slides = await pptxOutline(file)
+    expect(slides).toHaveLength(3)
+    const notes = await pptxNotesText(file)
+    expect(notes).toContain('Slide 1 notes')
+    const matches = await pptxTextGrep(file, 'enterprise')
+    expect(matches).toHaveLength(1)
   })
 })
