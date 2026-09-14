@@ -363,13 +363,13 @@ case          filter           in        out    saved  fidelity
 ---------------------------------------------------------------
 git-log-stat  git-log       57227       3027    94.7%  2/2
 npm-ls-all    dep-list      34546       1060    96.9%  2/2
-vitest-run    vitest        22684      22682        -  2/2
+vitest-run    vitest        22684        322    98.6%  2/2
 ---------------------------------------------------------------
-TOTAL                      114457      26769    76.6%  6/6
+TOTAL                      114457       4409    96.1%  6/6
 
-ratio    76.6% saved  (PRIMARY -- must improve; measured floor 0.0%, headroom 23.4%)
+ratio    96.1% saved  (PRIMARY -- must improve; measured floor 0.0%, headroom 3.9%)
 fidelity 6/6 kept   (GUARD -- must not regress; any miss exits 1)
-coverage 3/157 filters exercised, 2/3 cases compressed
+coverage 3/157 filters exercised, 3/3 cases compressed
 ```
 
 There are two numbers on purpose. **Ratio** is the thing to push up. **Fidelity** counts the lines

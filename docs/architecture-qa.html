@@ -417,7 +417,7 @@
                             <span>How and when the semantic index triggers, and what is indexed</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>The index runs automatically in the background in your local development environment whenever files are saved or modified, just like VS Code's local search index. It does not send your code to any cloud API; it uses a small local model (<code>bge-small-en-v1.5</code>, ~30 MB).</p>
+                            <p>The index runs automatically in the background in your local development environment whenever files are saved or modified, just like VS Code's local search index. It does not send your code to any cloud API; it uses a small local model (<code>bge-small-en-v1.5</code>, ~35 MB).</p>
 <ul>
     <li><strong>What is indexed:</strong> Function signatures, class definitions, method bodies, type declarations, docstrings, and markdown docs across 80+ languages.</li>
     <li><strong>What is strictly ignored:</strong> Your <code>node_modules/</code> folder, build output folders (<code>dist/</code>, <code>target/</code>), compiled binaries, and <code>.git</code> internals.</li>
@@ -523,7 +523,7 @@
                             <span>Doesn't enterprise prompt caching make repeated tokens cheap or free?</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>This is the most common counter-argument from engineers familiar with Anthropic or OpenAI prompt caching. On paper, cached prompt tokens receive up to a 90% discount. In production engineering workflows, prompt caching does not eliminate the penalty of context bloat for five concrete reasons:</p>
+                            <p>This is the most common counter-argument from engineers familiar with Anthropic or OpenAI prompt caching. On paper, cached prompt tokens receive a discount of 90% or more. In production engineering workflows, prompt caching does not eliminate the penalty of context bloat for five concrete reasons:</p>
                             
                             <ol style="margin-left:20px; margin-bottom:12px;">
                                 <li><strong>The 5-Minute Eviction TTL (Developer Thinking Time):</strong>
@@ -564,36 +564,36 @@
                             <span>What happens in short, one-shot sessions?</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>It depends entirely on whether the one-shot question touches local files. In a single-turn session, token-goat either slightly increases cost by 10% to 15% (for pure zero-file trivia) or cuts cost by 50% to 95%+ (the moment it touches code, a PRD spec, an Excel sheet, or a PDF) thanks to <strong>first-read savings</strong>:</p>
+                            <p>It depends entirely on whether the one-shot question touches local files. In a single-turn session, token-goat either slightly increases cost by about 26% (for pure zero-file trivia) or cuts cost substantially (the moment it touches code, a PRD spec, an Excel sheet, or a PDF) thanks to <strong>first-read savings</strong>:</p>
 
                             <div class="example-box" style="margin-bottom:12px;">
-                                <div class="example-header">Case A: Pure Trivia (Zero File Reads) → +10% to +14% Overhead</div>
+                                <div class="example-header">Case A: Pure Trivia (Zero File Reads) → ~26% Overhead</div>
                                 <p style="margin-bottom:6px;">If you ask an abstract conversational question like <em>"explain the difference between REST and GraphQL"</em> or <em>"draft an email template"</em>, the agent reads no files and runs no commands.</p>
                                 <div style="font-family:var(--font-mono); font-size:12px; line-height:1.5;">
                                 • <strong>Without token-goat:</strong> ~3,500 base prompt tokens (system instructions + user query).<br>
-                                • <strong>With token-goat:</strong> 3,500 base + 500 instruction tokens = 4,000 tokens.<br>
-                                <span style="color:#b91c1c; font-weight:600;">→ Impact: ~14% token increase (+500 tokens, or roughly $0.0015 on Sonnet).</span><br>
+                                • <strong>With token-goat:</strong> 3,500 base + 900 instruction tokens = 4,400 tokens.<br>
+                                <span style="color:#b91c1c; font-weight:600;">→ Impact: ~26% token increase (+900 tokens, or roughly $0.0027 on Sonnet).</span><br>
                                 <span style="color:var(--text-dim);">If you only use an AI agent as a generic Google or ChatGPT substitute without inspecting workspace files, token-goat adds minor overhead.</span>
                                 </div>
                             </div>
 
                             <div class="example-box">
-                                <div class="example-header">Case B: Workspace File Inspection (Code, Specs, Spreadsheets, PDFs) → 50% to 95%+ Token Reduction (First-Read Savings)</div>
+                                <div class="example-header">Case B: Workspace File Inspection (Code, Specs, Spreadsheets, PDFs) → Large First-Read Savings</div>
                                 <p style="margin-bottom:6px;">Token-goat is not just for developers. Whether you are an engineer inspecting code, a product manager reading a PRD, or an analyst querying a financial spreadsheet, reading entire files into context blows through budgets:</p>
                                 <div style="font-family:var(--font-mono); font-size:12px; line-height:1.55;">
-                                • <strong>Source Code (e.g. <code>AuthService.ts</code>, 1,200 lines):</strong><br>
-                                &nbsp;&nbsp;Full read: 6,000 tokens → Surgical AST read (<code>read "AuthService.ts::validateToken"</code>): <strong>150 tokens</strong> (<span style="color:#15803d; font-weight:700;">97% saved</span>)<br><br>
-                                • <strong>Product Specs & Docs (e.g. <code>PlatformPRD.md</code>, 35 pages):</strong><br>
-                                &nbsp;&nbsp;Full read: 14,000 tokens → Section extraction (<code>section "PlatformPRD.md::Billing Rules"</code>): <strong>280 tokens</strong> (<span style="color:#15803d; font-weight:700;">98% saved</span>)<br><br>
-                                • <strong>Spreadsheets & Data (e.g. <code>FY26_Budget.xlsx</code>, 20,000 cells):</strong><br>
+                                • <strong>Source Code (measured: this project’s own <code>src/parser.ts</code>, 179,847 characters):</strong><br>
+                                &nbsp;&nbsp;Full read: ~45,000 tokens → Surgical AST read (<code>read "src/parser.ts::indexFileSync"</code>), 1,463 characters: <strong>~370 tokens</strong> (<span style="color:#15803d; font-weight:700;">99% saved</span>)<br><br>
+                                • <strong>Specs & Docs (measured: this project’s own <code>CLAUDE.arch.md</code>, 123,871 characters):</strong><br>
+                                &nbsp;&nbsp;Full read: ~31,000 tokens → Section extraction (<code>section "CLAUDE.arch.md::Component Map"</code>), 19,890 characters: <strong>~5,000 tokens</strong> (<span style="color:#15803d; font-weight:700;">84% saved</span>)<br><br>
+                                • <strong>Spreadsheets & Data (illustrative: a 20,000-cell <code>FY26_Budget.xlsx</code>):</strong><br>
                                 &nbsp;&nbsp;Full dump: 30,000 tokens → Targeted query (<code>xlsx-query FY26_Budget.xlsx "SELECT Revenue FROM Q3"</code>): <strong>190 tokens</strong> (<span style="color:#15803d; font-weight:700;">99% saved</span>)<br><br>
-                                • <strong>Contracts & Manuals (e.g. <code>VendorSLA.pdf</code>, 80 pages):</strong><br>
+                                • <strong>Contracts & Manuals (illustrative: an 80-page <code>VendorSLA.pdf</code>):</strong><br>
                                 &nbsp;&nbsp;Full read: 45,000 tokens → Page slice (<code>pdf-extract VendorSLA.pdf --pages 12-13</code>): <strong>450 tokens</strong> (<span style="color:#15803d; font-weight:700;">99% saved</span>)<br><br>
                                 <span style="color:#15803d; font-weight:600;">✓ Net First-Read Savings: Even on a single turn, runtime hooks intercept oversized first reads, saving thousands of tokens instantly.</span>
                                 </div>
                             </div>
 
-                            <p style="margin-top:10px;">In short: for pure conversational trivia, it adds ~500 tokens (~14% overhead). For any task that touches a workspace file (whether code, markdown specifications, Excel models, PDF contracts, or OpenAPI JSON), first-read savings pay back the 500-token prompt immediately and cut token burn by 50% to 95% on turn 1.</p>
+                            <p style="margin-top:10px;">In short: for pure conversational trivia, it adds ~900 tokens (~26% overhead). For any task that touches a workspace file (whether code, markdown specifications, Excel models, PDF contracts, or OpenAPI JSON), first-read savings pay back the 900-token instruction block immediately and cut token burn by roughly 60% to 90% on turn 1, measured across the project’s own surgical-read benchmark cases.</p>
                         </div>
                     </div>
                                     </div>
@@ -665,7 +665,7 @@
 If you want to estimate net dollar savings on your company invoice, account for the provider's ephemeral cache:<br>
 • <strong>Warm turns (within 5-min TTL):</strong> Discounted up to 90% by Anthropic/OpenAI, but you still pay the remaining 10% base rate. Reducing 100k to 18k cuts that 10% billed tail by 82%.<br>
 • <strong>Cold turns (pausing >5 min to think, debug, or test):</strong> The cache evicts completely. You pay 100% full write price (125% on Anthropic) to reload the context from scratch. Reducing context from 100k to 18k slashes those eviction reload penalties by 82%.<br>
-<span style="color:#15803d; font-weight:700;">→ Net Invoiced Dollar Savings: 70% to 85% even after enterprise prompt cache discounts.</span>
+<span style="color:#15803d; font-weight:700;">→ Net Invoiced Dollar Savings: a 64.0% median in the project’s own paired evaluation (n=6), even after enterprise prompt cache discounts.</span>
 </div>
                         </div>
                     </div>
@@ -698,7 +698,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
                                     </div>
                                     <div class="qa-answer-body" id="ans-Q-04">
 <div class="security-callout">
-    <strong>Security &amp; Overhead Context:</strong> VS Code Copilot and Copilot CLI store expansive workspace indexes and full plain-text transcripts of every conversation and file read. Token-Goat does not duplicate this: it filters out 95% of prompt bloat before it hits the model, storing only compact, secret-redacted symbol slices with near-zero overhead.
+    <strong>Security &amp; Overhead Context:</strong> VS Code Copilot and Copilot CLI store expansive workspace indexes and full plain-text transcripts of every conversation and file read. Token-Goat does not duplicate this: it filters and redacts what passes through the hooks rather than retaining it, storing only compact, secret-redacted symbol slices with near-zero overhead.
 </div>
                                     
                     <div class="sub-qa-block">
@@ -724,8 +724,8 @@ If you want to estimate net dollar savings on your company invoice, account for 
                         <div class="sub-answer-text">
                             <p>No. Token-goat produces massive net savings on both system resources and token costs:</p>
                             <ol style="margin-left:20px; margin-bottom:12px;">
-                                <li><strong>Tiny local footprint:</strong> Token-goat runs locally as an embedded SQLite WAL database consuming under <strong>40 MB of RAM</strong>. Hook checks execute in-process in 5 to 15 milliseconds, which is imperceptible compared to a 2,000-millisecond API round-trip.</li>
-                                <li><strong>Massive token ROI on first read:</strong> The moment Copilot or any agent reads a file, token-goat cuts prompt consumption by up to 98% (e.g. 130 tokens instead of 11,000 tokens), paying for its background index many times over on the very first turn.</li>
+                                <li><strong>Tiny local footprint:</strong> Token-goat runs locally against an embedded SQLite WAL database, with <strong>no server and no compile step</strong>: CLI invocations are short-lived processes, and the only resident piece is the background reindex worker. Each hook check is a short-lived subprocess costing roughly 130 milliseconds, small against a 2,000-millisecond API round-trip.</li>
+                                <li><strong>Massive token ROI on first read:</strong> The moment Copilot or any agent reads a file, token-goat cuts prompt consumption by 80% on average across the project’s own benchmark cases, and by more than 90% on a large file, paying for its background index many times over on the very first turn.</li>
                                 <li><strong>Protects what VS Code ignores:</strong> VS Code's index does not deduplicate re-reads of unchanged files, does not fold noisy terminal command output (like 500 lines of passing tests), does not slice PDFs or spreadsheets, and does not operate outside VS Code (such as in Claude Code, Copilot CLI, Codex, or Cursor). Token-goat protects your context across all of them.</li>
                             </ol>
 
@@ -736,7 +736,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
                                 </div>
                                 <div class="compare-col compare-good">
                                     <div style="font-weight:600; color:#15803d; margin-bottom:4px;">VS CODE + TOKEN-GOAT</div>
-                                    <div style="font-size:11.5px; line-height:1.4;">Token-goat intercepts the <code>readFile</code> call.<br>Extracts only <code>refund()</code> (lines 140-170).<br><strong>Result: 130 tokens consumed (98% saved).</strong></div>
+                                    <div style="font-size:11.5px; line-height:1.4;">Token-goat intercepts the <code>readFile</code> call.<br>Extracts only <code>refund()</code> (lines 140-170).<br><strong>Result: only the 30 lines of that method enter context.</strong></div>
                                 </div>
                             </div>
 
@@ -780,9 +780,9 @@ If you want to estimate net dollar savings on your company invoice, account for 
                             <p>If an individual harness ever replicates a specific token-goat capability natively, token-goat already has built-in adaptive bridge detection (<code>src/bridges/registry.ts</code>). It dynamically detects native harness features and yields its own hook for that specific operation. There is zero redundant execution.</p>
                             <p>However, expecting commercial harnesses to solve this enterprise-wide ignores three structural realities:</p>
                             <ol style="margin-left:20px; margin-bottom:12px;">
-                                <li><strong>The Provider Incentive Conflict:</strong> Model providers (Anthropic, OpenAI, hyperscalers) generate revenue by billing for ingested tokens. A model provider's harness has no business incentive to slash billable token volume by 85% to 98% across your organization. Token-goat works exclusively for the customer.</li>
+                                <li><strong>The Provider Incentive Conflict:</strong> Model providers (Anthropic, OpenAI, hyperscalers) generate revenue by billing for ingested tokens. A model provider's harness has no business incentive to slash billable token volume by 85% to 97% across your organization. Token-goat works exclusively for the customer.</li>
                                 <li><strong>Cross-Harness Portability:</strong> Engineering teams never use a single tool. If Copilot in VS Code adds a feature, it does not help engineers running Claude Code in the CLI, Cursor, Windsurf, or automated CI pipelines. Token-goat provides a unified, cross-harness context engine with one shared index, security boundary, and configuration across every tool you run.</li>
-                                <li><strong>Full-Stack Scope Beyond Raw Code:</strong> Harnesses treat files as generic text. Token-goat is a multi-format context engine: AST symbol slicing across 80+ languages, token-aware PDF/Excel/Word extraction, automated image downsampling, and sub-0.2ms local SQLite caching.</li>
+                                <li><strong>Full-Stack Scope Beyond Raw Code:</strong> Harnesses treat files as generic text. Token-goat is a multi-format context engine: AST symbol slicing across 80+ languages, token-aware PDF/Excel/Word extraction, automated image downsampling, and a local SQLite index that answers without a language server or a build.</li>
                             </ol>
                         </div>
                     </div>
@@ -868,7 +868,7 @@ If you want to estimate net dollar savings on your company invoice, account for 
 <span>What about SecOps's &#x27;offline = true&#x27;? Does it break features?</span>
                         </div>
                         <div class="sub-answer-text">
-<p>SecOps often pushes for <code>offline = true</code> to guarantee zero outbound network traffic. That is great for compliance, but applying it immediately on a clean install creates a problem: token-goat needs to download its small local embedding model (<code>bge-small-en-v1.5</code>, ~30 MB) once to power semantic search.</p>
+<p>SecOps often pushes for <code>offline = true</code> to guarantee zero outbound network traffic. That is great for compliance, but applying it immediately on a clean install creates a problem: token-goat needs to download its small local embedding model (<code>bge-small-en-v1.5</code>, ~35 MB) once to power semantic search.</p>
 <p><strong>Shouldn't install cache the model automatically?</strong> Yes, and automated fail-soft background pre-caching is the default path. However, <code>token-goat install</code> is intentionally decoupled from blocking downloads so the command never hangs or crashes if run offline, in air-gapped CI, or behind a strict proxy.</p>
 <p>If you turn on <code>offline = true</code> before that model is cached locally, semantic search fails. Here is how to satisfy SecOps cleanly:</p>
 <div class="example-box">
@@ -973,13 +973,13 @@ offline = true
                         <div class="sub-answer-text">
                           <p>In theory, pairing architectural memory with token-goat is a natural division of labor: memory maps relationships, and token-goat extracts the exact code. But in production, running generic <strong>MCP codebase-memory</strong> tools burns massive context through three specific failure modes:</p>
                             
-                          <p><strong>1. The Permanent System Prompt Schema Tax (1,280 tokens/turn):</strong><br>
-                          Registering an MCP server forces the harness to inject full JSON-schema definitions for every tool into the system prompt on <em>every single turn</em>. Declaring standard memory tools (<code>create_entities</code>, <code>create_relations</code>, <code>add_observations</code>, <code>read_graph</code>, <code>search_nodes</code>) consumes ~1,280 tokens. In a 20-turn session, that is <strong>25,600 prompt tokens</strong> billed just for the tools to sit idle in context.</p>
+                          <p><strong>1. The Permanent System Prompt Schema Tax:</strong><br>
+                          Registering an MCP server forces the harness to inject full JSON-schema definitions for every tool into the system prompt on <em>every single turn</em>. Declaring standard memory tools (<code>create_entities</code>, <code>create_relations</code>, <code>add_observations</code>, <code>read_graph</code>, <code>search_nodes</code>) costs on the order of a thousand tokens. In a 20-turn session that whole cost is re-billed every turn, just for the tools to sit idle in context.</p>
 
-                          <p><strong>2. The JSON Syntax &amp; Entity Dump Tax (2,400+ tokens/query):</strong><br>
+                          <p><strong>2. The JSON Syntax &amp; Entity Dump Tax:</strong><br>
                           When queried, generic memory servers return sprawling JSON payloads where over 40% of the tokens are syntactic scaffolding (brackets, quotes, property keys):</p>
 <div class="example-box">
-<div class="example-header">Actual MCP Codebase-Memory Response Payload (~2,400 tokens)</div>
+<div class="example-header">MCP Codebase-Memory Response Payload (abridged; 57% of this excerpt is scaffolding rather than prose)</div>
 <pre style="margin:0; font-family:var(--font-mono); font-size:11px; color:var(--text); line-height:1.45; overflow-x:auto;">{
   "entities": [
     {
@@ -1286,7 +1286,7 @@ You do not have to take these numbers on faith. Verify token-goat directly on yo
 Run <code>node dist/token-goat.mjs bench</code> in your terminal. This replays a corpus of captured command output through the compressors and prints the byte-savings ratio plus a fidelity check (it exits 1 if a must-keep line is dropped). At the time of writing this ran at 96.1% saved with 6/6 fidelity checks kept; the ratio is not a fixed guarantee, only a floor the corpus must clear on every run.<br><br>
 
 <strong>Step 2: Verify Polyglot Surgical-Read Savings (Unit Benchmark):</strong><br>
-Run <code>npx vitest run <a href="https://github.com/DFKHelper/token-goat/blob/main/tests/token_savings_benchmark.test.ts" target="_blank" class="github-inline-ref">tests/token_savings_benchmark.test.ts</a></code>. This measures real TypeScript, Python, Go, and Markdown fixtures and enforces a floor (60% average, with a documented per-case exception at 50% for Go's doc-comment-preserving outline) below the README's claimed 85-97% range; the measured average at the time of writing was 80.2%, and the test prints the actual per-case numbers rather than asserting a fixed figure.<br><br>
+Run <code>npx vitest run <a href="https://github.com/DFKHelper/token-goat/blob/main/tests/token_savings_benchmark.test.ts" target="_blank" class="github-inline-ref">tests/token_savings_benchmark.test.ts</a></code>. This measures real TypeScript, Python, Go, and Markdown fixtures and enforces a floor (60% average, with a documented per-case exception at 50% for Go's doc-comment-preserving outline) below the 85-97% range <code>docs/architecture.md</code> quotes; the measured average at the time of writing was 80.2%, and the test prints the actual per-case numbers rather than asserting a fixed figure.<br><br>
 
 <strong>Step 3: Run an A/B Comparison on Your Own Codebase:</strong><br>
 This mirrors the methodology behind the paired evaluation above. Pick a real bug or task in your own repository. Run it once with an agent restricted to plain file reads and grep, and once with token-goat's surgical read commands available, keeping everything else (model, prompt, edit and test tools) the same. Compare total input tokens billed across both runs, the same accounting <code>scripts/generate-eval-capture.py</code> uses.
@@ -1384,8 +1384,8 @@ This mirrors the methodology behind the paired evaluation above. Pick a real bug
                             <span>The architectural difference: Compiler-hosted LSP vs. Runtime Gatekeeper</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>Roslyn is Microsoft's C# compiler platform. It is hosted in IDEs like Visual Studio to provide complete semantic type-checking, cross-assembly symbol binding, refactoring analyzers, and compiler diagnostics. However, Roslyn has strict structural constraints: it requires a valid, buildable project (<code>.sln</code> or <code>.csproj</code>), consumes 500 MB to 1.5 GB of memory, and only supports C# and VB.NET.</p>
-                            <p style="margin-top:8px;">Token-Goat is not an LSP replacement; it is a <strong>runtime context gatekeeper</strong>. It operates at less than 40 MB of RAM, parses source code using Tree-sitter AST and SQLite across 80+ languages without compiling anything, and functions reliably even when the codebase is in a broken or unbuildable state.</p>
+                            <p>Roslyn is Microsoft's C# compiler platform. It is hosted in IDEs like Visual Studio to provide complete semantic type-checking, cross-assembly symbol binding, refactoring analyzers, and compiler diagnostics. However, Roslyn has strict structural constraints: it requires a valid, buildable project (<code>.sln</code> or <code>.csproj</code>), consumes hundreds of megabytes to over a gigabyte of memory, and only supports C# and VB.NET.</p>
+                            <p style="margin-top:8px;">Token-Goat is not an LSP replacement; it is a <strong>runtime context gatekeeper</strong>. It parses source code using Tree-sitter AST and SQLite across 80+ languages without compiling anything, needs no project model or successful build to answer, and functions reliably even when the codebase is in a broken or unbuildable state.</p>
                         </div>
                     </div>
 
@@ -1453,7 +1453,7 @@ The agent writes a 2-line fix declaring <code>customerId</code>, runs <code>dotn
                             <td><span class="author-badge">Junior Developer Cohort</span></td>
                             <td style="font-size:11.5px; color:var(--text-dim); font-weight:500;">Token Economics &amp; Overhead</td>
                             <td class="field-name">token-goat is using more tokens.</td>
-                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#the-problem" target="_blank" title="View section in public GitHub README">GitHub README: ## The problem · ## Token savings, measured</a><span class="check">✓</span> Token-goat pays for its ~500-token instruction overhead on the very first file read or test run. Real multi-turn sessions save 60% to 90% of total tokens.</td>
+                            <td class="notes"><a class="readme-tag" href="https://github.com/DFKHelper/token-goat/blob/main/README.md#the-problem" target="_blank" title="View section in public GitHub README">GitHub README: ## The problem · ## Token savings, measured</a><span class="check">✓</span> Token-goat pays for its ~900-token instruction overhead on the very first file read or test run. The project’s own paired evaluation measured a 64.0% median saving over six clean pairs, with a spread from 89.1% down to one pair that cost 26.5% more.</td>
                             <td><a href="https://github.com/DFKHelper/token-goat/blob/main/src/stats.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/stats.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_read.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/hooks_read.ts</code></a><br><a href="https://github.com/DFKHelper/token-goat/blob/main/src/bash_compress.ts" target="_blank" class="github-file-link" title="View on public GitHub"><code style="font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:2px 6px; border-radius:3px; border:1px solid var(--border); display:inline-block; margin-bottom:3px; color:var(--text);">src/bash_compress.ts</code></a></td>
                         </tr>
 
@@ -1476,8 +1476,8 @@ The agent writes a 2-line fix declaring <code>customerId</code>, runs <code>dotn
                             <span>Why does it sometimes look like token-goat is consuming more tokens?</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>When an agent session starts, token-goat adds approximately 500 tokens of system instructions into the prompt. These instructions teach the agent how to use surgical commands (such as <code>token-goat read "file::symbol"</code>) and fold terminal output.</p>
-<p>If you run a trivial one-turn query (like asking <em>"what is a JavaScript promise?"</em> where the agent reads no files and runs no commands), those 500 tokens are net overhead on that single turn. However, teams across engineering, QA, DevOps, data, and product do not use AI assistants for one-turn trivia. You use them to inspect repositories, trace pipelines, review PRDs, examine spreadsheets, run test suites, and debug complex multi-file systems. The moment your agent reads any workspace file (code, a markdown PRD, an Excel sheet, a PDF, or terminal logs), that initial 500-token investment pays immediate dividends.</p>
+                            <p>At install time, token-goat writes approximately 900 tokens of routing instructions into your agent instruction file, where they are re-read on every session. These instructions teach the agent how to use surgical commands (such as <code>token-goat read "file::symbol"</code>) and fold terminal output.</p>
+<p>If you run a trivial one-turn query (like asking <em>"what is a JavaScript promise?"</em> where the agent reads no files and runs no commands), those 500 tokens are net overhead on that single turn. However, teams across engineering, QA, DevOps, data, and product do not use AI assistants for one-turn trivia. You use them to inspect repositories, trace pipelines, review PRDs, examine spreadsheets, run test suites, and debug complex multi-file systems. The moment your agent reads any workspace file (code, a markdown PRD, an Excel sheet, a PDF, or terminal logs), that initial 900-token investment pays immediate dividends.</p>
                         </div>
                     </div>
 
@@ -1513,7 +1513,7 @@ public async Task&lt;IActionResult&gt; UpdateEmail(string id, [FromBody] UpdateE
     return result.Success ? Ok() : StatusCode(500, result.Error);
 }</pre>
                                 <div style="margin-top:8px; font-size:11.5px; color:#15803d; font-weight:600;">
-                                    Saved on Turn 1: 5,860 tokens (97.7% reduction). Pays for the initial 500-token system prompt nearly 12x over on a single turn.
+                                    Saved on Turn 1: 5,860 tokens (97.7% reduction). Pays for the initial 900-token instruction block more than 6x over on a single turn.
                                 </div>
                             </div>
 
@@ -1572,7 +1572,7 @@ Tests:  1 failed, 81 passed, 82 total</pre>
                                 • Action 2 read dedup savings: <span style="color:#16a34a; font-weight:600;">+5,982 tokens</span><br>
                                 • Action 3 terminal folding savings: <span style="color:#16a34a; font-weight:600;">+2,410 tokens</span><br>
                                 <div style="margin-top:6px; padding-top:6px; border-top:1px dashed var(--border); font-size:13px;">
-                                    <strong>Net Session Savings: <span style="color:#16a34a;">13,752 tokens</span></strong> (Net token reduction: <strong style="color:#16a34a;">88.7%</strong>).
+                                    <strong>Net Session Savings: <span style="color:#16a34a;">13,752 tokens</span></strong> (Net token reduction: <strong style="color:#16a34a;">94.8%</strong> against the 14,500 tokens these three actions would otherwise have cost).
                                 </div>
                             </div></div>
                     </div>
@@ -1620,8 +1620,8 @@ Tests:  1 failed, 81 passed, 82 total</pre>
                             <span>Do token-goat&#x27;s local hooks add lag to tool calls and shell execution?</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>No. The interception hooks (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_read.ts" target="_blank" class="github-inline-ref"><code>src/hooks_read.ts</code></a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_session.ts" target="_blank" class="github-inline-ref"><code>src/hooks_session.ts</code></a>) are compiled TypeScript running locally in-process with SQLite WAL mode. When a tool call fires, token-goat checks the file hash and SQLite symbol cache in <strong>5 to 15 milliseconds</strong>.</p>
-<p>For perspective, human perception cannot detect delays under 100 milliseconds, and the network round-trip to the Anthropic or OpenAI API takes between 1,500 and 4,000 milliseconds. A 10-millisecond local check is less than 0.5% of your API round-trip. The hook itself is mathematically imperceptible.</p>
+                            <p>No. The interception hooks (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_read.ts" target="_blank" class="github-inline-ref"><code>src/hooks_read.ts</code></a>, <a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_session.ts" target="_blank" class="github-inline-ref"><code>src/hooks_session.ts</code></a>) are compiled TypeScript running locally against SQLite in WAL mode. The harness spawns one short-lived subprocess per hook fire, so when a tool call fires, token-goat checks the file hash and SQLite symbol cache in <strong>about 130 milliseconds</strong> (measured on an idle Windows machine, of which roughly 40 ms is Node.js startup itself).</p>
+<p>For perspective, the network round-trip to the Anthropic or OpenAI API takes between 1,500 and 4,000 milliseconds, so a 130-millisecond local check adds 3% to 9% on top of a round-trip you are already paying. That is a real cost, not a free one, and it is worth it only because the tokens it removes shorten the round-trip it sits in front of.</p>
 <p>Telemetry and stats collection are equally lightweight: counters are recorded via local atomic SQLite increments taking under <strong>0.2 milliseconds</strong>. There are no remote analytics pings, no background HTTP beacons, and no network calls blocking your workflow.</p>
                         </div>
                     </div>
@@ -1643,7 +1643,7 @@ Tests:  1 failed, 81 passed, 82 total</pre>
         <div style="font-size:11.5px; line-height:1.4;">Model thinking delay (TTFT): <strong>1.5 to 2 seconds</strong> per turn.<br>Agent starts streaming almost immediately.<br>Tasks finish in half the total clock time.</div>
     </div>
 </div>
-<p>A 10ms local check saves you 8,000ms of waiting on every single turn. Token-goat makes your sessions substantially faster overall.</p>
+<p>A local check costing a fraction of a second saves you seconds of waiting on every single turn. Token-goat makes your sessions substantially faster overall.</p>
                         </div>
                     </div>
 
@@ -1661,19 +1661,19 @@ Tests:  1 failed, 81 passed, 82 total</pre>
                                 <li><strong>Why the Initial Pass Takes Minutes (Local Neural Inference):</strong> To power semantic code search (<code>token-goat semantic</code>), Token-Goat runs a local 384-dimensional transformer model (<code>Xenova/bge-small-en-v1.5</code> via ONNX Runtime in <a href="https://github.com/DFKHelper/token-goat/blob/main/src/embed_model.ts" target="_blank" class="github-inline-ref"><code>src/embed_model.ts</code></a>). For every symbol and markdown chunk in the repository, it executes a neural network forward pass directly on your CPU:
                                     <div style="margin:6px 0; font-size:11.5px; color:var(--text-dim); font-family:var(--font-mono);">
                                         • A typical enterprise repository contains 8,000 to 15,000 code symbols and doc sections.<br>
-                                        • At 20 to 30ms per neural inference on CPU, that equals <strong>200 to 450 seconds (3 to 7 minutes)</strong> of sustained tensor matrix math.<br>
+                                        • Each one needs its own forward pass, so a cold index is minutes of sustained tensor matrix math rather than seconds.<br>
                                         • By default, ONNX Runtime attempts to parallelize across available CPU threads (<code>worker.embed_threads</code>), saturating multi-core workstations and triggering Windows Defender real-time scans on SQLite database churn.
                                     </div>
                                 </li>
                                 <li><strong>Why the Lag Permanently Disappears (Incremental SHA Fingerprinting):</strong> Once that initial baseline is written to SQLite, Token-Goat stores cryptographic SHA-256 hashes of every file and its parser/embedding state (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/fingerprint.ts" target="_blank" class="github-inline-ref"><code>src/fingerprint.ts</code></a>). On every future session:
                                     <div style="margin:6px 0; font-size:11.5px; color:var(--text-dim); font-family:var(--font-mono);">
-                                        • Unchanged files are verified and skipped in under <strong>0.05 milliseconds</strong> per file.<br>
-                                        • When you edit code, only that specific modified file is incrementally parsed and re-embedded in the background (taking <strong>~20 milliseconds</strong>).<br>
+                                        • Unchanged files are detected by SHA comparison and skipped without being reparsed.<br>
+                                        • When you edit code, only that specific modified file is incrementally parsed and re-embedded in the background.<br>
                                         • Session startup drift detection (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/reconcile.ts" target="_blank" class="github-inline-ref"><code>src/reconcile.ts</code></a>) enforces a hard <strong>1,500ms wall-clock ceiling</strong>, ensuring daily session launches remain instant.
                                     </div>
                                     In short: you pay the compute cost once per codebase; all daily work thereafter runs with zero CPU lag.
                                 </li>
-                                <li><strong>Your Interactive Agent Session is Never Blocked:</strong> Even during that first-time cold run, the session startup hook (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_session_start.ts" target="_blank" class="github-inline-ref"><code>src/hooks_session_start.ts</code></a>) executes in only 10ms. Terminal output folding, read deduplication, and image shrinking require zero embeddings and zero index. They function at 100% efficiency on prompt 1.</li>
+                                <li><strong>Your Interactive Agent Session is Never Blocked:</strong> Even during that first-time cold run, the session startup hook (<a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_session_start.ts" target="_blank" class="github-inline-ref"><code>src/hooks_session_start.ts</code></a>) finishes well inside that ceiling: about 0.3 seconds measured on an idle Windows machine, more under load. Terminal output folding, read deduplication, and image shrinking require zero embeddings and zero index. They function at 100% efficiency on prompt 1.</li>
                             </ul>
                         </div>
                     </div>
@@ -1942,7 +1942,7 @@ embeddings_enabled = false</pre>
                         </div>
                         <div class="sub-answer-text">
                             <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/hooks_skill.ts" target="_blank" class="github-inline-ref"><code>src/hooks_skill.ts</code></a>, <code>preSkillHandler</code> monitors invocations of the <code>Skill</code> tool. When an agent calls <code>Skill("superman")</code> or <code>Skill("pdf")</code>, token-goat records the skill body in session cache.</p>
-<p>If the model issues a repeat call to the exact same skill later in the same session, <code>hasSessionOutput(event.sessionId, skillName)</code> returns <code>true</code>. Loading a 40 KB skill document (e.g. 8,000 tokens) a second time wastes budget for rules already present in context memory.</p>
+<p>If the model issues a repeat call to the exact same skill later in the same session, <code>hasSessionOutput(event.sessionId, skillName)</code> returns <code>true</code>. Loading a 40 KB skill document (on the order of 10,000 tokens) a second time wastes budget for rules already present in context memory.</p>
                         </div>
                     </div>
 
@@ -2267,7 +2267,7 @@ blocked_roots = ["C:/Projects/pci-payment-gateway", "C:/Projects/hr-pii-service"
                             <span>Cryptographic Verification in ensureModelFiles()</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/embed_model.ts" target="_blank" class="github-inline-ref"><code>src/embed_model.ts</code></a>, model acquisition is not an arbitrary download. The model is hardcoded to revision <code>ea104dacec62c0de699686887e3f920caeb4f3e3</code> of <code>BAAI/bge-small-en-v1.5</code> with cryptographic hashes verified before use:</p>
+                            <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/embed_model.ts" target="_blank" class="github-inline-ref"><code>src/embed_model.ts</code></a>, model acquisition is not an arbitrary download. The model is hardcoded to revision <code>ea104dacec62c0de699686887e3f920caeb4f3e3</code> of <code>Xenova/bge-small-en-v1.5</code> with cryptographic hashes verified before use:</p>
 <table style="width:100%; border-collapse:collapse; margin-top:8px; font-size:12px;">
     <thead>
         <tr style="border-bottom:1px solid var(--border); text-align:left;">
@@ -2302,7 +2302,7 @@ blocked_roots = ["C:/Projects/pci-payment-gateway", "C:/Projects/hr-pii-service"
                             <p>Security & Governance Architect's proposal is the exact gold standard for enterprise air-gapped deployments:</p>
 <ol style="margin-left:20px; line-height:1.6; font-size:12.5px;">
     <li><strong>DevOps Provisioning:</strong> During standard developer machine image creation (or via internal Artifactory bundle download), copy the 2 verified files into:
-        <br><code>%LOCALAPPDATA%\dfk-helper\token-goat\models\BAAI\bge-small-en-v1.5\ea104dacec62c0de699686887e3f920caeb4f3e3\</code></li>
+        <br><code>%LOCALAPPDATA%\dfk-helper\token-goat\models\Xenova\bge-small-en-v1.5\ea104dacec62c0de699686887e3f920caeb4f3e3\</code></li>
     <li><strong>Lock Down Configuration:</strong> Distribute corporate baseline <code>token-goat.toml</code> with:
 <pre style="margin:6px 0; font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:6px 8px; border-radius:4px; border:1px solid var(--border);">[network]
 offline = true</pre>
@@ -2696,7 +2696,7 @@ Purged ~/.local/share/token-goat (databases, models, and cache deleted)</pre>
                             <span>Why Repetitive Download Prompts Occur</span>
                         </div>
                         <div class="sub-answer-text">
-                            <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/embed_model.ts" target="_blank" class="github-inline-ref"><code>src/embed_model.ts</code></a>, token-goat checks the local embedding model cache on startup. When an agent runs a semantic query, token-goat attempts to download <code>BAAI/bge-small-en-v1.5</code> (~34 MB) from Hugging Face.</p>
+                            <p>In <a href="https://github.com/DFKHelper/token-goat/blob/main/src/embed_model.ts" target="_blank" class="github-inline-ref"><code>src/embed_model.ts</code></a>, token-goat checks the local embedding model cache on startup. When an agent runs a semantic query, token-goat attempts to download <code>Xenova/bge-small-en-v1.5</code> (~34 MB) from Hugging Face.</p>
 <p><strong>The Failure Loop:</strong> When corporate firewall proxy inspection blocks or intercepts the connection, it returns an HTML proxy block page or closes the socket. Token-goat verifies the SHA-256 checksum; because the download failed or returned HTML, the hash check fails. Token-goat immediately deletes the corrupt file (<code>fs.rmSync(target)</code>) to prevent crash loops. On the next prompt, it tries to download again, producing the repetitive prompt cycle.</p>
                         </div>
                     </div>
@@ -2709,15 +2709,15 @@ Purged ~/.local/share/token-goat (databases, models, and cache deleted)</pre>
                         <div class="sub-answer-text">
                             <p>To resolve this manually without needing external internet access:</p>
 <ol style="margin-left:20px; line-height:1.6; font-size:12.5px;">
-    <li>Download the two pinned files from Hugging Face repository <code>BAAI/bge-small-en-v1.5</code> (Commit revision <code>ea104dacec62c0de699686887e3f920caeb4f3e3</code>):
+    <li>Download the two pinned files from Hugging Face repository <code>Xenova/bge-small-en-v1.5</code> (Commit revision <code>ea104dacec62c0de699686887e3f920caeb4f3e3</code>):
         <ul>
             <li><code>tokenizer.json</code> (711 KB, SHA-256: <code>d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66</code>)</li>
             <li><code>onnx/model_quantized.onnx</code> (34 MB, SHA-256: <code>6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4</code>)</li>
         </ul>
     </li>
     <li>Place both files in your local token-goat model directory:
-        <br><strong>Windows:</strong> <code>C:\Users\&lt;User&gt;\AppData\Local\dfk-helper\token-goat\models\BAAI\bge-small-en-v1.5\ea104dacec62c0de699686887e3f920caeb4f3e3\</code>
-        <br><strong>Linux:</strong> <code>~/.local/share/token-goat/models/BAAI/bge-small-en-v1.5/ea104dacec62c0de699686887e3f920caeb4f3e3/</code>
+        <br><strong>Windows:</strong> <code>C:\Users\&lt;User&gt;\AppData\Local\dfk-helper\token-goat\models\Xenova\bge-small-en-v1.5\ea104dacec62c0de699686887e3f920caeb4f3e3\</code>
+        <br><strong>Linux:</strong> <code>~/.local/share/token-goat/models/Xenova/bge-small-en-v1.5/ea104dacec62c0de699686887e3f920caeb4f3e3/</code>
     </li>
     <li>Verify by running:
 <pre style="margin:6px 0; font-family:var(--font-mono); font-size:11px; background:var(--surface-2); padding:6px 8px; border-radius:4px; border:1px solid var(--border);">$ token-goat doctor
@@ -2793,7 +2793,7 @@ embed = false</pre>
                         <div class="sub-answer-text">
                             <p>Why doesn't token-goat run OpenAI's <code>tiktoken</code> or Anthropic's exact BPE tokenizer on every intercepted read?</p>
 <ul>
-    <li><strong>Runtime Hook Latency:</strong> Token-goat hooks execute in <strong>5 to 15 milliseconds</strong>. Initializing and running a 100,000-vocabulary BPE tokenizer against a 2,000-line file would add <strong>50 to 120 milliseconds</strong> of latency to every single file read and command execution.</li>
+    <li><strong>Runtime Hook Latency:</strong> Token-goat hooks already cost <strong>about 130 milliseconds</strong> per fire. Initializing and running a 100,000-vocabulary BPE tokenizer against a 2,000-line file would add <strong>50 to 120 milliseconds</strong> of latency to every single file read and command execution.</li>
     <li><strong>Harness &amp; Model Agnosticism:</strong> An engineer may switch between several different model vendors in the same workday. Each model family uses a completely different tokenizer vocabulary. Computing model-specific tokens would require massive dependencies.</li>
     <li><strong>The 4 Bytes/Token Proxy:</strong> In software engineering benchmarks across JavaScript, C#, Python, and JSON, character-to-token ratios consistently hover between 3.6 and 4.2 bytes per token. The <code>bytes / 4</code> formula provides a remarkably accurate proxy at zero compute cost.</li>
 </ul>
@@ -2961,7 +2961,7 @@ embed = false</pre>
                         </div>
                         <div class="sub-answer-text">
                             <p>Cross-Platform Systems Engineer asks a concrete mathematical question: does token-goat carry Turn-1 overhead, and does it penalize single-turn ticket decomposition sessions on expensive models like Opus 5?</p>
-                            <p>Token-goat injects concise routing instructions into the agent's prompt (via <code>CLAUDE.md</code> or Copilot CLI system prompt), consuming approximately <strong>350 to 450 tokens</strong>. But does that make a single-turn ticket breakdown more expensive? <strong>No—in realistic enterprise workflows, it saves tens of thousands of tokens on Turn 1 alone.</strong></p>
+                            <p>Token-goat injects concise routing instructions into the agent's prompt (via <code>CLAUDE.md</code> or Copilot CLI system prompt), consuming approximately <strong>900 tokens</strong>. But does that make a single-turn ticket breakdown more expensive? <strong>No—in realistic enterprise workflows, it saves tens of thousands of tokens on Turn 1 alone.</strong></p>
                             
                             <div class="compare-grid">
                                 <div class="compare-col compare-bad">
@@ -2982,14 +2982,14 @@ embed = false</pre>
                                         • <strong>Ticket/Wiki Web Fetch:</strong> <code>token-goat web-output</code> strips HTML boilerplate to raw ticket payload: <strong>850 tokens</strong> (saved 7,650).<br>
                                         • <strong>Architecture Standards Doc:</strong> <code>token-goat section "docs/architecture-standards.md::Retry Policies"</code>: <strong>400 tokens</strong> (saved 5,100).<br>
                                         • <strong>Existing Service &amp; DTOs:</strong> <code>token-goat skeleton PaymentService.cs</code> extracts only method signatures and interfaces: <strong>450 tokens</strong> (saved 11,550).<br>
-                                        • <strong>Base Prompt + Guidance:</strong> 1,900 tokens (+400 initial guidance).<br>
-                                        <strong>Total Context: 3,600 tokens (~$0.05 on Opus 5).</strong><br>
-                                        <strong>Verdict:</strong> <strong>Token-goat SAVES 23,900 tokens (87% reduction) on Turn 1 alone!</strong>
+                                        • <strong>Base Prompt + Guidance:</strong> 1,900 tokens (+900 initial guidance).<br>
+                                        <strong>Total Context: 4,100 tokens (~$0.06 on Opus 5).</strong><br>
+                                        <strong>Verdict:</strong> <strong>Token-goat SAVES 23,400 tokens (85% reduction) on Turn 1 alone!</strong>
                                     </div>
                                 </div>
                             </div>
                             
-                            <p style="margin-top:10px; font-size:12px; color:var(--text-dim);"><em>Note on the isolated toy case:</em> The only theoretical scenario where token-goat represents a net cost is pasting a tiny 150-word raw text snippet into an empty chat with <em>zero external fetches, zero policy lookups, and zero repo grounding</em> (net penalty: ~400 tokens, or ~$0.006 on Opus). But that is a generic chatbot chat, not an enterprise quality agent workflow. Though it would explain my own negative experiences with IT tickets.</p>
+                            <p style="margin-top:10px; font-size:12px; color:var(--text-dim);"><em>Note on the isolated toy case:</em> The only theoretical scenario where token-goat represents a net cost is pasting a tiny 150-word raw text snippet into an empty chat with <em>zero external fetches, zero policy lookups, and zero repo grounding</em> (net penalty: ~900 tokens, or ~$0.014 on Opus). But that is a generic chatbot chat, not an enterprise quality agent workflow. Though it would explain my own negative experiences with IT tickets.</p>
                         </div>
                     </div>
 
@@ -3005,11 +3005,11 @@ embed = false</pre>
                             <p>Let's break down the exact economics across all three cost dimensions:</p>
                             <ul>
                                 <li><strong>Dollar / API Cost: $0.00 (Completely Free).</strong> <code>token-goat semantic</code> does <em>not</em> call OpenAI embeddings, Anthropic, or any paid cloud service. It runs 100% locally on your machine's CPU using ONNX Runtime (<code>bge-small-en-v1.5</code>) and queries local SQLite vector tables. It consumes zero cloud API tokens and costs $0.00.</li>
-                                <li><strong>Token Savings: Replaces a 2,000–15,000 Token Dump with ~40 Tokens (98% Savings).</strong><br>
+                                <li><strong>Token Savings: Returns a short ranked list of locations instead of a repository-wide text dump.</strong><br>
                                     When an agent wants to discover where a concept lives (e.g., <em>"where is payment retry handled?"</em>):
                                     <ul>
-                                        <li><strong>Without <code>token-goat semantic</code>:</strong> The agent executes recursive <code>grep</code> or <code>findstr</code> commands across the repo. This routinely dumps <strong>1,500 to 4,000+ tokens</strong> of raw matched lines into context. Worse, if grep fails to reveal the context, the agent blindly opens 2 to 4 full source files, burning <strong>10,000 to 25,000+ tokens</strong> just to find the relevant function.</li>
-                                        <li><strong>With <code>token-goat semantic</code>:</strong> The local ONNX vector search returns <strong>only 2 or 3 lines</strong> pointing directly to the exact file and symbol (e.g., <code>src/billing/payment.ts:42 (retryPayment)</code>)—consuming a mere <strong>~30 to 50 tokens</strong>.</li>
+                                        <li><strong>Without <code>token-goat semantic</code>:</strong> The agent executes recursive <code>grep</code> or <code>findstr</code> commands across the repo, which dumps every matched line whether or not it is relevant: searching this repository’s own <code>src/</code> for <code>retry</code> returns 24,189 characters, roughly 6,000 tokens. Worse, if the match list does not reveal the context, the agent falls back to opening whole source files.</li>
+                                        <li><strong>With <code>token-goat semantic</code>:</strong> The local ONNX vector search returns a ranked handful of hits, each named by file, symbol, and line range (e.g., <code>src/billing/payment.ts:42 (retryPayment)</code>) with its body—about 4,900 characters, roughly 1,200 tokens, measured on this repository.</li>
                                         <li><strong>Net Token Savings:</strong> Every call to <code>semantic</code> <strong>saves 1,500 to 10,000+ tokens</strong> by preventing the model from performing shotgun text searches or blind full-file reads!</li>
                                     </ul>
                                 </li>
@@ -3160,7 +3160,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                             <p>On Apple Silicon Macs (ARM64), token-goat delivers exceptional performance:</p>
 <ul>
     <li><strong>Hardware Accelerated ONNX Runtime:</strong> <code>onnxruntime-node</code> compiles natively for Apple Silicon, utilizing ARM NEON vector instructions for local embedding inference.</li>
-    <li><strong>Ultra-Fast Cold Indexing:</strong> Generating local vector embeddings for an entire repository on an M2/M3 MacBook takes only <strong>6 to 12 seconds</strong>, outperforming x86 laptops by more than 2x.</li>
+    <li><strong>Fast Cold Indexing:</strong> Generating local vector embeddings for an entire repository is a one-time cost paid in the background, and Apple Silicon runs the inference faster than an equivalent x86 laptop.</li>
     <li><strong>Native POSIX Signal Handling:</strong> Process prioritization (<code>process_priority.ts</code>) uses native POSIX <code>nice</code> levels, ensuring background worker indexing never causes UI lag or thermal throttling on MacBooks.</li>
 </ul>
                         </div>
@@ -3762,7 +3762,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                 <div style="margin-top:16px;">
                     <div class="example-box">
                         <div class="example-header">Operational Advisory on offline = true</div>
-                        If <code>offline = true</code> is enforced before the local embedding model (<code>bge-small-en-v1.5</code>, ~30 MB) has been cached to <code>~/.token-goat/models/</code>, semantic vector search is disabled. Run <code>token-goat doctor</code> once while connected to the company registry before locking down network egress.
+                        If <code>offline = true</code> is enforced before the local embedding model (<code>bge-small-en-v1.5</code>, ~35 MB) has been cached to <code>~/.token-goat/models/</code>, semantic vector search is disabled. Run <code>token-goat doctor</code> once while connected to the company registry before locking down network egress.
                     </div>
                 </div>
             </div>
@@ -3957,7 +3957,7 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                         <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px;">
                             <div style="font-weight:700; font-size:12.5px; color:var(--accent); margin-bottom:4px;">6. Image Shrinking &amp; Secret Redaction</div>
                             <p style="font-size:11.5px; color:var(--text-dim); line-height:1.45; margin:0;">
-                                Token-Goat automatically downscales high-resolution screenshots and diagram buffers before transmission (cutting 1,600-token images down to 350 tokens) and sanitizes API keys and bearer tokens through high-entropy pre-tool redaction.
+                                Token-Goat automatically downscales high-resolution screenshots and diagram buffers before transmission (capping them at 1,568 tokens, and well below that for most screenshots) and sanitizes API keys and bearer tokens through high-entropy pre-tool redaction.
                             </p>
                         </div>
 
@@ -4020,9 +4020,9 @@ Output the result as a concise Markdown summary that contains zero proprietary i
                             </tr>
                             <tr>
                                 <td><strong>RAM &amp; System Overhead</strong></td>
-                                <td>Heavy (350 MB to 1.5 GB per Roslyn instance)</td>
+                                <td>Heavy (hundreds of MB to over 1 GB per Roslyn instance)</td>
                                 <td>Embedded in VS Code Electron process</td>
-                                <td><span style="color:#16a34a; font-weight:700;">Ultra-lightweight</span> (a local SQLite index, no resident server)</td>
+                                <td>A local SQLite index plus one background reindex worker; CLI calls are short-lived processes</td>
                             </tr>
                             <tr>
                                 <td><strong>Supported Agent Harnesses</strong></td>
