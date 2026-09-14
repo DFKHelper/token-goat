@@ -99,4 +99,34 @@ describe('the read hook reaches every extension the file-type dispatcher routes'
 
     expect(result.hookType).not.toBe('deny')
   })
+
+  it('intercepts a JSON file above the JSON threshold and well below the generic gate', () => {
+    const file = path.join(base, 'large.json')
+    fs.writeFileSync(file, JSON.stringify({ title: 'Large JSON', padding: 'x'.repeat(FILE_TYPE_THRESHOLDS.json * 2) }))
+    const size = fs.statSync(file).size
+    expect(size).toBeGreaterThan(FILE_TYPE_THRESHOLDS.json)
+    expect(size).toBeLessThan(FILE_TYPE_THRESHOLDS.generic)
+
+    const result = preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file }, sessionId: 'json-reach' }))
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('json-outline')
+      expect(result.message).toContain('json-query')
+    }
+  })
+
+  it('intercepts a SQLite file regardless of size', () => {
+    const file = path.join(base, 'test.sqlite')
+    fs.writeFileSync(file, 'SQLite format 3\0\0\0')
+
+    const result = preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file }, sessionId: 'sqlite-reach' }))
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('sqlite-tables')
+      expect(result.message).toContain('sqlite-schema')
+      expect(result.message).toContain('sqlite-query')
+    }
+  })
 })

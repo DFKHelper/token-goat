@@ -25,8 +25,13 @@ export const FILE_TYPE_THRESHOLDS = {
   xml: 20_000,
   csv: 10_000,
   tsv: 10_000,
+  json: 20_000,
+  yaml: 20_000,
+  jsonl: 20_000,
   transcript: 10_000,
   office: 0,           // always block (.docx etc)
+  sqlite: 0,           // always block (.db, .sqlite, etc)
+  parquet: 0,          // always block (.parquet)
   generic: 100_000,    // catch-all for unrecognized large files
 } as const
 
@@ -373,6 +378,125 @@ export function handleTranscript(filePath: string, content: string, contentLengt
   }
 }
 
+/** SQLite handler — always blocks regardless of size, redirects to sqlite-* commands. */
+export function handleSqlite(filePath: string): FileTypeResult {
+  return {
+    shouldBlock: true,
+    message: [
+      `SQLite database — Read cannot return binary database content; this is not retryable with different Read parameters.`,
+      `See tables: token-goat sqlite-tables "${filePath}"`,
+      `See schema: token-goat sqlite-schema "${filePath}"`,
+      `Query data: token-goat sqlite-query "${filePath}" "SELECT ... FROM ... LIMIT 20"`,
+    ].join('\n'),
+  }
+}
+
+/** Parquet handler — always blocks regardless of size. */
+export function handleParquet(filePath: string): FileTypeResult {
+  return {
+    shouldBlock: true,
+    message: [
+      `Parquet file — Read cannot return binary columnar content; this is not retryable with different Read parameters.`,
+      `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet('${filePath}') LIMIT 10"`,
+    ].join('\n'),
+  }
+}
+
+/** JSON handler — blocks when file exceeds threshold. */
+export function handleJson(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.json) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: [
+        `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        `See structure: token-goat json-outline "${filePath}"`,
+        `Query subtree: token-goat json-query "${filePath}" '<path>'`,
+      ].join('\n'),
+    }
+  }
+
+  let summary = ''
+  try {
+    const parsed = JSON.parse(content)
+    if (Array.isArray(parsed)) {
+      summary = `JSON array (${parsed.length} items)`
+      if (parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
+        const itemKeys = Object.keys(parsed[0]).slice(0, 10)
+        summary += `, item keys: ${itemKeys.join(', ')}${Object.keys(parsed[0]).length > 10 ? '...' : ''}`
+      }
+    } else if (typeof parsed === 'object' && parsed !== null) {
+      const keys = Object.keys(parsed).slice(0, 15)
+      summary = `Top-level keys (${Object.keys(parsed).length}): ${keys.join(', ')}${Object.keys(parsed).length > 15 ? '...' : ''}`
+    }
+  } catch {
+    // Malformed JSON or unparseable
+  }
+
+  return {
+    shouldBlock: true,
+    message: [
+      `Large JSON file (${formatBytes(length)}).`,
+      summary ? fenceUntrustedFileContent(summary) : '',
+      `See structure: token-goat json-outline "${filePath}"`,
+      `Query subtree: token-goat json-query "${filePath}" '<path>'`,
+    ].filter(Boolean).join('\n'),
+  }
+}
+
+/** YAML handler — blocks when file exceeds threshold. */
+export function handleYaml(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.yaml) return { shouldBlock: false, message: '' }
+
+  return {
+    shouldBlock: true,
+    message: [
+      `Large YAML file (${formatBytes(length)}).`,
+      `See structure: token-goat yaml-outline "${filePath}"`,
+      `Query subtree: token-goat yaml-query "${filePath}" '<path>'`,
+    ].join('\n'),
+  }
+}
+
+/** JSON Lines (JSONL) handler — blocks when file exceeds threshold. */
+export function handleJsonl(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.jsonl) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: `Large JSON Lines file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Slice records with Read using offset and limit (each line is a single JSON record).`,
+    }
+  }
+
+  const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0)
+  let schema = ''
+  if (lines.length > 0) {
+    try {
+      const firstObj = JSON.parse(lines[0]!)
+      if (typeof firstObj === 'object' && firstObj !== null && !Array.isArray(firstObj)) {
+        const keys = Object.keys(firstObj).slice(0, 15)
+        schema = `Record keys: ${keys.join(', ')}${Object.keys(firstObj).length > 15 ? '...' : ''}`
+      }
+    } catch {
+      // not strict JSON on first line
+    }
+  }
+
+  return {
+    shouldBlock: true,
+    message: [
+      `Large JSON Lines file (${formatBytes(length)}, ~${lines.length} records).`,
+      schema ? fenceUntrustedFileContent(schema) : '',
+      `Slice records with Read using offset and limit (each line is a single JSON record), e.g. offset=1, limit=5.`,
+    ].filter(Boolean).join('\n'),
+  }
+}
+
 /** Generic catch-all for unrecognized large files. */
 export function handleGenericLarge(filePath: string, contentLength: number): FileTypeResult {
   if (contentLength < FILE_TYPE_THRESHOLDS.generic) return { shouldBlock: false, message: '' }
@@ -413,9 +537,13 @@ export function dispatchFileTypeHandler(
   if (ext === 'pptx') return handlePptx(filePath)
   if (ext === 'docx') return handleDocx(filePath)
   if (['odt', 'ods', 'ott', 'odp'].includes(ext)) return handleOfficeBinary(filePath)
+  if (['sqlite', 'db', 'sqlite3', 'db3'].includes(ext)) return handleSqlite(filePath)
+  if (ext === 'parquet') return handleParquet(filePath)
   if (ext === 'csv' || ext === 'tsv') return handleCsv(filePath, content, effectiveLength)
   if (ext === 'vtt' || ext === 'srt') return handleTranscript(filePath, content, effectiveLength)
-
+  if (ext === 'json') return handleJson(filePath, content, effectiveLength)
+  if (['yaml', 'yml'].includes(ext)) return handleYaml(filePath, content, effectiveLength)
+  if (ext === 'jsonl') return handleJsonl(filePath, content, effectiveLength)
 
   // Generic catch-all
   return handleGenericLarge(filePath, effectiveLength)

@@ -6,14 +6,19 @@ import {
   handleDocx,
   handleGenericLarge,
   handleHtml,
+  handleJson,
+  handleJsonl,
   handleOfficeBinary,
+  handleParquet,
   handlePdf,
   handlePptx,
+  handleSqlite,
   handleSvg,
   handleTranscript,
   handleTxt,
   handleXlsx,
   handleXml,
+  handleYaml,
   FILE_TYPE_THRESHOLDS,
 } from '../src/hints/file_type_handler.js'
 
@@ -679,6 +684,64 @@ describe('dispatchFileTypeHandler', () => {
     expect(logResult?.shouldBlock).toBe(true)
     expect(txtResult?.shouldBlock).toBe(false)
   })
+
+  it('dispatches .db, .sqlite, .sqlite3, .db3 to handleSqlite', () => {
+    for (const ext of ['db', 'sqlite', 'sqlite3', 'db3']) {
+      const result = dispatchFileTypeHandler(`/path/to/database.${ext}`, '')
+      expect(result?.shouldBlock).toBe(true)
+      expect(result?.message).toContain('sqlite-tables')
+      expect(result?.message).toContain('sqlite-schema')
+      expect(result?.message).toContain('sqlite-query')
+    }
+  })
+
+  it('dispatches .parquet to handleParquet', () => {
+    const result = dispatchFileTypeHandler('/path/to/data.parquet', '')
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('read_parquet')
+  })
+
+  it('dispatches large JSON to handleJson', () => {
+    const content = JSON.stringify({ name: 'test', padding: makeStr(FILE_TYPE_THRESHOLDS.json) })
+    const result = dispatchFileTypeHandler('/path/to/data.json', content)
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('json-outline')
+    expect(result?.message).toContain('json-query')
+  })
+
+  it('small JSON passes through', () => {
+    const result = dispatchFileTypeHandler('/path/to/config.json', '{"name": "test"}')
+    expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('dispatches large YAML and YML to handleYaml', () => {
+    const content = `key: value\n${makeStr(FILE_TYPE_THRESHOLDS.yaml)}`
+    const ymlResult = dispatchFileTypeHandler('/path/to/config.yml', content)
+    const yamlResult = dispatchFileTypeHandler('/path/to/config.yaml', content)
+    expect(ymlResult?.shouldBlock).toBe(true)
+    expect(ymlResult?.message).toContain('yaml-outline')
+    expect(yamlResult?.shouldBlock).toBe(true)
+    expect(yamlResult?.message).toContain('yaml-outline')
+  })
+
+  it('small YAML passes through', () => {
+    const result = dispatchFileTypeHandler('/path/to/config.yaml', 'name: app\nversion: 1.0\n')
+    expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('dispatches large JSONL to handleJsonl', () => {
+    const lines = Array.from({ length: 1000 }, (_, i) => JSON.stringify({ id: i, label: `row-${i}` }))
+    const content = lines.join('\n')
+    const result = dispatchFileTypeHandler('/path/to/events.jsonl', content)
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('JSON Lines')
+    expect(result?.message).toContain('Record keys')
+  })
+
+  it('small JSONL passes through', () => {
+    const result = dispatchFileTypeHandler('/path/to/events.jsonl', '{"id":1}\n{"id":2}\n')
+    expect(result?.shouldBlock).toBe(false)
+  })
 })
 
 describe('handleSvg', () => {
@@ -723,5 +786,106 @@ describe('handleXml', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('xml-outline')
     expect(result.message).toContain('xml-query')
+  })
+})
+
+describe('handleSqlite', () => {
+  it('always blocks regardless of size and directs to sqlite-tables, sqlite-schema, sqlite-query', () => {
+    const result = handleSqlite('/path/to/vehicles.db')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('sqlite-tables')
+    expect(result.message).toContain('sqlite-schema')
+    expect(result.message).toContain('sqlite-query')
+  })
+})
+
+describe('handleParquet', () => {
+  it('always blocks regardless of size and directs to read_parquet', () => {
+    const result = handleParquet('/path/to/records.parquet')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('read_parquet')
+  })
+})
+
+describe('handleJson', () => {
+  it('returns shouldBlock false below threshold', () => {
+    const content = JSON.stringify({ a: 1, b: 2 })
+    const result = handleJson('/path/to/data.json', content)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks large JSON object and outlines top-level keys', () => {
+    const obj: Record<string, unknown> = {
+      model: 'renegade',
+      year: 2026,
+      metadata: makeStr(FILE_TYPE_THRESHOLDS.json),
+    }
+    const content = JSON.stringify(obj)
+    const result = handleJson('/path/to/metadata.json', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('Top-level keys')
+    expect(result.message).toContain('model')
+    expect(result.message).toContain('json-outline')
+    expect(result.message).toContain('json-query')
+  })
+
+  it('blocks large JSON array and reports item count and keys', () => {
+    const arr = Array.from({ length: 500 }, (_, i) => ({ id: i, label: `label-${i}`, extra: makeStr(50) }))
+    const content = JSON.stringify(arr)
+    const result = handleJson('/path/to/items.json', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('JSON array (500 items)')
+    expect(result.message).toContain('item keys: id, label, extra')
+    expect(result.message).toContain('json-outline')
+    expect(result.message).toContain('json-query')
+  })
+
+  it('handles previewUnavailable gracefully when file is too large to scan', () => {
+    const result = handleJson('/path/to/huge.json', '', 50_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('too large to preview')
+    expect(result.message).toContain('json-outline')
+    expect(result.message).toContain('json-query')
+  })
+})
+
+describe('handleYaml', () => {
+  it('returns shouldBlock false below threshold', () => {
+    const content = 'name: service\nport: 8080\n'
+    const result = handleYaml('/path/to/service.yaml', content)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks large YAML and suggests yaml-outline and yaml-query', () => {
+    const content = `name: app\n${makeStr(FILE_TYPE_THRESHOLDS.yaml)}`
+    const result = handleYaml('/path/to/app.yaml', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('yaml-outline')
+    expect(result.message).toContain('yaml-query')
+  })
+})
+
+describe('handleJsonl', () => {
+  it('returns shouldBlock false below threshold', () => {
+    const content = '{"id": 1}\n{"id": 2}\n'
+    const result = handleJsonl('/path/to/events.jsonl', content)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks large JSONL and shows record count and record keys', () => {
+    const lines = Array.from({ length: 300 }, (_, i) => JSON.stringify({ id: i, text: `sample text ${i}`, padding: makeStr(80) }))
+    const content = lines.join('\n')
+    const result = handleJsonl('/path/to/dataset.jsonl', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('300 records')
+    expect(result.message).toContain('Record keys: id, text, padding')
+    expect(result.message).toContain('offset and limit')
+  })
+
+  it('handles previewUnavailable gracefully when JSONL is too large to scan', () => {
+    const result = handleJsonl('/path/to/huge.jsonl', '', 50_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('too large to preview')
+    expect(result.message).toContain('offset and limit')
   })
 })
