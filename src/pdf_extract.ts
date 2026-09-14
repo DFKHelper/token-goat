@@ -432,16 +432,19 @@ export interface PdfOutlineEntry {
   page: number | null
 }
 
-async function resolveDestPage(doc: pdfjsTypes.PDFDocumentProxy, dest: string | unknown[] | null): Promise<number | null> {
+/** The page one outline entry points at, or null when the destination does not resolve to one. Both awaits are raced against the document's deadline, as every other document await in this file is. The walk above checks the clock once per entry, which bounds how many times this runs but says nothing about how long one call takes, and both of these resolve a name through structures the file supplies: `getDestination` walks the name tree under `/Dests`, `getPageIndex` walks the page tree looking for the referenced page. Either can be made to search a large or pathological tree by the document, and without the race a single entry could hold the command open past the deadline the clock above exists to enforce. */
+export async function resolveDestPage(doc: pdfjsTypes.PDFDocumentProxy, dest: string | unknown[] | null, deadline: number): Promise<number | null> {
   let explicitDest = dest
   if (typeof explicitDest === 'string') {
-    explicitDest = await doc.getDestination(explicitDest)
+    explicitDest = await raceDeadline(doc.getDestination(explicitDest), deadline)
   }
   if (!Array.isArray(explicitDest) || explicitDest.length === 0) return null
   try {
-    const pageIndex = await doc.getPageIndex(explicitDest[0] as never)
+    const pageIndex = await raceDeadline(doc.getPageIndex(explicitDest[0] as never), deadline)
     return pageIndex + 1
-  } catch {
+  } catch (err) {
+    // A destination that does not resolve is a property of the file, not a failure: it answers null and the entry keeps its title with no page. The deadline is not that -- it is the command giving up -- so it is rethrown rather than swallowed into a null the caller cannot tell apart from an ordinary unresolved destination.
+    if (err instanceof PdfTookTooLongError) throw err
     return null
   }
 }
@@ -469,7 +472,7 @@ export async function extractPdfOutline(data: Uint8Array): Promise<PdfOutlineEnt
         for (const item of items) {
           if (entries.length >= MAX_OUTLINE_ENTRIES) return
           if (Date.now() > deadline) throw pdfWorkTookTooLong()
-          const page = await resolveDestPage(doc, item.dest)
+          const page = await resolveDestPage(doc, item.dest, deadline)
           const title = item.title.trim()
           entries.push({ level, title: title.length > MAX_OUTLINE_TITLE_CHARS ? `${title.slice(0, MAX_OUTLINE_TITLE_CHARS)}...` : title, page })
           if (item.items.length > 0) await walk(item.items, level + 1)

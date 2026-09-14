@@ -25,6 +25,7 @@ import {
   MAX_PDF_WORK_MILLIS,
   PDF_TEARDOWN_MILLIS,
   reconstructLayout,
+  resolveDestPage,
   PdfTooLargeError,
   PdfTookTooLongError,
   pdfWorkDeadline,
@@ -566,6 +567,39 @@ describe('a bookmark tree that is wide rather than deep', () => {
   it('still returns an ordinary outline untouched', async () => {
     const entries = await extractPdfOutline(wideOutlinePdfBytes(3, 6))
     expect(entries.map((e) => e.title)).toEqual(['TTTTTT0', 'TTTTTT1', 'TTTTTT2'])
+  })
+})
+
+describe('the two destination lookups one bookmark entry makes', () => {
+  // HAND-DERIVED: a document proxy is a pdfjs object, but what is under test is whether these two awaits are raced, which is a property of our own control flow and not of pdfjs's wire format. A promise that never settles is the only input that separates a raced await from an unraced one -- an unraced one simply never returns, and no assertion can be written against that except the test timing out. The outline walk checks the clock once per entry, so it bounds how MANY entries are visited and says nothing about how long one of them takes; both lookups below search a tree the file supplies.
+  const neverSettles = <T,>(): Promise<T> => new Promise<T>(() => {})
+  const expired = (): number => Date.now() - 1
+
+  it('gives up on a named destination whose name-tree lookup never comes back', async () => {
+    const doc = { getDestination: () => neverSettles<unknown[]>(), getPageIndex: () => neverSettles<number>() } as unknown as pdfjsTypes.PDFDocumentProxy
+    await expect(resolveDestPage(doc, 'chapter-one', expired())).rejects.toBeInstanceOf(PdfTookTooLongError)
+  }, 10_000)
+
+  it('gives up on a page-tree walk that never comes back, rather than reporting it as an unresolved bookmark', async () => {
+    const doc = { getDestination: () => neverSettles<unknown[]>(), getPageIndex: () => neverSettles<number>() } as unknown as pdfjsTypes.PDFDocumentProxy
+    // The catch around getPageIndex answers null for a destination that does not resolve, which is an ordinary property of a file. Swallowing the deadline into that same null would report a command that ran out of time as a bookmark with no page.
+    await expect(resolveDestPage(doc, [{}, 'XYZ'], expired())).rejects.toBeInstanceOf(PdfTookTooLongError)
+  }, 10_000)
+
+  it('still answers normally, and still answers null for a destination that does not resolve', async () => {
+    const doc = {
+      getDestination: (name: string) => Promise.resolve(name === 'known' ? [{ num: 4 }, 'XYZ'] : null),
+      getPageIndex: () => Promise.resolve(6),
+    } as unknown as pdfjsTypes.PDFDocumentProxy
+    expect(await resolveDestPage(doc, 'known', Date.now() + 60_000)).toBe(7)
+    expect(await resolveDestPage(doc, 'missing', Date.now() + 60_000)).toBeNull()
+    const rejecting = { getDestination: () => Promise.resolve(null), getPageIndex: () => Promise.reject(new Error('no such page')) } as unknown as pdfjsTypes.PDFDocumentProxy
+    expect(await resolveDestPage(rejecting, [{}, 'XYZ'], Date.now() + 60_000)).toBeNull()
+  })
+
+  it('is called by the outline walk with the document clock, since a stub doc cannot prove the caller passes one', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'pdf_extract.ts'), 'utf8')
+    expect(source).toContain('resolveDestPage(doc, item.dest, deadline)')
   })
 })
 
