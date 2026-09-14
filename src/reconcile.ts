@@ -323,24 +323,24 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     changed.push(file)
   }
 
-  // A deletion is inferred from absence, so it is only sound when the tracked-file enumeration
-  // actually produced the population it is being compared against. Two ways it does not:
-  //
-  //   - A budget-truncated pass never visited some tracked files, and every unvisited one looks
-  //     "indexed but not on disk" here.
-  //   - `getTrackedFiles` returns an empty list for a directory git cannot enumerate -- not a
-  //     repository, git not installed, git errored -- which is indistinguishable in the numbers
-  //     from a project whose every file was deleted. Measured against a real non-git project with
-  //     two live files and a populated index: every one of them was reported gone and queued for
-  //     removal.
-  //
-  // In both cases an incomplete sweep reports no deletions at all rather than a guess, because
-  // enqueueing a live file for removal is the one mistake here that destroys working index rows.
+  // A deletion is inferred from absence, so it is only sound when the enumeration it is measured against actually produced the population being compared. Two ways it does not: a budget-truncated pass never visited some tracked files, and every unvisited one looks indexed-but-gone here; and `getTrackedFiles` returns an empty list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- which is indistinguishable in the numbers from a project whose every file was deleted (measured against a real non-git project with two live files and a populated index: every one of them was reported gone and queued for removal). In both cases an incomplete sweep reports no deletions at all rather than a guess, because enqueueing a live file for removal is the one mistake here that destroys working index rows.
   const trackedUnavailable = tracked.length === 0 && indexed.size > 0
   const removed: string[] = []
   if (!budgetExhausted && !trackedUnavailable) {
     for (const [folded, entry] of indexed) {
-      if (!seenOnDisk.has(folded)) removed.push(entry.filePath)
+      if (seenOnDisk.has(folded)) continue
+      // The loop above costs one map lookup per row; this one costs a disk stat, so it needs the same clock the scan loop has. Read before the stat rather than after it, because a row that is still on disk takes an early exit: a check placed below that exit is reached only on rows that turn out to be deletions, which lets the contents of the index decide whether the bound is consulted at all. A sweep that runs out here reports no deletions and says so, rather than shipping the prefix it happened to reach as though it were the whole answer.
+      if (Date.now() - startedAt > budgetMs) {
+        budgetExhausted = true
+        removed.length = 0
+        break
+      }
+      // The stat is the whole check. `seenOnDisk` is filled from `git ls-files`, so on its own it says "not tracked", which is a different question from "not on disk" for every row the incremental path wrote: `token-goat index` lists tracked files only, but a file reaches the index whenever the agent reads or edits it, gitignored or merely not `git add`ed yet. Measured on this repository's own index, 228 of its 1,628 rows were untracked and all 228 were live on disk -- 201 under `scratch/`, 12 under `.claude/`, 5 under `node_modules/`, the rest loose files nobody had staged. Without this stat each sweep reported all of them as deletions and queued them for removal, the next read put them straight back, and the next sweep removed them again -- churn that never settles, and precisely the live-file removal the paragraph above calls the one mistake that destroys working index rows.
+      try {
+        fs.statSync(entry.filePath)
+      } catch {
+        removed.push(entry.filePath)
+      }
     }
   }
 
