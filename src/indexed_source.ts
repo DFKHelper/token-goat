@@ -11,3 +11,13 @@ export function indexedSourceText(filePath: string, raw: string): string {
 export function isVirtualIndexedPath(filePath: string): boolean {
   return filePath.toLowerCase().endsWith('.ipynb')
 }
+
+/** Shared by {@link formatSymbolLocation} and outline's path-less columnar row (which has no `path:` prefix to hang the check on, only the bare `sym.filePath` it renders alongside), so the wording naming a virtual-indexed location can never drift between the two surfaces. */
+export const NOTEBOOK_CELL_LINES_SUFFIX = ' (notebook cell lines)'
+
+/** Formats a symbol's stored location for display, appending {@link NOTEBOOK_CELL_LINES_SUFFIX} when the path is virtual-indexed so the printed coordinate is never mistaken for a line in the JSON on disk -- see {@link isVirtualIndexedPath}'s doc for the bug this closes (brief/outline printed `nb.ipynb:13-14`, which addressed the flattened virtual document, not line 13 of the notebook JSON). Non-notebook output is byte-identical to the pre-existing hand-rolled label: a `lineEnd` is only omitted when the caller passed none (a single-line result), never collapsed just because `lineStart === lineEnd` -- several callers (runSymbol, brief) print a one-line symbol's range as `1-1` today, and tests pin that exact byte shape. */
+export function formatSymbolLocation(displayPath: string, lineStart: number, lineEnd?: number): string {
+  const range = lineEnd === undefined ? `${lineStart}` : `${lineStart}-${lineEnd}`
+  const suffix = isVirtualIndexedPath(displayPath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
+  return `${displayPath}:${range}${suffix}`
+}

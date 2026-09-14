@@ -20,6 +20,7 @@ import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, toDispla
 import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { resolveBody, warnIfFilesStale } from './read_commands.js'
+import { formatSymbolLocation } from './indexed_source.js'
 import { getSessionFiles } from './session.js'
 import { pushAll, decodeSource, foldPath, escapeRegExp, requireNonNegativeStrictInt, suggestPackageNames } from './util.js'
 import { detectWalkMode } from './walk_mode.js'
@@ -614,7 +615,7 @@ function formatFrameBody(frame: TraceFrame, projectRoot: string, seen: Map<strin
     // file:line", the same phrasing `token-goat scope` itself reports.
     return [`    # body: No symbols enclosing line ${frame.lineNo} in '${frame.file}'`]
   }
-  const header = `    # body: ${resolved.name}  ${resolved.kind}  ${resolved.filePath}:${resolved.lineStart}-${resolved.lineEnd}`
+  const header = `    # body: ${resolved.name}  ${resolved.kind}  ${formatSymbolLocation(resolved.filePath, resolved.lineStart, resolved.lineEnd)}`
   if (seen.has(resolved.key)) {
     return [`${header} (same as above)`]
   }

@@ -30,6 +30,7 @@ import { decodeSource, runGit, ensureNewline, isTestFile, foldPath, extractError
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
+import { formatSymbolLocation } from './indexed_source.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
@@ -1495,7 +1496,7 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   for (const r of filtered) {
-    emit(`${displaySafeText(r.name)}\t${displaySafeText(r.kind)}\t${displaySafeText(toDisplayPath(rootDir, r.filePath))}:${r.lineStart}`)
+    emit(`${displaySafeText(r.name)}\t${displaySafeText(r.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, r.filePath)), r.lineStart)}`)
   }
   // stderr, so a shell pipeline reading the rows is unaffected, and only when the cap bit.
   if (cappedOut > 0) {
@@ -1603,7 +1604,7 @@ export function runScope(opts: ScopeOptions): number {
   }
 
   for (const s of enclosing) {
-    emit(`${displaySafeText(s.name)}\t${displaySafeText(s.kind)}\t${displaySafeText(toDisplayPath(scopeDisplayRoot, s.filePath))}:${s.lineStart}-${s.lineEnd}`)
+    emit(`${displaySafeText(s.name)}\t${displaySafeText(s.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(scopeDisplayRoot, s.filePath)), s.lineStart, s.lineEnd)}`)
   }
   return 0
 }
@@ -1831,7 +1832,7 @@ export function runSimilar(opts: SimilarOptions): number {
     emit(displaySafeJson(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart }))))
     return 0
   }
-  for (const h of results) emit(`${displaySafeText(h.name)}\t${displaySafeText(h.kind)}\t${displaySafeText(toDisplayPath(rootDir, h.filePath))}:${h.lineStart}`)
+  for (const h of results) emit(`${displaySafeText(h.name)}\t${displaySafeText(h.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, h.filePath)), h.lineStart)}`)
   return 0
 }
 

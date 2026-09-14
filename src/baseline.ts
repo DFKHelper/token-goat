@@ -20,6 +20,7 @@ import { getDb } from './db.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
+import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
@@ -316,7 +317,7 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
     // path is, so `- normalizePath (function) — src/paths.ts:12-23` can be fed straight back in as
     // `read "src/paths.ts::normalizePath"`. Costs ~10 tokens a line and saves a round trip each.
     for (const s of map.topSymbols) {
-      const loc = `${displaySafeText(toDisplayPath(map.rootDir, s.filePath))}:${s.lineStart}-${s.lineEnd}`
+      const loc = formatSymbolLocation(displaySafeText(toDisplayPath(map.rootDir, s.filePath)), s.lineStart, s.lineEnd)
       lines.push(`- ${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${loc}`)
     }
   } else {

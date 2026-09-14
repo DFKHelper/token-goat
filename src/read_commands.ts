@@ -12,7 +12,7 @@ import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
-import { indexedSourceText } from './indexed_source.js'
+import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -1276,7 +1276,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       const exactMatches = rawSymbols.filter((s) => s.name === opts.name)
       if (exactMatches.length > 0) {
         const shown = exactMatches.slice(0, DIDYOUMEAN_LIMIT)
-        const where = shown.map((s) => `${s.kind} at ${toDisplayPath(rootDir, s.filePath)}:${s.lineStart}`).join('; ')
+        const where = shown.map((s) => `${s.kind} at ${formatSymbolLocation(toDisplayPath(rootDir, s.filePath), s.lineStart)}`).join('; ')
         const more = exactMatches.length > shown.length ? ` (+${exactMatches.length - shown.length} more)` : ''
         const flags = [opts.kind !== undefined ? '--kind' : null, opts.file !== undefined ? '--file' : null].filter((f): f is string => f !== null)
         const widen = flags.length > 0 ? `drop ${flags.join('/')} to see it` : 'widen the search scope to see it'
@@ -1361,7 +1361,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // indexed project, so one hit can be a live file and the next one a checkout that was deleted
     // months ago. A single header line would have to lie about one of them.
     const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
-    const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}${statsStr}${goneTag}`
+    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${statsStr}${goneTag}`
     const body = resolveBody(sym)
     const bodyLines = body.split(/\r?\n/)
     const preview = bodyLines.slice(0, SYMBOL_PREVIEW_LINES).join('\n')
@@ -3315,7 +3315,9 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     // and must not be rendered as one (see hasRealDocstring).
     const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring.split('\n')[0] ?? '')}` : ''
     const statsStr = formatStatsSuffix(refCounts, sym)
-    lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
+    // outline has no `path:` prefix on the row to hang formatSymbolLocation's check on (the file is named once, in the header above) -- so the notebook marker is appended directly off the same isVirtualIndexedPath/NOTEBOOK_CELL_LINES_SUFFIX pair that helper uses, rather than routing a bare range through it.
+    const notebookSuffix = isVirtualIndexedPath(sym.filePath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
+    lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)
   }
   const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
   recordReadStat('outline', fullSourceBytes, text, opts.file)
@@ -4862,7 +4864,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
     // This header is token-goat's own line quoting a repo-chosen name, kind and path, so it is escaped. `body` below it is the source the reader asked for and stays byte-for-byte.
-    `# ${displaySafeText(match.name)}  ${displaySafeText(match.kind)}  ${displaySafeText(toDisplayPath(rootDir, match.filePath))}:${match.lineStart}-${match.lineEnd}`,
+    `# ${displaySafeText(match.name)}  ${displaySafeText(match.kind)}  ${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, match.filePath)), match.lineStart, match.lineEnd)}`,
     `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)`,
     body,
     '',
@@ -5433,9 +5435,9 @@ export function runChanged(opts: ChangedOptions = {}): number {
       recordReadStat('changed_lookup', symbolFullBytes, text, ref)
       return 0
     }
-    const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${toDisplayPath(projectRoot, s.filePath)}:${s.lineStart}`).join('\n')
+    const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${formatSymbolLocation(toDisplayPath(projectRoot, s.filePath), s.lineStart)}`).join('\n')
     for (const s of allSymbols) {
-      emit(`${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${displaySafeText(toDisplayPath(projectRoot, s.filePath))}:${s.lineStart}`)
+      emit(`${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(projectRoot, s.filePath)), s.lineStart)}`)
     }
     recordReadStat('changed_lookup', symbolFullBytes, symbolText, ref)
     return 0
@@ -5638,7 +5640,7 @@ export function runDiff(opts: DiffOptions): number {
   }
 
   // The header is token-goat's own line and quotes a repo-chosen symbol name, kind and path, so it is escaped. The bodies joined to it below are the payload the reader asked for and are left byte-for-byte: this command delivers file content unfenced by design.
-  const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}:${match.lineStart}-${match.lineEnd}`
+  const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)), match.lineStart, match.lineEnd)}`
   emit(guardText([header, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
   return 0
 }
@@ -5787,7 +5789,7 @@ export function runLog(opts: LogOptions): number {
   }
 
   // The header is token-goat's own line and quotes a repo-chosen symbol name, kind and path, so it is escaped. The bodies joined to it below are the payload the reader asked for and are left byte-for-byte: this command delivers file content unfenced by design.
-  const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}:${match.lineStart}-${match.lineEnd}`
+  const header = `# ${displaySafeText(match.name)} (${displaySafeText(match.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)), match.lineStart, match.lineEnd)}`
   emit(guardText([header, logResult.stdout].join('\n'), 'diff'))
   return 0
 }
