@@ -7,11 +7,15 @@ import {
   collectElements,
   collectTextRuns,
   decodeZipEntry,
+  MAX_OOXML_PART_BYTES,
+  OoxmlPartTooLargeError,
   parseOoxmlPart,
   readOoxmlZip,
   sortNumberedParts,
 } from '../src/ooxml_extract.js'
 import { zipSync } from 'fflate'
+import { MAX_ZIP_INPUT_BYTES } from '../src/zip_bounds.js'
+import { extractEmbeddableDocumentText, isDocumentRefusal } from '../src/doc_embed_extract.js'
 import { docxOutline } from '../src/docx_extract.js'
 import { pptxOutline } from '../src/pptx_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
@@ -155,6 +159,59 @@ describe('decodeZipEntry', () => {
     const entries = { 'ppt/slides/slide1.xml': new Uint8Array() }
     expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml')).toBe('')
   })
+
+  it('refuses a part past the size limit rather than reading it as absent', () => {
+    const entries = { 'word/document.xml': new Uint8Array(MAX_OOXML_PART_BYTES + 1) }
+    // Not null. Null is how every caller here spells "this document does not have that part", and an oversized one very much does.
+    expect(() => decodeZipEntry(entries, 'word/document.xml')).toThrow(OoxmlPartTooLargeError)
+    expect(() => decodeZipEntry(entries, 'word/document.xml')).toThrow(/word\/document\.xml is \d+ bytes/)
+  })
+
+  it('accepts a part exactly at the limit, so the bound is off-by-one in the direction that keeps documents readable', () => {
+    const entries = { 'word/document.xml': new TextEncoder().encode('<a/>') }
+    Object.defineProperty(entries['word/document.xml'], 'length', { value: MAX_OOXML_PART_BYTES })
+    expect(() => decodeZipEntry(entries, 'word/document.xml')).not.toThrow()
+  })
+})
+
+describe('one XML part large enough to exhaust the heap on its own', () => {
+  // MAX_ZIP_OUTPUT_BYTES bounds what an archive inflates to in TOTAL and says nothing about how the document divides it, so a file may spend all 500MB on one part. Every reader here then decodes that part to a string and builds an object tree over it, measured at about 7x the XML in heap. Measured before the cap, through the same indexer entry point these tests use: a 298KB .docx killed a 512MB-heap process outright (fixture built in a separate process, so the crash is the reader's and not the builder's), and a 1.19MB one reached 3.34GB resident and 24s on the default heap while returning 36M characters.
+  let dir: string
+  beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bigpart-')) })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  // FORMAT-DERIVED from ECMA-376 part 1 (the package skeleton) -- the minimum a reader needs to route to the oversized part, which is the only thing under test.
+  const bigDocx = (partBytes: number): Uint8Array => {
+    const body = '<w:p><w:r><w:t>x</w:t></w:r></w:p>'
+    const filler = body.repeat(Math.ceil(partBytes / body.length))
+    return zipSync({
+      '[Content_Types].xml': new TextEncoder().encode('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
+      '_rels/.rels': new TextEncoder().encode('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
+      'word/document.xml': new TextEncoder().encode(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${filler}</w:body></w:document>`),
+    }, { level: 9 })
+  }
+
+  it('is refused through the indexer entry point, which is where nobody is watching what a document costs', async () => {
+    const file = path.join(dir, 'big.docx')
+    fs.writeFileSync(file, bigDocx(MAX_OOXML_PART_BYTES + 1_000_000))
+    // Under the input cap and under the inflate cap: the two bounds that already existed both pass, which is the whole point.
+    expect(fs.statSync(file).size).toBeLessThan(MAX_ZIP_INPUT_BYTES)
+    await expect(extractEmbeddableDocumentText(file)).rejects.toBeInstanceOf(OoxmlPartTooLargeError)
+  }, 120_000)
+
+  it('is remembered as refused, so the indexer does not re-open it on every pass', async () => {
+    const file = path.join(dir, 'big2.docx')
+    fs.writeFileSync(file, bigDocx(MAX_OOXML_PART_BYTES + 1_000_000))
+    const err = await extractEmbeddableDocumentText(file).then(() => null, (e: unknown) => e)
+    expect(isDocumentRefusal(err)).toBe(true)
+  }, 120_000)
+
+  it('still reads an ordinary document whose largest part is well under the cap', async () => {
+    const file = path.join(dir, 'ok.docx')
+    fs.writeFileSync(file, bigDocx(50_000))
+    // A cap that refused everything would satisfy the two assertions above just as well.
+    await expect(extractEmbeddableDocumentText(file)).resolves.toContain('x')
+  }, 120_000)
 })
 
 // Zero direct coverage before this: pptx_extract.ts uses it to order ppt/slides/slideN.xml,

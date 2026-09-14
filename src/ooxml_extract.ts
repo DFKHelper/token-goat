@@ -88,10 +88,21 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
   }
 }
 
-/** Decodes one ZIP entry as UTF-8 text, or null if the entry doesn't exist. */
+/** The largest ONE XML part inside a document may be. {@link MAX_ZIP_OUTPUT_BYTES} bounds what an archive inflates to in total, at 500 MB, and says nothing about how that total is divided: a document is free to spend all of it on a single `word/document.xml`, and every reader here then decodes that part into a string and hands it to a parser that builds an object tree over it. Measured, the tree costs about 7x the XML in heap, so a part the existing caps permit is several gigabytes of nodes. A 298 KB .docx killed a 512 MB-heap process outright, and a 1.19 MB one reached 3.34 GB resident and 24 s on the default heap -- through `extractEmbeddableDocumentText`, which the indexer runs over every document in a repository nobody has read yet. 32 MB is six times the largest XML part in a corpus of 83 real documents from this machine (5.29 MB, a spreadsheet's worksheet; median 0.10 MB, p90 0.44 MB) and holds the parse tree near 230 MB at the measured ratio. */
+export const MAX_OOXML_PART_BYTES = 32 * 1024 * 1024
+
+/** Thrown when one XML part passes {@link MAX_OOXML_PART_BYTES}. A DocumentRefusedError for the same reason the zip size caps are: a part's size is a property of the file and the verdict is the same on every future pass, so the indexer must not keep re-opening it. */
+export class OoxmlPartTooLargeError extends DocumentRefusedError {
+  constructor(entryPath: string, bytes: number) {
+    super(`${entryPath} is ${bytes} bytes, past the ${MAX_OOXML_PART_BYTES}-byte limit for one part of an office file. Split the document, or extract from a smaller copy.`, 'OoxmlPartTooLargeError')
+  }
+}
+
+/** Decodes one ZIP entry as UTF-8 text, or null if the entry doesn't exist. Refuses one past {@link MAX_OOXML_PART_BYTES} rather than returning null: an oversized part is not an absent one, and every caller here reads null as "this document does not have that part" and carries on. Checked on the bytes rather than after decoding, because the decoded UTF-16 string is itself up to twice the part and is the first of the two allocations worth not making. */
 export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: string): string | null {
   const bytes = entries[entryPath]
   if (bytes === undefined) return null
+  if (bytes.length > MAX_OOXML_PART_BYTES) throw new OoxmlPartTooLargeError(entryPath, bytes.length)
   return new TextDecoder('utf-8').decode(bytes)
 }
 
