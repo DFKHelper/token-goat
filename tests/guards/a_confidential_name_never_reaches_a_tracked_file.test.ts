@@ -10,7 +10,16 @@ const REPO_ROOT = join(__dirname, '..', '..')
 
 /** Overridable so a machine that keeps its list elsewhere can point at it without editing this file. `userInfo().homedir` rather than `homedir()`: the latter reads `HOME`, which tests/setup/isolate-home.ts repoints at a per-run temp directory, so this guard went looking for the denylist inside the sandbox and failed on its absence every time. `userInfo` asks the operating system for the account's directory and is unaffected by that isolation, which is what a file deliberately kept outside the repository needs. */
 function listPath(): string {
-  return process.env['TOKEN_GOAT_CONFIDENTIAL_NAMES'] ?? join(userInfo().homedir, '.token-goat', 'confidential-names.txt')
+  if (process.env['TOKEN_GOAT_CONFIDENTIAL_NAMES']) return process.env['TOKEN_GOAT_CONFIDENTIAL_NAMES']
+  const candidates = [
+    join(userInfo().homedir, '.token-goat', 'confidential-names.txt'),
+    ...(process.platform === 'win32' && process.env['USERPROFILE'] ? [join(process.env['USERPROFILE'], '.token-goat', 'confidential-names.txt')] : []),
+    ...(process.platform === 'win32' ? [join('C:', 'Users', 'Gabriel.Grillo', '.token-goat', 'confidential-names.txt')] : []),
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return candidates[0]!
 }
 
 /** One name per line; `#` starts a comment. Blank lines are dropped so a trailing newline cannot become an empty pattern that matches every file. */
@@ -31,6 +40,17 @@ function trackedFilesMatching(pattern: string): string[] {
   }
 }
 
+/** Tracked file paths matching `pattern`, case-insensitively. A filename alone can leak a client name even if its content is clean or binary. */
+function trackedPathsMatching(pattern: string): string[] {
+  try {
+    const out = execFileSync('git', ['ls-files', '--cached'], { cwd: REPO_ROOT, encoding: 'utf-8' })
+    const lower = pattern.toLowerCase()
+    return out.split('\n').filter((p) => p !== '' && p.toLowerCase().includes(lower))
+  } catch {
+    return []
+  }
+}
+
 // CI has no home directory list and must not be blocked by its absence; the gate that matters runs on the machine where the commit is authored, before the push that would publish it.
 const runningInCi = process.env['CI'] !== undefined && process.env['CI'] !== ''
 
@@ -44,6 +64,7 @@ describe.skipIf(runningInCi)('a confidential name never reaches a tracked file',
   it('finds a word that is certainly present, so a clean result below means clean and not broken', () => {
     // Calibration. Without it a mistyped pathspec, a git that is not on PATH, or a cwd outside the work tree all produce the same empty list as a genuinely clean repository, and this guard would certify a leak for the rest of its life.
     expect(trackedFilesMatching('token-goat').length, 'the scan found no tracked file containing the project’s own name, so the scan itself is broken').toBeGreaterThan(0)
+    expect(trackedPathsMatching('package.json').length, 'the scan found no tracked path containing package.json, so the path scan is broken').toBeGreaterThan(0)
   })
 
   it('matches no tracked file against any name on the denylist', () => {
@@ -51,7 +72,42 @@ describe.skipIf(runningInCi)('a confidential name never reaches a tracked file',
     const path = listPath()
     const names = existsSync(path) ? confidentialNames(path) : []
     // Paths only, never the matched name: this message goes to a terminal, a CI log and anywhere else a failed run is pasted, and printing the confidential word to report that it leaked would leak it again.
-    const leaked = names.flatMap((name) => trackedFilesMatching(name))
-    expect(leaked, `a name on the denylist appears in these tracked files: ${leaked.join(', ')}. Tracked means it goes out with the next push. Remove the text, not this guard.`).toEqual([])
+    const leaked = [...new Set(names.flatMap((name) => [...trackedFilesMatching(name), ...trackedPathsMatching(name)]))]
+    expect(leaked, `a name on the denylist appears in these tracked files or paths: ${leaked.join(', ')}. Tracked means it goes out with the next push. Remove the text or rename the file, not this guard.`).toEqual([])
+  })
+
+  it('matches no reachable commit message against any name on the denylist', () => {
+    const path = listPath()
+    const names = existsSync(path) ? confidentialNames(path) : []
+    const RECORD = String.fromCharCode(0x1e)
+    const FIELD = String.fromCharCode(0x00)
+    let commits: { sha: string; body: string }[]
+    try {
+      const raw = execFileSync('git', ['log', '--format=%H%x00%B%x1e', 'HEAD'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      })
+      commits = raw
+        .split(RECORD)
+        .map((r) => r.trim())
+        .filter((r) => r.length > 0)
+        .map((r) => {
+          const [sha, ...rest] = r.split(FIELD)
+          return { sha: sha ?? '', body: rest.join(FIELD) }
+        })
+    } catch {
+      commits = []
+    }
+    const leakedCommits: string[] = []
+    for (const name of names) {
+      const lower = name.toLowerCase()
+      for (const c of commits) {
+        if (c.body.toLowerCase().includes(lower)) {
+          leakedCommits.push(c.sha)
+        }
+      }
+    }
+    expect(leakedCommits, `a name on the denylist appears in reachable commit messages: ${leakedCommits.join(', ')}. Rewrite or drop the commit message before pushing.`).toEqual([])
   })
 })

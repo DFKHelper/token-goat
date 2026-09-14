@@ -185,6 +185,7 @@ import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, la
 import { visionTokensSavedByText } from './image_shrink.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
+import { SUPPORTED_OCR_LANG_CODES, isSupportedOcrLang } from './ocr_languages.js'
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
 import { collectCapabilities, renderCapabilities } from './capabilities.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -1791,8 +1792,15 @@ function fenceOcrText(text: string): string {
   return fenceUntrustedOcrText(text)
 }
 
-async function cmdImageText(file: string, opts: { json?: boolean } = {}) {
-  const result = await runImageText(file)
+async function cmdImageText(file: string, opts: { json?: boolean; lang?: string } = {}) {
+  if (opts.lang) {
+    const tokens = opts.lang.split(/[+,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)
+    const invalid = tokens.filter((t) => !isSupportedOcrLang(t))
+    if (invalid.length > 0) {
+      throw new CliError(`unsupported OCR language(s) '${invalid.join(', ')}'; must be from: ${SUPPORTED_OCR_LANG_CODES.join(', ')}`)
+    }
+  }
+  const result = await runImageText(file, opts.lang)
   if (!result.ocrAvailable) {
     const msg = 'image-text unavailable (install tesseract.js to use this feature)'
     const text = opts.json === true ? displaySafeJson({ ocrAvailable: false, error: msg }) : msg
@@ -5116,6 +5124,7 @@ export function buildProgram(): Command {
   program
     .command('image-text <file>')
     .description('OCR text for an image instead of a raw Read, honest about low-confidence results')
+    .option('--lang <lang>', 'OCR language code (e.g. eng, fra, spa)')
     .option('-j, --json', 'output as JSON')
     .action(guard(cmdImageText))
 

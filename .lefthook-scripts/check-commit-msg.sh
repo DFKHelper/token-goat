@@ -33,4 +33,23 @@ if [[ -n "$OFFENDING" ]]; then
   exit 1
 fi
 
+# Reject a commit message that contains any name from the confidential denylist.
+DENYLIST="${TOKEN_GOAT_CONFIDENTIAL_NAMES:-$HOME/.token-goat/confidential-names.txt}"
+if [[ ! -f "$DENYLIST" && -n "${USERPROFILE:-}" ]]; then
+  DENYLIST="$USERPROFILE/.token-goat/confidential-names.txt"
+fi
+
+if [[ -f "$DENYLIST" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    clean_name="${line%%#*}"
+    clean_name="$(echo "$clean_name" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ -n "$clean_name" ]]; then
+      if printf '%s\n' "$BODY" | grep -qi -F "$clean_name"; then
+        echo "commit-msg: this commit message contains a confidential name. Remove it before committing." >&2
+        exit 1
+      fi
+    fi
+  done < "$DENYLIST"
+fi
+
 exit 0

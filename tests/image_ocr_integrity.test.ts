@@ -20,8 +20,10 @@ import { tokenGoatHome } from '../src/disk_cache.js'
 import {
   OCR_LANG_PATH,
   OCR_LANG_SHA256,
+  SUPPORTED_OCR_LANGS,
   ocrImage,
   ocrIntegrityFailed,
+  quarantineOcrLangCache,
   resetOcrStateForTesting,
   setTesseractEntryForTesting,
   verifyOcrLangCache,
@@ -188,5 +190,44 @@ describe('the child script the engine actually receives', () => {
     // value, so a change here silently points the pinned URL at a different artifact than the digest.
     expect(recorded.oem).toBe(1)
     expect(recorded.lang).toBe('eng')
+  })
+
+  it('passes the pinned langPath for opt-in languages like French and Spanish', async () => {
+    for (const lang of ['fra', 'spa'] as const) {
+      const recordTo = path.join(TMP, `opts-${lang}-${Math.random().toString(36).slice(2)}.json`)
+      setTesseractEntryForTesting(writeRecordingStub(recordTo))
+
+      const result = await ocrImage(Buffer.from('image bytes'), lang)
+
+      expect(result).not.toBeNull()
+      expect(fs.existsSync(recordTo)).toBe(true)
+      const recorded = JSON.parse(fs.readFileSync(recordTo, 'utf8')) as {
+        lang: string
+        oem: number
+        options: { cachePath?: string; langPath?: string }
+      }
+      expect(recorded.options.langPath).toBe(SUPPORTED_OCR_LANGS[lang].langPath)
+      expect(recorded.oem).toBe(1)
+      expect(recorded.lang).toBe(`eng+${lang}`)
+    }
+  })
+})
+
+describe('multilingual language-model verification', () => {
+  it('pins explicit versions and 64-char sha-256 for non-English languages', () => {
+    for (const [lang, spec] of Object.entries(SUPPORTED_OCR_LANGS)) {
+      expect(spec.langPath).toMatch(new RegExp(`@tesseract\\.js-data\\/${lang}@\\d+\\.\\d+\\.\\d+\\/`))
+      expect(spec.sha256).toMatch(/^[0-9a-f]{64}$/)
+    }
+  })
+
+  it('detects a poisoned cache file for an opt-in language and quarantines it', () => {
+    const fraCache = path.join(tokenGoatHome(), 'ocr-cache', 'fra.traineddata')
+    fs.mkdirSync(path.dirname(fraCache), { recursive: true })
+    fs.writeFileSync(fraCache, 'corrupted fra model')
+
+    expect(verifyOcrLangCache('fra')).toBe('mismatch')
+    quarantineOcrLangCache('fra')
+    expect(fs.existsSync(fraCache)).toBe(false)
   })
 })

@@ -47,7 +47,11 @@ import * as path from 'node:path'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { fenceUntrustedOcrText } from './injection_scan.js'
+import { DEFAULT_OCR_LANG, isSupportedOcrLang, resolveOcrLangs, type SupportedOcrLang } from './ocr_languages.js'
+import { SUPPORTED_OCR_LANGS, getOcrLangSpec, type OcrLangSpec } from './ocr_hashes.js'
 import { ensureDirSync } from './util.js'
+
+export { DEFAULT_OCR_LANG, SUPPORTED_OCR_LANGS, getOcrLangSpec, isSupportedOcrLang, resolveOcrLangs, type OcrLangSpec, type SupportedOcrLang }
 
 /** Result of a successful OCR pass. `confidence` is Tesseract's own 0-100 mean-word-confidence score. */
 export interface OcrResult {
@@ -63,8 +67,29 @@ export function setOcrTimeoutForTesting(ms: number | undefined): void {
   _ocrTimeoutMs = ms ?? 12_000
 }
 
-/** The file tesseract.js writes into its cache directory for the one language this module uses. Cached under `tokenGoatHome()` so installs share one download and it survives across CLI invocations, each hook event normally being its own short-lived process. */
-const OCR_LANG_FILE = 'eng.traineddata'
+/** Resolves all active OCR languages. English ('eng') is always included, plus any configured or requested additions. */
+export function getActiveOcrLangs(lang?: string): SupportedOcrLang[] {
+  if (typeof lang === 'string' && lang.trim()) {
+    return resolveOcrLangs(lang)
+  }
+  try {
+    const configured = loadConfig().image_shrink?.ocr_lang
+    if (typeof configured === 'string' && configured.trim()) {
+      return resolveOcrLangs(configured)
+    }
+  } catch {
+    // Fall back to default if config cannot be loaded
+  }
+  return [DEFAULT_OCR_LANG]
+}
+
+/** Resolve the effective OCR language string (e.g. 'eng' or 'eng+fra'). */
+export function resolveOcrLang(lang?: string): string {
+  return getActiveOcrLangs(lang).join('+')
+}
+
+/** The default file tesseract.js writes into its cache directory for the default language. Cached under `tokenGoatHome()` so installs share one download and it survives across CLI invocations, each hook event normally being its own short-lived process. */
+export const OCR_LANG_FILE = `${DEFAULT_OCR_LANG}.traineddata`
 
 /**
  * Where the language model is fetched from, pinned to an immutable npm version.
@@ -77,7 +102,7 @@ const OCR_LANG_FILE = 'eng.traineddata'
  * every token-goat install downloads, with no lockfile entry to notice it, because this is an HTTP
  * fetch rather than a dependency. Naming the version closes that.
  */
-export const OCR_LANG_PATH = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int'
+export const OCR_LANG_PATH = getOcrLangSpec('eng').langPath
 
 /**
  * SHA-256 of the decompressed `eng.traineddata` that {@link OCR_LANG_PATH} serves. tesseract.js
@@ -89,28 +114,38 @@ export const OCR_LANG_PATH = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/en
  * means the two channels have to agree; taking it from the CDN would only prove the CDN agrees with
  * itself.
  */
-export const OCR_LANG_SHA256 = '5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747'
+export const OCR_LANG_SHA256 = getOcrLangSpec('eng').sha256
 
 /** Verification outcome for the cached language model. `absent` is the ordinary cold-cache state, not a failure. */
 export type OcrLangCacheState = 'ok' | 'absent' | 'mismatch' | 'unreadable'
 
 /**
- * Hash the cached language model against {@link OCR_LANG_SHA256}.
+ * Hash the cached language model against its pinned SHA-256 digest in {@link SUPPORTED_OCR_LANGS}.
  *
  * tesseract.js performs no integrity check of any kind on this artifact: a grep of the installed
  * package for `createHash`, `integrity`, `sha256` or `sha512` matches nothing. So the check has to
  * live here, on the cache directory this module already owns and passes in as `cachePath`.
  */
-export function verifyOcrLangCache(): OcrLangCacheState {
-  const file = path.join(ocrCacheDir(), OCR_LANG_FILE)
-  let bytes: Buffer
-  try {
-    if (!fs.existsSync(file)) return 'absent'
-    bytes = fs.readFileSync(file)
-  } catch {
-    return 'unreadable'
+export function verifyOcrLangCache(lang?: string): OcrLangCacheState {
+  const activeLangs = getActiveOcrLangs(lang)
+  let anyAbsent = false
+  for (const l of activeLangs) {
+    const spec = getOcrLangSpec(l)
+    const file = path.join(ocrCacheDir(), `${l}.traineddata`)
+    try {
+      if (!fs.existsSync(file)) {
+        anyAbsent = true
+        continue
+      }
+      const bytes = fs.readFileSync(file)
+      if (createHash('sha256').update(bytes).digest('hex') !== spec.sha256) {
+        return 'mismatch'
+      }
+    } catch {
+      return 'unreadable'
+    }
   }
-  return createHash('sha256').update(bytes).digest('hex') === OCR_LANG_SHA256 ? 'ok' : 'mismatch'
+  return anyAbsent ? 'absent' : 'ok'
 }
 
 /**
@@ -118,12 +153,22 @@ export function verifyOcrLangCache(): OcrLangCacheState {
  * re-downloads from the pinned URL. Quarantining rather than retrying in-process keeps the failure
  * path free of retry logic: one call refuses, the next one is a normal cold start.
  */
-function quarantineOcrLangCache(): void {
-  try {
-    fs.rmSync(path.join(ocrCacheDir(), OCR_LANG_FILE), { force: true })
-  } catch {
-    // Best effort. A cache we cannot delete is still one we refuse to use, because the sticky flag
-    // below is what gates the next call, not the file's absence.
+export function quarantineOcrLangCache(lang?: string): void {
+  const activeLangs = getActiveOcrLangs(lang)
+  for (const l of activeLangs) {
+    const spec = getOcrLangSpec(l)
+    const file = path.join(ocrCacheDir(), `${l}.traineddata`)
+    try {
+      if (fs.existsSync(file)) {
+        const bytes = fs.readFileSync(file)
+        if (createHash('sha256').update(bytes).digest('hex') !== spec.sha256) {
+          fs.rmSync(file, { force: true })
+        }
+      }
+    } catch {
+      // Best effort. A cache we cannot delete is still one we refuse to use, because the sticky flag
+      // below is what gates the next call, not the file's absence.
+    }
   }
 }
 
@@ -144,9 +189,9 @@ export function ocrIntegrityFailed(): boolean {
  * forbid that, so offline mode checks the cache itself: a machine that already has the file still
  * does OCR, and one that does not declines instead of reaching cdn.jsdelivr.net.
  */
-export function ocrBlockedOffline(): boolean {
+export function ocrBlockedOffline(lang?: string): boolean {
   if (!loadConfig().network.offline) return false
-  return !fs.existsSync(path.join(ocrCacheDir(), OCR_LANG_FILE))
+  return verifyOcrLangCache(lang) === 'absent'
 }
 
 function ocrCacheDir(): string {
@@ -216,7 +261,10 @@ export function resetOcrStateForTesting(): void {
  * handler (see module doc comment) — the parent's timeout is what actually
  * bounds a load failure, not this handler.
  */
-function buildChildScript(entryPath: string, cacheDir: string): string {
+export function buildChildScript(entryPath: string, cacheDir: string, lang?: string): string {
+  const activeLangs = getActiveOcrLangs(lang)
+  const activeLangString = activeLangs.join('+')
+  const spec = getOcrLangSpec(lang ?? activeLangString)
   return [
     `const { createWorker } = require(${JSON.stringify(entryPath)});`,
     'const chunks = [];',
@@ -224,7 +272,7 @@ function buildChildScript(entryPath: string, cacheDir: string): string {
     "process.stdin.on('end', async () => {",
     '  try {',
     '    const buf = Buffer.concat(chunks);',
-    `    const worker = await createWorker('eng', 1, { cachePath: ${JSON.stringify(cacheDir)}, langPath: ${JSON.stringify(OCR_LANG_PATH)}, errorHandler: () => {} });`,
+    `    const worker = await createWorker(${JSON.stringify(activeLangString)}, 1, { cachePath: ${JSON.stringify(cacheDir)}, langPath: ${JSON.stringify(spec.langPath)}, errorHandler: () => {} });`,
     '    const { data } = await worker.recognize(buf);',
     "    process.stdout.write(JSON.stringify({ text: data.text || '', confidence: data.confidence || 0 }));",
     '    await worker.terminate();',
@@ -241,13 +289,14 @@ function buildChildScript(entryPath: string, cacheDir: string): string {
  * failure — dep unavailable, spawn error, timeout, non-zero exit, or
  * unparsable output — never throws.
  */
-export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
+export async function ocrImage(input: Buffer, lang?: string): Promise<OcrResult | null> {
   if (_ocrUnavailableThisProcess) return null
 
+  const activeLangs = getActiveOcrLangs(lang)
   const entryPath = resolveTesseractEntry()
   if (entryPath === null) return null
 
-  if (ocrBlockedOffline()) return null
+  if (ocrBlockedOffline(lang)) return null
 
   if (_ocrIntegrityFailed) return null
 
@@ -255,10 +304,36 @@ export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
   // case once the first OCR of the install has run. A cold cache cannot be: the file does not exist
   // until tesseract.js downloads it, so that first pass is verified after the fact below, which
   // guards the returned text and every later call rather than that one parse.
-  if (verifyOcrLangCache() === 'mismatch') {
+  if (verifyOcrLangCache(lang) === 'mismatch') {
     _ocrIntegrityFailed = true
-    quarantineOcrLangCache()
+    quarantineOcrLangCache(lang)
     return null
+  }
+
+  // Pre-download and verify any additional non-English languages that are absent from cache.
+  // English is handled by Tesseract.js directly (or already cached), but additional languages
+  // need their respective pinned CDN packages fetched and verified into cacheDir before worker init.
+  for (const l of activeLangs) {
+    if (l !== DEFAULT_OCR_LANG) {
+      const file = path.join(ocrCacheDir(), `${l}.traineddata`)
+      if (!fs.existsSync(file)) {
+        if (loadConfig().network.offline) return null
+        try {
+          const res = await fetch(getOcrLangSpec(l).langPath + `/${l}.traineddata.gz`)
+          if (!res.ok) return null
+          const gz = Buffer.from(await res.arrayBuffer())
+          const unzipped = (await import('node:zlib')).gunzipSync(gz)
+          if (createHash('sha256').update(unzipped).digest('hex') !== getOcrLangSpec(l).sha256) {
+            _ocrIntegrityFailed = true
+            return null
+          }
+          ensureOcrCacheDir()
+          fs.writeFileSync(file, unzipped)
+        } catch {
+          return null
+        }
+      }
+    }
   }
 
   return new Promise<OcrResult | null>((resolve) => {
@@ -269,7 +344,7 @@ export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
       // it silently re-downloads the ~2.9 MB language model on every single call, and leaves the
       // warm-cache verification above with nothing to verify. Nothing else creates this directory.
       ensureOcrCacheDir()
-      child = spawn(process.execPath, ['-e', buildChildScript(entryPath, ocrCacheDir())], {
+      child = spawn(process.execPath, ['-e', buildChildScript(entryPath, ocrCacheDir(), lang)], {
         stdio: ['pipe', 'pipe', 'ignore'],
       })
     } catch {
@@ -308,9 +383,9 @@ export async function ocrImage(input: Buffer): Promise<OcrResult | null> {
       // The child has run, so a cold cache is now populated. Verify before the text it produced is
       // allowed out: a model that fails its hash is one whose output nothing should trust, and
       // leaving it cached would let every later call use it without a download to re-check.
-      if (verifyOcrLangCache() === 'mismatch') {
+      if (verifyOcrLangCache(lang) === 'mismatch') {
         _ocrIntegrityFailed = true
-        quarantineOcrLangCache()
+        quarantineOcrLangCache(lang)
         finish(null, false)
         return
       }

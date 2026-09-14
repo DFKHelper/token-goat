@@ -17,9 +17,11 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import {
   formatOcrSummary,
+  getActiveOcrLangs,
   isTextHeavy,
   ocrImage,
   resetOcrStateForTesting,
+  resolveOcrLang,
   setOcrTimeoutForTesting,
   setTesseractEntryForTesting,
 } from '../src/image_ocr.js'
@@ -187,5 +189,46 @@ describe('ocrImage', () => {
     setTesseractEntryForTesting(okStub)
     const second = await ocrImage(Buffer.from('b'))
     expect(second?.text).toBe('second image text')
+  })
+})
+
+describe('resolveOcrLang and getActiveOcrLangs', () => {
+  it('defaults to eng always', () => {
+    expect(resolveOcrLang()).toBe('eng')
+    expect(getActiveOcrLangs()).toEqual(['eng'])
+  })
+
+  it('keeps English and appends valid explicit additional languages', () => {
+    expect(resolveOcrLang('fra')).toBe('eng+fra')
+    expect(getActiveOcrLangs('fra')).toEqual(['eng', 'fra'])
+    expect(resolveOcrLang('spa')).toBe('eng+spa')
+    expect(resolveOcrLang('deu')).toBe('eng+deu')
+    expect(resolveOcrLang('fra+spa')).toBe('eng+fra+spa')
+    expect(getActiveOcrLangs('fra, spa')).toEqual(['eng', 'fra', 'spa'])
+  })
+
+  it('deduplicates eng if passed explicitly', () => {
+    expect(resolveOcrLang('eng')).toBe('eng')
+    expect(getActiveOcrLangs('eng')).toEqual(['eng'])
+    expect(resolveOcrLang('eng+fra')).toBe('eng+fra')
+  })
+
+  it('falls back to eng on unrecognized language codes', () => {
+    expect(resolveOcrLang('unknown')).toBe('eng')
+    expect(resolveOcrLang('')).toBe('eng')
+    expect(getActiveOcrLangs('unknown')).toEqual(['eng'])
+  })
+
+  it('honors TOKEN_GOAT_OCR_LANG env override with English preserved', async () => {
+    const { invalidateConfigCache } = await import('../src/config.js')
+    process.env['TOKEN_GOAT_OCR_LANG'] = 'spa'
+    invalidateConfigCache()
+    try {
+      expect(resolveOcrLang()).toBe('eng+spa')
+      expect(getActiveOcrLangs()).toEqual(['eng', 'spa'])
+    } finally {
+      delete process.env['TOKEN_GOAT_OCR_LANG']
+      invalidateConfigCache()
+    }
   })
 })

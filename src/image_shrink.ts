@@ -48,7 +48,6 @@ import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
-import { formatOcrSummary, isTextHeavy, ocrImage } from './image_ocr.js'
 
 /** Recognised image extensions (lowercase, leading dot). */
 const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
@@ -616,6 +615,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
   // falls through to the existing pixel-shrink path unchanged -- zero regression risk to the
   // image-shrink feature this OCR path sits on top of.
   if (loadConfig().image_shrink.ocr_enabled) {
+    const { ocrImage, isTextHeavy, formatOcrSummary } = await import('./image_ocr.js')
     const ocr = await ocrImage(result.data)
     if (ocr !== null && isTextHeavy(ocr, loadConfig().image_shrink.ocr_min_confidence)) {
       // Measured against the shrunk image bytes (the realistic alternative this branch

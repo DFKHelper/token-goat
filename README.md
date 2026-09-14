@@ -523,6 +523,8 @@ The pipeline is written in TypeScript and decodes PNG, JPEG, GIF, and BMP itself
 
 The one thing the decoders will do is decline. A file whose header asks for more than 256 MB of pixel buffer, or that is in a variant token-goat cannot read exactly, is refused rather than guessed at, and the untouched original goes to the model. An untouched original is the right picture, so the only cost of a refusal is that the read is not shrunk.
 
+When `tesseract.js` is installed, text-heavy images can also have their text extracted via OCR (`token-goat image-text <file>`) to replace raw pixel data with plain text. English (`eng`) is always enabled by default, and users can combine one or more additional languages (`token-goat image-text <file> --lang "fra,spa"`). Language preferences persist across version updates when saved globally (`token-goat config set image_shrink.ocr_lang "fra,spa"`), per-project in `.token-goat.toml` (`[image_shrink] ocr_lang = "fra+spa"`), or via `TOKEN_GOAT_OCR_LANG`. 16 languages are supported (`eng`, `fra`, `spa`, `deu`, `ita`, `por`, `nld`, `pol`, `rus`, `tur`, `swe`, `ara`, `chi_sim`, `chi_tra`, `jpn`, `kor`), each cryptographically verified against pinned package checksums to protect against supply-chain tampering.
+
 ## Stats display
 
 `token-goat stats` uses 24-bit ANSI color and Unicode block characters for gradient bars, sparklines, and the activity heatmap. In the right terminal it renders sharply. In the wrong one you get broken characters, flat gray blocks, or a "rich is not installed" error.

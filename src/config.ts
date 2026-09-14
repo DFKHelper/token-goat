@@ -8,6 +8,7 @@ import { configPath, projectConfigPath } from './constants.js'
 import { envBool, envInt, envStr, envStrList, TRUTHY_ENV_VALUES, FALSY_ENV_VALUES } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
+import { DEFAULT_OCR_LANG, SUPPORTED_OCR_LANG_CODES, isSupportedOcrLang } from './ocr_languages.js'
 import { atomicWriteText, decodeSource, extractErrorMessage } from './util.js'
 import { registerReset } from './reset.js'
 
@@ -104,6 +105,7 @@ export interface ImageShrinkConfig {
   screenshot_redirect: boolean
   ocr_enabled: boolean
   ocr_min_confidence: number
+  ocr_lang: string
   vision_tier: VisionTier
 }
 
@@ -437,6 +439,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // noisier -- padding the threshold below the terminal/code norm still comfortably
     // excludes photographic false positives without needing a second heuristic.
     ocr_min_confidence: 65,
+    ocr_lang: DEFAULT_OCR_LANG,
     // Which resolution tier the model being shown the image is on, which decides what its pixels
     // cost. 'standard' (1568px long edge, 1568 visual tokens) is every model before Claude 4.7;
     // 'high' (2576px, 4784 tokens) is 4.7 and later, and bills the same large image up to roughly
@@ -647,6 +650,13 @@ function validatedVisionTier(raw: unknown, def: VisionTier): VisionTier {
   return raw === 'standard' || raw === 'high' ? raw : def
 }
 
+function validatedOcrLang(raw: unknown, def: string): string {
+  if (typeof raw !== 'string') return def
+  const tokens = raw.split(/[+,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)
+  const valid = tokens.filter((t) => isSupportedOcrLang(t))
+  return valid.length > 0 ? valid.join('+') : def
+}
+
 function validatedStr(raw: unknown, def: string): string {
   return typeof raw === 'string' ? raw : def
 }
@@ -798,6 +808,7 @@ export function validateNumericField(fieldKey: string, value: number, cfg: Recor
 const ENUM_FIELD_VALUES: Record<string, string[]> = {
   'compression.profile': ['auto', 'aggressive', 'balanced', 'minimal'],
   'compact_assist.harness': ['auto', ...KNOWN_HARNESS_NAMES],
+  'image_shrink.ocr_lang': [...SUPPORTED_OCR_LANG_CODES],
   // Deliberately has no entry above `normal`. This table is what `config set` checks; a
   // hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an
   // unrecognized value back to the default rather than trusting whatever the file said.
@@ -811,6 +822,11 @@ const ENUM_FIELD_VALUES: Record<string, string[]> = {
  * valid; returns the allowed-value list if the value is invalid.
  */
 export function validateEnumField(fieldKey: string, value: string): string[] | undefined {
+  if (fieldKey === 'image_shrink.ocr_lang') {
+    const tokens = value.split(/[+,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)
+    const allowed = [...SUPPORTED_OCR_LANG_CODES]
+    return tokens.length > 0 && tokens.every((t) => isSupportedOcrLang(t)) ? undefined : allowed
+  }
   const allowed = ENUM_FIELD_VALUES[fieldKey]
   if (!allowed) return undefined
   return allowed.includes(value) ? undefined : allowed
@@ -827,6 +843,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_SESSION_BRIEF',
   'TOKEN_GOAT_SKILL_PRESERVATION',
   'TOKEN_GOAT_MAX_IMAGE_PIXELS',
+  'TOKEN_GOAT_OCR_LANG',
   'TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD',
   'TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS',
   'TOKEN_GOAT_OVERFLOW_GUARD',
@@ -1655,9 +1672,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
   is_cfg.ocr_enabled = validatedBool(is_raw['ocr_enabled'], is_cfg.ocr_enabled)
   is_cfg.ocr_min_confidence = validatedInt(is_raw['ocr_min_confidence'], is_cfg.ocr_min_confidence, ...boundsOf('image_shrink.ocr_min_confidence'))
+  is_cfg.ocr_lang = validatedOcrLang(is_raw['ocr_lang'], is_cfg.ocr_lang)
   is_cfg.vision_tier = validatedVisionTier(is_raw['vision_tier'], is_cfg.vision_tier)
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
   is_cfg.ocr_enabled = envBool('TOKEN_GOAT_OCR_ENABLED', is_cfg.ocr_enabled)
+  is_cfg.ocr_lang = validatedOcrLang(process.env['TOKEN_GOAT_OCR_LANG'], is_cfg.ocr_lang)
   is_cfg.vision_tier = validatedVisionTier(process.env['TOKEN_GOAT_VISION_TIER'], is_cfg.vision_tier)
 
   const sc_raw = section(raw, 'screenshot')
@@ -1944,6 +1963,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
   'image_shrink.ocr_enabled': ['TOKEN_GOAT_OCR_ENABLED'],
+  'image_shrink.ocr_lang': ['TOKEN_GOAT_OCR_LANG'],
   'image_shrink.vision_tier': ['TOKEN_GOAT_VISION_TIER'],
   'screenshot.block_private_targets': ['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
@@ -2090,6 +2110,7 @@ export function saveConfig(config: Config): void {
       screenshot_redirect: is_cfg.screenshot_redirect,
       ocr_enabled: is_cfg.ocr_enabled,
       ocr_min_confidence: is_cfg.ocr_min_confidence,
+      ocr_lang: is_cfg.ocr_lang,
       vision_tier: is_cfg.vision_tier,
     },
     screenshot: {

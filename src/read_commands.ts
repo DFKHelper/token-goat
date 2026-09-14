@@ -4694,7 +4694,7 @@ export interface ImageTextResult {
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above): runs OCR via image_ocr.ts's isolated-child-process ocrImage. Honest about low-confidence results -- `text` stays null below isTextHeavy's threshold rather than surfacing noise as content; `confidence`/`chars` are always reported so the caller can see why. */
-export async function runImageText(file: string): Promise<ImageTextResult> {
+export async function runImageText(file: string, lang?: string): Promise<ImageTextResult> {
   if (!fileExists(file)) {
     throw new Error(`Could not read: ${file}`)
   }
@@ -4702,7 +4702,7 @@ export async function runImageText(file: string): Promise<ImageTextResult> {
     throw new Error(`Not an image file: ${file}`)
   }
   const data = fs.readFileSync(file)
-  const ocr = await ocrImage(data)
+  const ocr = await ocrImage(data, lang)
   if (ocr === null) {
     // A null result means "engine not installed" only when the engine is genuinely absent. If it
     // is present, OCR ran and produced nothing for this input -- a corrupt image, a timeout, an

@@ -101,6 +101,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'image_shrink.enabled',
   'image_shrink.jpeg_quality',
   'image_shrink.ocr_enabled',
+  'image_shrink.ocr_lang',
   'image_shrink.ocr_min_confidence',
   'image_shrink.screenshot_redirect',
   // Overridable rather than locked: it changes no image and no protection, only which tier's
