@@ -61,6 +61,11 @@ const EXEMPT: Record<string, { reason: string; where: 'entry' | 'r.ts'; markers:
     where: 'entry',
     markers: ['extractElixir(content, filePath).symbols'],
   },
+  graphql: {
+    reason: 'The graphql entry never calls assignBraceBlockSpans, so there is no option to pass: extractGraphql masks its own `"""` descriptions first, in stripGraphqlDescriptions, because a description body is arbitrary prose and a line of it reading like `type Foo represents a user` would otherwise match the declaration regexes as a phantom symbol. The member exists so that the per-language tables findMultilineOpener consults state GraphQL\'s own rules rather than the borrowed ones it used to read.',
+    where: 'entry',
+    markers: ['extractGraphql(content, filePath).symbols'],
+  },
   r: {
     reason: 'The r entry never calls assignBraceBlockSpans either: extractR computes its own spans, and its brace walk passes `rRawStrings` so a raw character constant is skipped by its own mirrored closer. An ordinary R string that runs across lines is already handled by the scanner\'s quote state, which carries across newlines.',
     where: 'r.ts',

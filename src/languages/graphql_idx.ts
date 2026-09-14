@@ -88,9 +88,7 @@ const MAX_HEADING_LEN = 120
  * and a content line that happens to read like a declaration (e.g. `type Foo represents a user`
  * inside a `"""..."""` block) would otherwise be matched by `TYPE_RE`/`OPERATION_RE`/`FRAGMENT_RE`
  * as a real, phantom symbol since those patterns are only anchored to line start, not aware of
- * being inside a description. GraphQL's `"""..."""` uses the same triple-double-quote delimiter
- * as Kotlin's raw strings, so the `'kotlin'` `MultilineStringLang` is reused rather than adding a
- * new one.
+ * being inside a description. GraphQL's `"""..."""` uses the same triple-double-quote delimiter as Kotlin's raw strings, and `'kotlin'` was reused as the `MultilineStringLang` for that reason until it turned out that every per-language table keyed on the tag comes along with it: `MULTILINE_OPENER_COMMENT_MARKERS.kotlin` is `['//']`, so once a description closed mid-line and `findMultilineOpener` took over from the `#` guard below, a `"""` sitting in a trailing `#` comment opened a phantom description that ran to end of file and cost the schema every symbol in it. GraphQL now carries its own tag, whose entries state GraphQL's own rules -- `#` comments, and a block string that ends at the first `"""` run rather than the longest.
  *
  * Also resolves precedence against `#` line comments on lines where no description is
  * currently open: a real `#` comment can textually contain a `"""`-looking sequence (e.g. `#
@@ -109,13 +107,13 @@ function stripGraphqlDescriptions(text: string): string {
       const tripleOpenerPos = line.indexOf('"""')
       if (hashPos !== -1 && (tripleOpenerPos === -1 || hashPos < tripleOpenerPos)) {
         const head = line.slice(0, hashPos)
-        const { code, state: nextState } = stripMultilineStringSpan(head, null, 'kotlin')
+        const { code, state: nextState } = stripMultilineStringSpan(head, null, 'graphql')
         state = nextState
         outLines.push(stripStringLiterals(code) + line.slice(hashPos))
         continue
       }
     }
-    const { code, state: nextState } = stripMultilineStringSpan(line, state, 'kotlin')
+    const { code, state: nextState } = stripMultilineStringSpan(line, state, 'graphql')
     state = nextState
     // Also blank single-line double-quoted descriptions that aren't part of a triple-quoted span.
     outLines.push(stripStringLiterals(code))

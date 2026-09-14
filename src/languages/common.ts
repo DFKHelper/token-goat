@@ -648,7 +648,8 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
     }
 
     // top.kind === 'string'
-    if (ch === '\\' && i + 1 < line.length) {
+    // `line[i + 1] !== '\n'` because a backslash is never an escape for the line break that follows it in any language this runs over, and consuming the pair here would skip past the `\n` handler above -- the one that closes a frame a stray apostrophe in a comment opened. An Apex comment ending in a path like `C:\` did exactly that: the newline was replaced by a space, the stack never reset, and the open frame blanked every following method until the next stray quote. Leaving the backslash to fall through costs nothing, since it is blanked as ordinary string content on the next pass and the newline then terminates the frame.
+    if (ch === '\\' && i + 1 < line.length && line[i + 1] !== '\n') {
       out += '  '
       i += 2
       continue
@@ -780,6 +781,8 @@ const MULTILINE_CLOSER_ANCHOR: Record<MultilineStringLang, CloserAnchor> = {
   scala: 'anywhere',
   // Dart's multi-line string production is a delimiter, content, then the delimiter, with no rule about where on a line the closing delimiter falls (Dart Programming Language Specification, section "Strings").
   dart: 'anywhere',
+  // A GraphQL block string closes at the next `"""` wherever it sits: the spec's BlockString production places no positional rule on the closing delimiter, and a one-line description such as `"""A user."""` is the ordinary form (GraphQL specification, section 2.9.4 "String Value").
+  graphql: 'anywhere',
   // C# has two cross-line forms and they disagree, so the language-level value is the permissive one. A verbatim string (`@"..."`) closes on the next non-doubled quote wherever it sits and has no positional rule (C# language reference, "String literals"). A multi-line raw string literal does require its closing run to begin its own line (C# language reference, "Raw string literals"), but that rule is unreachable as a mis-pairing here: the same section forbids the content from holding a quote run as long as the delimiter, so no run inside the body can be mistaken for the closer in the first place, and the run-length rule already in `closingQuoteRunEnd` is what enforces it.
   csharp: 'anywhere',
   // R has no fixed-delimiter multi-line form and no positional rule: an ordinary character constant runs to its next unescaped quote (R Language Definition, section 10.3.1 "Literal constants") and a raw constant to its mirrored closing punctuation (R base help page `?Quotes`, "Raw character constants"), on whatever line either lands.
@@ -794,12 +797,14 @@ function closerSearchStart(line: string, from: number, anchor: CloserAnchor): nu
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
-export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir' | 'scala' | 'dart' | 'r'
+export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift' | 'elixir' | 'scala' | 'dart' | 'r' | 'graphql'
 
 /** Per-language run-close rule for the triple-quoted families. A `Record` rather than a lookup with a fallback, so adding a language to {@link MultilineStringLang} is a compile error until its rule is decided. */
 const TRIPLE_QUOTE_RUN_CLOSE: Record<MultilineStringLang, QuoteRunClose> = {
   kotlin: 'last',
   scala: 'last',
+  // A GraphQL block string ends at the first `"""` run, because its grammar excludes that sequence from the body outright rather than letting the longest run win (GraphQL specification, section 2.9.4 "String Value", the BlockString production).
+  graphql: 'first',
   // Swift's closing delimiter has to stand alone on its own line (The Swift Programming Language, "Strings and Characters", section "Multiline String Literals"), so no run longer than three ever terminates a valid Swift literal; it is grouped with Kotlin and Scala so that the same-line and cross-line paths agree, not to assert a rule Swift itself defines.
   swift: 'last',
   csharp: 'last',
@@ -965,6 +970,7 @@ interface OpenerMatch {
 const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = {
   php: ['//', '#'],
   kotlin: ['//'],
+  graphql: ['#'],
   csharp: ['//'],
   powershell: ['#'],
   swift: ['//'],
@@ -1339,7 +1345,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     return { openStart: m.index, closesSameLine: null, state: { kind, identifier, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] } }
   }
 
-  if (lang === 'kotlin' || lang === 'swift' || lang === 'scala') {
+  if (lang === 'kotlin' || lang === 'swift' || lang === 'scala' || lang === 'graphql') {
     // Kotlin raw strings, Swift multi-line string literals and Scala multi-line string literals all use a fixed `"""` delimiter (unlike C#'s variable-length `"{3,}` run), so one branch serves all three.
     // Swift alone also has the extended-delimiter family (`#"..."#`, `##"""..."""##`, any hash count, which must match to close). Unlike R's raw constant, one that closes on the same line is masked rather than skipped: no Swift matcher reads a symbol name out of string content -- FUNC_RE, INIT_RE, SUBSCRIPT_RE, PROPERTY_RE and TYPE_HEADER_RE each read a bare identifier after a keyword -- so blanking one cannot cost a name, while leaving it unmasked lets a `}` inside it close the enclosing declaration early.
     let swiftExt: OpenerMatch | null = null
