@@ -29,7 +29,7 @@
  * anything, so a same-file literal that is spread from an empty source (`[...maybeEmpty]`) reads as
  * computed, not as safe, which is the conservative direction.
  */
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -115,8 +115,18 @@ const EXEMPT: readonly Exemption[] = [
 const MIN_FILES = 500
 const MIN_EACH_SITES = 150
 
+function readdirIfPresent(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+}
+
 function testFiles(dir: string, acc: string[] = []): string[] {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of readdirIfPresent(dir)) {
+    if (entry.name.startsWith('.')) continue
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) testFiles(full, acc)
     else if (entry.name.endsWith('.test.ts')) acc.push(full)

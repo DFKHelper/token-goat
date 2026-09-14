@@ -21,10 +21,20 @@ import { pinnedPopulation } from './population.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOTS = [path.join(HERE, '..', '..', 'src'), path.join(HERE, '..', '..', 'tests')]
 
+function readdirIfPresent(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+}
+
 /** Every `.ts` file under dir, recursively. */
 function tsFiles(dir: string): string[] {
   const out: string[] = []
-  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+  for (const ent of readdirIfPresent(dir)) {
+    if (ent.name.startsWith('.')) continue
     const full = path.join(dir, ent.name)
     if (ent.isDirectory()) out.push(...tsFiles(full))
     else if (ent.isFile() && ent.name.endsWith('.ts')) out.push(full)
