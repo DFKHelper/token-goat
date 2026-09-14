@@ -1313,6 +1313,29 @@ describe('parseFile reference extraction', () => {
     expect(refNames).toContain('sort')
   })
 
+  it('resolves C++ templated call sites to the bare callee name in refs', async () => {
+    const cppFile = write(
+      'tcall.cpp',
+      [
+        'void f() {',
+        '  auto a = std::make_unique<Foo>(1);',
+        '  auto b = tmpl<int>(2);',
+        '  auto c = obj.meth<int>(3);',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(cppFile)
+    expect(result.language).toBe('cpp')
+    const refNames = result.refs.map((r) => r.name)
+    // Fixture provenance: HAND-DERIVED. The three call shapes are ordinary C++ written by hand; the expected names are the source-level callee identifiers, not anything read off calleeName. The node types they produce (template_function under a qualified_identifier, a bare template_function, and a template_method under a field_expression) were confirmed by parsing this exact text with tree-sitter-cpp.
+    expect(refNames).toContain('make_unique')
+    expect(refNames).toContain('tmpl')
+    expect(refNames).toContain('meth')
+    // The template argument list must never be glued onto the recorded name, or no lookup of the real callee can match it.
+    expect(refNames).not.toContain('make_unique<Foo>')
+    expect(refNames).not.toContain('meth<int>')
+  })
+
   // Regression: REF_NOISE_BY_LANG only defined a builtin-noise filter for typescript/python, so
   // go/rust/c/cpp/ruby's bare-identifier stdlib/language builtins (fmt-adjacent bare calls like
   // Go's len/println, Rust's println!/vec! macros, C's printf/malloc) were never filtered out of

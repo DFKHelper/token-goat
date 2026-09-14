@@ -1549,6 +1549,32 @@ function cFunctionName(node: TsNode): string | null {
  * name for Rust macro invocations, and the constructor name for `new` / object
  * creation expressions. Returns `null` for shapes with no resolvable name.
  */
+/** Bare callee identifier of a C/C++ call's `function` child, or null when the position names no identifier. Walks the wrappers structurally rather than slicing text: a templated call site nests its name in a `template_function`/`template_method` node whose own text carries the argument list (`make_unique<Foo>`), so reading that text records a name no lookup of the real callee can match, and a bare `tmpl<int>(x)` is dropped entirely. */
+function cppCalleeName(node: TsNode): string | null {
+  switch (node.type) {
+    case 'identifier':
+    case 'field_identifier':
+      return node.text
+    case 'template_function':
+    case 'template_method': {
+      const name = node.childForFieldName('name')
+      return name !== null ? cppCalleeName(name) : null
+    }
+    case 'qualified_identifier': {
+      const name = node.childForFieldName('name')
+      return name !== null ? cppCalleeName(name) : lastSegment(node.text)
+    }
+    case 'field_expression': {
+      const field = node.childForFieldName('field')
+      if (field === null) return null
+      // Any other field shape (a destructor_name, say) keeps the plain text it resolved to before templated calls were unwrapped.
+      return cppCalleeName(field) ?? field.text
+    }
+    default:
+      return null
+  }
+}
+
 function calleeName(call: TsNode, language: Language): string | null {
   switch (language) {
     case 'typescript':
@@ -1603,10 +1629,7 @@ function calleeName(call: TsNode, language: Language): string | null {
     case 'cpp': {
       const fn = call.childForFieldName('function')
       if (fn === null) return null
-      if (fn.type === 'identifier') return fn.text
-      if (fn.type === 'field_expression') return fn.childForFieldName('field')?.text ?? null
-      if (fn.type === 'qualified_identifier') return lastSegment(fn.text)
-      return null
+      return cppCalleeName(fn)
     }
     case 'ruby': {
       const m = call.childForFieldName('method')
