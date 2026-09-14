@@ -34,13 +34,14 @@ function run(args: string[]): { out: string; err: string; code: number } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
-    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir },
+    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir, TOKEN_GOAT_NO_WORKER_SPAWN: '1' },
   })
   return { out: res.stdout ?? '', err: res.stderr ?? '', code: res.status ?? -1 }
 }
 
 function json(args: string[]): Record<string, unknown> {
-  const r = run([...args, '--json'])
+  const budgetArgs = args.includes('--budget-ms') ? [] : ['--budget-ms', '30000']
+  const r = run([...args, ...budgetArgs, '--json'])
   try {
     return JSON.parse(r.out) as Record<string, unknown>
   } catch {
