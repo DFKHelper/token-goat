@@ -4,6 +4,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.12] - 2026-09-14
+
+### Fixed
+
+- **A PDF can no longer stop `pdf-extract --layout` for good.** Rebuilding a page's lines walks the rows near each piece of text, and it stepped through them by counting. A document places its text where it likes, so it can name a height so large that adding one to it changes nothing -- and the walk then never reached its end. A 612-byte file was enough, the command sat at nothing for as long as it was left, and the minute-long limit on the read could not end it, because that limit is only read between pieces of work and this work never finished one. The walk now names the rows it visits instead of counting to them.
+- **A Word, PowerPoint or Excel file too large to open is now remembered as refused.** The size limit reported an ordinary failure, which reads as bad luck rather than as an answer about the file, so the indexer tried it again on every pass and would have forever. The same is now true of a spreadsheet whose sheet claims a range too large to scan.
+- **A deck or workbook is read once, not once per slide.** Collecting the text for the index opened the file again for every slide or sheet in it, decompressing the whole thing each time, and the number of times came from the file itself. A 200-slide deck took 201 passes and 4.6 seconds; it now takes one pass and 52ms, and a 1,000-slide deck takes 240ms. Walking a document's slides or sheets is also bounded by a clock now, as reading a PDF already was.
+
 ## [2.9.11] - 2026-09-13
 
 ### Added
