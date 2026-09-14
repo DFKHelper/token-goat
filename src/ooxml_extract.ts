@@ -18,6 +18,14 @@ export class OoxmlTookTooLongError extends DocumentRefusedError {
   }
 }
 
+/** Thrown when a file opens as a zip but does not hold the part that makes it the document it claims to be: no `word/document.xml`, no `xl/workbook.xml`, no slides in the presentation. A DocumentRefusedError for the same reason the size caps are -- which parts an archive holds is a property of its bytes, so the answer is the same on every future pass. Left as a plain Error it read to the indexer as a failed read rather than a verdict, so the file was never stamped and every worker drain re-opened and re-inflated the archive to be told the same thing again, forever. Not transient: no amount of quiet disk changes what is in the zip. */
+export class NotAnOfficeDocumentError extends DocumentRefusedError {
+  constructor(message: string, cause?: unknown) {
+    super(message, 'NotAnOfficeDocumentError')
+    if (cause !== undefined) this.cause = cause
+  }
+}
+
 /** The instant past which a bulk slide/sheet walk over one document must stop. One per document, not per slide/sheet -- opened once by the caller that starts the walk, the same way pdf_extract.ts's pdfWorkDeadline is opened once per PDF. */
 export function ooxmlWorkDeadline(): number {
   return Date.now() + MAX_OOXML_WORK_MILLIS
@@ -66,7 +74,7 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
   } catch (err) {
     throw new Error(accessFailureMessage(err, filePath), { cause: err })
   }
-  if (!stat.isFile()) throw new Error(`not a valid ${kind} file: ${filePath}`)
+  if (!stat.isFile()) throw new NotAnOfficeDocumentError(`not a valid ${kind} file: ${filePath}`)
   // ZipInputTooLargeError rather than a plain Error: a size cap is a verdict on these bytes and will hold on every future pass, so the indexer has to be able to tell it from a bad moment and stop re-reading the file. A plain Error here read as transient, and this is the reader the .docx/.pptx/.xlsx indexing path actually goes through -- the class was only ever raised from the zip-list/zip-read commands, which the indexer never calls.
   if (stat.size > MAX_ZIP_INPUT_BYTES) throw new ZipInputTooLargeError(filePath, stat.size, MAX_ZIP_INPUT_BYTES)
   let data: Buffer
@@ -84,7 +92,7 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
     // that message is more useful than "not a valid file", which would send the reader looking
     // for a corrupt file instead of an oversized one.
     if (err instanceof ZipOutputTooLargeError) throw err
-    throw new Error(`not a valid ${kind} file: ${filePath}`, { cause: err })
+    throw new NotAnOfficeDocumentError(`not a valid ${kind} file: ${filePath}`, err)
   }
 }
 

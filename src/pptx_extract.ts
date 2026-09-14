@@ -1,6 +1,6 @@
 /** PowerPoint (.pptx) narrow-slice reader. Slide XML lives at `ppt/slides/slideN.xml`, one file per slide, each a `p:sld > p:cSld > p:spTree` tree of shapes (`p:sp`); each shape has an optional `p:txBody` of paragraphs (`a:p`) of runs (`a:r`) of text (`a:t`). A slide's title placeholder is the shape whose `p:nvSpPr.p:nvPr.p:ph.@_type` is `title`/`ctrTitle`. Speaker notes live in a sibling `ppt/notesSlides/notesSlideN.xml` part, in the shape whose `p:ph.@_type` is `body` (the other notes-slide shape is a non-text slide-image placeholder). */
 
-import { assertOoxmlWithinDeadline, collectElements, collectTextRuns, decodeZipEntry, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts, type OoxmlPartBudget } from './ooxml_extract.js'
+import { assertOoxmlWithinDeadline, collectElements, collectTextRuns, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts, type OoxmlPartBudget } from './ooxml_extract.js'
 import { compileGuardedRegex } from './regex_guard.js'
 
 export interface SlideOutlineEntry {
@@ -92,7 +92,7 @@ async function listSlideParts(filePath: string): Promise<{ entries: Record<strin
       Object.keys(entries).filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p)),
       /slide(\d+)\.xml$/,
     )
-  if (slidePaths.length === 0) throw new Error(`no slides found in ${filePath} (not a valid .pptx?)`)
+  if (slidePaths.length === 0) throw new NotAnOfficeDocumentError(`no slides found in ${filePath} (not a valid .pptx?)`)
   return { entries, slidePaths, budget }
 }
 

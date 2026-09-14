@@ -50,7 +50,7 @@ export const MAX_LOCATE_CONTEXT_CHARS = 4_000
 /** How long one document's text may take to read, whatever it costs in memory. A byte budget bounds what is retained, not what is done. This extractor cannot stop pdfjs mid-page -- cancelling the stream throws from inside its message handler, and abandoning the reader can leave the teardown unable to settle (see readPageTextItems) -- so refusing at 8 MB frees the memory and leaves the producer inflating. Under the 50 MB input cap and the expansion ratio the fixture measures, that is hours of arithmetic for a file the indexer opened without being asked. The clock is the only bound that covers it. A minute is far past any honest read (a 500-page book is a few seconds) and short enough that a crafted file costs a stall rather than a wedged worker. */
 export const MAX_PDF_WORK_MILLIS = MAX_DOCUMENT_WORK_MILLIS
 
-/** Refusals from this module: the text budget, the input cap, and the clock. */
+/** Refusals from this module: the text budget, the input cap, and the clock. Deliberately not pdfjs's own InvalidPDFException/PasswordException: those are one library version's reading of the bytes, and an upgrade can turn a file it rejects today into one it reads, so settling them would bury a document on a verdict that is not the document's. Our own structural checks in the OOXML readers are settled, because whether a zip holds `word/document.xml` is a fact about the archive and not an opinion about it. */
 export class PdfRefusedError extends DocumentRefusedError {}
 
 /** Thrown when a PDF's text passes {@link MAX_PDF_TEXT_BYTES}, or the file itself passes {@link MAX_PDF_INPUT_BYTES}. */

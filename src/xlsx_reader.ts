@@ -14,7 +14,7 @@
  * otherwise with `text` carrying the display string.
  */
 
-import { assertOoxmlWithinDeadline, decodeZipEntry, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
+import { assertOoxmlWithinDeadline, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
 
 export interface ExcelCell {
   value: unknown
@@ -353,12 +353,12 @@ export async function readXlsxWorkbook(filePath: string, deadline: number = ooxm
   const workbookXml = decodeZipEntry(entries, 'xl/workbook.xml', budget)
   // A zip that opens fine but holds no workbook part is not a spreadsheet. Answered with the same
   // message a non-zip file gets, rather than letting a missing-part TypeError reach the CLI user.
-  if (workbookXml === null) throw new Error(`not a valid .xlsx file: ${filePath}`)
+  if (workbookXml === null) throw new NotAnOfficeDocumentError(`not a valid .xlsx file: ${filePath}`)
 
   const workbookRoot = await parseOoxmlPart(workbookXml)
   const wbNode = (workbookRoot as XmlNode | null)?.['workbook']
   if (wbNode === undefined || wbNode === null || typeof wbNode !== 'object') {
-    throw new Error(`not a valid .xlsx file: ${filePath}`)
+    throw new NotAnOfficeDocumentError(`not a valid .xlsx file: ${filePath}`)
   }
   const wb = wbNode as XmlNode
   const date1904 = isTruthyAttr(attr(wb['workbookPr'] as XmlNode | undefined, 'date1904'))

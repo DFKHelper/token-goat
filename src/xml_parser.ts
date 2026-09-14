@@ -52,6 +52,7 @@
  * by a limit, because there is no mechanism present that could resolve an external or user-defined
  * entity in the first place.
  */
+import { DocumentRefusedError } from './document_refusal.js'
 
 /**
  * Maximum element nesting. Guards the recursive walkers in ooxml_extract.ts against a crafted part,
@@ -59,6 +60,14 @@
  * nests around ten deep, so this sits three orders of magnitude above anything legitimate.
  */
 export const MAX_XML_DEPTH = 512
+
+/** Thrown when a part nests past {@link MAX_XML_DEPTH}. A DocumentRefusedError rather than a plain one, for the reason every other bound on this path is: how deep a document nests is a property of its bytes, so the refusal is identical on every future pass. As a plain Error the indexer classified it as a failed read, never stamped the file, and re-opened and re-parsed it on every worker drain. Not transient. */
+export class XmlTooDeepError extends DocumentRefusedError {
+  constructor(message: string) {
+    super(message, 'XmlTooDeepError')
+  }
+}
+
 
 const NAMED_ENTITIES: Record<string, string> = {
   lt: '<',
@@ -335,7 +344,7 @@ export function parseXml(xml: string): Record<string, unknown> {
       continue
     }
     if (stack.length > MAX_XML_DEPTH) {
-      throw new Error(`XML nesting deeper than ${MAX_XML_DEPTH} elements; refusing to parse (this file is not something any office application produces)`)
+      throw new XmlTooDeepError(`XML nesting deeper than ${MAX_XML_DEPTH} elements; refusing to parse (this file is not something any office application produces)`)
     }
     stack.push(frame)
   }
