@@ -169,7 +169,8 @@ export function getSqliteSchema(filePath: string): SqliteSchemaResult {
   const db = openReadonlySqlite(filePath)
   try {
     const objects = db
-      .prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      // ESCAPE makes the `_` literal. Without it `_` is LIKE's single-character wildcard, so `sqlite_%` also excludes any user table starting with `sqlite` plus one more character (`sqlitedata`, `sqlite3cfg`), and a discovery command that omits a table reads as that table not existing.
+      .prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")
       .all() as Array<{ name: string; type: string }>
 
     const tables: SqliteTableInfo[] = objects.map((o) => {
@@ -258,7 +259,8 @@ export function getSqliteTables(filePath: string): SqliteTableSummary[] {
   try {
     const objects = db
       .prepare(
-        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts_%' AND name NOT LIKE '%_vec0_%' ORDER BY name",
+        // ESCAPE makes every `_` literal; see getSqliteSchema above. Here it costs three tables rather than one, since `%_fts_%` and `%_vec0_%` exist to hide the shadow tables FTS5 and sqlite-vec create beside a virtual table, and unescaped they also hide anything of the shape `my_ftsx_cache`.
+        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_fts\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_vec0\\_%' ESCAPE '\\' ORDER BY name",
       )
       .all() as Array<{ name: string; type: string }>
 
