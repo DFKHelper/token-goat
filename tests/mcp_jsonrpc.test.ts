@@ -42,12 +42,7 @@ import {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/**
- * Every zod construct `src/mcp_server.ts` registers, in one table. Derived by reading the real
- * tool definitions rather than guessed: plain strings, a bounded positive integer, booleans, a
- * string array, a regex-constrained string, `.optional()` in both positions, and `.describe()` on
- * some fields but not others (an undescribed field is what catches a converter that assumes one).
- */
+/** Every zod construct `src/mcp_server.ts` registers, in one table. Derived by reading the real tool definitions rather than guessed: plain strings, a bounded positive integer, booleans, a string array, a regex-constrained string, `.optional()` in both positions, and `.describe()` on some fields but not others (an undescribed field is what catches a converter that assumes one). */
 const SHAPE = {
   name: z.string().describe('symbol name to search for'),
   limit: z.number().int().positive().max(200).optional().describe('max results (default: 20)'),
@@ -106,8 +101,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
       expect(JSON.stringify(ours, null, 2), 'tools/list diverged from the MCP SDK for the shape table').toBe(
         JSON.stringify(ref, null, 2),
       )
-      // Anti-vacuity: an implementation that listed nothing would match an oracle that listed
-      // nothing, and this test would pass while guarding zero schemas.
+      // Anti-vacuity: an implementation that listed nothing would match an oracle that listed nothing, and this test would pass while guarding zero schemas.
       expect(ours.tools).toHaveLength(3)
       expect(Object.keys((ours.tools[0] as any).inputSchema.properties)).toEqual(Object.keys(SHAPE))
     } finally {
@@ -141,8 +135,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
         const ref = await b.client.callTool({ name: call.name, arguments: call.args })
         expect(JSON.stringify(ours), `tools/call diverged from the MCP SDK for: ${call.label}`).toBe(JSON.stringify(ref))
       }
-      // Anti-vacuity again: at least one of those must actually have been an error result, or the
-      // loop above proves only that both implementations can say "ok".
+      // Anti-vacuity again: at least one of those must actually have been an error result, or the loop above proves only that both implementations can say "ok".
       const bad = await a.client.callTool({ name: 'with_schema', arguments: { name: 'alpha' } })
       expect(bad.isError).toBe(true)
       expect((bad.content as any[])[0].text).toContain('Invalid arguments for tool with_schema')
@@ -161,8 +154,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
     const b = await connect(theirs)
     try {
       expect(JSON.stringify(a.client.getServerVersion())).toBe(JSON.stringify(b.client.getServerVersion()))
-      // Both sides asserted: if the SDK ever stops declaring listChanged, this fails and whoever
-      // sees it can delete the divergence and its comment instead of inheriting a stale claim.
+      // Both sides asserted: if the SDK ever stops declaring listChanged, this fails and whoever sees it can delete the divergence and its comment instead of inheriting a stale claim.
       expect(b.client.getServerCapabilities()).toEqual({ tools: { listChanged: true } })
       expect(a.client.getServerCapabilities()).toEqual({ tools: {} })
     } finally {
@@ -179,9 +171,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
     const ourList = await a.client.listTools()
     await a.close()
 
-    // Substitute the protocol layer for a shim that forwards into the SDK, then build the very same
-    // 18 tools again. `createMcpServer` reaches its McpServer through a dynamic import, so mocking
-    // the module is enough -- no production code has to be refactored to be testable this way.
+    // Substitute the protocol layer for a shim that forwards into the SDK, then build the very same 18 tools again. `createMcpServer` reaches its McpServer through a dynamic import, so mocking the module is enough -- no production code has to be refactored to be testable this way.
     vi.resetModules()
     vi.doMock('../src/mcp_jsonrpc.js', () => ({
       McpServer: class {
@@ -210,8 +200,7 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
           JSON.stringify(ourList, null, 2),
           'tools/list for the real production tools diverged from the MCP SDK building the same registrations',
         ).toBe(JSON.stringify(refList, null, 2))
-        // The whole point is that every shipped tool is compared, so a nineteenth one cannot slip
-        // past unchecked. 18 is what ships today; raising it deliberately is fine, silently is not.
+        // The whole point is that every shipped tool is compared, so a nineteenth one cannot slip past unchecked. 18 is what ships today; raising it deliberately is fine, silently is not.
         expect(ourList.tools.length).toBe(18)
       } finally {
         await b.close()
@@ -271,9 +260,7 @@ describe('mcp_jsonrpc protocol handling', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect((sent[0] as any).result).toEqual({})
-    // A clean "method not found" is the contract for the surfaces we deliberately do not implement.
-    // A stub that answered `resources/list` with an empty list would tell a client we have no
-    // resources, which is a different and false statement.
+    // A clean "method not found" is the contract for the surfaces we deliberately do not implement. A stub that answered `resources/list` with an empty list would tell a client we have no resources, which is a different and false statement.
     expect((sent[1] as any).error.code).toBe(JSONRPC_METHOD_NOT_FOUND)
     expect((sent[1] as any).error.message).toContain('resources/list')
   })
@@ -286,16 +273,14 @@ describe('mcp_jsonrpc protocol handling', () => {
       deliver({ jsonrpc: '2.0', method })
     }
     await Promise.resolve()
-    // The JSON-RPC spec forbids a response to a notification, so an unknown one must be dropped
-    // rather than answered with "method not found".
+    // The JSON-RPC spec forbids a response to a notification, so an unknown one must be dropped rather than answered with "method not found".
     expect(sent).toEqual([])
   })
 
   it('refuses to register the same tool name twice', () => {
     const server = new McpServer({ name: 't', version: '1' })
     server.registerTool('dup', {}, () => textResult('a'))
-    // Silently replacing would make a copy-pasted registration shadow the tool it duplicated, and
-    // the only symptom would be one tool quietly doing another tool's work.
+    // Silently replacing would make a copy-pasted registration shadow the tool it duplicated, and the only symptom would be one tool quietly doing another tool's work.
     expect(() => server.registerTool('dup', {}, () => textResult('b'))).toThrow(/registered twice: dup/)
   })
 
@@ -308,8 +293,7 @@ describe('mcp_jsonrpc protocol handling', () => {
     }
     await server.connect(transport)
     transport.onclose?.()
-    // `mcp-serve` resolves its top-level promise on this callback, so a missed call hangs the
-    // process after the client hangs up and a double call would resolve it twice.
+    // `mcp-serve` resolves its top-level promise on this callback, so a missed call hangs the process after the client hangs up and a double call would resolve it twice.
     expect(closes).toBe(1)
   })
 })

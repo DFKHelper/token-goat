@@ -1,8 +1,4 @@
-/**
- * Guard: an MCP tool's advertised `annotations` must match what the tool actually does, not just what its config object claims.
- *
- * CAPTURE: the 18 tool names, their registration order, and the shape of a `tools/list` response (including that `annotations` rides on each listed tool) come from a real `createMcpServer()` connected to a `Client` over `InMemoryTransport.createLinkedPair()`, the same harness `tests/mcp_tool_allowlist.test.ts` already uses -- not from reading `src/mcp_server.ts`'s registration source. The per-tool valid-argument fixtures below are the ones that were probed against a real temp project (a git-inited directory holding `mod.ts` with `export function alphaSymbol()` and `notes.md` with `# Heading One`, `git add -A`'d) and confirmed to return a result rather than a schema-validation failure.
- */
+/** Guard: an MCP tool's advertised `annotations` must match what the tool actually does, not just what its config object claims. CAPTURE: the 18 tool names, their registration order, and the shape of a `tools/list` response (including that `annotations` rides on each listed tool) come from a real `createMcpServer()` connected to a `Client` over `InMemoryTransport.createLinkedPair()`, the same harness `tests/mcp_tool_allowlist.test.ts` already uses -- not from reading `src/mcp_server.ts`'s registration source. The per-tool valid-argument fixtures below are the ones that were probed against a real temp project (a git-inited directory holding `mod.ts` with `export function alphaSymbol()` and `notes.md` with `# Heading One`, `git add -A`'d) and confirmed to return a result rather than a schema-validation failure. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -129,8 +125,7 @@ function argsFor(name: string): Record<string, unknown> | undefined {
 
 describe('MCP tool annotations match tool behavior', () => {
   it('advertises a real, uniquely named tool population, so the checks below measure something', async () => {
-    // Calibration, mirroring tests/mcp_tool_allowlist.test.ts: if the unfiltered server advertised
-    // one tool or none, every assertion below would pass without cutting or checking anything real.
+    // Calibration, mirroring tests/mcp_tool_allowlist.test.ts: if the unfiltered server advertised one tool or none, every assertion below would pass without cutting or checking anything real.
     const client = await buildClient()
     const listed = await client.listTools()
     const names = listed.tools.map((t) => t.name)
@@ -154,10 +149,7 @@ describe('MCP tool annotations match tool behavior', () => {
     const declaredReadOnly = names.filter((n) => annotationsByName.get(n)?.['readOnlyHint'] === true)
     const declaredWriting = names.filter((n) => annotationsByName.get(n)?.['readOnlyHint'] === false)
 
-    // Discover, per tool, whether calling it actually changed the content store -- independent of
-    // what its annotation claims, so this is a discriminating oracle rather than the annotation
-    // grouping testing itself. A tool call returning an error result is fine here; only a write is
-    // being measured.
+    // Discover, per tool, whether calling it actually changed the content store -- independent of what its annotation claims, so this is a discriminating oracle rather than the annotation grouping testing itself. A tool call returning an error result is fine here; only a write is being measured.
     const wroteToContentStore: string[] = []
     for (const name of names) {
       const args = argsFor(name)
@@ -170,14 +162,12 @@ describe('MCP tool annotations match tool behavior', () => {
       if (before.length !== after.length || before.some((p, i) => p !== after[i])) wroteToContentStore.push(name)
     }
 
-    // The two halves this task calls out explicitly: the read-only-annotated tools, called, produced
-    // no write; and the writing tools did.
+    // The two halves this task calls out explicitly: the read-only-annotated tools, called, produced no write; and the writing tools did.
     const readOnlyThatWrote = declaredReadOnly.filter((n) => wroteToContentStore.includes(n))
     expect(readOnlyThatWrote, `these readOnlyHint:true tools wrote to the content store: ${readOnlyThatWrote.join(', ')}`).toEqual([])
     expect(wroteToContentStore.length, 'no tool call changed the content store at all -- the snapshot is not a discriminating oracle here').toBeGreaterThan(0)
 
-    // check 4: the observed writers are exactly the declared writers, by set equality against
-    // behavior -- not against a hardcoded list of names.
+    // check 4: the observed writers are exactly the declared writers, by set equality against behavior -- not against a hardcoded list of names.
     expect([...wroteToContentStore].sort()).toEqual([...declaredWriting].sort())
   })
 })

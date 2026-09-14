@@ -1,11 +1,4 @@
-/**
- * Semantic search: chunking, embedding, storage and the search itself.
- *
- * The embedding backend lives in embed_model.ts (the model, verified and run) and
- * embed_tokenizer.ts (the text, cut into the pieces it was trained on). It is optional: with the
- * inference runtime absent, everything here degrades to empty results rather than throwing, and
- * `semantic` answers on its keyword half alone.
- */
+/** Semantic search: chunking, embedding, storage and the search itself. The embedding backend lives in embed_model.ts (the model, verified and run) and embed_tokenizer.ts (the text, cut into the pieces it was trained on). It is optional: with the inference runtime absent, everything here degrades to empty results rather than throwing, and `semantic` answers on its keyword half alone. */
 
 import type { SqliteDatabase, SqliteStatement } from './sqlite_driver.js'
 
@@ -23,8 +16,7 @@ import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
 
-// Re-exported because the model's identity belongs to the module that fetches and verifies it, and
-// because every existing caller and test reads these three from here.
+// Re-exported because the model's identity belongs to the module that fetches and verifies it, and because every existing caller and test reads these three from here.
 export { DEFAULT_DIM, DEFAULT_MODEL, PINNED_MODEL_REVISION }
 
 // BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric instruction prefix on the QUERY side only -- passages/documents are embedded plain. See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query text only (never to chunk/document text, which would just add noise) to improve retrieval quality for this model family.
@@ -39,12 +31,7 @@ type PipelineFn = (
 ) => Promise<FeatureExtractor>
 const _extractorCache = new Map<string, Promise<FeatureExtractor>>()
 
-/**
- * The real backend, in the shape the cache and the retry loop already expect. The `task` argument
- * is ignored: there is exactly one thing this builds. It kept its name and signature through the
- * move off @xenova/transformers so the override below, and every test using it, still fit. (That
- * name survives in this file's comments only where it is describing history.)
- */
+/** The real backend, in the shape the cache and the retry loop already expect. The `task` argument is ignored: there is exactly one thing this builds. It kept its name and signature through the move off @xenova/transformers so the override below, and every test using it, still fit. (That name survives in this file's comments only where it is describing history.) */
 const inHousePipelineFn: PipelineFn = async (_task, modelName) => {
   const model = await EmbeddingModel.load(modelName)
   return async (text: string) => ({ data: await model.embed(text) })
@@ -87,9 +74,7 @@ async function buildExtractorWithRetry(
   let lastError: unknown
   for (let attempt = 1; attempt <= PIPELINE_RETRY_ATTEMPTS; attempt++) {
     try {
-      // The revision is pinned inside embed_model.ts, which is the only thing that can act on it:
-      // it is what the digests belong to. Passing it here as well would be a second copy of the
-      // same fact, and the one a reader would trust is not necessarily the one that is used.
+      // The revision is pinned inside embed_model.ts, which is the only thing that can act on it: it is what the digests belong to. Passing it here as well would be a second copy of the same fact, and the one a reader would trust is not necessarily the one that is used.
       return await pipelineFn('feature-extraction', modelName)
     } catch (e) {
       lastError = e
@@ -136,10 +121,7 @@ const _GENERATED_PATH_SEGMENTS = new Set([
 // Distance penalty added to generated/build path hits.
 const _GENERATED_PATH_PENALTY = 0.5
 
-// Path-segment fragments that mark archival/superseded content -- a design doc under docs/,
-// an old plan under plans/, an archive/ folder, or similar. Deprioritized (not dropped) via
-// semantic.archive_weight so live source wins ties/near-ties but a genuinely much better
-// archival match can still surface. See _pathPriorityPenalty.
+// Path-segment fragments that mark archival/superseded content -- a design doc under docs/, an old plan under plans/, an archive/ folder, or similar. Deprioritized (not dropped) via semantic.archive_weight so live source wins ties/near-ties but a genuinely much better archival match can still surface. See _pathPriorityPenalty.
 const _ARCHIVE_PATH_SEGMENTS = new Set([
   'archive',
   'archived',
@@ -149,13 +131,10 @@ const _ARCHIVE_PATH_SEGMENTS = new Set([
   'drafts',
 ])
 
-// Filename patterns (matched against the basename) that mark archival/superseded content
-// regardless of directory.
+// Filename patterns (matched against the basename) that mark archival/superseded content regardless of directory.
 const _ARCHIVE_FILE_RE = /(^changelog|\.bak$|\.orig$)/i
 
-// General docs/markdown paths get a milder penalty than archival content: docs are often
-// genuinely the right answer for a "how does X work" query, so this is a nudge, not a
-// suppression. See semantic.docs_weight.
+// General docs/markdown paths get a milder penalty than archival content: docs are often genuinely the right answer for a "how does X work" query, so this is a nudge, not a suppression. See semantic.docs_weight.
 const _DOCS_FILE_RE = /\.md$/i
 const _DOCS_DIR_SEGMENT = 'docs'
 
@@ -183,13 +162,7 @@ export interface Chunk {
   kind: string // function|class|method|section|window|symbol
 }
 
-/**
- * A structural cut point chunkFile can snap to instead of slicing blindly through a
- * fixed-size sliding window. Sourced from the same indexing pass's already-committed
- * symbol rows (kind: 'symbol') for source files, or from markdown heading extraction
- * (kind: 'section') for doc files - see `indexFileEmbeddings` in parser.ts. `start`/`end`
- * are 1-based, inclusive line numbers.
- */
+/** A structural cut point chunkFile can snap to instead of slicing blindly through a fixed-size sliding window. Sourced from the same indexing pass's already-committed symbol rows (kind: 'symbol') for source files, or from markdown heading extraction (kind: 'section') for doc files - see `indexFileEmbeddings` in parser.ts. `start`/`end` are 1-based, inclusive line numbers. */
 export interface ChunkBoundary {
   start: number
   end: number
@@ -204,44 +177,24 @@ export interface SearchHit {
   kind: string
   distance: number
   text: string
-  /**
-   * Rerank score (distance - verbatimBoost + generatedPathPenalty) computed by
-   * rerankHits. Absent on hits that never went through reranking. Downstream
-   * consumers that resort hits (e.g. mergeNearbyHits) must sort by this field
-   * when present so the rerank order survives merging - falling back to
-   * `distance` would silently discard the verbatim-token boost and
-   * generated-path penalty.
-   */
+  /** Rerank score (distance - verbatimBoost + generatedPathPenalty) computed by rerankHits. Absent on hits that never went through reranking. Downstream consumers that resort hits (e.g. mergeNearbyHits) must sort by this field when present so the rerank order survives merging - falling back to `distance` would silently discard the verbatim-token boost and generated-path penalty. */
   adjustedDistance?: number
 }
 
 // ============================================================================ Public API ============================================================================
 
-/**
- * Whether embedding is possible at all: the inference runtime is installed and loadable. It says
- * nothing about whether the model files are on disk yet, which is a question only answerable by
- * going and looking, and which resolves itself by downloading them.
- */
+/** Whether embedding is possible at all: the inference runtime is installed and loadable. It says nothing about whether the model files are on disk yet, which is a question only answerable by going and looking, and which resolves itself by downloading them. */
 export function isAvailable(): boolean {
   return isRuntimeAvailable()
 }
 
-/**
- * Why the backend did not load, or `null` when it loaded. `isAvailable()` collapses both failures
- * into `false`, which is the right answer for a caller deciding whether to embed but the wrong one
- * for `doctor`, whose whole job is naming the fix: a package that is absent is one install command
- * away, and a package that is present but throwing is a different problem entirely. Mirrors
- * `ts_refs.ts`'s `loadError()`, which exists for the same reason and is consumed by the same doctor
- * check one line above this one.
- */
+/** Why the backend did not load, or `null` when it loaded. `isAvailable()` collapses both failures into `false`, which is the right answer for a caller deciding whether to embed but the wrong one for `doctor`, whose whole job is naming the fix: a package that is absent is one install command away, and a package that is present but throwing is a different problem entirely. Mirrors `ts_refs.ts`'s `loadError()`, which exists for the same reason and is consumed by the same doctor check one line above this one. */
 export function embeddingBackendLoadError(): Error | null {
   return runtimeLoadError()
 }
 
 /**
- * Embed a batch of texts to fixed-dimension semantic vectors.
- *
- * Uses the pinned bge-small-en-v1.5 checkpoint on onnxruntime-node (384-dimensional output).
+ * Embed a batch of texts to fixed-dimension semantic vectors. Uses the pinned bge-small-en-v1.5 checkpoint on onnxruntime-node (384-dimensional output).
  *
  * @param texts - Strings to embed. Empty array returns empty array.
  * @param modelName - HuggingFace model identifier (default: bge-small-en-v1.5).
@@ -304,11 +257,7 @@ export async function embedTexts(
           `Dimension mismatch: model returned ${vec.length}-dim vector, expected ${expectedDim}`,
         )
       }
-      // The length was the only thing checked here, so a vector holding a NaN or an infinity was
-      // stored as readily as a real one. sqlite-vec then reports no distance at all for that row,
-      // which reads as nearer than everything else and puts it at the top of every search. Refuse
-      // the vector instead: the file is left unembedded and retried later, which is the same
-      // outcome as any other embedding failure and far better than one poisoned row.
+      // The length was the only thing checked here, so a vector holding a NaN or an infinity was stored as readily as a real one. sqlite-vec then reports no distance at all for that row, which reads as nearer than everything else and puts it at the top of every search. Refuse the vector instead: the file is left unembedded and retried later, which is the same outcome as any other embedding failure and far better than one poisoned row.
       const badIndex = vec.findIndex((component) => !Number.isFinite(component))
       if (badIndex !== -1) {
         throw new Error(
@@ -326,9 +275,7 @@ export async function embedTexts(
 }
 
 /**
- * Pack a float vector into the binary format expected by sqlite-vec (IEEE 754).
- *
- * Uses Float32Array for efficiency, mirroring Python's array.tobytes().
+ * Pack a float vector into the binary format expected by sqlite-vec (IEEE 754). Uses Float32Array for efficiency, mirroring Python's array.tobytes().
  *
  * @param vec - Array of floats to pack.
  * @returns Binary representation suitable for storage in vec0 table.
@@ -337,12 +284,7 @@ export function packVec(vec: number[]): Buffer {
   const view = new Float32Array(vec.length)
   for (const [i, val] of vec.entries()) {
     view[i] = val
-    // Checked here, after the narrowing, rather than only on the way out of the model. A value
-    // that is a perfectly finite JavaScript number but too large for a 32-bit float -- 1e39, or
-    // Number.MAX_VALUE -- becomes Infinity the moment it is written into this array, so a guard
-    // that only asks Number.isFinite(val) upstream lets it through and stores the poisoned vector
-    // anyway. This is the one place every stored vector passes through (insertChunkVector and
-    // upsertChunks both pack here), so it is where the guarantee belongs.
+    // Checked here, after the narrowing, rather than only on the way out of the model. A value that is a perfectly finite JavaScript number but too large for a 32-bit float -- 1e39, or Number.MAX_VALUE -- becomes Infinity the moment it is written into this array, so a guard that only asks Number.isFinite(val) upstream lets it through and stores the poisoned vector anyway. This is the one place every stored vector passes through (insertChunkVector and upsertChunks both pack here), so it is where the guarantee belongs.
     if (!Number.isFinite(view[i])) {
       throw new Error(
         `Non-finite embedding component at index ${i}: ${String(val)} is not representable as a 32-bit float`,
@@ -352,18 +294,7 @@ export function packVec(vec: number[]): Buffer {
   return Buffer.from(view.buffer)
 }
 
-/**
- * Split one line range into size-capped chunks via a sliding window.
- *
- * Shared core for the no-boundary fallback (the whole file is one range, tagged
- * 'window') and for emitting/sub-splitting a single structural boundary passed in
- * from chunkFile: a boundary whose body fits under `chunkSize` comes back as exactly
- * one chunk, because the accumulation loop below never trips its overflow branch;
- * an oversized boundary is sub-split the same way the old whole-file window logic
- * always worked, still tagged with the boundary's own `kind`. Overlap is clamped to
- * `rangeStart` so a sub-split never bleeds backward into a preceding, differently
- * tagged range.
- */
+/** Split one line range into size-capped chunks via a sliding window. Shared core for the no-boundary fallback (the whole file is one range, tagged 'window') and for emitting/sub-splitting a single structural boundary passed in from chunkFile: a boundary whose body fits under `chunkSize` comes back as exactly one chunk, because the accumulation loop below never trips its overflow branch; an oversized boundary is sub-split the same way the old whole-file window logic always worked, still tagged with the boundary's own `kind`. Overlap is clamped to `rangeStart` so a sub-split never bleeds backward into a preceding, differently tagged range. */
 function splitRangeIntoChunks(
   filePath: string,
   lines: string[],
@@ -383,14 +314,7 @@ function splitRangeIntoChunks(
     const line = lines[lineNo - 1] ?? ''
     const lineWithNewline = line + '\n'
     if (currentChunk.length + lineWithNewline.length > chunkSize && currentChunk.length > 0) {
-      // Flush current chunk if adding the next line would exceed size.
-      // Measured against the TRIMMED length, not the raw accumulated buffer: a long run of
-      // whitespace-only lines can clear MIN_CHUNK_CHARS in raw chars while trimming down to an
-      // empty string, and the text actually pushed below is `currentChunk.trim()` -- comparing
-      // the untrimmed length here let an all-whitespace chunk sail past this "too small" filter
-      // and get embedded/stored with text === "" (confirmed via a scratch repro: 30 whitespace-
-      // only lines followed by real content produced a chunk with rawTextLen 60+ but an entirely
-      // empty trimmed text).
+      // Flush current chunk if adding the next line would exceed size. Measured against the TRIMMED length, not the raw accumulated buffer: a long run of whitespace-only lines can clear MIN_CHUNK_CHARS in raw chars while trimming down to an empty string, and the text actually pushed below is `currentChunk.trim()` -- comparing the untrimmed length here let an all-whitespace chunk sail past this "too small" filter and get embedded/stored with text === "" (confirmed via a scratch repro: 30 whitespace- only lines followed by real content produced a chunk with rawTextLen 60+ but an entirely empty trimmed text).
       const trimmedLength = currentChunk.trim().length
       const currentChunkTooSmall = trimmedLength < MIN_CHUNK_CHARS
       if (!currentChunkTooSmall) {
@@ -403,23 +327,7 @@ function splitRangeIntoChunks(
         })
       }
 
-      // Start new chunk with overlap, never reaching before this range's own start.
-      //
-      // `overlap` is a CHARACTER budget (chunkFile documents it as "Overlap in chars between
-      // consecutive chunks", default 200), so the window is measured in the real lengths of the
-      // lines it covers. It used to be `Math.ceil(overlap / 40)` -- a fixed line count derived
-      // from a guess that every line is about 40 characters wide. On any file whose lines are
-      // wider than that guess, the guess is the only thing that bounded the window, and it
-      // bounded it in the wrong unit: 200 chars became 5 lines regardless, so a file of
-      // 3,000-char lines carried 15,000 characters of overlap into each chunk instead of 200.
-      // That broke the size cap this function exists to enforce -- `MAX_CHUNK_CHARS` is
-      // documented as the limit "before embedding: bge-small has ~512-token context window", and
-      // stored chunks reached 18,005 chars against a cap of 8,000, because the prefilled overlap
-      // alone was already over it before a single new line was added. It also multiplied what
-      // the database holds: measured over a 300 KB file of 3,000-char lines, the chunks stored
-      // 1,752,485 chars for 300,099 chars of source, 5.84x amplification, every duplicated byte
-      // also being embedded. Minified bundles, generated code, long CSV or log lines and
-      // single-line JSON all have lines far wider than 40 chars.
+      // Start new chunk with overlap, never reaching before this range's own start. `overlap` is a CHARACTER budget (chunkFile documents it as "Overlap in chars between consecutive chunks", default 200), so the window is measured in the real lengths of the lines it covers. It used to be `Math.ceil(overlap / 40)` -- a fixed line count derived from a guess that every line is about 40 characters wide. On any file whose lines are wider than that guess, the guess is the only thing that bounded the window, and it bounded it in the wrong unit: 200 chars became 5 lines regardless, so a file of 3,000-char lines carried 15,000 characters of overlap into each chunk instead of 200. That broke the size cap this function exists to enforce -- `MAX_CHUNK_CHARS` is documented as the limit "before embedding: bge-small has ~512-token context window", and stored chunks reached 18,005 chars against a cap of 8,000, because the prefilled overlap alone was already over it before a single new line was added. It also multiplied what the database holds: measured over a 300 KB file of 3,000-char lines, the chunks stored 1,752,485 chars for 300,099 chars of source, 5.84x amplification, every duplicated byte also being embedded. Minified bundles, generated code, long CSV or log lines and single-line JSON all have lines far wider than 40 chars.
       let overlapChars = 0
       let computedOverlapStart = currentLine
       while (computedOverlapStart > rangeStart) {
@@ -429,40 +337,10 @@ function splitRangeIntoChunks(
         overlapChars += candidateChars
         computedOverlapStart--
       }
-      // A below-MIN_CHUNK_CHARS chunk is dropped above (never pushed) rather than merged, so its
-      // lines must not be silently lost -- overlapStart normally starts fresh at `currentLine -
-      // overlapLines`, which can land AFTER this dropped chunk's own startLine whenever it spans
-      // more lines than the overlap window covers (e.g. several short lines followed immediately
-      // by one line long enough alone to trip the size flush). Confirmed via a scratch repro:
-      // ~5 one-char lines ahead of an 8500-char line vanished from every emitted chunk entirely
-      // -- never embedded, never semantically searchable -- because the recomputed overlap
-      // window (5 lines back from the huge line) started after them. Flooring at this chunk's
-      // own `startLine` when it was too small to keep on its own guarantees every source line
-      // survives into some chunk, at the cost of a larger-than-usual overlap on the rare case
-      // this triggers.
-      // Pinning applies only when the dropped chunk actually held something. The pin exists to stop
-      // a below-floor chunk's *content* being lost, and a buffer that trims to nothing has no
-      // content to lose -- while pinning it is what made this loop quadratic. `startLine` stops
-      // advancing, so the buffer grows without bound, so every following line re-trips the size
-      // flush and re-runs `trim()` over an ever-longer string. Measured on files that are entirely
-      // blank lines: 8,000 lines took 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold
-      // input, and every run produced zero chunks. At the 500 KB the indexer accepts that is
-      // minutes of one core inside the worker's drain loop, spent to produce nothing. A
-      // blank-padded log or a half-written file is all it takes.
+      // A below-MIN_CHUNK_CHARS chunk is dropped above (never pushed) rather than merged, so its lines must not be silently lost -- overlapStart normally starts fresh at `currentLine - overlapLines`, which can land AFTER this dropped chunk's own startLine whenever it spans more lines than the overlap window covers (e.g. several short lines followed immediately by one line long enough alone to trip the size flush). Confirmed via a scratch repro: ~5 one-char lines ahead of an 8500-char line vanished from every emitted chunk entirely -- never embedded, never semantically searchable -- because the recomputed overlap window (5 lines back from the huge line) started after them. Flooring at this chunk's own `startLine` when it was too small to keep on its own guarantees every source line survives into some chunk, at the cost of a larger-than-usual overlap on the rare case this triggers. Pinning applies only when the dropped chunk actually held something. The pin exists to stop a below-floor chunk's *content* being lost, and a buffer that trims to nothing has no content to lose -- while pinning it is what made this loop quadratic. `startLine` stops advancing, so the buffer grows without bound, so every following line re-trips the size flush and re-runs `trim()` over an ever-longer string. Measured on files that are entirely blank lines: 8,000 lines took 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold input, and every run produced zero chunks. At the 500 KB the indexer accepts that is minutes of one core inside the worker's drain loop, spent to produce nothing. A blank-padded log or a half-written file is all it takes.
       const droppedChunkHadContent = currentChunkTooSmall && trimmedLength > 0
       const overlapStart = droppedChunkHadContent ? Math.min(computedOverlapStart, startLine) : computedOverlapStart
-      // Only rebuild when the window actually moved. When it was pinned back to where it already
-      // began -- `overlapStart === startLine` -- the lines it covers are the lines `currentChunk`
-      // already holds, so slicing and joining them reconstructs the identical string.
-      //
-      // That rebuild was not just wasted work, it was quadratic. Content that never clears
-      // MIN_CHUNK_CHARS -- a file of blank lines, or one whose entire non-whitespace content is
-      // shorter than that floor -- pins the window on every flush, so `startLine` never advances
-      // and each flush re-joined a window one line longer than the last. 8,000 blank lines took
-      // 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold input, and every one of those
-      // runs produced zero chunks. At the 500 KB the indexer accepts, that is minutes of one core
-      // inside the worker's drain loop, buying nothing. A blank-padded log or a half-written file
-      // is all it takes.
+      // Only rebuild when the window actually moved. When it was pinned back to where it already began -- `overlapStart === startLine` -- the lines it covers are the lines `currentChunk` already holds, so slicing and joining them reconstructs the identical string. That rebuild was not just wasted work, it was quadratic. Content that never clears MIN_CHUNK_CHARS -- a file of blank lines, or one whose entire non-whitespace content is shorter than that floor -- pins the window on every flush, so `startLine` never advances and each flush re-joined a window one line longer than the last. 8,000 blank lines took 127 ms and 64,000 took 11.3 s, an 89-fold rise for an 8-fold input, and every one of those runs produced zero chunks. At the 500 KB the indexer accepts, that is minutes of one core inside the worker's drain loop, buying nothing. A blank-padded log or a half-written file is all it takes.
       if (overlapStart !== startLine) {
         const overlapText = lines
           .slice(overlapStart - 1, currentLine - 1)
@@ -476,15 +354,7 @@ function splitRangeIntoChunks(
     currentLine++
   }
 
-  // Flush final chunk. A below-floor trailing fragment is merged into the last emitted chunk
-  // (rather than dropped) when one exists, for the same reason as the mid-loop fix above -- the
-  // alternative silently drops the file's own final lines from the semantic index. When no chunk
-  // was emitted yet, there is nothing to merge into; dropping an entire too-small range is
-  // existing, intended behavior (chunkFile's own boundary/gap folding already guarantees a
-  // boundary-derived range clears MIN_CHUNK_CHARS before calling here -- this remaining case is
-  // only reachable for the whole-file window path with no boundaries at all).
-  // Same trimmed-length check as the mid-loop flush above -- an all-whitespace trailing buffer
-  // must not be pushed as an empty-text chunk just because its raw length cleared MIN_CHUNK_CHARS.
+  // Flush final chunk. A below-floor trailing fragment is merged into the last emitted chunk (rather than dropped) when one exists, for the same reason as the mid-loop fix above -- the alternative silently drops the file's own final lines from the semantic index. When no chunk was emitted yet, there is nothing to merge into; dropping an entire too-small range is existing, intended behavior (chunkFile's own boundary/gap folding already guarantees a boundary-derived range clears MIN_CHUNK_CHARS before calling here -- this remaining case is only reachable for the whole-file window path with no boundaries at all). Same trimmed-length check as the mid-loop flush above -- an all-whitespace trailing buffer must not be pushed as an empty-text chunk just because its raw length cleared MIN_CHUNK_CHARS.
   if (currentChunk.trim().length >= MIN_CHUNK_CHARS) {
     chunks.push({
       filePath,
@@ -503,26 +373,7 @@ function splitRangeIntoChunks(
 }
 
 /**
- * Chunk file content into semantically meaningful segments.
- *
- * With no boundaries (the default), splits on newlines using a fixed-size sliding
- * window, respecting requested chunk size and overlap - the original behavior,
- * unchanged, and the fallback for any file with zero parsed symbols/headings.
- *
- * With `boundaries` supplied (symbol rows for source files, markdown headings for doc
- * files - see `indexFileEmbeddings` in parser.ts), chunk cuts snap to structure
- * instead of slicing blindly: one chunk per boundary, tagged with its `kind`. An
- * oversized boundary is sub-split with the same sliding-window logic the fallback
- * path uses. Small gaps between boundaries - or before the first one - are folded
- * into the nearest adjacent chunk rather than becoming their own tiny fragment; a gap
- * large enough to clear MIN_CHUNK_CHARS on its own still becomes a standalone
- * 'window' chunk. Nested boundaries (a class symbol row and its own methods' rows
- * both cover the same lines) collapse to the outermost one so the same lines are
- * never embedded twice under two different chunks. A boundary that only partially
- * overlaps a previously-accepted one (starts inside it but extends past its end) is
- * not dropped - it is clipped to start right after the accepted boundary's end and
- * keeps its own `kind`, so its non-overlapping tail still gets its own chunk instead
- * of silently vanishing into an unrelated chunk.
+ * Chunk file content into semantically meaningful segments. With no boundaries (the default), splits on newlines using a fixed-size sliding window, respecting requested chunk size and overlap - the original behavior, unchanged, and the fallback for any file with zero parsed symbols/headings. With `boundaries` supplied (symbol rows for source files, markdown headings for doc files - see `indexFileEmbeddings` in parser.ts), chunk cuts snap to structure instead of slicing blindly: one chunk per boundary, tagged with its `kind`. An oversized boundary is sub-split with the same sliding-window logic the fallback path uses. Small gaps between boundaries - or before the first one - are folded into the nearest adjacent chunk rather than becoming their own tiny fragment; a gap large enough to clear MIN_CHUNK_CHARS on its own still becomes a standalone 'window' chunk. Nested boundaries (a class symbol row and its own methods' rows both cover the same lines) collapse to the outermost one so the same lines are never embedded twice under two different chunks. A boundary that only partially overlaps a previously-accepted one (starts inside it but extends past its end) is not dropped - it is clipped to start right after the accepted boundary's end and keeps its own `kind`, so its non-overlapping tail still gets its own chunk instead of silently vanishing into an unrelated chunk.
  *
  * @param filePath - Relative path to the file.
  * @param content - File content.
@@ -571,14 +422,7 @@ export function chunkFile(
     openEnd = b.end
   }
 
-  // Measured on the TRIMMED text of the range, matching the threshold splitRangeIntoChunks
-  // itself now applies (see the currentChunkTooSmall fix above) -- a raw-char-count version of
-  // this check let a whitespace-heavy range (or gap) clear MIN_CHUNK_CHARS here and stay
-  // standalone instead of folding into a neighbor, only for splitRangeIntoChunks to then
-  // silently drop that same range's real content (interspersed with the whitespace) because its
-  // own trimmed-length check disagreed, with no neighbor left to fold into by that point. Using
-  // the same trimmed measure here keeps the outer fold-vs-standalone decision and the inner
-  // drop-vs-keep decision consistent, so real content lines are never silently lost between them.
+  // Measured on the TRIMMED text of the range, matching the threshold splitRangeIntoChunks itself now applies (see the currentChunkTooSmall fix above) -- a raw-char-count version of this check let a whitespace-heavy range (or gap) clear MIN_CHUNK_CHARS here and stay standalone instead of folding into a neighbor, only for splitRangeIntoChunks to then silently drop that same range's real content (interspersed with the whitespace) because its own trimmed-length check disagreed, with no neighbor left to fold into by that point. Using the same trimmed measure here keeps the outer fold-vs-standalone decision and the inner drop-vs-keep decision consistent, so real content lines are never silently lost between them.
   const gapLength = (start: number, end: number): number => {
     let text = ''
     for (let lineNo = start; lineNo <= end; lineNo++) text += (lines[lineNo - 1] ?? '') + '\n'
@@ -655,10 +499,7 @@ export function chunkFile(
 }
 
 /**
- * Insert chunks into the database with computed embeddings.
- *
- * Upserts chunks in the index, computing and storing their embeddings
- * in the chunk_vectors table.
+ * Insert chunks into the database with computed embeddings. Upserts chunks in the index, computing and storing their embeddings in the chunk_vectors table.
  *
  * @param db - SQLite database connection.
  * @param chunks - Array of chunks to insert.
@@ -673,14 +514,7 @@ export function insertChunkVector(
   stmt.run(BigInt(rowid), packVec(embedding))
 }
 
-/**
- * Outcome of an embedding attempt, so callers can distinguish a real embed (or a legitimately
- * empty file) from a skip forced by absent optional deps (the inference runtime or the
- * sqlite-vec `chunk_vectors` table). The caller (parser.ts::indexFileEmbeddings) stamps a bare
- * `embed_sha` for `'embedded'` but an `unavailable:`-prefixed marker for `'unavailable'`, so a
- * file skipped only because deps were missing is re-embedded once the deps are installed instead
- * of masquerading as permanently fresh. See {@link embeddingsDepsAvailable}.
- */
+/** Outcome of an embedding attempt, so callers can distinguish a real embed (or a legitimately empty file) from a skip forced by absent optional deps (the inference runtime or the sqlite-vec `chunk_vectors` table). The caller (parser.ts::indexFileEmbeddings) stamps a bare `embed_sha` for `'embedded'` but an `unavailable:`-prefixed marker for `'unavailable'`, so a file skipped only because deps were missing is re-embedded once the deps are installed instead of masquerading as permanently fresh. See {@link embeddingsDepsAvailable}. */
 export type EmbedOutcome = 'embedded' | 'unavailable'
 
 export async function upsertChunks(
@@ -690,17 +524,14 @@ export async function upsertChunks(
   if (chunks.length === 0) {
     return 'embedded'
   }
-  // Every chunk here comes from chunkFile(filePath, content) for one file, so they all
-  // share the same filePath - safe to read it once, guarded by the length check above.
+  // Every chunk here comes from chunkFile(filePath, content) for one file, so they all share the same filePath - safe to read it once, guarded by the length check above.
   const filePath = chunks[0]!.filePath
 
   if (!isAvailable()) {
     console.warn('Embeddings not available; skipping semantic indexing')
-    // Still clear the file's stale rows even though we can't reinsert - matches the
-    // unconditional cleanup indexFile used to perform before this delete moved here.
+    // Still clear the file's stale rows even though we can't reinsert - matches the unconditional cleanup indexFile used to perform before this delete moved here.
     deleteFileEmbeddings(db, filePath)
-    // Report the skip so the caller stamps an unavailable-marker embed_sha (not a bare sha),
-    // letting this file be re-embedded once the model dependency is installed.
+    // Report the skip so the caller stamps an unavailable-marker embed_sha (not a bare sha), letting this file be re-embedded once the model dependency is installed.
     return 'unavailable'
   }
 
@@ -710,8 +541,7 @@ export async function upsertChunks(
     return 'unavailable'
   }
 
-  // Before adding to the index, make sure what is already in it came from this same stack --
-  // otherwise this file's fresh vectors join a set they cannot be compared against.
+  // Before adding to the index, make sure what is already in it came from this same stack -- otherwise this file's fresh vectors join a set they cannot be compared against.
   ensureEmbeddingProvenance(db)
 
   // Embed all chunk texts.
@@ -752,12 +582,7 @@ export async function upsertChunks(
     }
   })
 
-  // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN,
-  // which takes a read snapshot first and only asks for the write lock at the first writing
-  // statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting
-  // the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright.
-  // This database is shared by the worker daemon, the hook processes and the CLI at once, so that
-  // is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
+  // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN, which takes a read snapshot first and only asks for the write lock at the first writing statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright. This database is shared by the worker daemon, the hook processes and the CLI at once, so that is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
   tx.immediate()
   return 'embedded'
 }
@@ -809,12 +634,7 @@ export function fetchScopedHits(
     if (!row) {
       continue
     }
-    // A distance that is not a finite number never passes. vec0 hands back SQL NULL for a row whose
-    // stored vector holds a NaN component, and JavaScript reads that as `null`, which compares as 0
-    // against the threshold and then subtracts as 0 in the re-ranking below -- so a single such row
-    // would clear any threshold and sort ahead of every genuine match, in every project sharing the
-    // database. Writing one is now refused outright (see embedTexts), and a row already stored by an
-    // earlier build is ignored here rather than trusted.
+    // A distance that is not a finite number never passes. vec0 hands back SQL NULL for a row whose stored vector holds a NaN component, and JavaScript reads that as `null`, which compares as 0 against the threshold and then subtracts as 0 in the re-ranking below -- so a single such row would clear any threshold and sort ahead of every genuine match, in every project sharing the database. Writing one is now refused outright (see embedTexts), and a row already stored by an earlier build is ignored here rather than trusted.
     if (typeof row.distance === 'number' && Number.isFinite(row.distance) && row.distance <= maxDistance) {
       const chunk = (
         scopeParams !== undefined ? chunkStmt.get(row.rowid, ...scopeParams) : chunkStmt.get(row.rowid)
@@ -878,21 +698,14 @@ export function fetchScopedExactHits(
 }
 
 /**
- * Search for semantically similar chunks using vector similarity.
- *
- * Embeds the query, over-fetches candidates from chunk_vectors, and re-ranks
- * with verbatim boosting and generated-path penalties before truncating to topK.
+ * Search for semantically similar chunks using vector similarity. Embeds the query, over-fetches candidates from chunk_vectors, and re-ranks with verbatim boosting and generated-path penalties before truncating to topK.
  *
  * @param db - SQLite database connection.
  * @param query - Search query string.
  * @param topK - Number of results to return (default: 8).
  * @param modelName - Model to use for embedding (default: bge-small-en-v1.5).
  * @param maxDistance - Distance threshold; results above this are dropped (default: 1.2).
- * @param rootDir - When provided, scope results to chunks whose file_path lives under this
- *   project root (see {@link BACKFILL_MULTIPLIER} for how this is enforced against sqlite-vec's
- *   partition-less `chunk_vectors` table). `global.db` is a single machine-wide index shared
- *   across every project ever indexed (constants.ts), so callers that mean "search the current
- *   project" MUST pass this.
+ * @param rootDir - When provided, scope results to chunks whose file_path lives under this project root (see {@link BACKFILL_MULTIPLIER} for how this is enforced against sqlite-vec's partition-less `chunk_vectors` table). `global.db` is a single machine-wide index shared across every project ever indexed (constants.ts), so callers that mean "search the current project" MUST pass this.
  * @returns Array of SearchHit objects, sorted by distance (best first).
  */
 export async function searchSemantic(
@@ -904,12 +717,7 @@ export async function searchSemantic(
   rootDir?: string,
 ): Promise<SearchHit[]> {
   if (!isAvailable()) {
-    // Silent by design, and deliberately not a warning. This function only knows that the vector
-    // half is unavailable; whether that leaves the user with nothing depends entirely on what the
-    // caller does next, and the sole caller (runSemantic) always runs a BM25 pass alongside this
-    // one. The warning that used to live here said "semantic search disabled", which printed
-    // directly above real keyword results and was simply false. It now lives in runSemantic, which
-    // is the only place that can honestly describe what the user is about to get.
+    // Silent by design, and deliberately not a warning. This function only knows that the vector half is unavailable; whether that leaves the user with nothing depends entirely on what the caller does next, and the sole caller (runSemantic) always runs a BM25 pass alongside this one. The warning that used to live here said "semantic search disabled", which printed directly above real keyword results and was simply false. It now lives in runSemantic, which is the only place that can honestly describe what the user is about to get.
     return []
   }
 
@@ -922,10 +730,7 @@ export async function searchSemantic(
     return []
   }
 
-  // Searching has to check this too, not just indexing: a query vector computed by this stack is
-  // only comparable with stored vectors from the same stack, and it is entirely possible to search
-  // a database that has not been re-indexed since the stack changed. Returning nothing (and saying
-  // why) beats returning neighbours measured against vectors from a different model.
+  // Searching has to check this too, not just indexing: a query vector computed by this stack is only comparable with stored vectors from the same stack, and it is entirely possible to search a database that has not been re-indexed since the stack changed. Returning nothing (and saying why) beats returning neighbours measured against vectors from a different model.
   ensureEmbeddingProvenance(db, modelName)
 
   // Embed the query. BGE models are asymmetric: only the query side gets the retrieval-instruction prefix (see QUERY_INSTRUCTION_PREFIX) -- document/chunk embedding (the embedTexts call in chunk indexing) must stay unprefixed.
@@ -967,19 +772,7 @@ export async function searchSemantic(
   return rerankHits(hits, query, topK)
 }
 
-/**
- * Re-rank semantic hits by verbatim-token overlap, a generated-path penalty, and a path-priority
- * multiplier, then truncate to `topK`. Distance is an L2 distance over unit-length vectors (smaller = closer), so
- * lower adjusted score ranks higher: a chunk whose text contains query identifiers is pulled up
- * by a bounded boost; a chunk under a generated/build directory is pushed down additively; a
- * chunk under an archival/superseded path (archive/, plans/, CHANGELOG*, ...) or general docs
- * path is pushed down via `_pathPriorityPenalty` (semantic.archive_weight /
- * semantic.docs_weight) so live source wins ties/near-ties without ever excluding a genuinely
- * much better archival or docs match. Each returned hit keeps its raw `distance` but also gets
- * `adjustedDistance` stamped with the rerank score, so downstream code that resorts hits (e.g.
- * mergeNearbyHits) can preserve this ordering instead of silently reverting to raw-distance
- * order.
- */
+/** Re-rank semantic hits by verbatim-token overlap, a generated-path penalty, and a path-priority multiplier, then truncate to `topK`. Distance is an L2 distance over unit-length vectors (smaller = closer), so lower adjusted score ranks higher: a chunk whose text contains query identifiers is pulled up by a bounded boost; a chunk under a generated/build directory is pushed down additively; a chunk under an archival/superseded path (archive/, plans/, CHANGELOG*, ...) or general docs path is pushed down via `_pathPriorityPenalty` (semantic.archive_weight / semantic.docs_weight) so live source wins ties/near-ties without ever excluding a genuinely much better archival or docs match. Each returned hit keeps its raw `distance` but also gets `adjustedDistance` stamped with the rerank score, so downstream code that resorts hits (e.g. mergeNearbyHits) can preserve this ordering instead of silently reverting to raw-distance order. */
 export function rerankHits(hits: SearchHit[], query: string, topK: number): SearchHit[] {
   const queryTokens = _extractQueryTokens(query)
   const scored = hits.map((hit, index) => {
@@ -995,10 +788,7 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
       boost = Math.min(matches * _VERBATIM_TOKEN_BOOST, _MAX_VERBATIM_BOOST)
     }
     const penalty = _isGeneratedPath(hit.filePath) ? _GENERATED_PATH_PENALTY : 0
-    // pathPriority is a similarity-score multiplier in (0, 1] (< 1 = penalty). Distance is the
-    // inverse of similarity (smaller = closer), so applying it as a divisor here has the same
-    // deprioritizing effect a multiplier would have on a similarity score: a smaller weight
-    // divides the distance up (worse rank) without ever excluding the hit.
+    // pathPriority is a similarity-score multiplier in (0, 1] (< 1 = penalty). Distance is the inverse of similarity (smaller = closer), so applying it as a divisor here has the same deprioritizing effect a multiplier would have on a similarity score: a smaller weight divides the distance up (worse rank) without ever excluding the hit.
     const pathPenalty = _pathPriorityPenalty(hit.filePath)
     return { hit, index, adjusted: hit.distance - boost + penalty + pathPenalty }
   })
@@ -1007,15 +797,11 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
 }
 
 /**
- * Merge consecutive hits from the same file whose line ranges overlap or are close.
- *
- * When a function spans multiple chunks, merging prevents output from being dominated
- * by one large function.
+ * Merge consecutive hits from the same file whose line ranges overlap or are close. When a function spans multiple chunks, merging prevents output from being dominated by one large function.
  *
  * @param hits - Array of search hits.
  * @param proximity - Lines within which to consider hits as "nearby" (default: 20).
- * @returns Merged array of hits, re-sorted by rerank score (adjustedDistance)
- *   when present, falling back to raw distance otherwise.
+ * @returns Merged array of hits, re-sorted by rerank score (adjustedDistance) when present, falling back to raw distance otherwise.
  */
 export function mergeNearbyHits(
   hits: SearchHit[],
@@ -1110,8 +896,7 @@ export function mergeNearbyHits(
  * @param db - SQLite database connection.
  * @param filePath - Relative path to the file.
  * @param content - File content.
- * @param boundaries - Optional structural cut points (symbol or section ranges) to
- *   snap chunking to instead of the plain sliding window - see chunkFile.
+ * @param boundaries - Optional structural cut points (symbol or section ranges) to snap chunking to instead of the plain sliding window - see chunkFile.
  * @returns Number of chunks created and indexed.
  */
 export async function indexFile(
@@ -1126,8 +911,7 @@ export async function indexFile(
     // upsertChunks deletes the file's prior chunks/vectors as part of the same transaction as the new insert, so a failed insert can't leave them deleted-but-not-replaced. It returns 'unavailable' when the optional embedding deps are absent so the caller can avoid falsely stamping the file as embedded.
     return upsertChunks(db, chunks)
   }
-  // An empty file has nothing to embed regardless of whether the optional deps are present,
-  // so it is a genuinely terminal 'embedded' state (a bare embed_sha), never 'unavailable'.
+  // An empty file has nothing to embed regardless of whether the optional deps are present, so it is a genuinely terminal 'embedded' state (a bare embed_sha), never 'unavailable'.
   deleteFileEmbeddings(db, filePath)
   return 'embedded'
 }
@@ -1152,22 +936,13 @@ function chunkVectorsTableExists(db: SqliteDatabase): boolean {
   return usable
 }
 
-/**
- * Are BOTH optional embedding dependencies present on this connection: the onnxruntime-node
- * model ({@link isAvailable}) AND a usable sqlite-vec `chunk_vectors` table
- * ({@link chunkVectorsTableExists})? A real embed needs both -- upsertChunks reports
- * `'unavailable'` when either is missing. Freshness gates (worker.ts/cli.ts) use this to decide
- * whether an `unavailable:`-marked embed_sha must trigger a re-embed (deps now present) or can
- * still be treated as fresh (deps still absent, so re-embedding would just re-skip).
- */
+/** Are BOTH optional embedding dependencies present on this connection: the onnxruntime-node model ({@link isAvailable}) AND a usable sqlite-vec `chunk_vectors` table ({@link chunkVectorsTableExists})? A real embed needs both -- upsertChunks reports `'unavailable'` when either is missing. Freshness gates (worker.ts/cli.ts) use this to decide whether an `unavailable:`-marked embed_sha must trigger a re-embed (deps now present) or can still be treated as fresh (deps still absent, so re-embedding would just re-skip). */
 export function embeddingsDepsAvailable(db: SqliteDatabase): boolean {
   return isAvailable() && chunkVectorsTableExists(db)
 }
 
 /**
- * Delete all embeddings for a file.
- *
- * Removes stale entries when a file is modified or deleted.
+ * Delete all embeddings for a file. Removes stale entries when a file is modified or deleted.
  *
  * @param db - SQLite database connection.
  * @param filePath - Relative path to the file.
@@ -1188,14 +963,7 @@ export function deleteFileEmbeddings(
 }
 
 /**
- * Drop every stored vector and chunk in the database, and clear the `embed_sha` of each file that
- * had one, so the freshness gate re-embeds it (see {@link isEmbedFresh} in parser.ts).
- *
- * Only files that actually had chunk rows are cleared. A file carrying a bare `embed_sha` with no
- * chunks is a deliberate terminal skip -- an empty file, or a policy-excluded one like a
- * multi-megabyte `.profile-meta.xml` -- and re-entering those would re-read their whole content
- * just to reach the same early return. Collecting the paths before the delete rather than after is
- * what makes that distinction possible at all, and mirrors purgeDotenvEmbeddings in db.ts.
+ * Drop every stored vector and chunk in the database, and clear the `embed_sha` of each file that had one, so the freshness gate re-embeds it (see {@link isEmbedFresh} in parser.ts). Only files that actually had chunk rows are cleared. A file carrying a bare `embed_sha` with no chunks is a deliberate terminal skip -- an empty file, or a policy-excluded one like a multi-megabyte `.profile-meta.xml` -- and re-entering those would re-read their whole content just to reach the same early return. Collecting the paths before the delete rather than after is what makes that distinction possible at all, and mirrors purgeDotenvEmbeddings in db.ts.
  *
  * @returns How many files were marked for re-embedding.
  */
@@ -1210,33 +978,13 @@ export function resetAllEmbeddings(db: SqliteDatabase): number {
   return paths.length
 }
 
-/**
- * A stable identifier for the embedding stack in this process: the model, the exact revision of it
- * that was fetched, and the inference runtime's major.minor version.
- *
- * The runtime version is in here because it changes the numbers. Running the same quantized model
- * through two runtime versions produced final vectors 0.9925-0.9978 cosine apart -- both about
- * equally close to the unquantized model, so neither is wrong, but near-ties reorder between them.
- * Major.minor rather than the full version is a judgement call: int8 kernel changes land in minor
- * releases, and keying on the patch would re-embed every project on the machine for a bug fix that
- * cannot plausibly move a number. It errs toward not re-embedding, so a patch release that DID
- * change a kernel would go unnoticed.
- */
+/** A stable identifier for the embedding stack in this process: the model, the exact revision of it that was fetched, and the inference runtime's major.minor version. The runtime version is in here because it changes the numbers. Running the same quantized model through two runtime versions produced final vectors 0.9925-0.9978 cosine apart -- both about equally close to the unquantized model, so neither is wrong, but near-ties reorder between them. Major.minor rather than the full version is a judgement call: int8 kernel changes land in minor releases, and keying on the patch would re-embed every project on the machine for a bug fix that cannot plausibly move a number. It errs toward not re-embedding, so a patch release that DID change a kernel would go unnoticed. */
 export function embeddingProvenance(modelName: string = DEFAULT_MODEL): string {
   const revision = modelName === DEFAULT_MODEL ? PINNED_MODEL_REVISION.slice(0, 12) : 'unpinned'
   return `${modelName}@${revision}/${backendId()}`
 }
 
-/**
- * Which runtime computes the vectors, at which version -- see the note above on why that is the
- * half of the stamp that moves, and why it is keyed to major.minor.
- *
- * `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two
- * installs that both fail that read stamp the same string and are then treated as one stack. That
- * is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no
- * manifest above it, and every caller is already behind {@link isAvailable}, which only passes once
- * it has loaded.
- */
+/** Which runtime computes the vectors, at which version -- see the note above on why that is the half of the stamp that moves, and why it is keyed to major.minor. `runtimeVersion()` answers 'unknown' if it cannot find the installed package's manifest, and two installs that both fail that read stamp the same string and are then treated as one stack. That is a real hole and a narrow one: reaching it means the runtime loaded from somewhere with no manifest above it, and every caller is already behind {@link isAvailable}, which only passes once it has loaded. */
 function backendId(): string {
   return `onnxruntime-node@${majorMinor(runtimeVersion())}`
 }
@@ -1247,10 +995,7 @@ function majorMinor(version: string): string {
   return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version
 }
 
-// Memoized per connection, like _chunkVectorsUsable above and for the same reason: the answer
-// cannot change during a connection's life (the provenance is fixed once the runtime has loaded,
-// and the stamp is rewritten in the same call that finds it stale), so re-running the read on
-// every embed and every search would be pure overhead on the hot path.
+// Memoized per connection, like _chunkVectorsUsable above and for the same reason: the answer cannot change during a connection's life (the provenance is fixed once the runtime has loaded, and the stamp is rewritten in the same call that finds it stale), so re-running the read on every embed and every search would be pure overhead on the hot path.
 const _provenanceChecked = new WeakSet<SqliteDatabase>()
 
 /**
@@ -1332,14 +1077,7 @@ function _isGeneratedPath(filePath: string): boolean {
 }
 
 /**
- * Path-priority similarity multiplier applied before final ranking (rerankHits): archival/
- * superseded paths (archive/, plans/, CHANGELOG*, *.bak, ...) get semantic.archive_weight;
- * general docs/markdown paths get the milder semantic.docs_weight; live source gets 1 (no
- * change). Values are in (0, 1] -- < 1 pushes a hit down in rank (applied as a divisor against
- * distance, since distance is the inverse of similarity) without ever excluding it, so a
- * genuinely much better archival match can still beat a mediocre source match. Weights are
- * configurable and a weight of 1.0 fully disables that tier's penalty (e.g. for a project with
- * a genuinely live `plans/` directory).
+ * Path-priority similarity multiplier applied before final ranking (rerankHits): archival/ superseded paths (archive/, plans/, CHANGELOG*, *.bak, ...) get semantic.archive_weight; general docs/markdown paths get the milder semantic.docs_weight; live source gets 1 (no change). Values are in (0, 1] -- < 1 pushes a hit down in rank (applied as a divisor against distance, since distance is the inverse of similarity) without ever excluding it, so a genuinely much better archival match can still beat a mediocre source match. Weights are configurable and a weight of 1.0 fully disables that tier's penalty (e.g. for a project with a genuinely live `plans/` directory).
  *
  * @param filePath - Relative or absolute file path of the hit.
  * @returns Similarity multiplier in (0, 1] to apply (as a divisor on distance) to the hit.

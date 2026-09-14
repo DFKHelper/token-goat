@@ -52,11 +52,7 @@ import { z } from 'zod'
 /** The version this server speaks natively. */
 export const LATEST_PROTOCOL_VERSION = '2025-11-25'
 
-/**
- * Versions this server will negotiate down to. Mirrors the SDK's list: a client asking for any of
- * these gets its own version echoed back, which is what the spec asks for and what stops a client
- * pinned to an older revision from refusing the handshake.
- */
+/** Versions this server will negotiate down to. Mirrors the SDK's list: a client asking for any of these gets its own version echoed back, which is what the spec asks for and what stops a client pinned to an older revision from refusing the handshake. */
 export const SUPPORTED_PROTOCOL_VERSIONS = [
   LATEST_PROTOCOL_VERSION,
   '2025-06-18',
@@ -100,17 +96,12 @@ export interface JsonRpcErrorResponse {
 
 export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcResponse | JsonRpcErrorResponse
 
-/**
- * The transport contract, duck-typed so the SDK's own `InMemoryTransport` satisfies it without
- * any adapter -- that is what lets the tests keep driving this server with the reference client.
- */
+/** The transport contract, duck-typed so the SDK's own `InMemoryTransport` satisfies it without any adapter -- that is what lets the tests keep driving this server with the reference client. */
 export interface McpTransport {
   start(): Promise<void>
   send(message: JsonRpcMessage): Promise<void>
   close(): Promise<void>
-  // `| undefined` on each, rather than `?` alone, because this repo compiles with
-  // exactOptionalPropertyTypes: without it an implementation that declares the field as possibly
-  // unset does not satisfy the interface, and the SDK's own transports declare exactly that.
+  // `| undefined` on each, rather than `?` alone, because this repo compiles with exactOptionalPropertyTypes: without it an implementation that declares the field as possibly unset does not satisfy the interface, and the SDK's own transports declare exactly that.
   onmessage?: ((message: JsonRpcMessage) => void) | undefined
   onclose?: (() => void) | undefined
   onerror?: ((error: Error) => void) | undefined
@@ -125,9 +116,7 @@ export interface CallToolResult {
 /** A zod object shape, the same thing the SDK's `registerTool` takes as `inputSchema`. */
 export type ToolInputShape = Record<string, z.ZodType>
 
-/**
- * The behavioural hints a tool may advertise. Spelled out here rather than imported from `@modelcontextprotocol/sdk`, which is a devDependency and must stay off the shipping path; the field names and their meanings are the protocol's `Tool.annotations`, and tests/mcp_jsonrpc.test.ts compares the whole `tools/list` payload byte-for-byte against the SDK building the same registrations, so a field spelled differently from the protocol fails there rather than reaching a client that silently ignores it. Every field is a hint from an untrusted server, so a client must not treat any of them as a guarantee -- which is exactly why they are optional and why omitting one says nothing.
- */
+/** The behavioural hints a tool may advertise. Spelled out here rather than imported from `@modelcontextprotocol/sdk`, which is a devDependency and must stay off the shipping path; the field names and their meanings are the protocol's `Tool.annotations`, and tests/mcp_jsonrpc.test.ts compares the whole `tools/list` payload byte-for-byte against the SDK building the same registrations, so a field spelled differently from the protocol fails there rather than reaching a client that silently ignores it. Every field is a hint from an untrusted server, so a client must not treat any of them as a guarantee -- which is exactly why they are optional and why omitting one says nothing. */
 export interface ToolAnnotations {
   title?: string
   /** The tool does not modify its environment. */
@@ -149,11 +138,7 @@ export interface ToolDefinition<Shape extends ToolInputShape = ToolInputShape> {
 /** The argument object a handler receives, inferred from the shape it registered. */
 export type ToolArgs<Shape extends ToolInputShape> = z.infer<z.ZodObject<Shape>>
 
-/**
- * The stored form. Registration is generic and erases to this, which is why `registerTool` casts
- * once at the boundary: the cast is the single point where the per-tool type is traded for a
- * uniform map entry, and the schema that validated the arguments is the thing that makes it sound.
- */
+/** The stored form. Registration is generic and erases to this, which is why `registerTool` casts once at the boundary: the cast is the single point where the per-tool type is traded for a uniform map entry, and the schema that validated the arguments is the thing that makes it sound. */
 type ErasedHandler = (args: unknown) => CallToolResult | Promise<CallToolResult>
 
 interface RegisteredTool {
@@ -165,22 +150,10 @@ interface RegisteredTool {
   annotations: ToolAnnotations | undefined
 }
 
-/**
- * The `$schema` identifier the SDK emits for tool input schemas. Zod defaults to the 2020-12
- * identifier; we pin the SDK's so a client that inspects this field sees no change from the
- * version of token-goat that used the SDK directly.
- */
+/** The `$schema` identifier the SDK emits for tool input schemas. Zod defaults to the 2020-12 identifier; we pin the SDK's so a client that inspects this field sees no change from the version of token-goat that used the SDK directly. */
 const DRAFT_07_SCHEMA_ID = 'http://json-schema.org/draft-07/schema#'
 
-/**
- * A wart, preserved deliberately.
- *
- * The SDK raises bad-argument and unknown-tool failures as an `McpError`, catches it, and puts
- * `error.message` into the tool result -- and `McpError`'s message begins `MCP error -32602: `.
- * So that prefix has always been on the wire, in text a model reads, even though it is an internal
- * error class leaking into a user-facing string. This commit removes packages; it does not change
- * output. Dropping the prefix would be an improvement worth making on its own, where it is visible.
- */
+/** A wart, preserved deliberately. The SDK raises bad-argument and unknown-tool failures as an `McpError`, catches it, and puts `error.message` into the tool result -- and `McpError`'s message begins `MCP error -32602: `. So that prefix has always been on the wire, in text a model reads, even though it is an internal error class leaking into a user-facing string. This commit removes packages; it does not change output. Dropping the prefix would be an improvement worth making on its own, where it is visible. */
 const MCP_INVALID_PARAMS_PREFIX = `MCP error ${JSONRPC_INVALID_PARAMS}: `
 
 /** What a tool with no declared arguments advertises. Matches the SDK's `EMPTY_OBJECT_JSON_SCHEMA`. */
@@ -192,14 +165,7 @@ function buildJsonSchema(shape: ToolInputShape | undefined): Record<string, unkn
   return { ...schema, $schema: DRAFT_07_SCHEMA_ID }
 }
 
-/**
- * Renders a zod failure exactly the way the SDK's `getParseErrorMessage` and `getDotPath` do:
- * `message at path` per issue, newline-joined, with a bare message when the issue has no path, and
- * `a.b[0].c` addressing for nested fields.
- *
- * Matched character for character on purpose. This text reaches the model as the tool's answer, so
- * it is output, and a change here would be a behaviour change smuggled into a dependency removal.
- */
+/** Renders a zod failure exactly the way the SDK's `getParseErrorMessage` and `getDotPath` do: `message at path` per issue, newline-joined, with a bare message when the issue has no path, and `a.b[0].c` addressing for nested fields. Matched character for character on purpose. This text reaches the model as the tool's answer, so it is output, and a change here would be a behaviour change smuggled into a dependency removal. */
 function describeParseError(error: z.ZodError): string {
   return error.issues
     .map((issue) => {
@@ -221,12 +187,7 @@ function isRequest(message: JsonRpcMessage): message is JsonRpcRequest {
   return 'method' in message && 'id' in message && message.id !== undefined && message.id !== null
 }
 
-/**
- * A tools-only MCP server.
- *
- * Handlers are registered up front and never change, so there is no `notifications/tools/list_changed`
- * and the `tools` capability declares no `listChanged`.
- */
+/** A tools-only MCP server. Handlers are registered up front and never change, so there is no `notifications/tools/list_changed` and the `tools` capability declares no `listChanged`. */
 export class McpServer {
   private readonly info: { name: string; version: string }
   private readonly tools = new Map<string, RegisteredTool>()
@@ -239,10 +200,7 @@ export class McpServer {
     this.info = info
   }
 
-  /**
-   * Registers a tool. Schema generation happens here rather than at `tools/list` time, which also
-   * means a malformed shape fails loudly at startup instead of on a client's first listing.
-   */
+  /** Registers a tool. Schema generation happens here rather than at `tools/list` time, which also means a malformed shape fails loudly at startup instead of on a client's first listing. */
   registerTool<Shape extends ToolInputShape = Record<string, never>>(
     name: string,
     definition: ToolDefinition<Shape>,
@@ -254,22 +212,14 @@ export class McpServer {
       name,
       description: definition.description,
       jsonSchema: buildJsonSchema(shape),
-      // An absent shape still needs a validator, so an argumentless tool called with arguments is
-      // not silently handed them.
+      // An absent shape still needs a validator, so an argumentless tool called with arguments is not silently handed them.
       validator: z.object(shape ?? {}),
       annotations: definition.annotations,
     })
     this.handlers.set(name, handler as ErasedHandler)
   }
 
-  /**
-   * Wires this server to a transport and starts it.
-   *
-   * `onmessage` is assigned before `start()` on purpose: a transport may have buffered messages
-   * that arrive the moment it starts (the SDK's in-memory transport queues anything sent before a
-   * handler exists and drains the queue inside `start()`), so a server that started first would
-   * drop the client's `initialize`.
-   */
+  /** Wires this server to a transport and starts it. `onmessage` is assigned before `start()` on purpose: a transport may have buffered messages that arrive the moment it starts (the SDK's in-memory transport queues anything sent before a handler exists and drains the queue inside `start()`), so a server that started first would drop the client's `initialize`. */
   async connect(transport: McpTransport): Promise<void> {
     this.transport = transport
     transport.onmessage = (message) => {
@@ -289,8 +239,7 @@ export class McpServer {
   }
 
   private async send(message: JsonRpcMessage): Promise<void> {
-    // A peer that vanished mid-request is a normal shutdown race, not an error worth surfacing:
-    // the client is gone, so there is nobody left to tell.
+    // A peer that vanished mid-request is a normal shutdown race, not an error worth surfacing: the client is gone, so there is nobody left to tell.
     try {
       await this.transport?.send(message)
     } catch {
@@ -299,15 +248,7 @@ export class McpServer {
   }
 
   private async handleMessage(message: JsonRpcMessage): Promise<void> {
-    // One check, and it is the whole rule: only a message carrying an id gets a reply.
-    //
-    // That covers both things we drop. Responses to requests we never send have an id but no
-    // method. Notifications (`initialized`, `cancelled`, and whatever a future client adds) have a
-    // method but no id, and the JSON-RPC spec forbids replying to one at all -- so an unknown
-    // notification must be dropped silently rather than answered with "method not found", which is
-    // the mistake a `default:` branch invites. There was a separate `isNotification` guard above
-    // this line; it was removed because it could never fire, since a notification fails the id test
-    // anyway, and a branch that cannot fire is not a guard however much it reads like one.
+    // One check, and it is the whole rule: only a message carrying an id gets a reply. That covers both things we drop. Responses to requests we never send have an id but no method. Notifications (`initialized`, `cancelled`, and whatever a future client adds) have a method but no id, and the JSON-RPC spec forbids replying to one at all -- so an unknown notification must be dropped silently rather than answered with "method not found", which is the mistake a `default:` branch invites. There was a separate `isNotification` guard above this line; it was removed because it could never fire, since a notification fails the id test anyway, and a branch that cannot fire is not a guard however much it reads like one.
     if (!isRequest(message)) return
     const { id, method } = message
     const params = (message.params ?? {}) as Record<string, unknown>
@@ -330,8 +271,7 @@ export class McpServer {
           return
       }
     } catch (err) {
-      // Reaching here means the dispatch itself failed, not the tool: a tool's own failure is
-      // already turned into an isError result inside callTool.
+      // Reaching here means the dispatch itself failed, not the tool: a tool's own failure is already turned into an isError result inside callTool.
       await this.sendError(id, JSONRPC_INVALID_REQUEST, err instanceof Error ? err.message : String(err))
     }
   }
@@ -348,14 +288,7 @@ export class McpServer {
         : LATEST_PROTOCOL_VERSION
     return {
       protocolVersion,
-      // Tools only, and they never change after startup, so no `listChanged`. This is the one
-      // place we deliberately do not copy the SDK, which declares `listChanged: true` because its
-      // McpServer is *able* to send that notification. Token-goat registers every tool before it
-      // connects and never adds or removes one, so we would be promising a notification we can
-      // never have cause to send. No client behaviour turns on it either way -- a subscription
-      // that never fires and an absent subscription are the same thing when the list is fixed --
-      // so the honest declaration wins. Contrast the tool-error text below, which a model reads as
-      // content and is therefore matched to the SDK exactly.
+      // Tools only, and they never change after startup, so no `listChanged`. This is the one place we deliberately do not copy the SDK, which declares `listChanged: true` because its McpServer is *able* to send that notification. Token-goat registers every tool before it connects and never adds or removes one, so we would be promising a notification we can never have cause to send. No client behaviour turns on it either way -- a subscription that never fires and an absent subscription are the same thing when the list is fixed -- so the honest declaration wins. Contrast the tool-error text below, which a model reads as content and is therefore matched to the SDK exactly.
       capabilities: { tools: {} },
       serverInfo: { name: this.info.name, version: this.info.version },
     }
@@ -368,10 +301,7 @@ export class McpServer {
       inputSchema: tool.jsonSchema,
       // Omitted entirely when the tool registered none, rather than sent as an empty object: the SDK does the same, and a client reading an empty object cannot tell it from a tool that declined to answer.
       ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
-      // The SDK emits this for every tool it registers, and it is literally true of ours: we do
-      // not implement task augmentation, so a client that asks for it gets refused. Emitting the
-      // same thing keeps `tools/list` byte-identical to what token-goat sent before, which is what
-      // the differential test in tests/mcp_jsonrpc.test.ts pins.
+      // The SDK emits this for every tool it registers, and it is literally true of ours: we do not implement task augmentation, so a client that asks for it gets refused. Emitting the same thing keeps `tools/list` byte-identical to what token-goat sent before, which is what the differential test in tests/mcp_jsonrpc.test.ts pins.
       execution: { taskSupport: 'forbidden' },
     }))
   }
