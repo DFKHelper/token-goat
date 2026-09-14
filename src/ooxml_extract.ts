@@ -56,18 +56,7 @@ export function accessFailureMessage(err: unknown, filePath: string): string {
 export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '.xlsx'): Promise<Record<string, Uint8Array>> {
   const fflate = await loadFflate()
   if (!fflate) throw new Error('fflate is not installed; run `npm install fflate` to enable this command')
-  // Every failure below used to escape as the raw Node or fflate error. A missing file surfaced
-  // as Node's ENOENT, which names the path it resolved rather than the one the caller typed, so
-  // asking for a file by its bare name printed the reader's whole home directory back at them. A
-  // directory surfaced as EISDIR, and a non-OOXML file surfaced as fflate's "invalid zip data",
-  // which does not even say which file failed. The sibling xlsx reader already guards exactly
-  // this (see loadWorkbook in xlsx_extract.ts, which stops jszip's internals and a docs URL
-  // reaching the user); the same treatment never reached here. Both readers now answer in the
-  // same two shapes, and every path in the message is the one the caller passed. One funnel, so
-  // this covers docx-outline, docx-text, pptx-outline, pptx-slide, pptx-notes and pptx-text.
-  // Not read off filePath: the caller knows which format it asked for, and the extension does
-  // not. `docx-outline report.txt` used to answer "not a valid .txt file", naming a format
-  // nobody asked about and that this reader cannot read either way.
+  // Every failure below used to escape as the raw Node or fflate error. A missing file surfaced as Node's ENOENT, which names the path it resolved rather than the one the caller typed, so asking for a file by its bare name printed the reader's whole home directory back at them. A directory surfaced as EISDIR, and a non-OOXML file surfaced as fflate's "invalid zip data", which does not even say which file failed. The sibling xlsx reader already guards exactly this (see loadWorkbook in xlsx_extract.ts, which stops jszip's internals and a docs URL reaching the user); the same treatment never reached here. Both readers now answer in the same two shapes, and every path in the message is the one the caller passed. One funnel, so this covers docx-outline, docx-text, pptx-outline, pptx-slide, pptx-notes and pptx-text. Not read off filePath: the caller knows which format it asked for, and the extension does not. `docx-outline report.txt` used to answer "not a valid .txt file", naming a format nobody asked about and that this reader cannot read either way.
   let stat: fs.Stats
   try {
     stat = fs.statSync(filePath)
@@ -81,16 +70,13 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
   try {
     data = fs.readFileSync(filePath)
   } catch (err) {
-    // The file can vanish between the stat above and this read. Classified the same way, so the
-    // same situation does not get two different shapes depending on which call happened to see it.
+    // The file can vanish between the stat above and this read. Classified the same way, so the same situation does not get two different shapes depending on which call happened to see it.
     throw new Error(accessFailureMessage(err, filePath), { cause: err })
   }
   try {
     return unzipBounded(fflate, new Uint8Array(data), { limitBytes: MAX_ZIP_OUTPUT_BYTES, shouldExtract: () => true })
   } catch (err) {
-    // A ZipOutputTooLargeError already names the limit and how far over it the archive got --
-    // that message is more useful than "not a valid file", which would send the reader looking
-    // for a corrupt file instead of an oversized one.
+    // A ZipOutputTooLargeError already names the limit and how far over it the archive got -- that message is more useful than "not a valid file", which would send the reader looking for a corrupt file instead of an oversized one.
     if (err instanceof ZipOutputTooLargeError) throw err
     throw new NotAnOfficeDocumentError(`not a valid ${kind} file: ${filePath}`, err)
   }
@@ -138,23 +124,9 @@ export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: s
 
 /** Parses one XML part's text into a plain object tree. Stays `async` although `parseXml` is synchronous: every caller already awaits it, and the two pptx call sites parse a part and its `.rels` sibling concurrently. Dropping the promise would be a signature change rippling through docx_extract, pptx_extract and xlsx_reader for no gain. The parser used to be `fast-xml-parser`, loaded lazily as an optional dependency. It is now `src/xml_parser.ts`, which produces the identical shape for the options that were passed; see that file's header for why, and tests/xml_parser.test.ts for the differential test that holds the two to the same output. The historical notes below are kept because they record why those options were chosen, and the local parser is built to the same two decisions: */
 export async function parseOoxmlPart(xmlText: string): Promise<unknown> {
-  // trimValues defaulted to true in fast-xml-parser, which collapses a whitespace-only
-  // <w:t xml:space="preserve"> </w:t> run (Word's own way of holding just the space between
-  // two <w:r> runs split at a formatting boundary) down to an empty string with no #text key
-  // at all -- silently gluing the words on either side together. Disable it so inter-run
-  // spaces survive; callers already trim() at the paragraph/title level where it matters.
-  // parseTagValue defaults to true, which rewrites any element whose whole text looks numeric
-  // into a JavaScript number before the extractors ever see it. Every OOXML part these commands
-  // read holds document *text*, so that conversion is pure corruption: a spreadsheet cell or a
-  // Word paragraph reading `007` came back as `7`, `01234` as `1234`, `1.50` as `1.5`, `+12` as
-  // `12`, `1e5` as `100000` and `0x1A` as `26` -- zip codes, part numbers, invoice ids, SKUs and
-  // version strings all silently altered, with no error and nothing to show the value had changed.
-  // Numbers that really are numbers are unaffected: every numeric read in these extractors goes
-  // through its own Number()/parseInt() on the string, and attributes were never coerced here
-  // (parseAttributeValue stayed at its default of false).
+  // trimValues defaulted to true in fast-xml-parser, which collapses a whitespace-only <w:t xml:space="preserve"> </w:t> run (Word's own way of holding just the space between two <w:r> runs split at a formatting boundary) down to an empty string with no #text key at all -- silently gluing the words on either side together. Disable it so inter-run spaces survive; callers already trim() at the paragraph/title level where it matters. parseTagValue defaults to true, which rewrites any element whose whole text looks numeric into a JavaScript number before the extractors ever see it. Every OOXML part these commands read holds document *text*, so that conversion is pure corruption: a spreadsheet cell or a Word paragraph reading `007` came back as `7`, `01234` as `1234`, `1.50` as `1.5`, `+12` as `12`, `1e5` as `100000` and `0x1A` as `26` -- zip codes, part numbers, invoice ids, SKUs and version strings all silently altered, with no error and nothing to show the value had changed. Numbers that really are numbers are unaffected: every numeric read in these extractors goes through its own Number()/parseInt() on the string, and attributes were never coerced here (parseAttributeValue stayed at its default of false).
   //
-  // Both decisions are now properties of the parser rather than options passed to it: it never
-  // trims and never coerces, so neither can be switched back on by accident.
+  // Both decisions are now properties of the parser rather than options passed to it: it never trims and never coerces, so neither can be switched back on by accident.
   return parseXml(xmlText)
 }
 

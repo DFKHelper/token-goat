@@ -1,8 +1,5 @@
 /**
- * Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand
- * row CSV never needs a full `Read` just to answer "what's in column X where
- * Y = Z". Deliberately no query language beyond column projection + one
- * equality filter -- matches the project's "no premature abstraction" bar.
+ * Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". Deliberately no query language beyond column projection + one equality filter -- matches the project's "no premature abstraction" bar.
  */
 
 import { displaySafeText } from './paths.js'
@@ -64,16 +61,11 @@ export function detectDelimiter(content: string): string {
 function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
   const delimiter = opts.delimiter ?? detectDelimiter(content)
   if (opts.noHeader === true) {
-    // relax_column_count so a single short or long row is filled/trimmed to the widest shape
-    // rather than aborting the whole file (the default CSV_RECORD_INCONSISTENT_FIELDS_LENGTH).
-    // relax_quotes preserves unescaped quotes in field values (e.g. 16" wheels).
+    // relax_column_count so a single short or long row is filled/trimmed to the widest shape rather than aborting the whole file (the default CSV_RECORD_INCONSISTENT_FIELDS_LENGTH). relax_quotes preserves unescaped quotes in field values (e.g. 16" wheels).
     const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as string[][]
     return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
   }
-  // Two columns sharing a header name collapse to one key under `columns: true`, and the profile
-  // then reads as complete with a column silently gone. The tool's object-keyed model genuinely
-  // cannot carry both, so refuse and name the collision rather than drop it. Detected from the raw
-  // header before parsing, so it fires on a header-only file too.
+  // Two columns sharing a header name collapse to one key under `columns: true`, and the profile then reads as complete with a column silently gone. The tool's object-keyed model genuinely cannot carry both, so refuse and name the collision rather than drop it. Detected from the raw header before parsing, so it fires on a header-only file too.
   const header = csvHeader(content, { ...opts, delimiter })
   const dupes = header.filter((name, i) => name !== '' && header.indexOf(name) !== i)
   if (dupes.length > 0) {
@@ -83,28 +75,14 @@ function parseRecords(content: string, opts: { delimiter?: string; noHeader?: bo
         `rename the duplicates or pass --no-header to address columns positionally as col1, col2, …`,
     )
   }
-  // relax_column_count: a ragged row omits its missing trailing keys (read back as '') instead of
-  // aborting the file; an over-long row's extra fields past the header are dropped.
-  // relax_quotes: unescaped quotes inside values are preserved instead of failing with Invalid Opening Quote.
+  // relax_column_count: a ragged row omits its missing trailing keys (read back as '') instead of aborting the file; an over-long row's extra fields past the header are dropped. relax_quotes: unescaped quotes inside values are preserved instead of failing with Invalid Opening Quote.
   return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as Array<Record<string, string>>
 }
 
 /**
  * Resolve the real header column names, even when the file has zero data rows.
  *
- * `parseRecords`'s `columns: true` mode returns an EMPTY records array for a header-only CSV --
- * there is nothing to `Object.keys()` a header out of, which is what `queryCsv`'s `allColumns`
- * deliberately still does (its emptiness is how the CLI layer detects "no data rows" and prints
- * a friendly message instead of an empty table -- see read_commands.ts's runCsvQuery). But that
- * same emptiness was also being used as the sole "does this column exist" check for `--columns`/
- * `--where`: a spec naming a column that is honestly present in the header line -- just with zero
- * data rows to show for it -- threw a misleading `unknown column: X (available: )`, as if the
- * column itself didn't exist, rather than either working (returning the correctly-empty result)
- * or falling into the same friendly "no data rows" message. This resolves the REAL header
- * (independent of whether any data rows exist) so `--columns`/`--where` validation can tell
- * "genuinely absent from this file" apart from "present, just nothing to show". `noHeader` files
- * have no header line to recover (their `colN` names are synthesized from data-row cell counts,
- * which zero rows can't supply either) -- `[]` there is the honest answer, not a gap to paper over.
+ * `parseRecords`'s `columns: true` mode returns an EMPTY records array for a header-only CSV -- there is nothing to `Object.keys()` a header out of, which is what `queryCsv`'s `allColumns` deliberately still does (its emptiness is how the CLI layer detects "no data rows" and prints a friendly message instead of an empty table -- see read_commands.ts's runCsvQuery). But that same emptiness was also being used as the sole "does this column exist" check for `--columns`/`--where`: a spec naming a column that is honestly present in the header line -- just with zero data rows to show for it -- threw a misleading `unknown column: X (available: )`, as if the column itself didn't exist, rather than either working (returning the correctly-empty result) or falling into the same friendly "no data rows" message. This resolves the REAL header (independent of whether any data rows exist) so `--columns`/`--where` validation can tell "genuinely absent from this file" apart from "present, just nothing to show". `noHeader` files have no header line to recover (their `colN` names are synthesized from data-row cell counts, which zero rows can't supply either) -- `[]` there is the honest answer, not a gap to paper over.
  */
 function csvHeader(content: string, opts: { delimiter?: string; noHeader?: boolean }): string[] {
   if (opts.noHeader === true) return []
@@ -125,16 +103,10 @@ export interface CsvQueryResult {
   preFilterRows: number
 }
 
-// The column-capture excludes = < > ~ outright (they can each start a real single-char
-// operator, so a naive split must stop there and defer to resolveWhereColumn below). A bare
-// '!' or '~' is different: neither is a valid standalone operator on its own -- only '!=' and
-// '~=' are -- so each is only excluded when immediately followed by '=' -- this lets a column
-// literally named e.g. 'wow!thing' or 'temp~F' parse directly instead of hard-failing with no
-// operator match at all.
+// The column-capture excludes = < > ~ outright (they can each start a real single-char operator, so a naive split must stop there and defer to resolveWhereColumn below). A bare '!' or '~' is different: neither is a valid standalone operator on its own -- only '!=' and '~=' are -- so each is only excluded when immediately followed by '=' -- this lets a column literally named e.g. 'wow!thing' or 'temp~F' parse directly instead of hard-failing with no operator match at all.
 const WHERE_SPEC_RE = /^((?:[^=<>~!]|!(?!=)|~(?!=))+)(!=|~=|>=|<=|=|>|<)(.*)$/
 
-/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col>=value`/`col<=value`/`col~=regex`
- * specs from repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
+/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col>=value`/`col<=value`/`col~=regex` specs from repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
 export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undefined {
   if (specs === undefined || specs.length === 0) return undefined
   return specs.map((spec) => {
@@ -142,16 +114,11 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
     if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, col>=value, or col<=value, or col~=regex)`)
     const op = m[2] as CsvWhereOp
     const value = m[3] as string
-    // A numeric comparison with an empty right-hand side (e.g. a spec typo like "price>" with
-    // nothing after the operator) would otherwise reach matchesWhere as { op: '>', value: '' },
-    // where Number('') === 0 silently turns it into "price > 0" instead of surfacing the typo --
-    // the same blank-value trap matchesWhere already guards against for a blank cell.
+    // A numeric comparison with an empty right-hand side (e.g. a spec typo like "price>" with nothing after the operator) would otherwise reach matchesWhere as { op: '>', value: '' }, where Number('') === 0 silently turns it into "price > 0" instead of surfacing the typo -- the same blank-value trap matchesWhere already guards against for a blank cell.
     if ((op === '>' || op === '<' || op === '>=' || op === '<=') && value.trim() === '') {
       throw new Error(`invalid --where spec: ${spec} (missing comparison value after '${op}')`)
     }
-    // Up front, so a pattern that cannot compile or that would stall says so once with a reason,
-    // rather than silently matching no row once per row. matchesWhere re-checks because it is the
-    // only place the value is actually used, and a CsvWhere can be built without going through here.
+    // Up front, so a pattern that cannot compile or that would stall says so once with a reason, rather than silently matching no row once per row. matchesWhere re-checks because it is the only place the value is actually used, and a CsvWhere can be built without going through here.
     if (op === '~=') {
       const guarded = compileGuardedRegexCached(value)
       if (!guarded.ok) throw new Error(`invalid --where spec: ${spec} (the pattern ${guarded.reason})`)
@@ -161,17 +128,9 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
 }
 
 /**
- * `WHERE_SPEC_RE`'s column capture excludes `= < > ~ !` outright, so it always stops at the
- * FIRST operator-class character in the spec -- a column literally named e.g. `a<b` can never
- * be parsed correctly (`a<b=x` always splits as column `a`, op `<`, value `b=x`, even when a
- * genuine `a<b` column exists and was the intended target).
+ * `WHERE_SPEC_RE`'s column capture excludes `= < > ~ !` outright, so it always stops at the FIRST operator-class character in the spec -- a column literally named e.g. `a<b` can never be parsed correctly (`a<b=x` always splits as column `a`, op `<`, value `b=x`, even when a genuine `a<b` column exists and was the intended target).
  *
- * Re-checks the naive split against the real header: reconstructs the raw spec text from
- * `where`'s own fields (invertible, since parseWhereSpecs never drops characters from column,
- * op, or value) and looks for a LONGER header entry that is a prefix of that raw text with a
- * remainder that still parses as a valid `op value` pair. The longest such header entry wins,
- * so an unambiguous shorter column (e.g. `a`) only loses to a genuine longer column (e.g.
- * `a<b`) that is actually present in this file's header -- never to an arbitrary substring.
+ * Re-checks the naive split against the real header: reconstructs the raw spec text from `where`'s own fields (invertible, since parseWhereSpecs never drops characters from column, op, or value) and looks for a LONGER header entry that is a prefix of that raw text with a remainder that still parses as a valid `op value` pair. The longest such header entry wins, so an unambiguous shorter column (e.g. `a`) only loses to a genuine longer column (e.g. `a<b`) that is actually present in this file's header -- never to an arbitrary substring.
  */
 function resolveWhereColumn(where: CsvWhere, allColumns: string[]): CsvWhere {
   const rawSpec = where.column + where.op + where.value
@@ -196,10 +155,7 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
     case '!=':
       return cell !== where.value
     case '~=': {
-      // Guarded rather than compiled directly: `--where` comes off a command line, and a pattern
-      // that backtracks unboundedly would run once per row with no way to interrupt it. A refused
-      // pattern matches nothing rather than stalling; runCsvQuery rejects it up front, so this is
-      // the belt to that braces.
+      // Guarded rather than compiled directly: `--where` comes off a command line, and a pattern that backtracks unboundedly would run once per row with no way to interrupt it. A refused pattern matches nothing rather than stalling; runCsvQuery rejects it up front, so this is the belt to that braces.
       const guarded = compileGuardedRegexCached(where.value)
       return guarded.ok && guarded.re.test(cell)
     }
@@ -207,10 +163,7 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
     case '<':
     case '>=':
     case '<=': {
-      // `Number('')` is 0, not NaN, so a blank cell would otherwise be silently coerced to
-      // the literal value 0 and wrongly match filters like `col<10` or `col>-1`. Treat a
-      // blank cell as "no value" -- it never satisfies a numeric comparison -- unless the
-      // cell is genuinely the string "0" (which is non-blank and compares normally below).
+      // `Number('')` is 0, not NaN, so a blank cell would otherwise be silently coerced to the literal value 0 and wrongly match filters like `col<10` or `col>-1`. Treat a blank cell as "no value" -- it never satisfies a numeric comparison -- unless the cell is genuinely the string "0" (which is non-blank and compares normally below).
       if (cell.trim() === '') return false
       const cellNum = Number(cell)
       const valNum = Number(where.value)
@@ -234,11 +187,7 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
 export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult {
   const records = parseRecords(content, opts)
 
-  // allColumns stays [] for a header-only (zero data row) file with no explicit --columns --
-  // that emptiness is what tells the CLI layer to print "No data rows found" instead of an
-  // empty table (see read_commands.ts's runCsvQuery). realHeader is the true header column list
-  // regardless of data-row count, used only to validate that a --columns/--where name is
-  // genuinely known -- see csvHeader's doc comment for why the two must not be conflated.
+  // allColumns stays [] for a header-only (zero data row) file with no explicit --columns -- that emptiness is what tells the CLI layer to print "No data rows found" instead of an empty table (see read_commands.ts's runCsvQuery). realHeader is the true header column list regardless of data-row count, used only to validate that a --columns/--where name is genuinely known -- see csvHeader's doc comment for why the two must not be conflated.
   const allColumns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
   const realHeader = records.length > 0 ? allColumns : csvHeader(content, opts)
   const columns = opts.columns && opts.columns.length > 0 ? opts.columns : allColumns
@@ -269,10 +218,7 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
 }
 
 export function quoteCsvCell(cell: string): string {
-  // RFC 4180: quote cells containing comma, double quote, or a line break -- CR, LF, or
-  // CRLF, not just LF. A bare \r left unquoted corrupts terminal rendering (it overwrites
-  // the start of the line) and is unsafe to round-trip through strict RFC 4180 parsers.
-  // Escape embedded quotes by doubling them.
+  // RFC 4180: quote cells containing comma, double quote, or a line break -- CR, LF, or CRLF, not just LF. A bare \r left unquoted corrupts terminal rendering (it overwrites the start of the line) and is unsafe to round-trip through strict RFC 4180 parsers. Escape embedded quotes by doubling them.
   if (cell.includes(',') || cell.includes('"') || cell.includes('\n') || cell.includes('\r')) {
     return `"${cell.replace(/"/g, '""')}"`
   }
@@ -304,14 +250,10 @@ export interface CsvColumnProfile {
   topValues?: Array<{ value: string; count: number }>
 }
 
-/** Per-column type inference + null/distinct counts + min/max (or top values for
- * low-cardinality columns), so an agent can understand a CSV's shape without
- * reading every row. */
+/** Per-column type inference + null/distinct counts + min/max (or top values for low-cardinality columns), so an agent can understand a CSV's shape without reading every row. */
 export function profileCsv(content: string, opts: { delimiter?: string; noHeader?: boolean } = {}): CsvColumnProfile[] {
   const records = parseRecords(content, opts)
-  // Deliberately [] on zero data rows (not the real header): an empty result here is what tells
-  // the CLI layer to print "No data rows found" instead of a header with no stats to show (see
-  // read_commands.ts's runCsvProfile and queryCsv's allColumns doc comment above).
+  // Deliberately [] on zero data rows (not the real header): an empty result here is what tells the CLI layer to print "No data rows found" instead of a header with no stats to show (see read_commands.ts's runCsvProfile and queryCsv's allColumns doc comment above).
   const columns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
 
   return columns.map((col) => {
@@ -331,10 +273,7 @@ export function profileCsv(content: string, opts: { delimiter?: string; noHeader
         profile.min = String(nums.reduce((a, b) => Math.min(a, b)))
         profile.max = String(nums.reduce((a, b) => Math.max(a, b)))
       } else if (isDate) {
-        // A plain lexicographic sort on the raw date strings (the string-column path below)
-        // silently swaps min/max whenever lexicographic and chronological order diverge, e.g.
-        // non-zero-padded "10/1/2026" sorts before "9/1/2026" as a string. Sort by parsed
-        // timestamp instead, keeping the original string as the reported value.
+        // A plain lexicographic sort on the raw date strings (the string-column path below) silently swaps min/max whenever lexicographic and chronological order diverge, e.g. non-zero-padded "10/1/2026" sorts before "9/1/2026" as a string. Sort by parsed timestamp instead, keeping the original string as the reported value.
         const sorted = [...nonEmpty].sort((a, b) => Date.parse(a) - Date.parse(b))
         profile.min = sorted[0] as string
         profile.max = sorted[sorted.length - 1] as string
@@ -356,9 +295,7 @@ export function profileCsv(content: string, opts: { delimiter?: string; noHeader
 export function formatCsvProfile(profiles: CsvColumnProfile[]): string {
   return profiles
     .map((p) => {
-      // Every one of these comes out of the file, and this summary is prose, not CSV: a cell holding
-      // a newline would otherwise end the line and start one that reads exactly like a column of
-      // token-goat's own. Escaped rather than dropped, so the value is still shown.
+      // Every one of these comes out of the file, and this summary is prose, not CSV: a cell holding a newline would otherwise end the line and start one that reads exactly like a column of token-goat's own. Escaped rather than dropped, so the value is still shown.
       const lines = [
         `${displaySafeText(p.name)}  (${p.inferredType})`,
         `  nulls: ${p.nullCount}  distinct: ${p.distinctCount}`,

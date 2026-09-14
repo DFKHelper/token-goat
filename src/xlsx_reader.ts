@@ -1,17 +1,9 @@
 /**
  * Minimal in-house SpreadsheetML (.xlsx) reader.
  *
- * .xlsx is an OOXML zip-of-XML container exactly like .docx and .pptx, both of which this repo
- * already reads with `fflate` plus the in-house XML parser through `ooxml_extract.ts`. Reading .xlsx the
- * same way removes the only reason `exceljs` was ever installed: 55 packages, and the sole source
- * of every deprecated package in the tree (`inflight`, `lodash.isequal`, `bluebird`, `unzipper`,
- * old `glob`, `tmp`, `fs-extra`, plus eleven `lodash.*` micro-packages).
+ * .xlsx is an OOXML zip-of-XML container exactly like .docx and .pptx, both of which this repo already reads with `fflate` plus the in-house XML parser through `ooxml_extract.ts`. Reading .xlsx the same way removes the only reason `exceljs` was ever installed: 55 packages, and the sole source of every deprecated package in the tree (`inflight`, `lodash.isequal`, `bluebird`, `unzipper`, old `glob`, `tmp`, `fs-extra`, plus eleven `lodash.*` micro-packages).
  *
- * The shapes produced here deliberately match what ExcelJS produced, because `cellText` and
- * `cellFormula` in `xlsx_extract.ts` branch on them and are unchanged: a native `Date` for a
- * date-formatted cell, `{ formula, result }` for a formula cell (whose `result` may itself be a
- * `Date` or `{ error }`), `{ error }` for a directly-entered error cell, and a plain primitive
- * otherwise with `text` carrying the display string.
+ * The shapes produced here deliberately match what ExcelJS produced, because `cellText` and `cellFormula` in `xlsx_extract.ts` branch on them and are unchanged: a native `Date` for a date-formatted cell, `{ formula, result }` for a formula cell (whose `result` may itself be a `Date` or `{ error }`), `{ error }` for a directly-entered error cell, and a plain primitive otherwise with `text` carrying the display string.
  */
 
 import { assertOoxmlWithinDeadline, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
@@ -53,11 +45,7 @@ function asArray(val: unknown): XmlNode[] {
   return []
 }
 
-/**
- * Text content of an element. With `ignoreAttributes: false`, an element carrying an attribute
- * (`<t xml:space="preserve"> a </t>`) parses to an object with a `#text` key rather than a bare
- * string, so both shapes have to be handled or every whitespace-preserving run reads as empty.
- */
+/** Text content of an element. With `ignoreAttributes: false`, an element carrying an attribute (`<t xml:space="preserve"> a </t>`) parses to an object with a `#text` key rather than a bare string, so both shapes have to be handled or every whitespace-preserving run reads as empty. */
 function textOf(node: unknown): string {
   if (node === undefined || node === null) return ''
   if (typeof node === 'string') return node
@@ -93,15 +81,10 @@ function refToRow(ref: string): number {
   return m ? parseInt(m[1]!, 10) : 0
 }
 
-// The builtin number formats Excel reserves for dates and times. 14-22 are the date/time set,
-// 45-47 the elapsed-time set. Everything else builtin is numeric, currency, percent or text.
+// The builtin number formats Excel reserves for dates and times. 14-22 are the date/time set, 45-47 the elapsed-time set. Everything else builtin is numeric, currency, percent or text.
 const BUILTIN_DATE_FORMAT_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
 
-/**
- * Whether a custom `formatCode` describes a date or time. Quoted literals, bracketed
- * colour/locale/condition sections and backslash escapes are stripped first, because a literal
- * `"May"` or a `[$-409]` locale tag would otherwise make a plain currency format read as a date.
- */
+/** Whether a custom `formatCode` describes a date or time. Quoted literals, bracketed colour/locale/condition sections and backslash escapes are stripped first, because a literal `"May"` or a `[$-409]` locale tag would otherwise make a plain currency format read as a date. */
 export function formatCodeIsDate(formatCode: string): boolean {
   const stripped = formatCode
     .replace(/"[^"]*"/g, '')
@@ -110,13 +93,7 @@ export function formatCodeIsDate(formatCode: string): boolean {
   return /[ymdhs]/i.test(stripped)
 }
 
-/**
- * Serial number to a UTC `Date`. Two epochs exist: the default 1900 mode where serial 1 is
- * 1900-01-01, and 1904 mode (`workbookPr/@date1904`) where serial 0 is 1904-01-01. The 1900 mode
- * also carries the Lotus 1-2-3 leap-year bug Excel keeps for compatibility: serial 60 is the
- * non-existent 1900-02-29, so every serial from 61 up is one day ahead of the true count and has
- * to be shifted back. Built from UTC because `formatDateCell` reads `getUTCHours()` and friends.
- */
+/** Serial number to a UTC `Date`. Two epochs exist: the default 1900 mode where serial 1 is 1900-01-01, and 1904 mode (`workbookPr/@date1904`) where serial 0 is 1904-01-01. The 1900 mode also carries the Lotus 1-2-3 leap-year bug Excel keeps for compatibility: serial 60 is the non-existent 1900-02-29, so every serial from 61 up is one day ahead of the true count and has to be shifted back. Built from UTC because `formatDateCell` reads `getUTCHours()` and friends. */
 export function serialToDate(serial: number, date1904: boolean): Date {
   if (date1904) return new Date(Date.UTC(1904, 0, 1) + Math.round(serial * 86400000))
   const adjusted = serial >= 61 ? serial - 1 : serial
@@ -158,9 +135,7 @@ function parseSharedStrings(parsed: unknown): string[] {
   const sst = (parsed as XmlNode)['sst']
   if (sst === undefined || sst === null || typeof sst !== 'object') return []
   return asArray((sst as XmlNode)['si']).map((si) => {
-    // A plain string is `<si><t>..</t></si>`; a rich-text one splits into `<si><r><t>..</t></r>..`.
-    // `<rPh>` phonetic runs also carry a `<t>` but are a pronunciation guide, not the cell's text,
-    // so the runs are read off `r` explicitly rather than by collecting every `t` in the subtree.
+    // A plain string is `<si><t>..</t></si>`; a rich-text one splits into `<si><r><t>..</t></r>..`. `<rPh>` phonetic runs also carry a `<t>` but are a pronunciation guide, not the cell's text, so the runs are read off `r` explicitly rather than by collecting every `t` in the subtree.
     if (si['t'] !== undefined) return textOf(si['t'])
     const runs = asArray(si['r'])
     if (runs.length > 0) return runs.map((r) => textOf(r['t'])).join('')
@@ -178,8 +153,7 @@ function parseWorkbookRels(parsed: unknown): Map<string, string> {
     const id = attr(rel, 'Id')
     const target = attr(rel, 'Target')
     if (id === undefined || target === undefined) continue
-    // An absolute target is package-rooted, so it only loses its leading slash; a relative one
-    // resolves against the part's own folder, which for xl/workbook.xml is `xl/`.
+    // An absolute target is package-rooted, so it only loses its leading slash; a relative one resolves against the part's own folder, which for xl/workbook.xml is `xl/`.
     const normalized = target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\//, '')}`
     out.set(id, normalized)
   }
@@ -206,9 +180,7 @@ function buildCell(
   const hasV = c['v'] !== undefined
   const hasIs = c['is'] !== undefined
   const fNode = c['f']
-  // A shared-formula follower (`<f t="shared" si="0"/>`) carries no formula text of its own. It
-  // still has a cached `<v>`, so it is read as a plain value rather than reported as a formula
-  // with an empty string, which would render as a bare `=` under --formulas.
+  // A shared-formula follower (`<f t="shared" si="0"/>`) carries no formula text of its own. It still has a cached `<v>`, so it is read as a plain value rather than reported as a formula with an empty string, which would render as a bare `=` under --formulas.
   const formula = fNode === undefined ? '' : textOf(fNode)
   if (!hasV && !hasIs && formula === '') return null
 
@@ -297,9 +269,7 @@ function parseSheet(parsed: unknown, shared: string[], styles: StyleInfo, date19
     if (rowCells.size === 0) continue
     cells.set(rowIdx, rowCells)
     populatedRows++
-    // The row extent is the highest row that actually holds content. A trailing `<row/>` carrying
-    // only a style, or a row of styled-but-valueless cells, is not content: counting it would make
-    // every consumer scan past the real data.
+    // The row extent is the highest row that actually holds content. A trailing `<row/>` carrying only a style, or a row of styled-but-valueless cells, is not content: counting it would make every consumer scan past the real data.
     if (rowIdx > rowCount) rowCount = rowIdx
   }
   return { cells, rowCount, columnCount, populatedRows }
@@ -316,12 +286,7 @@ function makeWorksheet(name: string, data: SheetData): ExcelWorksheet {
       },
       eachCell(opts, cb) {
         if (opts.includeEmpty) {
-          // This row's own last populated column, not the sheet-wide maximum. ExcelJS, which this
-          // shim stands in for, walks a row out to its own width: on a sheet whose widest row has 9
-          // columns, a 4-column row yields 4 cells, not 9. Using the sheet maximum handed every
-          // short row a tail of empty cells that the real library never emits. No caller passes
-          // includeEmpty today -- every consumer in xlsx_extract.ts passes false -- which is why
-          // nothing caught it, and is also why it would have been a trap for the first one that did.
+          // This row's own last populated column, not the sheet-wide maximum. ExcelJS, which this shim stands in for, walks a row out to its own width: on a sheet whose widest row has 9 columns, a 4-column row yields 4 cells, not 9. Using the sheet maximum handed every short row a tail of empty cells that the real library never emits. No caller passes includeEmpty today -- every consumer in xlsx_extract.ts passes false -- which is why nothing caught it, and is also why it would have been a trap for the first one that did.
           let maxCol = 0
           if (rowCells !== undefined) for (const c of rowCells.keys()) if (c > maxCol) maxCol = c
           for (let c = 1; c <= maxCol; c++) cb(rowCells?.get(c) ?? EMPTY_CELL, c)
@@ -351,8 +316,7 @@ export async function readXlsxWorkbook(filePath: string, deadline: number = ooxm
   const budget = ooxmlPartBudget()
 
   const workbookXml = decodeZipEntry(entries, 'xl/workbook.xml', budget)
-  // A zip that opens fine but holds no workbook part is not a spreadsheet. Answered with the same
-  // message a non-zip file gets, rather than letting a missing-part TypeError reach the CLI user.
+  // A zip that opens fine but holds no workbook part is not a spreadsheet. Answered with the same message a non-zip file gets, rather than letting a missing-part TypeError reach the CLI user.
   if (workbookXml === null) throw new NotAnOfficeDocumentError(`not a valid .xlsx file: ${filePath}`)
 
   const workbookRoot = await parseOoxmlPart(workbookXml)
@@ -378,8 +342,7 @@ export async function readXlsxWorkbook(filePath: string, deadline: number = ooxm
   for (const sheet of asArray((wb['sheets'] as XmlNode | undefined)?.['sheet'])) {
     const name = attr(sheet, 'name') ?? ''
     const rid = attr(sheet, 'r:id') ?? attr(sheet, 'relationshipId')
-    // Resolved through the rels part, never by assuming `xl/worksheets/sheetN.xml` matches the
-    // workbook's sheet order: producers other than Excel itself do not guarantee that naming.
+    // Resolved through the rels part, never by assuming `xl/worksheets/sheetN.xml` matches the workbook's sheet order: producers other than Excel itself do not guarantee that naming.
     const partPath = rid === undefined ? undefined : rels.get(rid)
     const cached = partPath === undefined ? undefined : parsedByPart.get(partPath)
     if (cached !== undefined) {

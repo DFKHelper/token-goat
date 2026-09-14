@@ -1,38 +1,13 @@
 /**
- * Narrow schema summary + read-only query extraction for `token-goat sqlite-schema` /
- * `sqlite-query`, so a project's `.db`/`.sqlite`/`.sqlite3` fixture never needs a raw-byte
- * `Read` (useless) or a shelled-out `sqlite3` CLI (may not be installed, unstructured output)
- * just to answer "what tables does this have" or "what's in table X where Y = Z". Matches the
- * project's "no premature abstraction" bar (see csv_query.ts / json_query.ts for the same
- * philosophy applied to CSV/JSON).
+ * Narrow schema summary + read-only query extraction for `token-goat sqlite-schema` / `sqlite-query`, so a project's `.db`/`.sqlite`/`.sqlite3` fixture never needs a raw-byte `Read` (useless) or a shelled-out `sqlite3` CLI (may not be installed, unstructured output) just to answer "what tables does this have" or "what's in table X where Y = Z". Matches the project's "no premature abstraction" bar (see csv_query.ts / json_query.ts for the same philosophy applied to CSV/JSON).
  *
- * Security posture (sqlite-query only executes text an agent -- or a prompt-injection payload
- * embedded in file content the agent is processing -- hands it, so this is a trust boundary):
+ * Security posture (sqlite-query only executes text an agent -- or a prompt-injection payload embedded in file content the agent is processing -- hands it, so this is a trust boundary):
  *
- *  1. The connection itself is opened `{ readonly: true }` (a real, supported libsqlite3 option --
- *     SQLite's core refuses any write at the OS/VFS level under `SQLITE_OPEN_READONLY`,
- *     independent of anything the SQL text says).
- *  2. `validateReadOnlySelect` rejects the SQL text itself before it ever reaches
- *     `db.prepare()`: single-statement only (no `;`-separated multi-statement injection),
- *     must start with `SELECT` or `WITH` (CTE prefix), and must not contain any
- *     data-modification/DDL/transaction/attach/pragma keyword anywhere outside a string
- *     literal or comment.
- *  3. `stmt.reader` (SQLite's own "does this statement return rows" classification) is checked
- *     after `prepare()` as a third, independent layer -- catches any statement shape our
- *     keyword scan didn't anticipate.
+ *  1. The connection itself is opened `{ readonly: true }` (a real, supported libsqlite3 option -- SQLite's core refuses any write at the OS/VFS level under `SQLITE_OPEN_READONLY`, independent of anything the SQL text says).
+ *  2. `validateReadOnlySelect` rejects the SQL text itself before it ever reaches `db.prepare()`: single-statement only (no `;`-separated multi-statement injection), must start with `SELECT` or `WITH` (CTE prefix), and must not contain any data-modification/DDL/transaction/attach/pragma keyword anywhere outside a string literal or comment.
+ *  3. `stmt.reader` (SQLite's own "does this statement return rows" classification) is checked after `prepare()` as a third, independent layer -- catches any statement shape our keyword scan didn't anticipate.
  *
- * Row/execution cap: the SQLite driver is synchronous and exposes no query-cancellation or
- * progress-handler hook (verified against the installed 11.10.0 -- no `interrupt`/`progress`
- * on `Database`/`Statement`), so there is no real wall-clock timeout available. The mitigation
- * is a hard cap on rows pulled from the result iterator (`stmt.iterate()`, not `stmt.all()`,
- * so we stop asking SQLite to produce more rows the moment the cap is hit rather than buffering
- * an unbounded array first). This bounds "give me every row of a huge join" -- the common
- * runaway case -- but does NOT bound a single-row aggregate over a pathological cartesian
- * product (e.g. `SELECT COUNT(*) FROM a, b, c`): SQLite must still fully evaluate the join to
- * produce that one row, and no cap on rows *returned* changes that. That residual risk is the
- * same for a `LIMIT`-wrapping approach (an outer `LIMIT` doesn't stop the inner scan either),
- * so it isn't a reason to prefer one mitigation over the other; documented here rather than
- * silently assumed away.
+ * Row/execution cap: the SQLite driver is synchronous and exposes no query-cancellation or progress-handler hook (verified against the installed 11.10.0 -- no `interrupt`/`progress` on `Database`/`Statement`), so there is no real wall-clock timeout available. The mitigation is a hard cap on rows pulled from the result iterator (`stmt.iterate()`, not `stmt.all()`, so we stop asking SQLite to produce more rows the moment the cap is hit rather than buffering an unbounded array first). This bounds "give me every row of a huge join" -- the common runaway case -- but does NOT bound a single-row aggregate over a pathological cartesian product (e.g. `SELECT COUNT(*) FROM a, b, c`): SQLite must still fully evaluate the join to produce that one row, and no cap on rows *returned* changes that. That residual risk is the same for a `LIMIT`-wrapping approach (an outer `LIMIT` doesn't stop the inner scan either), so it isn't a reason to prefer one mitigation over the other; documented here rather than silently assumed away.
  */
 
 import * as fs from 'node:fs'
@@ -40,15 +15,10 @@ import { displaySafeText } from './paths.js'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
 
-/** Hard cap on rows pulled from a query's result iterator, independent of any caller-supplied
- * `--head`. Bounds worst-case memory/time for "return everything" queries against a huge table
- * or join; a caller wanting a smaller slice still uses `--head` on top of this. */
+/** Hard cap on rows pulled from a query's result iterator, independent of any caller-supplied `--head`. Bounds worst-case memory/time for "return everything" queries against a huge table or join; a caller wanting a smaller slice still uses `--head` on top of this. */
 export const SQLITE_QUERY_ROW_CAP = 5000
 
-// First 16 bytes of every valid SQLite database file (the fixed "SQLite format 3\0" header
-// magic) -- checked before ever handing the path to SQLite, so a non-database file
-// (or a corrupt one whose header is intact but body isn't) gets a clean "not a SQLite
-// database" message instead of an opaque native-addon exception.
+// First 16 bytes of every valid SQLite database file (the fixed "SQLite format 3\0" header magic) -- checked before ever handing the path to SQLite, so a non-database file (or a corrupt one whose header is intact but body isn't) gets a clean "not a SQLite database" message instead of an opaque native-addon exception.
 const SQLITE_MAGIC = Buffer.from([0x53,0x51,0x4c,0x69,0x74,0x65,0x20,0x66,0x6f,0x72,0x6d,0x61,0x74,0x20,0x33,0x00])
 
 function readMagicBytes(filePath: string): Buffer | null {
@@ -69,17 +39,13 @@ function readMagicBytes(filePath: string): Buffer | null {
   }
 }
 
-/** True when `filePath` exists and its first 16 bytes match the SQLite file-header magic. Does
- * not guarantee the rest of the file is well-formed (a truncated/corrupt body still opens the
- * header check but fails later at `db.prepare()`/query time, which is caught separately). */
+/** True when `filePath` exists and its first 16 bytes match the SQLite file-header magic. Does not guarantee the rest of the file is well-formed (a truncated/corrupt body still opens the header check but fails later at `db.prepare()`/query time, which is caught separately). */
 export function isSqliteFile(filePath: string): boolean {
   const magic = readMagicBytes(filePath)
   return magic !== null && magic.equals(SQLITE_MAGIC)
 }
 
-/** Opens `filePath` as a read-only SQLite connection. Never creates a file (fileMustExist) and
- * never accepts a path that doesn't exist or doesn't look like a SQLite database -- both fail
- * fast with a plain Error instead of reaching the native addon with a bogus path. */
+/** Opens `filePath` as a read-only SQLite connection. Never creates a file (fileMustExist) and never accepts a path that doesn't exist or doesn't look like a SQLite database -- both fail fast with a plain Error instead of reaching the native addon with a bogus path. */
 export function openReadonlySqlite(filePath: string): SqliteDatabase {
   if (!fs.existsSync(filePath)) {
     throw new Error(`file not found: ${displaySafeText(filePath)}`)
@@ -96,11 +62,7 @@ export function openReadonlySqlite(filePath: string): SqliteDatabase {
 }
 
 function quoteIdent(name: string): string {
-  // PRAGMA statements can't take bound (`?`) parameters in SQLite -- the table/index name has
-  // to be interpolated into the statement text. Standard SQLite double-quoted-identifier
-  // escaping (embedded `"` doubled) makes this safe even though the name isn't attacker
-  // input in the adversarial sense (it always comes from this same database's own
-  // sqlite_master, not from the CLI caller).
+  // PRAGMA statements can't take bound (`?`) parameters in SQLite -- the table/index name has to be interpolated into the statement text. Standard SQLite double-quoted-identifier escaping (embedded `"` doubled) makes this safe even though the name isn't attacker input in the adversarial sense (it always comes from this same database's own sqlite_master, not from the CLI caller).
   return `"${name.replace(/"/g, '""')}"`
 }
 
@@ -130,8 +92,7 @@ export interface SqliteTableInfo {
   columns: SqliteColumnInfo[]
   indexes: SqliteIndexInfo[]
   foreignKeys: SqliteForeignKeyInfo[]
-  /** Row count via `SELECT COUNT(*)`, or null when that count itself fails (e.g. a view over a
-   * missing/broken dependency). */
+  /** Row count via `SELECT COUNT(*)`, or null when that count itself fails (e.g. a view over a missing/broken dependency). */
   rowCount: number | null
 }
 
@@ -160,10 +121,7 @@ interface ForeignKeyRow {
 }
 
 /**
- * Structural summary of a SQLite database: every table/view with its column list (name,
- * declared type, nullable/PK flags from `PRAGMA table_info`), indexes (`PRAGMA index_list` +
- * `PRAGMA index_info`), foreign keys (`PRAGMA foreign_key_list`), and a row count. Mirrors what
- * `outlineJson` does for JSON structure -- concise structural facts, not a dump.
+ * Structural summary of a SQLite database: every table/view with its column list (name, declared type, nullable/PK flags from `PRAGMA table_info`), indexes (`PRAGMA index_list` + `PRAGMA index_info`), foreign keys (`PRAGMA foreign_key_list`), and a row count. Mirrors what `outlineJson` does for JSON structure -- concise structural facts, not a dump.
  */
 export function getSqliteSchema(filePath: string): SqliteSchemaResult {
   const db = openReadonlySqlite(filePath)
@@ -200,8 +158,7 @@ export function getSqliteSchema(filePath: string): SqliteSchemaResult {
         const row = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(o.name)}`).get() as { c: number }
         rowCount = row.c
       } catch {
-        // A view over a missing/broken dependency, or any other count failure -- report the
-        // table/view's shape without a row count rather than failing the whole schema summary.
+        // A view over a missing/broken dependency, or any other count failure -- report the table/view's shape without a row count rather than failing the whole schema summary.
         rowCount = null
       }
 
@@ -250,9 +207,7 @@ export interface SqliteTableSummary {
 }
 
 /**
- * Ultra-compact table inventory for a SQLite database: lists each table/view with its
- * row count and column count in one line per table, consuming ~90% fewer tokens than a full
- * schema dump when an agent only needs to know what tables exist and how large they are.
+ * Ultra-compact table inventory for a SQLite database: lists each table/view with its row count and column count in one line per table, consuming ~90% fewer tokens than a full schema dump when an agent only needs to know what tables exist and how large they are.
  */
 export function getSqliteTables(filePath: string): SqliteTableSummary[] {
   const db = openReadonlySqlite(filePath)
@@ -307,12 +262,7 @@ export function formatSqliteTables(tables: SqliteTableSummary[]): string {
     .join('\n')
 }
 
-// Keywords that mutate data/schema, change transaction state, or reach outside this one
-// database file (ATTACH). Checked as whole words against the SQL text with string literals and
-// comments stripped out first, so a literal like `WHERE note = 'please DELETE me'` or a
-// `-- DROP the old rows first` comment never trips the scan. `REPLACE` gets special treatment
-// below: SQLite also has a scalar `replace(x, y, z)` string function, so a bare word-boundary
-// match on `REPLACE` would reject a completely read-only `SELECT replace(name, 'a', 'b') ...`.
+// Keywords that mutate data/schema, change transaction state, or reach outside this one database file (ATTACH). Checked as whole words against the SQL text with string literals and comments stripped out first, so a literal like `WHERE note = 'please DELETE me'` or a `-- DROP the old rows first` comment never trips the scan. `REPLACE` gets special treatment below: SQLite also has a scalar `replace(x, y, z)` string function, so a bare word-boundary match on `REPLACE` would reject a completely read-only `SELECT replace(name, 'a', 'b') ...`.
 const FORBIDDEN_KEYWORDS = [
   'INSERT',
   'UPDATE',
@@ -336,9 +286,7 @@ const FORBIDDEN_KEYWORDS = [
 ]
 
 /**
- * Replaces the contents of string/quoted-identifier literals and comments with spaces
- * (preserving overall shape, not positions) so keyword/semicolon scanning below never matches
- * text that's actually inert data or commentary rather than SQL syntax.
+ * Replaces the contents of string/quoted-identifier literals and comments with spaces (preserving overall shape, not positions) so keyword/semicolon scanning below never matches text that's actually inert data or commentary rather than SQL syntax.
  */
 function stripSqlLiteralsAndComments(sql: string): string {
   let out = ''
@@ -387,10 +335,7 @@ function stripSqlLiteralsAndComments(sql: string): string {
 }
 
 /**
- * Rejects anything that isn't a single, read-only `SELECT` (optionally CTE-prefixed via
- * `WITH`/`WITH RECURSIVE`) statement. Throws with a specific reason on failure; returns nothing
- * on success. This is the SQL-text half of sqlite-query's defense-in-depth -- the connection is
- * also opened read-only (openReadonlySqlite), and `stmt.reader` is re-checked after prepare().
+ * Rejects anything that isn't a single, read-only `SELECT` (optionally CTE-prefixed via `WITH`/`WITH RECURSIVE`) statement. Throws with a specific reason on failure; returns nothing on success. This is the SQL-text half of sqlite-query's defense-in-depth -- the connection is also opened read-only (openReadonlySqlite), and `stmt.reader` is re-checked after prepare().
  */
 export function validateReadOnlySelect(sql: string): void {
   const stripped = stripSqlLiteralsAndComments(sql)
@@ -414,22 +359,13 @@ export function validateReadOnlySelect(sql: string): void {
       throw new Error(`statement contains forbidden keyword '${kw}' (sqlite-query only allows read-only SELECT queries)`)
     }
   }
-  // REPLACE is only forbidden as the "REPLACE INTO ..." / "INSERT OR REPLACE" statement form,
-  // not as the scalar replace(...) function -- reject a bare REPLACE keyword only when it is
-  // NOT immediately followed by '(' (a function call).
+  // REPLACE is only forbidden as the "REPLACE INTO ..." / "INSERT OR REPLACE" statement form, not as the scalar replace(...) function -- reject a bare REPLACE keyword only when it is NOT immediately followed by '(' (a function call).
   if (/\bREPLACE\b(?!\s*\()/.test(upper)) {
     throw new Error("statement contains forbidden keyword 'REPLACE' (sqlite-query only allows read-only SELECT queries)")
   }
 }
 
-// A 64-bit SQLite INTEGER column (large snowflake/hash IDs, nanosecond timestamps) can exceed
-// Number.MAX_SAFE_INTEGER. The driver's default (non-safe-integer) mode silently rounds such
-// a value to the nearest representable double when reading it back -- e.g. 9223372036854775807
-// comes back as 9223372036854776000, with no error and no indication the value was corrupted.
-// runReadOnlySqliteQuery below reads with safeIntegers enabled and normalizes each value through
-// {@link normalizeSqliteScalar} instead: safe-range integers stay plain numbers (unchanged
-// behavior), and out-of-range ones become an exact decimal string rather than a lossy number --
-// so a raw JS `bigint` (which JSON.stringify cannot serialize) never actually reaches a caller.
+// A 64-bit SQLite INTEGER column (large snowflake/hash IDs, nanosecond timestamps) can exceed Number.MAX_SAFE_INTEGER. The driver's default (non-safe-integer) mode silently rounds such a value to the nearest representable double when reading it back -- e.g. 9223372036854775807 comes back as 9223372036854776000, with no error and no indication the value was corrupted. runReadOnlySqliteQuery below reads with safeIntegers enabled and normalizes each value through {@link normalizeSqliteScalar} instead: safe-range integers stay plain numbers (unchanged behavior), and out-of-range ones become an exact decimal string rather than a lossy number -- so a raw JS `bigint` (which JSON.stringify cannot serialize) never actually reaches a caller.
 export type SqliteScalar = string | number | null | Uint8Array
 
 export interface SqliteQueryRow {
@@ -439,23 +375,14 @@ export interface SqliteQueryRow {
 export interface SqliteQueryResult {
   columns: string[]
   rows: SqliteQueryRow[]
-  /** True when the result was truncated by SQLITE_QUERY_ROW_CAP (more rows existed than were
-   * fetched from the iterator). Independent of any caller-side `--head` limiting. */
+  /** True when the result was truncated by SQLITE_QUERY_ROW_CAP (more rows existed than were fetched from the iterator). Independent of any caller-side `--head` limiting. */
   rowCapped: boolean
 }
 
 /**
- * Runs a validated, read-only `SELECT` against `filePath` and returns up to `rowCap` rows.
- * Iterates (`stmt.iterate()`) rather than buffering the whole result (`stmt.all()`) so a
- * runaway "return everything" query stops pulling rows from SQLite the moment the cap is hit,
- * instead of materializing an unbounded array first. See the module doc for why this does not
- * bound a single-row pathological aggregate.
+ * Runs a validated, read-only `SELECT` against `filePath` and returns up to `rowCap` rows. Iterates (`stmt.iterate()`) rather than buffering the whole result (`stmt.all()`) so a runaway "return everything" query stops pulling rows from SQLite the moment the cap is hit, instead of materializing an unbounded array first. See the module doc for why this does not bound a single-row pathological aggregate.
  */
-/** Converts one raw SQLite result value (read with `safeIntegers(true)`, so every SQLite
- * INTEGER column arrives as a `bigint`) into a {@link SqliteScalar}: a `bigint` that still fits a
- * safe JS number converts to a plain `number` (identical to the pre-existing non-safe-integer
- * behavior for the overwhelmingly common case), while one that doesn't converts to its exact
- * decimal string instead of silently rounding -- see the {@link SqliteScalar} module doc. */
+/** Converts one raw SQLite result value (read with `safeIntegers(true)`, so every SQLite INTEGER column arrives as a `bigint`) into a {@link SqliteScalar}: a `bigint` that still fits a safe JS number converts to a plain `number` (identical to the pre-existing non-safe-integer behavior for the overwhelmingly common case), while one that doesn't converts to its exact decimal string instead of silently rounding -- see the {@link SqliteScalar} module doc. */
 function normalizeSqliteScalar(value: unknown): SqliteScalar {
   if (typeof value === 'bigint') {
     return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString()
@@ -483,16 +410,12 @@ export function runReadOnlySqliteQuery(filePath: string, sql: string, opts: { ro
       throw new Error(`invalid SQL: ${msg}`, { cause: e })
     }
 
-    // Third defense-in-depth layer: SQLite's own classification of whether this
-    // statement produces rows. Catches any non-SELECT shape the keyword scan didn't
-    // anticipate (e.g. a future SQLite statement form not yet in FORBIDDEN_KEYWORDS).
+    // Third defense-in-depth layer: SQLite's own classification of whether this statement produces rows. Catches any non-SELECT shape the keyword scan didn't anticipate (e.g. a future SQLite statement form not yet in FORBIDDEN_KEYWORDS).
     if (!stmt.reader) {
       throw new Error('only read-only SELECT statements are allowed (sqlite-query is read-only)')
     }
 
-    // See the SqliteScalar module doc: without this, a 64-bit INTEGER column value beyond
-    // Number.MAX_SAFE_INTEGER is silently rounded to the nearest representable double on the way
-    // out, with no error and no indication of the corruption.
+    // See the SqliteScalar module doc: without this, a 64-bit INTEGER column value beyond Number.MAX_SAFE_INTEGER is silently rounded to the nearest representable double on the way out, with no error and no indication of the corruption.
     stmt.safeIntegers(true)
 
     let columns: string[] = []
@@ -539,9 +462,7 @@ export function formatSqliteQueryTable(result: SqliteQueryResult, opts: { headTr
   return lines.join('\n')
 }
 
-// Local copy of csv_query.ts's quoteCsvCell RFC-4180 quoting rule (comma/quote/newline -> quoted,
-// embedded quotes doubled) so sqlite_query.ts doesn't need a cross-module dependency just for
-// this one formatting helper.
+// Local copy of csv_query.ts's quoteCsvCell RFC-4180 quoting rule (comma/quote/newline -> quoted, embedded quotes doubled) so sqlite_query.ts doesn't need a cross-module dependency just for this one formatting helper.
 function quoteCsvCellLocal(cell: string): string {
   if (cell.includes(',') || cell.includes('"') || cell.includes('\n') || cell.includes('\r')) {
     return `"${cell.replace(/"/g, '""')}"`

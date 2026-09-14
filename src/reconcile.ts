@@ -1,31 +1,13 @@
 /**
  * Catch-up reconciliation: detect index drift caused by edits token-goat never saw.
  *
- * Every existing freshness mechanism in this repo is driven by an in-session hook. The Edit
- * hook enqueues what the agent edits (`hooks_edit.ts`); the Bash post-hook enqueues what
- * head-moving git commands rewrite and what in-place shell rewrites touch (`hooks_bash.ts`);
- * the per-file `staleWarning`/`healStaleIndex` pair in `read_commands.ts` reparses a file the
- * moment a command names it. Between them, drift caused *during* a session is covered well.
+ * Every existing freshness mechanism in this repo is driven by an in-session hook. The Edit hook enqueues what the agent edits (`hooks_edit.ts`); the Bash post-hook enqueues what head-moving git commands rewrite and what in-place shell rewrites touch (`hooks_bash.ts`); the per-file `staleWarning`/`healStaleIndex` pair in `read_commands.ts` reparses a file the moment a command names it. Between them, drift caused *during* a session is covered well.
  *
- * None of them can see drift that happened while no hook was running: a `git pull` in another
- * terminal, an edit from an IDE or a second agent session, a codegen or build step invoked
- * outside the harness, or a worker that exited with paths still queued. Nothing reconciles that
- * on the way back in, and the commands most likely to be asked first -- `semantic`, `symbol` by
- * name, `find`, `refs`, `callers`, `arch`, `dead` -- never name a file, so the per-file heal
- * never fires for them. They answer from whatever rows exist, and a stale answer is
- * indistinguishable from a correct one.
+ * None of them can see drift that happened while no hook was running: a `git pull` in another terminal, an edit from an IDE or a second agent session, a codegen or build step invoked outside the harness, or a worker that exited with paths still queued. Nothing reconciles that on the way back in, and the commands most likely to be asked first -- `semantic`, `symbol` by name, `find`, `refs`, `callers`, `arch`, `dead` -- never name a file, so the per-file heal never fires for them. They answer from whatever rows exist, and a stale answer is indistinguishable from a correct one.
  *
- * This module closes that by sweeping the tracked-file set once and enqueueing anything whose
- * on-disk content no longer matches its indexed fingerprint. It is deliberately cause-agnostic:
- * rather than enumerate the ways drift can happen and add a detector per cause, it compares the
- * two things that must agree and repairs the difference, so a cause nobody anticipated is
- * covered by the same code.
+ * This module closes that by sweeping the tracked-file set once and enqueueing anything whose on-disk content no longer matches its indexed fingerprint. It is deliberately cause-agnostic: rather than enumerate the ways drift can happen and add a detector per cause, it compares the two things that must agree and repairs the difference, so a cause nobody anticipated is covered by the same code.
  *
- * Cost discipline: `mtime` is checked first and the content hash is computed only for files
- * whose mtime moved, so the steady-state cost is one `stat` per tracked file and zero reads.
- * A file whose mtime moved but whose content did not (the common `git checkout` round-trip)
- * costs one read and is correctly left alone. The whole sweep is bounded by a wall-clock budget
- * and never throws, because its main caller is a session-start hook.
+ * Cost discipline: `mtime` is checked first and the content hash is computed only for files whose mtime moved, so the steady-state cost is one `stat` per tracked file and zero reads. A file whose mtime moved but whose content did not (the common `git checkout` round-trip) costs one read and is correctly left alone. The whole sweep is bounded by a wall-clock budget and never throws, because its main caller is a session-start hook.
  */
 import * as fs from 'node:fs'
 
@@ -40,12 +22,7 @@ import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
 import { countNoun, foldPath } from './util.js'
 
-/**
- * Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a
- * cold filesystem cache: this repo's own measurement is that hook cost is dominated by process
- * startup rather than logic, and a sweep that pushed past that would turn a correctness
- * improvement into a latency regression on every single session.
- */
+/** Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a cold filesystem cache: this repo's own measurement is that hook cost is dominated by process startup rather than logic, and a sweep that pushed past that would turn a correctness improvement into a latency regression on every single session. */
 export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 
 export interface ReconcileOptions {
@@ -58,11 +35,7 @@ export interface ReconcileOptions {
   dbPath?: string
 }
 
-/**
- * Reads the resume point left by a previous budget-truncated sweep of `root`, or null when there
- * is none (fresh project, a completed lap already cleared it, or the row cannot be read). Never
- * throws: a corrupt or unreadable cursor degrades to "start from the beginning", not a crash.
- */
+/** Reads the resume point left by a previous budget-truncated sweep of `root`, or null when there is none (fresh project, a completed lap already cleared it, or the row cannot be read). Never throws: a corrupt or unreadable cursor degrades to "start from the beginning", not a crash. */
 function readReconcileCursor(dbPath: string, root: string): string | null {
   try {
     const row = getDb(dbPath).prepare('SELECT last_scanned_path FROM reconcile_cursor WHERE root = ?').get(root) as { last_scanned_path: string } | undefined
@@ -105,22 +78,11 @@ export interface ReconcileResult {
   removed: string[]
   /** Files whose mtime moved but whose content did not: measured, not estimated. */
   mtimeOnly: number
-  /**
-   * Tracked files (a subset of {@link changed}) enqueued purely because their rows carry a
-   * `parser_sha` other than {@link PARSER_FINGERPRINT} -- content on disk never moved, but the
-   * extractor that produced their symbol/ref rows did. Reported separately from the rest of
-   * `changed` because it is the one bucket a content-only diff (`diskSha !== entry.sha`) could
-   * never have found on its own.
-   */
+  /** Tracked files (a subset of {@link changed}) enqueued purely because their rows carry a `parser_sha` other than {@link PARSER_FINGERPRINT} -- content on disk never moved, but the extractor that produced their symbol/ref rows did. Reported separately from the rest of `changed` because it is the one bucket a content-only diff (`diskSha !== entry.sha`) could never have found on its own. */
   parserStale: number
   /** True when the budget stopped the sweep before every tracked file was examined. */
   budgetExhausted: boolean
-  /**
-   * True when the tracked-file enumeration came back empty against a non-empty index -- the
-   * project is not a git repository, git is missing, or git errored. Distinguished from a
-   * genuinely emptied project because the two are identical in the numbers and opposite in what
-   * they mean.
-   */
+  /** True when the tracked-file enumeration came back empty against a non-empty index -- the project is not a git repository, git is missing, or git errored. Distinguished from a genuinely emptied project because the two are identical in the numbers and opposite in what they mean. */
   trackedUnavailable: boolean
   /** Tracked files never examined because the budget ran out. */
   unscanned: number
@@ -139,16 +101,12 @@ export interface RunReconcileOptions {
 /**
  * CLI entrypoint for `token-goat reconcile`. Returns the process exit code.
  *
- * Exit code is 0 whether or not drift was found: finding drift is this command succeeding, not
- * failing, and a nonzero code would break `token-goat reconcile && <next step>` on exactly the runs
- * where the reconciliation did its job.
+ * Exit code is 0 whether or not drift was found: finding drift is this command succeeding, not failing, and a nonzero code would break `token-goat reconcile && <next step>` on exactly the runs where the reconciliation did its job.
  */
 export function runReconcile(opts: RunReconcileOptions = {}): number {
   const raw = reconcileProject(opts)
 
-  // Absolute paths are what the queue needs and what `reconcileProject` therefore works in; they
-  // are not what a person reading a drift report needs. Converted here, at the presentation seam,
-  // so the mechanism keeps the only form the worker can match.
+  // Absolute paths are what the queue needs and what `reconcileProject` therefore works in; they are not what a person reading a drift report needs. Converted here, at the presentation seam, so the mechanism keeps the only form the worker can match.
   const root = getDisplayRoot(opts.cwd ?? process.cwd())
   const display = (paths: string[]): string[] => paths.map((p) => toDisplayPath(root, p)).sort()
   const result = {
@@ -165,17 +123,13 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
 
   const lines: string[] = []
   if (isReconcileClean(result)) {
-    // Not claimed when the enumeration failed: an empty drift set there means nothing was
-    // compared, and "Index matches disk" over zero comparisons is the confident wrong answer this
-    // whole command exists to avoid. The disclosure below carries that case instead.
+    // Not claimed when the enumeration failed: an empty drift set there means nothing was compared, and "Index matches disk" over zero comparisons is the confident wrong answer this whole command exists to avoid. The disclosure below carries that case instead.
     if (!result.trackedUnavailable) {
       lines.push(`Index matches disk: ${countNoun(result.scanned, 'file')} checked in ${result.elapsedMs}ms.`)
     }
   } else {
     const verb = opts.dryRun === true ? 'would reindex' : 'queued for reindexing'
-    // Deletions get their own verb. The shared one is accurate for the other two kinds and wrong
-    // here -- "indexed but gone from disk (queued for reindexing)" describes reparsing a file that
-    // no longer exists, which is the opposite of what the queue does with it.
+    // Deletions get their own verb. The shared one is accurate for the other two kinds and wrong here -- "indexed but gone from disk (queued for reindexing)" describes reparsing a file that no longer exists, which is the opposite of what the queue does with it.
     const dropVerb = opts.dryRun === true ? 'would drop from the index' : 'queued for removal'
     if (result.changed.length > 0) lines.push(`${countNoun(result.changed.length, 'file')} changed since indexing (${verb}):`)
     for (const f of result.changed) lines.push(`  ~ ${f}`)
@@ -185,9 +139,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     for (const f of result.removed) lines.push(`  - ${f}`)
     lines.push(`Checked ${countNoun(result.scanned, 'file')} in ${result.elapsedMs}ms.`)
   }
-  // Both disclosures print in every mode, clean or not. A sweep that ran out of time found the
-  // drift it had time to find, and "Index matches disk" over a partial scan is the exact shape of
-  // confident-wrong-answer this codebase treats as a defect rather than a rough edge.
+  // Both disclosures print in every mode, clean or not. A sweep that ran out of time found the drift it had time to find, and "Index matches disk" over a partial scan is the exact shape of confident-wrong-answer this codebase treats as a defect rather than a rough edge.
   if (result.mtimeOnly > 0) {
     lines.push(`${countNoun(result.mtimeOnly, 'file')} had a newer timestamp but identical content, so ${result.mtimeOnly === 1 ? 'it was' : 'they were'} left alone.`)
   }
@@ -213,9 +165,7 @@ export function isReconcileClean(r: ReconcileResult): boolean {
 /**
  * Sweep `cwd`'s tracked files against the index and enqueue whatever drifted.
  *
- * Deletions are enqueued rather than handled separately: the worker's drain reconciles a
- * deletion when the removed path is the one enqueued, so one queue and one drainer cover all
- * three drift kinds instead of a second removal path that could disagree with the first.
+ * Deletions are enqueued rather than handled separately: the worker's drain reconciles a deletion when the removed path is the one enqueued, so one queue and one drainer cover all three drift kinds instead of a second removal path that could disagree with the first.
  */
 export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const cwd = opts.cwd ?? process.cwd()
@@ -224,23 +174,11 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const dbPath = opts.dbPath ?? globalDbPath()
 
   const tracked = getTrackedFiles(cwd)
-  // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds
-  // a prefix-range bound straight from the root it is handed. A relative `cwd` -- what
-  // `token-goat reconcile` from inside the project passes -- would produce a relative prefix that
-  // matches no stored row, so every tracked file would look unindexed and the sweep would enqueue
-  // the entire project as "added" on every run.
+  // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
   const indexed = getProjectFileEntries(projectRoot, dbPath)
 
-  // Resume where the previous budget-truncated sweep of this project left off, instead of
-  // rescanning the same deterministic `git ls-files` prefix every session forever and never
-  // reaching whatever comes after it. Matched by folded/normalized path rather than by array
-  // index, because the tracked-file list can change shape between sessions (a file added, removed,
-  // or renamed shifts every index after it); a cursor that no longer matches anything just is not
-  // found, and the sweep falls back to starting from the beginning -- never an out-of-bounds read,
-  // never a crash. `scanOrder` is always a full permutation of `tracked` (same elements, same
-  // count, only reordered), so a lap that completes without exhausting the budget still visits
-  // every tracked file exactly once, which is what the deletion logic below depends on.
+  // Resume where the previous budget-truncated sweep of this project left off, instead of rescanning the same deterministic `git ls-files` prefix every session forever and never reaching whatever comes after it. Matched by folded/normalized path rather than by array index, because the tracked-file list can change shape between sessions (a file added, removed, or renamed shifts every index after it); a cursor that no longer matches anything just is not found, and the sweep falls back to starting from the beginning -- never an out-of-bounds read, never a crash. `scanOrder` is always a full permutation of `tracked` (same elements, same count, only reordered), so a lap that completes without exhausting the budget still visits every tracked file exactly once, which is what the deletion logic below depends on.
   let scanOrder = tracked
   const cursorPath = tracked.length > 0 ? readReconcileCursor(dbPath, projectRoot) : null
   if (cursorPath !== null) {
@@ -261,9 +199,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   let lastScanned: string | null = null
 
   for (const file of scanOrder) {
-    // Checked before the work rather than after, so the budget bounds what this function does
-    // rather than merely reporting that it overran. The check itself is a clock read, and
-    // hoisting it out of the loop would be the optimization that removes the bound.
+    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran. The check itself is a clock read, and hoisting it out of the loop would be the optimization that removes the bound.
     if (Date.now() - startedAt > budgetMs) {
       budgetExhausted = true
       break
@@ -279,14 +215,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       continue
     }
 
-    // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what
-    // gets extracted from content that never moved, so the mtime/content diff below -- which only
-    // ever compares this file's bytes against themselves -- can never notice it. Without this, a
-    // file nobody edits after a parser bump keeps the old parser's rows forever (this is the same
-    // failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts;
-    // reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the
-    // one place a content-only key silently misses this bucket entirely). An empty parserSha is a
-    // row written before the column existed and is correctly stale, same as the per-file gates.
+    // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what gets extracted from content that never moved, so the mtime/content diff below -- which only ever compares this file's bytes against themselves -- can never notice it. Without this, a file nobody edits after a parser bump keeps the old parser's rows forever (this is the same failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts; reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the one place a content-only key silently misses this bucket entirely). An empty parserSha is a row written before the column existed and is correctly stale, same as the per-file gates.
     if (entry.parserSha !== PARSER_FINGERPRINT) {
       changed.push(file)
       parserStale++
@@ -297,18 +226,12 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     try {
       mtimeMs = fs.statSync(file).mtimeMs
     } catch {
-      // Vanished between `getTrackedFiles` and now, or unreadable. Treat as drift rather than
-      // silently skipping: enqueueing it lets the worker's own read decide, and a genuinely
-      // missing file is reconciled as a deletion there.
+      // Vanished between `getTrackedFiles` and now, or unreadable. Treat as drift rather than silently skipping: enqueueing it lets the worker's own read decide, and a genuinely missing file is reconciled as a deletion there.
       changed.push(file)
       continue
     }
 
-    // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not
-    // deliberately forge timestamps, so the overwhelming majority of files cost one stat and
-    // nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below,
-    // never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as
-    // drift would enqueue the entire repository on every branch switch.
+    // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch.
     if (entry.mtime !== 0 && mtimeMs === entry.mtime) continue
 
     const diskSha = fingerprintFile(file)
@@ -347,22 +270,11 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   let enqueued = 0
   if (opts.dryRun !== true) {
     for (const p of [...changed, ...added, ...removed]) {
-      // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the
-      // root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the
-      // project) yields relative paths, and the worker's sha gate keys on the canonical absolute
-      // form. An unresolved relative path enqueues a key no reader can match -- the queue would
-      // fill and nothing would ever reindex. Paths from the index are already canonical, so
-      // resolving them is a no-op.
+      // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
       enqueueDirtyPathSafe(resolveIndexPath(p, cwd), { alreadyResolved: true })
       enqueued++
     }
-    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any
-    // side effect, and persisting a resume point is a side effect. A truncated sweep that scanned
-    // at least one file saves where it stopped, so the next sweep resumes there; a sweep with
-    // nothing scanned (budget already gone before the first file) leaves whatever cursor already
-    // exists untouched rather than clobbering it with nothing. A sweep that completed a full lap
-    // clears the cursor, since the next sweep should start a fresh lap from the beginning rather
-    // than carry forward an offset a completed lap has made meaningless.
+    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (budget already gone before the first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
     if (budgetExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
     } else if (tracked.length > 0) {

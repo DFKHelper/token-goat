@@ -1,12 +1,9 @@
 /**
  * SQLite connection management and index-DB schema.
  *
- * Ports the connection-pragma setup from `db.py` (WAL journal mode, NORMAL
- * synchronous) and the index schema (files / symbols / refs / FTS5) that later
- * layers query. Each database file gets one lazily-opened, cached connection.
+ * Ports the connection-pragma setup from `db.py` (WAL journal mode, NORMAL synchronous) and the index schema (files / symbols / refs / FTS5) that later layers query. Each database file gets one lazily-opened, cached connection.
  *
- * The connection itself comes from `./sqlite_driver.js`, a thin better-sqlite3-shaped facade over
- * Node's built-in `node:sqlite`; nothing in this file talks to `node:sqlite` directly.
+ * The connection itself comes from `./sqlite_driver.js`, a thin better-sqlite3-shaped facade over Node's built-in `node:sqlite`; nothing in this file talks to `node:sqlite` directly.
  */
 
 import * as fs from 'node:fs'
@@ -39,8 +36,7 @@ const _connections = new Map<string, SqliteDatabase>()
  *   - notes   — file/symbol-attached architecture notes with a staleness fingerprint (notes.ts).
  *   - symbols_fts — FTS5 mirror of symbols for full-text name/body search.
  *
- * The FTS5 table is content-linked to `symbols` (external-content) so the row
- * data lives once in `symbols`; triggers keep the index in sync on write.
+ * The FTS5 table is content-linked to `symbols` (external-content) so the row data lives once in `symbols`; triggers keep the index in sync on write.
  */
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS files (
@@ -354,15 +350,9 @@ function alterTableIdempotent(conn: SqliteDatabase, sql: string): void {
 }
 
 /**
- * Delete every chunk (and matching vector) belonging to a dotenv file, and clear those files'
- * `embed_sha` so they are re-embedded through the redacting path.
+ * Delete every chunk (and matching vector) belonging to a dotenv file, and clear those files' `embed_sha` so they are re-embedded through the redacting path.
  *
- * Paths are filtered in JS with the same {@link isDotenvPath} predicate the redaction uses, rather
- * than with a `LIKE '%.env%'` pattern, so this covers exactly the file set the fix covers and
- * cannot drift from it. `chunk_vectors` is the optional sqlite-vec virtual table: on a build
- * without the native extension the statement throws at prepare time, which is not a reason to fail
- * the migration -- the chunk rows carrying the secret text are deleted either way, and a vector
- * with no chunk row is unreadable (searchSemantic joins them by rowid).
+ * Paths are filtered in JS with the same {@link isDotenvPath} predicate the redaction uses, rather than with a `LIKE '%.env%'` pattern, so this covers exactly the file set the fix covers and cannot drift from it. `chunk_vectors` is the optional sqlite-vec virtual table: on a build without the native extension the statement throws at prepare time, which is not a reason to fail the migration -- the chunk rows carrying the secret text are deleted either way, and a vector with no chunk row is unreadable (searchSemantic joins them by rowid).
  */
 function purgeDotenvEmbeddings(conn: SqliteDatabase): void {
   let paths: string[]
@@ -386,8 +376,7 @@ function purgeDotenvEmbeddings(conn: SqliteDatabase): void {
     try {
       conn.prepare('UPDATE files SET embed_sha = NULL WHERE path = ?').run(p)
     } catch {
-      // Older shape without the column; the v1 -> v2 step adds it, and a file with no embed_sha is
-      // never treated as fresh anyway.
+      // Older shape without the column; the v1 -> v2 step adds it, and a file with no embed_sha is never treated as fresh anyway.
     }
   }
 }
@@ -433,13 +422,7 @@ const MIGRATIONS: Record<number, Migration> = {
   8: (conn) => alterTableIdempotent(conn, "ALTER TABLE symbols ADD COLUMN parent TEXT NOT NULL DEFAULT ''"),
   // v9 -> v10: adds hint_emissions.bytes_emitted (see SCHEMA_VERSION comment above for why). A pre-existing v9 database's `hint_emissions` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, same pattern as v1 -> v2 / v2 -> v3 / v8 -> v9 above.
   9: (conn) => alterTableIdempotent(conn, 'ALTER TABLE hint_emissions ADD COLUMN bytes_emitted INTEGER'),
-  // v10 -> v11: purge chunks (and their vectors) for dotenv files. Until this version, a tracked
-  // `.env` was chunked and embedded verbatim on the git path, so `semantic` returned its values --
-  // see dotenv_redact.ts. Redacting from now on is not enough on its own: the embed-freshness gate
-  // (isEmbedFresh in parser.ts) skips a file whose bytes have not changed, so an already-indexed
-  // .env would have kept serving its pre-fix chunks indefinitely. Deleting the rows here both
-  // removes the stored secrets and, by clearing embed_sha, makes the next drain re-embed the file
-  // through the redacting path.
+  // v10 -> v11: purge chunks (and their vectors) for dotenv files. Until this version, a tracked `.env` was chunked and embedded verbatim on the git path, so `semantic` returned its values -- see dotenv_redact.ts. Redacting from now on is not enough on its own: the embed-freshness gate (isEmbedFresh in parser.ts) skips a file whose bytes have not changed, so an already-indexed .env would have kept serving its pre-fix chunks indefinitely. Deleting the rows here both removes the stored secrets and, by clearing embed_sha, makes the next drain re-embed the file through the redacting path.
   10: purgeDotenvEmbeddings,
   // v12 -> v13: adds files.parser_sha, the digest of the extraction logic that produced this file's rows, tracked separately from files.sha for the same reason embed_sha is -- content freshness and parse freshness are different questions, and the content sha alone could only ever answer the first. A pre-existing v12 database's `files` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has it from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, same pattern as v1 -> v2 / v2 -> v3 / v8 -> v9 / v9 -> v10 above. Deliberately left NULL for every existing row rather than backfilled with the current fingerprint: NULL is the truthful answer (nobody recorded which parser wrote those rows), and it is also the answer that makes the freshness gates reparse them once, which is exactly what a database indexed by an older parser needs. v13 -> v14: changes both FTS5 tables' tokenizer to `unicode61 remove_diacritics 2`, so a search for `Noi` or `Viet` finds `Hà Nội` and `Việt Nam` -- combining marks that `remove_diacritics 1`, FTS5's default, leaves in place. This is the first schema change that `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot express at all rather than merely cannot express on a populated table: against an existing virtual table that statement is a silent no-op, so without MIGRATIONS[13] the new tokenizer would reach only databases created after this release. The step drops both tables, re-runs FTS_SQL to re-create them at the current declaration, and rebuilds each from its content table.
   12: (conn) => alterTableIdempotent(conn, 'ALTER TABLE files ADD COLUMN parser_sha TEXT'),
@@ -454,40 +437,18 @@ function runMigrations(conn: SqliteDatabase, fromVersion: number, toVersion: num
   }
 }
 
-/**
- * Apply pragmas + schema to a freshly opened connection.
- *
- * WAL journal mode allows a reader to proceed while a writer holds the file;
- * NORMAL synchronous trades a small durability window for far fewer fsyncs,
- * which matters on the hot hook path. FTS5 and the optional sqlite-vec table
- * are best-effort: a SQLite build lacking either still yields a working DB.
- */
+/** Apply pragmas + schema to a freshly opened connection. WAL journal mode allows a reader to proceed while a writer holds the file; NORMAL synchronous trades a small durability window for far fewer fsyncs, which matters on the hot hook path. FTS5 and the optional sqlite-vec table are best-effort: a SQLite build lacking either still yields a working DB. */
 /** How long {@link enableWalWithRetry} keeps trying before giving up, matched to `busy_timeout`. */
 const WAL_SWITCH_DEADLINE_MS = 15_000
 
 /**
- * Put a connection into WAL mode, waiting out other processes rather than failing on the first
- * refusal.
+ * Put a connection into WAL mode, waiting out other processes rather than failing on the first refusal.
  *
- * Converting a database's journal mode needs exclusive access, and SQLite answers `SQLITE_BUSY`
- * for that conversion **without consulting the busy handler** -- the wait `busy_timeout` configures
- * applies to ordinary lock contention, not to this. So on a database that does not exist yet, where
- * every process racing to create it runs this conversion, `busy_timeout` cannot help and the losers
- * throw immediately. Reproduced with six processes indexing one new database under load: one threw
- * `database is locked` from this very pragma and dropped the file it was indexing, while the run
- * still exited 0. That is the same silent-file-loss the deferred-`BEGIN` fix in `writeParseResult`
- * removed, arriving by a second and entirely separate route -- which is why the comment that used
- * to sit here, saying moving `busy_timeout` first was mere hardening because it "did not change
- * it", was reporting a real remaining failure as a non-event.
+ * Converting a database's journal mode needs exclusive access, and SQLite answers `SQLITE_BUSY` for that conversion **without consulting the busy handler** -- the wait `busy_timeout` configures applies to ordinary lock contention, not to this. So on a database that does not exist yet, where every process racing to create it runs this conversion, `busy_timeout` cannot help and the losers throw immediately. Reproduced with six processes indexing one new database under load: one threw `database is locked` from this very pragma and dropped the file it was indexing, while the run still exited 0. That is the same silent-file-loss the deferred-`BEGIN` fix in `writeParseResult` removed, arriving by a second and entirely separate route -- which is why the comment that used to sit here, saying moving `busy_timeout` first was mere hardening because it "did not change it", was reporting a real remaining failure as a non-event.
  *
- * A process that loses the race has nothing to fix and nothing to report: whoever won is doing the
- * conversion it wanted done. So each attempt re-reads the mode, and finding `wal` is success no
- * matter who set it. Only a deadline passing with the database still not in WAL is an error, and it
- * carries the last refusal so a genuine permission or filesystem problem is not reported as
- * contention.
+ * A process that loses the race has nothing to fix and nothing to report: whoever won is doing the conversion it wanted done. So each attempt re-reads the mode, and finding `wal` is success no matter who set it. Only a deadline passing with the database still not in WAL is an error, and it carries the last refusal so a genuine permission or filesystem problem is not reported as contention.
  *
- * `budgetMs` exists so the giving-up branch can be reached in a test without spending the real
- * fifteen seconds to get there. Production callers pass nothing and get that full budget.
+ * `budgetMs` exists so the giving-up branch can be reached in a test without spending the real fifteen seconds to get there. Production callers pass nothing and get that full budget.
  */
 export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetMs: number = WAL_SWITCH_DEADLINE_MS): void {
   const deadline = Date.now() + budgetMs
@@ -500,8 +461,7 @@ export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetM
     } catch (e) {
       lastError = e
     }
-    // Another process may already have finished the conversion while this one was being refused,
-    // in which case there is nothing left to do and no reason to keep waiting.
+    // Another process may already have finished the conversion while this one was being refused, in which case there is nothing left to do and no reason to keep waiting.
     try {
       if (String(conn.pragma('journal_mode', { simple: true })).toLowerCase() === 'wal') return
     } catch {
@@ -516,13 +476,7 @@ export function enableWalWithRetry(conn: Pick<SqliteDatabase, 'pragma'>, budgetM
 
 function initConnection(conn: SqliteDatabase): void {
   // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
-  // Set FIRST, before any statement that can contend, rather than after the two pragmas below as it
-  // used to be. The switch to WAL and the schema creation that follows it both need an exclusive
-  // lock, and on a database that does not exist yet every process racing to create it runs both --
-  // with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at
-  // all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure
-  // that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in
-  // parser.ts), and moving this line did not change it.
+  // Set FIRST, before any statement that can contend, rather than after the two pragmas below as it used to be. The switch to WAL and the schema creation that follows it both need an exclusive lock, and on a database that does not exist yet every process racing to create it runs both -- with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in parser.ts), and moving this line did not change it.
   conn.pragma('busy_timeout = 15000')
   enableWalWithRetry(conn)
   conn.pragma('synchronous = NORMAL')
@@ -576,9 +530,7 @@ function initConnection(conn: SqliteDatabase): void {
 /**
  * Resolve a db path argument to an absolute path under the data directory.
  *
- * A bare filename (no directory separator) is placed in {@link dataDir}; an
- * already-absolute or explicitly-relative path is resolved as given so callers
- * can point at a temp file in tests.
+ * A bare filename (no directory separator) is placed in {@link dataDir}; an already-absolute or explicitly-relative path is resolved as given so callers can point at a temp file in tests.
  */
 function resolveDbPath(dbPath: string): string {
   if (path.isAbsolute(dbPath)) return dbPath
@@ -593,12 +545,9 @@ function connectionKey(dbPath: string): { resolved: string; key: string } {
 }
 
 /**
- * Return the cached {@link SqliteDatabase} for `dbPath`, opening and
- * initializing it on first access.
+ * Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access.
  *
- * The connection is opened with the schema applied, WAL enabled, and the
- * optional FTS5 / sqlite-vec tables created when available. Subsequent calls
- * with the same resolved path return the same handle.
+ * The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle.
  */
 export function getDb(dbPath: string): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
@@ -618,8 +567,7 @@ export function getDb(dbPath: string): SqliteDatabase {
   try {
     initConnection(conn)
   } catch (e) {
-    // A setup step (WAL pragma, schema exec, ...) failed after the handle was already
-    // opened. Close it before propagating so the failure does not leak a file descriptor.
+    // A setup step (WAL pragma, schema exec, ...) failed after the handle was already opened. Close it before propagating so the failure does not leak a file descriptor.
     try {
       conn.close()
     } catch {
@@ -631,9 +579,7 @@ export function getDb(dbPath: string): SqliteDatabase {
   return conn
 }
 
-/**
- * Close the cached connection for `dbPath` if one is open. No-op otherwise.
- */
+/** Close the cached connection for `dbPath` if one is open. No-op otherwise. */
 export function closeDb(dbPath: string): void {
   const { key } = connectionKey(dbPath)
   const conn = _connections.get(key)
@@ -649,8 +595,7 @@ export function closeDb(dbPath: string): void {
 /**
  * Close every open connection and clear the cache.
  *
- * Registered with {@link registerReset} so tests start from a clean slate, and
- * usable directly for process shutdown.
+ * Registered with {@link registerReset} so tests start from a clean slate, and usable directly for process shutdown.
  */
 export function closeAllDbs(): void {
   for (const conn of _connections.values()) {

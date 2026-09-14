@@ -1,9 +1,4 @@
-/**
- * Word (.docx) narrow-slice reader. Body text lives at `word/document.xml`, a
- * `w:document > w:body` tree of paragraphs (`w:p`), each holding runs (`w:r`) of text (`w:t`).
- * A paragraph is a heading when its `w:pPr.w:pStyle.@_w:val` matches `HeadingN`/`Heading N`/`Title`
- * (the exact style ID Word writes depends on the template, so both forms are checked).
- */
+/** Word (.docx) narrow-slice reader. Body text lives at `word/document.xml`, a `w:document > w:body` tree of paragraphs (`w:p`), each holding runs (`w:r`) of text (`w:t`). A paragraph is a heading when its `w:pPr.w:pStyle.@_w:val` matches `HeadingN`/`Heading N`/`Title` (the exact style ID Word writes depends on the template, so both forms are checked). */
 
 import { displaySafeText } from './paths.js'
 import { collectElements, collectTextRuns, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'

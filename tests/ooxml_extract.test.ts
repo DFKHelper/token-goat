@@ -42,57 +42,38 @@ describe('readOoxmlZip', () => {
 
   it('rejects a file over the compressed-size cap before ever unzipping it', async () => {
     const file = path.join(dir, 'huge.pptx')
-    // Sparse file: fs.statSync only reads metadata, and the size guard must reject
-    // before fflate.unzipSync ever reads/decompresses content (which would throw a
-    // different, less useful error on invalid zip data).
+    // Sparse file: fs.statSync only reads metadata, and the size guard must reject before fflate.unzipSync ever reads/decompresses content (which would throw a different, less useful error on invalid zip data).
     const fd = fs.openSync(file, 'w')
     fs.ftruncateSync(fd, 51 * 1024 * 1024)
     fs.closeSync(fd)
     await expect(readOoxmlZip(file, '.docx')).rejects.toThrow(/over the 50MB limit/)
   })
 
-  // Gap 1: the compressed-input cap above only bounds what's read off disk. `unzipSync`
-  // decompresses every entry's *declared* uncompressed size with no cap of its own, so a
-  // compliant, capped-input archive can still ask fflate to allocate hundreds of megabytes -- or
-  // more -- for one entry. This is an honestly-labeled bomb (declared size matches the real
-  // content), so the cheap declared-size check alone is enough to catch it before any streaming
-  // decompression begins.
+  // Gap 1: the compressed-input cap above only bounds what's read off disk. `unzipSync` decompresses every entry's *declared* uncompressed size with no cap of its own, so a compliant, capped-input archive can still ask fflate to allocate hundreds of megabytes -- or more -- for one entry. This is an honestly-labeled bomb (declared size matches the real content), so the cheap declared-size check alone is enough to catch it before any streaming decompression begins.
   it('rejects a decompression bomb by its declared size, without decompressing it', async () => {
     const file = path.join(dir, 'bomb.pptx')
-    // 520MB of zeros, well over the 500MB decompressed-output limit, compresses to a few MB in
-    // well under a second -- readOoxmlZip doesn't care about real OOXML structure, only that the
-    // bytes are a valid zip container.
+    // 520MB of zeros, well over the 500MB decompressed-output limit, compresses to a few MB in well under a second -- readOoxmlZip doesn't care about real OOXML structure, only that the bytes are a valid zip container.
     fs.writeFileSync(file, zipSync({ 'bomb.bin': zeroPayload(520) }, { level: 1 }))
 
     const t0 = Date.now()
     await expect(readOoxmlZip(file, '.pptx')).rejects.toThrow(/over the 500MB decompressed-size limit/)
     const elapsedMs = Date.now() - t0
 
-    // The declared-size check rejects before any streaming decompression of the entry begins.
-    // Fully materializing 520MB would take measurably longer than this; a generous bound catches
-    // a regression to "decompress first, check after" without being flaky under load.
+    // The declared-size check rejects before any streaming decompression of the entry begins. Fully materializing 520MB would take measurably longer than this; a generous bound catches a regression to "decompress first, check after" without being flaky under load.
     expect(elapsedMs).toBeLessThan(1000)
   })
 })
 
 describe('parseOoxmlPart / collectTextRuns', () => {
   it('preserves a whitespace-only run split at a formatting boundary instead of collapsing it away', async () => {
-    // Word commonly splits a sentence across multiple <w:r> runs at a bold/italic/hyperlink
-    // boundary, using a standalone xml:space="preserve" run to hold just the inter-word space.
-    // fast-xml-parser's trimValues defaults to true, which would trim that run's text down to
-    // an empty string with no #text key at all, silently gluing "Hello" and "world" together.
+    // Word commonly splits a sentence across multiple <w:r> runs at a bold/italic/hyperlink boundary, using a standalone xml:space="preserve" run to hold just the inter-word space. fast-xml-parser's trimValues defaults to true, which would trim that run's text down to an empty string with no #text key at all, silently gluing "Hello" and "world" together.
     const xml =
       '<w:p><w:r><w:t>Hello</w:t></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r><w:r><w:t>world</w:t></w:r></w:p>'
     const parsed = await parseOoxmlPart(xml)
     expect(collectTextRuns(parsed, 'w:t').join('')).toBe('Hello world')
   })
 
-  // fast-xml-parser's parseTagValue defaults to true, which rewrites any element whose whole
-  // text looks numeric into a JavaScript number. Every part these extractors read holds document
-  // text, so that turned a cell or paragraph reading `007` into `7` and `1.50` into `1.5` --
-  // silent corruption of zip codes, part numbers, invoice ids and version strings, with nothing
-  // in the output to show the value had been altered. Each spelling below is a separate way the
-  // coercion fires, so one surviving spelling still fails here.
+  // fast-xml-parser's parseTagValue defaults to true, which rewrites any element whose whole text looks numeric into a JavaScript number. Every part these extractors read holds document text, so that turned a cell or paragraph reading `007` into `7` and `1.50` into `1.5` -- silent corruption of zip codes, part numbers, invoice ids and version strings, with nothing in the output to show the value had been altered. Each spelling below is a separate way the coercion fires, so one surviving spelling still fails here.
   it.each([
     ['a leading zero', '007'],
     ['a zip code', '01234'],
@@ -114,11 +95,7 @@ describe('parseOoxmlPart / collectTextRuns', () => {
 })
 
 describe('collectElements', () => {
-  // Regression: the docstring promises collectElements does not descend further into a
-  // match's own subtree once it has collected that match (mirroring collectTextRuns' `else
-  // if`), but the code used a bare `if` for the recursive walk call, so it unconditionally
-  // re-descended into every matched node's own children too -- collecting a same-named tag
-  // nested inside itself a second time as a spurious extra "match".
+  // Regression: the docstring promises collectElements does not descend further into a match's own subtree once it has collected that match (mirroring collectTextRuns' `else if`), but the code used a bare `if` for the recursive walk call, so it unconditionally re-descended into every matched node's own children too -- collecting a same-named tag nested inside itself a second time as a spurious extra "match".
   it('collects only the outer match of a tag nested inside itself, not both', async () => {
     const xml = '<root><w:p id="outer"><w:p id="inner"/></w:p></root>'
     const parsed = await parseOoxmlPart(xml)
@@ -137,9 +114,7 @@ describe('collectElements', () => {
   })
 })
 
-// Zero direct coverage before this: only exercised transitively through pptx_extract.ts /
-// docx_extract.ts's higher-level tests, which never pinned decodeZipEntry's own null-vs-decoded
-// contract in isolation.
+// Zero direct coverage before this: only exercised transitively through pptx_extract.ts / docx_extract.ts's higher-level tests, which never pinned decodeZipEntry's own null-vs-decoded contract in isolation.
 describe('decodeZipEntry', () => {
   it('decodes an existing entry as UTF-8 text', () => {
     const entries = { 'ppt/slides/slide1.xml': new TextEncoder().encode('<hello/>') }
@@ -215,8 +190,7 @@ describe('one XML part large enough to exhaust the heap on its own', () => {
   }, 120_000)
 })
 
-// Zero direct coverage before this: pptx_extract.ts uses it to order ppt/slides/slideN.xml,
-// but none of its own tests pin the sort-key extraction or the no-match fallback in isolation.
+// Zero direct coverage before this: pptx_extract.ts uses it to order ppt/slides/slideN.xml, but none of its own tests pin the sort-key extraction or the no-match fallback in isolation.
 describe('sortNumberedParts', () => {
   it('sorts numbered parts numerically, not lexicographically', () => {
     const paths = ['ppt/slides/slide10.xml', 'ppt/slides/slide2.xml', 'ppt/slides/slide1.xml']
@@ -241,11 +215,7 @@ describe('sortNumberedParts', () => {
   })
 })
 
-// Every one of these used to escape as the raw underlying error. The missing-file case is the
-// one that mattered most: Node's ENOENT names the path it resolved, so asking for `nope.docx`
-// printed the reader's entire home directory back at them, and it reached the CLI unmodified.
-// The sibling xlsx reader already guarded exactly this shape; ooxml never did. Six commands
-// share this funnel: docx-outline, docx-text, pptx-outline, pptx-slide, pptx-notes, pptx-text.
+// Every one of these used to escape as the raw underlying error. The missing-file case is the one that mattered most: Node's ENOENT names the path it resolved, so asking for `nope.docx` printed the reader's entire home directory back at them, and it reached the CLI unmodified. The sibling xlsx reader already guarded exactly this shape; ooxml never did. Six commands share this funnel: docx-outline, docx-text, pptx-outline, pptx-slide, pptx-notes, pptx-text.
 describe('readOoxmlZip failure messages', () => {
   let dir: string
 
@@ -272,8 +242,7 @@ describe('readOoxmlZip failure messages', () => {
   })
 
   it('names the file the caller passed, not one it resolved itself', async () => {
-    // A bare relative name is the case that exposed it: statSync resolves against cwd and puts
-    // the whole absolute path in the message, for a caller who never typed one.
+    // A bare relative name is the case that exposed it: statSync resolves against cwd and puts the whole absolute path in the message, for a caller who never typed one.
     const err = await readOoxmlZip('nope-relative.docx', '.docx').then(
       () => null,
       (e: unknown) => e as Error,
@@ -310,9 +279,7 @@ describe('readOoxmlZip failure messages', () => {
     expect((err?.cause as Error | undefined)?.message).toMatch(/invalid zip data/)
   })
 
-  // The format comes from the command, not from whatever the file happens to be called.
-  // `docx-outline report.txt` used to answer "not a valid .txt file", naming a format the user
-  // never asked for and that this reader could not have read either way.
+  // The format comes from the command, not from whatever the file happens to be called. `docx-outline report.txt` used to answer "not a valid .txt file", naming a format the user never asked for and that this reader could not have read either way.
   it('names the format the caller asked for, not the extension on the path', async () => {
     const bad = path.join(dir, 'report.txt')
     fs.writeFileSync(bad, 'plain text, not a zip')
@@ -333,9 +300,7 @@ describe('readOoxmlZip failure messages', () => {
 
 })
 
-// The branch behind these is unreachable from a test that goes through the filesystem: node:fs is
-// a frozen namespace so statSync cannot be mocked, and no real probe gives the same errno on every
-// platform. Asserted on the classifier directly rather than left uncovered.
+// The branch behind these is unreachable from a test that goes through the filesystem: node:fs is a frozen namespace so statSync cannot be mocked, and no real probe gives the same errno on every platform. Asserted on the classifier directly rather than left uncovered.
 describe('accessFailureMessage', () => {
   it('calls only a genuinely absent file missing', () => {
     const err = Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
@@ -362,10 +327,7 @@ describe('accessFailureMessage', () => {
 })
 
 
-// `collectElements` appended each matching array with `out.push(...val)`, a call with one
-// argument per item, so it failed with "Maximum call stack size exceeded" above roughly 125,000
-// elements. A long Word document reaches that: a 40 kB .docx of 400,000 paragraphs crashed
-// `docx-text` with that raw engine message and no indication of what was wrong.
+// `collectElements` appended each matching array with `out.push(...val)`, a call with one argument per item, so it failed with "Maximum call stack size exceeded" above roughly 125,000 elements. A long Word document reaches that: a 40 kB .docx of 400,000 paragraphs crashed `docx-text` with that raw engine message and no indication of what was wrong.
 describe('collecting more elements than can be spread as call arguments', () => {
   it('collects every one instead of overflowing the call stack', () => {
     const HUGE = 200_000
