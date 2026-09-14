@@ -102,11 +102,7 @@ describe('index_reader round-trips inserted rows', () => {
     expect(querySymbols({ filePath: 'a.ts', kind: 'function' }, dbPath)).toHaveLength(1)
   })
 
-  // Regression coverage: mutation testing (cycle 65) found `limit` was fully unenforced by the
-  // whole test suite -- a mutant that hardcoded `LIMIT 999999` in place of the bound `limit`
-  // parameter passed every existing test green. Many CLI callers (DIDYOUMEAN_LIMIT,
-  // ALL_SYMBOLS_IN_FILE_LIMIT, FIND_SCAN_LIMIT in read_commands.ts/graph_commands.ts) depend on
-  // this cap actually truncating the result set.
+  // Regression coverage: mutation testing (cycle 65) found `limit` was fully unenforced by the whole test suite -- a mutant that hardcoded `LIMIT 999999` in place of the bound `limit` parameter passed every existing test green. Many CLI callers (DIDYOUMEAN_LIMIT, ALL_SYMBOLS_IN_FILE_LIMIT, FIND_SCAN_LIMIT in read_commands.ts/graph_commands.ts) depend on this cap actually truncating the result set.
   it('querySymbols caps results at the requested limit, defaulting to 100', () => {
     const dbPath = tmpDbPath()
     const db = getDb(dbPath)
@@ -167,11 +163,7 @@ describe('index_reader round-trips inserted rows', () => {
     expect(queryRefsByContext('Impl', 'a.ts', dbPath)).toHaveLength(20)
   })
 
-  // Regression: global.db is a single machine-wide index shared across every project ever
-  // indexed (constants.ts). queryRefCounts used to run WHERE name IN (...) with no path scope,
-  // so outline/skeleton --stats summed reference counts across every project sharing a symbol
-  // name -- a symbol's ref count in project A was inflated by unrelated references to a
-  // same-named symbol in project B.
+  // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). queryRefCounts used to run WHERE name IN (...) with no path scope, so outline/skeleton --stats summed reference counts across every project sharing a symbol name -- a symbol's ref count in project A was inflated by unrelated references to a same-named symbol in project B.
   it('queryRefCounts scoped by rootDir excludes references from a different project root', () => {
     const dbPath = tmpDbPath()
     const db = getDb(dbPath)
@@ -190,6 +182,30 @@ describe('index_reader round-trips inserted rows', () => {
 
     const scopedToB = queryRefCounts(['shared'], dbPath, 'projB')
     expect(scopedToB.get('shared')).toBe(3) // only projB's 3 references
+  })
+
+  // Regression: the name list went into one `IN (...)` and SQLite bounds how many parameters a statement may bind, refusing to prepare past it -- `too many SQL variables`, thrown rather than answered short, so `--stats` failed outright instead of returning fewer counts. The fixture is sized past that bound on purpose: every earlier test here passes a handful of names, and a bound is invisible to a fixture smaller than it.
+  it('queryRefCounts answers for more names than SQLite will bind in one statement', () => {
+    // CAPTURE: 32,766 is what this build of SQLite refuses above, measured by binding an IN list of growing width until it threw. It is a compile-time option, so the code batches under the 999 an older build would set rather than under this number.
+    const SQL_VARIABLE_LIMIT = 32_766
+    const names = Array.from({ length: SQL_VARIABLE_LIMIT + 100 }, (_, i) => `sym${String(i)}`)
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+    // Three names with distinct counts, placed in the first batch, in a later one, and in the tail past the limit -- so a merge that drops a batch or overwrites the map is visible.
+    db.transaction(() => {
+      for (const [name, times] of [['sym3', 1], ['sym1200', 2], [`sym${String(SQL_VARIABLE_LIMIT + 50)}`, 3]] as const) {
+        for (let i = 0; i < times; i++) stmt.run('projA/x.ts', name, i + 1, 0, '')
+      }
+    })()
+
+    const counts = queryRefCounts(names, dbPath, 'projA')
+
+    expect(counts.get('sym3')).toBe(1)
+    expect(counts.get('sym1200')).toBe(2)
+    expect(counts.get(`sym${String(SQL_VARIABLE_LIMIT + 50)}`)).toBe(3)
+    // Names with no references are absent rather than zero, which is the documented contract.
+    expect(counts.size).toBe(3)
   })
 
   it('getFileEntry returns an inserted file row', () => {
@@ -264,9 +280,7 @@ describe('index_reader round-trips inserted rows', () => {
   })
 
   it('sanitizeFtsQuery doubles an embedded literal double-quote instead of leaving it unescaped (mutation-testing gap: an unescaped quote breaks the FTS5 string-literal boundary)', () => {
-    // A bare `"` inside a term must become `""` (FTS5's own escape for a literal quote within a
-    // quoted string), not pass through as-is -- an unescaped quote prematurely closes the FTS5
-    // string literal this function wraps every term in, corrupting the query syntax.
+    // A bare `"` inside a term must become `""` (FTS5's own escape for a literal quote within a quoted string), not pass through as-is -- an unescaped quote prematurely closes the FTS5 string literal this function wraps every term in, corrupting the query syntax.
     expect(sanitizeFtsQuery('say "hi"')).toBe('"say" """hi"""')
   })
 
@@ -288,9 +302,7 @@ describe('index_reader round-trips inserted rows', () => {
       ).c > 0
     if (!ftsExists) return // FTS5 unavailable — sibling test covers the no-op path
 
-    // End-to-end confirmation that sanitizeFtsQuery's escaping keeps a query with an embedded
-    // quote resolving through the real FTS5 pipeline (the direct unit test above on
-    // sanitizeFtsQuery itself is what actually traps a regression in the escaping logic).
+    // End-to-end confirmation that sanitizeFtsQuery's escaping keeps a query with an embedded quote resolving through the real FTS5 pipeline (the direct unit test above on sanitizeFtsQuery itself is what actually traps a regression in the escaping logic).
     const hits = searchSymbolsFts('quoted "note"', 10, dbPath)
     expect(hits.map((s) => s.name)).toContain('quotedNote')
   })

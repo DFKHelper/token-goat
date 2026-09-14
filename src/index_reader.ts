@@ -1,16 +1,4 @@
-/**
- * Read side of the symbol index.
- *
- * Queries the `symbols`, `refs`, and `files` tables (schema in `db.ts`) that the
- * `token-goat symbol`, `token-goat refs`, and related CLI commands surface.
- * Mapping from snake_case DB columns to the camelCase {@link SymbolEntry} /
- * {@link RefEntry} / {@link FileIndexEntry} shapes lives here so callers never
- * touch raw rows.
- *
- * Each query accepts an optional `dbPath` (defaulting to the global index DB) so
- * tests can point at a throwaway database. The path is passed straight to
- * {@link getDb}, which caches one connection per resolved path.
- */
+/** Read side of the symbol index. Queries the `symbols`, `refs`, and `files` tables (schema in `db.ts`) that the `token-goat symbol`, `token-goat refs`, and related CLI commands surface. Mapping from snake_case DB columns to the camelCase {@link SymbolEntry} / {@link RefEntry} / {@link FileIndexEntry} shapes lives here so callers never touch raw rows. Each query accepts an optional `dbPath` (defaulting to the global index DB) so tests can point at a throwaway database. The path is passed straight to {@link getDb}, which caches one connection per resolved path. */
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
@@ -73,18 +61,6 @@ function toRefEntry(row: RefRow): RefEntry {
   }
 }
 
-/**
- * Query symbols by any combination of name, file, and kind.
- *
- * All filters are optional and AND-combined; an empty `opts` returns every
- * symbol (bounded by `limit`, default 100). Results are ordered by file then
- * starting line for stable output.
- *
- * `rootDir`, when provided, scopes the query to files under that project root
- * via {@link projectScopeClause} -- required whenever a caller means "symbols
- * in the current project", since `dbPath` (typically `global.db`) is a single
- * machine-wide index shared across every project ever indexed (constants.ts).
- */
 /** Push {@link projectScopeClause}'s clause onto `where`/`param` onto `params` when `rootDir` is set. Shared by querySymbols/queryRefs/queryRefCounts, which all need the same "scope to files under this project root" filter against different WHERE-clause shapes. */
 function applyRootDirScope(
   rootDir: string | undefined,
@@ -104,10 +80,7 @@ interface SymbolQueryOpts {
   kind?: string
   rootDir?: string
   fileBaseName?: string
-  /** Keep only symbols whose span covers this 1-based line. Pushed into SQL rather than filtered
-   * in the caller because `limit` is applied by the database: a caller that fetches a capped page
-   * and *then* filters for the enclosing rows silently loses any match that sorted past the cap,
-   * and reports the same "nothing encloses this line" it would for a line nothing covers. */
+  /** Keep only symbols whose span covers this 1-based line. Pushed into SQL rather than filtered in the caller because `limit` is applied by the database: a caller that fetches a capped page and *then* filters for the enclosing rows silently loses any match that sorted past the cap, and reports the same "nothing encloses this line" it would for a line nothing covers. */
   enclosingLine?: number
 }
 
@@ -145,6 +118,7 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
 /** Rows returned when a caller names no `limit`. Exported because a caller that reports whether its scan was complete has to compare its row count against the window it actually got, and an implicit default it cannot see makes that comparison silently wrong. */
 export const DEFAULT_QUERY_LIMIT = 100
 
+/** Query symbols by any combination of name, file, and kind. All filters are optional and AND-combined; an empty `opts` returns every symbol (bounded by `limit`, default 100). Results are ordered by file then starting line for stable output. `rootDir`, when provided, scopes the query to files under that project root via {@link projectScopeClause} -- required whenever a caller means "symbols in the current project", since `dbPath` (typically `global.db`) is a single machine-wide index shared across every project ever indexed (constants.ts). */
 export function querySymbols(
   opts: SymbolQueryOpts & { limit?: number } = {},
   dbPath: string = globalDbPath(),
@@ -171,14 +145,7 @@ export function distinctSymbolKinds(rootDir?: string, dbPath: string = globalDbP
   return rows.map((r) => r.kind)
 }
 
-/**
- * True count of symbols matching the same name/filePath/kind/rootDir filters
- * {@link querySymbols} accepts, ignoring `limit` entirely -- used so `token-goat
- * symbol --json` can report an honest `totalCount` instead of the count of
- * whatever `querySymbols`'s own SQL `LIMIT` happened to let through (the same
- * "SQL LIMIT applied before the count is taken" shape that undercounted
- * `refs --top`; see that fix's commit for the sibling bug).
- */
+/** True count of symbols matching the same name/filePath/kind/rootDir filters {@link querySymbols} accepts, ignoring `limit` entirely -- used so `token-goat symbol --json` can report an honest `totalCount` instead of the count of whatever `querySymbols`'s own SQL `LIMIT` happened to let through (the same "SQL LIMIT applied before the count is taken" shape that undercounted `refs --top`; see that fix's commit for the sibling bug). */
 export function countSymbols(opts: SymbolQueryOpts = {}, dbPath: string = globalDbPath()): number {
   const { clause, params } = buildSymbolWhere(opts)
   const sql = `SELECT COUNT(*) as cnt FROM symbols ${clause}`
@@ -187,16 +154,7 @@ export function countSymbols(opts: SymbolQueryOpts = {}, dbPath: string = global
   return row.cnt
 }
 
-/**
- * Query references to a name, optionally scoped to one file.
- *
- * `name` is required (callers always know which symbol's uses they want).
- * Results are ordered by file then line; `limit` defaults to 100.
- *
- * `rootDir`, when provided, scopes the query to references in files under that
- * project root (see {@link querySymbols} for why this matters against the
- * machine-wide `global.db`).
- */
+/** Query references to a name, optionally scoped to one file. `name` is required (callers always know which symbol's uses they want). Results are ordered by file then line; `limit` defaults to 100. `rootDir`, when provided, scopes the query to references in files under that project root (see {@link querySymbols} for why this matters against the machine-wide `global.db`). */
 /** Shared WHERE-clause builder for {@link queryRefs} and {@link countRefs} -- both filter the same `refs` table by the same name/filePath/rootDir combination, so the clause/params construction lives in one place instead of drifting between a "fetch rows" and a "count rows" copy (mirrors {@link buildSymbolWhere}). */
 function buildRefsWhere(opts: { name: string; filePath?: string; rootDir?: string }): {
   clause: string
@@ -232,12 +190,7 @@ export function queryRefs(
   return rows.map(toRefEntry)
 }
 
-/**
- * True count of refs matching the same name/filePath/rootDir filters {@link queryRefs} accepts,
- * ignoring `limit` entirely -- used so `token-goat refs --json` can report an honest `totalCount`
- * instead of the count of whatever `queryRefs`'s own SQL `LIMIT` happened to let through (the
- * same shape {@link countSymbols} fixed for `token-goat symbol --json`).
- */
+/** True count of refs matching the same name/filePath/rootDir filters {@link queryRefs} accepts, ignoring `limit` entirely -- used so `token-goat refs --json` can report an honest `totalCount` instead of the count of whatever `queryRefs`'s own SQL `LIMIT` happened to let through (the same shape {@link countSymbols} fixed for `token-goat symbol --json`). */
 export function countRefs(opts: { name: string; filePath?: string; rootDir?: string }, dbPath: string = globalDbPath()): number {
   const { clause, params } = buildRefsWhere(opts)
   const sql = `SELECT COUNT(*) as cnt FROM refs ${clause}`
@@ -246,15 +199,7 @@ export function countRefs(opts: { name: string; filePath?: string; rootDir?: str
   return row.cnt
 }
 
-/**
- * Refs recorded with a given enclosing `context` (the class/function name the ref's line falls
- * inside) in one specific file. Used to resolve a class's extends-clause target: an
- * `extends_clause` ref's `context` is set to the extending class's own name (see the
- * extends-clause parser fix), so `queryRefsByContext(className, classFile)` returns the ref(s)
- * recorded at that class's declaration -- among which the base class name can be picked out.
- * Narrower than {@link queryRefs} (which requires a `name` filter) for exactly this "what did
- * this file/context reference" direction.
- */
+/** Refs recorded with a given enclosing `context` (the class/function name the ref's line falls inside) in one specific file. Used to resolve a class's extends-clause target: an `extends_clause` ref's `context` is set to the extending class's own name (see the extends-clause parser fix), so `queryRefsByContext(className, classFile)` returns the ref(s) recorded at that class's declaration -- among which the base class name can be picked out. Narrower than {@link queryRefs} (which requires a `name` filter) for exactly this "what did this file/context reference" direction. */
 export function queryRefsByContext(context: string, filePath: string, dbPath: string = globalDbPath()): RefEntry[] {
   const sql = `SELECT file_path, name, line, col, context FROM refs WHERE context = ? AND ${pathEq('file_path')} ORDER BY line LIMIT 20`
   const db = getDb(dbPath)
@@ -262,16 +207,10 @@ export function queryRefsByContext(context: string, filePath: string, dbPath: st
   return rows.map(toRefEntry)
 }
 
-/**
- * Batched reference count per symbol name, for `outline --stats`/`skeleton --stats`. One
- * `GROUP BY` query over all requested names instead of one query per symbol -- avoids N+1
- * queries when a file has many symbols. Names with zero references are simply absent from
- * the returned map (callers should default to 0).
- *
- * `rootDir`, when provided, counts only references in files under that project root (see
- * {@link querySymbols} for why this matters against the machine-wide `global.db`) -- without
- * it, a symbol name shared with an unrelated project on the same machine inflates the count.
- */
+/** Batched reference count per symbol name, for `outline --stats`/`skeleton --stats`. One `GROUP BY` query over all requested names instead of one query per symbol -- avoids N+1 queries when a file has many symbols. Names with zero references are simply absent from the returned map (callers should default to 0). `rootDir`, when provided, counts only references in files under that project root (see {@link querySymbols} for why this matters against the machine-wide `global.db`) -- without it, a symbol name shared with an unrelated project on the same machine inflates the count. */
+/** How many names go into one `IN (...)` list. SQLite bounds the number of bound parameters in a statement and enforces it by refusing to prepare -- `too many SQL variables`, an exception rather than a short answer, so the caller gets no reference counts at all rather than fewer. The live limit is 32,766 here, but it is a compile-time option and an older or differently-built SQLite sets it at 999, so the batch is sized under that floor rather than under what this build happens to allow. The cost of the extra round trips is not worth measuring: the largest caller today is capped at 5,000 names. */
+const REF_COUNT_BATCH = 900
+
 export function queryRefCounts(
   names: string[],
   dbPath: string = globalDbPath(),
@@ -281,29 +220,21 @@ export function queryRefCounts(
   if (names.length === 0) return counts
 
   const db = getDb(dbPath)
-  const placeholders = names.map(() => '?').join(', ')
-  const params: (string | number)[] = [...names]
-  const scopeWhere: string[] = []
-  applyRootDirScope(rootDir, 'file_path', scopeWhere, params)
-  const scopeSql = scopeWhere.length > 0 ? ` AND ${scopeWhere.join(' AND ')}` : ''
-  const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${placeholders})${scopeSql} GROUP BY name`
-  const rows = db.prepare(sql).all(...params) as Array<{ name: string; c: number }>
-  for (const row of rows) {
-    counts.set(row.name, row.c)
+  for (let start = 0; start < names.length; start += REF_COUNT_BATCH) {
+    const batch = names.slice(start, start + REF_COUNT_BATCH)
+    const params: (string | number)[] = [...batch]
+    const scopeWhere: string[] = []
+    applyRootDirScope(rootDir, 'file_path', scopeWhere, params)
+    const scopeSql = scopeWhere.length > 0 ? ` AND ${scopeWhere.join(' AND ')}` : ''
+    const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${batch.map(() => '?').join(', ')})${scopeSql} GROUP BY name`
+    for (const row of db.prepare(sql).all(...params) as Array<{ name: string; c: number }>) {
+      counts.set(row.name, row.c)
+    }
   }
   return counts
 }
 
-/**
- * Every indexed file under `rootDir`, keyed by its folded path.
- *
- * The bulk counterpart to {@link getFileEntry}, for the one caller that needs the whole
- * project's rows at once: `reconcile.ts` compares each tracked file on disk against its indexed
- * fingerprint, and doing that through per-file `getFileEntry` calls would mean one prepared
- * statement execution per file -- hundreds of round trips on the session-start hot path, to
- * answer a question a single scoped scan answers. Keyed by folded path so the caller can look up
- * a disk path without re-deriving the case-folding rule the query already applied.
- */
+/** Every indexed file under `rootDir`, keyed by its folded path. The bulk counterpart to {@link getFileEntry}, for the one caller that needs the whole project's rows at once: `reconcile.ts` compares each tracked file on disk against its indexed fingerprint, and doing that through per-file `getFileEntry` calls would mean one prepared statement execution per file -- hundreds of round trips on the session-start hot path, to answer a question a single scoped scan answers. Keyed by folded path so the caller can look up a disk path without re-deriving the case-folding rule the query already applied. */
 export function getProjectFileEntries(
   rootDir: string,
   dbPath: string = globalDbPath(),
@@ -329,10 +260,7 @@ export function getProjectFileEntries(
   return out
 }
 
-/**
- * Fetch the index entry for one file by its stored path. Returns `null` when
- * the file is not in the index.
- */
+/** Fetch the index entry for one file by its stored path. Returns `null` when the file is not in the index. */
 export function getFileEntry(
   filePath: string,
   dbPath: string = globalDbPath(),
@@ -356,14 +284,7 @@ export function getFileEntry(
   }
 }
 
-// Quote each whitespace-separated term as an FTS5 string literal so that characters FTS5 treats
-// as query operators (`:` `(` `)` `*`, AND/OR/NOT) in a natural-language query are matched
-// literally instead of throwing a syntax error that the catch below would swallow into an empty
-// result. `join` controls how the quoted terms combine: FTS5 treats bare whitespace between
-// terms as implicit AND, so 'AND' (the default) requires every term to co-occur in one symbol --
-// exact/narrow searches want this for precision. 'OR' relaxes that to "any term", used as a
-// widen-on-empty fallback by searchSymbolsFts below for realistic multi-word natural-language
-// queries where requiring every word to co-occur is unrealistically strict.
+// Quote each whitespace-separated term as an FTS5 string literal so that characters FTS5 treats as query operators (`:` `(` `)` `*`, AND/OR/NOT) in a natural-language query are matched literally instead of throwing a syntax error that the catch below would swallow into an empty result. `join` controls how the quoted terms combine: FTS5 treats bare whitespace between terms as implicit AND, so 'AND' (the default) requires every term to co-occur in one symbol -- exact/narrow searches want this for precision. 'OR' relaxes that to "any term", used as a widen-on-empty fallback by searchSymbolsFts below for realistic multi-word natural-language queries where requiring every word to co-occur is unrealistically strict.
 export function sanitizeFtsQuery(query: string, join: 'AND' | 'OR' = 'AND'): string {
   const terms = query
     .split(/\s+/)
@@ -372,8 +293,7 @@ export function sanitizeFtsQuery(query: string, join: 'AND' | 'OR' = 'AND'): str
   return terms.join(join === 'OR' ? ' OR ' : ' ')
 }
 
-/** Runs one FTS5 MATCH query and maps rows to {@link SymbolEntry}. Shared by both the strict
- * AND-joined attempt and the OR-joined widen-on-empty retry in {@link searchSymbolsFts}. */
+/** Runs one FTS5 MATCH query and maps rows to {@link SymbolEntry}. Shared by both the strict AND-joined attempt and the OR-joined widen-on-empty retry in {@link searchSymbolsFts}. */
 function runFtsQuery(
   db: ReturnType<typeof getDb>,
   match: string,
@@ -395,28 +315,7 @@ function runFtsQuery(
   return rows.map(toSymbolEntry)
 }
 
-/**
- * Full-text symbol search over the `symbols_fts` mirror.
- *
- * Joins FTS hits back to `symbols` to return full {@link SymbolEntry} rows in
- * BM25 relevance order. Falls back to an empty result (rather than throwing) if
- * the FTS5 table is unavailable in this SQLite build or the query is malformed.
- *
- * Tries an AND-joined query first (every term must co-occur in one symbol — the more precise,
- * higher-confidence match) and, only if that returns zero rows, retries with an OR-joined query
- * (any term matches, ranked by bm25()). A realistic natural-language query like "add retry logic
- * to the webfetch cache" rarely has every one of its words co-occurring verbatim in a single
- * symbol's indexed text, so a bare AND join returned nothing for exactly the phrasings this
- * search exists to handle; OR-joining unconditionally risked over-broad, low-relevance results
- * for queries that WOULD have matched under AND. Widening only on a genuine zero-hit AND result
- * keeps the precise path for anyone whose terms do co-occur, while still surfacing something
- * for a phrase that doesn't.
- *
- * `rootDir`, when provided, scopes the search to files under that project root
- * (see {@link querySymbols} for why this matters against the machine-wide
- * `global.db`) -- without it, results leak in symbols from every other project
- * ever indexed on the machine.
- */
+/** Full-text symbol search over the `symbols_fts` mirror. Joins FTS hits back to `symbols` to return full {@link SymbolEntry} rows in BM25 relevance order. Falls back to an empty result (rather than throwing) if the FTS5 table is unavailable in this SQLite build or the query is malformed. Tries an AND-joined query first (every term must co-occur in one symbol — the more precise, higher-confidence match) and, only if that returns zero rows, retries with an OR-joined query (any term matches, ranked by bm25()). A realistic natural-language query like "add retry logic to the webfetch cache" rarely has every one of its words co-occurring verbatim in a single symbol's indexed text, so a bare AND join returned nothing for exactly the phrasings this search exists to handle; OR-joining unconditionally risked over-broad, low-relevance results for queries that WOULD have matched under AND. Widening only on a genuine zero-hit AND result keeps the precise path for anyone whose terms do co-occur, while still surfacing something for a phrase that doesn't. `rootDir`, when provided, scopes the search to files under that project root (see {@link querySymbols} for why this matters against the machine-wide `global.db`) -- without it, results leak in symbols from every other project ever indexed on the machine. */
 export function searchSymbolsFts(
   query: string,
   limit = 50,
