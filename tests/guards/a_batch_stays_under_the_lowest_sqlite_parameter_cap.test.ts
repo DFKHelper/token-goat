@@ -20,6 +20,14 @@ const PRE_3_32_DEFAULT_CAP = 999
 /** Every `IN (?,?,...)` list whose width a caller chooses, as a source literal and the SQL that carries it. */
 const BATCHED_WIDTHS = [{ file: 'index_reader.ts', constant: 'REF_COUNT_BATCH', extraParams: 2, why: 'the project-root scope adds a lower and an upper bound' }]
 
+/** The lines of `src` with block comments blanked and line comments cut, so a guard counting identifier uses counts code and not the prose describing it. Blanking rather than deleting keeps line numbering intact for anything that reports a position. */
+function codeLines(src: string): string[] {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+}
+
 function sourceLiteral(file: string, constant: string): number {
   const src = fs.readFileSync(path.join(SRC, file), 'utf8')
   const match = new RegExp(`const ${constant} = ([0-9_]+)`).exec(src)
@@ -35,10 +43,10 @@ describe('a batch stays under the lowest SQLite parameter cap', () => {
   })
 
   it.each(BATCHED_WIDTHS)('$constant is actually read by the query it bounds, not just declared beside it', ({ file, constant }) => {
-    // Arithmetic on a number the query never consults is arithmetic about nothing: the width could be 900 and the statement still built over every name at once. This asks only that the constant is used somewhere past its declaration; that it is used *correctly* is what the over-the-cap regression test in tests/index_reader.test.ts proves, by asking for more names than this build will bind and expecting an answer rather than a throw.
+    // Arithmetic on a number the query never consults is arithmetic about nothing: the width could be 900 and the statement still built over every name at once. Counting raw occurrences was not enough -- the declaration's own doc comment names the constant, so prose alone satisfied the floor and a guard that proves only "this identifier is mentioned twice" proves nothing. Code lines only, declaration excluded. That it is used *correctly* is what the over-the-cap regression test in tests/index_reader.test.ts proves, by asking for more names than this build will bind and expecting an answer rather than a throw.
     const src = fs.readFileSync(path.join(SRC, file), 'utf8')
-    const uses = src.split(constant).length - 1
-    expect(uses, `${constant} appears only where it is declared in ${file}, so nothing is bounded by it`).toBeGreaterThan(1)
+    const uses = codeLines(src).filter((line) => line.includes(constant) && !new RegExp(`const ${constant}\\b`).test(line)).length
+    expect(uses, `${constant} is mentioned in ${file} but never read by a line of code outside its own declaration, so nothing is bounded by it`).toBeGreaterThan(0)
   })
 
   it('the project-root scope really does add the two parameters the widths budget for', () => {

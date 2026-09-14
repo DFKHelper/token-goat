@@ -9,6 +9,7 @@ import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, planPros
 import { loadConfig } from './config.js'
 import { fingerprintFile } from './fingerprint.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
+import { isVirtualIndexedPath } from './indexed_source.js'
 import { getFileEntry, querySymbols } from './index_reader.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
@@ -147,7 +148,8 @@ function parseFoldSpansFromDisk(normalizedPath: string, rows: readonly FoldRow[]
 function resolveFoldSpans(normalizedPath: string, hasCommentSyntax: boolean, rows: readonly FoldRow[]): FoldSpan[] {
   try {
     const entry = getFileEntry(normalizedPath)
-    if (entry !== null && entry.sha !== '' && entry.sha === fingerprintFile(normalizedPath) && entry.parserSha === PARSER_FINGERPRINT) {
+    // The freshness gate below asks whether the index is current, not whether it measures the same document as `rows`. For a notebook it is both current and unusable here: the spans are lines of the virtual Python source, the rows are lines of JSON. Measured before this guard, a 123-line notebook came back with its JSON cut mid-array and a notice reading "114 more lines of big_one (10-123) folded" over a region that held no such body. Comment folds still apply, because those are read off the delivered text itself.
+    if (entry !== null && entry.sha !== '' && !isVirtualIndexedPath(normalizedPath) && entry.sha === fingerprintFile(normalizedPath) && entry.parserSha === PARSER_FINGERPRINT) {
       return querySymbols({ filePath: normalizedPath, limit: BODY_FOLD_SYMBOL_LIMIT })
     }
     if (hasCommentSyntax) enqueueDirtyPathSafe(normalizedPath)

@@ -1566,10 +1566,15 @@ function cppCalleeName(node: TsNode): string | null {
       const name = node.childForFieldName('name')
       return name !== null ? cppCalleeName(name) : lastSegment(node.text)
     }
+    case 'dependent_name': {
+      // `r.template meth<int>(3)` parses as `dependent_name(template, template_method)`; the keyword is the first child, the name the last. Without this case the field_expression fallback below recorded the whole spelling, `template meth<int>`, which matches no symbol the indexer ever writes.
+      const last = node.namedChildren[node.namedChildren.length - 1]
+      return last !== undefined ? cppCalleeName(last) : null
+    }
     case 'field_expression': {
       const field = node.childForFieldName('field')
       if (field === null) return null
-      // Any other field shape (a destructor_name, say) keeps the plain text it resolved to before templated calls were unwrapped.
+      // Any other field shape keeps the plain text it resolved to before templated calls were unwrapped. Measured, not assumed: `o->~Foo()` reaches this fallback as a destructor_name whose text is `~Foo`, and `~Foo` is exactly the name the extractor gives the destructor's own definition, so the ref matches.
       return cppCalleeName(field) ?? field.text
     }
     default:

@@ -16,6 +16,7 @@ import * as path from 'node:path'
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
 import { assertWriteInScope } from './bridges/project_scope_guard.js'
 import { ensureStorageRootPrivate } from './constants.js'
+import { indexedSourceText } from './indexed_source.js'
 import { normalizePath } from './paths.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import type { GitResult, RunGitOptions } from './types.js'
@@ -863,7 +864,8 @@ export function buildContextWindow(absPath: string, line: number, contextLines: 
   if (!Number.isFinite(contextLines) || contextLines <= 0) return null
   let text: string
   try {
-    text = readFileSync(absPath, 'utf-8')
+    // Through indexedSourceText, because `line` is an index coordinate and a notebook is indexed from its virtual Python source, not from the JSON on disk. Reading the raw bytes here printed `"cell_type": "code",` as the context around a call site whose real text is `return helper()`, with no error to say so.
+    text = indexedSourceText(absPath, readFileSync(absPath, 'utf-8'))
   } catch {
     return null
   }

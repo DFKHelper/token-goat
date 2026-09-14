@@ -11,6 +11,7 @@ import { getBashOutput } from '../src/bash_output_cache.js'
 import { invalidateConfigCache } from '../src/config.js'
 import type { HookOutput } from '../src/types.js'
 import { unfence } from './helpers/unfence.js'
+import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 
 /** A post on an MCP result always returns the fenced copy now: an MCP result is a remote server's text, and the fence is decided by that provenance rather than by whether the scan hit. The caching, dedup and compression tests below are not about the fence, so they assert the body survived the round trip instead of restating the wrapper -- the fencing tests further down this file pin its exact format. */
 function expectFencedPost(post: HookOutput, body: string): void {
@@ -65,8 +66,23 @@ describe('extractMcpResultText', () => {
     expect(joined).not.toContain('\\n')
   })
 
-  it('still stringifies a bare array with nothing textual in it', () => {
-    expect(extractMcpResultText({ tool_response: [{ type: 'image', source: { data: 'x' } }] })).toBe('[{"type":"image","source":{"data":"x"}}]')
+  it('reports no text for a block array with nothing textual in it, rather than stringifying the blocks', () => {
+    // A recognised block array carrying only an image is decoded, not unrecognised. Stringifying it turned the picture into its own base64 payload as text -- measured at 60,301 bytes of updatedToolOutput for a 60 KB image -- so every caller must see '' and leave the result alone. PROVENANCE: HAND-DERIVED, in the block shape tasks/captures/mcp-hook-payload/ establishes.
+    expect(extractMcpResultText({ tool_response: [{ type: 'image', source: { data: 'x' } }] })).toBe('')
+    expect(extractMcpResultText({ tool_response: { content: [{ type: 'image', source: { data: 'x' } }] } })).toBe('')
+  })
+
+  it('keeps stringifying an array that is not blocks at all, so structured results still cache', () => {
+    expect(extractMcpResultText({ tool_response: [{ id: 1 }, { id: 2 }] })).toBe('[{"id":1},{"id":2}]')
+    // A `type` field alone does not make something a content block. Without the allowlist this array read as image-only, and a result the handler would otherwise fence, redact and cache was passed through untouched.
+    expect(extractMcpResultText({ tool_response: [{ type: 'status', value: 'ok' }] })).toBe('[{"type":"status","value":"ok"}]')
+  })
+
+  it('reads the text an embedded resource keeps one level down', () => {
+    // An EmbeddedResource carries `resource.text`, not `text`. Read only at the top level it looked textless, which after the image-only fix meant the handler left it alone -- so a remote server's text would reach the model with no fence and no secret redaction. PROVENANCE: FORMAT-DERIVED from the MCP schema's EmbeddedResource/TextResourceContents at modelcontextprotocol.io/specification.
+    const raw = { tool_response: [{ type: 'resource', resource: { uri: 'file:///tmp/a.txt', mimeType: 'text/plain', text: 'resource body' } }] }
+    expect(extractMcpResultText(raw)).toBe('resource body')
+    expect(extractMcpResultText({ tool_response: { content: raw.tool_response } })).toBe('resource body')
   })
 
   it('falls back to output/text/body string fields', () => {
@@ -94,6 +110,31 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
   function prePayload(): Record<string, unknown> {
     return { tool_name: toolName, tool_input: toolInput, session_id: sessionId }
   }
+
+  it.each([
+    ['bare block array', (block: unknown) => [block]],
+    ['content-wrapped block array', (block: unknown) => ({ content: [block] })],
+  ])('leaves an image-only MCP result alone instead of shipping its base64 as text (%s)', async (_shape, wrap) => {
+    // Measured before the fix, against the built bundle: a 60 KB image came back as 60,301 bytes of updatedToolOutput whose body was the block JSON with the base64 inline. The model lost the picture and paid for it twice. PROVENANCE: HAND-DERIVED payload in the block shape tasks/captures/mcp-hook-payload/ establishes.
+    const data = 'A'.repeat(60000)
+    const block = { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }
+    const post = await runHook(buildEvent('post_tool_use', postPayload(wrap(block))))
+    const emitted = post.hookType === 'rewriteOutput' ? post.updatedOutput : ''
+    expect(emitted, 'the image base64 reached the model as text').not.toContain(data.slice(0, 64))
+    expect(post.hookType).toBe('pass')
+  })
+
+  it('still fences and redacts a result whose only text sits inside an embedded resource', async () => {
+    // The consequence of the block classifier being wrong is not a missing convenience: a result the reader calls textless is passed through whole, so a remote server's text reaches the model with no provenance fence and no secret redaction. This asserts the outcome, not the extractor.
+    const secret = 'ghp_0123456789abcdefghijklmnopqrstuvwxyzA'
+    const post = await runHook(
+      buildEvent('post_tool_use', postPayload([{ type: 'resource', resource: { uri: 'file:///x', mimeType: 'text/plain', text: `token is ${secret}` } }])),
+    )
+    expect(post.hookType).toBe('rewriteOutput')
+    if (post.hookType !== 'rewriteOutput') throw new Error('unreachable')
+    expect(post.updatedOutput, 'a remote server’s text shipped unfenced').toContain(UNTRUSTED_TOOL_TAG)
+    expect(post.updatedOutput, 'a credential shipped unredacted').not.toContain(secret)
+  })
 
   it('caches a read-only result on post and denies the identical pre with a recall id', async () => {
     const post = await runHook(buildEvent('post_tool_use', postPayload('the file body')))

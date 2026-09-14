@@ -1336,6 +1336,22 @@ describe('parseFile reference extraction', () => {
     expect(refNames).not.toContain('meth<int>')
   })
 
+  it('strips the template keyword and argument list off a C++ dependent member call', async () => {
+    const cppFile = write(
+      'tdep.cpp',
+      ['struct Foo { ~Foo(); template<class T> void meth(T); };', 'Foo::~Foo() {}', 'void f(Foo* o, Foo& r) {', '  o->~Foo();', '  r.template meth<int>(3);', '}'].join('\n'),
+    )
+    const result = await parseFile(cppFile)
+    expect(result.language).toBe('cpp')
+    const refNames = result.refs.map((r) => r.name)
+    // Fixture provenance: HAND-DERIVED. `r.template meth<int>(3)` parses to field_expression -> dependent_name(template, template_method(field_identifier meth)), confirmed by dumping this exact text through tree-sitter-cpp; the whole spelling used to be recorded verbatim, and no symbol is ever written under that name.
+    expect(refNames).toContain('meth')
+    expect(refNames).not.toContain('template meth<int>')
+    // The destructor goes through the same field_expression fallback and must keep its name, because that is the name its own definition is indexed under.
+    expect(refNames).toContain('~Foo')
+    expect(result.symbols.map((s) => s.name)).toContain('~Foo')
+  })
+
   it('records a C++ constructor reached through new, the way it already does for TypeScript and Java', async () => {
     const cppFile = write(
       'tnew.cpp',

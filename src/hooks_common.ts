@@ -107,33 +107,45 @@ export function isMcpErrorResponse(raw: Record<string, unknown>): boolean {
   return (tr as Record<string, unknown>)['isError'] === true
 }
 
-/** Join the `text` field of every block in an MCP content array, skipping blocks that carry none (an image block, say). Returns '' when nothing textual is there, which both callers treat as "keep looking". */
-function blocksToText(blocks: readonly unknown[]): string {
+/** Every `type` the MCP schema gives a content block. An allowlist rather than "has a string type", because both directions of that looser test are wrong: an ordinary structured array like `[{type:'status',value:'ok'}]` would be mistaken for blocks and lose its JSON representation, while the array this is really trying to recognise is exactly the one whose members are these. PROVENANCE: FORMAT-DERIVED from the MCP schema's ContentBlock union (TextContent, ImageContent, AudioContent, EmbeddedResource, ResourceLink) at modelcontextprotocol.io/specification. */
+const MCP_CONTENT_BLOCK_TYPES = new Set(['text', 'image', 'audio', 'resource', 'resource_link'])
+
+/** Join the `text` field of every block in an MCP content array. Returns null when `blocks` is not a content-block array at all, which tells the caller to keep looking. Returns '' for a recognised array of typed blocks that carries no text -- an image-only result, say -- which the caller must treat as final: falling through from there reaches the JSON.stringify terminal, which ships a base64 image to the model as tens of kilobytes of text in place of the picture it replaced. */
+function blocksToText(blocks: unknown): string | null {
+  if (!Array.isArray(blocks)) return null
   const parts: string[] = []
+  let recognised = false
   for (const block of blocks) {
-    if (block && typeof block === 'object') {
-      const text = (block as Record<string, unknown>)['text']
-      if (typeof text === 'string') parts.push(text)
+    if (!block || typeof block !== 'object') continue
+    const rec = block as Record<string, unknown>
+    const type = rec['type']
+    if (typeof type === 'string' && MCP_CONTENT_BLOCK_TYPES.has(type)) recognised = true
+    if (typeof rec['text'] === 'string') {
+      parts.push(rec['text'])
+      continue
+    }
+    // An EmbeddedResource keeps its text one level down, under `resource`. Read only at the top level it looks like a block with nothing textual in it, and the caller would then leave the whole payload alone -- which for a remote server's text means reaching the model with no fence, no redaction and no cache entry.
+    const resource = rec['resource']
+    if (resource !== null && typeof resource === 'object') {
+      const nested = (resource as Record<string, unknown>)['text']
+      if (typeof nested === 'string') parts.push(nested)
     }
   }
-  return parts.join('\n')
+  if (parts.length > 0) return parts.join('\n')
+  return recognised ? '' : null
 }
 
-/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the same array delivered bare with no `content` wrapper (which is how several MCP servers' PostToolUse payloads actually arrive -- see `tasks/captures/mcp-hook-payload/`), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. */
+/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the same array delivered bare with no `content` wrapper (which is how several MCP servers' PostToolUse payloads actually arrive -- see `tasks/captures/mcp-hook-payload/`), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. A block array that carries no text at all returns '' rather than reaching that fallback: every caller reads '' as "nothing to do here" and leaves the payload alone, which is what an image-only result needs. */
 export function extractToolResultText(raw: Record<string, unknown>): string {
   const tr = raw['tool_response']
   if (typeof tr === 'string') return tr
   if (!tr || typeof tr !== 'object') return ''
-  if (Array.isArray(tr)) {
-    const bare = blocksToText(tr)
-    if (bare.length > 0) return bare
-  }
+  const bare = blocksToText(tr)
+  if (bare !== null) return bare
   const resp = tr as Record<string, unknown>
   const content = resp['content']
-  if (Array.isArray(content)) {
-    const joined = blocksToText(content)
-    if (joined.length > 0) return joined
-  }
+  const joined = blocksToText(content)
+  if (joined !== null) return joined
   for (const key of ['output', 'text', 'body']) {
     if (typeof resp[key] === 'string') return resp[key] as string
   }
