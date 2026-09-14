@@ -98,11 +98,33 @@ export class OoxmlPartTooLargeError extends DocumentRefusedError {
   }
 }
 
-/** Decodes one ZIP entry as UTF-8 text, or null if the entry doesn't exist. Refuses one past {@link MAX_OOXML_PART_BYTES} rather than returning null: an oversized part is not an absent one, and every caller here reads null as "this document does not have that part" and carries on. Checked on the bytes rather than after decoding, because the decoded UTF-16 string is itself up to twice the part and is the first of the two allocations worth not making. */
-export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: string): string | null {
+/** The largest total XML one document may have decoded out of it across every part its reader touches. {@link MAX_OOXML_PART_BYTES} bounds ONE part and {@link MAX_ZIP_OUTPUT_BYTES} bounds the whole archive's inflate, and neither bounds what a reader retains as parse trees AT ONCE, which is the quantity that actually decides whether the heap survives: a document chooses how many parts it declares, and every one of them a reader decodes and parses is held until the read returns. Measured, through readXlsxWorkbook: a 66,438-byte .xlsx whose workbook declares 500 `<sheet>` elements whose relationships all name one 797 KB worksheet part cost 15,150 ms and 1,511 MB resident against 64 ms and 100 MB for the same part declared once, and a 99,012-byte one declaring 5,000 killed the process outright (`Ineffective mark-compacts near heap limit`, reproduced at --max-old-space-size=1024). Deduplicating repeated parts answers that file but not its honest twin: 500 DISTINCT 797 KB worksheets, 31 MB on disk and 398 MB inflated, passes every existing cap and still cost 17,191 ms and 1,899 MB. Across 86 real Office documents on this machine the parts a reader decodes and retains at once (`xl/worksheets/*`, `ppt/slides/*`, `ppt/notesSlides/*`, `word/document.xml`, `xl/sharedStrings.xml`) came to p50 0.035 MB, p90 0.362 MB, max 5.33 MB, over at most 40 such parts in one document. 64 MB is twelve times the largest real document and holds the heap near 455 MB at this repo's measured ~7.1x parse-tree-to-XML ratio. */
+export const MAX_OOXML_DOCUMENT_PART_BYTES = 64 * 1024 * 1024
+
+/** Thrown when one document's decoded parts come to more than {@link MAX_OOXML_DOCUMENT_PART_BYTES}. Not transient, for the same reason {@link OoxmlPartTooLargeError} is not: how much XML a document declares is a property of its bytes and the sum is the same on every future pass, so the indexer records it as settled instead of re-inflating the archive on every worker drain forever. */
+export class OoxmlDocumentTooLargeError extends DocumentRefusedError {
+  constructor(entryPath: string, spentBytes: number, partBytes: number) {
+    super(`decoding ${entryPath} (${partBytes} bytes, after ${spentBytes} already decoded) would take this office file past the ${MAX_OOXML_DOCUMENT_PART_BYTES}-byte limit on the XML one document may have decoded at once. Split the document, or extract from a smaller copy.`, 'OoxmlDocumentTooLargeError')
+  }
+}
+
+/** What one document has spent of {@link MAX_OOXML_DOCUMENT_PART_BYTES} so far. A mutable object threaded through every {@link decodeZipEntry} call of one read rather than a counter each reader keeps, because decodeZipEntry is already the sole decode funnel for all three formats and a bound checked anywhere else is a bound a fourth reader can be written without. */
+export interface OoxmlPartBudget {
+  spent: number
+}
+
+/** Opened ONCE per document read, by whichever function opens that document's archive -- the same one-per-document shape as {@link ooxmlWorkDeadline}. One per part would bound nothing, since the whole defect is a document declaring many parts. */
+export function ooxmlPartBudget(): OoxmlPartBudget {
+  return { spent: 0 }
+}
+
+/** Decodes one ZIP entry as UTF-8 text, or null if the entry doesn't exist. Refuses one past {@link MAX_OOXML_PART_BYTES} rather than returning null: an oversized part is not an absent one, and every caller here reads null as "this document does not have that part" and carries on. Checked on the bytes rather than after decoding, because the decoded UTF-16 string is itself up to twice the part and is the first of the two allocations worth not making. `budget` is required rather than defaulted, because a parameter a caller may omit is one the shipping path omits while every test supplies it, leaving a green suite over a dead bound -- the injected-seam trap this repo has shipped before. */
+export function decodeZipEntry(entries: Record<string, Uint8Array>, entryPath: string, budget: OoxmlPartBudget): string | null {
   const bytes = entries[entryPath]
   if (bytes === undefined) return null
   if (bytes.length > MAX_OOXML_PART_BYTES) throw new OoxmlPartTooLargeError(entryPath, bytes.length)
+  if (budget.spent + bytes.length > MAX_OOXML_DOCUMENT_PART_BYTES) throw new OoxmlDocumentTooLargeError(entryPath, budget.spent, bytes.length)
+  budget.spent += bytes.length
   return new TextDecoder('utf-8').decode(bytes)
 }
 

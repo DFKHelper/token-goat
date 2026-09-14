@@ -6,7 +6,7 @@
  */
 
 import { displaySafeText } from './paths.js'
-import { collectElements, collectTextRuns, decodeZipEntry, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
+import { collectElements, collectTextRuns, decodeZipEntry, ooxmlPartBudget, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
 
 interface ParagraphLike {
   'w:pPr'?: { 'w:pStyle'?: { '@_w:val'?: string } }
@@ -37,7 +37,7 @@ function headingLevel(styleVal: string | undefined): number | null {
 
 async function loadDocumentBody(filePath: string): Promise<unknown> {
   const entries = await readOoxmlZip(filePath, '.docx')
-  const xml = decodeZipEntry(entries, 'word/document.xml')
+  const xml = decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())
   if (xml === null) throw new Error(`no word/document.xml found in ${filePath} (not a valid .docx?)`)
   return parseOoxmlPart(xml)
 }

@@ -6,7 +6,7 @@ import { displaySafeText } from './paths.js'
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
 import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
 
-const loadWorkbook: (filePath: string) => Promise<ExcelWorkbook> = readXlsxWorkbook
+const loadWorkbook: (filePath: string, deadline?: number) => Promise<ExcelWorkbook> = readXlsxWorkbook
 
 function requireSheet(wb: ExcelWorkbook, sheetName?: string): ExcelWorksheet {
   if (sheetName !== undefined && sheetName.trim() !== '') {
@@ -155,7 +155,8 @@ export interface SheetInfo {
 }
 
 export async function listSheets(filePath: string, deadline: number = ooxmlWorkDeadline()): Promise<SheetInfo[]> {
-  const wb = await loadWorkbook(filePath)
+  // Passed down rather than letting loadWorkbook open its own: the sheet loop inside the reader and the extent walk below are two halves of one document's work, and two clocks over one document is twice the bound this file is supposed to be under.
+  const wb = await loadWorkbook(filePath, deadline)
   return wb.worksheets.map((ws) => {
     assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific sheets with xlsx-head, or use a smaller workbook.')
     const { ref, rows, cols } = usedRange(ws)
@@ -229,7 +230,8 @@ export async function headSheet(filePath: string, sheetName?: string, rows = 20,
 
 /** Every sheet's head text from one archive read, for callers that need the whole workbook rather than one sheet at a time (the embeddings pipeline via doc_embed_extract.ts). Looping headSheet itself once per sheet used to cost one full archive read-and-reparse of EVERY sheet per sheet requested -- listSheets's own workbook load plus one more per sheet, none of it cached -- because loadWorkbook has no cache and nothing bounded how many sheets a workbook could make it run for. `deadline` defaults to a fresh {@link ooxmlWorkDeadline} so a caller can pass one down across several documents (or its own remaining budget) but doesn't have to. */
 export async function allSheetsHeadText(filePath: string, rows: number, deadline: number = ooxmlWorkDeadline()): Promise<string> {
-  const wb = await loadWorkbook(filePath)
+  // Same one-clock-per-document reason as listSheets: the reader's own sheet loop is inside this deadline, not beside it.
+  const wb = await loadWorkbook(filePath, deadline)
   const sheetTexts: string[] = []
   for (const ws of wb.worksheets) {
     assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific sheets with xlsx-head, or use a smaller workbook.')

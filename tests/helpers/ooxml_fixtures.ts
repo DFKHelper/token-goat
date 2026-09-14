@@ -124,3 +124,73 @@ export function buildFarCornerXlsxFixture(cellRef = 'XFD1048576'): Uint8Array {
     { level: 9 },
   )
 }
+
+export interface MultiSheetXlsxOptions {
+  /** How many `<sheet>` elements `xl/workbook.xml` declares. Each gets its own name and its own `r:id`. */
+  sheetCount: number
+  /** True: every `r:id` resolves to the single `xl/worksheets/sheet1.xml`, which is what a reader with no dedup pays for N times over. False: each `r:id` resolves to its own `xl/worksheets/sheetK.xml`. */
+  aliasOnePart: boolean
+  /** Rows of five inline-string cells per worksheet part, i.e. how much real parse work one part is worth. */
+  rowsPerSheet?: number
+  /** Bytes of inert padding appended to each worksheet part inside one element, so a fixture can be heavy in DECODED BYTES without being heavy in parse-tree nodes -- the cumulative-byte bound is a bound on the former, and a fixture reaching it through rows alone would spend the heap it is meant to be protecting. */
+  padBytesPerSheet?: number
+}
+
+/** A valid .xlsx declaring `sheetCount` sheets, with control over whether their relationships alias one worksheet part or name distinct ones. Provenance: FORMAT-DERIVED from ECMA-376 -- Part 2 (OPC) for `[Content_Types].xml` and `_rels/.rels`, and Part 1 §18.2.20 (SpreadsheetML) for `xl/workbook.xml`'s `<sheets>`/`<sheet name sheetId r:id>` and for the worksheet relationship part `xl/_rels/workbook.xml.rels`, whose `Relationship/@Target` resolves relative to `xl/`. Nothing here is read off token-goat's own reader: the format permits several `<sheet>` elements to carry distinct `r:id`s that resolve to one target, and that permission -- not our parser -- is what this fixture exercises. */
+export function buildMultiSheetXlsxFixture(opts: MultiSheetXlsxOptions): Uint8Array {
+  const { sheetCount, aliasOnePart } = opts
+  const rowsPerSheet = opts.rowsPerSheet ?? 200
+  const padBytesPerSheet = opts.padBytesPerSheet ?? 0
+  const partCount = aliasOnePart ? 1 : sheetCount
+  const partPathFor = (k: number): string => `xl/worksheets/sheet${k}.xml`
+
+  const sheetXml = (k: number): string => {
+    const rows: string[] = []
+    for (let r = 1; r <= rowsPerSheet; r++) {
+      const cells: string[] = []
+      for (let c = 0; c < 5; c++) {
+        const ref = `${String.fromCharCode(65 + c)}${r}`
+        cells.push(`<c r="${ref}" t="inlineStr"><is><t>p${k}r${r}c${c}</t></is></c>`)
+      }
+      rows.push(`<row r="${r}">${cells.join('')}</row>`)
+    }
+    const pad = padBytesPerSheet > 0 ? `<extLst><ext uri="pad">${'A'.repeat(padBytesPerSheet)}</ext></extLst>` : ''
+    return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.join('')}</sheetData>${pad}</worksheet>`
+  }
+
+  const sheetDecls: string[] = []
+  const relDecls: string[] = []
+  for (let i = 1; i <= sheetCount; i++) {
+    sheetDecls.push(`<sheet name="Sheet${i}" sheetId="${i}" r:id="rId${i}"/>`)
+    const target = aliasOnePart ? 'worksheets/sheet1.xml' : `worksheets/sheet${i}.xml`
+    relDecls.push(`<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${target}"/>`)
+  }
+
+  const overrides: string[] = []
+  const files: Record<string, Uint8Array> = {}
+  for (let k = 1; k <= partCount; k++) {
+    overrides.push(`<Override PartName="/${partPathFor(k)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    files[partPathFor(k)] = strToU8(sheetXml(k))
+  }
+
+  files['[Content_Types].xml'] = strToU8(
+    '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+      `${overrides.join('')}</Types>`,
+  )
+  files['_rels/.rels'] = strToU8(
+    '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+  )
+  files['xl/workbook.xml'] = strToU8(
+    '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+      `<sheets>${sheetDecls.join('')}</sheets></workbook>`,
+  )
+  files['xl/_rels/workbook.xml.rels'] = strToU8(
+    '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      `${relDecls.join('')}</Relationships>`,
+  )
+
+  return zipSync(files, { level: 6 })
+}

@@ -14,7 +14,7 @@
  * otherwise with `text` carrying the display string.
  */
 
-import { decodeZipEntry, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
+import { assertOoxmlWithinDeadline, decodeZipEntry, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
 
 export interface ExcelCell {
   value: unknown
@@ -344,17 +344,13 @@ function makeWorksheet(name: string, data: SheetData): ExcelWorksheet {
   }
 }
 
-/**
- * Reads a .xlsx file into the workbook shape `xlsx_extract.ts` consumes.
- *
- * The zip is opened through `readOoxmlZip`, which already carries the input size cap, the
- * not-a-file guard, and the message shapes that stop a bare filename echoing the reader's home
- * directory back at the caller -- rather than a second zip reader repeating all three.
- */
-export async function readXlsxWorkbook(filePath: string): Promise<ExcelWorkbook> {
+/** Reads a .xlsx file into the workbook shape `xlsx_extract.ts` consumes. The zip is opened through `readOoxmlZip`, which already carries the input size cap, the not-a-file guard, and the message shapes that stop a bare filename echoing the reader's home directory back at the caller -- rather than a second zip reader repeating all three. `deadline` defaults to a fresh `ooxmlWorkDeadline` so a caller that reads one workbook does not have to open a clock itself, but every caller that already has one for this document (xlsx_extract.ts's `loadWorkbook` sites) passes it down: two clocks over one document is twice the bound, which is the same class of defect as the loop below having had none. */
+export async function readXlsxWorkbook(filePath: string, deadline: number = ooxmlWorkDeadline()): Promise<ExcelWorkbook> {
   const entries = await readOoxmlZip(filePath, '.xlsx')
+  // Opened once here, for this document, and threaded through every decode below: the sheet loop's cost is set by how many `<sheet>` elements the workbook part declares, which no per-part or per-archive cap bounds.
+  const budget = ooxmlPartBudget()
 
-  const workbookXml = decodeZipEntry(entries, 'xl/workbook.xml')
+  const workbookXml = decodeZipEntry(entries, 'xl/workbook.xml', budget)
   // A zip that opens fine but holds no workbook part is not a spreadsheet. Answered with the same
   // message a non-zip file gets, rather than letting a missing-part TypeError reach the CLI user.
   if (workbookXml === null) throw new Error(`not a valid .xlsx file: ${filePath}`)
@@ -367,27 +363,37 @@ export async function readXlsxWorkbook(filePath: string): Promise<ExcelWorkbook>
   const wb = wbNode as XmlNode
   const date1904 = isTruthyAttr(attr(wb['workbookPr'] as XmlNode | undefined, 'date1904'))
 
-  const relsXml = decodeZipEntry(entries, 'xl/_rels/workbook.xml.rels')
+  const relsXml = decodeZipEntry(entries, 'xl/_rels/workbook.xml.rels', budget)
   const rels = parseWorkbookRels(relsXml === null ? null : await parseOoxmlPart(relsXml))
 
-  const sharedXml = decodeZipEntry(entries, 'xl/sharedStrings.xml')
+  const sharedXml = decodeZipEntry(entries, 'xl/sharedStrings.xml', budget)
   const shared = sharedXml === null ? [] : parseSharedStrings(await parseOoxmlPart(sharedXml))
 
-  const stylesXml = decodeZipEntry(entries, 'xl/styles.xml')
+  const stylesXml = decodeZipEntry(entries, 'xl/styles.xml', budget)
   const styles = parseStyles(stylesXml, stylesXml === null ? null : await parseOoxmlPart(stylesXml))
 
   const worksheets: ExcelWorksheet[] = []
+  // Keyed on the resolved part rather than the `r:id`, because parseWorkbookRels is a plain rId -> target map and nothing in it requires distinct ids to name distinct parts: N `<sheet>` elements may all resolve to one `worksheets/sheet1.xml`, and each used to be decoded, parsed and retained again as its own cell Map. The duplicate sheet is not dropped the way pptx_extract.ts's slide dedup drops a repeated `<p:sldId>` -- the `<sheet>` entries carry distinct names and getWorksheet(name) must still find every one of them -- so the second name gets its own worksheet view over the SAME parsed SheetData.
+  const parsedByPart = new Map<string, SheetData>()
   for (const sheet of asArray((wb['sheets'] as XmlNode | undefined)?.['sheet'])) {
     const name = attr(sheet, 'name') ?? ''
     const rid = attr(sheet, 'r:id') ?? attr(sheet, 'relationshipId')
     // Resolved through the rels part, never by assuming `xl/worksheets/sheetN.xml` matches the
     // workbook's sheet order: producers other than Excel itself do not guarantee that naming.
     const partPath = rid === undefined ? undefined : rels.get(rid)
-    const sheetXml = partPath === undefined ? null : decodeZipEntry(entries, partPath)
-    const data =
+    const cached = partPath === undefined ? undefined : parsedByPart.get(partPath)
+    if (cached !== undefined) {
+      worksheets.push(makeWorksheet(name, cached))
+      continue
+    }
+    // Before the parse, not after it: the parse is what the clock is here to bound, and a workbook declaring thousands of sheets otherwise spends the whole 60 s budget's worth of work and more before anything looks at a clock at all.
+    assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific sheets with xlsx-head, or use a smaller workbook.')
+    const sheetXml = partPath === undefined ? null : decodeZipEntry(entries, partPath, budget)
+    const data: SheetData =
       sheetXml === null
         ? { cells: new Map(), rowCount: 0, columnCount: 0, populatedRows: 0 }
         : parseSheet(await parseOoxmlPart(sheetXml), shared, styles, date1904)
+    if (partPath !== undefined) parsedByPart.set(partPath, data)
     worksheets.push(makeWorksheet(name, data))
   }
 

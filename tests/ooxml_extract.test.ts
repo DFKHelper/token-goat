@@ -8,6 +8,7 @@ import {
   collectTextRuns,
   decodeZipEntry,
   MAX_OOXML_PART_BYTES,
+  ooxmlPartBudget,
   OoxmlPartTooLargeError,
   parseOoxmlPart,
   readOoxmlZip,
@@ -142,35 +143,35 @@ describe('collectElements', () => {
 describe('decodeZipEntry', () => {
   it('decodes an existing entry as UTF-8 text', () => {
     const entries = { 'ppt/slides/slide1.xml': new TextEncoder().encode('<hello/>') }
-    expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml')).toBe('<hello/>')
+    expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml', ooxmlPartBudget())).toBe('<hello/>')
   })
 
   it('returns null for a path not present in the entries map', () => {
     const entries = { 'ppt/slides/slide1.xml': new TextEncoder().encode('<hello/>') }
-    expect(decodeZipEntry(entries, 'ppt/slides/slide2.xml')).toBeNull()
+    expect(decodeZipEntry(entries, 'ppt/slides/slide2.xml', ooxmlPartBudget())).toBeNull()
   })
 
   it('decodes multi-byte UTF-8 content correctly', () => {
     const entries = { 'word/document.xml': new TextEncoder().encode('café 日本') }
-    expect(decodeZipEntry(entries, 'word/document.xml')).toBe('café 日本')
+    expect(decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())).toBe('café 日本')
   })
 
   it('decodes an empty entry as an empty string, distinct from a missing entry', () => {
     const entries = { 'ppt/slides/slide1.xml': new Uint8Array() }
-    expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml')).toBe('')
+    expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml', ooxmlPartBudget())).toBe('')
   })
 
   it('refuses a part past the size limit rather than reading it as absent', () => {
     const entries = { 'word/document.xml': new Uint8Array(MAX_OOXML_PART_BYTES + 1) }
     // Not null. Null is how every caller here spells "this document does not have that part", and an oversized one very much does.
-    expect(() => decodeZipEntry(entries, 'word/document.xml')).toThrow(OoxmlPartTooLargeError)
-    expect(() => decodeZipEntry(entries, 'word/document.xml')).toThrow(/word\/document\.xml is \d+ bytes/)
+    expect(() => decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())).toThrow(OoxmlPartTooLargeError)
+    expect(() => decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())).toThrow(/word\/document\.xml is \d+ bytes/)
   })
 
   it('accepts a part exactly at the limit, so the bound is off-by-one in the direction that keeps documents readable', () => {
     const entries = { 'word/document.xml': new TextEncoder().encode('<a/>') }
     Object.defineProperty(entries['word/document.xml'], 'length', { value: MAX_OOXML_PART_BYTES })
-    expect(() => decodeZipEntry(entries, 'word/document.xml')).not.toThrow()
+    expect(() => decodeZipEntry(entries, 'word/document.xml', ooxmlPartBudget())).not.toThrow()
   })
 })
 
