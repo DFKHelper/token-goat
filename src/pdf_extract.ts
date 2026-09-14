@@ -230,7 +230,8 @@ export function reconstructLayout(items: LayoutTextItem[], deadline: number): st
     const home = bucketOf(y)
     // Compare against the row's MOST RECENTLY added item, not its first -- a row is a proximity chain (each item within Y_EPSILON of the item right before it), not a fixed band around the first item's y. A smoothly y-drifting line (baseline jitter from a scanned/rotated PDF, or justified text) where each adjacent pair is within Y_EPSILON but the cumulative drift across the whole line exceeds it would otherwise get wrongly split into multiple rows once compared only against the first item.
     let found = -1
-    for (let bucket = home - 1; bucket <= home + 1; bucket++) {
+    // Iterated as an explicit triple rather than `for (let b = home - 1; b <= home + 1; b++)`. A document sets `transform[5]` through `Tm`, and pdfjs passes it through unclamped as long as the page's `/MediaBox` is tall enough to keep the glyph on it -- both under the file's control. Past 2^53 the increment is a no-op, since `home + 1 === home`, so the counting form never advanced and never exited: one text item at y = 2e16 in a 600-byte PDF held `pdf-extract --layout` forever. Nothing could interrupt it either, this loop being synchronous and the clock above sitting outside it. Naming the three buckets removes the counter the arithmetic broke, and terminates for +/-Infinity and NaN as well.
+    for (const bucket of [home - 1, home, home + 1]) {
       for (const row of byBucket.get(bucket) ?? []) {
         const last = (rows[row] as LayoutTextItem[])[(rows[row] as LayoutTextItem[]).length - 1] as LayoutTextItem
         if (Math.abs((last.transform[5] as number) - y) < Y_EPSILON && (found === -1 || row < found)) found = row

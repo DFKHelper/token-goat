@@ -1,4 +1,5 @@
 /** A PDF's content stream is compressed, so the text it yields is bounded by nothing the file's own size reveals. The OOXML readers have refused an over-expanding archive since `zip_bounds.ts`; the PDF readers had no equivalent, and a small crafted file could exhaust the heap in every one of them -- including the indexer's, which opens PDFs unprompted and discards the failure, so the background worker crash-looped where nobody was watching. Measured on the fixture below at `--max-old-space-size=512`: 160 KB of file, 35 million characters of text, 740 MB resident. These tests pin the two fences that now exist: a text budget enforced while pages stream, and an input-size cap applied before a file is read at all. Each is paired with a calibration proving an ordinary document still comes back whole, because a bound that refuses everything satisfies the refusal assertions just as well. */
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -34,8 +35,9 @@ import {
 } from '../src/pdf_extract.js'
 import { extractEmbeddableDocumentText, isDocumentRefusal } from '../src/doc_embed_extract.js'
 import { runPdfExtractText, runPdfLocate, runPdfMeta, runPdfOutline } from '../src/read_commands.js'
-import { ZipInputTooLargeError, ZipOutputTooLargeError } from '../src/zip_bounds.js'
-import { pdfBomb } from './helpers/pdf-bomb.js'
+import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError, ZipOutputTooLargeError } from '../src/zip_bounds.js'
+import { BUNDLE } from './helpers/bundle.js'
+import { pdfBomb, pdfTextAtY } from './helpers/pdf-bomb.js'
 
 const BOMB_OPS = 130_000
 const BOMB_CHARS_PER_OP = 70
@@ -138,6 +140,22 @@ describe('the indexer, which opens every PDF in the tree without being asked', (
       const refusal = REFUSAL_PER_FORMAT[ext as string]
       expect(refusal, `${ext} is routed, so name the refusal its bound raises`).toBeDefined()
       expect(isDocumentRefusal(refusal), `${ext}'s bound must read as settled, not as a bad moment`).toBe(true)
+    }
+  })
+
+  it('classifies the refusal each routed format actually raises, not one a test can name for it', async () => {
+    // CAPTURE. The guard above scores a hand-written map, so it is satisfied by adding a correct-looking entry whether or not the reader agrees -- and it was: every OOXML reader threw a plain Error for its input-size cap, while the map named ZipInputTooLargeError, which only the zip-list/zip-read commands ever raised. So the indexer re-stat'd and re-attempted an over-cap .docx on every drain, forever, under a green suite. This drives the real dispatcher with a real over-cap file per extension and reads back whatever it throws.
+    const oversize = Math.max(MAX_PDF_INPUT_BYTES, MAX_ZIP_INPUT_BYTES) + 1
+    for (const ext of ['.pdf', '.docx', '.pptx', '.xlsx']) {
+      const file = path.join(dir, `over-cap${ext}`)
+      fs.writeFileSync(file, Buffer.from('x'))
+      // Sparse, so four 50MB+ fixtures cost no real disk.
+      fs.truncateSync(file, oversize)
+      const raised = await extractEmbeddableDocumentText(file).then(
+        () => new Error(`${ext} returned instead of refusing a ${oversize}-byte file`),
+        (err: unknown) => err as Error,
+      )
+      expect(isDocumentRefusal(raised), `${ext} raised ${raised.name}: ${raised.message}`).toBe(true)
     }
   })
 
@@ -406,6 +424,32 @@ describe('the work that happens once the page has already been read', () => {
   it('still stops on the clock, whatever the grouping costs', () => {
     expect(() => reconstructLayout(oneItemPerRow(5_000), Date.now() - 1)).toThrow(PdfTookTooLongError)
   })
+
+  it('terminates on a text-item y so large that adding one to its bucket index changes nothing', () => {
+    // The bucket sweep ran `for (let b = home - 1; b <= home + 1; b++)`. Past 2^53 the increment is a no-op -- `home + 1 === home` -- so the loop never advances and never exits, on the very first item, whatever else the page holds. It is synchronous, so no clock can end it: the event loop is blocked, and the deadline check sits outside this loop anyway. A document sets `transform[5]` directly through `Tm`, so the number driving it is one the file chooses.
+    // Out-of-process for the same reason as the fixture test below. A vitest per-test timeout cannot interrupt a synchronous loop, so calling this inline would wedge the worker rather than fail the assertion -- confirmed by doing exactly that once.
+    const probe = [
+      "import { reconstructLayout } from './src/pdf_extract.js'",
+      'for (const y of [2e16, -2e16, Infinity, -Infinity, NaN, Number.MAX_VALUE, 700]) {',
+      "  const out = reconstructLayout([{ str: 'A', transform: [1, 0, 0, 1, 10, y], width: 5 }], Date.now() + 600000)",
+      "  if (out !== 'A') throw new Error(`y=${y} returned ${JSON.stringify(out)}`)",
+      '}',
+      "console.log('every y terminated')",
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-'], { input: probe, cwd: process.cwd(), encoding: 'utf8', timeout: 60_000 })
+    expect(res.signal, `a y value spun forever instead of grouping one item: ${res.stderr}`).toBeNull()
+    expect(res.stdout).toContain('every y terminated')
+  }, 90_000)
+
+  it('refuses to hang the shipped binary on a 600-byte PDF that places its text out past 2^53', () => {
+    // The unit test above pins the loop; this pins that a real document reaches it. pdfjs reports `Tm`'s y verbatim, with no clamp, provided the `/MediaBox` is tall enough to keep the glyph on the page -- both of which the file controls. Measured before the fix: `pdf-extract --layout` on this fixture was still spinning after 45 s at 0% progress, with MAX_PDF_WORK_MILLIS at 60 s unable to fire. The subprocess is the point: an in-process call would hang this worker rather than fail it, and a hung suite reads as an infrastructure problem rather than a regression.
+    const file = path.join(dir, 'huge-y.pdf')
+    fs.writeFileSync(file, pdfTextAtY('20000000000000000'))
+    const res = spawnSync(process.execPath, [BUNDLE, 'pdf-extract', '--layout', file], { encoding: 'utf8', timeout: 30_000 })
+    expect(res.signal, 'the command must finish on its own rather than be killed at the timeout').toBeNull()
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('A')
+  }, 60_000)
 
   it('reads the same rows out of a page it always did', () => {
     // Calibration: the fast path has to agree with the rule, not merely be fast. Two items on one row (y within the epsilon) and one on another, with the lower row printed last.

@@ -8,10 +8,39 @@ export interface PdfBombShape {
   charsPerOp: number
   /** How many pages carry that content stream. Defaults to 1. The pages are distinct objects, as ISO 32000-1 7.7.3.3 requires (each carries its own `/Parent`), but they all name the same content stream, so a hundred pages cost a hundred short dictionaries rather than a hundred copies of the text. */
   pages?: number
-  /**
-   * How many graphics operators precede the text, on every page. Defaults to 0. These cost parse time and produce no text, so a page carrying them yields no chunk from pdfjs's text stream: a bound checked only inside that stream's loop never sees them.
-   */
+  /** How many graphics operators precede the text, on every page. Defaults to 0. These cost parse time and produce no text, so a page carrying them yields no chunk from pdfjs's text stream: a bound checked only inside that stream's loop never sees them. */
   graphicsOps?: number
+}
+
+/** Serialise numbered indirect objects into a PDF with a matching `xref` table and trailer. Each object is a list of byte runs, so a binary stream body can ride as a Buffer beside its string dictionary. */
+function assemble(objects: (string | Buffer)[][]): Buffer {
+  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n', 'latin1')]
+  const offsets: number[] = []
+  let at = chunks[0]!.length
+  for (const object of objects) {
+    offsets.push(at)
+    for (const part of object) {
+      const bytes = typeof part === 'string' ? Buffer.from(part, 'latin1') : part
+      chunks.push(bytes)
+      at += bytes.length
+    }
+  }
+  const size = objects.length + 1
+  const xref = [`xref\n0 ${size}\n0000000000 65535 f \n`, ...offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`)].join('')
+  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${at}\n%%EOF\n`, 'latin1'))
+  return Buffer.concat(chunks)
+}
+
+/** A one-glyph PDF placing its text at `y` user-space units up the page, on a `/MediaBox` tall enough to hold it. Provenance: HAND-DERIVED from ISO 32000-1 (`Tm`, 9.4.2; `/MediaBox`, 7.7.3.3), then CAPTURE-confirmed: pdfjs reports `item.transform[5] === y` verbatim for each value used here, with no clamp. The tall box is load-bearing rather than decoration -- at the default 792pt height pdfjs culls the off-page glyph and reports no text item at all, so a fixture that omits it silently tests nothing. PDF reals have no exponent syntax, so `y` must be written in full decimal digits. */
+export function pdfTextAtY(y: string): Buffer {
+  const content = `BT /F1 12 Tf 1 0 0 1 10 ${y} Tm (A) Tj ET\n`
+  return assemble([
+    ['1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'],
+    ['2 0 obj\n<< /Type /Pages /Kids [5 0 R] /Count 1 >>\nendobj\n'],
+    [`3 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj\n`],
+    ['4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n'],
+    [`5 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 ${y}] /Resources << /Font << /F1 4 0 R >> >> /Contents 3 0 R >>\nendobj\n`],
+  ])
 }
 
 /** A PDF whose FlateDecode content stream decompresses to `ops` lines of `charsPerOp` characters, on each of `pages` pages. */
@@ -34,19 +63,5 @@ export function pdfBomb({ ops, charsPerOp, pages = 1, graphicsOps = 0 }: PdfBomb
       `${firstPage + i} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 3 0 R >>\nendobj\n`,
     ]),
   ]
-  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n', 'latin1')]
-  const offsets: number[] = []
-  let at = chunks[0]!.length
-  for (const object of objects) {
-    offsets.push(at)
-    for (const part of object) {
-      const bytes = typeof part === 'string' ? Buffer.from(part, 'latin1') : part
-      chunks.push(bytes)
-      at += bytes.length
-    }
-  }
-  const size = objects.length + 1
-  const xref = [`xref\n0 ${size}\n0000000000 65535 f \n`, ...offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`)].join('')
-  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${at}\n%%EOF\n`, 'latin1'))
-  return Buffer.concat(chunks)
+  return assemble(objects)
 }

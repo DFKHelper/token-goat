@@ -11,7 +11,7 @@ import * as fs from 'node:fs'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
 import { parseXml } from './xml_parser.js'
-import { MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, unzipBounded, ZipOutputTooLargeError, type ZipStreamModule } from './zip_bounds.js'
+import { MAX_ZIP_INPUT_BYTES, MAX_ZIP_OUTPUT_BYTES, unzipBounded, ZipInputTooLargeError, ZipOutputTooLargeError, type ZipStreamModule } from './zip_bounds.js'
 
 type FflateModule = ZipStreamModule
 
@@ -57,9 +57,8 @@ export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '
     throw new Error(accessFailureMessage(err, filePath), { cause: err })
   }
   if (!stat.isFile()) throw new Error(`not a valid ${kind} file: ${filePath}`)
-  if (stat.size > MAX_ZIP_INPUT_BYTES) {
-    throw new Error(`${filePath} is ${Math.round(stat.size / (1024 * 1024))}MB, over the ${MAX_ZIP_INPUT_BYTES / (1024 * 1024)}MB limit for OOXML files`)
-  }
+  // ZipInputTooLargeError rather than a plain Error: a size cap is a verdict on these bytes and will hold on every future pass, so the indexer has to be able to tell it from a bad moment and stop re-reading the file. A plain Error here read as transient, and this is the reader the .docx/.pptx/.xlsx indexing path actually goes through -- the class was only ever raised from the zip-list/zip-read commands, which the indexer never calls.
+  if (stat.size > MAX_ZIP_INPUT_BYTES) throw new ZipInputTooLargeError(filePath, stat.size, MAX_ZIP_INPUT_BYTES)
   let data: Buffer
   try {
     data = fs.readFileSync(filePath)

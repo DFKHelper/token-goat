@@ -1,10 +1,6 @@
-/**
- * Excel (.xlsx) narrow-slice reader. Reads the OOXML container directly through
- * `xlsx_reader.ts`, which shares the zip+XML core in `ooxml_extract.ts` with the .docx and
- * .pptx readers -- so the size cap, the not-a-file guard and the path-leak-safe error messages
- * are one implementation rather than three.
- */
+/** Excel (.xlsx) narrow-slice reader. Reads the OOXML container directly through `xlsx_reader.ts`, which shares the zip+XML core in `ooxml_extract.ts` with the .docx and .pptx readers -- so the size cap, the not-a-file guard and the path-leak-safe error messages are one implementation rather than three. */
 
+import { DocumentRefusedError } from './document_refusal.js'
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
 import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
 
@@ -21,16 +17,16 @@ function requireSheet(wb: ExcelWorkbook, sheetName: string): ExcelWorksheet {
 // ws.rowCount and ws.columnCount come straight from the highest row/column number declared in any populated cell's `r="..."` attribute in the sheet XML (xlsx_reader.ts's parseSheet); OOXML allows up to 2^20 rows by 2^14 columns, and a single cell placed at that far corner is enough to declare it, cheaply, in an otherwise tiny file. A full scan of the declared range (as usedRange/headSheet/sheetToCsv all do) is then quadratic in numbers the file merely states, not in anything it actually contains. This ceiling rejects that before the scan starts rather than after it has spent seconds to minutes finding almost nothing there.
 const MAX_XLSX_SCAN_CELLS = 20_000_000
 
-/**
- * One ceiling for both extents a cell scan can be driven by, because both cost the same per cell.
- * `assertScannableExtent` bounds the extent the FILE declares; `rangeSheet` bounds the one the
- * CALLER asks for. Only the first existed, so `--range A1:XFD1048576` -- 17,179,869,184 cells, all
- * of them accumulating a string -- reached no guard at all and exhausted the heap.
- */
-function assertCellCount(cells: number, extent: string, hint: string): void {
-  if (cells > MAX_XLSX_SCAN_CELLS) {
-    throw new Error(`${extent} (${cells.toLocaleString()} cells), over the ${MAX_XLSX_SCAN_CELLS.toLocaleString()}-cell scan limit; ${hint}`)
+/** Thrown when a declared or requested cell extent is past {@link MAX_XLSX_SCAN_CELLS}. A DocumentRefusedError, not a plain one, for the same reason the zip size caps are: the extent comes from the sheet, so the answer is the same every time the indexer looks, and a transient-looking failure has it re-open the workbook on every pass forever. */
+export class XlsxScanTooLargeError extends DocumentRefusedError {
+  constructor(extent: string, cells: number, hint: string) {
+    super(`${extent} (${cells.toLocaleString()} cells), over the ${MAX_XLSX_SCAN_CELLS.toLocaleString()}-cell scan limit; ${hint}`, 'XlsxScanTooLargeError')
   }
+}
+
+/** One ceiling for both extents a cell scan can be driven by, because both cost the same per cell. `assertScannableExtent` bounds the extent the FILE declares; `rangeSheet` bounds the one the CALLER asks for. Only the first existed, so `--range A1:XFD1048576` -- 17,179,869,184 cells, all of them accumulating a string -- reached no guard at all and exhausted the heap. */
+function assertCellCount(cells: number, extent: string, hint: string): void {
+  if (cells > MAX_XLSX_SCAN_CELLS) throw new XlsxScanTooLargeError(extent, cells, hint)
 }
 
 function assertScannableExtent(ws: ExcelWorksheet): void {
