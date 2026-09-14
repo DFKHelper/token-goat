@@ -1,25 +1,11 @@
 /**
- * A project-scoped semantic search must not report "no match" because closer chunks belonged to
- * other projects.
+ * A project-scoped semantic search must not report "no match" because closer chunks belonged to other projects.
  *
- * `global.db` is machine-wide: every project ever indexed shares one `chunk_vectors` table, and vec0
- * has no partition column, so the ANN scan cannot be scoped. `fetchScopedHits` therefore caps the
- * scan with `AND k = ?` and applies the project-root predicate afterwards, per candidate row. That is
- * the cap-before-predicate shape this repo has shipped before: the limit runs in one layer and the
- * predicate that decides what was wanted runs in the next, so the answer can be discarded before it
- * is ever considered.
+ * `global.db` is machine-wide: every project ever indexed shares one `chunk_vectors` table, and vec0 has no partition column, so the ANN scan cannot be scoped. `fetchScopedHits` therefore caps the scan with `AND k = ?` and applies the project-root predicate afterwards, per candidate row. That is the cap-before-predicate shape this repo has shipped before: the limit runs in one layer and the predicate that decides what was wanted runs in the next, so the answer can be discarded before it is ever considered.
  *
- * `searchSemantic` softens it with one backfill retry at BACKFILL_MULTIPLIER times the over-fetch,
- * bounded by MAX_OVER_FETCH. Bounded is the operative word: past that ceiling of candidates there is
- * no further retry and no signal to the caller. A project whose nearest chunk ranks past the ceiling
- * gets an empty result that is indistinguishable from having nothing to match.
+ * `searchSemantic` softens it by retrying at BACKFILL_MULTIPLIER times the over-fetch until the scan is exhausted. The retry stops at VEC_MAX_K, which is sqlite-vec's limit rather than ours, and past it the project's own chunks are ranked directly instead -- see tests/guards/semantic_survives_an_index_larger_than_the_ann_ceiling.test.ts, which covers an index too large for any scan to reach the answer. This file covers the case below that ceiling, where growing the scan is what finds it.
  *
- * Provenance: HAND-DERIVED. The vectors here are constructed so the ranking is decided arithmetic,
- * not luck: every out-of-project chunk is given the exact query vector (distance 0) and the single
- * in-project chunk a perturbed copy (distance > 0, still inside maxDistance). Ordering by distance
- * therefore puts every out-of-project chunk ahead of the answer, deterministically, with no reliance
- * on tie-break order among equal distances. No model runs: setPipelineFnForTesting supplies the query
- * vector, as the BGE-prefix tests in tests/semantic_project_scope.test.ts already do.
+ * Provenance: HAND-DERIVED. The vectors here are constructed so the ranking is decided arithmetic, not luck: every out-of-project chunk is given the exact query vector (distance 0) and the single in-project chunk a perturbed copy (distance > 0, still inside maxDistance). Ordering by distance therefore puts every out-of-project chunk ahead of the answer, deterministically, with no reliance on tie-break order among equal distances. No model runs: setPipelineFnForTesting supplies the query vector, as the BGE-prefix tests in tests/semantic_project_scope.test.ts already do.
  */
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
@@ -68,7 +54,7 @@ describe.skipIf(!canExerciseVec0)('project-scoped semantic search past the candi
     fs.rmSync(TMP, { recursive: true, force: true })
   })
 
-  /** Comfortably past MAX_OVER_FETCH, so no retry schedule bounded by that ceiling can reach the answer. */
+  /** Comfortably past MAX_OVER_FETCH, so the first scan cannot reach the answer and only a retry can, and comfortably under VEC_MAX_K, so the retry is allowed to grow that far. */
   const OUTSIDE_CHUNKS = MAX_OVER_FETCH + 50
 
   it('finds the in-project chunk even when more than MAX_OVER_FETCH closer chunks belong to other projects', async () => {

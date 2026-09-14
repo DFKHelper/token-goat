@@ -169,6 +169,9 @@ const _MIN_TOKEN_LEN = 3
 export const OVER_FETCH_FACTOR = 4
 export const MAX_OVER_FETCH = 100
 
+// The widest ANN scan sqlite-vec will run. Asking for more is refused outright ("k value in knn query too large, provided 8100 and the limit is 4096"), not truncated to the limit, so a scan that grows past it takes semantic matching down for the whole query rather than returning fewer rows. Exported so the fallback's guard and its test can name the same number the library does.
+export const VEC_MAX_K = 4096
+
 // ============================================================================ Types ============================================================================
 
 /** A contiguous code or text segment suitable for embedding. */
@@ -832,6 +835,48 @@ export function fetchScopedHits(
   return { hits, candidateCount: rows.length }
 }
 
+/** Rank one project's own chunks exactly, without an ANN scan. The scan above caps the candidate list first and applies the project predicate second, which is why it needs the backfill at all; here the predicate runs first and the cap applies to what survived it, so the nearest in-project chunk cannot be ranked out by chunks belonging to other projects. That ordering is only affordable because the scope predicate is a range over `file_path` rather than a scan: measured on this repository's own index, 19,341 of `global.db`'s 209,208 chunk rows, the whole pass took 234 ms. `vec_distance_L2` is not a metric choice -- it is the metric vec0's MATCH column already reports, since `chunk_vectors` is declared with no `distance_metric` -- so a hit found this way carries the same number, comparable against the same `maxDistance`, as a hit found by the scan. The finite-distance guard is the one from `fetchScopedHits`, for the same reason. */
+export function fetchScopedExactHits(
+  db: SqliteDatabase,
+  queryVec: number[],
+  limit: number,
+  maxDistance: number,
+  rootDir: string,
+): SearchHit[] {
+  const scope = projectScopeClause('c.file_path')
+  // The threshold runs inside the query and the row limit outside it, in that order. A vector holding a NaN component -- refused on write now, but written by earlier builds -- makes `vec_distance_L2` return SQL NULL, and NULL sorts ahead of every real distance under ASC, so a limit applied before the distance test is spent on rows that are not matches at all: measured on a four-row fixture with two such vectors, `LIMIT 2` returned both NULLs and neither of the two genuine hits. Filtering afterwards in JavaScript cannot recover them, because by then the query has already thrown them away. That is the same cap-before-predicate shape this function exists to remove, one layer down.
+  const rows = db
+    .prepare(
+      `SELECT file_path, start_line, end_line, text, kind, distance FROM (
+         SELECT c.file_path AS file_path, c.start_line AS start_line, c.end_line AS end_line, c.text AS text, c.kind AS kind, vec_distance_L2(v.embedding, ?) AS distance
+         FROM chunks c JOIN chunk_vectors v ON v.rowid = c.id
+         WHERE ${scope.clause}
+       )
+       WHERE distance IS NOT NULL AND distance <= ?
+       ORDER BY distance ASC
+       LIMIT ?`,
+    )
+    .all(packVec(queryVec), ...scope.params(rootDir), maxDistance, limit) as Array<
+    { file_path: string; start_line: number; end_line: number; text: string; kind: string; distance: number } | undefined
+  >
+
+  const hits: SearchHit[] = []
+  for (const row of rows) {
+    if (!row || typeof row.distance !== 'number' || !Number.isFinite(row.distance) || row.distance > maxDistance) {
+      continue
+    }
+    hits.push({
+      filePath: row.file_path,
+      startLine: row.start_line,
+      endLine: row.end_line,
+      kind: row.kind,
+      distance: row.distance,
+      text: row.text,
+    })
+  }
+  return hits
+}
+
 /**
  * Search for semantically similar chunks using vector similarity.
  *
@@ -900,17 +945,21 @@ export async function searchSemantic(
     Math.ceil(topK * OVER_FETCH_FACTOR),
   )
 
-  let k = overFetchK
+  let k = Math.min(overFetchK, VEC_MAX_K)
   let pass = fetchScopedHits(db, queryVec, k, maxDistance, rootDir)
   let hits = pass.hits
 
-  // Backfill: when scoped and the pass didn't surface enough hits, grow k and retry, until the answer is found or the ANN scan runs out of rows. `pass.candidateCount === k` is the only reason to retry: a scan that returned fewer candidates than asked for is exhausted, so a bigger k returns the exact same rows and a retry would cost latency for nothing. See BACKFILL_MULTIPLIER for why this escalates to exhaustion rather than stopping at a fixed candidate ceiling.
+  // Backfill: when scoped and the pass didn't surface enough hits, grow k and retry, until the answer is found or the ANN scan runs out of rows. `pass.candidateCount === k` is the only reason to retry: a scan that returned fewer candidates than asked for is exhausted, so a bigger k returns the exact same rows and a retry would cost latency for nothing. See BACKFILL_MULTIPLIER for why this escalates rather than stopping at a fixed candidate ceiling, and VEC_MAX_K for the one ceiling that is not ours to choose.
   if (rootDir !== undefined) {
-    const ceiling = countStoredVectors(db)
+    const ceiling = Math.min(countStoredVectors(db), VEC_MAX_K)
     while (hits.length < topK && pass.candidateCount === k && k < ceiling) {
       k = Math.min(ceiling, k * BACKFILL_MULTIPLIER)
       pass = fetchScopedHits(db, queryVec, k, maxDistance, rootDir)
       hits = pass.hits
+    }
+    // The scan is as wide as sqlite-vec allows and still returned a full page of candidates, so there are chunks it never reached and the project's answer may be one of them. Nothing wider exists, so stop asking the index which rows are closest and ask it which rows are this project's -- see fetchScopedExactHits, which reverses the cap and the predicate rather than raising the cap. countStoredVectors counts chunk rows rather than vectors, so it can overstate by the number of chunks not yet embedded; the error is one-sided and costs at most one extra exact pass on a table that turns out to have been within reach, never a missed one.
+    if (hits.length < topK && pass.candidateCount === k && k >= ceiling && countStoredVectors(db) > VEC_MAX_K) {
+      hits = fetchScopedExactHits(db, queryVec, overFetchK, maxDistance, rootDir)
     }
   }
 
@@ -919,7 +968,7 @@ export async function searchSemantic(
 
 /**
  * Re-rank semantic hits by verbatim-token overlap, a generated-path penalty, and a path-priority
- * multiplier, then truncate to `topK`. Distance is a cosine distance (smaller = closer), so
+ * multiplier, then truncate to `topK`. Distance is an L2 distance over unit-length vectors (smaller = closer), so
  * lower adjusted score ranks higher: a chunk whose text contains query identifiers is pulled up
  * by a bounded boost; a chunk under a generated/build directory is pushed down additively; a
  * chunk under an archival/superseded path (archive/, plans/, CHANGELOG*, ...) or general docs
