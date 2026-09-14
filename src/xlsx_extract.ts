@@ -168,18 +168,14 @@ export async function listSheets(filePath: string, deadline: number = ooxmlWorkD
 function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number, columns?: string[]): string {
   assertScannableExtent(ws)
   const rowCount = ws.rowCount || 0
+  // The sheet-wide used-column count, taken from the worksheet rather than recomputed. An earlier version tracked this maximum inline while walking every row, which is what forced the whole sheet to be read for a preview of a few lines of it: `xlsx-head --rows 5` and `--rows 20` on a 550,000-row sheet both took about five seconds, because the cost was the scan and not the rows asked for. readXlsxWorkbook already records the maximum while parsing the sheet (see parseSheetXml), so reading it here costs nothing and is the same number -- verified equal to a full scan on a sheet whose widest row is its last.
+  const sheetCols = ws.columnCount || 0
+  // Header plus exactly the data rows requested. Everything past this was built and then dropped by the slice below.
+  const scanRows = Math.min(rowCount, rows + 1)
   const aoa: string[][] = []
-  // Track the sheet-wide max column inline during this row scan instead of calling usedRange(ws) afterward, which would redo an identical full eachCell pass over every row just to recompute the same maximum this loop already sees one row at a time.
-  let sheetCols = 0
-  for (let r = 1; r <= rowCount; r++) {
-    const row = ws.getRow(r)
-    let maxCol = 0
-    row.eachCell({ includeEmpty: false }, (_c, colNumber) => {
-      if (colNumber > maxCol) maxCol = colNumber
-    })
-    if (maxCol > sheetCols) sheetCols = maxCol
+  for (let r = 1; r <= scanRows; r++) {
     const rowVals: string[] = []
-    for (let c = 1; c <= maxCol; c++) {
+    for (let c = 1; c <= sheetCols; c++) {
       rowVals.push(cellText(ws.getCell(encodeCell({ r, c }))))
     }
     aoa.push(rowVals)
@@ -216,8 +212,9 @@ function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number, columns?: stri
 
   const lines = [header.map(quoteCsvCell).join(',')]
   for (const r of dataRows) lines.push(r.map(quoteCsvCell).join(','))
-  if (aoa.length - 1 > dataRows.length) {
-    lines.push(`...(${aoa.length - 1 - dataRows.length} more rows elided; use --rows to see more, or xlsx-query for filtering)`)
+  // From rowCount, not from aoa: the scan no longer reaches the end of the sheet, and the count of what was left out is exactly what a truncated scan cannot see. The old expression was `aoa.length - 1`, which was equal to this only because the loop above visited every row.
+  if (rowCount - 1 > dataRows.length) {
+    lines.push(`...(${rowCount - 1 - dataRows.length} more rows elided; use --rows to see more, or xlsx-query for filtering)`)
   }
   return lines.join('\n')
 }
