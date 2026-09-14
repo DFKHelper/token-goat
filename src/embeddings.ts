@@ -835,7 +835,7 @@ export function fetchScopedHits(
   return { hits, candidateCount: rows.length }
 }
 
-/** Rank one project's own chunks exactly, without an ANN scan. The scan above caps the candidate list first and applies the project predicate second, which is why it needs the backfill at all; here the predicate runs first and the cap applies to what survived it, so the nearest in-project chunk cannot be ranked out by chunks belonging to other projects. That ordering is only affordable because the scope predicate is a range over `file_path` rather than a scan: measured on this repository's own index, 19,341 of `global.db`'s 209,208 chunk rows, the whole pass took 234 ms. `vec_distance_L2` is not a metric choice -- it is the metric vec0's MATCH column already reports, since `chunk_vectors` is declared with no `distance_metric` -- so a hit found this way carries the same number, comparable against the same `maxDistance`, as a hit found by the scan. The finite-distance guard is the one from `fetchScopedHits`, for the same reason. */
+/** Rank one project's own chunks exactly, without an ANN scan. The scan above caps the candidate list first and applies the project predicate second, which is why it needs the backfill at all; here the predicate runs first and the cap applies to what survived it, so the nearest in-project chunk cannot be ranked out by chunks belonging to other projects. That ordering is only affordable because the scope predicate is served by an index rather than a scan: `EXPLAIN QUERY PLAN` reports `SEARCH c USING INDEX idx_chunks_file_folded`, the expression index over the folded path, so the distance is computed for the project's rows and not the machine's. Measured on this repository's own index, 19,376 of `global.db`'s 209,251 chunk rows, the pass took 360 ms against the over-fetch's 258 ms -- and a scope so wide it selects everything (a drive root) takes 2,044 ms, which is the worst case this path can reach. `vec_distance_L2` is not a metric choice -- it is the metric vec0's MATCH column already reports, since `chunk_vectors` is declared with no `distance_metric` -- so a hit found this way carries the same number, comparable against the same `maxDistance`, as a hit found by the scan. The finite-distance guard is the one from `fetchScopedHits`, for the same reason. Rows that share a distance are broken by path and then by start line: without that, a cut through a group of equal distances takes an arbitrary subset, and since re-ranking scores text and path rather than distance, the same query over the same database could answer differently on two runs. */
 export function fetchScopedExactHits(
   db: SqliteDatabase,
   queryVec: number[],
@@ -853,7 +853,7 @@ export function fetchScopedExactHits(
          WHERE ${scope.clause}
        )
        WHERE distance IS NOT NULL AND distance <= ?
-       ORDER BY distance ASC
+       ORDER BY distance ASC, file_path ASC, start_line ASC
        LIMIT ?`,
     )
     .all(packVec(queryVec), ...scope.params(rootDir), maxDistance, limit) as Array<
@@ -959,7 +959,8 @@ export async function searchSemantic(
     }
     // The scan is as wide as sqlite-vec allows and still returned a full page of candidates, so there are chunks it never reached and the project's answer may be one of them. Nothing wider exists, so stop asking the index which rows are closest and ask it which rows are this project's -- see fetchScopedExactHits, which reverses the cap and the predicate rather than raising the cap. countStoredVectors counts chunk rows rather than vectors, so it can overstate by the number of chunks not yet embedded; the error is one-sided and costs at most one extra exact pass on a table that turns out to have been within reach, never a missed one.
     if (hits.length < topK && pass.candidateCount === k && k >= ceiling && countStoredVectors(db) > VEC_MAX_K) {
-      hits = fetchScopedExactHits(db, queryVec, overFetchK, maxDistance, rootDir)
+      // Ranked over the same width the scan would have offered, not the over-fetch's: re-ranking scores verbatim overlap and path priority, so handing it a pool of 100 where the scan would have handed it thousands answers the query differently for a reason that has nothing to do with why this branch was taken.
+      hits = fetchScopedExactHits(db, queryVec, VEC_MAX_K, maxDistance, rootDir)
     }
   }
 

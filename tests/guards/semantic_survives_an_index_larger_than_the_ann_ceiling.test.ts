@@ -17,7 +17,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeAllDbs, getDb } from '../../src/db.js'
-import { DEFAULT_DIM, ensureEmbeddingProvenance, insertChunkVector, MAX_OVER_FETCH, searchSemantic, setPipelineFnForTesting, VEC_MAX_K } from '../../src/embeddings.js'
+import { DEFAULT_DIM, ensureEmbeddingProvenance, fetchScopedExactHits, insertChunkVector, MAX_OVER_FETCH, searchSemantic, setPipelineFnForTesting, VEC_MAX_K } from '../../src/embeddings.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import Database from '../../src/sqlite_driver.js'
 
@@ -147,6 +147,47 @@ describe.skipIf(!canExerciseVec0)('semantic search on an index past the ANN ceil
     const hits = await searchSemantic(db, 'anything', 3, undefined, 1.2, 'c:/rootA')
 
     expect(hits.map((h) => h.filePath)).toEqual(['c:/rootA/only.ts'])
+  })
+
+  it('hands re-ranking the same width of field the scan would have, not the narrower over-fetch', async () => {
+    // Re-ranking is not distance-only: it scores verbatim overlap and path priority, so which rows it is shown decides which row wins. A scan at full width can show it as many as VEC_MAX_K scoped rows, and a fallback that showed it MAX_OVER_FETCH would answer the same query differently for a reason unrelated to why the fallback was taken. Arithmetic rather than a judgement call about re-ranking's strength: ask for more results than the over-fetch can hold, and count what comes back.
+    const wanted = MAX_OVER_FETCH + 20
+    stubQueryVector()
+    const db = seed('pool-width.db', { withTarget: false })
+    const chunkStmt = db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
+    const vecStmt = db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)')
+    const perturbed = Array.from<number>({ length: DEFAULT_DIM }).fill(0.01)
+    perturbed[0] = 0.01 + PERTURBATION
+    db.transaction(() => {
+      for (let i = 0; i < wanted; i++) {
+        const row = chunkStmt.run(`c:/rootA/file${String(i)}.ts`, 1, 1, `rootA chunk ${String(i)}`, 'code')
+        insertChunkVector(vecStmt, row.lastInsertRowid, perturbed)
+      }
+    })()
+
+    const hits = await searchSemantic(db, 'anything', wanted, undefined, 1.2, 'c:/rootA')
+
+    expect(hits).toHaveLength(wanted)
+  })
+
+  it('orders rows that share a distance the same way every time', () => {
+    // ORDER BY distance alone leaves SQLite free to return any subset of rows sharing a boundary distance, and re-ranking then scores whichever subset it happened to get -- so the same query can answer differently on two runs of the same database. Every vector here is identical, so distance decides nothing and the tie-break decides everything.
+    const db = getDb(path.join(TMP, 'ties.db'))
+    ensureEmbeddingProvenance(db)
+    const chunkStmt = db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
+    const vecStmt = db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)')
+    const same = Array.from<number>({ length: DEFAULT_DIM }).fill(0.01)
+    // Inserted out of order, and with the later line of the earlier path last, so neither insertion order nor rowid can produce the expected answer by coincidence.
+    db.transaction(() => {
+      for (const [file, line] of [['c:/rootA/c.ts', 1], ['c:/rootA/a.ts', 9], ['c:/rootA/b.ts', 1], ['c:/rootA/a.ts', 2]] as const) {
+        const row = chunkStmt.run(file, line, line, `tied ${file}:${String(line)}`, 'code')
+        insertChunkVector(vecStmt, row.lastInsertRowid, same)
+      }
+    })()
+
+    const hits = fetchScopedExactHits(db, same, 3, 1.2, 'c:/rootA')
+
+    expect(hits.map((h) => `${h.filePath}:${String(h.startLine)}`)).toEqual(['c:/rootA/a.ts:2', 'c:/rootA/a.ts:9', 'c:/rootA/b.ts:1'])
   })
 
   it('still returns nothing for a project that has no chunk at all, so the case above is not passing by accident', async () => {
