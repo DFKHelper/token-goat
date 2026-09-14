@@ -3554,13 +3554,18 @@ function runQueryCommand(
 
     if (opts.json === true) {
       const capped = guardJsonRows(limited)
-      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
+      // `result.truncated` is the query's own ceilings biting, alongside the row guard's cap and `--head`. All three mean the same thing to a caller -- this list is a prefix -- and a caller that already reads the field for one of them has to see the others.
+      const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated || result.truncated, totalCount }, 0)
       emit(jsonText)
       recordReadStat(kind, fullSourceBytes, jsonText, opts.file)
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))
       if (headTruncated) {
         lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+      }
+      if (result.truncated) {
+        // Said in the plain form too. This one is not the caller asking for fewer rows -- it is the query giving up partway through the document, which nothing else on screen would reveal.
+        lines.push(`...(the search stopped early at this tool's traversal limit; these are not necessarily all the matches. Narrow the path to search less of the document.)`)
       }
       const plainText = lines.join('\n')
       emitGuarded(plainText, guardTag)

@@ -128,35 +128,57 @@ type PathOp =
   | { kind: 'wildcard' }
   | { kind: 'filter'; field: string; value: string }
 
-const MAX_RECURSIVE_NODES = 50_000
-const MAX_RECURSIVE_DEPTH = 100
+export const MAX_RECURSIVE_NODES = 50_000
+export const MAX_RECURSIVE_DEPTH = 100
+/* Deliberately no ceiling on the number of items a query returns. It was tried and removed: `..key` pushes at most once per node it visits, so a recursive result is already bounded by MAX_RECURSIVE_NODES, and `[*]` yields references into a document that is already parsed and already in memory, so a fan-out can never be longer than the document's own node count and costs a pointer each. A cap there bought nothing and broke the guarantee the large-array tests in tests/json_query.test.ts pin, that a wildcard over a 200,000-element array returns all 200,000. What reaches a caller is capped downstream by the overflow guard and `--head`. */
 
-function collectRecursiveKey(root: unknown, keyName: string, out: unknown[]): void {
-  let nodeCount = 0
+/** One query's remaining allowance, threaded through the whole evaluation rather than held in a local by the function that spends it. {@link collectRecursiveKey} kept its own counter, and `evalJsonPath` calls it once per item an earlier segment fanned out to, so the ceiling multiplied by that fan-out: measured on a 532,931-byte document, `..a..a..blob` reached 408,510 collected items in 9,180 ms, eight times the ceiling the constant names. `exhausted` rides along because a bound that stops quietly returns a short list no caller can tell from a complete one. */
+interface QueryBudget {
+  nodesLeft: number
+  exhausted: boolean
+}
+
+/** `seen` stays per-call, deliberately, while `budget` is the query's: it exists to stop a cycle inside ONE walk, and sharing it across the roots a fan-out produced would silently drop values that are genuinely reachable from the second root. The budget is the opposite -- the whole point is that every root spends from the same allowance. */
+function collectRecursiveKey(root: unknown, keyName: string, out: unknown[], budget: QueryBudget): void {
   const seen = new Set<object>()
 
   function walk(val: unknown, depth: number): void {
-    if (depth > MAX_RECURSIVE_DEPTH) return
+    if (depth > MAX_RECURSIVE_DEPTH) {
+      // Not a silent return. A target below this depth is invisible to the query, and `items: []` is exactly what a misspelled key returns, so without the flag the caller is told "no such key" about a document that has it.
+      budget.exhausted = true
+      return
+    }
     if (val === null || typeof val !== 'object') return
     if (seen.has(val)) return
     seen.add(val)
 
-    nodeCount++
-    if (nodeCount > MAX_RECURSIVE_NODES) return
+    if (budget.nodesLeft <= 0) {
+      budget.exhausted = true
+      return
+    }
+    budget.nodesLeft--
 
+    // Abandoning the rest of a node's children is the one exhaustion the entry guard above cannot see, because it fires by NOT calling walk again. The `remaining` test keeps it honest: a document whose last node lands exactly on the final unit of budget has had nothing cut from it, and reporting that as truncated would cry wolf on every document that happens to fit.
     if (Array.isArray(val)) {
       for (let i = 0; i < val.length; i++) {
         walk(val[i], depth + 1)
-        if (nodeCount > MAX_RECURSIVE_NODES) return
+        if (budget.nodesLeft <= 0) {
+          if (i < val.length - 1) budget.exhausted = true
+          return
+        }
       }
     } else {
       const obj = val as Record<string, unknown>
       if (Object.prototype.hasOwnProperty.call(obj, keyName)) {
         out.push(obj[keyName])
       }
-      for (const k of Object.keys(obj)) {
-        walk(obj[k], depth + 1)
-        if (nodeCount > MAX_RECURSIVE_NODES) return
+      const keys = Object.keys(obj)
+      for (let i = 0; i < keys.length; i++) {
+        walk(obj[keys[i] as string], depth + 1)
+        if (budget.nodesLeft <= 0) {
+          if (i < keys.length - 1) budget.exhausted = true
+          return
+        }
       }
     }
   }
@@ -172,15 +194,17 @@ function collectRecursiveKey(root: unknown, keyName: string, out: unknown[]): vo
  * arrays. An empty spec means "the whole document". Examples: `data.items[3].name`,
  * `items[*].id`, `items[status=active]`, `items[status="active"][0].name`, `..raw`, `..request.url.raw`.
  */
+/** Own keys only, at both steps. `in` and a bare property read both see the prototype chain, so `[constructor.name=Object]` resolved to `'Object'` on every plain object in an array and the filter matched all of them -- a filter that selects everything is worse than one that selects nothing, because it looks like data. A document parsed from JSON never puts a data key on the chain, so nothing legitimate is lost by refusing to look there. */
 function getNestedField(obj: unknown, fieldPath: string): unknown {
   if (obj === null || typeof obj !== 'object') return undefined
-  if (fieldPath in (obj as Record<string, unknown>)) {
+  if (Object.prototype.hasOwnProperty.call(obj, fieldPath)) {
     return (obj as Record<string, unknown>)[fieldPath]
   }
   const parts = fieldPath.split('.')
   let cur: unknown = obj
   for (const part of parts) {
     if (cur === null || typeof cur !== 'object') return undefined
+    if (!Object.prototype.hasOwnProperty.call(cur, part)) return undefined
     cur = (cur as Record<string, unknown>)[part]
   }
   return cur
@@ -240,9 +264,21 @@ export function parseJsonPath(spec: string): PathOp[] {
           expr = expr.slice(2).trim()
         }
         const m = /^([^=]+)==?(.*)$/.exec(expr)
-        if (!m) throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], or [field=value])`)
+        if (!m) {
+          // A bare `<`/`>` has no `=` for the match to anchor on, so it lands here rather than in the swallowed-operator check below. Named explicitly, because "expected [n], [*], or [field=value]" does not tell someone who wrote `[price>10]` what is actually wrong with it.
+          const bareOperator = /[<>]/.exec(expr)
+          if (bareOperator !== null) {
+            throw new Error(`unsupported comparison operator '${bareOperator[0]}' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+          }
+          throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], or [field=value])`)
+        }
         let field = (m[1] as string).trim()
         if (field.startsWith('@.')) field = field.slice(2).trim()
+        // The field group is `[^=]+`, so it swallows the first character of any two-character comparison operator: `price>=10` parsed as a field literally named `price>`, which no document has, and the query returned an empty filter rather than an error. An empty result is what a correct filter matching nothing looks like, so the user is told their data has no expensive items instead of being told this grammar does not do `>=`.
+        const swallowedOperator = /[!<>]$/.exec(field)
+        if (swallowedOperator !== null) {
+          throw new Error(`unsupported comparison operator '${swallowedOperator[0]}=' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+        }
         let rawVal = (m[2] as string).trim()
         if (
           (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
@@ -271,6 +307,8 @@ export interface JsonQueryResult {
   fanned: boolean
   /** Current matched values. Single-element and non-fanned means "one scalar result". */
   items: unknown[]
+  /** True when one of this module's ceilings stopped the evaluation, so `items` is a prefix of the answer rather than the answer. Always present, never left undefined on the complete case: a field that appears only on failure is one every caller forgets to read. */
+  truncated: boolean
 }
 
 /**
@@ -283,6 +321,8 @@ export interface JsonQueryResult {
 export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryResult {
   let current: unknown[] = [data]
   let fanned = false
+  // One allowance for the whole path, opened here rather than inside the op that spends it -- see QueryBudget.
+  const budget: QueryBudget = { nodesLeft: MAX_RECURSIVE_NODES, exhausted: false }
 
   for (const op of ops) {
     const next: unknown[] = []
@@ -300,7 +340,7 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
         }
       } else if (op.kind === 'recursive_key') {
         fanned = true
-        collectRecursiveKey(item, op.name, next)
+        collectRecursiveKey(item, op.name, next, budget)
       } else if (op.kind === 'index') {
         if (Array.isArray(item)) {
           const idx = op.index < 0 ? item.length + op.index : op.index
@@ -336,7 +376,7 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
     current = next
   }
 
-  return { fanned, items: current }
+  return { fanned, items: current, truncated: budget.exhausted }
 }
 
 /** Convenience wrapper: parse + eval a path spec in one call. */
