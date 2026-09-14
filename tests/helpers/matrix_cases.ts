@@ -952,6 +952,19 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('users  (table, 1 row)')
     expect(r.stdout).toContain('name TEXT')
   },
+  'sqlite-tables': () => {
+    const dir = mkIsolated('tg-matrix-sqlitetables-')
+    const dbPath = path.join(dir, 'fixture.db')
+    execFileSync(process.execPath, [
+      '--no-warnings',
+      '-e',
+      "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); db.prepare('INSERT INTO users (id, name) VALUES (?, ?)').run(1, 'Alice'); db.close();",
+      dbPath,
+    ])
+    const r = run(['sqlite-tables', dbPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('users')
+  },
   'sqlite-query': () => {
     const dir = mkIsolated('tg-matrix-sqlitequery-')
     const dbPath = path.join(dir, 'fixture.db')
@@ -1198,6 +1211,21 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['xlsx-head', xlsxPath, '--sheet', 'People'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Alice')
+  },
+  'xlsx-columns': () => {
+    const dir = mkIsolated('tg-matrix-xlsxcols-')
+    const xlsxPath = path.join(dir, 'book.xlsx')
+    execFileSync(process.execPath, ['-e', `
+      const ExcelJS = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'exceljs'))});
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('People');
+      ws.addRow(['name','age']);
+      ws.addRow(['Alice','30']);
+      wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
+    `])
+    const r = run(['xlsx-columns', xlsxPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('name')
   },
   'xlsx-range': () => {
     const dir = mkIsolated('tg-matrix-xlsxr-')

@@ -306,3 +306,95 @@ describe('a wildcard over an array too large to spread as call arguments', () =>
     expect(out.items).toHaveLength(HUGE)
   })
 })
+
+describe('recursive descent and quoted filter expressions in json_query', () => {
+  it('extracts deep keys recursively with ..key', () => {
+    const postman = {
+      info: { name: 'API Collection' },
+      item: [
+        {
+          name: 'Group 1',
+          item: [
+            {
+              name: 'Get User',
+              request: { url: { raw: 'https://api.example.com/user/1' } },
+            },
+          ],
+        },
+        {
+          name: 'Group 2',
+          item: [
+            {
+              name: 'Delete User',
+              request: { url: { raw: 'https://api.example.com/user/1' } },
+            },
+          ],
+        },
+      ],
+    }
+
+    const res = queryJson(postman, '..raw')
+    expect(res.fanned).toBe(true)
+    expect(res.items).toEqual([
+      'https://api.example.com/user/1',
+      'https://api.example.com/user/1',
+    ])
+  })
+
+  it('chains recursive descent with subpath ..request.url.raw', () => {
+    const postman = {
+      item: [
+        {
+          request: { url: { raw: 'https://example.com/a' } },
+        },
+        {
+          subitem: {
+            request: { url: { raw: 'https://example.com/b' } },
+          },
+        },
+      ],
+    }
+
+    const res = queryJson(postman, '..request.url.raw')
+    expect(res.items).toEqual(['https://example.com/a', 'https://example.com/b'])
+  })
+
+  it('filters with double and single quoted strings', () => {
+    const data = {
+      items: [
+        { id: 1, name: 'Alice Smith', tag: 'lead' },
+        { id: 2, name: 'Bob Jones', tag: 'lead' },
+        { id: 3, name: 'Carol White', tag: 'member' },
+      ],
+    }
+
+    const res1 = queryJson(data, 'items[tag="lead"].name')
+    expect(res1.items).toEqual(['Alice Smith', 'Bob Jones'])
+
+    const res2 = queryJson(data, "items[name='Bob Jones'].id")
+    expect(res2.items).toEqual([2])
+  })
+
+  it('handles escaped quotes and brackets in filter expressions', () => {
+    const data = {
+      items: [
+        { id: 1, label: 'item [A]' },
+        { id: 2, label: 'item "B"' },
+      ],
+    }
+
+    const res1 = queryJson(data, 'items[label="item [A]"].id')
+    expect(res1.items).toEqual([1])
+
+    const res2 = queryJson(data, 'items[label="item \\"B\\""].id')
+    expect(res2.items).toEqual([2])
+  })
+
+  it('prevents infinite recursion on circular structures', () => {
+    const circular: Record<string, unknown> = { key: 'root' }
+    circular.self = circular
+
+    const res = queryJson(circular, '..key')
+    expect(res.items).toEqual(['root'])
+  })
+})

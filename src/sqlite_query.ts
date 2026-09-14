@@ -241,6 +241,70 @@ export function formatSqliteSchema(result: SqliteSchemaResult): string {
     .join('\n\n')
 }
 
+export interface SqliteTableSummary {
+  name: string
+  kind: 'table' | 'view'
+  rowCount: number | null
+  columnCount: number
+}
+
+/**
+ * Ultra-compact table inventory for a SQLite database: lists each table/view with its
+ * row count and column count in one line per table, consuming ~90% fewer tokens than a full
+ * schema dump when an agent only needs to know what tables exist and how large they are.
+ */
+export function getSqliteTables(filePath: string): SqliteTableSummary[] {
+  const db = openReadonlySqlite(filePath)
+  try {
+    const objects = db
+      .prepare(
+        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts_%' AND name NOT LIKE '%_vec0_%' ORDER BY name",
+      )
+      .all() as Array<{ name: string; type: string }>
+
+    return objects.map((o) => {
+      let columnCount: number
+      try {
+        const cols = db.prepare(`PRAGMA table_info(${quoteIdent(o.name)})`).all() as unknown[]
+        columnCount = cols.length
+      } catch {
+        columnCount = 0
+      }
+
+      let rowCount: number | null
+      try {
+        const row = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(o.name)}`).get() as { c: number }
+        rowCount = row.c
+      } catch {
+        rowCount = null
+      }
+
+      return {
+        name: o.name,
+        kind: o.type === 'view' ? 'view' : 'table',
+        rowCount,
+        columnCount,
+      }
+    })
+  } finally {
+    db.close()
+  }
+}
+
+export function formatSqliteTables(tables: SqliteTableSummary[]): string {
+  if (tables.length === 0) return '(no tables or views found)'
+  return tables
+    .map((t) => {
+      const parts: string[] = [t.kind]
+      if (t.rowCount !== null) {
+        parts.push(`${t.rowCount.toLocaleString()} row${t.rowCount === 1 ? '' : 's'}`)
+      }
+      parts.push(`${t.columnCount} col${t.columnCount === 1 ? '' : 's'}`)
+      return `${displaySafeText(t.name)}  (${parts.join(', ')})`
+    })
+    .join('\n')
+}
+
 // Keywords that mutate data/schema, change transaction state, or reach outside this one
 // database file (ATTACH). Checked as whole words against the SQL text with string literals and
 // comments stripped out first, so a literal like `WHERE note = 'please DELETE me'` or a

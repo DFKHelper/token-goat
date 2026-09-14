@@ -8,6 +8,8 @@ import {
   openReadonlySqlite,
   getSqliteSchema,
   formatSqliteSchema,
+  getSqliteTables,
+  formatSqliteTables,
   validateReadOnlySelect,
   runReadOnlySqliteQuery,
   formatSqliteQueryTable,
@@ -415,6 +417,26 @@ describe('sqlite_query', () => {
 
     it('renders a distinct message for a query with no result columns or rows', () => {
       expect(formatSqliteQueryTable({ columns: [], rows: [], rowCapped: false })).toBe('(no rows)')
+    })
+  })
+
+  describe('getSqliteTables and formatSqliteTables', () => {
+    it('returns a compact summary of tables and views', () => {
+      const tables = getSqliteTables(dbPath)
+      expect(tables.length).toBe(3)
+      const users = tables.find((t) => t.name === 'users')
+      expect(users?.kind).toBe('table')
+      expect(users?.rowCount).toBe(3)
+      expect(users?.columnCount).toBe(4)
+
+      const view = tables.find((t) => t.name === 'active_users')
+      expect(view?.kind).toBe('view')
+      expect(view?.columnCount).toBe(4)
+
+      const text = formatSqliteTables(tables)
+      expect(text).toContain('users  (table, 3 rows, 4 cols)')
+      expect(text).toContain('departments  (table, 2 rows, 2 cols)')
+      expect(text).toContain('active_users  (view,')
     })
   })
 })

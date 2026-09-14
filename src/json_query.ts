@@ -123,29 +123,94 @@ export function formatJsonOutline(outline: JsonOutline): string {
 
 type PathOp =
   | { kind: 'key'; name: string }
+  | { kind: 'recursive_key'; name: string }
   | { kind: 'index'; index: number }
   | { kind: 'wildcard' }
   | { kind: 'filter'; field: string; value: string }
 
+const MAX_RECURSIVE_NODES = 50_000
+const MAX_RECURSIVE_DEPTH = 100
+
+function collectRecursiveKey(root: unknown, keyName: string, out: unknown[]): void {
+  let nodeCount = 0
+  const seen = new Set<object>()
+
+  function walk(val: unknown, depth: number): void {
+    if (depth > MAX_RECURSIVE_DEPTH) return
+    if (val === null || typeof val !== 'object') return
+    if (seen.has(val)) return
+    seen.add(val)
+
+    nodeCount++
+    if (nodeCount > MAX_RECURSIVE_NODES) return
+
+    if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        walk(val[i], depth + 1)
+        if (nodeCount > MAX_RECURSIVE_NODES) return
+      }
+    } else {
+      const obj = val as Record<string, unknown>
+      if (Object.prototype.hasOwnProperty.call(obj, keyName)) {
+        out.push(obj[keyName])
+      }
+      for (const k of Object.keys(obj)) {
+        walk(obj[k], depth + 1)
+        if (nodeCount > MAX_RECURSIVE_NODES) return
+      }
+    }
+  }
+
+  walk(root, 0)
+}
+
 /**
- * Parses a dot-path query spec into a sequence of ops. Grammar: `key(.key)*` where any key may
- * be followed by zero or more bracket segments -- `[n]` (array index), `[*]` (wildcard, fans
+ * Parses a dot-path query spec into a sequence of ops. Grammar: `(..key|key)(.key)*` where any key
+ * may be followed by zero or more bracket segments -- `[n]` (array index), `[*]` (wildcard, fans
  * out every element), or `[field=value]` (filter, keeps array elements whose `field` stringifies
- * to `value`). An empty spec means "the whole document". Examples: `data.items[3].name`,
- * `items[*].id`, `items[status=active]`, `items[status=active][0].name`.
+ * to `value`). `..key` performs recursive descent, searching for `key` across all nested objects and
+ * arrays. An empty spec means "the whole document". Examples: `data.items[3].name`,
+ * `items[*].id`, `items[status=active]`, `items[status="active"][0].name`, `..raw`, `..request.url.raw`.
  */
 export function parseJsonPath(spec: string): PathOp[] {
   const ops: PathOp[] = []
   const n = spec.length
   let i = 0
   while (i < n) {
+    if (spec[i] === '.' && i + 1 < n && spec[i + 1] === '.') {
+      i += 2
+      let j = i
+      while (j < n && spec[j] !== '.' && spec[j] !== '[') j++
+      if (j === i) throw new Error(`invalid path spec: expected property name after '..' in '${spec}'`)
+      ops.push({ kind: 'recursive_key', name: spec.slice(i, j) })
+      i = j
+      continue
+    }
     const ch = spec[i]
     if (ch === '.') {
       i++
       continue
     }
     if (ch === '[') {
-      const close = spec.indexOf(']', i)
+      let inQuote: string | null = null
+      let close = -1
+      for (let k = i + 1; k < n; k++) {
+        const c = spec[k]
+        if (inQuote !== null) {
+          if (c === '\\') {
+            k++
+            continue
+          }
+          if (c === inQuote) {
+            inQuote = null
+          }
+        } else if (c === '"' || c === "'") {
+          inQuote = c
+        } else if (c === ']') {
+          close = k
+          break
+        }
+      }
       if (close === -1) throw new Error(`invalid path spec: unterminated '[' in '${spec}'`)
       const inner = spec.slice(i + 1, close)
       if (inner === '*') {
@@ -155,7 +220,17 @@ export function parseJsonPath(spec: string): PathOp[] {
       } else {
         const m = /^([^=]+)=(.*)$/.exec(inner)
         if (!m) throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], or [field=value])`)
-        ops.push({ kind: 'filter', field: (m[1] as string).trim(), value: m[2] as string })
+        const field = (m[1] as string).trim()
+        let rawVal = (m[2] as string).trim()
+        if (
+          (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
+          (rawVal.startsWith("'") && rawVal.endsWith("'"))
+        ) {
+          if (rawVal.length >= 2) {
+            rawVal = rawVal.slice(1, -1).replace(/\\(["'\\])/g, '$1')
+          }
+        }
+        ops.push({ kind: 'filter', field, value: rawVal })
       }
       i = close + 1
       continue
@@ -201,6 +276,9 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
         } else if (!fanned) {
           throw new Error(`path not found: key '${op.name}' does not exist on ${jsonType(item)} value`)
         }
+      } else if (op.kind === 'recursive_key') {
+        fanned = true
+        collectRecursiveKey(item, op.name, next)
       } else if (op.kind === 'index') {
         if (Array.isArray(item)) {
           const idx = op.index < 0 ? item.length + op.index : op.index

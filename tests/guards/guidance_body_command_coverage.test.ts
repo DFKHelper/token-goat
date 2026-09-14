@@ -143,6 +143,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'zip-list', reason: FORMAT_EXTRACT_REASON },
   { command: 'zip-read', reason: FORMAT_EXTRACT_REASON },
   { command: 'pr-slice', reason: FORMAT_EXTRACT_REASON },
+  { command: 'sqlite-tables', reason: FORMAT_EXTRACT_REASON },
   { command: 'sqlite-schema', reason: FORMAT_EXTRACT_REASON },
   { command: 'sqlite-query', reason: FORMAT_EXTRACT_REASON },
   { command: 'fetch-image', reason: FORMAT_EXTRACT_REASON },

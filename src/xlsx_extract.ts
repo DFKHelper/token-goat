@@ -2,17 +2,25 @@
 
 import { DocumentRefusedError } from './document_refusal.js'
 import { assertOoxmlWithinDeadline, ooxmlWorkDeadline } from './ooxml_extract.js'
+import { displaySafeText } from './paths.js'
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
 import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
 
 const loadWorkbook: (filePath: string) => Promise<ExcelWorkbook> = readXlsxWorkbook
 
-function requireSheet(wb: ExcelWorkbook, sheetName: string): ExcelWorksheet {
-  const ws = wb.getWorksheet(sheetName)
-  if (ws === undefined) {
-    throw new Error(`unknown sheet: ${sheetName} (available: ${wb.worksheets.map((s) => s.name).join(', ')})`)
+function requireSheet(wb: ExcelWorkbook, sheetName?: string): ExcelWorksheet {
+  if (sheetName !== undefined && sheetName.trim() !== '') {
+    const ws = wb.getWorksheet(sheetName)
+    if (ws === undefined) {
+      throw new Error(`unknown sheet: ${sheetName} (available: ${wb.worksheets.map((s) => s.name).join(', ')})`)
+    }
+    return ws
   }
-  return ws
+  const first = wb.worksheets[0]
+  if (first === undefined) {
+    throw new Error('workbook contains no worksheets')
+  }
+  return first
 }
 
 // ws.rowCount and ws.columnCount come straight from the highest row/column number declared in any populated cell's `r="..."` attribute in the sheet XML (xlsx_reader.ts's parseSheet); OOXML allows up to 2^20 rows by 2^14 columns, and a single cell placed at that far corner is enough to declare it, cheaply, in an otherwise tiny file. A full scan of the declared range (as usedRange/headSheet/sheetToCsv all do) is then quadratic in numbers the file merely states, not in anything it actually contains. This ceiling rejects that before the scan starts rather than after it has spent seconds to minutes finding almost nothing there.
@@ -155,7 +163,7 @@ export async function listSheets(filePath: string): Promise<SheetInfo[]> {
 }
 
 /** The actual per-sheet head extraction, given a worksheet the caller already has (from a workbook it may be reusing across sheets). Split out of headSheet so a bulk walk over every sheet (allSheetsHeadText) can load the workbook once instead of each sheet re-triggering loadWorkbook's own full archive read and re-parse of every other sheet in the file. */
-function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number): string {
+function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number, columns?: string[]): string {
   assertScannableExtent(ws)
   const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
@@ -175,10 +183,35 @@ function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number): string {
     aoa.push(rowVals)
   }
   // Pad the header AND every data row to the sheet's actual used-column-count (same fix sheetToCsv already applies below) rather than to the header's own width - a data row wider than the header (e.g. trailing notes columns) must still line up under a header cell, or the CSV output desyncs which value belongs to which column.
-  const header = Array.from({ length: sheetCols }, (_, i) => String(aoa[0]?.[i] ?? ''))
-  const dataRows = aoa.slice(1, 1 + rows).map((r) =>
+  let header = Array.from({ length: sheetCols }, (_, i) => String(aoa[0]?.[i] ?? ''))
+  let dataRows = aoa.slice(1, 1 + rows).map((r) =>
     Array.from({ length: sheetCols }, (_, i) => String(r[i] ?? '')),
   )
+
+  if (columns !== undefined && columns.length > 0) {
+    const normCols = columns.map((c) => c.trim()).filter(Boolean)
+    const selectedIndices: number[] = []
+    for (const req of normCols) {
+      let idx = header.findIndex((h) => h === req)
+      if (idx === -1) {
+        idx = header.findIndex((h) => h.toLowerCase() === req.toLowerCase())
+      }
+      if (idx === -1 && /^[A-Za-z]+$/.test(req)) {
+        const colNum = colLettersToIndex(req)
+        if (colNum >= 1 && colNum <= sheetCols) {
+          idx = colNum - 1
+        }
+      }
+      if (idx !== -1 && !selectedIndices.includes(idx)) {
+        selectedIndices.push(idx)
+      } else if (idx === -1) {
+        throw new Error(`unknown column: ${req} (available: ${header.filter(Boolean).join(', ')})`)
+      }
+    }
+    header = selectedIndices.map((i) => header[i] ?? '')
+    dataRows = dataRows.map((r) => selectedIndices.map((i) => r[i] ?? ''))
+  }
+
   const lines = [header.map(quoteCsvCell).join(',')]
   for (const r of dataRows) lines.push(r.map(quoteCsvCell).join(','))
   if (aoa.length - 1 > dataRows.length) {
@@ -187,10 +220,10 @@ function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number): string {
   return lines.join('\n')
 }
 
-export async function headSheet(filePath: string, sheetName: string, rows: number): Promise<string> {
+export async function headSheet(filePath: string, sheetName?: string, rows = 20, columns?: string[]): Promise<string> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
-  return headSheetFromWorksheet(ws, rows)
+  return headSheetFromWorksheet(ws, rows, columns)
 }
 
 /** Every sheet's head text from one archive read, for callers that need the whole workbook rather than one sheet at a time (the embeddings pipeline via doc_embed_extract.ts). Looping headSheet itself once per sheet used to cost one full archive read-and-reparse of EVERY sheet per sheet requested -- listSheets's own workbook load plus one more per sheet, none of it cached -- because loadWorkbook has no cache and nothing bounded how many sheets a workbook could make it run for. `deadline` defaults to a fresh {@link ooxmlWorkDeadline} so a caller can pass one down across several documents (or its own remaining budget) but doesn't have to. */
@@ -209,7 +242,7 @@ export interface XlsxRangeResult {
   rows: string[][]
 }
 
-export async function rangeSheet(filePath: string, sheetName: string, rangeSpec: string, showFormulas: boolean): Promise<XlsxRangeResult> {
+export async function rangeSheet(filePath: string, sheetName: string | undefined, rangeSpec: string, showFormulas: boolean): Promise<XlsxRangeResult> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
   const range = decodeRange(rangeSpec)
@@ -256,9 +289,92 @@ async function sheetToCsv(ws: ExcelWorksheet): Promise<string> {
   return lines.join('\n')
 }
 
-export async function querySheet(filePath: string, sheetName: string, opts: CsvQueryOptions): Promise<CsvQueryResult> {
+export async function querySheet(filePath: string, sheetName: string | undefined, opts: CsvQueryOptions): Promise<CsvQueryResult> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
   const csvText = await sheetToCsv(ws)
   return queryCsv(csvText, opts)
+}
+
+export interface XlsxColumnSummary {
+  letter: string
+  name: string
+  index: number
+  nonEmptyRows: number
+  sampleRows: number
+  sampleValues: string[]
+}
+
+export interface XlsxColumnsResult {
+  sheetName: string
+  totalSheetRows: number
+  sampleRows: number
+  columns: XlsxColumnSummary[]
+}
+
+export async function xlsxColumns(
+  filePath: string,
+  sheetName?: string,
+  sampleLimit = 100,
+): Promise<XlsxColumnsResult> {
+  const wb = await loadWorkbook(filePath)
+  const ws = requireSheet(wb, sheetName)
+  assertScannableExtent(ws)
+  const rowCount = ws.rowCount || 0
+  const { cols: sheetCols } = usedRange(ws)
+  if (rowCount === 0 || sheetCols === 0) {
+    return { sheetName: ws.name, totalSheetRows: 0, sampleRows: 0, columns: [] }
+  }
+
+  const sampleRows = Math.min(Math.max(1, sampleLimit), Math.max(1, rowCount - 1))
+  const headers: string[] = []
+  for (let c = 1; c <= sheetCols; c++) {
+    const val = cellText(ws.getCell(encodeCell({ r: 1, c })))
+    headers.push(val || `(col ${indexToColLetters(c)})`)
+  }
+
+  const colSummaries: XlsxColumnSummary[] = headers.map((name, i) => ({
+    letter: indexToColLetters(i + 1),
+    name,
+    index: i + 1,
+    nonEmptyRows: 0,
+    sampleRows,
+    sampleValues: [],
+  }))
+
+  for (let r = 2; r <= 1 + sampleRows; r++) {
+    for (let c = 1; c <= sheetCols; c++) {
+      const txt = cellText(ws.getCell(encodeCell({ r, c })))
+      if (txt !== '') {
+        const summary = colSummaries[c - 1]!
+        summary.nonEmptyRows++
+        if (summary.sampleValues.length < 3 && !summary.sampleValues.includes(txt)) {
+          summary.sampleValues.push(txt)
+        }
+      }
+    }
+  }
+
+  return {
+    sheetName: ws.name,
+    totalSheetRows: Math.max(0, rowCount - 1),
+    sampleRows,
+    columns: colSummaries,
+  }
+}
+
+export function formatXlsxColumns(result: XlsxColumnsResult): string {
+  if (result.columns.length === 0) return `Sheet "${displaySafeText(result.sheetName)}" is empty`
+  const lines = [
+    `Sheet: ${displaySafeText(result.sheetName)} (${result.totalSheetRows} data rows, ${result.columns.length} columns; sampled first ${result.sampleRows} rows)`,
+  ]
+  for (const c of result.columns) {
+    const pct = result.sampleRows > 0 ? Math.round((c.nonEmptyRows / c.sampleRows) * 100) : 0
+    const samples =
+      c.sampleValues.length > 0
+        ? ` (e.g. ${c.sampleValues.map((v) => JSON.stringify(v.length > 30 ? v.slice(0, 27) + '...' : v)).join(', ')})`
+        : ' (all empty)'
+    lines.push(`  ${c.letter.padEnd(4)} ${displaySafeText(c.name).padEnd(25)} ${c.nonEmptyRows}/${c.sampleRows} (${pct}%)${samples}`)
+  }
+  return lines.join('\n')
 }

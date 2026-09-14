@@ -146,7 +146,7 @@ import {
   formatCommentsSlice,
   formatDescriptionSlice,
 } from './pr_slice.js'
-import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
+import { getSqliteSchema, formatSqliteSchema, getSqliteTables, formatSqliteTables, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
@@ -4383,6 +4383,33 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
       const text = formatSqliteSchema(schema)
       emit(text)
       recordReadStat('sqlite_schema', fullSourceBytes, text, opts.file)
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+export interface SqliteTablesCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat sqlite-tables file``: ultra-compact inventory of tables and views
+ * in a SQLite database with row counts and column counts instead of a raw Read or full schema dump. */
+export function runSqliteTables(opts: SqliteTablesCliOptions): number {
+  try {
+    const tables = getSqliteTables(opts.file)
+    const fullSourceBytes = sumFileSizes([opts.file])
+    if (opts.json === true) {
+      const jsonText = displaySafeJson(tables, 0)
+      emit(jsonText)
+      recordReadStat('sqlite_tables', fullSourceBytes, jsonText, opts.file)
+    } else {
+      const text = formatSqliteTables(tables)
+      emit(text)
+      recordReadStat('sqlite_tables', fullSourceBytes, text, opts.file)
     }
     return 0
   } catch (e) {

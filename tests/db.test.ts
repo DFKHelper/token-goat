@@ -59,6 +59,16 @@ describe('getDb', () => {
     expect(Number(sync)).toBe(1)
   })
 
+  it('sets cache_size, temp_store, and mmap_size for query performance', () => {
+    const db = getDb(tmpDbPath())
+    const cacheSize = Number(db.pragma('cache_size', { simple: true }))
+    expect(cacheSize).toBe(-32000)
+    const tempStore = Number(db.pragma('temp_store', { simple: true }))
+    expect(tempStore).toBe(2)
+    const mmap = Number(db.pragma('mmap_size', { simple: true }))
+    expect(mmap).toBeGreaterThanOrEqual(0)
+  })
+
   it('sets a busy_timeout above the driver default so concurrent writers wait instead of erroring', () => {
     // token-goat runs multiple processes against one global.db (worker daemon + CLI hook invocations). Without a generous busy_timeout a writer that finds the write lock held fails immediately with SQLITE_BUSY ("database is locked"). The driver opens connections at 5000ms (matching better-sqlite3, since node:sqlite's own default is 0); we raise it to 15000ms here, so a regression that drops the explicit pragma is caught.
     const db = getDb(tmpDbPath())

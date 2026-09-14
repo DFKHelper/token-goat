@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { formatXlsxRange, headSheet, listSheets, querySheet, rangeSheet } from '../src/xlsx_extract.js'
+import { formatXlsxColumns, formatXlsxRange, headSheet, listSheets, querySheet, rangeSheet, xlsxColumns } from '../src/xlsx_extract.js'
 
 let dir: string
 let file: string
@@ -302,5 +302,45 @@ describe('a sheet whose declared used range reaches the format\'s own far corner
 
   it('rejects querySheet with a clear scan-limit error instead of scanning the full declared range', async () => {
     await expect(querySheet(farCornerFile, 'FarCorner', {})).rejects.toThrow(/scan limit/)
+  })
+})
+
+describe('xlsx ergonomic improvements: sheet defaulting, column projection, xlsxColumns', () => {
+  it('defaults to the first sheet when sheetName is omitted', async () => {
+    const text = await headSheet(file, undefined, 2)
+    expect(text).toContain('name,age,dept')
+    expect(text).toContain('Alice,30,Eng')
+  })
+
+  it('projects columns by name in headSheet', async () => {
+    const text = await headSheet(file, 'Employees', 2, ['name', 'dept'])
+    expect(text).toContain('name,dept')
+    expect(text).toContain('Alice,Eng')
+    expect(text).not.toContain('30')
+  })
+
+  it('projects columns by letter in headSheet', async () => {
+    const text = await headSheet(file, 'Employees', 2, ['A', 'C'])
+    expect(text).toContain('name,dept')
+    expect(text).toContain('Alice,Eng')
+  })
+
+  it('extracts column schema summaries via xlsxColumns', async () => {
+    const summary = await xlsxColumns(file, 'Employees', 10)
+    expect(summary.sheetName).toBe('Employees')
+    expect(summary.columns.length).toBe(3)
+    expect(summary.columns[0]?.name).toBe('name')
+    expect(summary.columns[0]?.letter).toBe('A')
+    expect(summary.columns[0]?.nonEmptyRows).toBe(3)
+    expect(summary.columns[0]?.sampleValues).toContain('Alice')
+
+    const formatted = formatXlsxColumns(summary)
+    expect(formatted).toContain('Sheet: Employees')
+    expect(formatted).toContain('A    name')
+  })
+
+  it('querySheet works with defaulted sheetName', async () => {
+    const result = await querySheet(file, undefined, { columns: ['name'] })
+    expect(result.rows).toEqual([['Alice'], ['Bob'], ['Carol']])
   })
 })

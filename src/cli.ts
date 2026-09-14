@@ -117,8 +117,10 @@ import {
   runZipList,
   runZipRead,
   runPrSlice,
+  runSqliteTables,
   runSqliteSchema,
   runSqliteQuery,
+  guardJsonRows,
   runCoverageReportGaps,
   runConflicts,
 
@@ -146,7 +148,7 @@ import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeF
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus, installVerificationNotice } from './bridges_status.js'
 import type { HarnessName } from './bridges/types.js'
 import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
-import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
+import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet, xlsxColumns, formatXlsxColumns } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
@@ -1902,21 +1904,38 @@ async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
   recordXlsxStat('xlsx_sheets', file, text)
 }
 
-async function cmdXlsxHead(file: string, opts: { sheet: string; rows?: string }) {
+async function cmdXlsxHead(file: string, opts: { sheet?: string; rows?: string; columns?: string }) {
   const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
-  const text = fenceFileText(await xlsxHeadSheet(file, opts.sheet, rows))
+  const columns = opts.columns
+    ? opts.columns.split(',').map((c) => c.trim()).filter(Boolean)
+    : undefined
+  const text = fenceFileText(await xlsxHeadSheet(file, opts.sheet, rows, columns))
   out(text)
   recordXlsxStat('xlsx_head', file, text)
 }
 
-async function cmdXlsxRange(file: string, opts: { sheet: string; range: string; formulas?: boolean }) {
+async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?: string; json?: boolean } = {}) {
+  const maxRows = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 100
+  const result = await xlsxColumns(file, opts.sheet, maxRows)
+  if (opts.json === true) {
+    const text = displaySafeJson(result)
+    out(text)
+    recordXlsxStat('xlsx_columns', file, text)
+  } else {
+    const text = fenceFileText(formatXlsxColumns(result))
+    out(text)
+    recordXlsxStat('xlsx_columns', file, text)
+  }
+}
+
+async function cmdXlsxRange(file: string, opts: { sheet?: string; range: string; formulas?: boolean }) {
   const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
   const text = fenceFileText(formatXlsxRange(result))
   out(text)
   recordXlsxStat('xlsx_range', file, text)
 }
 
-async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: string; where?: string[]; head?: string }) {
+async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns?: string; where?: string[]; head?: string; json?: boolean }) {
   const columns = opts.columns
     ? opts.columns
         .split(',')
@@ -1929,9 +1948,26 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
     ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
-  const text = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
-  out(text)
-  recordXlsxStat('xlsx_query', file, text)
+  if (opts.json === true) {
+    const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
+    const headTruncated = result.rows.length < result.totalRows
+    const capped = guardJsonRows(rowsJson)
+    const text = displaySafeJson(
+      {
+        items: capped.items,
+        truncated: capped.truncated || headTruncated,
+        totalCount: result.totalRows,
+        ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}),
+      },
+      0,
+    )
+    out(text)
+    recordXlsxStat('xlsx_query', file, text)
+  } else {
+    const text = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
+    out(text)
+    recordXlsxStat('xlsx_query', file, text)
+  }
 }
 
 // Same registry/producer desync as recordXlsxStat above, for the pptx-*/docx-*/transcript*
@@ -2132,6 +2168,10 @@ async function cmdZipRead(file: string, entry: string, opts: { json?: boolean })
 
 function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
   process.exitCode = runPrSlice({ pr, slice, ...opts })
+}
+
+function cmdSqliteTables(file: string, opts: { json?: boolean }) {
+  process.exitCode = runSqliteTables({ file, ...opts })
 }
 
 function cmdSqliteSchema(file: string, opts: { json?: boolean }) {
@@ -3694,9 +3734,10 @@ function generateCompactHelp(): string {
     '  exports, imports, find, grep',
     '',
     'File Formats: pdf-meta, pdf-outline, pdf-extract, pdf-locate, xlsx-sheets,',
-    '  xlsx-head, xlsx-query, xlsx-range, yaml-outline, yaml-query, json-outline,',
-    '  json-query, xml-outline, xml-query, html-outline, html-query, html-lint,',
-    '  docx-outline, docx-text, pptx-outline, pptx-slide, pptx-text, pptx-notes',
+    '  xlsx-head, xlsx-columns, xlsx-query, xlsx-range, yaml-outline, yaml-query,',
+    '  json-outline, json-query, xml-outline, xml-query, html-outline, html-query,',
+    '  html-lint, docx-outline, docx-text, pptx-outline, pptx-slide, pptx-text,',
+    '  pptx-notes',
     '',
     'Index & Search: index, map, reconcile, doctor, commands, ask, pack, tokens,',
     '  budget, failures, todo, trace, logfold, lockdeps, dep-docs, recent, hot,',
@@ -3718,8 +3759,8 @@ function generateCompactHelp(): string {
     '  bridges-status, worker, statusline, version, config, config-get,',
     '  capabilities, help',
     '',
-    'Data: note, note-add, note-get, note-list, sqlite-query, sqlite-schema,',
-    '  csv-profile, csv-query',
+    'Data: note, note-add, note-get, note-list, sqlite-query, sqlite-tables,',
+    '  sqlite-schema, csv-profile, csv-query',
     '',
     'Utils: ignores, bash-history, web-history, openapi-op, openapi-outline,',
     '  gdrive-sections, screenshot, opencode-*, fetch-image, image-meta,',
@@ -5054,14 +5095,23 @@ export function buildProgram(): Command {
   program
     .command('xlsx-head <file>')
     .description('preview the header + first N rows of one sheet instead of a raw Read')
-    .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
+    .option('--sheet <name>', 'sheet name (default: first sheet, see xlsx-sheets)')
     .option('--rows <n>', 'number of data rows to show (default 20)')
+    .option('--columns <a,b,c>', 'comma-separated column names or letters to project (default: all)')
     .action(guard(cmdXlsxHead))
+
+  program
+    .command('xlsx-columns <file>')
+    .description('column names, letters, fill rates, and sample values instead of a raw Read')
+    .option('--sheet <name>', 'sheet name (default: first sheet, see xlsx-sheets)')
+    .option('--head <n>', 'max rows to sample for fill rates and distinct values (default: 100)')
+    .option('--json', 'emit column summaries as JSON')
+    .action(guard(cmdXlsxColumns))
 
   program
     .command('xlsx-range <file>')
     .description('extract one cell range (e.g. A1:D50) from a sheet instead of a raw Read')
-    .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
+    .option('--sheet <name>', 'sheet name (default: first sheet, see xlsx-sheets)')
     .requiredOption('--range <a1-notation>', 'cell range, e.g. A1:D50')
     .option('--formulas', 'show formulas instead of computed values where present')
     .action(guard(cmdXlsxRange))
@@ -5069,7 +5119,7 @@ export function buildProgram(): Command {
   program
     .command('xlsx-query <file>')
     .description('project columns / filter rows from one sheet instead of a raw Read')
-    .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
+    .option('--sheet <name>', 'sheet name (default: first sheet, see xlsx-sheets)')
     .option('--columns <a,b,c>', 'comma-separated columns to project (default: all)')
     .option(
       '--where <spec>',
@@ -5078,6 +5128,7 @@ export function buildProgram(): Command {
       [],
     )
     .option('--head <n>', 'max rows to show')
+    .option('--json', 'emit rows as a JSON array of objects instead of a table')
     .action(guard(cmdXlsxQuery))
 
   program
@@ -5282,6 +5333,12 @@ export function buildProgram(): Command {
     .option('--repo <owner/repo>', "target repo (default: resolved from the current directory's git remote 'origin')")
     .option('--json', 'emit the slice as JSON instead of text')
     .action(guard(cmdPrSlice))
+
+  program
+    .command('sqlite-tables <file>')
+    .description('compact inventory of tables and views with row counts and column counts instead of a raw Read')
+    .option('--json', 'emit the table inventory as JSON instead of text')
+    .action(guard(cmdSqliteTables))
 
   program
     .command('sqlite-schema <file>')

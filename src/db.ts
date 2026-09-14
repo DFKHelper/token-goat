@@ -285,7 +285,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   body,
   docstring,
   content='symbols',
-  content_rowid='id'
+  content_rowid='id',
+  tokenize='unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name, body, docstring)
@@ -311,7 +312,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS cache_recall_fts USING fts5(
   label,
   content,
   content='cache_recall',
-  content_rowid='row_id'
+  content_rowid='row_id',
+  tokenize='unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS cache_recall_ai AFTER INSERT ON cache_recall BEGIN
   INSERT INTO cache_recall_fts(rowid, label, content)
@@ -483,6 +485,9 @@ function initConnection(conn: SqliteDatabase): void {
   conn.pragma('busy_timeout = 15000')
   enableWalWithRetry(conn)
   conn.pragma('synchronous = NORMAL')
+  conn.pragma('cache_size = -32000')
+  conn.pragma('temp_store = MEMORY')
+  conn.pragma('mmap_size = 134217728')
 
   // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte consistent. Registered once per connection (not per-query) and marked deterministic so SQLite can use it in query planning the same way it would a built-in function.
   conn.function('TG_LOWER', { deterministic: true }, (value: unknown) =>

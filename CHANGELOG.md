@@ -4,6 +4,18 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added
+
+- **`token-goat sqlite-tables <db> [--json]`**: Ultra-compact overview of SQLite tables and views, reporting row counts and column counts (e.g. `sra_vehicles (table, 981 rows, 27 cols)`) in under 50 tokens, cutting schema discovery cost by over 90% compared to `sqlite-schema`.
+- **`token-goat xlsx-columns <file> [--sheet <name>] [--head <n>] [--json]`**: Profiles column names, letters, fill rates, and sample values across wide multi-column spreadsheets without dumping thousands of tokens of wide CSV rows into context.
+- **`token-goat xlsx-head --columns <a,b,c>`**: Projects only specific comma-separated column names or letters, avoiding wide-column token dumps on large spreadsheets.
+- **Excel sheet defaulting**: `xlsx-columns`, `xlsx-head`, `xlsx-range`, and `xlsx-query` now default to the workbook's first sheet when `--sheet` is omitted, eliminating the need for an initial exploratory turn.
+- **JSONPath recursive descent (`..key`)**: `json-query` and `yaml-query` now support preorder depth-first recursive descent across arbitrary nested objects and arrays using `..property` syntax, bounded by cycle detection, a depth limit of 100, and a traversal node cap of 50,000. Also supports quoted filter expressions with escaped quotes (`[?(@.field == "value with spaces")]`).
+- **SQLite engine performance tuning**: `initConnection` now configures `cache_size = -32000` (32 MB page cache), `temp_store = MEMORY`, and `mmap_size = 134217728` (128 MB memory-mapped I/O) for faster multi-table queries and joins.
+- **Unicode61 FTS5 tokenizer**: Virtual FTS5 tables (`symbols_fts`, `cache_recall_fts`) now use SQLite's `unicode61` tokenizer to support diacritics and accented European characters.
+
 ## [2.9.12] - 2026-09-14
 
 ### Fixed
