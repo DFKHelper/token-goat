@@ -279,6 +279,14 @@ CREATE TABLE IF NOT EXISTS embedding_provenance (
 `
 
 // FTS5 is a compile-time-optional SQLite extension. Node's bundled SQLite ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
+/**
+ * The tokenizer both FTS5 mirrors are declared with.
+ *
+ * `remove_diacritics 2` rather than FTS5's default of 1: the default folds only diacritics encoded as a single precomposed codepoint, so `café` was already findable as `cafe` before this was set, but `Hà Nội` was not findable as `Ha Noi` (https://sqlite.org/fts5.html#unicode61_tokenizer). Named as a constant because {@link rebuildFtsAtCurrentTokenizer} has to compare a database's stored declaration against it, and a second copy of the string is exactly how those two drift apart.
+ */
+export const FTS_TOKENIZER = 'unicode61 remove_diacritics 2'
+
+// The `tokenize=` argument here reaches a database exactly once, when its virtual table is first created: `CREATE VIRTUAL TABLE IF NOT EXISTS` against an existing table of the same name is a silent no-op, and SQLite reports no error and no warning when the stored declaration differs from this one. Changing the tokenizer therefore needs a SCHEMA_VERSION bump and a step in MIGRATIONS that drops, re-creates and rebuilds both tables -- see MIGRATIONS[13] -- or the change reaches only databases created after it, leaving two populations that search differently with nothing to tell them apart. tests/guards/fts_tokenizer_reaches_existing_databases.test.ts fails if this literal moves without that bump.
 const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name,
@@ -286,7 +294,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   docstring,
   content='symbols',
   content_rowid='id',
-  tokenize='unicode61'
+  tokenize='${FTS_TOKENIZER}'
 );
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name, body, docstring)
@@ -313,7 +321,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS cache_recall_fts USING fts5(
   content,
   content='cache_recall',
   content_rowid='row_id',
-  tokenize='unicode61'
+  tokenize='${FTS_TOKENIZER}'
 );
 CREATE TRIGGER IF NOT EXISTS cache_recall_ai AFTER INSERT ON cache_recall BEGIN
   INSERT INTO cache_recall_fts(rowid, label, content)
@@ -332,7 +340,7 @@ END;
 `
 
 // Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above). v6 -> v7: added skill_version_snapshots (skill_version_drift.ts's one-shot "token-goat was upgraded since you loaded this skill" nudge). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v6 database, so no MIGRATIONS[6] step is needed (same reasoning as v5 -> v6 above). v7 -> v8: added notes (token-goat note-add/note-get/note-list -- file/symbol-attached architecture notes with a staleness fingerprint, see notes.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v7 database, so no MIGRATIONS[7] step is needed (same reasoning as v6 -> v7 above). v8 -> v9: added symbols.parent, separating the "parent container name" the regex adapters used to overload into symbols.docstring from the symbol's real doc comment (see precedingDocComment in parser.ts and makeLineSymbol/makeSpanSymbol/makeSymbolEmitter in languages/common.ts). A pre-existing v8 database's `symbols` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive like v3 -> v8 above. v9 -> v10: added hint_emissions.bytes_emitted, the per-emission spend (byte length of the hint text actually injected into context) recorded alongside the pre-existing bytes-saved figures already tracked in the `stats` table, so `token-goat hint-stats` can answer "are hints net-positive" instead of only measuring their benefit (see applyHintTracking/logHintEmission in hint_stats.ts). Left nullable with no default rather than defaulted to 0, so a pre-existing v9 database's rows -- which predate spend tracking entirely -- read as genuinely unknown spend, not a fake measured zero. A pre-existing v9 database's `hint_emissions` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive like v3 -> v8 above. v11 -> v12: added embedding_provenance (which embedding stack produced the stored vectors, see the table's own comment and ensureEmbeddingProvenance in embeddings.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v11 database, so no MIGRATIONS[11] step is needed. Deliberately no migration step even though existing vectors ARE invalidated by this change: a migration would have to run the invalidation on every database at open time, including ones whose embedding stack is absent and which therefore have nothing to re-embed with. The check belongs where embedding actually happens, and an empty provenance table on a populated index is the signal it keys on. v12 -> v13: added files.parser_sha, the digest of the extraction logic (src/parser.ts plus src/languages/**) that produced a file's rows, so a parser change invalidates already-indexed files whose content never moved. A pre-existing v12 database's `files` table predates the column, so it needs an explicit ALTER TABLE in MIGRATIONS -- not purely additive.
-export const SCHEMA_VERSION = 13 as const
+export const SCHEMA_VERSION = 14 as const
 
 type Migration = (conn: SqliteDatabase) => void
 
@@ -384,6 +392,37 @@ function purgeDotenvEmbeddings(conn: SqliteDatabase): void {
   }
 }
 
+/**
+ * Drop both FTS5 mirrors, re-create them from {@link FTS_SQL}, and repopulate each from its content table.
+ *
+ * Every other migration step here exists because `CREATE TABLE IF NOT EXISTS` cannot alter a populated table. This one exists because `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot alter an EMPTY one either: against an existing table of that name it is a silent no-op, so a changed `tokenize=` argument would otherwise reach new databases only.
+ *
+ * Both tables are external-content (`content='symbols'` / `content='cache_recall'`), so the rows are not lost by the drop and `'rebuild'` re-derives the whole index from the base table. The triggers are left alone: they name the tables rather than depending on their declaration, and FTS_SQL's `CREATE TRIGGER IF NOT EXISTS` keeps them in place.
+ *
+ * A SQLite build without FTS5 has neither table, and every statement here throws at prepare time. That is not a migration failure -- higher layers already fall back to LIKE when the mirrors are absent (see the FTS_SQL call site in ensureSchema), and the same build could not have created them in the first place.
+ *
+ * Runs as one immediate transaction, which every previous step could do without. They add columns; this one drops a table that the `symbols` triggers write to, so between the DROP and the CREATE there is a window where an ordinary insert by another process fails with "no such table: main.symbols_fts" -- observed, not theorised: tests/index_concurrent_write_race.test.ts caught exactly that on the first run of this step, with one of eleven concurrently indexed files lost. Measured across six runs each way, that test fails 5 times in 6 without the transaction and 0 in 6 with it, so a single green run of it is not evidence this step is safe -- repeat it if this function changes. Taking the write lock up front instead makes that process wait out the rebuild under the 15s busy_timeout set in initConnection. `.immediate()` rather than the deferred default for the reason given on Database.transaction: a deferred transaction takes the lock at its first write, which here is already past the DROP.
+ */
+function rebuildFtsAtCurrentTokenizer(conn: SqliteDatabase): void {
+  try {
+    // Every migration step runs on a brand-new database too, which is stamped 0 and so walks the whole ladder. FTS_SQL created both tables at the current tokenizer moments earlier, so without this check a first-ever open would drop and re-create them for nothing -- and, less obviously, so would every test that opens a fresh index. Ask the database what it has rather than inferring it from the stamped version, which is also the honest check for a database whose tables were created by a build where FTS5 was missing and later restored.
+    const declarations = conn
+      .prepare("SELECT sql FROM sqlite_master WHERE name IN ('symbols_fts','cache_recall_fts')")
+      .all() as Array<{ sql: string | null }>
+    const current = declarations.map((d) => /tokenize\s*=\s*'([^']*)'/.exec(d.sql ?? '')?.[1] ?? '')
+    if (current.length === 2 && current.every((t) => t === FTS_TOKENIZER)) return
+
+    conn.transaction(() => {
+      conn.exec('DROP TABLE IF EXISTS symbols_fts; DROP TABLE IF EXISTS cache_recall_fts;')
+      conn.exec(FTS_SQL)
+      conn.exec("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild');")
+      conn.exec("INSERT INTO cache_recall_fts(cache_recall_fts) VALUES('rebuild');")
+    }).immediate()
+  } catch {
+    // FTS5 unavailable in this SQLite build -- search is already on the LIKE fallback path.
+  }
+}
+
 // Keyed by the FROM version: MIGRATIONS[1] upgrades a v1 database to v2, MIGRATIONS[2] upgrades v2 to v3, and so on. A version with no registered step is a no-op, which also covers a SCHEMA_VERSION bump for a purely additive change already handled by `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL (no ALTER TABLE needed).
 const MIGRATIONS: Record<number, Migration> = {
   // v1 -> v2: adds files.embed_sha, tracked separately from files.sha so embedding freshness can be gated independently of parse freshness (see makeIndexer in worker.ts). A pre-existing v1 database's `files` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, so a genuine ALTER TABLE failure is never silently lost.
@@ -402,8 +441,10 @@ const MIGRATIONS: Record<number, Migration> = {
   // removes the stored secrets and, by clearing embed_sha, makes the next drain re-embed the file
   // through the redacting path.
   10: purgeDotenvEmbeddings,
-  // v12 -> v13: adds files.parser_sha, the digest of the extraction logic that produced this file's rows, tracked separately from files.sha for the same reason embed_sha is -- content freshness and parse freshness are different questions, and the content sha alone could only ever answer the first. A pre-existing v12 database's `files` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has it from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, same pattern as v1 -> v2 / v2 -> v3 / v8 -> v9 / v9 -> v10 above. Deliberately left NULL for every existing row rather than backfilled with the current fingerprint: NULL is the truthful answer (nobody recorded which parser wrote those rows), and it is also the answer that makes the freshness gates reparse them once, which is exactly what a database indexed by an older parser needs.
+  // v12 -> v13: adds files.parser_sha, the digest of the extraction logic that produced this file's rows, tracked separately from files.sha for the same reason embed_sha is -- content freshness and parse freshness are different questions, and the content sha alone could only ever answer the first. A pre-existing v12 database's `files` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has it from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, same pattern as v1 -> v2 / v2 -> v3 / v8 -> v9 / v9 -> v10 above. Deliberately left NULL for every existing row rather than backfilled with the current fingerprint: NULL is the truthful answer (nobody recorded which parser wrote those rows), and it is also the answer that makes the freshness gates reparse them once, which is exactly what a database indexed by an older parser needs. v13 -> v14: changes both FTS5 tables' tokenizer to `unicode61 remove_diacritics 2`, so a search for `Noi` or `Viet` finds `Hà Nội` and `Việt Nam` -- combining marks that `remove_diacritics 1`, FTS5's default, leaves in place. This is the first schema change that `CREATE VIRTUAL TABLE IF NOT EXISTS` cannot express at all rather than merely cannot express on a populated table: against an existing virtual table that statement is a silent no-op, so without MIGRATIONS[13] the new tokenizer would reach only databases created after this release. The step drops both tables, re-runs FTS_SQL to re-create them at the current declaration, and rebuilds each from its content table.
   12: (conn) => alterTableIdempotent(conn, 'ALTER TABLE files ADD COLUMN parser_sha TEXT'),
+  // v13 -> v14: re-creates both FTS5 tables at the tokenizer FTS_SQL currently declares (see the SCHEMA_VERSION comment above for why no `IF NOT EXISTS` form can do this).
+  13: rebuildFtsAtCurrentTokenizer,
 }
 
 // Walks a database from its stamped version up to (but not including) `toVersion`, applying each registered migration step in order. Does not itself touch PRAGMA user_version -- the caller stamps that once every step has run.
