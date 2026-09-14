@@ -1,4 +1,5 @@
 /** Guard: an MCP tool's advertised `annotations` must match what the tool actually does, not just what its config object claims. CAPTURE: the 18 tool names, their registration order, and the shape of a `tools/list` response (including that `annotations` rides on each listed tool) come from a real `createMcpServer()` connected to a `Client` over `InMemoryTransport.createLinkedPair()`, the same harness `tests/mcp_tool_allowlist.test.ts` already uses -- not from reading `src/mcp_server.ts`'s registration source. The per-tool valid-argument fixtures below are the ones that were probed against a real temp project (a git-inited directory holding `mod.ts` with `export function alphaSymbol()` and `notes.md` with `# Heading One`, `git add -A`'d) and confirmed to return a result rather than a schema-validation failure. */
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -82,7 +83,7 @@ async function buildClient(): Promise<Client> {
   return client
 }
 
-/** Every file under the content store's subdirectory, recursively, as a sorted list of absolute paths -- used as a before/after fingerprint rather than a byte-for-byte diff, since a new file appearing (or an existing one disappearing) is what a write or an eviction looks like here. The root is `tokenGoatHome()`, which is where `storeBlob` actually writes; reading it from `dataDir()` instead -- the database's home, a different directory on every platform -- made this snapshot see nothing at all, and an oracle that can never observe a write certifies every annotation it is shown. */
+/** Every file under the content store's subdirectory, recursively, each carrying its size, its modification time and a hash of its bytes. Paths alone are not enough: the store is content-addressed, so a tool that re-writes text it has already stored lands on the same filename, and a name-only fingerprint reports no write. That is not hypothetical -- it is how `handoff_resolve` was first certified read-only, when in fact it compresses the handoff text and stores it again on every call. The root is `tokenGoatHome()`, which is where `storeBlob` actually writes; reading it from `dataDir()` instead -- the database's home, a different directory on every platform -- made this snapshot see nothing at all, and an oracle that can never observe a write certifies every annotation it is shown. */
 function snapshotContentDir(): string[] {
   const dir = path.join(tokenGoatHome(), CONTENT_SUBDIR)
   if (!fs.existsSync(dir)) return []
@@ -90,8 +91,13 @@ function snapshotContentDir(): string[] {
   const walk = (d: string): void => {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, entry.name)
-      if (entry.isDirectory()) walk(p)
-      else out.push(p)
+      if (entry.isDirectory()) {
+        walk(p)
+        continue
+      }
+      const stat = fs.statSync(p)
+      const hash = createHash('sha256').update(fs.readFileSync(p)).digest('hex')
+      out.push(`${p}|${String(stat.size)}|${String(stat.mtimeMs)}|${hash}`)
     }
   }
   walk(dir)

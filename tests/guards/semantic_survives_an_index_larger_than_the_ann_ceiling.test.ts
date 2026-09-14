@@ -190,6 +190,29 @@ describe.skipIf(!canExerciseVec0)('semantic search on an index past the ANN ceil
     expect(hits.map((h) => `${h.filePath}:${String(h.startLine)}`)).toEqual(['c:/rootA/a.ts:2', 'c:/rootA/a.ts:9', 'c:/rootA/b.ts:1'])
   })
 
+  it('orders rows that share a distance, a path and a start line, which path and line alone cannot separate', () => {
+    // `chunks` carries no uniqueness constraint on (file_path, start_line), so one file can hold several chunks beginning on the same line -- a long line split across chunks, or two kinds extracted from one construct. Ordering by path and line leaves those tied, and a LIMIT cutting through the tie takes whichever subset the sorter produced. The fixture is deliberately larger than the limit so the cut lands mid-tie rather than past the end of the rows.
+    const TIED = 200
+    const db = getDb(path.join(TMP, 'same-line-ties.db'))
+    ensureEmbeddingProvenance(db)
+    const chunkStmt = db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
+    const vecStmt = db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)')
+    const same = Array.from<number>({ length: DEFAULT_DIM }).fill(0.01)
+    db.transaction(() => {
+      for (let i = 0; i < TIED; i++) {
+        const row = chunkStmt.run('c:/rootA/one.ts', 7, 7, `tied chunk ${String(i)}`, 'code')
+        insertChunkVector(vecStmt, row.lastInsertRowid, same)
+      }
+    })()
+
+    const half = TIED / 2
+    const first = fetchScopedExactHits(db, same, half, 1.2, 'c:/rootA').map((h) => h.text)
+
+    // The rows are indistinguishable on every column the order names except the row id, so this is the id order -- and asking twice has to give the same half of the tie, which is the property a caller actually depends on. Stated plainly: removing `id ASC` from the query does NOT turn this test red today, because the plan reaches these rows through an index and hands them back in row-id order regardless. The clause makes the ordering total rather than dependent on that, and this test pins the property a plan change would break, not the clause.
+    expect(first).toEqual(Array.from({ length: half }, (_, i) => `tied chunk ${String(i)}`))
+    expect(fetchScopedExactHits(db, same, half, 1.2, 'c:/rootA').map((h) => h.text)).toEqual(first)
+  })
+
   it('still returns nothing for a project that has no chunk at all, so the case above is not passing by accident', async () => {
     // Calibration in the other direction. A fallback that scanned the whole table instead of the project's slice of it would answer this one with rootB rows.
     stubQueryVector()

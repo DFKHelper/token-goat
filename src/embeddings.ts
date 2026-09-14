@@ -655,7 +655,7 @@ export function fetchScopedHits(
   return { hits, candidateCount: rows.length }
 }
 
-/** Rank one project's own chunks exactly, without an ANN scan. The scan above caps the candidate list first and applies the project predicate second, which is why it needs the backfill at all; here the predicate runs first and the cap applies to what survived it, so the nearest in-project chunk cannot be ranked out by chunks belonging to other projects. That ordering is only affordable because the scope predicate is served by an index rather than a scan: `EXPLAIN QUERY PLAN` reports `SEARCH c USING INDEX idx_chunks_file_folded`, the expression index over the folded path, so the distance is computed for the project's rows and not the machine's. Measured on this repository's own index, 19,376 of `global.db`'s 209,251 chunk rows, the pass took 360 ms against the over-fetch's 258 ms -- and a scope so wide it selects everything (a drive root) takes 2,044 ms, which is the worst case this path can reach. `vec_distance_L2` is not a metric choice -- it is the metric vec0's MATCH column already reports, since `chunk_vectors` is declared with no `distance_metric` -- so a hit found this way carries the same number, comparable against the same `maxDistance`, as a hit found by the scan. The finite-distance guard is the one from `fetchScopedHits`, for the same reason. Rows that share a distance are broken by path and then by start line: without that, a cut through a group of equal distances takes an arbitrary subset, and since re-ranking scores text and path rather than distance, the same query over the same database could answer differently on two runs. */
+/** Rank one project's own chunks exactly, without an ANN scan. The scan above caps the candidate list first and applies the project predicate second, which is why it needs the backfill at all; here the predicate runs first and the cap applies to what survived it, so the nearest in-project chunk cannot be ranked out by chunks belonging to other projects. That ordering is only affordable because the scope predicate is served by an index rather than a scan: `EXPLAIN QUERY PLAN` reports `SEARCH c USING INDEX idx_chunks_file_folded`, the expression index over the folded path, so the distance is computed for the project's rows and not the machine's. Measured on this repository's own index, 19,376 of `global.db`'s 209,251 chunk rows, the pass took 360 ms against the over-fetch's 258 ms -- and a scope so wide it selects everything (a drive root) takes 2,044 ms, which is the worst case this path can reach. `vec_distance_L2` is not a metric choice -- it is the metric vec0's MATCH column already reports, since `chunk_vectors` is declared with no `distance_metric` -- so a hit found this way carries the same number, comparable against the same `maxDistance`, as a hit found by the scan. The finite-distance guard is the one from `fetchScopedHits`, for the same reason. Rows that share a distance are broken by path, then start line, then row id: without that, a cut through a group of equal distances takes an arbitrary subset, and since re-ranking scores text and path rather than distance, the same query over the same database could answer differently on two runs. The row id is what makes the order total -- `chunks` carries no uniqueness constraint on `(file_path, start_line)`, so two chunks of one file can begin on the same line and path and line alone would leave them tied. */
 export function fetchScopedExactHits(
   db: SqliteDatabase,
   queryVec: number[],
@@ -668,12 +668,12 @@ export function fetchScopedExactHits(
   const rows = db
     .prepare(
       `SELECT file_path, start_line, end_line, text, kind, distance FROM (
-         SELECT c.file_path AS file_path, c.start_line AS start_line, c.end_line AS end_line, c.text AS text, c.kind AS kind, vec_distance_L2(v.embedding, ?) AS distance
+         SELECT c.id AS id, c.file_path AS file_path, c.start_line AS start_line, c.end_line AS end_line, c.text AS text, c.kind AS kind, vec_distance_L2(v.embedding, ?) AS distance
          FROM chunks c JOIN chunk_vectors v ON v.rowid = c.id
          WHERE ${scope.clause}
        )
        WHERE distance IS NOT NULL AND distance <= ?
-       ORDER BY distance ASC, file_path ASC, start_line ASC
+       ORDER BY distance ASC, file_path ASC, start_line ASC, id ASC
        LIMIT ?`,
     )
     .all(packVec(queryVec), ...scope.params(rootDir), maxDistance, limit) as Array<

@@ -400,7 +400,7 @@ export async function createMcpServer(): Promise<McpServer> {
         stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
       },
-      // readOnlyHint describes the caller's environment -- the files and data the caller owns; forceRefresh reparses those files into token-goat's own derived index, which is not a modification of them.
+      // What readOnlyHint claims here, once, for all fifteen tools that carry it: the caller's own environment is untouched -- the project's files, and anything the caller would notice missing. Three things these tools do are deliberately outside that. They append a row to token-goat's `stats` table. They may reparse a file whose index entry is stale, and enqueue it for the background indexer. Opening a database for the first time creates its schema. All three are token-goat's own derived state, rebuilt from the project on demand and worth nothing if deleted; calling a symbol lookup a writing tool on their account would cost the caller a confirmation prompt for every read while protecting nothing. A tool that touches anything the caller owns says so instead, and the guard beside this file measures which tools those are rather than trusting the claim.
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) => {
@@ -533,6 +533,7 @@ export async function createMcpServer(): Promise<McpServer> {
         json: z.boolean().optional().describe('output as JSON'),
         projectRoot: makeProjectRootField('search'),
       },
+      // openWorldHint stays false although a first call on a machine with no cached model downloads one over the network: what this tool interacts with is the local index, and the download provisions the tool rather than being the tool reaching out. A client reading `true` here would take it as "this searches the internet", which is the wrong warning.
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
@@ -842,7 +843,8 @@ export async function createMcpServer(): Promise<McpServer> {
       inputSchema: {
         text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('text to compress'),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      // destructiveHint is true for every tool that writes here, including the ones that only ever add: the store is bounded by item count and by total bytes, so a write can evict an earlier entry and leave a recovery id the caller is holding unredeemable. idempotentHint survives a repeat writing a fresh timestamp and another stats row, on the same reading of "its environment" set out on the read tool above.
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     (args) => toCallToolResult({ text: displaySafeJson(compressionPayload(compressText(args.text))), code: 0 }),
   )
@@ -891,7 +893,8 @@ export async function createMcpServer(): Promise<McpServer> {
         full: z.boolean().optional().describe('return full text instead of a compact payload'),
         projectRoot: makeProjectRootField('scope'),
       },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      // Reads like a read, and is not one: resolving compactly runs the handoff text back through compressText, which stores the compact payload so the recovery id it hands back can be redeemed. A measurement, not a reading of this code -- the guard hashes the store's bytes around every tool call, and this is the tool it caught.
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     (args) => {
       const result = resolveHandoff(args.name, {
