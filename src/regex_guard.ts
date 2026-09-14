@@ -112,7 +112,7 @@ export const PROBE_LENGTHS: readonly number[] = Array.from({ length: PROBE_MAX_L
 const PROJECTED_LINE_LENGTH = 10_000
 const PROJECTION_BUDGET_MS = 1000
 const PROJECTION_SIGNAL_MS = 1
-const PROBE_GROWTH_FACTOR = 12
+export const PROBE_GROWTH_FACTOR = 12
 /**
  * Characters to end a probe input with, tried in order until one makes the pattern fail to match.
  *
@@ -483,7 +483,7 @@ export function probeAlphabets(source: string): string[] {
   return [...PROBE_ALPHABETS, ...kept, ...extra]
 }
 
-export function growsExponentially(re: RegExp): boolean {
+export function growsExponentially(re: RegExp): RefusalCause | null {
   const relaxed = detune(re.source)
   // The raw pattern is run at length only when nothing in it can hold an explosion shut past a
   // rung. A consuming gate is safe to walk into -- `^a{300}(a|aa)+$` hands the ambiguous tail only
@@ -492,9 +492,10 @@ export function growsExponentially(re: RegExp): boolean {
   // assertion in it is judged on {@link detune}'s rewrite instead, which has the same parts in the
   // same order and no gate to hide behind.
   if (relaxed === null || !relaxed.hadLookaround) {
-    if (climbsPastBudget(re)) return true
+    const cause = climbsPastBudget(re)
+    if (cause !== null) return cause
   }
-  if (relaxed === null) return false
+  if (relaxed === null) return null
   // A negative assertion is DELETED rather than unwrapped, because unwrapping inverts it and the
   // rest of the pattern would then only be reached by an input the original refuses. Deleting it
   // loses its own cost, though, and the engine has to run an assertion to completion to learn that
@@ -506,7 +507,8 @@ export function growsExponentially(re: RegExp): boolean {
     } catch {
       continue
     }
-    if (growsExponentially(inner)) return true
+    const innerCause = growsExponentially(inner)
+    if (innerCause !== null) return innerCause
   }
   let widened: RegExp
   try {
@@ -514,13 +516,13 @@ export function growsExponentially(re: RegExp): boolean {
   } catch {
     // Removing a group renumbers backreferences; a rewrite that no longer compiles says nothing
     // about the original, so it is dropped rather than guessed at.
-    return false
+    return null
   }
   return growsExponentially(widened)
 }
 
 /** The probe ladder itself: whether `re` blows the budget, or projects past it, at any rung. */
-function climbsPastBudget(re: RegExp): boolean {
+function climbsPastBudget(re: RegExp): RefusalCause | null {
   const probe = new RegExp(re.source, re.flags.replace('g', ''))
   // What one PATTERN may spend on sweeps that find nothing, and whether any input anywhere ever
   // made it fail. Both are outside the alphabet loop; the per-alphabet sweep tally is not, for the
@@ -564,7 +566,7 @@ function climbsPastBudget(re: RegExp): boolean {
         return m
       }
       for (const candidate of swept === undefined ? candidates : [swept, ...candidates]) {
-        if (attempt(candidate) === 'over-budget') return true
+        if (attempt(candidate) === 'over-budget') return 'over-budget'
         if (failing !== undefined) break
       }
       // The candidate list is finite and a pattern can simply name all of it. Every terminator
@@ -587,7 +589,7 @@ function climbsPastBudget(re: RegExp): boolean {
         sweeps++
         const sweepStarted = Date.now()
         for (const candidate of SWEEP_TAILS) {
-          if (attempt(candidate) === 'over-budget') return true
+          if (attempt(candidate) === 'over-budget') return 'over-budget'
           if (failing !== undefined) {
             swept = candidate
             break
@@ -603,19 +605,19 @@ function climbsPastBudget(re: RegExp): boolean {
       // Sub-millisecond timings are noise on every platform this runs on, so a ratio between two of
       // them means nothing. Only a long run that is also disproportionate counts. This catches a
       // machine slow enough that the curve clears the budget between two rungs rather than on one.
-      if (previous !== undefined && elapsed > 1 && elapsed > previous * PROBE_GROWTH_FACTOR) return true
+      if (previous !== undefined && elapsed > 1 && elapsed > previous * PROBE_GROWTH_FACTOR) return 'ratio'
       previous = elapsed
       timings.push(elapsed)
     }
-    if (projectsPastBudget(timings)) return true
+    if (projectsPastBudget(timings)) return 'projection'
   }
   // Nothing the ladder built ever made this pattern fail, so none of its timings measured a
   // backtrack and 0 ms on every rung is not evidence of anything. Certifying on that is how a
   // pattern hides: it only has to match everything the probe can construct. Where the shape says
   // there is a repeated group to be ambiguous about, an unfalsifiable pattern is refused rather
   // than accepted, so running out of ways to ask means unknown rather than safe.
-  if (!falsified && QUANTIFIED_GROUP.test(re.source)) return true
-  return false
+  if (!falsified && QUANTIFIED_GROUP.test(re.source)) return 'unfalsifiable'
+  return null
 }
 
 /** The `)` closing the group that opens at `start`, or -1 if the source never closes it. */
@@ -777,8 +779,13 @@ export function projectsPastBudget(timings: readonly number[]): boolean {
 /** The longest pattern the guard will measure. Past this the measurement is the stall. */
 const MAX_PATTERN_LENGTH = 4096
 
-/** A compiled pattern, or the reason it was refused -- phrased to complete "the pattern ...". */
-export type GuardedRegex = { readonly ok: true; readonly re: RegExp } | { readonly ok: false; readonly reason: string }
+/** Which of the four measurements inside {@link climbsPastBudget} produced a refusal, so a test can assert on the cause instead of approximating it with its own wall-clock timings, which a loaded machine can disagree with. */
+export type RefusalCause = 'over-budget' | 'ratio' | 'projection' | 'unfalsifiable'
+
+/** A compiled pattern, or the reason it was refused -- phrased to complete "the pattern ...". `cause` is set only when the refusal came from a measurement inside {@link growsExponentially}; the two refusals before measurement (too long, does not compile) leave it undefined. */
+export type GuardedRegex =
+  | { readonly ok: true; readonly re: RegExp }
+  | { readonly ok: false; readonly reason: string; readonly cause?: RefusalCause }
 
 /**
  * Compiles a search pattern, refusing one that will not compile or that can stall the process.
@@ -810,12 +817,14 @@ export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
   // bound, not a style rule. So the pattern is run first, and the static check picks the wording
   // when it fires. `secret_redact.ts` keeps its own two-stage form deliberately: there a refusal is
   // reported through `doctor` for a human to rewrite, and the conservative side is different.
-  if (growsExponentially(re)) {
+  const cause = growsExponentially(re)
+  if (cause !== null) {
     return {
       ok: false,
       reason: hasNestedQuantifier(pattern)
         ? 'repeats a group that already repeats, which can take exponential time to match'
         : 'takes time that climbs steeply with the length of the line, which can stall on ordinary text',
+      cause,
     }
   }
   return { ok: true, re }

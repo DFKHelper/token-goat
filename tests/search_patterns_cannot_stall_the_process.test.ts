@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { compileGuardedRegex, growsExponentially, hasNestedQuantifier, PROBE_LENGTHS, probeAlphabets, projectsPastBudget } from '../src/regex_guard.js'
+import { compileGuardedRegex, growsExponentially, hasNestedQuantifier, PROBE_GROWTH_FACTOR, PROBE_LENGTHS, probeAlphabets, projectsPastBudget } from '../src/regex_guard.js'
 import { compileGrepMatcher } from '../src/util.js'
 import { runGrep } from '../src/read_commands.js'
 import { sliceTranscript } from '../src/transcript_extract.js'
@@ -190,7 +190,7 @@ describe('the guard refuses what the engine cannot finish', () => {
   it('catches (a|a)+ by measurement, not by shape', () => {
     // Pinned deliberately: telling `(a|a)+` from `(x|y)+` by shape would refuse every ordinary alternation, so if the probe ever stopped running, this pattern is the one nothing else would notice being accepted.
     expect(hasNestedQuantifier('^(a|a)+$'), 'the shape check now claims this one, so the probe is no longer load-bearing for it').toBe(false)
-    expect(growsExponentially(new RegExp('^(a|a)+$'))).toBe(true)
+    expect(growsExponentially(new RegExp('^(a|a)+$'))).not.toBeNull()
   })
 
   it('calibration: ^(b|bb)+$ really does hang the raw engine, so refusing it means something', () => {
@@ -204,7 +204,7 @@ describe('the guard refuses what the engine cannot finish', () => {
     // Both halves are pinned. If the shape check stops claiming this pattern the test still passes for the right reason, but the first assertion is what makes the second one evidence that the MEASUREMENT is deciding rather than evidence that the shape check happened to agree.
     const slug = '^(?:[a-z]+-)+[a-z]+$'
     expect(hasNestedQuantifier(slug), 'the shape check no longer condemns this, so it no longer tests the override').toBe(true)
-    expect(growsExponentially(new RegExp(slug)), 'the probe now condemns a pattern measured at ~1 ms on 200 KB').toBe(false)
+    expect(growsExponentially(new RegExp(slug)), 'the probe now condemns a pattern measured at ~1 ms on 200 KB').toBeNull()
     expect(compileGuardedRegex(slug).ok, 'the shape check is overruling the measurement again').toBe(true)
   })
 
@@ -359,24 +359,32 @@ describe('what the probe is seeded and terminated with', () => {
 })
 
 describe('what the probe cannot run, it projects or strips', () => {
-  it('refuses a quadratic pattern whose every rung-to-rung ratio is inside the factor', () => {
-    // The finding in one assertion: the ratio test is honest and says no, so something else has to say yes. If the ladder ever grows a rung that makes this ratio large the test still passes, but the first assertion is what makes the second one evidence about the PROJECTION.
-    const quadratic = '^(a+)(a+)(a+)!$'
-    const at = (n: number): number => {
-      const started = performance.now()
-      new RegExp(quadratic).test('a'.repeat(n) + 'b')
-      return performance.now() - started
-    }
-    // Each rung is the fastest of several runs, not one run. A single sample carries whatever the scheduler did during it, and the two samples here are milliseconds apart: on a loaded machine this assertion read 15.9 against a true ratio of 7.1 and failed a push. The minimum is the right estimator for a timing whose only noise is additive -- nothing makes a run finish faster than the work takes -- and the first run of any size is discarded because it pays for the engine warming up, which on this pattern costs 7x the steady-state time.
-    const fastestAt = (n: number): number => {
-      at(n)
-      let best = Infinity
-      for (let i = 0; i < 9; i++) best = Math.min(best, at(n))
-      return best
-    }
-    const ratio = fastestAt(512) / Math.max(fastestAt(256), 0.001)
-    expect(ratio, 'the doubling now trips the ratio test, so this no longer tests the projection').toBeLessThan(12)
-    expect(compileGuardedRegex(quadratic).ok, 'a pattern costing 2.4 s on one 3000-character line was accepted').toBe(false)
+  it('projects a ladder past the budget that no rung-to-rung ratio would refuse', () => {
+    // The claim this file needs and cannot get from a clock: a pattern whose cost grows QUADRATICALLY climbs too gently for the rung-to-rung ratio to ever fire, and is caught only by extrapolating the top doubling out to a real line length. Asserting that through `compileGuardedRegex` means asserting on the guard's own wall-clock measurement, and on a loaded machine that measurement legitimately refuses the same pattern for a different reason -- observed as `over-budget` during a full-suite run on 2026-09-14, where a single rung simply took longer than its budget. So the ladder is built here instead of measured, and handed to the pure function that does the projecting. PROVENANCE: HAND-DERIVED. The timings are `t(n) = n^2 * 20 / 512^2`, computed from the definition of quadratic growth, not read off any run: 20 ms at the top rung, which is the order the real `^(a+)(a+)(a+)!$` measures there.
+    const TOP_RUNG_MS = 20
+    const top = PROBE_LENGTHS.at(-1) as number
+    const ladder = PROBE_LENGTHS.map((n) => (n * n * TOP_RUNG_MS) / (top * top))
+    let steepest = 0
+    for (let i = 1; i < ladder.length; i++) steepest = Math.max(steepest, (ladder[i] as number) / (ladder[i - 1] as number))
+
+    expect(steepest, 'this ladder is steep enough for the rung-to-rung check to refuse it, so it no longer isolates the projection').toBeLessThan(PROBE_GROWTH_FACTOR)
+    expect(projectsPastBudget(ladder), 'a ladder that reaches 20 ms at 512 characters by squaring is over a second on a 10,000-character line, and the projection is the only check that can see that').toBe(true)
+  })
+
+  it('refuses the quadratic pattern the projection was built for, whichever check gets there first', () => {
+    // The end-to-end half, kept deliberately free of any claim about WHICH check refused: all four are correct answers for this pattern and which one arrives depends on how loaded the machine is. Costs 2.4 s against one 3000-character line.
+    const guarded = compileGuardedRegex('^(a+)(a+)(a+)!$')
+
+    expect(guarded.ok).toBe(false)
+    expect(guarded.ok ? undefined : guarded.cause, 'refused before any measurement ran, so the refusal says nothing about how costly the pattern is').toBeDefined()
+  })
+
+  it('a pattern refused before it is measured carries no cause', () => {
+    // The other side of that field: `cause` is what separates a refusal the measurement produced from one the parser did, and a test asserting on a cause has to know the difference.
+    const guarded = compileGuardedRegex('^(a+')
+
+    expect(guarded.ok).toBe(false)
+    expect(guarded.ok ? 'unused' : guarded.cause).toBeUndefined()
   })
 
   it('does not project a linear pattern into a refusal', () => {

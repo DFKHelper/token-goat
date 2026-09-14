@@ -208,7 +208,7 @@ export function queryRefsByContext(context: string, filePath: string, dbPath: st
 }
 
 /** Batched reference count per symbol name, for `outline --stats`/`skeleton --stats`. One `GROUP BY` query over all requested names instead of one query per symbol -- avoids N+1 queries when a file has many symbols. Names with zero references are simply absent from the returned map (callers should default to 0). `rootDir`, when provided, counts only references in files under that project root (see {@link querySymbols} for why this matters against the machine-wide `global.db`) -- without it, a symbol name shared with an unrelated project on the same machine inflates the count. */
-/** How many names go into one `IN (...)` list. SQLite bounds the number of bound parameters in a statement and enforces it by refusing to prepare -- `too many SQL variables`, an exception rather than a short answer, so the caller gets no reference counts at all rather than fewer. The live limit is 32,766 here, but it is a compile-time option and an older or differently-built SQLite sets it at 999, so the batch is sized under that floor rather than under what this build happens to allow. The cost of the extra round trips is not worth measuring: the largest caller today is capped at 5,000 names. */
+/** How many names go into one `IN (...)` list. SQLite caps the highest host-parameter index a statement may use (`SQLITE_LIMIT_VARIABLE_NUMBER`), which with the anonymous `?` placeholders here is the same as a cap on how many it may carry, and it enforces the cap at `prepare` time by throwing `too many SQL variables` rather than answering short -- so the caller gets no reference counts at all rather than fewer. Measured on the build shipped here: 32,766 prepares, 32,767 throws. That number is not a constant to design against. It is the default only since SQLite 3.32; before that the default was 999, a custom build may compile in less, and a connection may lower it at runtime with `sqlite3_limit`. 900 leaves room for the two parameters the project-root scope adds under the pre-3.32 default, which is the lowest value anything is likely to be built with -- a choice, not a proof, and `a_batch_stays_under_the_lowest_sqlite_parameter_cap` is what pins it. */
 const REF_COUNT_BATCH = 900
 
 export function queryRefCounts(
@@ -220,17 +220,27 @@ export function queryRefCounts(
   if (names.length === 0) return counts
 
   const db = getDb(dbPath)
-  for (let start = 0; start < names.length; start += REF_COUNT_BATCH) {
-    const batch = names.slice(start, start + REF_COUNT_BATCH)
-    const params: (string | number)[] = [...batch]
-    const scopeWhere: string[] = []
-    applyRootDirScope(rootDir, 'file_path', scopeWhere, params)
-    const scopeSql = scopeWhere.length > 0 ? ` AND ${scopeWhere.join(' AND ')}` : ''
-    const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${batch.map(() => '?').join(', ')})${scopeSql} GROUP BY name`
-    for (const row of db.prepare(sql).all(...params) as Array<{ name: string; c: number }>) {
-      counts.set(row.name, row.c)
+  const scopeWhere: string[] = []
+  const scopeParams: (string | number)[] = []
+  applyRootDirScope(rootDir, 'file_path', scopeWhere, scopeParams)
+  const scopeSql = scopeWhere.length > 0 ? ` AND ${scopeWhere.join(' AND ')}` : ''
+  const sqlFor = (width: number): string =>
+    `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${Array.from({ length: width }, () => '?').join(', ')})${scopeSql} GROUP BY name`
+  // Every full batch is the same statement, so it is prepared once and run with different names. A
+  // file with 400,000 symbols is 445 batches, and preparing that statement 445 times is 445 parses
+  // of a 900-placeholder string for no gain. The last batch is usually a different width and gets
+  // its own.
+  const full = names.length >= REF_COUNT_BATCH ? db.prepare(sqlFor(REF_COUNT_BATCH)) : undefined
+  // One read transaction over all the batches. `global.db` is written by the background indexer while this reads, so without it batch 1 and batch 445 can see different databases and the map would mix counts from either side of a reindex -- something the single statement this replaced could not do. The cost is that the snapshot is pinned for the whole loop: in WAL, which is what `db.ts` puts every connection in, that does not block the writer but does defer checkpointing for as long as the read runs. Measured against the live 400,157-symbol index on 2026-09-14: 135,079 names is 150 batches and 420 ms end to end, 50,000 names 75 ms, 5,000 names 4 ms. Half a second of deferred checkpointing is a smaller price than a count that is half from before a reindex and half from after.
+  db.transaction(() => {
+    for (let start = 0; start < names.length; start += REF_COUNT_BATCH) {
+      const batch = names.slice(start, start + REF_COUNT_BATCH)
+      const stmt = batch.length === REF_COUNT_BATCH && full !== undefined ? full : db.prepare(sqlFor(batch.length))
+      for (const row of stmt.all(...batch, ...scopeParams) as Array<{ name: string; c: number }>) {
+        counts.set(row.name, row.c)
+      }
     }
-  }
+  })()
   return counts
 }
 

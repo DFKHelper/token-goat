@@ -51,3 +51,17 @@ So a second PostToolUse hook cannot rewrite an MCP result alongside token-goat: 
 A probe that measures a rewrite while another rewriter is installed is measuring the wrong thing. The
 control -- disable the other one, change nothing else, re-run -- is what turned a false negative into
 the answer, and it is cheap.
+
+## A committed example of the shape
+
+`list_tags-bare-array.json` is one of these payloads, kept whole so a test can be written against a
+real one rather than against a hand-typed guess at the format. It is a `list_tags` call against the
+public `sqlite/sqlite` repository, chosen because nothing in the request or the reply names a person:
+the tool input is an owner, a repo and a page size, and the reply is two public tag names and their
+commit hashes. `cwd`, `session_id`, `transcript_path`, `tool_use_id` and `prompt_id` were removed;
+nothing else was altered. Captured 2026-09-14 by the same temporary hook described above.
+
+Note for anyone re-running Task 0 against `mcp__claude-in-chrome__*`: those tools were unavailable in
+the 2026-09-14 session too, a second time. The bare-array shape is not specific to a server, so the
+capture above answers the shape question; what is still uncaptured is a payload carrying an IMAGE
+block beside text blocks, which Task 2 wants.

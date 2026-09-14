@@ -208,6 +208,20 @@ describe('index_reader round-trips inserted rows', () => {
     expect(counts.size).toBe(3)
   })
 
+  // The batched loop runs inside `db.transaction`, so that a reindex committed by the background worker between two batches cannot leave the map holding counts from either side of it. That wrapping is what makes a caller who already holds a transaction a new risk: an inner `BEGIN` throws, and only the driver's SAVEPOINT nesting keeps it from doing so.
+  it('queryRefCounts still answers when its caller already holds a transaction', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+
+    // The row is written INSIDE the transaction and never committed before the read. A connection other than this one cannot see it, so a pass here means `queryRefCounts` really did run on the caller's own open transaction rather than on a second connection that happened to find the same committed data.
+    const counts = db.transaction(() => {
+      db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)').run('projA/x.ts', 'nested', 1, 0, '')
+      return queryRefCounts(['nested'], dbPath, 'projA')
+    })()
+
+    expect(counts.get('nested'), 'the count came back without the uncommitted row, so this ran on a different connection and proves nothing about nesting').toBe(1)
+  })
+
   it('getFileEntry returns an inserted file row', () => {
     const dbPath = tmpDbPath()
     const db = getDb(dbPath)

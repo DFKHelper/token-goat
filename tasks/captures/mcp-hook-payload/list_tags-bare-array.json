@@ -1,0 +1,20 @@
+{
+  "permission_mode": "bypassPermissions",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__plugin_github_github__list_tags",
+  "tool_input": {
+    "owner": "sqlite",
+    "repo": "sqlite",
+    "perPage": 2
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "[{\"name\":\"vesion-3.45.1\",\"sha\":\"189e44dfecdc7868bb860dfb5d98eab371318c37\"},{\"name\":\"version-3.53.4\",\"sha\":\"b09c88c14082339b66c7b7158d609a771e64ca69\"}]"
+    }
+  ],
+  "duration_ms": 797
+}
