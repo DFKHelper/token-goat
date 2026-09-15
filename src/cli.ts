@@ -1359,24 +1359,30 @@ function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boo
 }
 
 // Sets process.exitCode to the wrapped command's exit code (NOT via `guard`, which forces 0 on success — compress must propagate the real code so shell chaining still sees the original failure/success signal).
-async function cmdCompress(opts: {
-  cmd?: string
-  cmdB64?: string
-  filter?: string
-  timeout?: string
-  compress?: boolean
-  profile?: string
-  maxTokens?: string
-  quietSuccess?: boolean
-  native?: boolean
-}): Promise<void> {
+async function cmdCompress(
+  commandArgs: string[] | undefined,
+  opts: {
+    cmd?: string
+    cmdB64?: string
+    filter?: string
+    timeout?: string
+    compress?: boolean
+    profile?: string
+    maxTokens?: string
+    quietSuccess?: boolean
+    native?: boolean
+  } = {},
+): Promise<void> {
   try {
     let command = opts.cmd
+    if (Array.isArray(commandArgs) && commandArgs.length > 0) {
+      command = command ? [command, ...commandArgs].join(' ') : commandArgs.join(' ')
+    }
     if (opts.cmdB64 !== undefined) {
       command = Buffer.from(opts.cmdB64, 'base64').toString('utf8')
     }
     if (!command || command.trim() === '') {
-      err(`token-goat: either -c/--cmd or --cmd-b64 is required`)
+      err(`token-goat: either command arguments, -c/--cmd, or --cmd-b64 is required`)
       process.exitCode = 1
       return
     }
@@ -1956,10 +1962,11 @@ export function buildProgram(): Command {
     .action(guard(cmdGdriveSections))
 
   program
-    .command('compress')
+    .command('compress [command...]')
     .alias('bash')
     .alias('run')
     .description('run a shell command (under a POSIX shell / bash) and emit a compressed view of its output')
+    .allowUnknownOption(true)
     .option('-c, --cmd <command>', 'the shell command to run, as one string (use / for paths across platforms)')
     .option('--cmd-b64 <payload>', 'the shell command as a base64-encoded string (preserves quotes, backslashes, and symbols across platforms)')
     .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')

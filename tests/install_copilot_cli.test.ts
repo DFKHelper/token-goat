@@ -844,6 +844,32 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBe('you already read this file')
   })
 
+  it('folds postToolUse context into modifiedResult.textResultForLlm when toolResult has textResultForLlm', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({ hookSpecificOutput: { additionalContext: 'you already read this file' } }),
+    )
+    const stdout = runShim(
+      'postToolUse',
+      JSON.stringify({
+        sessionId: 's1',
+        cwd: '/tmp',
+        toolName: 'read',
+        toolArgs: {},
+        toolResult: { textResultForLlm: 'file contents here' },
+      }),
+      cwd,
+      env,
+    )
+    const parsed = JSON.parse(stdout)
+    expect(parsed.additionalContext).toBe('you already read this file')
+    expect(parsed.modifiedResult).toEqual({
+      resultType: 'success',
+      textResultForLlm: 'file contents here\n\n[token-goat: you already read this file]',
+    })
+  })
+
   it('translates a postToolUse rewriteOutput (hookSpecificOutput.updatedToolOutput) into modifiedResult', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(

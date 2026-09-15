@@ -95,4 +95,30 @@ describe('compress command aliases', () => {
     expect(message).not.toContain('unknown command')
     expect(message).not.toContain('Did you mean')
   })
+
+  it('runs command passed via positional arguments after `--`', async () => {
+    captureStdout()
+    captureStderr()
+    const code = await runCli(['compress', '--filter', 'generic', '--', REPEAT_CMD])
+    expect(code, stderr.join('')).toBe(0)
+    expect(stdout.join('')).toContain('×60')
+  })
+
+  it('passes child flags without tripping unknown option errors', async () => {
+    captureStdout()
+    captureStderr()
+    // In real sessions, commands like `token-goat compress -f npm -c npm --prefix foo test` failed because Commander parsed `--prefix` as a token-goat option.
+    const code = await runCli(['compress', '--filter', 'generic', '-c', `"${process.execPath}" -e "console.log('hello')" --`, '--prefix', 'extra'])
+    const errText = stderr.join('')
+    expect(errText).not.toContain("unknown option '--prefix'")
+    expect(code).toBe(0)
+  })
+
+  it('runs bare positional command without -c or --', async () => {
+    captureStdout()
+    captureStderr()
+    const code = await runCli(['compress', '--filter', 'generic', REPEAT_CMD])
+    expect(code, stderr.join('')).toBe(0)
+    expect(stdout.join('')).toContain('×60')
+  })
 })
