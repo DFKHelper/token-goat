@@ -1035,7 +1035,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
-          'Read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.',
+          'Tried to read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.',
         )
       }
     }

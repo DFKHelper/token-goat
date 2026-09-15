@@ -2170,7 +2170,7 @@ Some content that makes the file large enough`
     const r3 = preReadHandler(readEvent(p))
     expect(r3.hookType).toBe('deny')
     if (r3.hookType === 'deny') {
-      expect(r3.message).toContain('Read this file 2 times already')
+      expect(r3.message).toContain('Tried to read this file 2 times already')
       expect(r3.message).toContain('token-goat skeleton')
     }
   })
@@ -2292,7 +2292,7 @@ Some content that makes the file large enough`
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('Read this file')
+      expect(result.message).toContain('Tried to read this file')
       expect(result.message).toContain('times already')
       expect(result.message).toContain('token-goat skeleton')
       expect(result.message).toContain('token-goat outline')
@@ -2325,6 +2325,7 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).not.toContain('Read this file')
+      expect(result.context).not.toContain('Tried to read this file')
     }
   })
 

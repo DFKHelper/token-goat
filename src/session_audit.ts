@@ -415,7 +415,7 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?Use `token-goat (?:section|read)/, tool: 'Read' },
   { kind: 'read_served_deny', re: /was already served in this session, byte for byte/, tool: 'Read' },
   { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\. Use `token-goat section/, tool: 'Read' },
-  { kind: 'read_count_deny', re: /Read this file \d+ times already/, tool: 'Read' },
+  { kind: 'read_count_deny', re: /(?:Read|Tried to read) this file \d+ times already/, tool: 'Read' },
   { kind: 'generic_reread_deny', re: /was already read this session \(\d+ read/, tool: 'Read' },
   { kind: 'large_file_deny', re: /is very large \(\d+(?:\.\d+)?KB\)\./, tool: 'Read' },
   { kind: 'file_type_handler_deny', re: /too large to preview \(exceeds the in-hook scan cap\)|cannot be read as text\.|Read cannot return spreadsheet content|Read cannot return slide content|Read cannot return document content|Use Read with offset and limit parameters to read specific line ranges/, tool: 'Read' },
