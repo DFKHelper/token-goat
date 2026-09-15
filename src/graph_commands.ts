@@ -26,8 +26,6 @@ import { guardJsonRows, unknownSymbolSuggestion, warnIfFilesStale } from './read
 import {
   ensureNewline,
   isTestFile,
-  buildContextWindow,
-  renderContextWindow,
   compileGrepMatcher,
   grepFilteredToEmptyNotice,
   excludeTestsHiddenNote,
@@ -35,6 +33,7 @@ import {
   resolveOnPath,
   windowsCmdQuoteArg,
 } from './util.js'
+import { buildContextWindow, renderContextWindow } from './util_context.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { globalDbPath } from './constants.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'

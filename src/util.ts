@@ -13,10 +13,9 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup, removeCreatedBackups } from './bridges/created_configs.js'
+import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
 import { assertWriteInScope } from './bridges/project_scope_guard.js'
 import { ensureStorageRootPrivate } from './constants.js'
-import { indexedSourceText } from './indexed_source.js'
 import { spawnSync } from 'node:child_process'
 
 import { normalizePath } from './paths.js'
@@ -25,6 +24,18 @@ import type { GitResult, RunGitOptions } from './types.js'
 
 export { normalizePath }
 export type { GitResult, RunGitOptions }
+
+export {
+  type HookEntryLike,
+  type MatcherGroupLike,
+  type MatcherGroupWithMatcher,
+  stripOwnHooksFromMap,
+  stripStaleGroupHooks,
+  stripDelimitedBlock,
+  upsertDelimitedBlock,
+  writeJsonSettings,
+  writeIfDifferent,
+} from './util_config.js'
 
 export {
   sleepSync,
@@ -622,283 +633,6 @@ export function sanitizeIdForFilename(id: string, maxLen?: number, fallback?: st
   return safe.length > 0 ? safe : (fallback ?? safe)
 }
 
-/** One hook entry as stored in a harness's `[[hooks.<Event>]]`/`hooks.<event>[]` config shape --
- * the minimal fields {@link stripOwnHooksFromMap} needs. */
-interface HookEntryLike {
-  readonly command: string
-}
-
-/** One matcher group under a hook event key -- the minimal fields {@link stripOwnHooksFromMap}
- * needs. Generic over the hook-entry type so each bridge's own richer interface (with its
- * harness-specific extra fields) is preserved through the spread in the returned groups. */
-interface MatcherGroupLike<H extends HookEntryLike> {
-  readonly hooks?: readonly H[]
-}
-
-/**
- * Shared by codex_install.ts's `uninstallCodex` and gemini_install.ts's `uninstallGemini`
- * (both harnesses use the same `Record<eventKey, matcherGroup[]>` hooks shape): strip
- * token-goat's own hook entries out of `hooks`, mutating it in place. A matcher group survives
- * if it still has non-token-goat hooks left, OR if it started with zero hooks (an empty group
- * is user data token-goat never wrote, so it's preserved rather than treated as "fully
- * stripped"). An event key whose every group was removed entirely is deleted. Returns true if
- * at least one hook entry was actually removed, so callers can skip writing the file back when
- * nothing changed.
- */
-export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherGroupLike<H>>(
-  hooks: Record<string, G[] | undefined>,
-  isOurs: (command: string) => boolean,
-): boolean {
-  let removed = false
-  for (const eventKey of Object.keys(hooks)) {
-    const groups = hooks[eventKey]
-    // A malformed config can hold a single table (TOML `[hooks.SomeEvent]`) where the
-    // array-of-tables shape (`[[hooks.SomeEvent]]`) is expected -- skip it rather than
-    // crashing on `for...of` over a non-iterable; it's user data, not ours to touch.
-    if (groups === undefined || !Array.isArray(groups)) continue
-    const kept: G[] = []
-    for (const group of groups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isOur = isOurs(h.command)
-        if (isOur) removed = true
-        return !isOur
-      })
-      if (keptHooks.length > 0) {
-        kept.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
-        kept.push(group)
-      }
-    }
-    if (kept.length > 0) {
-      hooks[eventKey] = kept
-    } else {
-      delete hooks[eventKey]
-    }
-  }
-  return removed
-}
-
-/** {@link MatcherGroupLike} plus the optional `matcher` field {@link stripStaleGroupHooks} needs. */
-interface MatcherGroupWithMatcher<H extends HookEntryLike> extends MatcherGroupLike<H> {
-  readonly matcher?: string
-}
-
-/**
- * Shared by codex_install.ts, gemini_install.ts, and qwen_install.ts's install functions: given
- * one hook event's existing matcher groups, strip out any stale token-goat hook entry (legacy
- * bare command, or a same-shape command whose baked entry path is no longer current) so a
- * re-install upgrades in place instead of leaving a dead duplicate. When `matcherFilter` is
- * provided, only groups whose `matcher` field strictly equals `matcherFilter.matcher` (which may
- * itself be `undefined`, for matcher-less groups) are filtered; other groups pass through
- * untouched -- this matches codex/gemini's per-matcher install loop. When `matcherFilter` is
- * omitted entirely, every group is filtered regardless of its `matcher` field -- this matches
- * qwen's single catch-all group and codex's matcher-less global-event loop. The wrapper object
- * (rather than a bare `matcher?: string` param) is what lets "no restriction" and "restrict to
- * groups whose matcher is undefined" be expressed as two distinct calls. A group survives
- * filtering if it still has non-token-goat hooks left, OR if it started with zero hooks (an
- * empty group is user data token-goat never wrote, so it's preserved). Does not mutate `groups`;
- * returns the filtered array for the caller to push the fresh entry onto.
- */
-export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherGroupWithMatcher<H>>(
-  groups: readonly G[],
-  isOurs: (command: string) => boolean,
-  matcherFilter?: { readonly matcher: string | undefined },
-): G[] {
-  // Defensive against a caller that forgot to shape-check its own foreign-config-derived value: a bare string here would otherwise be iterated character by character (for..of on a string yields its chars) and those characters re-pushed as if they were matcher-group objects, which is exactly the corruption class this function exists to prevent. Every current caller already guards with Array.isArray before calling in, so this is redundant for them today; it exists so a future caller that skips that guard fails safe (empty result) instead of corrupting the write.
-  const list: readonly G[] = Array.isArray(groups) ? groups : []
-  const next: G[] = []
-  for (const group of list) {
-    if (matcherFilter !== undefined && group.matcher !== matcherFilter.matcher) {
-      next.push(group)
-      continue
-    }
-    const keptHooks = (group.hooks ?? []).filter((h) => !isOurs(h.command))
-    if (keptHooks.length > 0) {
-      next.push({ ...group, hooks: keptHooks })
-    } else if ((group.hooks ?? []).length === 0) {
-      next.push(group)
-    }
-  }
-  return next
-}
-
-/**
- * Shared by install.ts's `stripClaudeMdBlock` and codex_install.ts's `stripAgentsBlock`:
- * remove a delimited block (everything from `beginMarker` through the end of `endMarker`,
- * inclusive) from the file at `p`. Returns false without writing when the file can't be read
- * or the markers aren't found in order. Collapses the surrounding whitespace so removing the
- * block doesn't leave a run of blank lines behind.
- */
-export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: string, keepBackups = false): boolean {
-  let existing: string
-  try {
-    existing = readFileSync(p, 'utf8')
-  } catch {
-    return false
-  }
-
-  const beginIdx = existing.indexOf(beginMarker)
-  const endIdx = existing.indexOf(endMarker)
-  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return false
-
-  const before = existing.slice(0, beginIdx).replace(/\s+$/, '')
-  const after = existing.slice(endIdx + endMarker.length).replace(/^\s+/, '')
-
-  let next: string
-  if (before.length > 0 && after.length > 0) {
-    next = `${before}\n\n${after}`
-  } else if (before.length > 0) {
-    next = `${before}\n`
-  } else {
-    next = after
-  }
-
-  // Backed up first, mirroring upsertDelimitedBlock's install-side write above and
-  // writeJsonSettings's settings.json handling: an uninstall's in-place rewrite of a file the
-  // caller may hand-edit gets the same recovery copy an install-side rewrite does.
-  backupFile(p)
-  atomicWriteText(p, next)
-  // Mirrors install.ts's uninstallHooks: the backups this path (and any earlier install-side
-  // upsertDelimitedBlock call for the same file) created are token-goat's own litter, so a
-  // strip -- which is USUALLY an uninstall action -- takes them with it rather than leaving stray
-  // `.bak.<ISO>` siblings behind for every one of this function's six call sites.
-  //
-  // `keepBackups` is the exception a MIGRATION needs: a strip run as one step of an install still
-  // rewrites a file the user may have hand-edited, and deleting the recovery copy made seconds
-  // earlier is the one case where "back up everything we overwrite" silently does not hold. The
-  // caller says which of the two it is; ordering the calls differently would not, and that is
-  // exactly how the guarantee was lost.
-  if (!keepBackups) removeCreatedBackups(p)
-  return true
-}
-
-/**
- * Shared by install.ts's `writeClaudeMdBlock` and codex_install.ts's `writeAgentsBlock`:
- * insert or update a delimited block in the file at `p`. If `beginMarker`/`endMarker` are
- * already present (in order), the span between them is replaced with `block` verbatim
- * (returning false without writing when it's already exactly `block`). Otherwise `block` is
- * appended after a blank line, trimming trailing whitespace first so re-runs don't accumulate
- * blank lines. Creates `p`'s parent directory and treats a missing file as empty content.
- *
- * Backs up `p` first, exactly like `writeJsonSettings` does for `settings.json`: this is the
- * same in-place-overwrite hazard on a file the caller may hand-edit (`~/.claude/CLAUDE.md`,
- * `AGENTS.md`, an instructions file, ...), so it gets the same timestamped `.bak.<ISO>` recovery
- * copy before either write path below touches it. `backupFile` no-ops when `p` doesn't exist yet.
- */
-export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: string, block: string): boolean {
-  // Before the read, not just before the write: this is the helper that lands the routing block in
-  // `.github/copilot-instructions.md`, the exact path the SA-1 escapes went through.
-  assertWriteInScope(p)
-  let existing: string
-  try {
-    existing = readFileSync(p, 'utf8')
-  } catch {
-    existing = ''
-  }
-
-  const beginIdx = existing.indexOf(beginMarker)
-  const endIdx = existing.indexOf(endMarker)
-
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx)
-    const after = existing.slice(endIdx + endMarker.length)
-    const current = existing.slice(beginIdx, endIdx + endMarker.length)
-    if (current === block) return false
-    ensureDirSync(path.dirname(p))
-    backupFile(p)
-    atomicWriteText(p, `${before}${block}${after}`)
-    return true
-  }
-
-  const trimmed = existing.replace(/\s+$/, '')
-  const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
-  ensureDirSync(path.dirname(p))
-  backupFile(p)
-  atomicWriteText(p, next)
-  return true
-}
-
-/**
- * Shared by install.ts, bridges/gemini_install.ts, and bridges/openclaw_install.ts: persist a
- * settings object as pretty-printed JSON with a trailing newline, backing up the prior file
- * first and creating `p`'s parent directory if needed.
- */
-export function writeJsonSettings(p: string, settings: unknown): void {
-  ensureDirSync(path.dirname(p))
-  backupFile(p)
-  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
-}
-
-/**
- * Shared by bridges/grok_install.ts and bridges/copilot_cli_install.ts: write `content` to `p`
- * only if it differs from what's already there (or the file doesn't exist), optionally backing
- * up the prior file first. Returns whether a write happened.
- */
-export function writeIfDifferent(p: string, content: string, backup = false): boolean {
-  let existing: string | undefined
-  try {
-    existing = readFileSync(p, 'utf8')
-  } catch {
-    existing = undefined
-  }
-  if (existing === content) return false
-  if (backup) backupFile(p)
-  ensureDirSync(path.dirname(p))
-  atomicWriteText(p, content)
-  return true
-}
-
-/** One line of a source-context window: its 1-indexed line number and verbatim text. Matches the shape `grep`'s `GrepHit.context` entries already use, so the same renderer serves `grep -C`, `refs -C`, and `callers -C`. */
-export interface SourceContextLine {
-  readonly line: number
-  readonly text: string
-}
-
-/**
- * Read an inclusive window of `contextLines` source lines either side of `line` (1-indexed)
- * out of `absPath`. Returns null when `contextLines` is not positive, the file cannot be read,
- * or `line` falls outside the file -- callers treat null as "render the plain, context-free
- * line", so a deleted/unreadable file degrades to today's output instead of erroring.
- */
-export function buildContextWindow(absPath: string, line: number, contextLines: number): SourceContextLine[] | null {
-  if (!Number.isFinite(contextLines) || contextLines <= 0) return null
-  let text: string
-  try {
-    // Through indexedSourceText, because `line` is an index coordinate and a notebook is indexed from its virtual Python source, not from the JSON on disk. Reading the raw bytes here printed `"cell_type": "code",` as the context around a call site whose real text is `return helper()`, with no error to say so.
-    text = indexedSourceText(absPath, readFileSync(absPath, 'utf-8'))
-  } catch {
-    return null
-  }
-  const lines = text.split(/\r?\n/)
-  const idx = line - 1
-  if (idx < 0 || idx >= lines.length) return null
-  const start = Math.max(0, idx - contextLines)
-  const end = Math.min(lines.length - 1, idx + contextLines)
-  const out: SourceContextLine[] = []
-  for (let i = start; i <= end; i++) out.push({ line: i + 1, text: lines[i] ?? '' })
-  return out
-}
-
-/**
- * Render a context window in `grep`'s established form: the matched line as
- * `file:N: text` (plus `matchSuffix`), every surrounding line as `file-N- text`. Extracted
- * from {@link runGrep}'s own emit loop so `refs`/`callers` `-C` produce byte-identical
- * framing rather than a second, subtly different dialect.
- */
-export function renderContextWindow(
-  displayFile: string,
-  matchLine: number,
-  window: readonly SourceContextLine[],
-  matchSuffix = '',
-  indent = '',
-): string[] {
-  return window.map((c) =>
-    c.line === matchLine
-      ? `${indent}${displayFile}:${c.line}: ${c.text}${matchSuffix}`
-      : `${indent}${displayFile}-${c.line}- ${c.text}`,
-  )
-}
-
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)
@@ -1190,32 +924,5 @@ export function hookPowershellCommand(scriptPath: string, event: string): string
   const entryPath = process.argv[1]
   const entryArg = entryPath ? ` ${quotePowershellPath(entryPath)}` : ''
   return `${quotePowershellPath(process.execPath)} ${quotePowershellPath(scriptPath)} ${event}${entryArg}`
-}
-
-// Capped Levenshtein distance, mirroring config_commands.ts's didYouMeanKeySuffix helper (same
-// cap, same top-N/sort-by-distance shape) for consistency across this CLI's "did you mean"
-// suggestions. Shared here since text_commands.ts's lockdeps command and dep_docs.ts's package
-// lookup both need the identical package-name suggestion behavior.
-export function packageNameDistance(a: string, b: string, cap = 3): number {
-  if (Math.abs(a.length - b.length) > cap) return cap + 1
-  const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
-  for (let i = 1; i <= a.length; i++) {
-    const curr: number[] = [i]
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      curr.push(Math.min((curr[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost))
-    }
-    prev.splice(0, prev.length, ...curr)
-  }
-  return prev[b.length] ?? cap + 1
-}
-
-export function suggestPackageNames(query: string, names: string[]): string[] {
-  return [...new Set(names)]
-    .map((n) => ({ n, d: packageNameDistance(query.toLowerCase(), n.toLowerCase()) }))
-    .filter((x) => x.d <= 3)
-    .sort((a, b) => a.d - b.d)
-    .slice(0, 5)
-    .map((x) => x.n)
 }
 

@@ -45,7 +45,8 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
+import { packageNameDistance } from '../src/util_suggest.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 

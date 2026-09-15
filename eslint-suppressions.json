@@ -122,7 +122,7 @@
       "count": 9
     }
   },
-  "src/text_commands.ts": {
+  "src/text_trace.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 12
     }

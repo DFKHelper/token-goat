@@ -4,30 +4,27 @@
  * Provides check utilities and the runDoctor() entrypoint for the doctor command.
  */
 
-import { compileCustomPatterns } from './secret_redact.js'
 import * as fs from 'fs'
-import * as os from 'os'
 import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB, resolveOnPath } from './util.js'
-import { displaySafeText, normalizePath } from './paths.js'
+import { displaySafeText } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { PARSER_FINGERPRINT } from './parser_fingerprint.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
-import { CONFIG_KEY_ENV_OVERRIDES, loadConfig, PROJECT_LOCKED_KEYS, PROJECT_LOCKED_SECTIONS, readConfigSource } from './config.js'
-import { envBool } from './env.js'
+import { loadConfig, readConfigSource } from './config.js'
 import type { Config } from './config.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
-import { findStrayClaudeMdBlocks, isInstalled } from './install.js'
+import { isInstalled } from './install.js'
 import { vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
-import { visualStudioManagedEntry, visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
-import { cursorManagedEntry, cursorMcpPath } from './bridges/cursor_install.js'
-import { zedManagedEntry, zedSettingsPath } from './bridges/zed_install.js'
+import { visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
+import { cursorMcpPath } from './bridges/cursor_install.js'
+import { zedSettingsPath } from './bridges/zed_install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 import { isAvailable as embeddingModelAvailable, embeddingBackendLoadError } from './embeddings.js'
 import { treeSitterCoreAvailable, treeSitterCoreLoadError, isTreeSitterAvailable, missingTreeSitterGrammarPackages } from './parser.js'
@@ -43,169 +40,62 @@ import type { DoctorResult } from './doctor_result.js'
 export type { DoctorResult } from './doctor_result.js'
 export { checkSymbolBodySize, OVERSIZED_BODY_PROBE_SQL } from './symbol_body_probe.js'
 
-export interface ProcessInfo {
-  processId: number
-  parentProcessId: number
-  name: string
-  commandLine: string
-}
+import {
+  type ProcessInfo,
+  checkMcpProcessHealth,
+  readWindowsProcesses,
+  checkWorkerRunning,
+} from './cli_doctor_process.js'
 
-export function globalMcpConfigPath(): string {
-  const copilotHome = process.env['COPILOT_HOME']
-  const root = copilotHome !== undefined && copilotHome.trim() !== ''
-    ? path.resolve(copilotHome)
-    : path.join(os.homedir(), '.copilot')
-  return path.join(root, 'mcp-config.json')
-}
+import {
+  globalMcpConfigPath,
+  checkGlobalMcpConfig,
+  VSCODE_USER_SCOPE_MIGRATED_NOTE,
+  VSCODE_PROJECT_SCOPE_COVERAGE_NOTE,
+  VSCODE_USER_SCOPE_MULTIROOT_NOTE,
+  checkVscodeUserScopeHooks,
+  VSCODE_DOUBLE_FIRE_NOTE,
+  checkVscodeClaudeHooks,
+  dedupeByResolvedPath,
+  checkVisualStudio,
+  checkZed,
+  checkCursor,
+  checkStrayClaudeMdBlocks,
+} from './cli_doctor_platforms.js'
 
-export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): DoctorResult {
-  if (!fs.existsSync(configPath)) {
-    return { name: 'Global MCP configuration', status: 'ok', message: `no global Copilot MCP configuration found at ${displaySafeText(configPath)}` }
-  }
+import {
+  LOCKED_BOOLEAN_SAFE_VALUE,
+  lockedEnvOverridableKeys,
+  type EnvOverriddenSetting,
+  envOverriddenSecuritySettings,
+  checkSecurityPosture,
+  dataDirPermissionResult,
+} from './cli_doctor_security.js'
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'))
-  } catch {
-    return {
-      name: 'Global MCP configuration',
-      status: 'warn',
-      message: `could not read global Copilot MCP configuration at ${displaySafeText(configPath)}; unable to audit heavy launchers.`,
-    }
-  }
-
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return {
-      name: 'Global MCP configuration',
-      status: 'warn',
-      message: `global Copilot MCP configuration at ${displaySafeText(configPath)} has an unsupported format; unable to audit heavy launchers.`,
-    }
-  }
-
-  const configuredServers = (parsed as Record<string, unknown>)['mcpServers']
-  if (typeof configuredServers !== 'object' || configuredServers === null || Array.isArray(configuredServers)) {
-    return { name: 'Global MCP configuration', status: 'ok', message: `no global stdio MCP servers configured at ${displaySafeText(configPath)}` }
-  }
-
-  let chromeDevTools = 0
-  let playwright = 0
-  for (const server of Object.values(configuredServers)) {
-    if (typeof server !== 'object' || server === null || Array.isArray(server)) continue
-    const entry = server as Record<string, unknown>
-    const rawCommand = entry['command']
-    const command = typeof rawCommand === 'string' ? rawCommand : ''
-    const args = entry['args']
-    if (!/\bnpx(?:\.cmd)?\b/i.test(command) || !Array.isArray(args)) continue
-    const invocation = args.filter((arg): arg is string => typeof arg === 'string').join(' ')
-    if (/\bchrome-devtools-mcp\b/i.test(invocation)) chromeDevTools += 1
-    if (/@playwright[\\/]mcp\b/i.test(invocation)) playwright += 1
-  }
-
-  if (chromeDevTools > 0 || playwright > 0) {
-    const launchers: string[] = []
-    if (chromeDevTools > 0) launchers.push(`${chromeDevTools} Chrome DevTools MCP launcher${chromeDevTools === 1 ? '' : 's'}`)
-    if (playwright > 0) launchers.push(`${playwright} Playwright MCP launcher${playwright === 1 ? '' : 's'}`)
-    return {
-      name: 'Global MCP configuration',
-      status: 'warn',
-      // `launchers` is built from counts and literal words, so it carries nothing from the file; `configPath` is the config-derived part of this line and is what gets escaped, here and at the four other returns in this function.
-      message: `${launchers.join(' and ')} configured at ${displaySafeText(configPath)}. Move heavy launchers to project scope or remove them when not actively needed.`,
-    }
-  }
-
-  return { name: 'Global MCP configuration', status: 'ok', message: `no known heavy global MCP launchers configured at ${displaySafeText(configPath)}` }
-}
-
-export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | null): DoctorResult {
-  // `null` means the gather itself failed, which is not the same as "gathered, found nothing".
-  // Reporting the ok message for a failed gather is a clean bill of health backed by no data.
-  if (processes === null) {
-    return {
-      name: 'MCP process health',
-      status: 'warn',
-      message: 'could not read the process list (PowerShell did not answer), so duplicate MCP launchers and orphaned Node processes were not checked',
-    }
-  }
-  const byPid = new Set(processes.map((process) => process.processId))
-  const nodeProcesses = processes.filter((process) => process.name.toLowerCase() === 'node.exe')
-  const chromeLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*chrome-devtools-mcp/i.test(process.commandLine))
-  const playwrightLaunchers = nodeProcesses.filter((process) => /npx-cli\.js.*@playwright[\\/]mcp/i.test(process.commandLine))
-  // token-goat's own indexing daemon is spawned detached, so its parent is gone the moment it
-  // starts -- being parentless is what healthy looks like for it, not a symptom. Without this the
-  // check warned on nearly every install and advised terminating the very process that keeps the
-  // index current. Matched on the daemon flag it is always launched with (see worker.ts).
-  const orphanedNodeProcesses = nodeProcesses.filter(
-    (process) => !byPid.has(process.parentProcessId) && !/--worker-daemon\b/.test(process.commandLine),
-  )
-  const launchers = chromeLaunchers.length + playwrightLaunchers.length
-
-  if (launchers > 2 || orphanedNodeProcesses.length > 0) {
-    const details: string[] = []
-    if (chromeLaunchers.length > 1) details.push(`${chromeLaunchers.length} Chrome DevTools MCP launchers`)
-    if (playwrightLaunchers.length > 1) details.push(`${playwrightLaunchers.length} Playwright MCP launchers`)
-    if (orphanedNodeProcesses.length > 0) details.push(`${orphanedNodeProcesses.length} orphaned Node process${orphanedNodeProcesses.length === 1 ? '' : 'es'}`)
-    return {
-      name: 'MCP process health',
-      status: 'warn',
-      message: `${details.join('; ')} detected. These are host-managed processes; close stale Copilot sessions before terminating a specific confirmed orphan.`,
-    }
-  }
-
-  return { name: 'MCP process health', status: 'ok', message: 'no duplicate MCP launchers or orphaned Node processes detected' }
-}
-
-function runProcessListCommand(): string {
-  const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
-  // The interpreter is named by absolute path under SystemRoot, and the arguments go through an argv array rather than a shell string. `powershell.exe` as a bare name in a shell string is resolved by cmd.exe from the current directory first, so `token-goat doctor` run inside a repository shipping a `powershell.exe` executed that instead. The command text itself was never attacker-controlled -- the binary was.
-  const systemRoot = process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows'
-  const shell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  const result = spawnSync(fs.existsSync(shell) ? shell : 'powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
-    encoding: 'utf8',
-    timeout: 20000,
-    maxBuffer: 10 * 1024 * 1024,
-    windowsHide: true,
-  })
-  if (result.error !== undefined) throw result.error
-  return result.stdout ?? ''
-}
-
-/**
- * `null` when the process list could not be read at all, so a caller can tell that apart from an
- * empty machine. `runCommand` exists so a test can force that failure; the default is the real
- * PowerShell call, and the sibling test that supplies no override drives it live.
- */
-export function readWindowsProcesses(runCommand: () => string = runProcessListCommand): ProcessInfo[] | null {
-  if (process.platform !== 'win32') return []
-  try {
-    const output = runCommand().trim()
-    if (output === '') return []
-    const parsed: unknown = JSON.parse(output)
-    const rows = Array.isArray(parsed) ? parsed : [parsed]
-    return rows.flatMap((row): ProcessInfo[] => {
-      if (typeof row !== 'object' || row === null) return []
-      const value = row as Record<string, unknown>
-      if (typeof value['ProcessId'] !== 'number' || typeof value['ParentProcessId'] !== 'number' || typeof value['Name'] !== 'string') return []
-      return [{
-        processId: value['ProcessId'],
-        parentProcessId: value['ParentProcessId'],
-        name: value['Name'],
-        commandLine: typeof value['CommandLine'] === 'string' ? value['CommandLine'] : '',
-      }]
-    })
-  } catch {
-    return null
-  }
-}
-
-/**
- * Check if the token-goat worker process is running for `dataDir`. Accepts an explicit
- * `dataDir` (defaulting to the real install dir via isWorkerRunning's own default) so a
- * caller diagnosing a specific data directory -- as runDoctor does when given a non-default
- * `dataDir`, exactly like checkDbExists/checkSymbolCount/checkDirtyQueueHealth already do --
- * checks that directory's pid file rather than always the real default one.
- */
-export function checkWorkerRunning(dataDir?: string): boolean {
-  return dataDir !== undefined ? isWorkerRunning(dataDir) : isWorkerRunning()
+export {
+  type ProcessInfo,
+  checkMcpProcessHealth,
+  readWindowsProcesses,
+  checkWorkerRunning,
+  globalMcpConfigPath,
+  checkGlobalMcpConfig,
+  VSCODE_USER_SCOPE_MIGRATED_NOTE,
+  VSCODE_PROJECT_SCOPE_COVERAGE_NOTE,
+  VSCODE_USER_SCOPE_MULTIROOT_NOTE,
+  checkVscodeUserScopeHooks,
+  VSCODE_DOUBLE_FIRE_NOTE,
+  checkVscodeClaudeHooks,
+  dedupeByResolvedPath,
+  checkVisualStudio,
+  checkZed,
+  checkCursor,
+  checkStrayClaudeMdBlocks,
+  LOCKED_BOOLEAN_SAFE_VALUE,
+  lockedEnvOverridableKeys,
+  type EnvOverriddenSetting,
+  envOverriddenSecuritySettings,
+  checkSecurityPosture,
+  dataDirPermissionResult,
 }
 
 /**
@@ -797,177 +687,6 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
  * opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is
  * correct for users who have never touched `--copilot`.
  */
-/** What `install --vscode` prints when it walked an existing user-scope install back to project scope. */
-export const VSCODE_USER_SCOPE_MIGRATED_NOTE =
-  'Moved the VS Code integration from user scope to this project. It used to live in ~/.copilot/hooks, where VS Code resolves its working directory to the FIRST folder of a multi-root workspace and nothing else, so read hints, image shrinking and edit interception were silently doing nothing for every other folder. The shared ~/.copilot/hooks files stay in place if "token-goat install --copilot" still needs them.'
-
-/** What `install --vscode` prints after a project-scope install, since it no longer covers every project. */
-export const VSCODE_PROJECT_SCOPE_COVERAGE_NOTE =
-  'This covers this project only. Run "token-goat install --vscode" once in each project you want it in, or "token-goat install --vscode --user" for one install covering every project (single-root workspaces only — see below).'
-
-/** What `install --vscode --user` prints, so the opt-out states the limitation it is opting into. */
-export const VSCODE_USER_SCOPE_MULTIROOT_NOTE =
-  'NOTE: a user-scope install works in every project, but VS Code runs it with the first folder of a multi-root workspace as its working directory, so it does nothing for the other folders. Use "token-goat install --vscode" (project scope, the default) in each folder that needs it.'
-
-/**
- * Report a VS Code hooks install still sitting in user scope, where it cannot see past folders[0].
- *
- * VS Code resolves an agent hook's working directory from the hook FILE's own location
- * (`getWorkspaceFolder(hookFile.uri) ?? folders[0]` in workbench.desktop.main.js). `~/.copilot/hooks`
- * is inside no workspace folder, so the lookup misses and the cwd is the FIRST folder for every
- * invocation -- captured live against 1.137.0 in a two-root workspace. Read hints, image shrinking
- * and edit interception are therefore silently inert for every other folder, with no error to see.
- *
- * Two distinct findings, because the fixes differ:
- *  - user scope only: the install works but is blind past the first folder.
- *  - both scopes: VS Code runs EVERY hooks file it discovers (captured: two invocations of every
- *    event inside one session id), so each hook fires twice here on top of the blindness.
- *
- * Returns null when only the project install is present, which is the intended state.
- */
-export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: boolean): DoctorResult | null {
-  if (!userScope) return null
-  return {
-    name: 'VS Code hooks scope',
-    status: 'warn',
-    message: projectScope
-      ? 'token-goat VS Code hooks are installed in BOTH ~/.copilot/hooks and this project\'s .github/hooks, and VS Code runs every hooks file it finds, so each hook fires twice. The user-scope copy is also pinned to the first folder of a multi-root workspace. Run "token-goat uninstall --vscode --user" to keep only the project install.'
-      : 'token-goat VS Code hooks are installed in user scope (~/.copilot/hooks). VS Code runs them with the FIRST folder of a multi-root workspace as their working directory, so read hints, image shrinking and edit interception do nothing for any other folder. Run "token-goat install --vscode" in each project to move it to project scope.',
-  }
-}
-
-/** One-line note `install --vscode` prints when VS Code will also run the Claude Code hooks. */
-export const VSCODE_DOUBLE_FIRE_NOTE =
-  'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. Turn chat.useClaudeHooks off in VS Code settings to keep only the --vscode hooks.'
-
-/**
- * Warn when VS Code will run token-goat's Claude Code hooks as well as its own.
- *
- * With `chat.useClaudeHooks` on, VS Code reads `~/.claude/settings.json` and the workspace
- * `.claude/settings*.json` next to the Copilot hooks directories (its hook-source list in
- * workbench.desktop.main.js, 1.136.0), so a machine with both installs runs every token-goat hook
- * twice per tool call, once under the wrong wire format. Returns null when either half is missing.
- */
-export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInstalled: boolean, vscodeHooksInstalled: boolean): DoctorResult | null {
-  if (!useClaudeHooks || !claudeHooksInstalled) return null
-  return {
-    name: 'VS Code hooks',
-    status: 'warn',
-    message: vscodeHooksInstalled
-      ? 'VS Code has chat.useClaudeHooks on and token-goat hooks are in both ~/.claude/settings.json and the Copilot hooks file, so each hook fires twice in VS Code. Turn chat.useClaudeHooks off in VS Code settings.'
-      : 'VS Code has chat.useClaudeHooks on, so it runs the token-goat hooks from ~/.claude/settings.json in Claude Code wire format, which VS Code reads only in part. Run "token-goat install --vscode" and turn chat.useClaudeHooks off in VS Code settings.',
-  }
-}
-
-/**
- * Reports the `install --visualstudio` MCP entries found in `mcpPaths` (the user `.mcp.json` and the cwd one); null when neither has one.
- *
- * Visual Studio runs no token-goat hooks, so there is no hook to exercise: what can break on this machine is the entry's node or bundle path going stale after an upgrade, or the server being listed twice because `alsoReadPaths` (the solution's `.vscode/mcp.json`, which Visual Studio reads too) registers it as well.
- */
-/**
- * `paths` with duplicates removed, comparing on the resolved path.
- *
- * The two callers below are unparameterized (`visualStudioUserMcpPath()` and
- * `visualStudioProjectMcpPath()`), and with the cwd at the user's home directory both resolve to
- * the same `~/.mcp.json`: a single registration then reports as a duplicate, and the message prints
- * one path twice. Case folding and separator normalization are both needed, not either alone.
- */
-function dedupeByResolvedPath(paths: readonly string[]): string[] {
-  const seen = new Set<string>()
-  return paths.filter((p) => {
-    const key = normalizePath(path.resolve(p)).toLowerCase()
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: readonly string[] = []): DoctorResult | null {
-  const found = dedupeByResolvedPath(mcpPaths).flatMap((mcpPath) => {
-    const entry = visualStudioManagedEntry(mcpPath)
-    return entry === null ? [] : [{ mcpPath, ...entry }]
-  })
-  if (found.length === 0) return null
-  const stale = found.find((e) => !fs.existsSync(e.command) || !fs.existsSync(e.bundlePath))
-  if (stale !== undefined) {
-    return {
-      name: 'Visual Studio',
-      status: 'warn',
-      // Every field here is read straight out of a project `.mcp.json` / `.vscode/mcp.json`, so a repository picks all three spellings. Escaped at the interpolation site because this message is token-goat's own voice: a doctor report reaches the model verbatim as an MCP tool result (mcp_server.ts's captureOutput), and an unescaped `[tg]` in a command path would arrive looking like a token-goat deny.
-      message: `the token-goat MCP entry in ${displaySafeText(stale.mcpPath)} points at ${displaySafeText(stale.command)} ${displaySafeText(stale.bundlePath)}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
-    }
-  }
-  const registered = dedupeByResolvedPath([...found.map((e) => e.mcpPath), ...alsoReadPaths.filter((p) => visualStudioManagedEntry(p) !== null)])
-  if (registered.length > 1) {
-    return {
-      name: 'Visual Studio',
-      status: 'warn',
-      message: `Visual Studio reads ${registered.map(displaySafeText).join(' and ')}, and each registers token-goat, so it lists the token-goat server more than once. Keep one: "token-goat uninstall --vscode -p" drops the .vscode/mcp.json entry, "token-goat uninstall --visualstudio" (add -p for the project entry) drops a Visual Studio one.`,
-    }
-  }
-  return {
-    name: 'Visual Studio',
-    status: 'ok',
-    message: `MCP server registered in ${found.map((e) => displaySafeText(e.mcpPath)).join(', ')}. Visual Studio runs no token-goat hooks: it gets the MCP tools and instructions only, and only once the token-goat tools are ticked in the chat Tools picker.`,
-  }
-}
-
-/**
- * Reports the `install --zed` MCP context-server entry; null when none is present.
- *
- * Zed runs no token-goat hooks (no hooks API exists for its first-party agent), so there is no
- * hook to exercise: what can break on this machine is the shim script itself going missing, or the
- * Node binary / bundle path it was generated with going stale after an upgrade -- the same failure
- * shape `checkVisualStudio` above reports for its `command`/`args` pair, just read out of the shim
- * script's own content instead, since Zed's entry carries only `command` (a path to that script).
- */
-export function checkZed(settingsPath: string): DoctorResult | null {
-  const entry = zedManagedEntry(settingsPath)
-  if (entry === null) return null
-  const shimPath = entry.command
-  if (!fs.existsSync(shimPath)) {
-    return {
-      name: 'Zed',
-      status: 'warn',
-      message: `the token-goat MCP entry in ${displaySafeText(settingsPath)} points at ${displaySafeText(shimPath)}, which no longer exists; run "token-goat uninstall --zed" and then "token-goat install --zed" again.`,
-    }
-  }
-  const script = fs.readFileSync(shimPath, 'utf8')
-  const referencedPaths = [...script.matchAll(/"([^"]+)"/g)].map((m) => m[1]).filter((p): p is string => typeof p === 'string' && p.length > 0)
-  const stalePath = referencedPaths.find((p) => !fs.existsSync(p))
-  if (stalePath !== undefined) {
-    return {
-      name: 'Zed',
-      status: 'warn',
-      message: `the token-goat shim at ${displaySafeText(shimPath)} points at ${displaySafeText(stalePath)}, which no longer exists; run "token-goat uninstall --zed" and then "token-goat install --zed" again.`,
-    }
-  }
-  return {
-    name: 'Zed',
-    status: 'ok',
-    message: `MCP context server registered in ${displaySafeText(settingsPath)}. Zed runs no token-goat hooks: it gets the MCP tools only, and only once the token-goat server is enabled in Zed's Agent panel.`,
-  }
-}
-
-/**
- * `mcpPath`'s token-goat MCP entry, if any. `claudeHooksInstalled` (from `../install.ts`'s
- * `isInstalled`) decides which message to print: Cursor imports Claude Code's hooks from
- * `~/.claude/settings.json` by default (confirmed against the installed 3.19.7 bundle -- see
- * `../bridges/cursor_install.ts`'s header), so token-goat never writes a second copy into
- * `~/.cursor/hooks.json`. That means whether hooks actually fire in Cursor depends entirely on
- * whether the ordinary Claude Code install has been run, not on anything this bridge writes.
- */
-export function checkCursor(mcpPath: string, claudeHooksInstalled: boolean): DoctorResult | null {
-  const entry = cursorManagedEntry(mcpPath)
-  if (entry === null) return null
-  return {
-    name: 'Cursor',
-    status: 'ok',
-    message: claudeHooksInstalled
-      ? `MCP server registered in ${displaySafeText(mcpPath)}. Cursor also imports the token-goat hooks already installed in ~/.claude/settings.json by default, so hooks work in Cursor too with no separate hooks.json entry.`
-      : `MCP server registered in ${displaySafeText(mcpPath)}. Cursor writes and runs no token-goat hooks here: it imports Claude Code hooks from ~/.claude/settings.json by default, but none are installed there yet -- run "token-goat install" to get hooks in Cursor too.`,
-  }
-}
 
 export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
   if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
@@ -1053,255 +772,6 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
 /**
  * Run all doctor checks and return results.
  */
-/**
- * Warn when a token-goat marker block lives in a markdown file other than `~/.claude/CLAUDE.md`.
- *
- * install/uninstall resolve one hardcoded path, so a relocated block is never refreshed and
- * never removed -- and the next install appends a fresh copy to CLAUDE.md, duplicating the
- * guidance with only one copy live. Detection only; the user's file is never edited here.
- */
-export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
-  const strays = findStrayClaudeMdBlocks(searchRoot)
-  if (strays.length === 0) {
-    return { name: 'CLAUDE.md block', status: 'ok', message: 'no stray copies outside CLAUDE.md' }
-  }
-  return {
-    name: 'CLAUDE.md block',
-    status: 'warn',
-    message:
-      `${strays.length} stray cop${strays.length === 1 ? 'y' : 'ies'} outside CLAUDE.md ` +
-      `(never refreshed by install, never removed by uninstall, will go stale): ${strays.join(', ')}`,
-  }
-}
-
-/**
- * Reports the security posture in one place, because that is the question an evaluation asks and
- * there was no command that answered it: what is this allowed to reach, what is it scanning, and
- * who else on this machine can read what it stored.
- *
- * Reporting, not nagging. A line only warns when a protection that ships on has been turned off,
- * so a default install is quiet. Google Drive is reported either way rather than warned about: it
- * is opt-out by design, and a warning on the shipped default would train the reader to skip the
- * whole section.
- */
-/**
- * The safe direction for each project-locked setting that is a boolean.
- *
- * Every key here must also appear in {@link CONFIG_KEY_ENV_OVERRIDES}; every project-locked key that
- * has an env override and is *not* here is treated as a value replacement instead (see below). The
- * guard test asserts that split covers the locked set exactly, because the first version of this
- * check listed six keys by hand and missed nine, and a hand-kept list of what to check is the same
- * drift this file already avoided for env var *names*.
- */
-const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
-  'gdrive.enabled': false,
-  'injection.enabled': true,
-  'redaction.strict': true,
-  'mcp.confine_reads_to_project_root': true,
-  'screenshot.block_private_targets': true,
-  'network.offline': true,
-  'indexing.cross_project_symbols': false,
-  // `hints.fold_code_bodies` is deliberately absent for the same reason as `hints.fold_prose_paragraphs` below: it now ships on. Its cost was the thing keeping it off, and that cost is now measured rather than assumed -- 6.6 points of recovery reads beyond what the same symbols draw anyway, against a fold that withholds a whole function body. It remains project-locked, so the environment deciding it is still reported by the value-replacement arm.
-  // `hints.fold_prose_paragraphs` is deliberately absent: it now ships on, so neither direction is a weakening. Setting it true restates the shipped default, and setting it false shows the reader MORE of a document, so warning on either would break this file's own rule that a default install stays quiet. It remains project-locked, so the environment deciding it is still worth reporting, which is what the value-replacement arm below does.
-  // The three remaining hints keys, fold_comment_blocks and outline_large_documents and skeleton_large_sources, are absent for exactly the same reason and just as deliberately: each ships on, so neither direction of an override is a weakening, and a false entry here would make a default install warn about itself. All three stay project-locked, so the environment deciding one is still reported by the value-replacement arm below.
-  'webfetch.compress_bodies': true,
-}
-
-/**
- * Every project-locked config key that an environment variable can still override.
- *
- * `PROJECT_LOCKED_SECTIONS` and `PROJECT_LOCKED_KEYS` stop a checked-in `.token-goat.toml` from
- * loosening these. They do not stop an environment variable, and the environment is reachable from a
- * cloned repository in more ways than it looks: `.envrc` for direnv, `terminal.integrated.env.*` in a
- * committed `.vscode/settings.json`, `containerEnv` in a devcontainer. The lock and the override sit
- * at different layers, so the lock never sees it.
- *
- * Refusing the override was considered and rejected. An operator exporting a variable in their own
- * shell is doing something legitimate, and blocking it would break that case to defend against one
- * they can already see. What they cannot see is a variable arriving from a file they did not write,
- * so this reports rather than prevents.
- *
- * Derived rather than listed, so a new locked section, a new locked key, or a new env override is
- * covered the day it lands instead of the day someone remembers this function exists.
- */
-export function lockedEnvOverridableKeys(): string[] {
-  const out: string[] = []
-  for (const key of Object.keys(CONFIG_KEY_ENV_OVERRIDES)) {
-    const section = key.split('.')[0] ?? ''
-    const locked = PROJECT_LOCKED_SECTIONS.includes(section) || PROJECT_LOCKED_KEYS.includes(key)
-    if (locked && (CONFIG_KEY_ENV_OVERRIDES[key] ?? []).length > 0) out.push(key)
-  }
-  return out.sort()
-}
-
-/** One locked setting the environment is currently deciding, and how it is deciding it. */
-export interface EnvOverriddenSetting {
-  readonly setting: string
-  readonly envVar: string
-  /** `weakened` = a boolean flipped to its unsafe value. `replaced` = the environment is supplying the value for a setting with no single safe direction, which covers every non-boolean and the booleans deliberately left out of LOCKED_BOOLEAN_SAFE_VALUE. */
-  readonly kind: 'weakened' | 'replaced'
-}
-
-/**
- * Locked settings the environment is holding open or replacing.
- *
- * Booleans are read through `envBool` rather than compared as strings, so the answer here is the one
- * `_buildConfig` reached: `0`, `no` and `off` are all ways to switch a protection off, and a check
- * that only looked for the literal `false` would miss three of the four spellings. Passing the safe
- * value as the default means an unset, blank or unrecognised variable reports nothing, and a variable
- * that makes a setting *safer* reports nothing either.
- *
- * A non-boolean locked setting is reported whenever its variable is set at all. There is no safe
- * direction to compare against: `TOKEN_GOAT_WEBFETCH_ALLOW` and `TOKEN_GOAT_MCP_ALLOWED_ROOTS`
- * replace their list rather than adding to it, so the environment supplying one means the config
- * file is no longer deciding it, and only the operator can say whether the replacement is weaker.
- * Saying nothing here is what made the first version print a clean line while the fetch allow list
- * and the MCP root confinement were both being set from outside the config.
- */
-export function envOverriddenSecuritySettings(): EnvOverriddenSetting[] {
-  const out: EnvOverriddenSetting[] = []
-  for (const setting of lockedEnvOverridableKeys()) {
-    const safe = LOCKED_BOOLEAN_SAFE_VALUE[setting]
-    for (const envVar of CONFIG_KEY_ENV_OVERRIDES[setting] ?? []) {
-      if (safe === undefined) {
-        const raw = process.env[envVar]
-        if (raw !== undefined && raw.trim() !== '') out.push({ setting, envVar, kind: 'replaced' })
-      } else if (envBool(envVar, safe) !== safe) {
-        out.push({ setting, envVar, kind: 'weakened' })
-      }
-    }
-  }
-  return out
-}
-
-export function checkSecurityPosture(cfg: Config, dataDirPath: string): DoctorResult[] {
-  const results: DoctorResult[] = []
-
-  results.push({
-    name: 'Security network',
-    status: 'ok',
-    message: cfg.network.offline
-      ? 'offline mode is on: no fetch, model download, OCR data, screenshot, or Drive call'
-      : 'offline mode is off (network.offline)',
-  })
-
-  results.push(
-    cfg.injection.enabled
-      ? { name: 'Security injection', status: 'ok', message: 'fetched and MCP content is scanned and fenced' }
-      : { name: 'Security injection', status: 'warn', message: 'scanning is off (injection.enabled): fetched and MCP content reaches the model unfenced' },
-  )
-
-  results.push({
-    name: 'Security gdrive',
-    status: 'ok',
-    message: cfg.gdrive.enabled ? 'enabled (gdrive.enabled = false turns it off)' : 'disabled',
-  })
-
-  const allow = cfg.webfetch.allow.length
-  const deny = cfg.webfetch.deny.length
-  results.push({
-    name: 'Security fetch policy',
-    status: 'ok',
-    message: allow > 0
-      ? `${allow} allowed host pattern${allow === 1 ? '' : 's'}, ${deny} denied: nothing outside the allow list is fetched`
-      : `no allow list, ${deny} denied pattern${deny === 1 ? '' : 's'}: any host not denied can be fetched`,
-  })
-
-  const custom = compileCustomPatterns(cfg.redaction.custom_patterns)
-  const strictNote = cfg.redaction.strict ? 'strict mode on' : 'strict mode off (redaction.strict)'
-  const patternNote =
-    custom.patterns.length === 0
-      ? 'built-in patterns only'
-      : `${custom.patterns.length} custom pattern${custom.patterns.length === 1 ? '' : 's'} plus the built-in ones`
-  results.push(
-    custom.problems.length > 0
-      ? {
-          name: 'Security redaction',
-          // A pattern the operator believes is redacting, but which never compiled, is the one
-          // failure here that is invisible from the output itself -- so it warns rather than
-          // being reported as a healthy count that happens to be short.
-          status: 'warn',
-          message:
-            `${custom.problems.length} custom redaction pattern${custom.problems.length === 1 ? '' : 's'} could not be used ` +
-            `and ${custom.problems.length === 1 ? 'is' : 'are'} not redacting anything: ` +
-            custom.problems.map((p) => `${p.pattern} (${p.reason})`).join('; '),
-        }
-      : { name: 'Security redaction', status: 'ok', message: `${patternNote}, ${strictNote}` },
-  )
-
-  const extraRoots = cfg.mcp.allowed_roots.length
-  results.push(
-    cfg.mcp.confine_reads_to_project_root
-      ? {
-          name: 'Security mcp roots',
-          status: 'ok',
-          // Two separate controls, and reporting only the first read as a guarantee about the second. `confine_reads_to_project_root` keeps a read inside the root the caller named; `mcp.allowed_roots` decides which roots may be named at all, and empty means any of them (assertRootAllowed returns early). Saying "confined to the project root" while the caller picks that root overstates the confinement, so the empty case now names itself.
-          message: extraRoots === 0
-            ? 'reads are confined to the project root the caller names, but mcp.allowed_roots is empty, so an MCP caller may name any root on this machine'
-            : `reads are confined to the project root, and callers may name only the ${extraRoots} root${extraRoots === 1 ? '' : 's'} in mcp.allowed_roots`,
-        }
-      : { name: 'Security mcp roots', status: 'warn', message: 'confinement is off (mcp.confine_reads_to_project_root): a read can leave the project' },
-  )
-
-  // Reported at `ok` in both directions rather than warning on the permissive one, following the fetch-policy line above: cross-project lookup is the shipped default, so a warning would fire on every healthy install and teach people to skip the section. Saying it plainly is the point -- the index is machine-wide, so with this on, `symbol NAME` run in one project can answer with another project's source, verbatim, including anything sensitive that project has in it. That is by design (a monorepo sibling resolves), it is not something the output hides (every hit is printed with its absolute path), and it is the one setting here whose blast radius nothing else in this report describes.
-  results.push({
-    name: 'Security symbol scope',
-    status: 'ok',
-    message: cfg.indexing.cross_project_symbols
-      ? 'symbol lookups can resolve into other projects in the machine-wide index (indexing.cross_project_symbols = false confines them to this project)'
-      : 'symbol lookups are confined to this project',
-  })
-
-  const overridden = envOverriddenSecuritySettings()
-  const weakened = overridden.filter((o) => o.kind === 'weakened')
-  const replaced = overridden.filter((o) => o.kind === 'replaced')
-  const describe = (o: EnvOverriddenSetting): string => `${o.setting} (${o.envVar})`
-  const parts: string[] = []
-  if (weakened.length > 0) parts.push(`held open: ${weakened.map(describe).join(', ')}`)
-  if (replaced.length > 0) parts.push(`set from the environment: ${replaced.map(describe).join(', ')}`)
-  results.push(
-    overridden.length === 0
-      ? {
-          name: 'Security config overrides',
-          status: 'ok',
-          // Naming the count keeps this from reading as a guarantee about settings it never looked
-          // at, which is what the first version of this line did while nine locked keys went
-          // unchecked behind it.
-          message: `no environment variable is overriding any of the ${lockedEnvOverridableKeys().length} project-locked settings`,
-        }
-      : {
-          name: 'Security config overrides',
-          status: 'warn',
-          message:
-            `the environment, not the config file, is deciding ${overridden.length === 1 ? 'a' : 'these'} ` +
-            `project-locked setting${overridden.length === 1 ? '' : 's'}. ${parts.join('; ')}. ` +
-            'A project config cannot change these; an environment variable can, and one can be set by a file in a cloned repository.',
-        },
-  )
-
-  results.push(dataDirPermissionResult(dataDirPath))
-  return results
-}
-
-/** Owner-only is the shipped mode; anything looser means another local user can read the index. */
-function dataDirPermissionResult(dataDirPath: string): DoctorResult {
-  if (process.platform === 'win32') {
-    return { name: 'Security data dir', status: 'ok', message: 'inherits the parent ACL (POSIX modes do not apply on Windows)' }
-  }
-  try {
-    const mode = fs.statSync(dataDirPath).mode & 0o777
-    if ((mode & 0o077) !== 0) {
-      return {
-        name: 'Security data dir',
-        status: 'warn',
-        message: `mode ${mode.toString(8).padStart(3, '0')}: other local users can read the indexed source text`,
-      }
-    }
-    return { name: 'Security data dir', status: 'ok', message: `mode ${mode.toString(8).padStart(3, '0')}: owner only` }
-  } catch {
-    return { name: 'Security data dir', status: 'warn', message: 'could not be read, so its permissions are unknown' }
-  }
-}
 
 /**
  * Runs every diagnostic check and returns the results.

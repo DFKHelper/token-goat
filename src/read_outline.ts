@@ -193,9 +193,6 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       kind: s.kind,
       lineStart: s.lineStart,
       lineEnd: s.lineEnd,
-      body: s.body,
-      docstring: s.docstring,
-      parent: s.parent,
       ...(refCounts !== undefined
         ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) }
         : {}),

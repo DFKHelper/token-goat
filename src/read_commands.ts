@@ -1,4 +1,3 @@
-import { parseYamlDocument } from './read_structured_data.js'
 /**
  * CLI command handlers for surgical-read commands.
  *
@@ -15,9 +14,8 @@ import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
-import { indexFileSync, isTreeSitterAvailable } from './parser.js'
+import { indexFileSync } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
-import { supportRequestLine } from './version.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
 import { extractExportNames, extractImports, importsExtensionFor } from './import_export_extract.js'
@@ -27,12 +25,12 @@ import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
 import { readSection, listSections, extractSection } from './section_reader.js'
-import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, isTestFile } from './util.js'
+import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 export { requireNonNegativeStrictInt } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
-import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
+import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
-import { unsupportedLanguageName, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
@@ -68,24 +66,40 @@ import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from 
 
 // ---- constants --------------------------------------------------------------
 
-const DIDYOUMEAN_LIMIT = 5
+import {
+  DIDYOUMEAN_LIMIT,
+  didYouMean,
+  findStructuredKeyPath,
+  formatBareNameSpecError,
+  formatCrossFileLead,
+  rankSimilarNames,
+  trimBlankLines,
+  unknownSymbolSuggestion,
+} from './read_suggest.js'
+import {
+  confinedProjectRoot,
+  confinementRefusal,
+  formatAmbiguity,
+  parseColonLineRange,
+  parseCrossFileMultiSpec,
+  parseLineRange,
+  parseReadSpec,
+  resolveSymbolSpec,
+  runLineRange,
+} from './read_spec.js'
+import {
+  formatStatsSuffix,
+  hasRealDocstring,
+  previewLines,
+  symbolExtractorGap,
+} from './read_meta.js'
+
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
 const SYMBOL_PREVIEW_LINES = 5
-/** Qualified retries listed for an ambiguous `section` heading before the tail is summarized. Exported so `insert-section` refuses the same ambiguity with the same shape of message. */
-export const AMBIGUOUS_HEADING_LIMIT = 10
-// A query this long or longer gets a 2-edit typo budget; below it, 1. See typoBudget.
-const TYPO_TWO_EDIT_MIN_LEN = 8
-// Past this length a near-miss is no longer plausibly a typo of the same name, so the edit-distance fallback is skipped entirely.
-const TYPO_MAX_QUERY_LEN = 64
-const MIN_REVERSE_MATCH_LEN = 3 // reverse ("query contains symbol") containment only -- below this, short indexed names like `b`/`n` match nearly any query
 const GREP_MAX_LINES = 200
 // Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover
 // this tool's own index (thousands of symbols) without paging.
 export const FIND_SCAN_LIMIT = 20_000
-// Caps for the JSON/YAML nested-key lookup that runs on a `symbol` miss. 128 KiB skips generated lockfiles (this repo's package-lock.json is ~302 KB) while still covering every hand-written manifest, and 12 files bounds the worst case at ~1.5 MiB of parsing on a path that already lost -- the node cap stops a pathologically deep document from turning a miss into a hang.
-const STRUCTURED_MISS_MAX_BYTES = 128 * 1024
-const STRUCTURED_MISS_MAX_FILES = 12
-const STRUCTURED_MISS_MAX_NODES = 20_000
 
 // `refs --top` exists specifically for high-fanout symbols (hundreds+ of references) and
 // aggregates by file before truncating, so it must scan far more rows than the default
@@ -646,227 +660,6 @@ export function findSpecSeparator(spec: string): number {
   return spec.lastIndexOf('::')
 }
 
-// True when `full` ends with `suffix` at a path-segment boundary — the suffix is either the
-// whole string or immediately preceded by `/` or `\`. A raw `endsWith` would let a requested
-// `utils.ts` incorrectly match an indexed `myutils.ts`.
-function endsWithPathBoundary(full: string, suffix: string): boolean {
-  if (!full.endsWith(suffix)) return false
-  if (full.length === suffix.length) return true
-  const boundaryChar = full[full.length - suffix.length - 1]
-  return boundaryChar === '/' || boundaryChar === '\\'
-}
-
-// Minimum length for a query word to count towards word-level similarity below -- below this,
-// short words like "a"/"of" would match almost any candidate. Mirrors MIN_REVERSE_MATCH_LEN's
-// role for whole-string reverse containment.
-const MIN_WORD_SIMILARITY_LEN = 3
-
-/**
- * Rank `items` by closeness in length to `query` (shortest length-delta first), same tiebreak
- * everywhere it's used: ordinal (not locale-aware) string comparison -- an unlocaled
- * localeCompare() sorts differently across Node's small-icu vs full-icu builds and different
- * system default locales, which would make this truncation-affecting ranking nondeterministic
- * across machines/CI runners. Shared by every "did you mean" candidate list in this file so
- * they all rank the same way; does not mutate `items`.
- */
-function sortByLengthCloseness(items: string[], query: string): string[] {
-  return [...items].sort((a, b) => {
-    const diff = Math.abs(a.length - query.length) - Math.abs(b.length - query.length)
-    if (diff !== 0) return diff
-    return a < b ? -1 : a > b ? 1 : 0
-  })
-}
-
-/**
- * Filter `candidates` to those similar to `query` -- case-insensitive substring match in either
- * direction, with the reverse direction (`query` contains `candidate`) gated at
- * MIN_REVERSE_MATCH_LEN so short indexed names like `b`/`n` don't match nearly every query --
- * then rank by {@link sortByLengthCloseness} and dedupe. This is the near-name scan `runSymbol`
- * used inline before every "did you mean" list in this file grew the same unranked/unfiltered
- * dump: a one-character typo and a nonsense query used to produce byte-identical suggestion
- * lists. Factored out so `read`, `openapi-op`, and `zip-read` misses all get real ranking too,
- * not just `symbol`.
- */
-// Levenshtein distance, but bounded: it returns as soon as every cell in a row exceeds `max`, so a comparison against a wildly different name costs a couple of rows instead of a full matrix. Two rolling rows rather than a full grid -- the distance is all that is wanted, never the alignment.
-function withinEditDistance(a: string, b: string, max: number): boolean {
-  if (Math.abs(a.length - b.length) > max) return false
-  if (a === b) return true
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
-  for (let i = 1; i <= a.length; i++) {
-    const cur = [i]
-    let rowMin = i
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      const v = Math.min((cur[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost)
-      cur.push(v)
-      if (v < rowMin) rowMin = v
-    }
-    if (rowMin > max) return false
-    prev = cur
-  }
-  return (prev[b.length] ?? Number.MAX_SAFE_INTEGER) <= max
-}
-
-// One edit for a short query, two once it is long enough that two typos stay unambiguous. Scaling with length matters because a fixed budget of 2 would make almost every 4-character name a neighbour of every other.
-function typoBudget(queryLen: number): number {
-  return queryLen >= TYPO_TWO_EDIT_MIN_LEN ? 2 : 1
-}
-
-export function rankSimilarNames(candidates: string[], query: string): string[] {
-  const queryLower = query.toLowerCase()
-  const filtered = candidates.filter((c) => {
-    const cLower = c.toLowerCase()
-    return cLower.includes(queryLower) || (cLower.length >= MIN_REVERSE_MATCH_LEN && queryLower.includes(cLower))
-  })
-  // Substring containment cannot reach a typo that drops, swaps, or mistypes a character -- `parseConfg` is neither a substring of `parseConfig` nor the reverse -- which is the single most common way a caller misses a name they already know. The edit-distance pass runs ONLY when containment found nothing, so it can supply an answer where there was none but can never reorder or displace a containment match; a query near nothing still yields nothing, keeping the block a suggestion rather than a net. Queries past TYPO_MAX_QUERY_LEN skip it: at that length a couple of edits no longer means "same name, mistyped", and the scan is not worth paying for.
-  if (filtered.length === 0 && queryLower.length <= TYPO_MAX_QUERY_LEN) {
-    const budget = typoBudget(queryLower.length)
-    const near = candidates.filter((c) => withinEditDistance(c.toLowerCase(), queryLower, budget))
-    return sortByLengthCloseness([...new Set(near)], query)
-  }
-  return sortByLengthCloseness([...new Set(filtered)], query)
-}
-
-/**
- * Filter and rank `available` headings by similarity to `query` before handing them to
- * {@link didYouMean}. Unfiltered, every heading in the file was shown regardless of relevance
- * -- a query for "zzzz" printed the exact same candidate list as a genuine near-miss like
- * "Setup", which isn't a "did you mean" suggestion at all, just the full heading dump.
- * Similarity mirrors {@link resolveHeaderPos}'s widened tier in section_reader.ts (a heading
- * is similar if it contains the query as a substring, or every query word is a substring of
- * some word in the heading), so a heading the widened tier would resolve to, or find
- * ambiguous among, always shows up here as a suggestion too. Ranked by
- * closeness in length to the query, same tiebreak as the near-name scan in the `symbol`
- * miss path. Callers pass the ranked result straight to didYouMean, which already caps at
- * DIDYOUMEAN_LIMIT -- no second cap here.
- */
-export function filterSimilarHeadings(available: string[], query: string): string[] {
-  const queryLower = query.toLowerCase()
-  const queryWords = queryLower.split(/[^a-z0-9]+/).filter((w) => w.length >= MIN_WORD_SIMILARITY_LEN)
-  const matched = available.filter((heading) => {
-    const headingLower = heading.toLowerCase()
-    if (headingLower.includes(queryLower)) return true
-    if (queryLower.length >= MIN_WORD_SIMILARITY_LEN && queryLower.includes(headingLower)) return true
-    if (queryWords.length === 0) return false
-    const headingWords = headingLower.split(/[^a-z0-9]+/).filter((w) => w.length > 0)
-    // Forward containment only -- see resolveHeaderPos's widened tier in section_reader.ts
-    // for why a reverse check would false-positive on unrelated words.
-    return queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
-  })
-  // Containment cannot reach a misspelled heading word: `Instalation` is neither a substring of `Installation` nor the reverse, so a one-character slip in a heading the caller already knows reads exactly like a query about nothing. Mirror the edit-distance fallback rankSimilarNames uses for symbol names, matched WORD-to-word rather than whole-heading, since a heading is usually several words and no realistic typo budget spans the whole string. Runs only when containment found nothing, so it can never reorder or displace a containment match, and a query near no word still yields nothing.
-  if (matched.length === 0 && queryWords.length > 0) {
-    const near = available.filter((heading) => {
-      const headingWords = heading.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 0)
-      return queryWords.some((qw) => qw.length <= TYPO_MAX_QUERY_LEN && headingWords.some((hw) => withinEditDistance(hw, qw, typoBudget(qw.length))))
-    })
-    return sortByLengthCloseness(near, query)
-  }
-  return sortByLengthCloseness(matched, query)
-}
-
-export function didYouMean(candidates: string[]): string {
-  // Deduplicate first. Headings are not unique within a file -- a changelog carries one `Fixed`
-  // per release -- so an unfiltered list printed the same name five times and spent the whole
-  // suggestion budget saying one thing. Symbol callers pass names that are already distinct, so
-  // this only ever collapses a genuine repeat.
-  const unique = [...new Set(candidates)]
-  if (unique.length === 0) return ''
-  const lines = ['Did you mean:']
-  for (const c of unique.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - ${c}`)
-  }
-  if (unique.length > DIDYOUMEAN_LIMIT) {
-    lines.push(`  (${unique.length - DIDYOUMEAN_LIMIT} more not shown)`)
-  }
-  return lines.join('\n')
-}
-
-/**
- * Shared by refs/callers/impact/call-chain's bare-name miss path: a typo'd or nonexistent
- * symbol name reads identically to a real symbol with a genuinely empty result set ("no
- * references"/"no callers"), which is the exact "invites deleting live code" trap this file
- * already calls out for `--exclude-tests`. Callers already know the query came back empty
- * (never paid on a successful lookup) and have already established `name` is NOT indexed --
- * this only supplies the `Did you mean:` suggestion, same bounded-scan-then-rank shape as
- * `runSymbol`'s own near-name scan above, scoped to `rootDir` so a same-named symbol in an
- * unrelated project on the same machine (global.db is machine-wide) never leaks in as a
- * suggestion. Returns '' when the index has no near-name candidates -- callers append this
- * directly, so a leading newline is baked in only when there's something to show.
- */
-export function unknownSymbolSuggestion(name: string, rootDir: string): string {
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
-  const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), name)
-  return candidates.length > 0 ? `\n${didYouMean(candidates)}` : ''
-}
-
-// Shared "file::symbol" spec-format error for `read`/`brief` when the argument has no `::`
-// separator and isn't a readable file. The old messages ("Symbol not found" for brief, "Could
-// not read" for read) asserted something false -- the name may well be indexed, and the
-// argument was never a file at all, so this is a spec-format mistake, not a missing-symbol or
-// filesystem problem. Mirrors `similar`/`blame` (graph_commands.ts): a bare name that resolves
-// to indexed symbols is pointed at the exact `file::symbol` spec(s) to retry with; one that
-// resolves to nothing gets those commands' own "Invalid spec" wording verbatim, rather than a
-// third dialect of the same error.
-export function formatBareNameSpecError(command: string, name: string, projectRoot?: string): string {
-  const rootDir = projectRoot ?? resolveProjectRoot({ project: process.cwd() })
-  const matches = querySymbols({ name, limit: 50, rootDir })
-  const seen = new Set<string>()
-  const specs: string[] = []
-  for (const m of matches) {
-    const spec = `${toDisplayPath(rootDir, m.filePath)}::${m.name}`
-    if (seen.has(spec)) continue
-    seen.add(spec)
-    specs.push(spec)
-  }
-  if (specs.length === 0) {
-    return `Invalid spec - expected "file::symbol", got: ${name}`
-  }
-  const lines = [`Not a file: '${displaySafeText(name)}'. Did you mean:`]
-  for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - token-goat ${command} "${spec}"`)
-  }
-  if (specs.length > DIDYOUMEAN_LIMIT) {
-    lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
-  }
-  return lines.join('\n')
-}
-
-// Cross-file "did you mean" lead for the file::symbol not-found path: `formatBareNameSpecError`
-// already does a name-keyed, project-scoped lookup for the no-`::`-separator case, but the
-// same wrong-file mistake (right symbol name, wrong file in the spec) only got a file-scoped
-// same-file fallback -- which can never find a symbol that isn't in that file at all. This
-// reuses `formatBareNameSpecError`'s exact query shape/wording so the two "here's the runnable
-// spec" messages in this file don't drift into a third dialect. Returns '' if the name isn't
-// indexed anywhere.
-function formatCrossFileLead(command: string, name: string, excludeFilePath: string, projectRoot?: string): string {
-  // Same cwd fallback the sibling same-file lookup a few lines below each call site already
-  // uses (`resolveIndexPath(file, opts.projectRoot ?? process.cwd())`) -- deliberately not
-  // resolveProjectRoot's own git-toplevel lookup, which would add an unconditional `git
-  // rev-parse` call to a path that previously never shelled out at all.
-  const rootDir = projectRoot ?? process.cwd()
-  const matches = querySymbols({ name, limit: 50, rootDir })
-  const excludeResolved = resolveIndexPath(excludeFilePath, rootDir)
-  const seen = new Set<string>()
-  const specs: string[] = []
-  for (const m of matches) {
-    if (foldPath(m.filePath) === foldPath(excludeResolved)) continue
-    const spec = `${toDisplayPath(rootDir, m.filePath)}::${m.name}`
-    if (seen.has(spec)) continue
-    seen.add(spec)
-    specs.push(spec)
-  }
-  if (specs.length === 0) return ''
-  const firstSpec = specs[0]
-  const lines = [`'${name}' is defined in ${firstSpec !== undefined ? firstSpec.split('::')[0] : ''}`]
-  for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - token-goat ${command} "${spec}"`)
-  }
-  if (specs.length > DIDYOUMEAN_LIMIT) {
-    lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
-  }
-  return lines.join('\n')
-}
-
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
 //
 // Containment rule (documented per the semantic-fields task): a symbol is a candidate only if
@@ -905,18 +698,6 @@ function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { nam
   return best === null ? null : { name: best.name, kind: best.kind, lineStart: best.lineStart }
 }
 
-export function trimBlankLines(lines: string[]): string[] {
-  let start = 0
-  let end = lines.length
-  while (start < end && lines[start]?.trim() === '') start++
-  while (end > start && lines[end - 1]?.trim() === '') end--
-  return lines.slice(start, end)
-}
-
-export function firstBodyLine(body: string): string {
-  return body.split('\n').find((l) => l.trim() !== '') ?? ''
-}
-
 // ---- symbol lookup ----------------------------------------------------------
 
 export interface SymbolOptions {
@@ -943,83 +724,6 @@ export interface SymbolOptions {
   excludeTests?: boolean
   /** `--stats`: add a per-result reference count and doc-coverage flag, same shape as read/skeleton/outline's `--stats`. Opt-in; omitted or false leaves output byte-identical to today, and the extra `queryRefCounts` round trip is only paid when this is set. `symbol` is the one command in the family where this matters most for disambiguation -- it can return several same-named candidates across files -- but that is also where its known limitation bites hardest: `queryRefCounts` keys by symbol NAME (project-wide), not by definition site, so several same-named symbols in different files (e.g. under `--grep`) all show the identical count rather than a per-file one. Documented, not fixed, here for the same reason it is not fixed in read/skeleton/outline. */
   stats?: boolean
-}
-
-/**
- * Locate `name` as an object key nested at depth >= 2 inside one of the already-indexed
- * JSON/YAML files in `filePaths`, returning the dot-path that `json-query`/`yaml-query`
- * accepts, or `null` when it is not found.
- *
- * Exists because JSON/YAML files are indexed only to depth 1 (top-level keys become
- * `property` symbols; nested keys deliberately do not, or every manifest would flood
- * bare-name lookups with `name`/`version`/`type` rows and duplicate `json-query`). A `symbol
- * better-sqlite3` miss is therefore correct-from-evidence but wrong-in-fact, and its
- * `Did you mean: sql` suggestion actively points away from the answer.
- *
- * Deliberately answers with a real dot-path or with silence -- never a generic "JSON keys
- * aren't symbols" line, which would fire on nearly every miss in nearly every project and
- * bill itself for a saving it did not deliver.
- */
-export function findStructuredKeyPath(name: string, filePaths: string[]): { filePath: string; dotPath: string; command: string } | null {
-  let filesTried = 0
-  for (const filePath of filePaths) {
-    if (filesTried >= STRUCTURED_MISS_MAX_FILES) break
-    const lower = filePath.toLowerCase()
-    const isYaml = lower.endsWith('.yaml') || lower.endsWith('.yml')
-    if (!isYaml && !lower.endsWith('.json')) continue
-    // Size-gate off the stat, before reading: the point of the cap is to never pay to load or parse a lockfile, so checking after readFileText would defeat it.
-    let size: number
-    try {
-      size = fs.statSync(filePath).size
-    } catch {
-      continue
-    }
-    if (size > STRUCTURED_MISS_MAX_BYTES) continue
-    filesTried += 1
-    let data: unknown
-    try {
-      const text = readFileText(filePath)
-      if (text === null) continue
-      data = isYaml ? parseYamlDocument(text) : (JSON.parse(text) as unknown)
-    } catch {
-      // A malformed manifest must never turn a clean miss into an error; the miss message is already correct without this hint.
-      continue
-    }
-    const dotPath = findKeyDotPath(data, name)
-    if (dotPath !== null) return { filePath, dotPath, command: isYaml ? 'yaml-query' : 'json-query' }
-  }
-  return null
-}
-
-/** True when `key` can appear unambiguously as a `.`-joined segment in `json_query.ts`'s dot-path grammar: a `.` would be parsed as an extra path separator and a `[`/`]` as a bracket-expression delimiter, so a key containing either cannot be encoded as a plain segment in that grammar. */
-function isDotPathSafeKey(key: string): boolean {
-  return !key.includes('.') && !key.includes('[') && !key.includes(']')
-}
-
-/** Breadth-first search for `name` as an object key at depth >= 2 in a parsed JSON/YAML document, returning its dot-path in `json_query.ts`'s grammar (`a.b`, `a[0].b`). Breadth-first so the shallowest -- and so shortest and least ambiguous -- path wins, and node-capped so a deep document cannot make a failed lookup expensive. A match reachable only through a key containing `.`, `[`, or `]` is skipped rather than returned: such a key is not representable in the dot-path grammar, so emitting it would suggest a command that either fails or silently selects a different value. */
-function findKeyDotPath(root: unknown, name: string): string | null {
-  const queue: Array<{ value: unknown; prefix: string; depth: number; safe: boolean }> = [
-    { value: root, prefix: '', depth: 0, safe: true },
-  ]
-  let visited = 0
-  while (queue.length > 0) {
-    const node = queue.shift()
-    if (node === undefined) break
-    if (visited++ >= STRUCTURED_MISS_MAX_NODES) return null
-    const { value, prefix, depth, safe } = node
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) queue.push({ value: value[i], prefix: `${prefix}[${i}]`, depth, safe })
-      continue
-    }
-    if (value === null || typeof value !== 'object') continue
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      const keySafe = safe && isDotPathSafeKey(key)
-      const childPath = prefix === '' ? key : `${prefix}.${key}`
-      if (key === name && depth + 1 >= 2 && keySafe) return childPath
-      queue.push({ value: child, prefix: childPath, depth: depth + 1, safe: keySafe })
-    }
-  }
-  return null
 }
 
 /** Handle ``token-goat symbol <name>``. */
@@ -1344,518 +1048,6 @@ export interface ReadOptions {
   suppressStat?: boolean
 }
 
-export function parseReadSpec(spec: string): { file: string; symbol?: string } {
-  const colonIdx = findSpecSeparator(spec)
-  if (colonIdx === -1) return { file: spec }
-  return { file: spec.slice(0, colonIdx), symbol: spec.slice(colonIdx + 2) }
-}
-
-// Cross-file multi-spec: `src/a.ts::alphaFn,src/b.ts::betaFn`. Comma-separated segments are walked left to right tracking a "current file" -- a segment containing `::` sets a new current file and contributes its own symbol, a segment with no `::` inherits the current file (so `src/a.ts::alphaFn,src/b.ts::betaFn,gammaFn` reads gammaFn from b.ts). Deliberately returns null (falling through to the existing single-file `parseReadSpec`/`findSpecSeparator` handling, byte-for-byte unchanged) unless at least two segments carry their own `::`, because a spec with only one `::` segment is either the pre-existing single-file `file::a,b` form or the numeric line-range form `file::N,M` -- both already handled correctly by the code below and must not be reinterpreted here. Also declines outright if the first segment has no `::`, so a bare-name spec (no file prefix at all) keeps reaching `formatBareNameSpecError` untouched.
-export function parseCrossFileMultiSpec(spec: string): { file: string; symbol: string }[] | null {
-  const segments = spec.split(',')
-  if (segments.length < 2) return null
-  if (findSpecSeparator(segments[0]!) === -1) return null
-  if (segments.filter((seg) => findSpecSeparator(seg) !== -1).length < 2) return null
-
-  let currentFile: string | undefined
-  const pairs: { file: string; symbol: string }[] = []
-  for (const rawSeg of segments) {
-    const seg = rawSeg.trim()
-    const idx = findSpecSeparator(seg)
-    if (idx !== -1) {
-      currentFile = seg.slice(0, idx)
-      const sym = seg.slice(idx + 2)
-      if (sym.length > 0) pairs.push({ file: currentFile, symbol: sym })
-      continue
-    }
-    if (currentFile !== undefined && seg.length > 0) pairs.push({ file: currentFile, symbol: seg })
-  }
-  return pairs.length > 1 ? pairs : null
-}
-
-/**
- * Bare multi-FILE spec: `src/a.ts,src/b.ts`. The file-list counterpart of
- * {@link parseCrossFileMultiSpec} (which handles the `file::symbol` pair form) -- this is the one
- * splitter shared by `outline`/`skeleton`/`exports`/`imports`, none of which take a `::` symbol
- * part at all.
- *
- * Declines (returns null, leaving the single-file path byte-for-byte unchanged) when: there is no
- * comma; the spec as written is itself an existing file (a real path may legitimately contain a
- * comma, and that reading must win); any segment carries a `::` (that is the symbol-spec grammar,
- * not a file list); or fewer than two non-empty segments survive trimming.
- */
-export function parseMultiFileSpec(spec: string): string[] | null {
-  if (!spec.includes(',')) return null
-  if (fileExists(spec)) return null
-  if (findSpecSeparator(spec) !== -1) return null
-  const parts = spec.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-  return parts.length > 1 ? parts : null
-}
-
-/**
- * The note a single-argument read command prints when extra positional arguments were supplied.
- * Space-separated extras are dropped in silence -- an agent would believe it had seen every file
- * or symbol it named. Naming the comma form here is the whole point: it is the grammar that
- * actually reads them all.
- *
- * `noun` matches what the command's argument is called in its own usage line, so `read` says
- * "spec" rather than "file". `mergeable: false` is for the commands that genuinely have no
- * merged form (`symbol`, and `section --list`): suggesting a comma list there would print a
- * command that does not work, which is worse than printing no suggestion at all.
- */
-export function extraFileArgsNote(
-  command: string,
-  first: string,
-  extras: readonly string[],
-  opts: { noun?: 'file' | 'spec'; mergeable?: boolean } = {},
-): string {
-  const noun = opts.noun ?? 'file'
-  const head = `Note: ${extras.length} extra ${noun} argument(s) ignored (${extras.join(', ')}).`
-  if (opts.mergeable === false) return `${head} ${command} takes one ${noun} at a time.`
-  return `${head} ${command} reads one ${noun}, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
-}
-
-// A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read. Exported so mcp_server.ts's confinement gate can recognize the exact same range syntax runRead does, instead of restating this regex in a second place (see specFilePart there).
-export function parseLineRange(spec: string): { file: string; start: number; end: number } | null {
-  const m = /^(.+)@(\d+)(?:-(\d+))?$/.exec(spec)
-  if (m === null) return null
-  // If the full spec is a real file (e.g., a file literally named "notes@2024"), treat it as a plain file, not a range.
-  if (fileExists(spec)) return null
-  // A `file::symbol@LINE` anchored symbol spec also matches this regex (the whole spec ends in
-  // `@<digits>`), but its `file` capture would be the bogus "file::symbol" string -- decline here
-  // so it falls through to the normal `::` symbol-spec path, which is where the anchor actually
-  // belongs (see resolveSymbolSpec's own `@<digits>` stripping). A real file-level range spec
-  // never contains `::`, so this guard cannot reject one.
-  if (m[1]!.includes('::')) return null
-  const start = parseInt(m[2]!, 10)
-  const end = m[3] !== undefined ? parseInt(m[3], 10) : start
-  return { file: m[1]!, start, end }
-}
-
-// A `file::symbol` read whose "symbol" is actually a bare numeric line spec -- `120`, `120-140`,
-// `120:140`, or `120,140` -- is almost certainly an agent reaching for a line-range read with the
-// `::` symbol separator instead of the documented `@` form (`file@120-140`). Rather than fail with
-// "Symbol 'X' not found" and force a fall back to `sed`/full Read (extra round-trips, wasted
-// tokens), recognize the numeric shape and serve those lines. This is only ever consulted AFTER
-// symbol resolution has already found no matching symbol, so it can never shadow a real definition
-// (and no valid identifier is all-digits anyway). Returns null for anything that is not a pure
-// numeric range.
-function parseColonLineRange(symbol: string): { start: number; end: number } | null {
-  const m = /^(\d+)(?:[-:,](\d+))?$/.exec(symbol)
-  if (m === null) return null
-  const start = parseInt(m[1]!, 10)
-  const end = m[2] !== undefined ? parseInt(m[2], 10) : start
-  return { start, end }
-}
-
-// Read an inclusive, 1-indexed line range straight from disk. Index-independent (raw fs read), so it works for files in any project and for paths outside every indexed project root.
-function runLineRange(
-  range: { file: string; start: number; end: number },
-  opts: ReadOptions,
-): { text: string; code: number } {
-  const { file, start, end } = range
-  // Same projectRoot-vs-cwd resolution as runRead's bare-file branch above; `file@N-M` reaches
-  // readFileText by a different path and would otherwise keep the identical escape.
-  const diskPath = resolveAgainstProjectRoot(file, opts.projectRoot)
-  if (start < 1) {
-    return { text: `Invalid line range: start must be >= 1 (got ${start})`, code: 1 }
-  }
-  if (end < start) {
-    return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
-  }
-  const text = readFileText(diskPath)
-  if (text === null) {
-    return { text: `Could not read: ${file}`, code: 1 }
-  }
-  const allLines = text.split(/\r?\n/)
-  // A trailing newline terminates the last line rather than starting a new empty one; drop the phantom empty element split() appends so the line count matches editor/symbol-read conventions.
-  if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
-  if (start > allLines.length) {
-    return { text: `Line ${start} is past end of file (${countNoun(allLines.length, 'line')}): ${file}`, code: 1 }
-  }
-  const clampedEnd = Math.min(end, allLines.length)
-  const slice = allLines.slice(start - 1, clampedEnd)
-  if (opts.json === true) {
-    return { text: displaySafeJson({ file, start, end: clampedEnd, lines: slice }), code: 0 }
-  }
-  const tok = Math.ceil(slice.join('\n').length / 4)
-  return {
-    text: guardText(
-      [`# lines ${start}-${clampedEnd} of ${allLines.length} (~${tok} tok)`, slice.join('\n')].join('\n'),
-      'lines',
-    ),
-    code: 0,
-  }
-}
-
-// Resolves a `file::symbol` spec to its indexed SymbolEntry, including dotted-path ("Class.method")
-// disambiguation and the partial-path fallback for an index keyed by a longer relative path.
-// Shared by `runRead` and `runBrief` -- do not reimplement this resolution elsewhere.
-/**
- * Outcome of resolving a `file::symbol` (or qualified `file::Parent.symbol`) spec:
- *  - `ok`        exactly one distinct definition matched (or a Parent qualifier narrowed
- *                the field to one) — the common, unchanged path.
- *  - `ambiguous` the bare name matched several distinct definitions in the file and no
- *                Parent qualifier disambiguated them. Callers MUST surface an error that
- *                lists every candidate rather than silently return the first row.
- *  - `none`      nothing matched.
- */
-export type SymbolResolution =
-  | { kind: 'ok'; entry: SymbolEntry }
-  | { kind: 'confined'; message: string }
-  | { kind: 'ambiguous'; symbol: string; file: string; candidates: SymbolEntry[] }
-  | { kind: 'none' }
-
-// Container kinds whose docstring may hold a real doc comment rather than a parent name.
-const PARENT_IDENTIFIER_RE = /^[\w$]+$/
-
-/**
- * Best-effort name of the symbol that lexically encloses `entry`, used only to label a
- * candidate in an ambiguity error. Tree-sitter/flat-emitter adapters record the parent via
- * line-containment (the class symbol's range spans the method body), so the tightest
- * enclosing symbol is the parent. Regex-parsed adapters (php/csharp/kotlin/powershell)
- * store the parent class name directly in the method's `docstring` field because their
- * class symbol is a single-line span at the header that never contains the body — fall back
- * to that when it is a bare identifier and no enclosing symbol was found. Returns null for a
- * genuine top-level definition.
- */
-function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string | null {
-  let best: SymbolEntry | null = null
-  for (const s of fileSymbols) {
-    const sameSpan = s.lineStart === entry.lineStart && s.lineEnd === entry.lineEnd
-    if (sameSpan) continue
-    if (s.lineStart <= entry.lineStart && s.lineEnd >= entry.lineEnd) {
-      if (best === null || s.lineStart > best.lineStart) best = s
-    }
-  }
-  if (best !== null) return best.name
-  // Prefer the real `parent` column (populated by the regex adapters via makeLineSymbol/
-  // makeSpanSymbol -- see db.ts's SCHEMA_SQL comment for the full history of why this needed its
-  // own column). KEEP the docstring-as-parent fallback below: a row indexed by an older binary
-  // (or not yet reindexed since the migration) has `parent: ''` but may still carry the old
-  // overloaded value in `docstring`, and dropping the fallback would break qualified lookup for
-  // those pre-existing rows until the next reindex.
-  // Defensive `?? ''`: SymbolEntry.parent is a required field for every real indexed row (see
-  // index_reader.ts's `row.parent ?? ''` coalesce at the DB boundary), but a caller constructing
-  // a SymbolEntry-shaped object by hand (a test double, an older SDK/plugin caller) may still omit
-  // it -- treat that the same as an empty parent rather than throwing.
-  const parent = (entry.parent ?? '').trim()
-  if (parent !== '') return parent
-  const doc = entry.docstring.trim()
-  if (doc !== '' && PARENT_IDENTIFIER_RE.test(doc)) return doc
-  return null
-}
-
-/**
- * Render the hard error shown when a bare `file::symbol` lookup matches multiple distinct
- * definitions. Two shapes are handled:
- *  - same-file ambiguity (several classes in one file each defining `compress`): labels stay
- *    bare `Parent.symbol (line N)` and the retry re-targets the original `file` spec, byte-for-
- *    byte unchanged from the pre-fix same-file behavior.
- *  - cross-file ambiguity (two different files each defining a same-named top-level symbol,
- *    where `findParentName` has no cross-file concept of "parent" and returns null for both):
- *    labels are prefixed with the candidate's own indexed file path so the candidates are
- *    visually distinguishable, and the retry targets that candidate's own file path instead of
- *    re-echoing the original ambiguous `file` string (which would just re-enter this same
- *    ambiguous resolution path).
- * A mixed list (some candidates share a same-file parent, others don't, across multiple files)
- * gets file-prefixed labels for every candidate, each with its own working, distinct retry.
- */
-export function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string, commandName = 'read'): string {
-  const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
-  const displayRoot = getDisplayRoot(explicitRoot)
-  const lines = [
-    // A symbol name and a file name are chosen by the repository, and this sentence is token-goat instructing the reader what to do next, so a name shaped like a marker would read as part of that instruction.
-    `Ambiguous symbol '${displaySafeText(symbol)}' in '${displaySafeText(file)}': ${countNoun(candidates.length, 'definition')} match. ` +
-      `Retry with one of the qualified commands below to pick one:`,
-  ]
-  const fileSymCache = new Map<string, SymbolEntry[]>()
-  const getFileSyms = (filePath: string): SymbolEntry[] => {
-    let fileSyms = fileSymCache.get(filePath)
-    if (fileSyms === undefined) {
-      // FIND_SCAN_LIMIT, not a bare 1000: both call sites mean "every symbol in this file", and a
-      // silent cap makes a symbol past the cutoff read as absent rather than truncated.
-      fileSyms = querySymbols({ filePath, limit: FIND_SCAN_LIMIT })
-      fileSymCache.set(filePath, fileSyms)
-    }
-    return fileSyms
-  }
-  // A retry only needs the `@LINE` anchor when the plain `Parent.symbol` (or bare `symbol`)
-  // qualifier would not, by itself, uniquely pick this candidate back out on resubmission. Two
-  // ways that happens: (1) two candidates in the same file render the identical qualifier string
-  // (rare -- e.g. two same-named classes each with a same-named method), caught by counting
-  // qualifier strings per file below; (2) a candidate has no parent at all, and some other
-  // candidate shares its file -- resolveSymbolSpec's bare-name lookup does not filter by parent,
-  // so retrying with the bare name re-matches every same-named row in that file, parented or not
-  // (this is the original bug: a top-level `run` alongside a `cmdUninstall.run` in the same file
-  // -- the top-level one's own name is the exact spec that was already ambiguous). A parentless
-  // candidate that is the ONLY same-named definition in its file (e.g. each side of a cross-file
-  // ambiguity) needs no anchor: the retry's file already disambiguates it.
-  const parents = candidates.map((c) => findParentName(c, getFileSyms(c.filePath)))
-  const plainQualifiers = candidates.map((c, i) => (parents[i] !== null ? `${parents[i]}.${symbol}` : symbol))
-  const qualifierCounts = new Map<string, number>()
-  const fileGroupSize = new Map<string, number>()
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i]!
-    const key = `${c.filePath} ${plainQualifiers[i]}`
-    qualifierCounts.set(key, (qualifierCounts.get(key) ?? 0) + 1)
-    fileGroupSize.set(c.filePath, (fileGroupSize.get(c.filePath) ?? 0) + 1)
-  }
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i]!
-    const parent = parents[i]!
-    const plainQualifier = plainQualifiers[i]!
-    const collides =
-      (qualifierCounts.get(`${c.filePath} ${plainQualifier}`) ?? 0) > 1 ||
-      (parent === null && (fileGroupSize.get(c.filePath) ?? 0) > 1)
-    const qualifier = collides ? `${plainQualifier}@${c.lineStart}` : plainQualifier
-    // Cross-file ambiguity can't be resolved by re-typing the original (still-ambiguous) `file`
-    // spec -- retarget the retry at this candidate's own indexed file path so it resolves to
-    // exactly this candidate. Same-file ambiguity keeps retrying against the original `file`
-    // string, unchanged from the pre-fix behavior.
-    const retryFile = multiFile ? toDisplayPath(displayRoot, c.filePath) : file
-    const label = multiFile ? `${toDisplayPath(displayRoot, c.filePath)}::${qualifier}` : qualifier
-    lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat ${commandName} "${retryFile}::${qualifier}"`)
-  }
-  return lines.join('\n')
-}
-
-/**
- * The confining project root when `indexing.cross_project_symbols = false`, else null. Resolved
- * once per command so every index-backed lookup answers to the same root.
- */
-export function confinedProjectRoot(): string | null {
-  return loadConfig().indexing.cross_project_symbols ? null : resolveProjectRoot()
-}
-
-/**
- * The refusal message for an index-backed lookup at `resolved` when confinement is on, or null
- * when the lookup is allowed. Shared by every command that answers out of the index, so they all
- * refuse with one wording: the index holds symbol bodies for every project ever indexed on this
- * machine and serves them without touching the filesystem, so a directory sandbox around the
- * agent cannot contain it -- each command has to enforce the setting itself or the setting is
- * bypassed by whichever command forgot.
- */
-export function confinementRefusal(label: string, resolved: string, root: string | null): string | null {
-  if (root === null || isInsideRoot(resolved, root)) return null
-  return `${label} is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(root, resolved)}`
-}
-
-/** {@link confinementRefusal} for a caller-supplied file spec, resolved the same way the lookup itself resolves it. */
-export function fileConfinementRefusal(label: string, file: string, projectRoot: string | undefined): string | null {
-  const root = confinedProjectRoot()
-  if (root === null) return null
-  return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
-}
-
-export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
-  const { file, symbol: rawSymbol } = parseReadSpec(spec)
-  if (rawSymbol === undefined || rawSymbol === '') return { kind: 'none' }
-
-  // A trailing `@<digits>` anchors the spec to one candidate's exact `lineStart`, for the case
-  // where no `Parent.symbol` qualifier can disambiguate a top-level definition (it has no
-  // parent, so the plain qualifier is identical to the bare name that was already ambiguous).
-  // Stripped here, before any lookup, so it composes with both the bare form (`symbol@LINE`) and
-  // the dotted form (`Parent.method@LINE`) -- everything below this point operates on the
-  // anchor-free `symbol` exactly as it did before anchors existed, and the anchor itself is only
-  // consulted once by `finalize` at the very end, to narrow whatever candidates were found.
-  const anchorMatch = /^(.+)@(\d+)$/.exec(rawSymbol)
-  const symbol = anchorMatch !== null ? anchorMatch[1]! : rawSymbol
-  const lineAnchor = anchorMatch !== null ? parseInt(anchorMatch[2]!, 10) : undefined
-
-  const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
-  // Refuse before any index work: the resolution below reads bodies straight out of the shared
-  // index, so the check has to happen here rather than at each caller's rendering step.
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
-  if (confined !== null) return { kind: 'confined', message: confined }
-  if (forceRefresh === true) {
-    indexFileSyncPinned(resolved, globalDbPath())
-    enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
-  } else {
-    // Self-heal a stale index before querying below, so runRead/runBrief serve fresh data
-    // instead of the caller having to fall back to a stale-index warning.
-    healStaleIndex(resolved)
-  }
-
-  // Collapse a raw candidate list into a final resolution. Distinct definitions are keyed by
-  // their (file,line) span, so a symbol accidentally indexed twice collapses to one row and
-  // does not read as ambiguous. Exactly one distinct match -> ok (this preserves the
-  // unambiguous single-match behavior byte-for-byte). More than one distinct match -> the
-  // hard `ambiguous` error, which is the fix: never silently return candidates[0] when the
-  // caller's name genuinely picks out several different definitions.
-  const finalize = (cands: SymbolEntry[], displaySymbol: string): SymbolResolution => {
-    const seen = new Set<string>()
-    const distinct: SymbolEntry[] = []
-    for (const c of cands) {
-      const key = `${c.filePath}|${c.lineStart}|${c.lineEnd}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      distinct.push(c)
-    }
-    // A line anchor narrows an otherwise-ambiguous (or otherwise-fine) candidate list to the one
-    // definition that starts on that exact line -- exact equality only, so it reduces to at most
-    // one candidate. No match reuses the same "not found" shape as every other no-candidates
-    // case in this function (a stale anchor from a moved/deleted definition is not a new kind of
-    // failure) rather than inventing a distinct "bad anchor" error.
-    const anchored = lineAnchor === undefined ? distinct : distinct.filter((c) => c.lineStart === lineAnchor)
-    if (anchored.length === 0) return { kind: 'none' }
-    if (anchored.length === 1) return { kind: 'ok', entry: anchored[0]! }
-    return { kind: 'ambiguous', symbol: displaySymbol, file, candidates: anchored }
-  }
-
-  // Some indexed symbol names legitimately contain dots (TOML sections like "tool.poetry", CSS
-  // selectors like ".btn") and must be matched exactly before assuming the dot is a Class.method
-  // separator. Try the full unsplit symbol name first; only fall back to dot-split heuristic
-  // if the exact match returns nothing.
-  if (symbol.includes('.')) {
-    const exactMatch = querySymbols({ name: symbol, filePath: resolved, limit: 10 })
-    if (exactMatch.length > 0) {
-      return finalize(exactMatch, symbol)
-    }
-  }
-
-  // For a dotted path (e.g. "Session.refresh" or "Outer.Inner.refresh"), the symbol we want is the leaf — the LAST segment — since methods are indexed by their bare name. Using split('.')[1] would pick the middle segment of a 3+ part path and resolve to the wrong symbol (e.g. the inner class instead of its method).
-  const dotParts = symbol.split('.')
-  const [symBase, methodName] =
-    dotParts.length > 1
-      ? [dotParts[0] ?? symbol, dotParts[dotParts.length - 1]]
-      : [symbol, undefined]
-
-  // When a method name is given (e.g. "Session.refresh"), query for the method name directly. Querying for symBase (the class name) and then searching for methodName among those results always fails because all returned symbols have name === symBase, never name === methodName.
-  const lookupName = methodName ?? symBase
-  let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
-  if (candidates.length === 0) {
-    // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by
-    // matching on a path-segment boundary when the exact key misses — a raw endsWith would let a
-    // requested `utils.ts` match an indexed `myutils.ts`. Fold case on case-insensitive
-    // filesystems (Windows/macOS) the same way foldPath/pathEqClause do elsewhere in this
-    // codebase (index_prune.ts, walk_index.ts, worker.ts) — this filter runs in plain JS, not
-    // SQL, so it is not covered by querySymbols' own COLLATE NOCASE and needs its own fold.
-    const foldedFile = foldPath(file)
-    // Narrow to the requested file's final path segment in SQL, not just in the `.filter` below: the query is `ORDER BY file_path, line_start LIMIT 50`, so for a symbol name with more than 50 definitions across the machine-wide index (`run`, `main`, `handler`) the requested file's row was cut before the filter ever saw it and a present symbol reported as missing, purely because its path sorted late. Basename equality holds for both directions of the path-boundary test below (a boundary suffix relation aligns whole segments), so this narrowing cannot drop a row the filter would have kept.
-    const baseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
-    candidates = querySymbols({
-      name: lookupName,
-      limit: 50,
-      ...(baseName !== '' ? { fileBaseName: baseName } : {}),
-      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
-    }).filter((s) => {
-      const foldedFilePath = foldPath(s.filePath)
-      return (
-        foldedFilePath === foldedFile ||
-        endsWithPathBoundary(foldedFilePath, foldedFile) ||
-        endsWithPathBoundary(foldedFile, foldedFilePath)
-      )
-    })
-  }
-
-  // For a dotted spec ("ClassName.methodName"), symBase names the class/container. When the
-  // bare methodName lookup above is ambiguous (multiple same-named methods, e.g. two classes
-  // each with their own `refresh`), narrow to candidates whose line range falls inside a
-  // symbol named symBase in the same file — otherwise the wrong class's method can win.
-  if (methodName !== undefined && candidates.length > 1) {
-    // Narrow the container query by the requested file's basename in SQL, not just via the filePath containment check applied to its results below: without this, a container name shared by more than 50 classes across the index (a common name like "Handler" or "Config") sorts the file we actually want past the LIMIT 50 cutoff before that check ever sees it, and disambiguation silently falls through to the wrong same-named method. `candidates` at this point may already span more than one file (the fallback above matches on a path boundary, not exact equality), so this narrows by basename rather than exact filePath, and the per-candidate filePath equality check a few lines down still picks the right one.
-    const containerBaseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
-    const containers = querySymbols({
-      name: symBase,
-      limit: 50,
-      ...(containerBaseName !== '' ? { fileBaseName: containerBaseName } : {}),
-      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
-    })
-    // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a method's
-    // class symbol with lineEnd === lineStart (single-line span at the class header, not the
-    // full body), so the line-containment check below always misses for them -- they instead
-    // record the parent class name directly in the method symbol's `parent` column (see
-    // makeLineSymbol/makeSpanSymbol in languages/common.ts). Fall back to `docstring` for a row
-    // indexed before the `parent` column existed (or not yet reindexed since) -- see the same
-    // reasoning in findParentName above. Match on either signal so both regex adapters
-    // (parent/docstring) and tree-sitter/flat-emitter adapters (line-containment) disambiguate
-    // correctly instead of silently falling through to candidates[0] (the first same-named
-    // method, regardless of which class was actually requested).
-    const symBaseLower = symBase.toLowerCase()
-    const scoped = candidates.filter((c) => {
-      const cParent = c.parent ?? ''
-      if (cParent.toLowerCase() === symBaseLower) return true
-      if (cParent === '' && c.docstring.toLowerCase() === symBaseLower) return true
-      return containers.some(
-        (cls) =>
-          cls.filePath === c.filePath &&
-          // A container is never its own containment match (mirrors findParentName's `sameSpan`
-          // exclusion above): without this, a same-named non-nesting pair on adjacent spans --
-          // e.g. an HTML `heading` symbol and an unrelated `html_id` symbol that both happen to
-          // be named "Overview" -- lets the OUTER one satisfy containment against ITSELF (its
-          // own span trivially contains itself), so `Overview.Overview` (the exact qualifier
-          // `formatAmbiguity` printed as the retry hint for the html_id candidate, since
-          // findParentName resolved its enclosing heading's name to the same string) kept both
-          // candidates in scope and reported ambiguous again -- a disambiguation hint that could
-          // never resolve the ambiguity it was emitted for.
-          !(cls.lineStart === c.lineStart && cls.lineEnd === c.lineEnd) &&
-          c.lineStart >= cls.lineStart &&
-          c.lineEnd <= cls.lineEnd,
-      )
-    })
-    if (scoped.length > 0) candidates = scoped
-  }
-
-  // A bare name that still matches several distinct definitions (no Parent qualifier, or a
-  // qualifier that failed to narrow) resolves to `ambiguous` here — the leaf name is what the
-  // user must re-qualify, so it is the display symbol for the error's `Parent.<leaf>` labels.
-  return finalize(candidates, lookupName)
-}
-
-/**
- * Shared spec-resolution path for symbol-scoped git commands (runDiff, runLog): requires a
- * `file::symbol` spec (not just a bare file), resolves it via resolveSymbolSpec, and emits the
- * standard ambiguous/did-you-mean error (same shape as runRead's own branches) on failure.
- * Returns null on any failure so callers can just `if (r === null) return 1`.
- */
-export function resolveSymbolSpecOrEmitError(
-  commandName: string,
-  spec: string,
-  projectRoot: string | undefined,
-): SymbolEntry | null {
-  const { file, symbol } = parseReadSpec(spec)
-  if (symbol === undefined || symbol === '') {
-    emitErr(`'token-goat ${commandName}' requires a 'file::symbol' spec (got '${spec}')`)
-    return null
-  }
-
-  const resolution = resolveSymbolSpec(spec, undefined, projectRoot)
-
-  if (resolution.kind === 'confined') {
-    emitErr(resolution.message)
-    return null
-  }
-
-  if (resolution.kind === 'ambiguous') {
-    emitErr(
-      formatAmbiguity(
-        resolution.symbol,
-        resolution.file,
-        resolution.candidates,
-        projectRoot,
-        commandName,
-      ),
-    )
-    return null
-  }
-
-  if (resolution.kind === 'none') {
-    const messages = [`Symbol '${symbol}' not found in '${file}'`]
-    const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot)
-    if (crossFileLead !== '') messages.push(crossFileLead)
-    const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
-    const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
-    const closes = rankSimilarNames(scanned, symbol)
-    if (closes.length > 0) messages.push(didYouMean(closes))
-    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
-    emitErr(messages.join('\n'))
-    return null
-  }
-
-  return resolution.entry
-}
-
 /** Handle ``token-goat read "file::symbol"`` and ``token-goat read "file@N-M"``. */
 export function runRead(opts: ReadOptions): { text: string; code: number } {
   const range = parseLineRange(opts.spec)
@@ -2037,25 +1229,6 @@ function runReadMulti(pairs: { file: string; symbol: string }[], opts: ReadOptio
 
 // ---- section ----------------------------------------------------------------
 
-export interface SectionOptions {
-  spec: string
-  json?: boolean
-  /**
-   * Project root a relative file spec resolves against. Defaults to `process.cwd()`; same
-   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
-   * server) whose cwd is not the workspace root -- a relative file spec would otherwise
-   * resolve on disk relative to the wrong directory.
-   */
-  projectRoot?: string
-  /**
-   * Suppress this call's own `recordReadStat`. Set by {@link runSectionMulti} when delegating
-   * to a recursive `runSection` call per heading, so the multi-heading call records exactly
-   * one stat for the whole spec instead of one per heading -- same reasoning as
-   * {@link ReadOptions.suppressStat} for `runReadMulti`. Not a CLI/MCP-facing option.
-   */
-  suppressStat?: boolean
-}
-
 /**
  * The base a relative file path resolves against on disk. Resolves against `projectRoot` only
  * when one was explicitly given AND the path is relative: an absolute path, or the no-projectRoot
@@ -2069,205 +1242,6 @@ export interface SectionOptions {
  */
 export function resolveAgainstProjectRoot(file: string, projectRoot: string | undefined): string {
   return projectRoot !== undefined && !path.isAbsolute(file) ? path.resolve(projectRoot, file) : file
-}
-
-/** Handle ``token-goat section "file::Heading"``. */
-// True when the file carries a heading whose text is exactly the given spec (case-insensitive, trimmed), optionally with a trailing `#<digits>` ordinal stripped off first. Deliberately literal rather than going through readSection: readSection's prefix and word-subset tiers would happily resolve a comma-separated fragment, which is the very ambiguity this check exists to settle.
-function literalHeadingExists(filePath: string, heading: string): boolean {
-  const ordinalMatch = /^([^#\r\n]+)#(\d+)$/.exec(heading)
-  const base = (ordinalMatch?.[1] ?? heading).trim().toLowerCase()
-  if (base.length === 0) return false
-  return listSections(filePath, readFileText).some((h) => h.trim().toLowerCase() === base)
-}
-
-export function runSection(opts: SectionOptions): { text: string; code: number } {
-  // Cross-file multi-spec `src/a.ts::Commands,src/b.ts::Component Map`. Checked before the single-file `::` handling below for the same reason runRead checks it first (see parseCrossFileMultiSpec) -- lastIndexOf('::') would otherwise fold the whole spec into one bogus file/heading pair, and parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::A,B` multi-heading form.
-  const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
-  if (crossFilePairs !== null) return runSectionCrossFile(crossFilePairs, opts)
-
-  const colonIdx = findSpecSeparator(opts.spec)
-  if (colonIdx === -1) {
-    return { text: `Invalid section spec — expected "file::Heading", got: ${opts.spec}`, code: 1 }
-  }
-  const specFilePath = opts.spec.slice(0, colonIdx)
-  // Only resolve against projectRoot when explicitly given and the spec's file part is
-  // relative -- an absolute path, or the no-projectRoot default, stays byte-identical to the
-  // pre-existing behavior (readSection/listSections resolve a relative path against
-  // process.cwd() themselves, same as the CLI always has).
-  const filePath = resolveAgainstProjectRoot(specFilePath, opts.projectRoot)
-  const heading = opts.spec.slice(colonIdx + 2)
-
-  // Multi-heading form: `file::A,B,C`. Mirrors runRead's `file::a,b,c` multi-symbol grammar
-  // (see runReadMulti) -- section headings carry no numeric-range meaning of their own (unlike
-  // read's `file::N,M` line-range spec), so no numeric guard is needed before splitting on the
-  // comma. Unlike a symbol name, though, a heading may legitimately contain a comma ("## Setup,
-  // Teardown"), so a literal heading of that text wins over the multi-heading reading -- same
-  // precedence parseHeadingSpec applies to a trailing `#<digits>`. Without this, asking for a
-  // present heading returned two unrelated sections with exit 0 and no sign the real one existed.
-  if (heading.includes(',') && !literalHeadingExists(filePath, heading)) {
-    const multiHeadings = heading.split(',').map((h) => h.trim()).filter((h) => h.length > 0)
-    if (multiHeadings.length > 1) return runSectionMulti(specFilePath, filePath, multiHeadings, opts)
-  }
-
-  const result = readSection(filePath, heading, readFileText)
-  if (result === null) {
-    // readSection returns null both when the file is unreadable (missing, permissions, etc.)
-    // and when the file exists but the heading isn't in it -- distinguish the two so a bad
-    // path doesn't masquerade as a missing section (an agent debugging "section not found"
-    // wastes turns hunting for a heading that was never the actual problem).
-    if (!fs.existsSync(filePath)) {
-      return { text: `File not found: '${filePath}'`, code: 1 }
-    }
-    // An out-of-range ordinal (`Fixed#9` in a file with five `Fixed` headings) is not a missing
-    // heading, and reporting it as one sends the caller hunting for text that is right there. The
-    // base spec resolves, and its `occurrences` says how many there really are.
-    const ordSpec = /^(.*?)#(\d+)$/.exec(heading)
-    const ordBase = ordSpec?.[1]?.trim()
-    if (ordBase !== undefined && ordBase.length > 0) {
-      const baseResult = readSection(filePath, ordBase, readFileText)
-      if (baseResult !== null) {
-        const total = baseResult.occurrences?.length ?? 1
-        return {
-          text:
-            `Heading '${ordBase}' has ${countNoun(total, 'occurrence')} in '${specFilePath}'; ` +
-            `valid ordinals are #1 to #${total}`,
-          code: 1,
-        }
-      }
-    }
-    const messages = [`Section '${heading}' not found in '${filePath}'`]
-    const allHeadings = listSections(filePath, readFileText)
-    const available = filterSimilarHeadings(allHeadings, heading)
-    if (available.length > 0) messages.push(didYouMean(available))
-    // The similarity filter correctly drops every candidate when the query resembles no heading, which would otherwise leave the miss with no next step -- worse than the unfiltered dump it replaced, since that at least revealed what the file contained. Point at outline (the command that lists headings), mirroring the `Try: token-goat semantic` fallback runSymbol prints for the same shape of dead end. A file with no headings at all is a different answer and gets said outright, because sending the caller to outline there would just print nothing.
-    else if (allHeadings.length === 0) messages.push(`'${specFilePath}' has no headings`)
-    else messages.push(`Try: token-goat outline ${specFilePath}`)
-    return { text: messages.join('\n'), code: 1 }
-  }
-
-  // Several headings share this name and the caller did not say which. Returning the first one
-  // silently is how `section "CHANGELOG.md::Fixed"` handed back the newest release's entry with
-  // no hint that four older ones existed -- the caller cannot tell a lucky hit from a wrong one.
-  // Refuse and name the qualified retries, exactly as `read` does for an ambiguous symbol. The
-  // ambiguity rides on the result rather than collapsing it to null, so the not-found branch
-  // above can never report a heading that is plainly present as missing.
-  if (result.occurrences !== undefined) {
-    const lines = [
-      `Ambiguous heading '${heading}' in '${specFilePath}': ` +
-        `${countNoun(result.occurrences.length, 'heading')} match. ` +
-        `Retry with one of the qualified commands below to pick one:`,
-    ]
-    for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {
-      lines.push(`  - line ${line}  ->  token-goat section "${specFilePath}::${heading}#${i + 1}"`)
-    }
-    if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
-      lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)
-    }
-    return { text: lines.join('\n'), code: 1 }
-  }
-
-  // A prefix-redirected match (readSection resolved a different heading than the one asked
-  // for) is recorded as section_replacement rather than a plain section_read, mirroring the
-  // "replacement" framing used by read_replacement for a substituted read elsewhere in this
-  // file.
-  const kind = result.redirectedFrom !== undefined ? 'section_replacement' : 'section_read'
-  const fullSourceBytes = sumFileSizes([filePath])
-
-  if (opts.json === true) {
-    const text = displaySafeJson(result)
-    if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
-    return { text, code: 0 }
-  }
-
-  const redirectNote =
-    result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  const text = guardText(
-    `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
-    'heading',
-  )
-  if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
-  return { text, code: 0 }
-}
-
-/**
- * Handle ``token-goat section "file::A,B,C"`` -- fetch several sections from one file in a
- * single call, mirroring `read`'s comma-separated multi-symbol grammar (see
- * {@link runReadMulti}). Delegates each heading to a recursive {@link runSection} call
- * (`suppressStat: true`) rather than reimplementing resolution, so not-found + did-you-mean
- * and JSON shape all come from the exact same code path the single-heading form already
- * exercises -- a failure to resolve one heading is reported inline instead of aborting the
- * whole call, same as `runReadMulti`'s per-symbol handling.
- */
-function runSectionMulti(
-  specFilePath: string,
-  resolvedFilePath: string,
-  headings: string[],
-  opts: SectionOptions,
-): { text: string; code: number } {
-  let anyFound = false
-  const jsonOut: Record<string, unknown> = {}
-  const textBlocks: string[] = []
-
-  for (const heading of headings) {
-    const sub = runSection({ ...opts, spec: `${specFilePath}::${heading}`, suppressStat: true })
-    if (sub.code === 0) anyFound = true
-    if (opts.json === true) {
-      // Parse the sub-call's JSON string back into an object so the multi envelope nests real
-      // JSON per heading, never an embedded string -- a failed sub-call has no JSON body of
-      // its own, so it is represented by its plain-text error instead.
-      jsonOut[heading] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
-      continue
-    }
-    textBlocks.push(`${heading}:\n${sub.text}`)
-  }
-
-  // Count the file's on-disk size once for the whole multi-heading call, not once per
-  // heading -- each sub-call already skipped its own recordReadStat via suppressStat for
-  // exactly this reason (see SectionOptions.suppressStat).
-  const fullSourceBytes = sumFileSizes([resolvedFilePath])
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
-  if (anyFound) recordReadStat('section_read', fullSourceBytes, text, opts.spec)
-  return { text, code: anyFound ? 0 : 1 }
-}
-
-/**
- * Handle a cross-file multi-heading spec `src/a.ts::Commands,src/b.ts::Component Map` -- mirrors {@link runReadMulti} exactly (see its docstring), with `symbol` on each pair carrying a heading name instead of a symbol name. Delegates each heading to a recursive {@link runSection} call (`suppressStat: true`), so not-found + did-you-mean and JSON shape all come from the exact same single-heading path `runSectionMulti` already exercises -- a failure to resolve one heading is reported inline instead of aborting the whole call.
- */
-function runSectionCrossFile(pairs: { file: string; symbol: string }[], opts: SectionOptions): { text: string; code: number } {
-  let anyFound = false
-  const jsonOut: Record<string, unknown> = {}
-  const textBlocks: string[] = []
-
-  // A bare heading is only a safe output key when every pair shares one file -- that is the pre-existing single-file `file::A,B` shape, so keying by bare heading there keeps output byte-for-byte identical to before cross-file specs existed. Once more than one distinct file is involved, two files can legitimately share a heading name (`## Commands` is common), so the key must be the full `file::heading` pair or one entry would silently overwrite the other -- same reasoning as `runReadMulti`'s `keyFor`.
-  const distinctFiles = new Set(pairs.map((p) => p.file))
-  const keyFor = (p: { file: string; symbol: string }): string =>
-    distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`
-
-  for (const { file, symbol: heading } of pairs) {
-    const sub = runSection({ ...opts, spec: `${file}::${heading}`, suppressStat: true })
-    if (sub.code === 0) anyFound = true
-    const key = keyFor({ file, symbol: heading })
-    if (opts.json === true) {
-      // Parse the sub-call's JSON string back into an object so the multi envelope nests real
-      // JSON per heading, never an embedded string -- a failed sub-call has no JSON body of its
-      // own, so it is represented by its plain-text error instead.
-      jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
-      continue
-    }
-    textBlocks.push(`${key}:\n${sub.text}`)
-  }
-
-  // Resolves the same way runSection resolves its own `filePath` -- relative to projectRoot only when one is given and the path isn't already absolute -- so the byte count backing this call's stat matches what a single-file call against the same path would have counted.
-  const resolvePath = (f: string): string =>
-    opts.projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(opts.projectRoot, f) : f
-
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
-  if (anyFound) {
-    // Count each distinct file's on-disk size once for the whole cross-file call, not once per heading or per file repeat -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see SectionOptions.suppressStat).
-    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, resolvePath))
-    recordReadStat('section_read', fullSourceBytes, text, opts.spec)
-  }
-  return { text, code: anyFound ? 0 : 1 }
 }
 
 // ---- refs -------------------------------------------------------------------
@@ -2859,66 +1833,6 @@ export * from './read_outline.js'
  * unrecognized extension), or a tree-sitter language whose grammar did not load, so only the
  * coarse regex fallback ran. `undefined` otherwise, where "no symbols" is the honest answer.
  */
-export function symbolExtractorGap(displayPath: string, resolvedPath: string): string | undefined {
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const named = unsupportedLanguageName(resolvedPath)
-  const language = detectLanguageOfFile(resolvedPath)
-  if (named !== undefined || language === 'unknown') {
-    const what = named !== undefined ? `${named}, ${ext}` : ext !== '' ? ext : 'no extension'
-    return (
-      `'${displayPath}': token-goat has no symbol extractor for this file type (${what}), so there are no symbols to list; grep, plain reads and \`token-goat tokens\` still work on it.\n` +
-      supportRequestLine(named ?? (ext !== '' ? `${ext} file` : 'this file type'))
-    )
-  }
-  if (TREE_SITTER_LANGUAGES.includes(language) && !isTreeSitterAvailable(language)) {
-    return `No symbols found in '${displayPath}', but tree-sitter parsing for this file type (${ext}) is unavailable, so only a coarse regex fallback ran. Run \`token-goat doctor\` for the cause and the fix.`
-  }
-  return undefined
-}
-
-/** The empty-result line for `outline`/`skeleton`: a missing path, a gap in token-goat's extraction, or a file that genuinely declares nothing. */
-export function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
-  // A path that does not exist reads as "this file has no symbols", so a typo or a stale path guess looks like a definitive answer about a real file and the caller stops looking instead of fixing the path. Checked before the language branch: a missing `foo.scala` is a wrong path, not an unsupported extractor. Wording is `exports`/`imports`/`deps`/`test-for`' verbatim, which already close this same gap.
-  if (!fs.existsSync(resolvedPath)) {
-    return `Could not read: ${displayPath}`
-  }
-  return symbolExtractorGap(displayPath, resolvedPath) ?? `No indexed symbols found in '${displayPath}'`
-}
-
-/**
- * Whether a symbol's `docstring` field holds an actual doc comment.
- *
- * The column is overloaded: the regex-parsed adapters (php/csharp/kotlin/swift/scala/...)
- * store the *parent class name* there, because their class symbol is a single-line span at the
- * header that never contains the method body, so line-containment can't recover the parent (see
- * {@link findParentName}). Treating that bare name as documentation made every nested symbol in
- * those languages report `documented` when it has no doc comment at all -- a false positive, and
- * worse than the missing-docstring case because it asserts something untrue.
- *
- * A real doc comment is never a single bare identifier, so {@link PARENT_IDENTIFIER_RE} -- the
- * same test `findParentName` already uses to recognize the parent convention -- separates them.
- */
-export function hasRealDocstring(docstring: string): boolean {
-  const doc = docstring.trim()
-  return doc !== '' && !PARENT_IDENTIFIER_RE.test(doc)
-}
-
-/**
- * Render the trailing `--stats` annotation (`  [N refs, documented|undocumented]`) shared by
- * `skeleton`, `outline`, and `read`'s text output. Returns `''` when `refCounts` is `undefined`
- * (i.e. `--stats` wasn't requested), so callers can always append the result unconditionally.
- */
-export function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { name: string; docstring: string }): string {
-  return refCounts !== undefined
-    ? `  [${countNoun(refCounts.get(sym.name) ?? 0, 'ref')}, ${hasRealDocstring(sym.docstring) ? 'documented' : 'undocumented'}]`
-    : ''
-}
-
-
-
-/** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
-
-
 // ---- github pr-slice ---------------------------------------------------------
 
 export interface PrSliceCliOptions {
@@ -3550,44 +2464,6 @@ export type { SymbolEntry, RefEntry }
  * tool_result) are skipped. Returns the joined text, or '' when nothing matches,
  * which keeps `--transcript` harmless on a file that is not a transcript.
  */
-export function extractTranscriptText(jsonl: string): string {
-  const collected: string[] = []
-  for (const rawLine of jsonl.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (line.length === 0) continue
-    let obj: unknown
-    try {
-      obj = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (typeof obj !== 'object' || obj === null) continue
-    const rec = obj as Record<string, unknown>
-    if (rec['type'] !== 'assistant') continue
-    const msg = rec['message']
-    if (typeof msg !== 'object' || msg === null) continue
-    const content = (msg as Record<string, unknown>)['content']
-    if (typeof content === 'string') {
-      if (content.length > 0) collected.push(content)
-      continue
-    }
-    if (!Array.isArray(content)) continue
-    for (const block of content) {
-      if (typeof block !== 'object' || block === null) continue
-      const b = block as Record<string, unknown>
-      if (b['type'] === 'text' && typeof b['text'] === 'string' && b['text'].length > 0) {
-        collected.push(b['text'])
-      }
-    }
-  }
-  return collected.join('\n')
-}
-
-/** First `n` lines of a body, for the semantic-search preview. */
-function previewLines(body: string, n: number): string {
-  return body.split(/\r?\n/).slice(0, n).join('\n')
-}
-
 interface SemanticOptions {
   limit?: number
   /**
@@ -3925,5 +2801,9 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
 export * from './read_structured_data.js'
 export * from './read_git.js'
 export * from './read_inspect.js'
+export * from './read_suggest.js'
+export * from './read_section.js'
+export * from './read_spec.js'
+export * from './read_meta.js'
 
 export { querySymbols, queryRefs, readSection, listSections, extractSection, runSemantic }

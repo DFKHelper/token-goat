@@ -5,14 +5,16 @@ import {
   toDisplayPath,
 } from './paths.js'
 import {
-  buildContextWindow,
   compileGrepMatcher,
   countNoun,
   excludeTestsHiddenNote,
   grepFilteredToEmptyNotice,
   isTestFile,
-  renderContextWindow,
 } from './util.js'
+import {
+  buildContextWindow,
+  renderContextWindow,
+} from './util_context.js'
 import { resolveCallers, type CallerEntry } from './graph_commands.js'
 import { resolveProjectRoot } from './project.js'
 import { globalDbPath } from './constants.js'

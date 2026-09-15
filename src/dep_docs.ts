@@ -32,7 +32,7 @@ import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
 import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
-import { suggestPackageNames } from './util.js'
+import { suggestPackageNames } from './util_suggest.js'
 
 const _require = createRequire(import.meta.url)
 

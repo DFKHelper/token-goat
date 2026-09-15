@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 
 import { indexFileSync } from '../../src/parser.js'
-import { buildContextWindow } from '../../src/util.js'
+import { buildContextWindow } from '../../src/util_context.js'
 import { normalizePath } from '../../src/paths.js'
 import { foldDelivery } from '../../src/fold_delivery.js'
 import { indexedSourceText } from '../../src/indexed_source.js'
