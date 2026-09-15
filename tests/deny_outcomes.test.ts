@@ -90,7 +90,7 @@ const DENY_FIXTURES: Array<{ kind: string; text: string; expectedWithheldBytes: 
   // FORMAT-DERIVED: hooks_read.ts, Item 2 (markdown already-read) branch + editAnywayHint()
   { kind: 'markdown_already_read_deny', text: 'Markdown file already read this session. Use `token-goat section "README.md::HeadingName"` to read one section. To edit it anyway, use `token-goat replace "README.md" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, count-based (3rd+ read) deny branch + editAnywayHint()
-  { kind: 'read_count_deny', text: 'Read this file 3 times already — use `token-goat read "foo.ts::Symbol"`, `token-goat skeleton foo.ts`, or `token-goat outline foo.ts` to pull just the part you need. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
+  { kind: 'read_count_deny', text: 'Tried to read this file 3 times already — use `token-goat read "foo.ts::Symbol"`, `token-goat skeleton foo.ts`, or `token-goat outline foo.ts` to pull just the part you need. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, generic reread_deny branch + editAnywayHint()
   { kind: 'generic_reread_deny', text: 'foo.ts was already read this session (2 reads). Use token-goat read/section/symbol to re-read surgically. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts large-file deny branch (toKB, util.ts) + describeSliceAdvice() + editAnywayHint()
@@ -260,6 +260,10 @@ const SUPERSEDED_DENY_FIXTURES: Array<{ kind: string; text: string }> = [
   {
     kind: 'memory_md_reread_deny',
     text: "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.",
+  },
+  {
+    kind: 'read_count_deny',
+    text: 'Read this file 3 times already — use `token-goat read "foo.ts::Symbol"`, `token-goat skeleton foo.ts`, or `token-goat outline foo.ts` to pull just the part you need. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.',
   },
 ]
 

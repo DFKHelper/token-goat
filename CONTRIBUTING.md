@@ -53,3 +53,8 @@ The same trick applies to any tool that takes URL-style paths on the command lin
 3. Commit, push `main`, create the GitHub release (`gh release create vX.Y.Z`).
 4. The release event triggers `.github/workflows/publish.yml` which runs `npm publish`.
 5. Verify at `https://www.npmjs.com/package/token-goat`.
+
+## Session mining for improvements
+
+If you notice missed token savings, hook friction, or command errors during an AI coding session (Copilot CLI, Claude Code, Cursor, etc.), run the [Session Mining Prompt](docs/PROMPT_SESSION_MINING.md) on your session history to generate an actionable Maintainer Feedback Card before submitting a bug report or pull request.
+

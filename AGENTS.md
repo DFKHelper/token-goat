@@ -15,6 +15,8 @@ npm run test:guards # fast I/O-free structural guards (tests/guards)
 npm run test:matrix # built-bundle command matrix (slow, pre-push/CI tier)
 npm run typecheck   # tsc --noEmit
 npm run lint        # ESLint
+npm run docs:arch   # sync CLAUDE.arch.md with src/ modules
+npm run docs:arch:check # verify zero architecture drift
 ```
 
 Tests run in two tiers:

@@ -519,12 +519,12 @@ async function main() {
     return
   }
 
-  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs)))
+  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs, payload)))
 }
 
 ${MATERIALIZE_SHRUNK_IMAGE_JS}
 
-function translate(copilotEvent, resp, toolName, originalToolArgs) {
+function translate(copilotEvent, resp, toolName, originalToolArgs, payload) {
   if (copilotEvent === 'preToolUse') {
     const hso = resp && resp.hookSpecificOutput
     const denied = resp && (resp.decision === 'block' || (hso && hso.permissionDecision === 'deny'))
@@ -546,52 +546,20 @@ function translate(copilotEvent, resp, toolName, originalToolArgs) {
   }
 
   if (copilotEvent === 'postToolUse') {
-    // Verified against the shipping @github/copilot 1.0.80 bundle, not against the docs page.
-    // NativeHookPipelineProcessor.postToolExecution (app.js offset 2043150) gates on
-    // toolResult.resultType === "success", then does n.toolResultJson && CSr(e.toolResult,
-    // n.toolResultJson), where CSr (offset 2032350) is an in-place Object.assign; the mutated
-    // object is re-serialized back to native in the postTool callback at offset 1793926. So
-    // modifiedResult IS honored on this event, and token-goat's rewriteOutput producers
-    // (compression, injection fencing, image shrink) really do reach the model. resultType is
-    // hardcoded 'success' because success is the only branch this event ever runs on.
-    //
-    // additionalContext on THIS event is dropped on the JS path. grep -abo "onAdditionalContext:"
-    // app.js returns nothing, so the callback is never supplied, and the two "onAdditionalContext?"
-    // call sites (offsets 2041896 and 2043300) are both no-ops. preToolsExecution (offset 2041832)
-    // additionally pushes each context into an array that IS drained into the native return
-    // payload (additional_contexts, offset 1791950); postToolExecution has no such push and its
-    // native return payload (offset 1793926) has no additional_contexts key. Residual, stated
-    // honestly: the native hookProcessorPostToolUse might fold additionalContext into the
-    // toolResultJson it returns, and that was NOT verified. The evidence leans against it, since
-    // the failure sibling path appends its context explicitly in JS via
-    // hookAppendPostToolUseFailureContext and there is no success-path counterpart. The
-    // out.additionalContext below is kept as cheap best-effort, not as a channel anything should
-    // depend on -- see src/pending_context.ts, whose whole design depended on it.
-    //
-    // Failed tool calls never reach this event. postToolUse and postToolUseFailure are two
-    // distinct hook events (both listed in the runtime.node hook-event enum at offset 101618150),
-    // and the shipped copilot-sdk/types.d.ts says onPostToolUse "does not fire for non-success
-    // results". The failure event cannot carry a fence either: PostToolUseFailureHookInput carries
-    // only a stringified error message, not the tool result, and PostToolUseFailureHookOutput
-    // consumes only additionalContext -- "modifiedResult or suppressOutput are not honored for
-    // failure hooks". rejected/denied/timeout results trigger no post hook at all. So on Copilot,
-    // the output of a failed tool call reaches the model unfenced, uncompressed and unshrunk, and
-    // no response shape this shim could emit changes that. That gap is real and still open. What
-    // is now wired is the narrower thing that IS possible there: the postToolUseFailure branch
-    // below carries advisory text alongside the failure, and never rewrites it.
-    //
-    // Emitted camelCase-only. The inbound side around line 247 also tolerates a snake_case "VS
-    // Code compatible" shape, and this comment used to justify the camelCase choice by claiming
-    // PascalCase event registration selects the snake_case response format. That reasoning is
-    // UNVERIFIED in 1.0.80: every hook-response field in the native string tables is camelCase,
-    // and the snake_case hits in the bundle are unrelated internal Rust identifiers. camelCase
-    // stays because it is what the bundle reads; the old justification is no longer asserted.
+    // modifiedResult is honored on success: rewriteOutput (compression, fencing, image shrink) reaches LLM.
+    // additionalContext is dropped on Copilot CLI JS path; we fold context into modifiedResult.textResultForLlm.
     const hso = resp && resp.hookSpecificOutput
     const updatedToolOutput = hso && hso.updatedToolOutput
     const context = extractContext(resp)
     const out = {}
     if (typeof updatedToolOutput === 'string') {
       out.modifiedResult = { resultType: 'success', textResultForLlm: updatedToolOutput }
+    } else if (context) {
+      const rawResult = payload && payload.toolResult
+      const originalText = rawResult && (typeof rawResult.textResultForLlm === 'string' ? rawResult.textResultForLlm : typeof rawResult.text_result_for_llm === 'string' ? rawResult.text_result_for_llm : undefined)
+      if (typeof originalText === 'string') {
+        out.modifiedResult = { resultType: 'success', textResultForLlm: originalText + '\\n\\n[token-goat: ' + context + ']' }
+      }
     }
     if (context) out.additionalContext = context
     return out

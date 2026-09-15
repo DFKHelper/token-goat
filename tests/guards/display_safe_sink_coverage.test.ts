@@ -366,7 +366,7 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'expression is a token-budget truncator, not a neutralizer, and is not what makes it safe.',
   ],
   [
-    'read_commands.ts:sym.name',
+    'read_outline.ts:sym.name',
     'skeleton and outline listing rows: these are the payload the reader asked for, and these ' +
       'commands hand back file structure unfenced by design. Escaping the name alone would buy ' +
       'nothing, because the same row carries firstBodyLine(sym.body) and the docstring summary as ' +
@@ -374,7 +374,7 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'header above the rows is token-goat\'s own line. This is a deliberate scope boundary.',
   ],
   [
-    'read_commands.ts:sym.kind',
+    'read_outline.ts:sym.kind',
     'the other column of the same skeleton and outline rows as sym.name above: the payload the ' +
       'reader asked for, sitting on a line that also carries raw source bytes. Escaping one column ' +
       'of a row whose neighbour is unescaped by design would be theatre, not defence.',

@@ -4,44 +4,57 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 ## Component Map
 
-**Entry and dispatch**
+<!-- ARCH_COMPONENTS_START -->
+
+**Entry and CLI Dispatch**
 
 | Module | Role |
 |--------|------|
-| [`src/main.ts`](src/main.ts) | Package executable shim — calls `run()` from `cli.ts`; lets the event loop drain (no `process.exit`) so buffered stdout flushes cleanly on Windows pipes |
+| [`src/cli_cmd_analysis.ts`](src/cli_cmd_analysis.ts) | CLI command registration for code analysis, dependency, graph, and git commands. |
+| [`src/cli_cmd_formats.ts`](src/cli_cmd_formats.ts) | CLI command registration for file formats: PDF, Office, Structured Data, SQLite, Media, and Text utilities. |
+| [`src/cli_cmd_session.ts`](src/cli_cmd_session.ts) | CLI command registration for session, caching, audit, skill, and note commands. |
+| [`src/cli_dispatch.ts`](src/cli_dispatch.ts) | Shared CLI execution and dispatch helpers. |
+| [`src/cli_help.ts`](src/cli_help.ts) | Compact CLI help generation. |
 | [`src/cli.ts`](src/cli.ts) | Commander CLI; `buildProgram()` registers every subcommand and wires it to a `cmd*` handler via `guard()`; `run()` is the exported entry point |
-| [`src/read_commands.ts`](src/read_commands.ts) | **Single source of truth for surgical-read logic** — `runSymbol`, `runRead`, `runSection`, `runRefs`, `runSkeleton`, `runOutline`, `runChanged`, `runConfigGet`, `runExports`, `runImports`, `runFind`, `runGrep`; all CLI read subcommands delegate here |
+| [`src/main.ts`](src/main.ts) | Package executable shim — calls `run()` from `cli.ts`; lets the event loop drain (no `process.exit`) so buffered stdout flushes cleanly on Windows pipes |
 | [`src/mcp_server.ts`](src/mcp_server.ts) | `createMcpServer()`: MCP stdio server for `token-goat mcp-serve`, registering all 18 tools by calling the same `read_commands.ts`/`content_store.ts` handlers the CLI uses; does not connect a transport |
 | [`src/types.ts`](src/types.ts) | Wire-shape leaf: `HookOutput` union, `HOOK_EVENTS`, `CANONICAL_TOOLS`, `GitResult` — no local imports, safe for any layer to depend on |
 
-**Indexer and worker (critical path)**
+**Indexer and Worker (Critical Path)**
 
 | Module | Role |
 |--------|------|
-| [`src/parser.ts`](src/parser.ts) | Tree-sitter orchestration and all symbol/ref/section extraction. Inline tree-sitter extractors for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++; regex/pattern extractors (inline) for Markdown, JSON, YAML, TOML, CSS, and Dockerfile; regex adapters (from `src/languages/registry.ts`, reached through the dynamic `loadRegexExtractors()` so hooks never compile them) for C#, PHP, HTML, Liquid, Kotlin, GraphQL, SQL, INI, Makefile, Proto, and `.env`. Main entry points: `indexFileSync()` (sync, called by worker drain), `parseFile()` (async, calls `parseContent()` then `writeParseResult()`) |
-| [`src/parser_types.ts`](src/parser_types.ts) | Shared types: `SymbolEntry`, `RefEntry`, `FileIndexEntry`, `Language` union (27 values plus `unknown`), `EXTENSION_LANGUAGE`, `FILENAME_LANGUAGE`, `detectLanguage()` |
-| [`src/worker.ts`](src/worker.ts) | Dirty-queue consumer — `runWorkerLoop()` polls every `DEFAULT_POLL_INTERVAL_MS` (2000 ms); `drainOnce()` calls `processDirtyBatch()`, which SHA-checks each dirty file then calls `makeIndexer(dbPath)` (production default: `globalDbPath()`); can run as a Node.js Worker Thread or as a detached child process. Also runs periodic housekeeping in the same loop: snapshot cleanup and a daily `sweepKnownRoots()` pass (see `index_prune.ts`) that prunes dead file rows for known project roots |
-| [`src/index_prune.ts`](src/index_prune.ts) | `pruneDeletedFiles()` deletes file/symbol/ref/chunk rows under a root prefix for paths no longer on disk (used by `token-goat index` and the worker sweep); `recordKnownRootThrottled()` (called from `postEditHandler`) upserts the edited file's project root into the `known_roots` table; `sweepKnownRoots()` prunes dead rows for reachable known roots, tombstones unreachable roots for `KNOWN_ROOT_MISSING_GRACE_MS` (7 days) before forgetting them, and flags rather than prunes a root where the deletion would remove an anomalous share of its rows |
-| [`src/worker.ts`](src/worker.ts) | Daemon lifecycle for the same worker: PID file write/read/clear, `startDetachedWorker()`, `runDetachedWorkerDaemon()` |
 | [`src/fingerprint.ts`](src/fingerprint.ts) | `fingerprintFile()` — fast SHA-check used by `processDirtyBatch` to skip unchanged files |
+| [`src/index_prune.ts`](src/index_prune.ts) | `pruneDeletedFiles()` deletes file/symbol/ref/chunk rows under a root prefix for paths no longer on disk (used by `token-goat index` and the worker sweep); `recordKnownRootThrottled()` (called from `postEditHandler`) upserts the edited file's project root into the `known_roots` table; `sweepKnownRoots()` prunes dead rows for reachable known roots, tombstones unreachable roots for `KNOWN_ROOT_MISSING_GRACE_MS` (7 days) before forgetting them, and flags rather than prunes a root where the deletion would remove an anomalous share of its rows |
+| [`src/parser_fingerprint.ts`](src/parser_fingerprint.ts) | Exports: `PARSER_FINGERPRINT` |
+| [`src/parser_refs.ts`](src/parser_refs.ts) | Call-site reference extraction via tree-sitter AST traversal. |
+| [`src/parser_structured.ts`](src/parser_structured.ts) | Extractors for structured textual formats (Markdown, JSON, YAML, TOML, CSS, Dockerfile) and fallback regex symbol recovery. |
+| [`src/parser_treesitter.ts`](src/parser_treesitter.ts) | Tree-sitter symbol extractors for typed and compiled languages (TS/JS, Python, Go, Rust, Ruby, Java, C/C++). |
+| [`src/parser_ts_types.ts`](src/parser_ts_types.ts) | Minimal structural typings for the node-tree-sitter API surface we touch. |
+| [`src/parser_types.ts`](src/parser_types.ts) | Shared types: `SymbolEntry`, `RefEntry`, `FileIndexEntry`, `Language` union (27 values plus `unknown`), `EXTENSION_LANGUAGE`, `FILENAME_LANGUAGE`, `detectLanguage()` |
+| [`src/parser.ts`](src/parser.ts) | Tree-sitter orchestration and all symbol/ref/section extraction. Inline tree-sitter extractors for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++; regex/pattern extractors (inline) for Markdown, JSON, YAML, TOML, CSS, and Dockerfile; regex adapters (from `src/languages/registry.ts`, reached through the dynamic `loadRegexExtractors()` so hooks never compile them) for C#, PHP, HTML, Liquid, Kotlin, GraphQL, SQL, INI, Makefile, Proto, and `.env`. Main entry points: `indexFileSync()` (sync, called by worker drain), `parseFile()` (async, calls `parseContent()` then `writeParseResult()`) |
+| [`src/reconcile.ts`](src/reconcile.ts) | Catch-up reconciliation: detect index drift caused by edits token-goat never saw. |
+| [`src/worker.ts`](src/worker.ts) | Dirty-queue consumer — `runWorkerLoop()` polls every `DEFAULT_POLL_INTERVAL_MS` (2000 ms); `drainOnce()` calls `processDirtyBatch()`, which SHA-checks each dirty file then calls `makeIndexer(dbPath)` (production default: `globalDbPath()`); can run as a Node.js Worker Thread or as a detached child process. Also runs periodic housekeeping in the same loop: snapshot cleanup and a daily `sweepKnownRoots()` pass (see `index_prune.ts`) that prunes dead file rows for known project roots |
 
-**Storage**
+**Storage and Database**
 
 | Module | Role |
 |--------|------|
+| [`src/constants.ts`](src/constants.ts) | `dataDir()` (platform-keyed data root), `globalDbPath()`, `configPath()`, `ENV_KEYS` |
 | [`src/db.ts`](src/db.ts) | SQLite connection cache (`getDb()`/`closeDb()`/`closeAllDbs()`); `initConnection()` applies WAL, `SCHEMA_SQL` (files/symbols/refs/chunks), `FTS_SQL` (symbols_fts FTS5 virtual table plus sync triggers), and optional sqlite-vec `chunk_vectors` table |
 | [`src/index_reader.ts`](src/index_reader.ts) | Query layer over the index DB: `querySymbols()`, `queryRefs()`, `getFileEntry()`, `searchSymbolsFts()` |
 | [`src/section_reader.ts`](src/section_reader.ts) | Section/heading extraction (`readSection()`, `listAllSections()`) for `token-goat section` |
-| [`src/constants.ts`](src/constants.ts) | `dataDir()` (platform-keyed data root), `globalDbPath()`, `configPath()`, `ENV_KEYS` |
 | [`src/stats.ts`](src/stats.ts) | Stats aggregation from the `stats` table in `global.db`; `summarize()`, `renderStats()` |
 
-**Embeddings and semantic search**
+**Embeddings and Semantic Search**
 
 | Module | Role |
 |--------|------|
+| [`src/embed_model.ts`](src/embed_model.ts) | The embedding backend: fetch the pinned model, verify it, run it, pool it. |
+| [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts) | A BERT WordPiece tokenizer for exactly the spec `bge-small-en-v1.5`'s `tokenizer.json` declares: BertNormalizer(clean_text, handle_chinese_chars, strip_accents=null, lowercase=true |
 | [`src/embeddings.ts`](src/embeddings.ts) | [`src/embed_model.ts`](src/embed_model.ts) (pinned `Xenova/bge-small-en-v1.5`, 384 dimensions, over `onnxruntime-node`) and [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts); `chunkFile()` splits source into overlapping windows; `upsertChunks()` writes to `chunks` and `chunk_vectors`; `searchSemantic()` queries `chunk_vectors` via vec0 KNN |
 
-**Paths and project detection**
+**Paths, Filesystem, and Project Detection**
 
 | Module | Role |
 |--------|------|
@@ -49,112 +62,396 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/project.ts`](src/project.ts) | `findProject()` walks up for project markers; `makeProjectAt()` for marker-free dirs; `projectHash()` (SHA1 of canonical path) |
 | [`src/repomap.ts`](src/repomap.ts) | `getTrackedFiles()` via `git ls-files`; `buildMap()` / `buildCompactMap()` / `formatMap()` for `token-goat map` |
 
-**Hook subsystem**
+**Hook Subsystem**
 
 | Module | Role |
 |--------|------|
+| [`src/code_fold.ts`](src/code_fold.ts) | First-read fold planning: `planBodyFolds()` picks foldable index spans (functions, methods, variables; never a class, interface, or type alias) and `planCommentFolds()` finds comment blocks of at least twelve lines from the delivered text alone, so a file the indexer has never seen still folds. Comment syntax is keyed on the file extension and never sniffed from content |
 | [`src/hook_registry.ts`](src/hook_registry.ts) | `registerHook(eventName, handler, filter?)` — stores handlers in a `Map<HookEventName, Registration[]>`; `runHook()` dispatches by event name and optional tool-name filter |
-| [`src/relay.ts`](src/relay.ts) | Entry point for `token-goat hook <event>`: `relay()` reads the JSON payload from stdin, normalizes tool-scoped events via `hooks_cli.ts::normalizePayload()` (harness-aware: maps Codex/Gemini tool names to canonical names), dispatches via `hook_registry.ts::runHook()`, then `serializeOutput()` translates the result back to the harness wire format |
+| [`src/hooks_agent_spawn.ts`](src/hooks_agent_spawn.ts) | Subagent briefing pack hook. |
+| [`src/hooks_bash_commands.ts`](src/hooks_bash_commands.ts) | Shell command parsing, git mutation detection, pipeline filtering, and syntax validation. |
+| [`src/hooks_bash.ts`](src/hooks_bash.ts) | `preBashHandler()` — cat/wsl-cat/rg detection (incl. `powershell -Command`/`pwsh -c`-wrapped `Get-Content` via `extractPowerShellWrappedGetContent`, size-gated on temp paths), bash output dedup, compression filters; `postBashHandler()` — caches bash stdout/stderr, emits `gh api` and one-time `gh pr/issue view` field-batching advisories |
+| [`src/hooks_bashoutput.ts`](src/hooks_bashoutput.ts) | BashOutput poll-delta caching hook. |
+| [`src/hooks_browser_image.ts`](src/hooks_browser_image.ts) | post_tool_use handler for browser-automation MCP tools whose results embed an inline base64 screenshot with no destination-file option. |
 | [`src/hooks_cli.ts`](src/hooks_cli.ts) | Harness payload normalization only: `normalizePayload()` translates harness-specific tool payloads to token-goat's canonical shape before dispatch. Response serialization and hook dispatch live in `relay.ts` / `hook_registry.ts` |
 | [`src/hooks_common.ts`](src/hooks_common.ts) | Shared hook helpers: `getToolName()`, `getToolInput()`, `getFilePath()`, `passOutput()`, `denyOutput()`, `contextOutput()` |
-| [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection; `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
-| [`src/code_fold.ts`](src/code_fold.ts) | First-read fold planning: `planBodyFolds()` picks foldable index spans (functions, methods, variables; never a class, interface, or type alias) and `planCommentFolds()` finds comment blocks of at least twelve lines from the delivered text alone, so a file the indexer has never seen still folds. Comment syntax is keyed on the file extension and never sniffed from content |
-| [`src/hooks_edit.ts`](src/hooks_edit.ts) | `postEditHandler()` — calls `recordFileEdit()` and `appendDirtyPath()` to queue the file for re-indexing, `ensureWorkerAlive()` to respawn the worker daemon if it died, and `recordKnownRootThrottled()` to register the file's project root for the worker's periodic dead-row sweep; fires on `Write` and `Edit` tool events |
-| [`src/hooks_bash.ts`](src/hooks_bash.ts) | `preBashHandler()` — cat/wsl-cat/rg detection (incl. `powershell -Command`/`pwsh -c`-wrapped `Get-Content` via `extractPowerShellWrappedGetContent`, size-gated on temp paths), bash output dedup, compression filters; `postBashHandler()` — caches bash stdout/stderr, emits `gh api` and one-time `gh pr/issue view` field-batching advisories |
-| [`src/hooks_fetch.ts`](src/hooks_fetch.ts) | `preFetchHandler()` / `postFetchHandler()` — image shrink for WebFetch responses, web-output cache |
 | [`src/hooks_compact.ts`](src/hooks_compact.ts) | `preCompactHandler()` — builds a structured session manifest from `getSessionFiles()` and `getSessionWebFetches()` and returns it as `systemMessage` |
+| [`src/hooks_edit.ts`](src/hooks_edit.ts) | `postEditHandler()` — calls `recordFileEdit()` and `appendDirtyPath()` to queue the file for re-indexing, `ensureWorkerAlive()` to respawn the worker daemon if it died, and `recordKnownRootThrottled()` to register the file's project root for the worker's periodic dead-row sweep; fires on `Write` and `Edit` tool events |
+| [`src/hooks_exitplanmode.ts`](src/hooks_exitplanmode.ts) | ExitPlanMode plan-body deduplication hook. |
+| [`src/hooks_fetch.ts`](src/hooks_fetch.ts) | `preFetchHandler()` / `postFetchHandler()` — image shrink for WebFetch responses, web-output cache |
+| [`src/hooks_glob.ts`](src/hooks_glob.ts) | post_tool_use / pre_tool_use handlers for the Glob tool. |
+| [`src/hooks_grep.ts`](src/hooks_grep.ts) | post_tool_use / pre_tool_use handlers for the Grep tool. |
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |
+| [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
+| [`src/hooks_read_slice.ts`](src/hooks_read_slice.ts) | Line windowing, slice estimation, line diffing, and truncated-read detection. |
+| [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection; `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
+| [`src/hooks_screenshot.ts`](src/hooks_screenshot.ts) | Pre-tool-use hook — `pre_screenshot`: denies MCP screenshot tool calls that don't specify a destination file, redirecting the model to re-issue the call with one. |
+| [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
 | [`src/hooks_skill.ts`](src/hooks_skill.ts) | `postSkillHandler()` captures skill bodies across compaction; `preSkillHandler()` denies a same-session re-load with a compact-recall hint |
-| [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
+| [`src/hooks_taskoutput.ts`](src/hooks_taskoutput.ts) | TaskOutput poll-delta caching hook. |
+| [`src/hooks_tool_failure.ts`](src/hooks_tool_failure.ts) | `post_tool_use_failure` handler -- the repeat-failure brake. |
+| [`src/hooks_websearch.ts`](src/hooks_websearch.ts) | WebSearch caching/dedup hooks. |
+| [`src/hooks_write.ts`](src/hooks_write.ts) | pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302). |
 | [`src/image_shrink.ts`](src/image_shrink.ts) | `preReadImageHandler()` — intercepts large image Read events, shrinks via system tools, injects the smaller bytes |
 | [`src/install.ts`](src/install.ts) | `installHooks()` / `uninstallHooks()` — idempotently writes/removes hook entries in `.claude/settings.json` and generates the shim at `claudeHookScriptPath()` (`~/.claude/hooks/token-goat-shim.js`); each entry invokes `hookCommandFor(shim, event)` = `"<node>" "<shim>" <event> "<entry>"`. Staleness is decided by exact command equality, so a legacy alias, a pre-shim bare command, and a shim whose baked paths have moved are all replaced in place. `HOOK_EVENT_MAP` registers `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, `SubagentStop`, `SessionStart` |
+| [`src/relay.ts`](src/relay.ts) | Entry point for `token-goat hook <event>`: `relay()` reads the JSON payload from stdin, normalizes tool-scoped events via `hooks_cli.ts::normalizePayload()` (harness-aware: maps Codex/Gemini tool names to canonical names), dispatches via `hook_registry.ts::runHook()`, then `serializeOutput()` translates the result back to the harness wire format |
 
-**Session and compaction**
+**Session, Compaction, and Audit**
 
 | Module | Role |
 |--------|------|
-| [`src/session.ts`](src/session.ts) | In-memory per-session state for the current hook process: `recordFileRead()`, `recordFileEdit()`, `recordWebFetch()`, `recordBashOutput()`, `getSessionId()`; `exportSessionState()` / `importSessionState()` serialize it for cross-process persistence |
-| [`src/session_store.ts`](src/session_store.ts) | Persists session state across the per-tool-call hook processes: `loadSessionState()` / `saveSessionState()` (one JSON per session under `sessions/`), wired into [`src/relay.ts`](src/relay.ts). Fail-soft + merge-on-save |
-| [`src/disk_cache.ts`](src/disk_cache.ts) | Shared content-addressed blob store backing the bash/web caches: `tokenGoatHome()`, `storeBlob()` / `loadBlob()` / `pruneBlobs()` |
-| [`src/snapshots.ts`](src/snapshots.ts) | Per-session content snapshots used by diff-aware re-read in `hooks_read.ts` |
 | [`src/compact.ts`](src/compact.ts) | `buildManifest()` / `buildManifestAdaptive()` — load the session JSON cache and produce a structured PreCompact manifest; `computeAdaptiveBudget()` scales the token budget by session age and edit density |
+| [`src/resume.ts`](src/resume.ts) | Post-compact recovery resume logic |
+| [`src/session_audit.ts`](src/session_audit.ts) | Corpus-wide session audit: streams every Claude Code transcript (JSONL) under a corpus root (default `~/.claude/projects`) and reports where the tokens actually went. |
+| [`src/session_read.ts`](src/session_read.ts) | Surgical reads over Claude Code's own session JSONL transcripts (files like `~/.claude/projects/<project-slug>/<session-id>.jsonl`). |
+| [`src/session_store.ts`](src/session_store.ts) | Persists session state across the per-tool-call hook processes: `loadSessionState()` / `saveSessionState()` (one JSON per session under `sessions/`), wired into [`src/relay.ts`](src/relay.ts). Fail-soft + merge-on-save |
+| [`src/session.ts`](src/session.ts) | In-memory per-session state for the current hook process: `recordFileRead()`, `recordFileEdit()`, `recordWebFetch()`, `recordBashOutput()`, `getSessionId()`; `exportSessionState()` / `importSessionState()` serialize it for cross-process persistence |
 | [`src/skill_cache.ts`](src/skill_cache.ts) | Skill body/compact cache on disk (`skills/`); `skill-body`, `skill-compact`, `skill-list`, `skill-size` commands draw from here |
+| [`src/snapshots.ts`](src/snapshots.ts) | Per-session content snapshots used by diff-aware re-read in `hooks_read.ts` |
 
-**Harness bridges**
+**Surgical Reads and Text Processing**
 
 | Module | Role |
 |--------|------|
-| [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \| `codex` \| `opencode` \| `gemini` \| `qwen` \| `kimi` \| `hermes` \| `openclaw` \| `pi` \| `copilot_cli` \| `vscode` \| `visualstudio` \| `grok` \| `generic`), `BridgeConfig` |
-| [`src/bridges/visualstudio_install.ts`](src/bridges/visualstudio_install.ts) | `install --visualstudio`: Visual Studio's `servers` entry in `.mcp.json` plus a guidance block, no hooks; its block shrinks to an addendum while a VS Code or Copilot CLI gate shares `.github/copilot-instructions.md` (`syncVisualStudioProjectGuidance`) |
-| [`src/bridges/mcp_servers_json.ts`](src/bridges/mcp_servers_json.ts) | The `servers`-keyed MCP JSON reader/writer VS Code and Visual Studio share; edits `servers["token-goat"]` without re-indenting the user's other entries |
-| [`src/bridges/registry.ts`](src/bridges/registry.ts) | `detectHarness()` / `getHarnessName()` — env-variable-based harness detection |
+| [`src/read_brief.ts`](src/read_brief.ts) | Surgical read implementation for brief |
+| [`src/read_commands.ts`](src/read_commands.ts) | **Single source of truth for surgical-read logic** — `runSymbol`, `runRead`, `runSection`, `runRefs`, `runSkeleton`, `runOutline`, `runChanged`, `runConfigGet`, `runExports`, `runImports`, `runFind`, `runGrep`; all CLI read subcommands delegate here |
+| [`src/read_git.ts`](src/read_git.ts) | Surgical read implementation for git |
+| [`src/read_inspect.ts`](src/read_inspect.ts) | Surgical read implementation for inspect |
+| [`src/read_meta.ts`](src/read_meta.ts) | Surgical read implementation for meta |
+| [`src/read_outline.ts`](src/read_outline.ts) | Outline and skeleton command handlers. |
+| [`src/read_section.ts`](src/read_section.ts) | Surgical read implementation for section |
+| [`src/read_spec.ts`](src/read_spec.ts) | Surgical read implementation for spec |
+| [`src/read_structured_data.ts`](src/read_structured_data.ts) | Surgical read implementation for structured_data |
+| [`src/read_suggest.ts`](src/read_suggest.ts) | Surgical read implementation for suggest |
+| [`src/text_commands.ts`](src/text_commands.ts) | Text-processing and session/index/config CLI commands (Family C2). |
+| [`src/text_logfold.ts`](src/text_logfold.ts) | Text processing, analysis, and transformation for logfold |
+| [`src/text_todo.ts`](src/text_todo.ts) | Text processing, analysis, and transformation for todo |
+| [`src/text_trace.ts`](src/text_trace.ts) | Text processing, analysis, and transformation for trace |
+
+**Harness Bridges**
+
+| Module | Role |
+|--------|------|
 | [`src/bridges/claudecode.ts`](src/bridges/claudecode.ts) | Claude Code hook script template and install config |
+| [`src/bridges/codex_install.ts`](src/bridges/codex_install.ts) | Codex CLI install / uninstall writer. |
 | [`src/bridges/codex.ts`](src/bridges/codex.ts) | Codex hook script template; `hookSpecificOutput: true` (Codex schemas use `additionalProperties: false`) |
+| [`src/bridges/copilot_cli_install.ts`](src/bridges/copilot_cli_install.ts) | Copilot CLI install/uninstall wiring. |
+| [`src/bridges/copilot_cli.ts`](src/bridges/copilot_cli.ts) | Copilot CLI hook shim. |
+| [`src/bridges/created_configs.ts`](src/bridges/created_configs.ts) | A record of the config files token-goat itself created, so uninstall can delete one it created and never one that was already the user's. |
+| [`src/bridges/cursor_install.ts`](src/bridges/cursor_install.ts) | Cursor MCP-server installer. |
+| [`src/bridges/gemini_install.ts`](src/bridges/gemini_install.ts) | Gemini CLI install / uninstall writer. |
+| [`src/bridges/grok_install.ts`](src/bridges/grok_install.ts) | Grok CLI (xAI's "Grok Build") install / uninstall writer. |
+| [`src/bridges/grok.ts`](src/bridges/grok.ts) | Grok CLI (xAI's "Grok Build") bridge. |
+| [`src/bridges/guidance_block.ts`](src/bridges/guidance_block.ts) | Shared guidance-block builder for every harness that gets a token-goat routing block written into its instructions file (Claude Code's CLAUDE.md, Codex's AGENTS.md, Copilot CLI's c |
+| [`src/bridges/index.ts`](src/bridges/index.ts) | Bridges barrel. |
+| [`src/bridges/kimi_install.ts`](src/bridges/kimi_install.ts) | Kimi Code CLI (MoonshotAI/kimi-code) install / uninstall writer. |
+| [`src/bridges/kimi.ts`](src/bridges/kimi.ts) | Kimi Code CLI bridge (MoonshotAI/kimi-code). |
+| [`src/bridges/matcher_group.ts`](src/bridges/matcher_group.ts) | Shared shape for a `[[hooks.<Event>]]`-style matcher group: an optional `matcher` string plus a list of hook entries, each carrying at least a `command` string. |
+| [`src/bridges/mcp_servers_json.ts`](src/bridges/mcp_servers_json.ts) | The `servers`-keyed MCP JSON reader/writer VS Code and Visual Studio share; edits `servers["token-goat"]` without re-indenting the user's other entries |
+| [`src/bridges/openclaw_install.ts`](src/bridges/openclaw_install.ts) | OpenClaw install / uninstall writer. |
+| [`src/bridges/openclaw.ts`](src/bridges/openclaw.ts) | OpenClaw bridge plugin. |
+| [`src/bridges/opencode_install.ts`](src/bridges/opencode_install.ts) | opencode install / uninstall writer. |
+| [`src/bridges/opencode.ts`](src/bridges/opencode.ts) | opencode bridge plugin. |
+| [`src/bridges/pi_install.ts`](src/bridges/pi_install.ts) | pi (pi-coding-agent) install / uninstall writer. |
+| [`src/bridges/pi.ts`](src/bridges/pi.ts) | pi (pi-coding-agent) extension bridge. |
+| [`src/bridges/project_scope_guard.ts`](src/bridges/project_scope_guard.ts) | Refuse a project-scope install target that does not really live inside the project. |
+| [`src/bridges/qwen_install.ts`](src/bridges/qwen_install.ts) | Qwen Code (QwenLM/qwen-code, a Gemini CLI fork) hook integration. |
+| [`src/bridges/registry.ts`](src/bridges/registry.ts) | `detectHarness()` / `getHarnessName()` — env-variable-based harness detection |
+| [`src/bridges/relay_block.ts`](src/bridges/relay_block.ts) | Harness bridge integration and hook configuration for relay_block |
+| [`src/bridges/shim_common.ts`](src/bridges/shim_common.ts) | Text fragments shared by the generated harness hook shims. |
+| [`src/bridges/shrink_block.ts`](src/bridges/shrink_block.ts) | Harness bridge integration and hook configuration for shrink_block |
+| [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \ |
+| [`src/bridges/visualstudio_install.ts`](src/bridges/visualstudio_install.ts) | `install --visualstudio`: Visual Studio's `servers` entry in `.mcp.json` plus a guidance block, no hooks; its block shrinks to an addendum while a VS Code or Copilot CLI gate shares `.github/copilot-instructions.md` (`syncVisualStudioProjectGuidance`) |
+| [`src/bridges/vscode_hooks.ts`](src/bridges/vscode_hooks.ts) | Wire-format shaping for VS Code's agent hooks (the built-in Copilot agent, VS Code 1.136+). |
+| [`src/bridges/vscode_install.ts`](src/bridges/vscode_install.ts) | Project-local VS Code MCP configuration and routing guidance. |
+| [`src/bridges/zed_install.ts`](src/bridges/zed_install.ts) | Zed context-server installer. |
 
-**Language adapters (`src/languages/`)**
-
-The adapters below are regex-based (no tree-sitter dependency). Tree-sitter inline extractors for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++ live in `src/parser.ts`; inline regex extractors for Markdown, JSON, YAML, TOML, CSS, and Dockerfile also live there. Adding a new regex adapter also means adding one entry to `ADAPTER_EXTRACTORS` (`src/languages/registry.ts`), the lazily loaded dispatch table for `extractSymbolsNoTreeSitter()`.
+**Language Adapters**
 
 | Module | Role |
 |--------|------|
+| [`src/languages/abap.ts`](src/languages/abap.ts) | ABAP adapter: the REPORT/PROGRAM/FUNCTION-POOL name, local and global classes (DEFINITION and IMPLEMENTATION, each to its ENDCLASS) with their METHOD blocks as children, interfaces |
+| [`src/languages/abl.ts`](src/languages/abl.ts) | Progress OpenEdge ABL adapter: internal PROCEDUREs and FUNCTIONs, CLASS, INTERFACE and ENUM types with their METHODs, CONSTRUCTORs and DESTRUCTORs as children, and DEFINE TEMP-TABL |
+| [`src/languages/apex.ts`](src/languages/apex.ts) | Salesforce Apex extractor (`extractApex`) — class, interface, trigger, method |
+| [`src/languages/asm.ts`](src/languages/asm.ts) | Assembly adapter for GNU as (`.s`, `.S`), NASM (`.asm`, `.nasm`) and IBM High Level Assembler, which share `.asm`: one adapter that picks its dialect from the file's own content. |
+| [`src/languages/bash_idx.ts`](src/languages/bash_idx.ts) | Shell/Bash symbol extractor. |
+| [`src/languages/batch.ts`](src/languages/batch.ts) | Windows batch adapter for `.bat` and `.cmd` files: the labels cmd.exe jumps to, each running to the line before the next label or to the end of the file, with the batch files a `ca |
+| [`src/languages/brace_engine.ts`](src/languages/brace_engine.ts) | Shared scanner for the brace-language adapters (Objective-C, Groovy, Solidity, Thrift, GLSL, HLSL, WGSL, Metal). |
+| [`src/languages/clojure.ts`](src/languages/clojure.ts) | Clojure adapter: `defn`, `defn-`, `def`, `defmacro`, `defprotocol`, `defrecord`, `deftype`, `defmulti`, `defmethod`, `definterface`, `ns`. |
+| [`src/languages/cmake.ts`](src/languages/cmake.ts) | CMake adapter for `CMakeLists.txt` and `.cmake` files: `function` and `macro` definitions (closed by `endfunction` and `endmacro`), the targets `add_library`, `add_executable` and |
+| [`src/languages/cobol.ts`](src/languages/cobol.ts) | COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, `COPY` imports, and `PERFORM`/`GO TO`/`CALL 'x'` references |
+| [`src/languages/common_lisp.ts`](src/languages/common_lisp.ts) | Common Lisp adapter: `defun`, `defmacro`, `defvar`/`defparameter`/`defconstant`, `defclass`, `defgeneric`, `defmethod`, `defstruct`, `defpackage`, `deftype`, `define-condition`, `d |
 | [`src/languages/common.ts`](src/languages/common.ts) | Shared helpers: `buildLineIndex()`, `offsetToLine()`, `makeSymbolEmitter()`, `assignFlatEndLines()`, comment-strip utilities |
 | [`src/languages/csharp.ts`](src/languages/csharp.ts) | C# extractor (`extractCsharp`) — namespace, class, method, property, constructor, delegate |
-| [`src/languages/php.ts`](src/languages/php.ts) | PHP extractor (`extractPhp`) |
-| [`src/languages/html.ts`](src/languages/html.ts) | HTML extractor (`extractHtml`) |
-| [`src/languages/liquid.ts`](src/languages/liquid.ts) | Liquid template extractor (`extractLiquid`) |
-| [`src/languages/kotlin.ts`](src/languages/kotlin.ts) | Kotlin extractor (`extractKotlin`) — class, fun, const |
-| [`src/languages/graphql_idx.ts`](src/languages/graphql_idx.ts) | GraphQL extractor (`extractGraphql`) |
-| [`src/languages/sql_idx.ts`](src/languages/sql_idx.ts) | SQL extractor (`extractSql`) |
-| [`src/languages/ini_idx.ts`](src/languages/ini_idx.ts) | INI/properties extractor (`extractIni`) |
-| [`src/languages/makefile_idx.ts`](src/languages/makefile_idx.ts) | Makefile extractor (`extractMakefile`) |
-| [`src/languages/proto_idx.ts`](src/languages/proto_idx.ts) | Protobuf extractor (`extractProto`) |
+| [`src/languages/dart.ts`](src/languages/dart.ts) | Dart symbol extractor — regex-based (no tree-sitter grammar needed). |
+| [`src/languages/elixir.ts`](src/languages/elixir.ts) | Elixir symbol extractor — regex-based (no tree-sitter grammar needed). |
+| [`src/languages/emacs_lisp.ts`](src/languages/emacs_lisp.ts) | Emacs Lisp adapter: `defun`, `defmacro`, `defvar`, `defcustom`, `defconst`, `defgroup`, `defface`, `define-derived-mode`, `define-minor-mode`, and the `cl-lib` forms `cl-defun`, `c |
 | [`src/languages/env_idx.ts`](src/languages/env_idx.ts) | `.env` extractor (`extractEnv`) |
-| [`src/languages/apex.ts`](src/languages/apex.ts) | Salesforce Apex extractor (`extractApex`) — class, interface, trigger, method |
+| [`src/languages/erlang.ts`](src/languages/erlang.ts) | Erlang adapter for `.erl` and `.hrl` files. |
+| [`src/languages/fortran.ts`](src/languages/fortran.ts) | Fortran adapter: PROGRAM, MODULE, SUBMODULE, SUBROUTINE, FUNCTION, separate MODULE PROCEDURE and BLOCK DATA units, derived TYPE definitions and named INTERFACE blocks, with the uni |
+| [`src/languages/fsharp.ts`](src/languages/fsharp.ts) | F# (The F# Language Specification, version 4.1, section 3.1 "Lexical Analysis" and section 3.2 "Comments") adapter: `namespace`, `module`, `type`, `exception`, and top-level `let`/ |
+| [`src/languages/graphql_idx.ts`](src/languages/graphql_idx.ts) | GraphQL extractor (`extractGraphql`) |
+| [`src/languages/groovy.ts`](src/languages/groovy.ts) | Groovy symbol extractor, also used for Gradle build scripts and Jenkinsfiles. |
+| [`src/languages/haskell.ts`](src/languages/haskell.ts) | Haskell (Haskell 2010 Language Report) adapter: `module`, `data`/`newtype`, `type`, `class`, `instance`, and top-level function bindings (a type signature and/or one or more equati |
+| [`src/languages/html.ts`](src/languages/html.ts) | HTML extractor (`extractHtml`) |
+| [`src/languages/index.ts`](src/languages/index.ts) | Re-exports all language adapters added in the languages/ subdirectory. |
+| [`src/languages/ini_idx.ts`](src/languages/ini_idx.ts) | INI/properties extractor (`extractIni`) |
+| [`src/languages/ipynb_idx.ts`](src/languages/ipynb_idx.ts) | Jupyter notebook (`.ipynb`) adapter. |
+| [`src/languages/jcl.ts`](src/languages/jcl.ts) | z/OS JCL adapter: the JOB (to the next JOB, a `//` null statement, or the end of the file), PROC procedures (an in-stream one to its PEND), and the named EXEC steps of each, a step |
+| [`src/languages/kotlin.ts`](src/languages/kotlin.ts) | Kotlin extractor (`extractKotlin`) — class, fun, const |
+| [`src/languages/liquid.ts`](src/languages/liquid.ts) | Liquid template extractor (`extractLiquid`) |
+| [`src/languages/lua.ts`](src/languages/lua.ts) | Lua symbol extractor — regex-based (no tree-sitter grammar needed). |
+| [`src/languages/makefile_idx.ts`](src/languages/makefile_idx.ts) | Makefile extractor (`extractMakefile`) |
+| [`src/languages/matlab.ts`](src/languages/matlab.ts) | MATLAB and Octave adapter: functions (nested and local ones too), classdef classes with their properties, methods, events and enumeration members. |
+| [`src/languages/natural.ts`](src/languages/natural.ts) | Software AG Natural adapter: the object itself (named by its file stem, kind by extension), inline `DEFINE SUBROUTINE` blocks, the `DEFINE DATA` block and its level-1 fields (also |
+| [`src/languages/nix.ts`](src/languages/nix.ts) | Nix (Nix Reference Manual, "Syntax" https://nix.dev/manual/nix/latest/language/syntax and "String literals" https://nix.dev/manual/nix/latest/language/string-literals) adapter. |
+| [`src/languages/objc.ts`](src/languages/objc.ts) | Objective-C and Objective-C++ symbol extractor. |
+| [`src/languages/ocaml.ts`](src/languages/ocaml.ts) | OCaml (The OCaml Manual, chapter 11 "The OCaml language", section 1 "Lexical conventions", https://v2.ocaml.org/manual/lex.html) adapter: `module`, `module type`, `type`, `exceptio |
+| [`src/languages/pascal.ts`](src/languages/pascal.ts) | Pascal, Delphi and Free Pascal adapter: the program, unit, library or package header, classes, records, objects, interfaces and enumerations from type sections, their methods, cons |
+| [`src/languages/perl.ts`](src/languages/perl.ts) | Perl symbol extractor: packages and named subs, a sub taking its package as parent. |
+| [`src/languages/php.ts`](src/languages/php.ts) | PHP extractor (`extractPhp`) |
+| [`src/languages/pli.ts`](src/languages/pli.ts) | PL/I adapter: labeled PROCEDURE blocks (nested ones under their parent) and PACKAGE blocks, each to the END that closes it. |
+| [`src/languages/powershell_idx.ts`](src/languages/powershell_idx.ts) | Language extractor and symbol parser for powershell |
+| [`src/languages/proto_idx.ts`](src/languages/proto_idx.ts) | Protobuf extractor (`extractProto`) |
+| [`src/languages/r.ts`](src/languages/r.ts) | R symbol extractor — regex-based (no tree-sitter grammar needed). |
+| [`src/languages/racket.ts`](src/languages/racket.ts) | Racket adapter: `define`, `define-values`, `define-syntax`, `define-syntax-rule`, `struct`, `define-struct`. |
+| [`src/languages/registry.ts`](src/languages/registry.ts) | The regex language adapters and the table that dispatches to them. |
+| [`src/languages/rpg.ts`](src/languages/rpg.ts) | ILE RPG adapter. |
+| [`src/languages/salesforce_frontend.ts`](src/languages/salesforce_frontend.ts) | Language extractor and symbol parser for salesforce |
 | [`src/languages/salesforce_metadata.ts`](src/languages/salesforce_metadata.ts) | Salesforce metadata XML extractor (`extractSalesforceMetadata`) — CustomObject, CustomField, ValidationRule, PermissionSet, Profile, CustomMetadata; detected by `SALESFORCE_METADATA_SUFFIXES` filename-suffix match (`src/parser_types.ts`) |
+| [`src/languages/sas.ts`](src/languages/sas.ts) | SAS adapter: %MACRO definitions (to their %MEND, nested ones under their parent) and DATA steps named by their first output data set (to RUN, QUIT, or the next step boundary). |
+| [`src/languages/scala.ts`](src/languages/scala.ts) | Scala symbol extractor — regex-based (no tree-sitter grammar needed). |
+| [`src/languages/scheme.ts`](src/languages/scheme.ts) | Scheme (R7RS) adapter: `define`, `define-syntax`, `define-record-type`, `define-values`, `define-library`. |
+| [`src/languages/sfc_idx.ts`](src/languages/sfc_idx.ts) | Single-File-Component extractor for Vue (`.vue`), Svelte (`.svelte`), and Astro (`.astro`). |
+| [`src/languages/shader.ts`](src/languages/shader.ts) | Shader symbol extractors. |
+| [`src/languages/sniff.ts`](src/languages/sniff.ts) | Content sniffs that pick a language for an ambiguous extension (`.m`, `.pp`, `.h`, `.pl`, `.t`, `.p`, `.w`, `.cls`). |
+| [`src/languages/solidity.ts`](src/languages/solidity.ts) | Solidity symbol extractor: contracts, interfaces and libraries with their functions, constructors, fallback and receive functions, modifiers, structs, enums, events and errors, plu |
+| [`src/languages/span_collector.ts`](src/languages/span_collector.ts) | Shared bookkeeping for the statement-scanning adapters (ABAP, SAS, PL/I, RPG, JCL, OpenEdge ABL): a symbol is opened when its header statement is read, closed when its terminator i |
+| [`src/languages/sql_idx.ts`](src/languages/sql_idx.ts) | SQL extractor (`extractSql`) |
+| [`src/languages/swift.ts`](src/languages/swift.ts) | Swift symbol extractor — regex-based (no tree-sitter grammar needed). |
+| [`src/languages/templates_idx.ts`](src/languages/templates_idx.ts) | Template-engine adapters: Jinja2 (`.j2`/`.jinja`/`.jinja2`), Handlebars (`.hbs`/`.handlebars`), ERB (`.erb`), EJS (`.ejs`), Nunjucks (`.njk`), and Twig (`.twig`). |
+| [`src/languages/terraform_idx.ts`](src/languages/terraform_idx.ts) | Terraform / HCL (.tf, .tfvars, .hcl) extractor. |
+| [`src/languages/thrift.ts`](src/languages/thrift.ts) | Apache Thrift IDL symbol extractor: structs, unions, exceptions, enums and services, the functions inside each service, typedefs, and constants. |
+| [`src/languages/vb.ts`](src/languages/vb.ts) | Visual Basic symbol extractor, regex-based (no tree-sitter grammar ships for VB). |
+| [`src/languages/vhdl.ts`](src/languages/vhdl.ts) | VHDL adapter: entity, architecture, package declaration, package body, function and procedure. |
+| [`src/languages/zig.ts`](src/languages/zig.ts) | Zig symbol extractor — regex-based (no tree-sitter grammar needed). |
 
-**Output rendering**
+**Bash Output, Compression, and Tool Filters**
 
 | Module | Role |
 |--------|------|
-| [`src/render/`](src/render/) | ANSI text, stats panels, JSON renderers (`ansi.ts`, `common.ts`, `stats_renderer.ts`, `types.ts`) |
+| [`src/bash_compress.ts`](src/bash_compress.ts) | Bash output compression filters (vitest, npm, docker, ruff, and others) |
+| [`src/bash_extractors.ts`](src/bash_extractors.ts) | Command line extractors, classification, and surgical hint builders for bash hook handlers. |
+| [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
+| [`src/bash_runner.ts`](src/bash_runner.ts) | Exports: `DEFAULT_TIMEOUT_SECONDS`, `MAX_CAPTURE_BYTES`, `RunOptions`, `run` |
+| [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
+| [`src/tool_filters/ai_clis.ts`](src/tool_filters/ai_clis.ts) | Bash output compression and normalization filter for ai_clis |
+| [`src/tool_filters/base.ts`](src/tool_filters/base.ts) | Bash output compression and normalization filter for base |
+| [`src/tool_filters/build.ts`](src/tool_filters/build.ts) | Bash output compression and normalization filter for build |
+| [`src/tool_filters/ci.ts`](src/tool_filters/ci.ts) | Bash output compression and normalization filter for ci |
+| [`src/tool_filters/cloud.ts`](src/tool_filters/cloud.ts) | Bash output compression and normalization filter for cloud |
+| [`src/tool_filters/containers.ts`](src/tool_filters/containers.ts) | Bash output compression and normalization filter for containers |
+| [`src/tool_filters/dispatch.ts`](src/tool_filters/dispatch.ts) | Bash output compression and normalization filter for dispatch |
+| [`src/tool_filters/families.ts`](src/tool_filters/families.ts) | Bash output compression and normalization filter for families |
+| [`src/tool_filters/generic.ts`](src/tool_filters/generic.ts) | Bash output compression and normalization filter for generic |
+| [`src/tool_filters/git.ts`](src/tool_filters/git.ts) | Bash output compression and normalization filter for git |
+| [`src/tool_filters/go_test.ts`](src/tool_filters/go_test.ts) | Bash output compression and normalization filter for go_test |
+| [`src/tool_filters/helpers.ts`](src/tool_filters/helpers.ts) | Bash output compression and normalization filter for helpers |
+| [`src/tool_filters/index.ts`](src/tool_filters/index.ts) | Bash output compression and normalization filter for index |
+| [`src/tool_filters/languages.ts`](src/tool_filters/languages.ts) | Bash output compression and normalization filter for languages |
+| [`src/tool_filters/linters.ts`](src/tool_filters/linters.ts) | Bash output compression and normalization filter for linters |
+| [`src/tool_filters/misc.ts`](src/tool_filters/misc.ts) | Bash output compression and normalization filter for misc |
+| [`src/tool_filters/package_managers.ts`](src/tool_filters/package_managers.ts) | Bash output compression and normalization filter for package_managers |
+| [`src/tool_filters/pytest.ts`](src/tool_filters/pytest.ts) | Bash output compression and normalization filter for pytest |
+| [`src/tool_filters/shell_file.ts`](src/tool_filters/shell_file.ts) | Bash output compression and normalization filter for shell_file |
+| [`src/tool_filters/test_runners.ts`](src/tool_filters/test_runners.ts) | Bash output compression and normalization filter for test_runners |
 
-**Configuration and utilities**
+**Hints, Guidance, and Formatting**
+
+| Module | Role |
+|--------|------|
+| [`src/hints/file_type_handler.ts`](src/hints/file_type_handler.ts) | Universal large-file interception for non-code, non-markdown file types. |
+| [`src/hints/lang_patterns.ts`](src/hints/lang_patterns.ts) | Session hint generator submodule for lang_patterns |
+| [`src/hints/markdown_hints.ts`](src/hints/markdown_hints.ts) | Markdown heading extraction and formatting for large-file hints. |
+| [`src/render/ansi.ts`](src/render/ansi.ts) | ANSI 24-bit colour primitives and text-alignment helpers for terminal rendering. |
+| [`src/render/index.ts`](src/render/index.ts) | Stats renderer package — ANSI truecolor terminal output. |
+| [`src/render/stats_renderer.ts`](src/render/stats_renderer.ts) | Terminal renderer for token-goat stats. |
+| [`src/render/types.ts`](src/render/types.ts) | Data-transfer types for the stats renderer. |
+
+**Diagnostics, Doctor, and Maintenance**
+
+| Module | Role |
+|--------|------|
+| [`src/cli_doctor_platforms.ts`](src/cli_doctor_platforms.ts) | Platform and harness integration diagnostics for token-goat doctor. |
+| [`src/cli_doctor_process.ts`](src/cli_doctor_process.ts) | Process table and MCP process health diagnostics for token-goat doctor. |
+| [`src/cli_doctor_security.ts`](src/cli_doctor_security.ts) | Security posture and configuration override diagnostics for token-goat doctor. |
+| [`src/cli_doctor.ts`](src/cli_doctor.ts) | `token-goat doctor` — install state and cache health |
+| [`src/pack.ts`](src/pack.ts) | `token-goat pack` — pack source files for context |
+
+**Caches and Output Stores**
+
+| Module | Role |
+|--------|------|
+| [`src/disk_cache.ts`](src/disk_cache.ts) | Shared content-addressed blob store backing the bash/web caches: `tokenGoatHome()`, `storeBlob()` / `loadBlob()` / `pruneBlobs()` |
+| [`src/gdrive.ts`](src/gdrive.ts) | Google Drive fetch and image cache integration |
+| [`src/mcp_cache.ts`](src/mcp_cache.ts) | Read-only MCP result cache: `isMcpReadOnly`/`mcpHash` helpers plus `storeMcpOutput`/`getMcpOutput` delegating to the bash-output blob store (session-scoped `mcp_<hash>` id) |
+| [`src/project_memory.ts`](src/project_memory.ts) | Project-scoped key-value memory (TOML, per-project hash) |
+| [`src/web_cache.ts`](src/web_cache.ts) | WebFetch body disk store (byte-capped, LRU-evicted) |
+| [`src/webfetch.ts`](src/webfetch.ts) | URL download and content cache persistence |
+
+**Configuration and Utilities**
 
 | Module | Role |
 |--------|------|
 | [`src/config.ts`](src/config.ts) | TOML config loader; `loadConfig()` returns a typed `Config` object; env-var overrides applied on top |
-| [`src/util.ts`](src/util.ts) | `runGit()` (canonical git subprocess), `sanitizeSurrogates()`, `estimateTokens()`, `get_logger()` |
 | [`src/env.ts`](src/env.ts) | Platform and env detection helpers |
-| [`src/version.ts`](src/version.ts) | `VERSION` string constant |
 | [`src/reset.ts`](src/reset.ts) | `registerReset()` / `runResets()` — teardown registry for tests |
+| [`src/util_config.ts`](src/util_config.ts) | Configuration file manipulation, hook stripping, and delimited block helpers. |
+| [`src/util_context.ts`](src/util_context.ts) | Source context window building and rendering. |
+| [`src/util_suggest.ts`](src/util_suggest.ts) | Levenshtein distance and string suggestion helpers. |
+| [`src/util.ts`](src/util.ts) | `runGit()` (canonical git subprocess), `sanitizeSurrogates()`, `estimateTokens()`, `get_logger()` |
+| [`src/version.ts`](src/version.ts) | `VERSION` string constant |
 
-**Caches and output stores**
-
-| Module | Role |
-|--------|------|
-| [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
-| [`src/web_cache.ts`](src/web_cache.ts) | WebFetch body disk store (byte-capped, LRU-evicted) |
-| [`src/mcp_cache.ts`](src/mcp_cache.ts) | Read-only MCP result cache: `isMcpReadOnly`/`mcpHash` helpers plus `storeMcpOutput`/`getMcpOutput` delegating to the bash-output blob store (session-scoped `mcp_<hash>` id) |
-| [`src/gdrive.ts`](src/gdrive.ts) | Google Drive fetch and image cache integration |
-| [`src/webfetch.ts`](src/webfetch.ts) | URL download and content cache persistence |
-| [`src/read_commands.ts`](src/read_commands.ts) | Recent git history hints surfaced into session and compact manifest |
-| [`src/project_memory.ts`](src/project_memory.ts) | Project-scoped key-value memory (TOML, per-project hash) |
-
-**Other CLI commands and filters**
+**Media, Documents, and Structured Formats**
 
 | Module | Role |
 |--------|------|
-| [`src/cli.ts`](src/cli.ts) | `token-goat ask` command, registered inline with the rest of the CLI |
-| [`src/bash_compress.ts`](src/bash_compress.ts) | Bash output compression filters (vitest, npm, docker, ruff, and others) |
-| [`src/tool_filters/`](src/tool_filters/) | TS rewrite of the bash-output compression filter framework: `base.ts` (`ToolFilter` abstract class + `CompressedOutput`), `helpers.ts` (shared utilities), `families.ts` (factory functions: `makeNodeTestRunnerFilter`, `makePackageManagerFilter`, `makeLinterFilter`, `makeAiCliFilter`), `dispatch.ts` (`TOOL_FILTERS` registry + `selectFilter` / `detectFromCommand`), and per-family modules: `test_runners.ts` (A), `pytest.ts` + `go_test.ts` (A), `package_managers.ts` (B), `linters.ts` (C), `git.ts` (D), `build.ts` (E), `containers.ts` (F), `cloud.ts` (G), `ci.ts` (H), `ai_clis.ts` (I — AiderFilter, GhCopilotFilter, CopilotFilter, GeminiCliFilter, ClaudeCliFilter, CursorFilter, WindsurfFilter, OpenCodeFilter, ContinueFilter, ClineFilter, CodexExecFilter), `shell_file.ts` (J — GrepFilter, RgFilter, LsFilter, EzaFilter, TreeFilter, FdFilter, WcFilter, BatFilter, DeltaFilter, FzfFilter, LazyGitFilter, JqFilter, YqFilter, CurlFilter, RsyncFilter, DiffFilter, FfmpegFilter, BinaryInspectFilter, FileTypeFilter, PsFilter), `languages.ts` (K1 — NodeFilter, PythonFilter, RubyFilter, BunFilter, DenoFilter, FlutterFilter, DartFilter, SwiftFilter, XcodeFilter, MixFilter, ZigFilter, RCmdFilter, erlangFilter, crystalFilter, haskellFilter, elmFilter, juliaFilter, powerShellFilter), `misc.ts` (K2 — PsqlFilter, MySQLFilter, Sqlite3Filter, RedisCLIFilter, SysPackageFilter, ProtocFilter, SassFilter, ToxFilter, NoxFilter, WasmPackFilter, NgFilter, PlaywrightFilter, CypressFilter, DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter — completes the 158-filter port). **Dispatch ordering:** `AI_CLI_FILTERS` before `CI_FILTERS` (`GhCopilotFilter` precedes `GhFilter`); `playwrightFilter` and `cypressFilter` before `bunFilter` (`bunx playwright test`/`bunx cypress run` must not route to BunFilter); `bunFilter` before `PACKAGE_MANAGER_FILTERS` (NodePackageFilter also claims `bun`); `SHELL_FILE_FILTERS`, `LANGUAGE_FILTERS`, `MISC_FILTERS` spread last (in that order). `SeverityLogFilter.matches()` returns false (content-based detection via `detect()`); `TailTruncFilter.matches()` returns false (explicit opt-in only via `filterByName('tail-trunc')` — universal true in the Python post-execution model, but in the TS pre-hook rewrite model a catch-all would add overhead for every trivial command). |
-| [`src/cli_doctor.ts`](src/cli_doctor.ts) | `token-goat doctor` — install state and cache health |
-| [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
+| [`src/image_engine.ts`](src/image_engine.ts) | Pure TypeScript / JavaScript Image Processing Engine for token-goat. |
+| [`src/image_ocr.ts`](src/image_ocr.ts) | OCR — extract text from text-heavy images (screenshots of a terminal, a stack trace, a table, an editor, a doc page) instead of paying vision tokens to reconstruct their pixels. |
+| [`src/json_query.ts`](src/json_query.ts) | Narrow structural summary + path-based extraction for `token-goat json-outline` / `json-query`, so a multi-thousand-line JSON document never needs a full `Read` just to answer "wha |
+| [`src/pdf_extract.ts`](src/pdf_extract.ts) | PDF -> plain text extraction for `token-goat pdf-extract`, so a PDF's useful content reaches the model as text instead of forcing a full binary `Read` (which token-goat can't index |
+| [`src/sqlite_driver.ts`](src/sqlite_driver.ts) | A better-sqlite3-shaped facade over Node's built-in `node:sqlite`. |
+| [`src/sqlite_query.ts`](src/sqlite_query.ts) | Narrow schema summary + read-only query extraction for `token-goat sqlite-schema` / `sqlite-query`, so a project's `.db`/`.sqlite`/`.sqlite3` fixture never needs a raw-byte `Read` |
+| [`src/xml_parser.ts`](src/xml_parser.ts) | Minimal XML reader for the OOXML parts token-goat extracts (.docx, .pptx, .xlsx). |
+| [`src/xml_query.ts`](src/xml_query.ts) | XML structure inspection and querying for token-goat. |
+
+**Specialized Subsystems**
+
+| Module | Role |
+|--------|------|
+| [`src/affected.ts`](src/affected.ts) | `token-goat affected` -- which test files a set of changed source files can reach. |
+| [`src/archive_query.ts`](src/archive_query.ts) | Entry listing + single-member extraction for `token-goat zip-list` / `zip-read`, so a .zip/.jar/.whl/.vsix/.nupkg (all zip-format containers under the hood) never needs its whole a |
+| [`src/baseline.ts`](src/baseline.ts) | Project map / overview (`token-goat map`). |
+| [`src/batch_serve.ts`](src/batch_serve.ts) | `--batch-serve`: run many CLI invocations inside one already-started process. |
+| [`src/bridges_status.ts`](src/bridges_status.ts) | Bridge hook-event parity matrix. |
+| [`src/cache_session_commands.ts`](src/cache_session_commands.ts) | Cache and history commands: bash-history, web-history, clean-cache, prune-cache, cache-audit. |
+| [`src/capabilities.ts`](src/capabilities.ts) | A machine-readable statement of every capability token-goat has that can send data off the machine or leave data on it, with its effective state and the place that state is enforce |
+| [`src/cli_bench.ts`](src/cli_bench.ts) | Exports: `BenchCase`, `BenchCaseResult`, `BenchReport`, `loadCorpus` |
+| [`src/cli_bootstrap_audit.ts`](src/cli_bootstrap_audit.ts) | Exports: `BootstrapAuditOptions`, `BootstrapAuditResult`, `buildBootstrapAudit`, `runBootstrapAudit` |
+| [`src/cli_commands.ts`](src/cli_commands.ts) | Machine-readable command manifest. |
+| [`src/cli_context_stats.ts`](src/cli_context_stats.ts) | CLI handler for ``token-goat context-stats``. |
+| [`src/cli_diagnostics.ts`](src/cli_diagnostics.ts) | Diagnostic, inspection, packaging, and budgeting command handlers. |
+| [`src/cli_file_ops.ts`](src/cli_file_ops.ts) | Exports: `cmdNoteAdd`, `cmdWriteFile`, `cmdReplace`, `cmdInsertSection` |
+| [`src/cli_hint_stats.ts`](src/cli_hint_stats.ts) | CLI handler for `token-goat hint-stats`. |
+| [`src/cli_mcp_audit.ts`](src/cli_mcp_audit.ts) | CLI handler for `token-goat mcp-audit`. |
+| [`src/cli_memory.ts`](src/cli_memory.ts) | CLI handler for `token-goat memory --analyze` / `--fix`. |
+| [`src/cli_office.ts`](src/cli_office.ts) | Exports: `fenceFileText`, `fenceFileFieldIfMatched`, `fileSizeOrZero`, `recordDocStat` |
+| [`src/cli_recall.ts`](src/cli_recall.ts) | CLI handler for `token-goat recall`. |
+| [`src/cli_session.ts`](src/cli_session.ts) | Session, corpus audit, memory, and output recall command handlers. |
+| [`src/cli_skills.ts`](src/cli_skills.ts) | Exports: `cmdSkillBody`, `cmdSkillCompact`, `cmdSkillList`, `cmdSkillSize` |
+| [`src/cli_stats.ts`](src/cli_stats.ts) | CLI handler for ``token-goat stats``. |
+| [`src/cli_statusline.ts`](src/cli_statusline.ts) | CLI handler for `token-goat statusline`. |
+| [`src/cli_structured.ts`](src/cli_structured.ts) | Exports: `cmdCsvQuery`, `cmdCsvProfile`, `cmdJsonOutline`, `cmdJsonQuery` |
+| [`src/cli_upgrade.ts`](src/cli_upgrade.ts) | Upgrade command for token-goat. |
+| [`src/cli_waste.ts`](src/cli_waste.ts) | CLI handler for `token-goat waste`. |
+| [`src/command_intent.ts`](src/command_intent.ts) | Intent-based suggestions for command names that don't exist. |
+| [`src/config_commands.ts`](src/config_commands.ts) | D3 commands: config, project, compact-doc, fetch-image, history. |
+| [`src/config_defaults.ts`](src/config_defaults.ts) | Default configuration values and factory functions for token-goat. |
+| [`src/config_project.ts`](src/config_project.ts) | Exports: `PROJECT_LOCKED_SECTIONS`, `PROJECT_LOCKED_KEYS`, `lastProjectConfigLockedKeys`, `setLastProjectConfigLockedKeys` |
+| [`src/config_types.ts`](src/config_types.ts) | Configuration types and interfaces for token-goat. |
+| [`src/confirm_apply.ts`](src/confirm_apply.ts) | Small, reusable diff-preview + confirm-before-write helper. |
+| [`src/conflict_query.ts`](src/conflict_query.ts) | Unresolved git merge-conflict marker extraction (`token-goat conflicts`). |
+| [`src/content_store.ts`](src/content_store.ts) | Local, bounded storage for generic compressed text and named handoffs. |
+| [`src/copilot_mcp_names.ts`](src/copilot_mcp_names.ts) | Canonicalise Copilot CLI's MCP tool names into the `mcp__<server>__<tool>` shape every MCP-aware hook in token-goat gates on. |
+| [`src/copilot_mcp_tools.ts`](src/copilot_mcp_tools.ts) | Reads Copilot CLI's on-disk MCP tool-definition cache. |
+| [`src/copilot_waste.ts`](src/copilot_waste.ts) | Waste analysis for Copilot CLI sessions. |
+| [`src/coverage_query.ts`](src/coverage_query.ts) | Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full ` |
+| [`src/csv_query.ts`](src/csv_query.ts) | Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". |
+| [`src/delivery_cap.ts`](src/delivery_cap.ts) | Exports: `CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES`, `bashOutputCapBytes`, `clipToDeliveryCap`, `deliveredOutputBytes` |
+| [`src/dep_docs.ts`](src/dep_docs.ts) | `token-goat dep-docs <package>` — surgical read for an installed npm dependency. |
+| [`src/doc_comment.ts`](src/doc_comment.ts) | Shared doc-comment recovery, used by both the tree-sitter parser (`parser.ts`) and the regex-based language adapters (`languages/common.ts`). |
+| [`src/doc_compact.ts`](src/doc_compact.ts) | Stable-doc compact serving for large reference docs. |
+| [`src/doc_embed_extract.ts`](src/doc_embed_extract.ts) | Extracted-text bridge from the binary-document readers (pdf, docx, pptx, xlsx) into the embeddings/chunking pipeline, so `token-goat semantic` can answer questions from spec PDFs, |
+| [`src/doctor_result.ts`](src/doctor_result.ts) | The shape every doctor check returns. |
+| [`src/document_refusal.ts`](src/document_refusal.ts) | How long any one document's extraction may run, whatever format it is. |
+| [`src/docx_extract.ts`](src/docx_extract.ts) | Word (.docx) narrow-slice reader. |
+| [`src/dotenv_redact.ts`](src/dotenv_redact.ts) | Value redaction for dotenv files. |
+| [`src/encoding.ts`](src/encoding.ts) | Source file character encoding and BOM detection / transcoding. |
+| [`src/evidence_cache.ts`](src/evidence_cache.ts) | Exports: `EvidenceRepresentation`, `EvidenceEntry`, `recordEvidence`, `findVerifiedFileEvidence` |
+| [`src/failures_state.ts`](src/failures_state.ts) | Cross-invocation state for `token-goat failures --delta` -- persists the failure-signature set (test names / summary lines, see `failures.ts::failureSignatures`) from the last `fai |
+| [`src/failures.ts`](src/failures.ts) | Extract failing test blocks from test runner output. |
+| [`src/filter_counts.ts`](src/filter_counts.ts) | Aggregated filter/rule counts for all hook types. |
+| [`src/fold_delivery.ts`](src/fold_delivery.ts) | Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. |
+| [`src/fold_structure.ts`](src/fold_structure.ts) | Turning a whole-file delivery into a structural view of it: a heading tree for a document, a declaration skeleton for source. |
+| [`src/graph_analysis.ts`](src/graph_analysis.ts) | Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask. |
+| [`src/graph_commands.ts`](src/graph_commands.ts) | CLI command handlers for code-graph commands. |
+| [`src/graph_inspection.ts`](src/graph_inspection.ts) | Code graph inspection commands: dead, deps, types, and scope. |
+| [`src/graph_traversal.ts`](src/graph_traversal.ts) | Core graph traversal, scope analysis, and cycle detection primitives. |
+| [`src/hint_stats.ts`](src/hint_stats.ts) | Efficacy tracking + auto-suppression for token-goat's discretionary hint hooks (`token-goat hint-stats`). |
+| [`src/hint_suggestion_guard.ts`](src/hint_suggestion_guard.ts) | Strip shell commands that a path broke out of, from hint and deny text on its way to the model. |
 | [`src/hints.ts`](src/hints.ts) | Session-hint text builder |
-| [`src/hints/`](src/hints/) | Hint submodules: `file_type_handler.ts`, `lang_patterns.ts`, `markdown_hints.ts` |
-| [`src/pack.ts`](src/pack.ts) | `token-goat pack` — pack source files for context |
-| [`src/resume.ts`](src/resume.ts) | Post-compact recovery resume logic |
+| [`src/hook_lib.ts`](src/hook_lib.ts) | In-process hook library entry point. |
+| [`src/html_query.ts`](src/html_query.ts) | HTML structure inspection, querying, and structural linting for token-goat. |
+| [`src/import_export_extract.ts`](src/import_export_extract.ts) | Language-specific import and export extractors. |
+| [`src/import_graph.ts`](src/import_graph.ts) | The project's internal import graph, built once and shared by every command that needs it. |
+| [`src/index_health.ts`](src/index_health.ts) | Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor.ts's checkSymbolCount) and by every query command that can dead-end on an empty |
+| [`src/index_reclaim.ts`](src/index_reclaim.ts) | Index-space reclamation (`token-goat reclaim-index`). |
+| [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
+| [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
+| [`src/language_specs.ts`](src/language_specs.ts) | The one table of languages token-goat indexes. |
+| [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
+| [`src/markdown_lines.ts`](src/markdown_lines.ts) | Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks) and the fence delimiter lines themselves, so a `#` comment inside a code fence is never mistaken for |
+| [`src/mcp_compress_packs.ts`](src/mcp_compress_packs.ts) | Schema-aware compression packs for two specific MCP servers, layered on top of {@link mcp_compress.ts}'s generic structural pass. |
+| [`src/mcp_compress.ts`](src/mcp_compress.ts) | Deterministic, structural compression for MCP tool results. |
+| [`src/mcp_jsonrpc.ts`](src/mcp_jsonrpc.ts) | A minimal Model Context Protocol server, in-house. |
+| [`src/mcp_stdio.ts`](src/mcp_stdio.ts) | The stdio transport for token-goat's MCP server -- newline-delimited JSON over the process's own stdin and stdout, which is the only transport `token-goat mcp-serve` has ever offer |
+| [`src/memory_prune.ts`](src/memory_prune.ts) | Automatic pruning and analysis of Claude Code's native auto-memory store. |
+| [`src/modules.ts`](src/modules.ts) | Module detection over the project's internal import graph. |
+| [`src/notebook_compact.ts`](src/notebook_compact.ts) | Strip cell outputs from Jupyter notebooks to reduce token burn. |
+| [`src/notes.ts`](src/notes.ts) | Architecture-notes storage layer. |
+| [`src/ocr_hashes.ts`](src/ocr_hashes.ts) | Exports: `OcrLangSpec`, `ocrLangPath`, `OCR_LANG_HASHES`, `SUPPORTED_OCR_LANGS` |
+| [`src/ocr_languages.ts`](src/ocr_languages.ts) | Supported language codes and resolver for Tesseract OCR. |
+| [`src/ooxml_extract.ts`](src/ooxml_extract.ts) | Shared ZIP+XML core for OOXML formats (.pptx, .docx are both a ZIP container of XML parts). |
+| [`src/openapi_query.ts`](src/openapi_query.ts) | Narrow structural summary + single-operation extraction for `token-goat openapi-outline` / `openapi-op`, so a multi-thousand-line OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) neve |
+| [`src/overflow_guard.ts`](src/overflow_guard.ts) | Overflow guard — cap oversized output to protect the model's context. |
+| [`src/path_containment.ts`](src/path_containment.ts) | Path canonicalization and the symlink-resolving containment test. |
+| [`src/pending_context.ts`](src/pending_context.ts) | Deferred hint delivery, for harnesses that run a prompt-submit hook but discard its response. |
+| [`src/pptx_extract.ts`](src/pptx_extract.ts) | PowerPoint (.pptx) narrow-slice reader. |
+| [`src/pr_slice.ts`](src/pr_slice.ts) | Surgical GitHub PR reads via the `gh` CLI. |
+| [`src/process_priority.ts`](src/process_priority.ts) | Scheduling priority for the processes that index. |
+| [`src/process_util.ts`](src/process_util.ts) | Process and OS execution utilities. |
+| [`src/purge.ts`](src/purge.ts) | `uninstall --purge`: delete everything token-goat has written to disk. |
+| [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
+| [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
+| [`src/regex_guard.ts`](src/regex_guard.ts) | Refusing a regular expression that can stall the process that runs it. |
+| [`src/resident_context.ts`](src/resident_context.ts) | Accounting for the context the harness injects and token-goat's hooks never see. |
+| [`src/screenshot.ts`](src/screenshot.ts) | Local screenshot capture for `token-goat screenshot`, so a page render can reach the model as a small shrunk image instead of round-tripping through a separate browser-automation M |
+| [`src/secret_redact.ts`](src/secret_redact.ts) | Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. |
+| [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
+| [`src/sharepoint_resolve.ts`](src/sharepoint_resolve.ts) | Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of fai |
+| [`src/shell.ts`](src/shell.ts) | Exports: `locateBashOnPath`, `resolveWindowsBash`, `wrappedShell`, `canRunWrappedShell` |
+| [`src/skill_version_drift.ts`](src/skill_version_drift.ts) | Session-scoped nudge for token-goat's own version drift. |
+| [`src/sql_path.ts`](src/sql_path.ts) | Exports: `pathEqClause`, `pathSuffixClause`, `projectScopeClause` |
+| [`src/stdin_json.ts`](src/stdin_json.ts) | Reading a JSON payload off stdin, with a timeout and a byte cap. |
+| [`src/symbol_body_probe.ts`](src/symbol_body_probe.ts) | Doctor's oversized-stored-body check, hosted outside cli_doctor.ts. |
+| [`src/transcript_extract.ts`](src/transcript_extract.ts) | Zero-dependency WebVTT/SRT transcript reader. |
+| [`src/ts_refs.ts`](src/ts_refs.ts) | Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. |
+| [`src/untrusted_fence.ts`](src/untrusted_fence.ts) | The single decision point for "should this text be fenced, and under what notice". |
+| [`src/url_policy.ts`](src/url_policy.ts) | Shared allow/deny matching for URL policy (`webfetch.allow` / `webfetch.deny`). |
+| [`src/video_chapters.ts`](src/video_chapters.ts) | Reads embedded chapter markers and subtitle-stream metadata out of a video file via `ffprobe`, so an agent can see a video's structure without downloading/transcoding it. |
+| [`src/vscode_duplicate.ts`](src/vscode_duplicate.ts) | Duplicate-invocation suppression for VS Code agent hooks. |
+| [`src/vscode_path_gate.ts`](src/vscode_path_gate.ts) | Which paths a pre_tool_use handler may open. |
+| [`src/vscode_savings.ts`](src/vscode_savings.ts) | Exports: `StatsDay`, `StatsJson`, `SavingsBarContent`, `parseStatsJson` |
+| [`src/walk_index.ts`](src/walk_index.ts) | Non-git walk-index fallback policy (`token-goat index --walk`). |
+| [`src/walk_mode.ts`](src/walk_mode.ts) | Git-vs-non-git detection for the indexer's walk mode. |
+| [`src/waste.ts`](src/waste.ts) | Session spend-ledger: parses a Claude Code session transcript (JSONL) and attributes token cost per tool call, per tool name, and per file, then flags a few concrete waste signals. |
+| [`src/web_extract.ts`](src/web_extract.ts) | HTML -> clean text extraction for fetched web content, so a `WebFetch` body never lands in context as raw markup. |
+| [`src/xlsx_extract.ts`](src/xlsx_extract.ts) | Excel (.xlsx) narrow-slice reader. |
+| [`src/xlsx_reader.ts`](src/xlsx_reader.ts) | Minimal in-house SpreadsheetML (.xlsx) reader. |
+| [`src/zip_bounds.ts`](src/zip_bounds.ts) | Shared decompression bounds for zip-format archives (.zip/.jar/.whl/.vsix/.nupkg, and the .docx/.pptx/.xlsx OOXML formats, which are all ZIP containers under the hood). |
 
+<!-- ARCH_COMPONENTS_END -->
 ## Storage Layout
 
 **Windows:** `%LOCALAPPDATA%\dfk-helper\token-goat\`

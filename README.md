@@ -701,6 +701,8 @@ Bug reports go to the same place. The most useful ones include:
 - The matching log line from `%LOCALAPPDATA%\dfk-helper\token-goat\logs\` on Windows or `~/.local/share/token-goat/logs/` on Linux/WSL
 - What you expected and what actually happened
 
+To audit an existing AI session for missed savings, hook friction, or optimization opportunities before opening an issue, see the [Session Mining Prompt](docs/PROMPT_SESSION_MINING.md).
+
 For private questions, commercial licensing, or anything you'd rather not post publicly, contact me at token-goat@dfkhelper.com.
 
 ## Disclaimer

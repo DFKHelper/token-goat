@@ -2170,7 +2170,7 @@ Some content that makes the file large enough`
     const r3 = preReadHandler(readEvent(p))
     expect(r3.hookType).toBe('deny')
     if (r3.hookType === 'deny') {
-      expect(r3.message).toContain('Read this file 2 times already')
+      expect(r3.message).toContain('Tried to read this file 2 times already')
       expect(r3.message).toContain('token-goat skeleton')
     }
   })
@@ -2292,7 +2292,7 @@ Some content that makes the file large enough`
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('Read this file')
+      expect(result.message).toContain('Tried to read this file')
       expect(result.message).toContain('times already')
       expect(result.message).toContain('token-goat skeleton')
       expect(result.message).toContain('token-goat outline')
@@ -2325,6 +2325,7 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).not.toContain('Read this file')
+      expect(result.context).not.toContain('Tried to read this file')
     }
   })
 
@@ -3863,5 +3864,76 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         // cleanup best effort
       }
     }
+  })
+
+  describe('sequential line-range paging and slice re-read dedup', () => {
+    it('detects and denies redundant line-range re-read when lines were already served', () => {
+      const p = path.join(os.tmpdir(), `tg-range-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `const x${i} = ${i};`).join('\n'))
+      tmpFiles.push(p)
+
+      // First slice: lines 10..30
+      const r1 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [10, 30] },
+        sessionId: 'test',
+      }))
+      expect(r1.hookType).not.toBe('deny')
+
+      // Second slice: lines 15..25 (completely within 10..30)
+      const r2 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [15, 25] },
+        sessionId: 'test',
+      }))
+      expect(r2.hookType).toBe('deny')
+      if (r2.hookType === 'deny') {
+        expect(r2.message).toContain('Lines 15..25 of')
+        expect(r2.message).toContain('was already read this session')
+      }
+    })
+
+    it('detects sequential line-range paging pattern and injects advisory context note', () => {
+      const p = path.join(os.tmpdir(), `tg-paging-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 150 }, (_, i) => `const x${i} = ${i};`).join('\n'))
+      tmpFiles.push(p)
+
+      // Slice 1: [1, 20]
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 20] }, sessionId: 'test' }))
+      // Slice 2: [21, 40]
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [21, 40] }, sessionId: 'test' }))
+      // Slice 3: [41, 60] -> triggers paging advisory note
+      const r3 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [41, 60] }, sessionId: 'test' }))
+      expect(r3.hookType).toBe('context')
+      if (r3.hookType === 'context') {
+        expect(r3.context).toContain('Sequential line-range paging detected')
+      }
+    })
+
+    it('caps isProtectedRecentRead so files read 4+ times cannot loop indefinitely in small sessions', () => {
+      const p = path.join(os.tmpdir(), `tg-cap-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, 'export const val = 42;\n')
+      tmpFiles.push(p)
+
+      // In a 1-file session, rank is 0 (< 4).
+      // Read 1
+      const r1 = preReadHandler(readEvent(p))
+      expect(r1.hookType).toBe('pass')
+      // Read 2 (re-read 1, readCount 1 -> protected)
+      const r2 = preReadHandler(readEvent(p))
+      expect(r2.hookType).not.toBe('deny')
+      // Read 3 (re-read 2, readCount 2 -> protected)
+      const r3 = preReadHandler(readEvent(p))
+      expect(r3.hookType).not.toBe('deny')
+      // Read 4 (re-read 3, readCount 3 -> protected)
+      const r4 = preReadHandler(readEvent(p))
+      expect(r4.hookType).not.toBe('deny')
+      // Read 5 (re-read 4, readCount 4 -> no longer protected by recency!)
+      const r5 = preReadHandler(readEvent(p))
+      expect(r5.hookType).toBe('deny')
+      if (r5.hookType === 'deny') {
+        expect(r5.message).toContain('Tried to read this file 4 times already')
+      }
+    })
   })
 })

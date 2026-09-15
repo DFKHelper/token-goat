@@ -409,3 +409,6 @@ export const ENV_KEYS = {
 // Changing it invalidates that index's predicate: bump SCHEMA_VERSION and add a MIGRATIONS step
 // dropping idx_symbols_oversized_body, or the stored index keeps the old threshold.
 export const SYMBOL_BODY_CHAR_CAP = 128 * 1024
+
+/** Upper bound on the number of symbols fetched in one SQL query for skeleton/outline. */
+export const SKELETON_SYMBOL_CAP = 5000
