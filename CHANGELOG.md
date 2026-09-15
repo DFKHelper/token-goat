@@ -6,6 +6,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
+- **Automated architecture documentation sync engine & pre-commit guard (`npm run docs:arch`, `npm run docs:arch:check`)**: Added `scripts/sync-arch-docs.mjs` and `tests/guards/architecture_docs.test.ts` to automatically extract, categorize, and verify all 360 source modules against `CLAUDE.arch.md` with zero drift while preserving human-curated architectural commentary.
+- **Session mining optimization prompt (`docs/PROMPT_SESSION_MINING.md`)**: Added a reusable session-auditing prompt and maintainer feedback card template for discovering missed surgical reads, hook friction, tool errors, and context optimization opportunities.
+- **High-performance composite indexing in index database**: Added composite expression indices (`idx_symbols_file_name_folded`, `idx_refs_file_name_folded`, `idx_chunks_file_kind_folded`) in `src/db.ts` to optimize `file::symbol` lookups, reference graph walks, and hybrid chunk retrieval without scanning entire files.
 - **`token-goat upgrade` (alias `update`, `--check`, `--json`)**: Checks the npm registry for a newer published version and installs it with `npm install -g token-goat@latest`, then re-runs `token-goat install` so hooks and bridge manifests point at the build that just landed. Skipping that second step is how an upgrade leaves a machine running new code through old wiring. `--check` reports the status without installing anything, and `--json` emits the same current/latest/updateAvailable result for a script to assert on. The registry request is timeboxed at 3.5 seconds and returns nothing at all when `network.offline` is set, so an offline machine reports that it could not reach the registry instead of hanging. Running it from inside a token-goat git checkout prints the local build commands instead of globally installing over your working tree.
 - **`token-goat doctor` reports an available update**: The audit ends with an update notice when a newer version is published, because the older the installed build, the more likely the rest of the report describes behavior that has already been fixed. The check is timeboxed at 1.5 seconds and stays silent when the registry cannot be reached, so `doctor` still finishes offline.
 - **`token-goat compress --quiet-success` (`-q`)**: On exit code 0, emits a single line (`[tg: ok] <command> (0.4s, recall: token-goat bash-output <id>)`) and stores the full output for recall instead of printing it. A passing test suite says nothing worth reading, so the tokens go to the run that failed. On a non-zero exit the output is delivered as usual, since that is the run you need to see.
@@ -14,7 +17,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **Read denial hook phrasing clarified to 'Tried to read'**: Updated `src/hooks_read.ts` from `"Read this file X times already"` to `"Tried to read this file X times already"` to prevent users and models from misinterpreting a denial as a successful read, while maintaining backward-compatible regex parsing for historical session transcripts in `src/session_audit.ts`.
 - **Surgical-read hints now name symbols and headings that exist in the file**: The hint shown when a read is declined used to suggest `token-goat read "file::SymbolName"`, a placeholder nobody can run, so following the advice cost a turn to discover the real name. It now reads the file it is talking about and names up to three actual symbols, or for Markdown, up to three actual headings. The hint also offers `outline` beside `skeleton`, since one gives you the shape of a file and the other its signatures.
+
+### Refactored
+
+- **Decomposition of monolithic core modules**: Decomposed `src/cli.ts`, `src/read_commands.ts`, `src/text_commands.ts`, `src/cli_doctor.ts`, and `src/util.ts` into cohesive, single-responsibility submodules (`src/cli_dispatch.ts`, `src/cli_help.ts`, `src/read_meta.ts`, `src/text_trace.ts`, `src/cli_doctor_platforms.ts`, `src/util_config.ts`, etc.) adhering to anti-monolithic architecture boundaries while preserving complete public export compatibility and test suite coverage.
 
 ### Fixed
 

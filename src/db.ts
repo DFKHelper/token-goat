@@ -76,6 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_folded ON symbols(TG_LOWER(file_path));
+CREATE INDEX IF NOT EXISTS idx_symbols_file_name_folded ON symbols(TG_LOWER(file_path), name);
 -- Partial index backing checkSymbolBodySize (cli_doctor.ts), which every SessionStart hook runs.
 -- Its predicate cannot be served by any index above, so the check had to read the whole symbols
 -- table -- 226 MB / 231324 rows here, 229 ms per session start, and the early-exit LIMIT 1 never
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
 CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_refs_file_folded ON refs(TG_LOWER(file_path));
+CREATE INDEX IF NOT EXISTS idx_refs_file_name_folded ON refs(TG_LOWER(file_path), name);
 
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +114,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_chunks_file_folded ON chunks(TG_LOWER(file_path));
+CREATE INDEX IF NOT EXISTS idx_chunks_file_kind_folded ON chunks(TG_LOWER(file_path), kind);
 
 -- Tracks every project root a hook has ever seen an edit for, so the worker's periodic sweep
 -- (sweepKnownRoots in index_prune.ts) knows which roots to auto-prune without scanning the
