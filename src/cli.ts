@@ -89,11 +89,8 @@ import {
   runSqliteTables,
   runSqliteSchema,
   runSqliteQuery,
-  runCoverageReportGaps,
-  runConflicts,
   runImageMeta,
   runImageText,
-  runScreenshot,
   extractTranscriptText,
   extractSection,
   runSemantic,
@@ -134,40 +131,37 @@ import { SUPPORTED_OCR_LANG_CODES, isSupportedOcrLang } from './ocr_languages.js
 import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
 import { collectCapabilities, renderCapabilities } from './capabilities.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
-import {
-  collectFiles,
-  collectFromStdin,
-  formatPack,
-  scanSecrets,
-  estimateBudget,
-  formatBudgetText,
-} from './pack.js'
-import {
-  extractFailures,
-  formatFailuresText,
-  formatFailuresJson,
-  failureSignatures,
-  computeFailureDelta,
-  formatFailureDeltaText,
-  formatFailureDeltaJson,
-} from './failures.js'
-import { loadFailureSnapshot, saveFailureSnapshot, DEFAULT_FAILURES_STATE_KEY } from './failures_state.js'
 import { findProject } from './project.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
 import { runDepDocs } from './dep_docs.js'
 import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
 import { cmdReclaimIndex } from './index_reclaim.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
-import { runContextStats } from './cli_context_stats.js'
-import { runBootstrapAudit } from './cli_bootstrap_audit.js'
-import { runMemoryCommand } from './cli_memory.js'
-import { runWasteCommand } from './cli_waste.js'
-import { buildSessionOutline, formatSessionOutline, formatSessionSlice, parseTurnRange, resolveSessionTranscript, sliceSessionTurns } from './session_read.js'
-import { auditSessionCorpus, formatSessionAudit } from './session_audit.js'
-import { runMcpAuditCommand } from './cli_mcp_audit.js'
-import { runRecallCommand } from './cli_recall.js'
-import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 import { runBenchCommand } from './cli_bench.js'
+import {
+  cmdContextStats,
+  cmdBootstrapAudit,
+  cmdMemory,
+  cmdWaste,
+  cmdSessionAudit,
+  cmdSessionOutline,
+  cmdSessionSlice,
+  cmdMcpAudit,
+  cmdRecall,
+  cmdStatusline,
+  cmdHintStats,
+} from './cli_session.js'
+import {
+  cmdCoverageReportGaps,
+  cmdConflicts,
+  cmdScreenshot,
+  cmdPack,
+  cmdTokens,
+  cmdBudget,
+  cmdFailures,
+  expandGlobs,
+} from './cli_diagnostics.js'
+export { expandGlobs }
 import {
   cmdSkillBody,
   cmdSkillCompact,
@@ -223,9 +217,6 @@ import {
   cmdZipList,
   cmdZipRead,
 } from './cli_structured.js'
-import { runHintStatsCommand } from './cli_hint_stats.js'
-import { isHintCategory } from './hint_stats.js'
-import { runStatuslineCommand } from './cli_statusline.js'
 import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
 
@@ -303,7 +294,7 @@ function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
 }
 
 // Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which SQLite rejects with an opaque "datatype mismatch" error).
-function requireInt(flag: string, raw: string): number {
+export function requireInt(flag: string, raw: string): number {
   // Only accept exact integer literals (optional leading minus, followed by digits)
   if (!/^-?\d+$/.test(raw)) {
     throw new CliError(`${flag} must be a number, got: "${raw}"`)
@@ -1231,154 +1222,6 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean }): Promise<v
   }
 }
 
-function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
-  return runContextStats(opts)
-}
-
-function cmdBootstrapAudit(opts: {
-  project?: string
-  home?: string
-  followLinks?: boolean
-  json?: boolean
-  top?: string
-  warnTokens?: string
-  failTokens?: string
-  warnBytes?: string
-  failBytes?: string
-} = {}): Promise<void> {
-  return runBootstrapAudit({
-    ...(opts.project === undefined ? {} : { project: opts.project }),
-    ...(opts.home === undefined ? {} : { home: opts.home }),
-    ...(opts.followLinks === undefined ? {} : { followLinks: opts.followLinks }),
-    ...(opts.json === undefined ? {} : { json: opts.json }),
-    ...(opts.top === undefined ? {} : { top: Number(opts.top) }),
-    ...(opts.warnTokens === undefined ? {} : { warnTokens: Number(opts.warnTokens) }),
-    ...(opts.failTokens === undefined ? {} : { failTokens: Number(opts.failTokens) }),
-    ...(opts.warnBytes === undefined ? {} : { warnBytes: Number(opts.warnBytes) }),
-    ...(opts.failBytes === undefined ? {} : { failBytes: Number(opts.failBytes) }),
-  })
-}
-
-function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
-  return runMemoryCommand(opts)
-}
-
-function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean; top?: string; copilot?: boolean } = {}): Promise<void> {
-  return runWasteCommand({
-    ...(opts.project !== undefined ? { project: opts.project } : {}),
-    ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
-    ...(opts.json === true ? { json: true } : {}),
-    ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
-    ...(opts.copilot === true ? { copilot: true } : {}),
-  })
-}
-
-async function cmdSessionAudit(opts: { dir?: string; json?: boolean } = {}): Promise<void> {
-  let summary
-  try {
-    summary = await auditSessionCorpus({ ...(opts.dir !== undefined ? { dir: opts.dir } : {}) })
-  } catch (err) {
-    throw new CliError(err instanceof Error ? err.message : String(err))
-  }
-  out(opts.json === true ? displaySafeJson(summary, 0) : formatSessionAudit(summary))
-}
-
-async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean } = {}): Promise<void> {
-  const transcriptPath = resolveSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
-  if (transcriptPath === null) {
-    throw new CliError(
-      sessionIdOrPath !== undefined
-        ? `no session transcript found for '${sessionIdOrPath}'`
-        : 'no session transcript found for the current project; pass a session id or path explicitly',
-    )
-  }
-  const turns = await buildSessionOutline(transcriptPath)
-  const text = opts.json === true ? displaySafeJson({ transcriptPath, turns }, 0) : `Transcript: ${transcriptPath}\n${formatSessionOutline(turns)}`
-  out(text)
-  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry carries a `session_outline`/`session-outline`
-  // entry, but nothing ever called recordStat for it -- the dashboard bucket was permanently zero
-  // regardless of real usage, the same class of gap already fixed for map_lookup/changed_lookup/
-  // csv_query/brief_view (see project_runchanged_missing_stat memory). This command's own
-  // description advertises itself as "instead of a raw Read", so the full transcript's on-disk
-  // size is the "full source" side of the bytes-saved calculation, mirroring recordReadStat's
-  // convention in read_commands.ts.
-  const fullSourceBytes = sessionTranscriptSize(transcriptPath)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('session_outline', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-/** Best-effort on-disk size of a session transcript file; 0 if it can't be stat'd (never blocks stat recording). */
-function sessionTranscriptSize(transcriptPath: string): number {
-  try {
-    return fs.statSync(transcriptPath).size
-  } catch {
-    return 0
-  }
-}
-
-async function cmdSessionSlice(
-  sessionIdOrPath: string | undefined,
-  opts: { project?: string; range: string; json?: boolean },
-): Promise<void> {
-  const transcriptPath = resolveSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
-  if (transcriptPath === null) {
-    throw new CliError(
-      sessionIdOrPath !== undefined
-        ? `no session transcript found for '${sessionIdOrPath}'`
-        : 'no session transcript found for the current project; pass a session id or path explicitly',
-    )
-  }
-  const { start, end } = parseTurnRange(opts.range)
-  const turns = await sliceSessionTurns(transcriptPath, start, end)
-  const text = opts.json === true ? displaySafeJson({ transcriptPath, turns }, 0) : formatSessionSlice(turns)
-  out(text)
-  // Same registry/producer desync as cmdSessionOutline above -- see the comment there.
-  const fullSourceBytes = sessionTranscriptSize(transcriptPath)
-  const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
-  recordStat('session_slice', bytesSaved, savedTokensFromBytes(bytesSaved))
-}
-
-function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<void> {
-  return runMcpAuditCommand({
-    ...(opts.project !== undefined ? { project: opts.project } : {}),
-    ...(opts.json === true ? { json: true } : {}),
-  })
-}
-
-function cmdRecall(query: string | undefined, opts: { type?: string; limit?: string; json?: boolean } = {}): void {
-  let type: RecallCacheType | undefined
-  if (opts.type !== undefined) {
-    if (!isRecallCacheType(opts.type)) {
-      throw new CliError(`--type must be one of: bash, web, mcp (got: ${opts.type})`)
-    }
-    type = opts.type
-  }
-  runRecallCommand(query, {
-    ...(type !== undefined ? { type } : {}),
-    ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
-    ...(opts.json === true ? { json: true } : {}),
-  })
-}
-
-function cmdStatusline(opts: { json?: boolean } = {}): Promise<void> {
-  return runStatuslineCommand({ ...(opts.json === true ? { json: true } : {}) })
-}
-
-function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: string; markIneffective?: string } = {}): void {
-  if (opts.markEffective !== undefined && !isHintCategory(opts.markEffective)) {
-    throw new CliError(`--mark-effective must be one of: bash_redirect, bash_recall, read_reread_dedup, read_structural_nav, edit_reread_suggest (got: ${opts.markEffective})`)
-  }
-  if (opts.markIneffective !== undefined && !isHintCategory(opts.markIneffective)) {
-    throw new CliError(`--mark-ineffective must be one of: bash_redirect, bash_recall, read_reread_dedup, read_structural_nav, edit_reread_suggest (got: ${opts.markIneffective})`)
-  }
-  runHintStatsCommand({
-    ...(opts.json === true ? { json: true } : {}),
-    ...(opts.reset === true ? { reset: true } : {}),
-    ...(opts.markEffective !== undefined && isHintCategory(opts.markEffective) ? { markEffective: opts.markEffective } : {}),
-    ...(opts.markIneffective !== undefined && isHintCategory(opts.markIneffective) ? { markIneffective: opts.markIneffective } : {}),
-  })
-}
-
 export function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
@@ -1724,30 +1567,6 @@ function cmdSqliteQuery(file: string, sql: string, opts: { head?: string; json?:
   process.exitCode = runSqliteQuery({ file, sql, ...opts })
 }
 
-function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boolean }) {
-  process.exitCode = runCoverageReportGaps({
-    file,
-    ...(opts.file !== undefined ? { fileFilter: opts.file } : {}),
-    ...(opts.json === true ? { json: true } : {}),
-  })
-}
-
-function cmdConflicts(targetPath: string | undefined, opts: { json?: boolean; summary?: boolean }) {
-  process.exitCode = runConflicts({
-    ...(targetPath !== undefined ? { path: targetPath } : {}),
-    ...(opts.json === true ? { json: true } : {}),
-    ...(opts.summary === true ? { summary: true } : {}),
-  })
-}
-
-async function cmdScreenshot(
-  url: string,
-  destPath: string,
-  opts: { executablePath?: string; width?: string; height?: string; fullPage?: boolean },
-) {
-  out(await runScreenshot(url, destPath, opts))
-}
-
 /**
  * Adapter for read_commands `run*` handlers, which print their own output and
  * return an exit code (0 ok, 1 handled error) rather than throwing a CliError.
@@ -1932,228 +1751,6 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   recordStat('gdrive_sections', bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
-/**
- * Expand glob patterns in a list of path strings using fs.globSync when available (Node 22+).
- * Literal paths are passed through unchanged. Exported for regression coverage (see
- * cli_expandglobs_large_match.test.ts); not part of the public CLI surface. `globFnOverride`
- * lets a test substitute a fake glob match array (e.g. a huge one, to exercise the
- * large-match-set path below) without writing real files to disk; production callers never
- * pass it, so the real `fs.globSync` is always used.
- */
-export function expandGlobs(
-  root: string,
-  patterns: string[],
-  globFnOverride?: (pattern: string, opts: { cwd: string }) => string[],
-): string[] {
-  const out: string[] = []
-  const globFn =
-    globFnOverride ??
-    ((fs as unknown as Record<string, unknown>)['globSync'] as
-      | ((pattern: string, opts: { cwd: string }) => string[])
-      | undefined)
-  for (const p of patterns) {
-    if (globFn !== undefined && (p.includes('*') || p.includes('?') || p.includes('{'))) {
-      try {
-        const hits = globFn(p, { cwd: root })
-        // Plain loop instead of out.push(...array): spreading a large glob match set (e.g.
-        // `**/*` on a big project) as call arguments blows the engine's call-stack limit well
-        // within realistic file counts (RangeError: Maximum call stack size exceeded), which
-        // this function's own try/catch then silently swallows as "not a valid glob, fall
-        // through to literal path" -- turning a huge, legitimate match set into zero matched
-        // files instead of throwing or reporting the real count.
-        for (const h of hits) out.push(path.isAbsolute(h) ? h : path.join(root, h))
-        continue
-      } catch {
-        // fall through to literal path
-      }
-    }
-    out.push(path.isAbsolute(p) ? p : path.join(root, p))
-  }
-  return out
-}
-
-/** Reads .tokengoatignore from the project root and returns its non-blank, non-comment lines as glob patterns. Returns undefined if the file doesn't exist. */
-function readIgnoreFile(root: string): string[] | undefined {
-  const ignorePath = path.join(root, '.tokengoatignore')
-  let raw: string
-  try {
-    raw = fs.readFileSync(ignorePath, 'utf8')
-  } catch {
-    return undefined
-  }
-  const patterns = raw
-    .split('\n')
-    .map((ln) => ln.trim())
-    .filter((ln) => ln.length > 0 && !ln.startsWith('#'))
-  return patterns.length > 0 ? patterns : undefined
-}
-
-function cmdPack(
-  patterns: string[] | undefined,
-  opts: {
-    format?: string
-    lineNumbers?: boolean
-    instructionFile?: string
-    output?: string
-    ignore?: boolean
-    stripComments?: boolean
-    scanSecrets?: boolean
-    budget?: string
-  },
-): void {
-  const root = process.cwd()
-  const style = opts.format === 'xml' ? 'xml' : opts.format === 'text' ? 'plain' : 'markdown'
-  const ignorePatterns = opts.ignore !== false ? readIgnoreFile(root) : undefined
-  const collectOpts = {
-    ...(opts.stripComments === true ? { do_strip_comments: true as const } : {}),
-    ...(ignorePatterns !== undefined ? { ignore_patterns: ignorePatterns } : {}),
-  }
-  const patternList = patterns ?? []
-  const expandedList = patternList.length > 0 ? expandGlobs(root, patternList) : []
-  if (patternList.length > 0 && expandedList.length === 0) {
-    throw new CliError(`no files matched: ${patternList.join(' ')}`)
-  }
-  const result =
-    expandedList.length > 0
-      ? collectFiles(root, expandedList, collectOpts)
-      : collectFromStdin(root, collectOpts)
-  if (opts.budget !== undefined) {
-    const budgetN = requireInt('--budget', opts.budget)
-    if (result.total_tokens > budgetN) {
-      err(`token-goat: pack: token count ${result.total_tokens} exceeds budget ${budgetN}`)
-      process.exitCode = 3
-      return
-    }
-  }
-  if (opts.scanSecrets === true) {
-    const hits = scanSecrets(result.files)
-    if (hits.length > 0) {
-      for (const hit of hits) {
-        // rel_path is a repository path. kind is a SECRET_PATTERNS key, so escaping it is a no-op today: it is escaped anyway so that making that table configurable later cannot reopen this line.
-        err(`token-goat: secret in ${displaySafePath(hit.rel_path)}:${hit.line}: ${displaySafeText(hit.kind)}`)
-      }
-      process.exitCode = 2
-      return
-    }
-  }
-  let instruction: string | undefined
-  if (opts.instructionFile !== undefined) {
-    instruction = fs.readFileSync(opts.instructionFile, 'utf8')
-  }
-  const formatted = formatPack(result, style, {
-    ...(opts.lineNumbers === true ? { line_numbers: true } : {}),
-    ...(instruction !== undefined ? { instruction } : {}),
-  })
-  if (opts.output !== undefined) {
-    fs.writeFileSync(opts.output, formatted, 'utf8')
-  } else {
-    out(formatted)
-  }
-}
-
-function cmdTokens(
-  patterns: string[] | undefined,
-  opts: { tree?: boolean; top?: string; asc?: boolean; json?: boolean },
-): void {
-  const root = process.cwd()
-  const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
-  let entries = [...result.entries]
-  if (opts.asc === true) entries.reverse()
-  const eligibleCount = entries.length
-  if (opts.top !== undefined) entries = entries.slice(0, requireNonNegativeInt('--top', opts.top))
-  const truncated = entries.length < eligibleCount
-  if (opts.json === true) {
-    // `total_tokens`/`total_lines` have always described the whole matched set, not the rows in
-    // `entries`. That is fine on a complete result and actively misleading on a capped one: three
-    // entries printed beside a total spanning hundreds of files reads as three files that sum to
-    // it. The added fields say which of the two the reader is looking at.
-    out(displaySafeJson({ entries, truncated, totalCount: eligibleCount, total_tokens: result.total_tokens, total_lines: result.total_lines }))
-    return
-  }
-  if (opts.tree === true) {
-    const dirs = new Map<string, typeof entries>()
-    for (const e of entries) {
-      const dir = path.dirname(e.rel_path)
-      if (!dirs.has(dir)) dirs.set(dir, [])
-      dirs.get(dir)!.push(e)
-    }
-    const lines: string[] = []
-    for (const [dir, dirEntries] of dirs) {
-      const dirTokens = dirEntries.reduce((s, e) => s + e.tokens, 0)
-      const pct = result.total_tokens > 0 ? Math.round((dirTokens / result.total_tokens) * 100) : 0
-      lines.push(`${dir}/ (${dirTokens} tokens, ${pct}%)`)
-      for (const e of dirEntries) {
-        lines.push(`  ${path.basename(e.rel_path).padEnd(30)}  ${String(e.tokens).padStart(8)} tokens`)
-      }
-    }
-    out(lines.join('\n'))
-    return
-  }
-  if (entries.length === 0) {
-    out('No files matched.')
-    return
-  }
-  // Reduce instead of Math.max(...array): spreading a large project's file list as call
-  // arguments blows the engine's call-stack limit (RangeError) well within realistic file
-  // counts -- mirrors the same fix in pack.ts's formatBudgetText.
-  const colW = entries.reduce((max, e) => Math.max(max, e.rel_path.length), 4)
-  const lines = [
-    `${'File'.padEnd(colW)}  ${'~Tokens'.padStart(8)}  ${'Lines'.padStart(6)}`,
-    `${'-'.repeat(colW)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`,
-  ]
-  for (const e of entries) {
-    lines.push(`${e.rel_path.padEnd(colW)}  ${String(e.tokens).padStart(8)}  ${String(e.lines).padStart(6)}`)
-  }
-  if (truncated) {
-    lines.push(`...and ${eligibleCount - entries.length} more (raise --top to see them).`)
-  }
-  out(lines.join('\n'))
-}
-
-function cmdBudget(
-  patterns: string[],
-  opts: { context?: string; json?: boolean },
-): void {
-  const root = process.cwd()
-  const result = estimateBudget(root, expandGlobs(root, patterns))
-  if (opts.json === true) {
-    out(displaySafeJson(result))
-  } else {
-    // Falls back to the configured context.model_window_tokens (in thousands, matching
-    // --context's own units) so the % line shows up without requiring --context on every call.
-    const contextK = opts.context !== undefined
-      ? requirePositiveInt('--context', opts.context)
-      : Math.round(loadConfig().context.model_window_tokens / 1000)
-    out(formatBudgetText(result, contextK))
-  }
-}
-
-function cmdFailures(
-  src: string | undefined,
-  opts: { runner?: string; json?: boolean; delta?: boolean; key?: string },
-): void {
-  const text = src !== undefined ? fs.readFileSync(src, 'utf8') : fs.readFileSync(0, 'utf8')
-  const result = extractFailures(text, opts.runner !== undefined ? { runner: opts.runner } : {})
-
-  if (opts.delta !== true) {
-    out(opts.json === true ? formatFailuresJson(result) : formatFailuresText(result))
-    return
-  }
-
-  // --delta needs a project identity to scope the persisted baseline to (see
-  // failures_state.ts's module doc for why project hash + an explicit --key, not a
-  // (sessionId, bash_id) pair, is the right key here).
-  const project = findProject(process.cwd())
-  if (project === null) {
-    throw new Error('token-goat failures --delta requires a project root (git repo, package.json, etc.) from cwd to scope the saved baseline')
-  }
-  const key = opts.key ?? DEFAULT_FAILURES_STATE_KEY
-  const signatures = failureSignatures(result)
-  const prior = loadFailureSnapshot(project.hash, key)
-  const delta = computeFailureDelta(prior?.signatures ?? null, signatures)
-  saveFailureSnapshot(project.hash, key, { signatures, runner: result.runner, storedAt: Date.now() })
-  out(opts.json === true ? formatFailureDeltaJson(delta, result.runner) : formatFailureDeltaText(delta, result.runner))
-}
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */

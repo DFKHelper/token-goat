@@ -22,22 +22,33 @@ import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_s
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { displaySafePath, normalizePath, toDisplayPath } from './paths.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type ServedBody } from './served_lines.js'
-
-/** A line of a Read result: its number in the file, its text, and the numbered form it occupies in the delivered output. Narrower than the shared {@link NumberedRow} in one way that matters -- the harness always numbers a Read, so `no` is never unknown here, and the fold planners below are free to do arithmetic on it. */
-interface NumberedRow {
-  readonly no: number
-  readonly text: string
-  readonly raw: string
-}
 import { decodeSource, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown, recordFileServedOutput, getFileServedOutputs } from './session.js'
 import { storeBashOutputSync, getBashOutput } from './bash_output_cache.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
-import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
+import { store as snapshotStore } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput, emitRewrite, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { redactSecrets } from './secret_redact.js'
+import {
+  readRequestedSliceWindow,
+  readStartLine,
+  isTruncatedReadDelivery,
+  estimateRequestedSlice,
+  describeSliceAdvice,
+  loadSnapshotDiff,
+  countTextLines,
+  estimateTruncatedLineCount,
+  editAnywayHint,
+  truncatedReadDenyMessage,
+  readWindowFromDisk,
+  SLICE_ESTIMATE_SCAN_CAP_BYTES,
+  type NumberedRow,
+  parseNumberedReadResult,
+} from './hooks_read_slice.js'
+
+export { readRequestedSliceWindow, isTruncatedReadDelivery, buildLineDiff } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
@@ -48,7 +59,7 @@ import {
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
-import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
+import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
@@ -190,226 +201,6 @@ function sessionArtifactRecall(rawPath: string): string {
   return 'Use `token-goat bash-output --file "' + filePath + '" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'
 }
 
-/** Reads a numeric tool-input param (Read's `offset`/`limit`), tolerating a numeric string. */
-function readIntToolInput(event: HookEvent, key: string): number | undefined {
-  const value = event.toolInput[key]
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value)
-    if (Number.isFinite(n)) return n
-  }
-  return undefined
-}
-
-export interface RequestedSliceWindow {
-  /** 1-based start line number, if requested or clamped */
-  readonly offset?: number | undefined
-  /** Number of lines requested, if bounded */
-  readonly limit?: number | undefined
-  /** Whether the tool input explicitly requested a bounded or partial window */
-  readonly isExplicitSlice: boolean
-}
-
-/**
- * Normalizes multi-harness line window parameters across Claude Code (`offset`/`limit`),
- * Copilot CLI (`view_range: [start, end]`), and other tools (`lines`, `range`, `start_line`/`end_line`).
- */
-export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow {
-  const rawOffset = readIntToolInput(event, 'offset')
-  const rawLimit = readIntToolInput(event, 'limit')
-
-  if (rawOffset !== undefined || rawLimit !== undefined) {
-    return {
-      offset: rawOffset !== undefined && rawOffset >= 1 ? Math.floor(rawOffset) : 1,
-      limit: rawLimit !== undefined && rawLimit > 0 ? Math.floor(rawLimit) : undefined,
-      isExplicitSlice: true,
-    }
-  }
-
-  const rawRange = event.toolInput['view_range'] ?? event.toolInput['lines'] ?? event.toolInput['range']
-  if (Array.isArray(rawRange) && rawRange.length >= 1) {
-    const rawStart = Number(rawRange[0])
-    const startVal = Number.isFinite(rawStart) && rawStart >= 1 ? Math.floor(rawStart) : 1
-    if (rawRange.length >= 2) {
-      const rawEnd = Number(rawRange[1])
-      if (rawEnd === -1) {
-        return { offset: startVal, isExplicitSlice: true }
-      }
-      if (Number.isFinite(rawEnd) && rawEnd >= startVal) {
-        const lineCount = Math.floor(rawEnd - startVal + 1)
-        return { offset: startVal, limit: lineCount, isExplicitSlice: true }
-      }
-    }
-    return { offset: startVal, isExplicitSlice: true }
-  }
-
-  const startLine =
-    readIntToolInput(event, 'start_line') ??
-    readIntToolInput(event, 'startLine') ??
-    readIntToolInput(event, 'start')
-  const endLine =
-    readIntToolInput(event, 'end_line') ??
-    readIntToolInput(event, 'endLine') ??
-    readIntToolInput(event, 'end')
-
-  if (startLine !== undefined || endLine !== undefined) {
-    const effectiveStart = startLine !== undefined && startLine >= 1 ? Math.floor(startLine) : 1
-    const effectiveLimit =
-      endLine !== undefined && endLine >= effectiveStart ? Math.floor(endLine - effectiveStart + 1) : undefined
-    return { offset: effectiveStart, limit: effectiveLimit, isExplicitSlice: true }
-  }
-
-  return { isExplicitSlice: false }
-}
-
-/** The 1-based file line the delivered body starts at, from `tool_response.file.startLine`. Defaults to 1, which is both the whole-file case and the safe answer when the harness sends no such field: a wrong start would shift every fold span against the file it came from. */
-function readStartLine(event: HookEvent): number {
-  const resp = event.raw['tool_response']
-  if (resp === null || typeof resp !== 'object') return 1
-  const file = (resp as Record<string, unknown>)['file']
-  if (file === null || typeof file !== 'object') return 1
-  const start = (file as Record<string, unknown>)['startLine']
-  if (typeof start === 'number' && Number.isSafeInteger(start) && start >= 1) return start
-  return 1
-}
-
-/** The notice Claude Code prints when a whole-file Read overruns the token cap, anchored to the start of a line: the notice is its own line (measured over 5,114 real transcripts, all 160 occurrences begin their string at index 0), while a source file that merely quotes the literal has it embedded mid-line inside a string, and folding that file is correct. Only the full `[Truncated: PARTIAL view` form is matched, never the bare `[Truncated:` prefix: across 13,904 real Read results the only bodies ever carrying that prefix were this repo's own six guard lines and one comment in session.ts, i.e. false positives without exception. */
-const HARNESS_TRUNCATION_NOTICE_RE = /^[ \t]*\[Truncated: PARTIAL view/m
-
-/**
- * True when the harness handed back only part of the read, so folding it would withhold lines the model never received.
- *
- * Two signals, strongest first. `tool_response.file.truncatedByTokenCap` is the structural one Claude Code sets on exactly the reads its token cap cut short: over 13,904 real Read results it appears on 159, is `true` on all 159, and is absent from every other read. It is strictly better than a string scan because it cannot be spoofed by a file that discusses truncation, and it is the only signal that fires at all on current Claude Code, which delivers the notice as a separate attachment banner the hook never sees in `tool_response`. The notice text is kept as a second arm for harnesses that splice it into the body instead, where dropping it would be a false negative nobody could characterise.
- *
- * `numLines < totalLines` is deliberately NOT used: it holds on 7,469 of those same 13,904 reads, almost all of them ordinary windowed reads that fold correctly, so it discriminates nothing.
- */
-export function isTruncatedReadDelivery(event: HookEvent, respText: string): boolean {
-  const resp = event.raw['tool_response']
-  if (resp !== null && typeof resp === 'object') {
-    const file = (resp as Record<string, unknown>)['file']
-    if (file !== null && typeof file === 'object' && (file as Record<string, unknown>)['truncatedByTokenCap'] === true) return true
-  }
-  return HARNESS_TRUNCATION_NOTICE_RE.test(respText)
-}
-
-/** Cap on bytes scanned while estimating an offset/limit slice — keeps the estimate itself cheap. */
-const SLICE_ESTIMATE_SCAN_CAP_BYTES = 2 * 1024 * 1024
-
-/** Below this many lines-scanned-so-far, a scan that didn't close its window reads as near-single-line. */
-const NEAR_SINGLE_LINE_SCAN_THRESHOLD = 20
-
-interface SliceScan {
-  /** Bytes counted as falling inside the requested [offset, offset+limit) window so far. */
-  bytes: number
-  /** True when `bytes` is safe to treat as the real slice size: either the window genuinely
-   *  closed (a line number >= offset+limit was reached), or the scan reached real EOF — both
-   *  give full visibility into what a Read call would actually return. False only for the
-   *  scan-cap case where the window hadn't even started (e.g. a very deep offset into a huge
-   *  file) — there, `bytes` is just "0 so far" and would be misleading to trust. */
-  trustworthy: boolean
-  /** True when the scan ended (EOF or cap) after seeing very few line breaks relative to bytes
-   *  scanned — the base64/minified-blob shape where there's ~1 "line" to window over, so
-   *  line-based offset/limit can't help regardless of what's requested. */
-  nearSingleLine: boolean
-}
-
-/**
- * Scans the 1-indexed line window [offset, offset + limit) — matching the Read tool's own
- * offset/limit semantics — without reading the whole file into memory. Reads in bounded
- * chunks and stops as soon as the window closes, EOF is hit, or the scan cap is hit.
- *
- * Returns null only when the file can't be opened at all.
- */
-function scanRequestedSlice(absPath: string, offset: number, limit: number): SliceScan | null {
-  const windowEnd = offset + limit // exclusive, 1-indexed line numbers
-  let fd: number
-  try {
-    fd = fs.openSync(absPath, 'r')
-  } catch {
-    return null
-  }
-  try {
-    const buf = Buffer.alloc(64 * 1024)
-    let lineNumber = 1
-    let sliceBytes = 0
-    let totalScanned = 0
-    for (;;) {
-      if (totalScanned >= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-        const nearSingleLine = lineNumber < NEAR_SINGLE_LINE_SCAN_THRESHOLD
-        return { bytes: sliceBytes, trustworthy: nearSingleLine, nearSingleLine }
-      }
-      const bytesRead = fs.readSync(fd, buf, 0, buf.length, null)
-      if (bytesRead === 0) {
-        // Real EOF — full visibility into the file, so `bytes` is exact even if the window
-        // never formally "closed" (the file simply has fewer lines than the request asked for).
-        return {
-          bytes: sliceBytes,
-          trustworthy: true,
-          nearSingleLine: lineNumber < NEAR_SINGLE_LINE_SCAN_THRESHOLD && totalScanned > 2000,
-        }
-      }
-      totalScanned += bytesRead
-      for (let i = 0; i < bytesRead; i++) {
-        if (lineNumber >= offset && lineNumber < windowEnd) sliceBytes++
-        if (buf[i] === 0x0a) {
-          lineNumber++
-          if (lineNumber >= windowEnd) return { bytes: sliceBytes, trustworthy: true, nearSingleLine: false }
-        }
-      }
-    }
-  } finally {
-    try {
-      fs.closeSync(fd)
-    } catch {
-      // best-effort
-    }
-  }
-}
-
-/** Outcome of trying to size a Read call's requested offset/limit window instead of the whole file. */
-type RequestedSlice =
-  | { readonly kind: 'bytes'; readonly bytes: number } // a trustworthy slice size — safe to gate on
-  | { readonly kind: 'unbounded' } // no offset/limit given, missing limit, or couldn't be cheaply sized — gate on the whole file
-  | { readonly kind: 'nearSingleLine' } // content shape makes any line window meaningless regardless of what's requested
-
-/**
- * Reads `offset`/`limit` (or multi-harness slice params) off the Read tool call and estimates
- * the size of just that slice, so a genuinely small, bounded request isn't gated on the whole file's
- * size. Only Read/view tool calls carry windowing — Grep/Glob events always resolve to
- * `unbounded` since they have no notion of a line window.
- */
-function estimateRequestedSlice(event: HookEvent, absPath: string): RequestedSlice {
-  const window = readRequestedSliceWindow(event)
-  // A non-positive limit (zero or negative) has no well-defined real-world slice size: fed
-  // straight into scanRequestedSlice, offset + limit <= offset makes the window close before it
-  // opens, so the byte counter never advances and the very first line break trips the "window
-  // closed" branch -- fabricating a trustworthy-looking {bytes: 0} instead of reporting that the
-  // requested size genuinely can't be estimated. Treat it exactly like a missing limit: fall back
-  // to gating on the whole file.
-  if (window.limit === undefined || window.limit <= 0) return { kind: 'unbounded' }
-  const effectiveOffset = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
-  const scan = scanRequestedSlice(absPath, effectiveOffset, window.limit)
-  if (scan === null) return { kind: 'unbounded' }
-  if (scan.nearSingleLine) return { kind: 'nearSingleLine' }
-  if (scan.trustworthy) return { kind: 'bytes', bytes: scan.bytes }
-  return { kind: 'unbounded' } // cap hit before the window even started — can't tell cheaply, fall back safely
-}
-
-/** Phrases the retry advice for a large-file deny based on whether/how offset/limit would help. */
-function describeSliceAdvice(slice: RequestedSlice, rawAbsPath: string): string {
-  const absPath = displaySafePath(rawAbsPath)
-  if (slice.kind === 'nearSingleLine') {
-    return BYTE_RANGE_ADVICE(absPath)
-  }
-  if (slice.kind === 'bytes') {
-    return (
-      `The requested offset/limit range is still ~${toKB(slice.bytes)}KB — ` +
-      'narrow the range further (a smaller limit) rather than reading the whole file.'
-    )
-  }
-  return 'Use Read with offset/limit to sample specific sections.'
-}
-
 /** Source/style/data files eligible for diff-on-reread when serve_diff_on_reread is enabled: the `diffable` column of src/language_specs.ts. */
 function isDiffableSource(basename: string): boolean {
   return languageHasFlag(detectLanguage(basename), 'diffable')
@@ -484,111 +275,6 @@ function detectSkillFile(filePath: string): string | null {
   const match = filePath.match(/\.claude[\\/]skills[\\/]([^\\/]+)[\\/]SKILL\.md$/i)
   // The directory name, which a checkout chooses, and the hint quoting it leaves on the context channel, which neither fences its payload nor escapes the markers token-goat speaks in. Unreachable today for a reason that is not this one: the only caller feeds the name to getCompactAnySessionSync, whose safeSkillName refuses anything outside [A-Za-z0-9_:-], and every spoken marker needs a bracket and a space. That gate exists to keep the name safe as a filename, not to stop an injection, so it is the kind of thing a later change relaxes without noticing what else it was holding. tests/skill_stale_compact_marker_name.test.ts pins it; this call is the survival layer for the day it moves.
   return match ? displaySafePath(match[1]!) : null
-}
-
-/**
- * Compute a compact unified-style diff between two versions of a doc file, reporting whether the body had to be truncated.
- *
- * Strips the common prefix/suffix to isolate the changed region, then formats it as a truncated unified diff (at most 50 changed lines). `text` is '' when the contents are identical. `truncated` is true when the changed region did not fit in the 50-line cap, i.e. the body deliberately omits changed lines -- callers that decide whether to serve the diff INSTEAD of the file must consult it, because the omitted lines are content the reader still needs (see {@link loadSnapshotDiff}).
- */
-function buildLineDiffDetailed(oldContent: string, newContent: string, label: string): { readonly text: string; readonly truncated: boolean } {
-  const oldLines = oldContent.split('\n')
-  const newLines = newContent.split('\n')
-
-  // Common prefix
-  let prefix = 0
-  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
-    prefix++
-  }
-
-  // Common suffix (not overlapping the prefix region)
-  let oldSuffix = oldLines.length
-  let newSuffix = newLines.length
-  while (oldSuffix > prefix && newSuffix > prefix && oldLines[oldSuffix - 1] === newLines[newSuffix - 1]) {
-    oldSuffix--
-    newSuffix--
-  }
-
-  if (prefix === oldLines.length && prefix === newLines.length) return { text: '', truncated: false }
-
-  const changedOld = oldLines.slice(prefix, oldSuffix)
-  const changedNew = newLines.slice(prefix, newSuffix)
-
-  const MAX_LINES = 50
-  const removedLines = changedOld.map(l => `-${l}`)
-  const addedLines = changedNew.map(l => `+${l}`)
-  const allChanges = [...removedLines, ...addedLines]
-
-  // The header's hunk counts must describe what the body actually shows, not the
-  // pre-truncation totals -- otherwise `@@ -x,{changedOld.length} +x,{changedNew.length} @@`
-  // overstates the line counts on any diff over MAX_LINES, breaking any consumer that
-  // trusts the header (a real unified-diff parser, or a human eyeballing it) instead of
-  // recounting the body itself. Derive the shown removed/added counts from the same slice
-  // point used for the body below.
-  const shownRemoved = Math.min(removedLines.length, MAX_LINES)
-  const shownAdded = Math.max(0, Math.min(addedLines.length, MAX_LINES - shownRemoved))
-
-  const out: string[] = [
-    `--- ${label} (prev)`,
-    `+++ ${label} (current)`,
-    `@@ -${prefix + 1},${shownRemoved} +${prefix + 1},${shownAdded} @@`,
-  ]
-
-  const truncated = allChanges.length > MAX_LINES
-  if (!truncated) {
-    out.push(...allChanges)
-  } else {
-    out.push(...allChanges.slice(0, MAX_LINES))
-    out.push(`... (${allChanges.length - MAX_LINES} more changed lines)`)
-  }
-
-  return { text: out.join('\n'), truncated }
-}
-
-/** String-only view of {@link buildLineDiffDetailed}, for the display-only callers (`cli.ts`'s history/restore previews, `confirm_apply.ts`'s change preview) that render a diff alongside the content rather than in place of it, and so do not care whether the body was truncated. */
-export function buildLineDiff(oldContent: string, newContent: string, label: string): string {
-  return buildLineDiffDetailed(oldContent, newContent, label).text
-}
-
-type SnapshotDiffResult =
-  | { readonly kind: 'unchanged'; readonly currentContent: string }
-  | { readonly kind: 'diff'; readonly diff: string; readonly savedBytes: number; readonly currentContent: string }
-  | { readonly kind: 'none' }
-
-/**
- * Shared by the session-artifact and doc/source re-read paths below: load the prior snapshot
- * for `normalized` under `sessionId`, strip its trailing `<snapshot truncated at ` marker if
- * present, and compare to the file's current on-disk content. Size-gated at 256KB and fails
- * soft to `{kind: 'none'}` on any missing snapshot, oversized file, or read/stat error --
- * callers fall through to their own generic re-read handling in that case, exactly as before
- * this was factored out of two independent ~25-line copies. `currentContent` is threaded back
- * out on the non-'none' variants so callers that need it (e.g. for `countTextLines`) don't
- * re-read the file a second time. Callers own their own messaging, stat name, and any
- * additional savings-floor gate.
- */
-function loadSnapshotDiff(sessionId: string, normalized: string, basename: string): SnapshotDiffResult {
-  const oldSnap = snapshotLoad(sessionId, normalized)
-  if (oldSnap === null) return { kind: 'none' }
-  try {
-    const sz = statSize(normalized)
-    if (sz === null || sz > 256 * 1024) return { kind: 'none' }
-    const currentContent = fs.readFileSync(normalized, 'utf8')
-    const TRUNC_MARKER = '\n<snapshot truncated at '
-    const oldRaw = oldSnap.toString('utf8')
-    const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
-    // A truncated snapshot only ever holds the first SNAPSHOT_TRUNCATE_BYTES of the original file, never the whole thing. Equality against currentContent can never hold (the stored prefix is always shorter), and a diff built against it always reports the missing tail as a fabricated addition -- even when nothing changed. There is no truthful answer to give from a partial baseline, so bail to 'none' exactly as for a missing snapshot, letting the caller fall through to its own re-read handling instead of asserting something about content it never actually compared.
-    if (truncIdx >= 0) return { kind: 'none' }
-    const oldContent = oldRaw
-    if (oldContent === currentContent) return { kind: 'unchanged', currentContent }
-    const { text: diff, truncated } = buildLineDiffDetailed(oldContent, currentContent, basename)
-    if (diff === '') return { kind: 'none' }
-    // A truncated body is never servable in place of the file. savedBytes below is measured against the diff TEXT, so every changed line the 50-line cap omits makes the diff shorter and the apparent saving larger -- the widest changes would clear the savings floor most easily while hiding the most content, and the caller's "Here is what changed" wording would be false. Fail soft to 'none' so the caller falls through to its generic re-read handling, exactly as it already does when a diff misses the savings floor.
-    if (truncated) return { kind: 'none' }
-    const savedBytes = Math.max(0, currentContent.length - diff.length)
-    return { kind: 'diff', diff, savedBytes, currentContent }
-  } catch {
-    return { kind: 'none' }
-  }
 }
 
 /**
@@ -1492,45 +1178,6 @@ function extractReadOutput(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
 }
 
-/** Count text lines the way `wc -l` does: newline count, plus one for a final non-empty
- *  line with no trailing newline. Empty content has zero lines. Used to gate the
- *  post-read structural-navigation hint against `post_read_code_compress.min_lines`. */
-function countTextLines(content: string): number {
-  if (content.length === 0) return 0
-  const parts = content.split(/\r\n|\r|\n/)
-  if (parts[parts.length - 1] === '') parts.pop()
-  return parts.length
-}
-
-/** Line count of `normalized`, capped by SLICE_ESTIMATE_SCAN_CAP_BYTES; Infinity when the
- *  file is too large to scan or unreadable (fail open toward the truncated-read deny). */
-function estimateTruncatedLineCount(normalized: string): number {
-  try {
-    const sz = statSize(normalized)
-    if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-      return countTextLines(fs.readFileSync(normalized, 'utf8'))
-    }
-  } catch {
-    // best-effort — treat as eligible for the deny below on read/stat failure
-  }
-  return Infinity
-}
-
-function editAnywayHint(rawPath: string): string {
-  const normalized = displaySafePath(rawPath)
-  return (
-    'To edit it anyway, use `token-goat replace "' + normalized + '" --old-b64 <base64> --new-b64 <base64>` (preferred — no temp files needed) or `--old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --b64 <base64>` (or `--from <newfile>`) to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
-  )
-}
-
-// No editAnywayHint here: both call sites only fire inside a wasFileReadThisSession-gated block, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-function truncatedReadDenyMessage(rawPath: string): string {
-  const normalized = displaySafePath(rawPath)
-  return (
-    'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.'
-  )
-}
-
 /**
  * post_tool_use handler for the Read tool.
  *
@@ -1629,32 +1276,6 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
 }
 
 /**
- * The exact text a Read of `normalized` delivers (or would deliver), read from disk.
- *
- * The Read tool's own `offset`/`limit` bound a line window, so an event carrying them was handed
- * that window and nothing else. Returns raw file lines rather than the tool's numbered rendering,
- * because every consumer compares against what a plain `sed`/`cat` prints. Null when the file
- * cannot be read or is past the scan cap.
- *
- * Shared by the two ends that must agree byte-for-byte on "what this read is worth": the producer
- * that stores a finished Read, and the pre-read check that asks whether the same bytes were already
- * served. Two copies of this slicing would be a silent miss the moment they drifted.
- */
-function readWindowFromDisk(event: HookEvent, normalized: string): string | null {
-  const size = statSize(normalized)
-  if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
-  const text = decodeSource(fs.readFileSync(normalized))
-  const window = readRequestedSliceWindow(event)
-  const start = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
-  const limit = window.limit
-  // `offset` bounds the window on its own: a Read carrying an offset and no limit delivers from that line to the end of the file, never the head. Consulting `offset` only when a `limit` was also given recorded the WHOLE file as served for such a read, and a later whole-file Read then had its never-delivered head withheld under a notice claiming it had already been served verbatim.
-  if (start === 1 && (limit === undefined || limit <= 0)) return text
-  const lines = text.split('\n')
-  const from = start - 1
-  return (limit === undefined || limit <= 0 ? lines.slice(from) : lines.slice(from, from + limit)).join('\n')
-}
-
-/**
  * The id of an already-served body that provably contains every line this Read would deliver, or
  * null when there is no such proof.
  *
@@ -1747,65 +1368,6 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
   } catch {
     // best-effort; never affect the completed Read
   }
-}
-
-/** One row of the Read tool's `cat -n` rendering: its line number, the raw line, and the row verbatim. */
-/** A Read result row: leading pad, the line number, a tab or arrow separator, then the file's line. */
-const READ_NUMBERED_ROW_RE = /^\s*(\d+)[\t→](.*)$/
-
-/** The numbered block inside a Read result, with whatever the harness wrapped around it kept intact. */
-interface ParsedReadResult {
-  readonly header: string[]
-  readonly rows: NumberedRow[]
-  readonly trailer: string[]
-}
-
-/**
- * Split a Read result into the `cat -n` block it delivered and the harness text around it.
- *
- * The block must be strictly consecutive -- row n followed by row n+1 -- because that is the one
- * property separating a real rendering from file content that merely looks numbered. A file whose
- * own lines begin with digits and a tab would otherwise parse as rows, and lines would be withheld
- * on a coincidence. A break in the sequence ends the block rather than voiding it, so a
- * system-reminder or notice appended after the rows is preserved verbatim instead of costing the
- * whole rewrite.
- *
- * A result carrying no numbered block at all is not necessarily unusable. Claude Code hands the hook the file's own text in `tool_response.file.content` and applies the `cat -n` rendering afterwards, for display only, so every real Read arrives here unnumbered -- 104 of 104 in a captured session. Treating that as unparseable made both post-read rewrites dead code on that harness: the fold booked 0 events across a full session while the rest of the read hook ran normally. So an unnumbered result is parsed as one row per line, numbered from `firstLine`, and both callers keep working against whichever form the harness sends.
- *
- * `raw` equals `text` for those synthesized rows, which is what a caller must emit back: `updatedToolOutput.file.content` is the same unnumbered field the content came from, and writing a numbered rendering into it would number the file twice on display.
- *
- * Null only when there is nothing to work with: an empty body, an image read, an error, a deny message.
- */
-function parseNumberedReadResult(respText: string, firstLine = 1): ParsedReadResult | null {
-  const lines = respText.split('\n')
-  const header: string[] = []
-  const rows: NumberedRow[] = []
-  const trailer: string[] = []
-  let i = 0
-  for (; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const m = READ_NUMBERED_ROW_RE.exec(line)
-    if (m === null || !Number.isSafeInteger(Number(m[1]))) {
-      header.push(line)
-      continue
-    }
-    rows.push({ no: Number(m[1]), text: m[2] ?? '', raw: line })
-    i++
-    break
-  }
-  for (; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const m = READ_NUMBERED_ROW_RE.exec(line)
-    const prev = rows[rows.length - 1]
-    if (m === null || prev === undefined || Number(m[1]) !== prev.no + 1) break
-    rows.push({ no: prev.no + 1, text: m[2] ?? '', raw: line })
-  }
-  for (; i < lines.length; i++) trailer.push(lines[i] ?? '')
-  if (rows.length > 0) return { header, rows, trailer }
-  // No numbered block: the harness sent the file's own text. One row per line, numbered from firstLine, nothing treated as header or trailer -- there is no wrapper here to preserve, and claiming one would drop a real line.
-  if (respText === '') return null
-  const plain = lines.map((text, idx) => ({ no: firstLine + idx, text, raw: text }))
-  return { header: [], rows: plain, trailer: [] }
 }
 
 /**

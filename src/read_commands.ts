@@ -13,7 +13,7 @@ import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
-import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
+import { indexedSourceText, formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import { displaySafeText, normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexFileSync, isTreeSitterAvailable } from './parser.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -26,9 +26,8 @@ import { getDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, type SearchHit } from './embeddings.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
-import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
-import type { SectionResult } from './section_reader.js'
-import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, filtersFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { readSection, listSections, extractSection } from './section_reader.js'
+import { decodeSource, runGit, ensureNewline, PER_FILE_COUNTERFACTUAL_CEILING, foldPath, foldCaseForContainment, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 export { requireNonNegativeStrictInt } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
@@ -41,8 +40,7 @@ import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
 import { detectLanguageOfFile } from './parser_types.js'
-import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT, refBlindKindVerdict } from './graph_commands.js'
-import type { CallerEntry } from './graph_commands.js'
+import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT, refBlindKindVerdict } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import {
   isGhAvailable,
@@ -245,7 +243,7 @@ function verifyPin(p: string, pinned: string): void {
  * no active pin (every CLI caller, and every MCP call with confinement disabled), this is
  * byte-for-byte the pre-existing behavior: indexFileSync does its own read.
  */
-function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
+export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
   if (pinned === undefined) {
     indexFileSync(resolvedPath, dbPath)
@@ -394,7 +392,7 @@ const DELETED_TAG = '⚠ DELETED: file no longer on disk'
  * hands over a path whose meaning depends on the current directory. Saying nothing is the right
  * answer there: a false "this file is gone" is worse than the silence this whole change replaces.
  */
-function fileIsGone(absPath: string): boolean {
+export function fileIsGone(absPath: string): boolean {
   // A relative path would be resolved against the current directory, which for a symbol search spanning every indexed project is the wrong one -- so it is never judged. Past that, fileIsAbsent answers ENOENT and only ENOENT: a file that is present but unreadable stays silent, the same as before.
   if (!path.isAbsolute(absPath)) return false
   return fileIsAbsent(absPath)
@@ -408,7 +406,7 @@ function fileIsGone(absPath: string): boolean {
  * fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/skeleton/symbol
  * lookup.
  */
-function staleWarning(resolvedPath: string): string {
+export function staleWarning(resolvedPath: string): string {
   const entry = getFileEntry(resolvedPath)
   if (entry === null || entry.sha === '') return ''
   const diskSha = fingerprintFile(resolvedPath)
@@ -809,7 +807,7 @@ export function unknownSymbolSuggestion(name: string, rootDir: string): string {
 // to indexed symbols is pointed at the exact `file::symbol` spec(s) to retry with; one that
 // resolves to nothing gets those commands' own "Invalid spec" wording verbatim, rather than a
 // third dialect of the same error.
-function formatBareNameSpecError(command: string, name: string, projectRoot?: string): string {
+export function formatBareNameSpecError(command: string, name: string, projectRoot?: string): string {
   const rootDir = projectRoot ?? resolveProjectRoot({ project: process.cwd() })
   const matches = querySymbols({ name, limit: 50, rootDir })
   const seen = new Set<string>()
@@ -915,7 +913,7 @@ export function trimBlankLines(lines: string[]): string[] {
   return lines.slice(start, end)
 }
 
-function firstBodyLine(body: string): string {
+export function firstBodyLine(body: string): string {
   return body.split('\n').find((l) => l.trim() !== '') ?? ''
 }
 
@@ -1346,14 +1344,14 @@ export interface ReadOptions {
   suppressStat?: boolean
 }
 
-function parseReadSpec(spec: string): { file: string; symbol?: string } {
+export function parseReadSpec(spec: string): { file: string; symbol?: string } {
   const colonIdx = findSpecSeparator(spec)
   if (colonIdx === -1) return { file: spec }
   return { file: spec.slice(0, colonIdx), symbol: spec.slice(colonIdx + 2) }
 }
 
 // Cross-file multi-spec: `src/a.ts::alphaFn,src/b.ts::betaFn`. Comma-separated segments are walked left to right tracking a "current file" -- a segment containing `::` sets a new current file and contributes its own symbol, a segment with no `::` inherits the current file (so `src/a.ts::alphaFn,src/b.ts::betaFn,gammaFn` reads gammaFn from b.ts). Deliberately returns null (falling through to the existing single-file `parseReadSpec`/`findSpecSeparator` handling, byte-for-byte unchanged) unless at least two segments carry their own `::`, because a spec with only one `::` segment is either the pre-existing single-file `file::a,b` form or the numeric line-range form `file::N,M` -- both already handled correctly by the code below and must not be reinterpreted here. Also declines outright if the first segment has no `::`, so a bare-name spec (no file prefix at all) keeps reaching `formatBareNameSpecError` untouched.
-function parseCrossFileMultiSpec(spec: string): { file: string; symbol: string }[] | null {
+export function parseCrossFileMultiSpec(spec: string): { file: string; symbol: string }[] | null {
   const segments = spec.split(',')
   if (segments.length < 2) return null
   if (findSpecSeparator(segments[0]!) === -1) return null
@@ -1502,7 +1500,7 @@ function runLineRange(
  *                lists every candidate rather than silently return the first row.
  *  - `none`      nothing matched.
  */
-type SymbolResolution =
+export type SymbolResolution =
   | { kind: 'ok'; entry: SymbolEntry }
   | { kind: 'confined'; message: string }
   | { kind: 'ambiguous'; symbol: string; file: string; candidates: SymbolEntry[] }
@@ -1563,7 +1561,7 @@ function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string 
  * A mixed list (some candidates share a same-file parent, others don't, across multiple files)
  * gets file-prefixed labels for every candidate, each with its own working, distinct retry.
  */
-function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string, commandName = 'read'): string {
+export function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string, commandName = 'read'): string {
   const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
   const displayRoot = getDisplayRoot(explicitRoot)
   const lines = [
@@ -1626,7 +1624,7 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
  * The confining project root when `indexing.cross_project_symbols = false`, else null. Resolved
  * once per command so every index-backed lookup answers to the same root.
  */
-function confinedProjectRoot(): string | null {
+export function confinedProjectRoot(): string | null {
   return loadConfig().indexing.cross_project_symbols ? null : resolveProjectRoot()
 }
 
@@ -1638,7 +1636,7 @@ function confinedProjectRoot(): string | null {
  * agent cannot contain it -- each command has to enforce the setting itself or the setting is
  * bypassed by whichever command forgot.
  */
-function confinementRefusal(label: string, resolved: string, root: string | null): string | null {
+export function confinementRefusal(label: string, resolved: string, root: string | null): string | null {
   if (root === null || isInsideRoot(resolved, root)) return null
   return `${label} is outside this project root, and indexing.cross_project_symbols = false confines symbol lookups to it: ${toDisplayPath(root, resolved)}`
 }
@@ -1650,7 +1648,7 @@ export function fileConfinementRefusal(label: string, file: string, projectRoot:
   return confinementRefusal(label, resolveIndexPath(file, projectRoot ?? process.cwd()), root)
 }
 
-function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
+export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol: rawSymbol } = parseReadSpec(spec)
   if (rawSymbol === undefined || rawSymbol === '') return { kind: 'none' }
 
@@ -2851,26 +2849,9 @@ function renderCallerGroups(refs: RefEntry[], contextLines = 0): string[] {
   return lines
 }
 
-// ---- skeleton / stub_view ---------------------------------------------------
+// ---- skeleton / stub_view / outline -----------------------------------------
 
-export interface SkeletonOptions {
-  file: string
-  json?: boolean
-  minLines?: number
-  /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
-  grep?: string
-  /** Internal. Set only by the multi-file path, where several files merge into one payload and each row needs to name its own file. Single-file callers already know the file they asked for, and every extra field per row costs rows under the byte cap. */
-  includeFilePath?: boolean
-  forceRefresh?: boolean
-  stats?: boolean
-  /**
-   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
-   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
-   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
-   * to the wrong absolute index key and silently match nothing.
-   */
-  projectRoot?: string
-}
+export * from './read_outline.js'
 
 /**
  * Why an existing file has no symbol rows when the cause is token-goat rather than the file:
@@ -2896,29 +2877,13 @@ export function symbolExtractorGap(displayPath: string, resolvedPath: string): s
 }
 
 /** The empty-result line for `outline`/`skeleton`: a missing path, a gap in token-goat's extraction, or a file that genuinely declares nothing. */
-function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
+export function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
   // A path that does not exist reads as "this file has no symbols", so a typo or a stale path guess looks like a definitive answer about a real file and the caller stops looking instead of fixing the path. Checked before the language branch: a missing `foo.scala` is a wrong path, not an unsupported extractor. Wording is `exports`/`imports`/`deps`/`test-for`' verbatim, which already close this same gap.
   if (!fs.existsSync(resolvedPath)) {
     return `Could not read: ${displayPath}`
   }
   return symbolExtractorGap(displayPath, resolvedPath) ?? `No indexed symbols found in '${displayPath}'`
 }
-
-/**
- * Upper bound on the number of symbols fetched in one SQL query for a single file's
- * `skeleton`/`outline`. The old hard `limit: 500` silently dropped every symbol past the 500th
- * on large files -- a 5000-line demonolith indexes to thousands of symbols -- and still reported
- * `truncated: false` with an honest-looking header, because the token-budget overflow guard
- * (guardJsonRows/guardText) only ever saw the pre-capped 500 rows and computed its
- * `truncated`/`totalCount` from that truncated slice. This cap is set high enough that the
- * overflow guard, not this SQL LIMIT, is the real limiter for realistic files. A file whose
- * symbol count genuinely exceeds THIS cap too is flagged via the fetch-one-past-the-cap
- * detection below, which also re-queries with countSymbols (no LIMIT) so `totalCount` stays
- * honest even past this cap, rather than just moving the same silent-lie cliff higher. (Same
- * "SQL LIMIT applied before the count is taken" truncation-lie shape already fixed for
- * symbol/refs/refs --top/grep --json.)
- */
-const SKELETON_SYMBOL_CAP = 5000
 
 /**
  * Whether a symbol's `docstring` field holds an actual doc comment.
@@ -2933,7 +2898,7 @@ const SKELETON_SYMBOL_CAP = 5000
  * A real doc comment is never a single bare identifier, so {@link PARENT_IDENTIFIER_RE} -- the
  * same test `findParentName` already uses to recognize the parent convention -- separates them.
  */
-function hasRealDocstring(docstring: string): boolean {
+export function hasRealDocstring(docstring: string): boolean {
   const doc = docstring.trim()
   return doc !== '' && !PARENT_IDENTIFIER_RE.test(doc)
 }
@@ -2943,315 +2908,16 @@ function hasRealDocstring(docstring: string): boolean {
  * `skeleton`, `outline`, and `read`'s text output. Returns `''` when `refCounts` is `undefined`
  * (i.e. `--stats` wasn't requested), so callers can always append the result unconditionally.
  */
-function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { name: string; docstring: string }): string {
+export function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { name: string; docstring: string }): string {
   return refCounts !== undefined
     ? `  [${countNoun(refCounts.get(sym.name) ?? 0, 'ref')}, ${hasRealDocstring(sym.docstring) ? 'documented' : 'undocumented'}]`
     : ''
 }
 
-/**
- * Shared prologue for `skeleton`/`outline`: resolve the file, optionally reparse it, fetch its
- * indexed symbols, and (on a non-empty result) apply the `--min-lines` filter and optional
- * `--stats` ref-count lookup. Both commands share this exact sequence verbatim; only their JSON
- * row shape and text-line formatting differ, so those stay in each command's own function.
- */
-// A file whose symbols were ALL removed by a filter renders as "(0 symbols)", which is the same thing an unindexed or symbol-less file shows -- except that case gets noSymbolsMessage explaining itself, and this one silently looked like a definitive answer about the file. Emitted only when the file genuinely had symbols before filtering, so the honest empty case keeps its own dedicated message untouched.
-function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefined, grep: string | undefined): string {
-  const parts: string[] = []
-  if (minLines !== undefined) parts.push(`--min-lines ${minLines}`)
-  if (grep !== undefined) parts.push(`--grep ${grep}`)
-  return filtersFilteredToEmptyNotice(preFilterCount, parts, 'indexed symbol', 'indexed symbols', 'the file is indexed')
-}
 
-function prepareSymbolListing(
-  file: string,
-  opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'confined'; text: string } | { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined; totalLines: number } {
-  const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-  // Same reason as resolveSymbolSpec's check: the listing below comes out of the shared index.
-  const confined = confinementRefusal('This file', resolved, confinedProjectRoot())
-  if (confined !== null) return { kind: 'confined', text: confined }
-  if (opts.forceRefresh === true) {
-    indexFileSyncPinned(resolved, globalDbPath())
-    enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
-  } else {
-    // Self-heal a stale index before querying below, so skeleton/outline serve fresh data
-    // instead of the caller having to fall back to a stale-index warning.
-    healStaleIndex(resolved)
-  }
-  // Fetch one past the cap so a file that genuinely has more than SKELETON_SYMBOL_CAP symbols can
-  // be flagged as truncated honestly, instead of the old `limit: 500` that dropped the overflow
-  // silently and still reported truncated:false.
-  const fetched = querySymbols({ filePath: resolved, limit: SKELETON_SYMBOL_CAP + 1 })
-  const symbolsTruncated = fetched.length > SKELETON_SYMBOL_CAP
-  const symbols = symbolsTruncated ? fetched.slice(0, SKELETON_SYMBOL_CAP) : fetched
-  // When the cap is actually hit, `symbols.length` (and anything downstream computed from it) is
-  // no longer the true count -- it's just SKELETON_SYMBOL_CAP. Re-query with no LIMIT (same
-  // "SQL LIMIT applied before the count is taken" fix already applied to runSymbol/countSymbols)
-  // so the JSON payload's totalCount stays honest instead of silently re-lying at the new,
-  // higher cap the way the old hard `limit: 500` used to.
-  const trueSymbolCount = symbolsTruncated ? countSymbols({ filePath: resolved }) : undefined
-
-  if (symbols.length === 0) {
-    return { kind: 'empty', text: noSymbolsMessage(file, resolved) }
-  }
-
-  // Both filters narrow the same already-fetched set, so they compose: --min-lines then --grep. Applied after the cap slice and after the genuinely-empty check, exactly as --min-lines always has been, so neither the truncation flag nor the no-symbols message changes meaning when --grep is added.
-  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const filtered = symbols.filter(
-    (s) =>
-      (opts.minLines === undefined || s.lineEnd - s.lineStart + 1 >= opts.minLines) &&
-      (matchesGrep === undefined || matchesGrep(s.name)),
-  )
-
-  const refCounts =
-    opts.stats === true
-      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
-      : undefined
-
-  const fullSourceBytes = sumFileSizes([resolved])
-
-  // Computed from the unfiltered (pre --min-lines/--grep) symbol set, not `filtered`: a narrowing filter can drop the very symbol that reaches furthest down the file, and reporting the total from what's left would then understate the file's real size instead of just the shown symbol count.
-  const totalLines = symbols.length > 0 ? Math.max(...symbols.map((s) => s.lineEnd)) : 0
-
-  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines }
-}
-
-/**
- * Runs a per-file `{text, code}` command once for each file of a comma-separated multi-file spec
- * and joins the blocks with a blank line. Shared by `skeleton` and `outline` so both get the same
- * ordering, the same block separator, and the same exit rule: 0 when at least one file produced
- * output, 1 only when every file failed (a single unreadable file must not suppress the rest).
- * Each block keeps its own `# Skeleton:`/`# Outline:` header, which is what identifies the file
- * it belongs to.
- */
-function runPerFileListing(
-  files: string[],
-  run: (file: string) => { text: string; code: number },
-  json = false,
-): { text: string; code: number } {
-  const blocks: string[] = []
-  let anyOk = false
-  for (const file of files) {
-    const r = run(file)
-    if (r.code === 0) anyOk = true
-    blocks.push(r.text)
-  }
-  // Joining blocks with a blank line is right for text and wrong for JSON: it produces N complete documents back to back, which no parser accepts, so `--json` -- a flag whose only purpose is machine consumption -- failed outright on a multi-file spec. Merge into one document instead. Rows carry their own filePath, so a single flat items array stays unambiguous and the payload keeps the exact shape a single-file call returns, which means a caller does not have to branch on how many files it asked for.
-  if (json) return mergeListingJson(files, blocks, anyOk)
-  return { text: blocks.join('\n\n'), code: anyOk ? 0 : 1 }
-}
-
-/**
- * Merge the per-file JSON payloads of a multi-file listing into one document: items
- * concatenated in the order the files were named, `truncated` true if any file truncated,
- * `totalCount` summed. A file that produced prose rather than JSON (an unreadable path, or
- * one with no indexed symbols -- both legitimate outcomes for one file of several) is
- * reported in an `errors` array rather than being spliced into the document as text, which
- * would break parsing again, or dropped, which would let a failed file read as an empty one.
- * `errors` is omitted entirely when every file succeeded, so the all-ok payload is shaped
- * exactly like a single-file one.
- */
-function mergeListingJson(files: string[], blocks: string[], anyOk: boolean): { text: string; code: number } {
-  const items: unknown[] = []
-  const errors: { file: string; message: string }[] = []
-  let truncated = false
-  let totalCount = 0
-  for (const [i, block] of blocks.entries()) {
-    const file = files[i] ?? ''
-    let parsed: { items?: unknown[]; truncated?: boolean; totalCount?: number } | undefined
-    try {
-      parsed = JSON.parse(block) as { items?: unknown[]; truncated?: boolean; totalCount?: number }
-    } catch {
-      parsed = undefined
-    }
-    if (parsed === undefined || !Array.isArray(parsed.items)) {
-      errors.push({ file, message: block.trim() })
-      continue
-    }
-    items.push(...parsed.items)
-    if (parsed.truncated === true) truncated = true
-    totalCount += parsed.totalCount ?? parsed.items.length
-  }
-  const payload = { items, truncated, totalCount, ...(errors.length > 0 ? { errors } : {}) }
-  return { text: displaySafeJson(payload), code: anyOk ? 0 : 1 }
-}
 
 /** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
-/**
- * How the symbol count is written in a `skeleton` or `outline` header.
- *
- * Plain when everything the file has is being shown. When the per-file cap in
- * {@link SKELETON_SYMBOL_CAP} cut the list short, the header says so and gives the real total,
- * which {@link runSkeletonPrep} already re-queried without a LIMIT for exactly this purpose.
- *
- * Both text headers used to state the capped number as though it were the whole file: a file of
- * 130,000 symbols printed `(5000 symbols)`, with nothing anywhere in the output to suggest
- * otherwise. The `--json` output of the same command reported `truncated: true` and
- * `totalCount: 130000` correctly, so the honest number was computed, carried all the way to the
- * renderer, and then used on only one of the two paths -- and the one it was missing from is the
- * default, and the one an agent reads. This is the same silent-truncation shape the comment on
- * SKELETON_SYMBOL_CAP describes as the reason that cap and its count exist at all.
- */
-function symbolCountLabel(shown: number, truncated: boolean, trueCount: number | undefined): string {
-  if (!truncated || trueCount === undefined || trueCount <= shown) return countNoun(shown, 'symbol')
-  return `${shown} of ${countNoun(trueCount, 'symbol')}`
-}
 
-export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
-  const multiFiles = parseMultiFileSpec(opts.file)
-  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file, includeFilePath: true }), opts.json === true)
-
-  const prep = prepareSymbolListing(opts.file, opts)
-  if (prep.kind === 'confined' || prep.kind === 'empty') {
-    return { text: prep.text, code: 1 }
-  }
-  const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines } = prep
-
-  if (opts.json === true) {
-    // filePath appears when, and only when, the payload can hold more than one file. It identifies which file a row came from -- without it two merged rows both reading lineStart 3 are indistinguishable while meaning different files -- but a single-file caller already knows the file it named, and every field costs rows: guardJsonRows caps by BYTES, so an unconditional path per row pushes real symbols out of a large file listing (the same lever that removing `body` pulled in the other direction). Rendered through toDisplayPath so it is root-relative and reproducible rather than absolute and specific to this machine and drive-letter casing.
-    const rows = filtered.map((s) => ({
-      ...(opts.includeFilePath === true ? { filePath: toDisplayPath(displayRoot, s.filePath) } : {}),
-      name: s.name,
-      kind: s.kind,
-      lineStart: s.lineStart,
-      lineEnd: s.lineEnd,
-      ...(refCounts !== undefined
-        ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) }
-        : {}),
-    }))
-    const capped = guardJsonRows(rows)
-    const payload = {
-      items: capped.items,
-      truncated: capped.truncated || symbolsTruncated,
-      totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
-      // Envelope-level, not per row: this listing is one named file, so the fact belongs to the
-      // whole payload. Only added when true, so live output keeps the exact three-key shape
-      // tests/json_envelope_shape.test.ts pins.
-      ...(fileIsGone(resolved) ? { deleted: true } : {}),
-    }
-    const text = displaySafeJson(payload)
-    recordReadStat('stub_view', fullSourceBytes, text, opts.file)
-    return { text, code: 0 }
-  }
-
-  const lines: string[] = [`# Skeleton: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)}, ${countNoun(totalLines, 'line')})`]
-  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
-  for (const sym of filtered) {
-    const lineStr = sym.lineStart.toString().padStart(6)
-    const statsStr = formatStatsSuffix(refCounts, sym)
-    lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
-  }
-  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
-  recordReadStat('stub_view', fullSourceBytes, text, opts.file)
-  return { text, code: 0 }
-}
-
-// ---- outline ----------------------------------------------------------------
-
-/**
- * Character cap for the per-symbol doc annotation in `outline`'s text mode. The `split('\n')[0]`
- * "first line" clip was written for conventional multi-line doc blocks, where line one is a short
- * summary; a single-line `//` doc comment is ONE physical line however long, so without a
- * character cap the "first line" is the entire doc essay and doc text can dominate the outline's
- * bytes (measured ~80% of the output on doc-heavy files, on a command whose purpose is a compact
- * map). This is the ceiling, not the usual cut: {@link clipDocSummary} ends on the first complete
- * sentence and only falls back to a word boundary at this cap when the line has no sentence end
- * inside it. The cap was once described as keeping roughly the first sentence on its own, which
- * measurement did not bear out: cutting here alone left 297 of 448 annotations in this project's
- * source ending mid-clause. The ellipsis marks the cut,
- * and the full text stays one `read`/`brief` on the symbol away. JSON mode is untouched: it carries
- * the full docstring for machine consumers.
- */
-const DOC_SUMMARY_MAX_CHARS = 140
-
-/** Shortest prefix of a doc line that is a complete sentence, or `null` when it has no usable sentence end. Skips the two shapes that are not sentence ends however much they look like one: a known abbreviation (`e.g.`) and a single letter (an initial, or `a.` opening a list). The point in a decimal needs no check of its own, because a terminator only counts here when whitespace or the end of the line follows it, and the digits after `0.75` are neither. A sentence shorter than this floor is a fragment like "Not used." that says less than the words after it, so it is passed over in favour of the next candidate. */
-function firstSentenceEnd(line: string): number | null {
-  const MIN_SENTENCE_CHARS = 30
-  const ABBREV = /(?:\b(?:e\.g|i\.e|vs|cf|etc|approx|al|Dr|Mr|Ms|St|Fig|No)\.|\b\p{L}\.)$/u
-  for (const m of line.matchAll(/[.!?](?=\s|$)/gu)) {
-    const end = m.index + 1
-    if (end < MIN_SENTENCE_CHARS) continue
-    const head = line.slice(0, end)
-    if (ABBREV.test(head)) continue
-    return end
-  }
-  return null
-}
-
-/** Clip a doc summary line for the outline. A docstring's first sentence is its summary by convention in every language token-goat parses, so that is the cut: it ends on a complete thought rather than mid-clause, and it is usually shorter than the cap as well. Measured over 448 docstrings in this project's own source, cutting here is 10.6% smaller than cutting at {@link DOC_SUMMARY_MAX_CHARS} and raises the share of annotations ending on a complete thought from 151 to 250. It never costs bytes: of the 448, 110 came out shorter and none came out longer. Where no sentence ends inside the cap the previous behaviour stands: cut at the last word boundary before it, or hard-cut a line with no usable space, such as one giant token. An ellipsis marks any text dropped, so a summary that consumed the whole line still passes through byte-identical. */
-function clipDocSummary(firstLine: string): string {
-  const sentence = firstSentenceEnd(firstLine)
-  if (sentence !== null && sentence <= DOC_SUMMARY_MAX_CHARS) {
-    return sentence === firstLine.length ? firstLine : `${firstLine.slice(0, sentence)}…`
-  }
-  if (firstLine.length <= DOC_SUMMARY_MAX_CHARS) return firstLine
-  const cut = firstLine.lastIndexOf(' ', DOC_SUMMARY_MAX_CHARS)
-  return `${firstLine.slice(0, cut > 40 ? cut : DOC_SUMMARY_MAX_CHARS).trimEnd()}…`
-}
-
-/**
- * `outline` takes exactly the options `skeleton` does -- same flags on the CLI, same shape through
- * `prepareSymbolListing`. Aliased rather than restated so a field added to one is never silently
- * missing from the other: the two were byte-identical copies, and the pair of `cli.ts` `.action`
- * blocks that build them is likewise line-for-line the same.
- */
-export type OutlineOptions = SkeletonOptions
-
-/** Handle ``token-goat outline file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
-export function runOutline(opts: OutlineOptions): { text: string; code: number } {
-  const multiFiles = parseMultiFileSpec(opts.file)
-  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file, includeFilePath: true }), opts.json === true)
-
-  const prep = prepareSymbolListing(opts.file, opts)
-  if (prep.kind === 'confined' || prep.kind === 'empty') {
-    return { text: prep.text, code: 1 }
-  }
-  const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
-
-  if (opts.json === true) {
-    // Project explicitly instead of spreading the row. The spread carried `body` -- the full source of every symbol -- into a payload for the one command whose entire purpose is to map a file WITHOUT its bodies. On src/cli.ts that was 45 KB of the 87 KB payload, and because guardJsonRows caps by bytes, the bodies crowded out symbols: 164 of 504 survived, so asking for machine-readable output silently returned under a third of the map the text form prints in full. An explicit projection also closes the trap that let it in -- a spread type-checks against SymbolEntry no matter what fields get added to it later, so the next new column would have leaked in just as quietly.
-    const rows = filtered.map((s) => ({
-      ...(opts.includeFilePath === true ? { filePath: toDisplayPath(displayRoot, s.filePath) } : {}),
-      name: s.name,
-      kind: s.kind,
-      lineStart: s.lineStart,
-      lineEnd: s.lineEnd,
-      docstring: s.docstring,
-      parent: s.parent,
-      ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
-    }))
-    const capped = guardJsonRows(rows)
-    const payload = {
-      items: capped.items,
-      truncated: capped.truncated || symbolsTruncated,
-      totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
-      // Same envelope-level flag, and same reason, as runSkeleton's payload above.
-      ...(fileIsGone(resolved) ? { deleted: true } : {}),
-    }
-    const text = displaySafeJson(payload)
-    recordReadStat('outline', fullSourceBytes, text, opts.file)
-    return { text, code: 0 }
-  }
-
-  const lines: string[] = [`# Outline: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)})`]
-  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
-  for (const sym of filtered) {
-    const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
-    const kindStr = sym.kind.padEnd(14)
-    const bodyLen = sym.lineEnd - sym.lineStart + 1
-    // Same overloaded-column guard as the stats flag: a bare parent name is not a doc comment
-    // and must not be rendered as one (see hasRealDocstring).
-    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring.split('\n')[0] ?? '')}` : ''
-    const statsStr = formatStatsSuffix(refCounts, sym)
-    // outline has no `path:` prefix on the row to hang formatSymbolLocation's check on (the file is named once, in the header above) -- so the notebook marker is appended directly off the same isVirtualIndexedPath/NOTEBOOK_CELL_LINES_SUFFIX pair that helper uses, rather than routing a bare range through it.
-    const notebookSuffix = isVirtualIndexedPath(sym.filePath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
-    lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)
-  }
-  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
-  recordReadStat('outline', fullSourceBytes, text, opts.file)
-  return { text, code: 0 }
-}
 
 // ---- github pr-slice ---------------------------------------------------------
 
@@ -3561,255 +3227,9 @@ export async function runScreenshot(
   return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
 }
 
-interface BriefOptions {
-  spec: string
-  limit?: number
-  json?: boolean
-  /**
-   * Project root to scope symbol resolution and relative-path resolution to. Defaults to
-   * `process.cwd()`; same field name as {@link ReadOptions.projectRoot}. Callers whose cwd is not
-   * the workspace root (e.g. an MCP server launched from an opaque directory) should pass the
-   * actual workspace root explicitly -- otherwise a relative file spec resolves against the wrong
-   * project, and the display paths in the rendered output name a root the caller never asked for.
-   */
-  projectRoot?: string
-  /** `-C, --context <n>`: lines of real call-site source around each entry of the caller block, in `grep -C`'s framing. Defaults to 0 (output unchanged). */
-  context?: number
-  /** `--exclude-tests`: drop callers whose call SITE is in a test file, matching `refs`/`callers` (which filter the call site) rather than `dead`/`symbol` (which filter the definition). Opt-in; output is byte-identical when omitted. */
-  excludeTests?: boolean
-  /** `--grep <pattern>`: only show callers whose enclosing caller NAME matches this regex (literal substring if it does not compile) -- narrows a high-fanout symbol's caller block the same way `refs --grep`/`call-chain --grep` narrow theirs, so a symbol with hundreds of callers doesn't need a separate `refs` round-trip just to find the ones that matter. Opt-in; output is byte-identical when omitted. */
-  grep?: string
-  /** Internal only -- set by {@link runBriefMulti} on each per-symbol recursive `runBriefCore` call so the single-symbol path skips its own `recordReadStat`, same convention as {@link ReadOptions.suppressStat} for `runReadMulti`. Not a CLI/MCP-facing option. */
-  suppressStat?: boolean
-}
+// ---- brief ------------------------------------------------------------------
 
-interface BriefResult {
-  symbol: SymbolEntry
-  callers: CallerEntry[]
-  totalCallers: number
-  truncated: boolean
-  /** How many callers `--exclude-tests` dropped. Omitted entirely when the flag is off or hid nothing, so default output stays byte-identical; present and non-zero it explains a `totalCallers` that would otherwise look inconsistent with an unfiltered `refs` count. */
-  hiddenByExcludeTests?: number
-  /** How many (post `--exclude-tests`) callers `--grep` dropped. Same omit-when-zero convention as {@link hiddenByExcludeTests}. */
-  hiddenByGrep?: number
-  section: SectionResult | null
-}
-
-/** Core of ``token-goat brief "file::symbol"``: bundles the symbol body, its resolved callers (enclosing-function-aware, via graph_commands.ts's real caller-resolution logic), and its containing doc section (if the file has heading structure) into one response -- cutting the common "understand this function" pattern from 2-3 round-trips to 1. Returns text+code instead of emitting directly so {@link runBrief} can both dispatch to {@link runBriefMulti} for a comma-separated spec and reuse this exact single-symbol path for each sub-call, mirroring runRead/runSection's core-vs-dispatcher split. Note that --limit validation deliberately lives in {@link runBrief}, not here: it is a whole-invocation flag, so validating per sub-call would repeat one usage error once per symbol and frame it as a per-symbol resolution failure. */
-function runBriefCore(opts: BriefOptions): { text: string; code: number } {
-  const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
-  if (resolution.kind === 'confined') return { text: resolution.message, code: 1 }
-  if (resolution.kind === 'ambiguous') {
-    return {
-      // Name the command explicitly: formatAmbiguity defaults to 'read', so brief's retry lines would otherwise tell the user to run `token-goat read`, which answers a different question than the one they asked.
-      text: formatAmbiguity(
-        resolution.symbol,
-        resolution.file,
-        resolution.candidates,
-        opts.projectRoot,
-        'brief',
-      ),
-      code: 1,
-    }
-  }
-  if (resolution.kind === 'none') {
-    // A bare name (no `::` at all) is a spec-format mistake, not evidence the symbol is
-    // missing -- see formatBareNameSpecError. A proper `file::symbol` spec that genuinely
-    // resolves to nothing keeps the original wording below, untouched.
-    if (findSpecSeparator(opts.spec) === -1) {
-      return { text: formatBareNameSpecError('brief', opts.spec, opts.projectRoot), code: 1 }
-    }
-    // Only paid after the query already came back empty, and only in text mode -- this branch's
-    // text is emitted verbatim via emitErr regardless of --json (no separate opts.json check
-    // exists in runBrief's caller for this path), so there's no JSON envelope to protect either
-    // way.
-    if (opts.json !== true) {
-      const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
-      if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
-        return { text: `Symbol not found: ${opts.spec}\n${emptyIndexMessage(rootDir)}`, code: 1 }
-      }
-    }
-    return { text: `Symbol not found: ${opts.spec}`, code: 1 }
-  }
-  const match = resolution.entry
-
-  // resolveCallers(name) with no explicit limit still applies its own internal default cap (500, in graph_commands.ts's queryRefs call) -- so a capped callers.length is not the true count once more than 500 references exist. The earlier fix for that took the total from a separate COUNT(*) query (queryRefCounts), but queryRefCounts keys by symbol NAME project-wide while resolveCallers additionally scopes to THIS definition site (filterRefsForSymbol drops refs living in a file that defines its own same-named symbol), so for a name defined in two files brief printed the other definition's callers into its own "Callers (N)" header and invented an "...(N more elided)" tail for rows that were never going to be listed. The scoped scan is the only thing that knows the real total, so it always runs unbounded here and its post-filter length is the total.
-  const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
-  const excludeTests = opts.excludeTests === true
-  // The unbounded scan also covers --grep and --exclude-tests, which both filter client-side below -- otherwise a high-fanout symbol's grep match could hide inside the callers that fell past resolveCallers' 500-row default page before the filter ever ran.
-  // resolveCallers' last argument makes it scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
-  const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, true)
-  const testFiltered = excludeTests ? allCallers.filter((c) => !isTestFile(c.file)) : allCallers
-  const hiddenByExcludeTests = excludeTests ? allCallers.length - testFiltered.length : 0
-  // --grep narrows by the caller's enclosing symbol NAME, same field/convention as
-  // runCallers'/call-chain's own --grep -- runs after the exclude-tests drop so both filters
-  // compose (grep sees the already test-filtered set, matching runCallers' ordering).
-  const preGrepCount = testFiltered.length
-  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const callers = matchesGrep !== undefined ? testFiltered.filter((c) => matchesGrep(c.caller)) : testFiltered
-  const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - callers.length : 0
-  // The unbounded scan above IS the complete in-project, definition-scoped set, so its post-filter length is the true total: it counts exactly the rows that can appear in the list below, which is what the "Callers (N)" header and the "...(N more elided)" tail both describe.
-  const totalCallers = callers.length
-  const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd, readFileText)
-  const limit = opts.limit ?? 20
-  const shown = callers.slice(0, limit)
-  const truncated = totalCallers > shown.length
-  // brief carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry (brief_view),
-  // but nothing here ever called recordStat -- the brief bucket in `token-goat stats --full`
-  // stayed permanently zero regardless of real usage, the same class of registry/producer
-  // desync previously fixed for map_lookup/changed_lookup/csv_query (see
-  // project_runchanged_missing_stat memory). "Full source" is the on-disk size of the file the
-  // resolved symbol lives in, mirroring recordReadStat's fullSourceBytes convention elsewhere in
-  // this file -- brief folds a symbol read + callers lookup + section lookup into that one file.
-  const fullSourceBytes = sumFileSizes([match.filePath])
-
-  if (opts.json === true) {
-    // callers' contextLines attached first (buildContextWindow reads real source off disk and needs the raw absolute `c.file`), THEN both symbol.filePath and callers[].file rewritten to the same root-relative spelling the text block above renders (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
-    const callersWithContext = (opts.context ?? 0) > 0
-      ? shown.map((c) => ({ ...c, contextLines: buildContextWindow(c.file, c.line, opts.context ?? 0) ?? [] }))
-      : shown
-    const result: BriefResult = {
-      symbol: { ...match, filePath: toDisplayPath(rootDir, match.filePath) },
-      callers: callersWithContext.map((c) => ({ ...c, file: toDisplayPath(rootDir, c.file) })),
-      totalCallers,
-      truncated,
-      ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}),
-      ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}),
-      section,
-    }
-    const jsonText = displaySafeJson(result)
-    if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
-    return { text: jsonText, code: 0 }
-  }
-
-  const body = resolveBody(match)
-  const bodyLen = match.lineEnd - match.lineStart + 1
-  const lines: string[] = [
-    // This header is token-goat's own line quoting a repo-chosen name, kind and path, so it is escaped. `body` below it is the source the reader asked for and stays byte-for-byte.
-    `# ${displaySafeText(match.name)}  ${displaySafeText(match.kind)}  ${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, match.filePath)), match.lineStart, match.lineEnd)}`,
-    `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)`,
-    body,
-    '',
-  ]
-
-  // An empty caller block reads as "nothing calls this", which for a symbol exercised only by tests is the opposite of the truth and invites deleting live code -- so when the filter is what emptied it, say so instead of showing a bare zero.
-  const hiddenNote = excludeTests && hiddenByExcludeTests > 0 ? ` (${excludeTestsHiddenNote(hiddenByExcludeTests)})` : ''
-  if (callers.length === 0 && matchesGrep !== undefined && preGrepCount > 0) {
-    // Distinguishes "--grep matched none of the N callers that do exist" from a genuinely
-    // caller-less symbol -- same "filtered store renders as populated" trap already fixed for
-    // refs/callers/dead/types/deps. preGrepCount already reflects --exclude-tests (if both are
-    // set), so this fires only once the grep filter is what zeroed the remaining set.
-    lines.push(`Callers (0): ${grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers').trim()}`)
-  } else {
-    lines.push(callers.length === 0 && hiddenNote !== ''
-      ? `Callers (0): no non-test callers${hiddenNote}`
-      : `Callers (${totalCallers}):${hiddenNote}`)
-  }
-  for (const c of shown) {
-    const callerDisplayPath = toDisplayPath(rootDir, c.file)
-    lines.push(`  ${c.caller}\t${callerDisplayPath}:${c.line}`)
-    // brief's caller block is its OWN rendering site, not a call into runCallers -- `-C` has to be
-    // threaded here separately or the flag would silently do nothing for `brief`.
-    const window = buildContextWindow(c.file, c.line, opts.context ?? 0)
-    if (window !== null) lines.push(...renderContextWindow(callerDisplayPath, c.line, window, '', '    '))
-  }
-  if (truncated) {
-    lines.push(`  ...(${totalCallers - shown.length} more elided)`)
-  }
-
-  if (section !== null) {
-    lines.push('')
-    lines.push(`Section: ${section.heading} (lines ${section.lineStart}-${section.lineEnd})`)
-  }
-
-  const text = guardText(trimBlankLines(lines).join('\n'), 'symbol')
-  if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
-  return { text, code: 0 }
-}
-
-/** Handle ``token-goat brief "file::a,b,c"`` -- bundle several symbols' body+callers+section views from one file in a single call, mirroring `read`/`section`'s comma-separated multi-spec grammar (see {@link runReadMulti}). Delegates each symbol to a recursive {@link runBriefCore} call (`suppressStat: true`) so ambiguity handling, not-found + did-you-mean, and JSON shape all come from the exact same code path the single-symbol form already exercises -- a failure to resolve one symbol is reported inline instead of aborting the whole call, same as `runReadMulti`'s per-symbol handling. */
-function runBriefMulti(file: string, symbols: string[], opts: BriefOptions): { text: string; code: number } {
-  let anyFound = false
-  const jsonOut: Record<string, unknown> = {}
-  const textBlocks: string[] = []
-
-  for (const sym of symbols) {
-    const sub = runBriefCore({ ...opts, spec: `${file}::${sym}`, suppressStat: true })
-    if (sub.code === 0) anyFound = true
-    if (opts.json === true) {
-      // Parse the sub-call's JSON string back into an object so the multi envelope nests real JSON per symbol, never an embedded string -- a failed sub-call has no JSON body of its own, so it is represented by its plain-text error instead.
-      jsonOut[sym] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
-      continue
-    }
-    textBlocks.push(`${sym}:\n${sub.text}`)
-  }
-
-  // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see BriefOptions.suppressStat).
-  const fullSourceBytes = sumFileSizes([resolveIndexPath(file, opts.projectRoot ?? process.cwd())])
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
-  if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
-  return { text, code: anyFound ? 0 : 1 }
-}
-
-/** Cross-file brief, e.g. `src/a.ts::fnA,src/b.ts::fnB`. Body mirrors runBriefMulti's own per-symbol loop above (same runBriefCore sub-call, same suppressStat + single fullSourceBytes-over-all-files convention), swapping the shared `file` for each pair's own -- and mirrors runSectionCrossFile/runRefsCrossFile/runReadMulti's `keyFor` rule: one distinct file across all pairs keys by bare symbol (matches today's same-file `brief "file::a,b"` output byte-for-byte), more than one keys by the full `file::symbol` pair so two files contributing the same symbol name stay distinct. */
-function runBriefCrossFile(pairs: { file: string; symbol: string }[], opts: BriefOptions): { text: string; code: number } {
-  const distinctFiles = new Set(pairs.map((p) => p.file))
-  const keyFor = (p: { file: string; symbol: string }): string => (distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`)
-
-  let anyFound = false
-  const jsonOut: Record<string, unknown> = {}
-  const textBlocks: string[] = []
-
-  for (const { file, symbol } of pairs) {
-    const key = keyFor({ file, symbol })
-    const sub = runBriefCore({ ...opts, spec: `${file}::${symbol}`, suppressStat: true })
-    if (sub.code === 0) anyFound = true
-    if (opts.json === true) {
-      jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
-      continue
-    }
-    textBlocks.push(`${key}:\n${sub.text}`)
-  }
-
-  const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
-  if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
-  return { text, code: anyFound ? 0 : 1 }
-}
-
-/** Handle ``token-goat brief "file::symbol"``: dispatches to {@link runBriefCrossFile} for a cross-file `a.ts::x,b.ts::y` spec, to {@link runBriefMulti} for a comma-separated same-file `file::a,b` spec, otherwise runs the single-symbol {@link runBriefCore} path, then emits the result -- `emitErr` on a nonzero code, `emit` on success. */
-export function runBrief(opts: BriefOptions): number {
-  // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently slice the caller list down to zero entries instead of surfacing a clear "you asked for nothing" error, consistent with every other --limit flag in this codebase. Validated once here rather than inside runBriefCore because --limit applies to the whole invocation, so a multi-symbol spec must report it once, not once per symbol.
-  if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
-    return 1
-  }
-
-  // Cross-file multi-spec `src/a.ts::fnA,src/b.ts::fnB`. Checked before the single-file `::` handling below for the same reason runRead/runSection/runRefs check it first (see parseCrossFileMultiSpec) -- parseReadSpec's `lastIndexOf('::')` would otherwise fold a spec crossing a file boundary into one bogus file/symbol-list pair. parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::a,b` multi-symbol form.
-  const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
-  if (crossFilePairs !== null) {
-    const { text, code } = runBriefCrossFile(crossFilePairs, opts)
-    if (code === 0) emit(text)
-    else emitErr(text)
-    return code
-  }
-
-  const { file, symbol } = parseReadSpec(opts.spec)
-  if (symbol !== undefined && symbol !== '' && symbol.includes(',')) {
-    const multiSymbols = symbol.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-    if (multiSymbols.length > 1) {
-      const { text, code } = runBriefMulti(file, multiSymbols, opts)
-      if (code === 0) emit(text)
-      else emitErr(text)
-      return code
-    }
-  }
-
-  const { text, code } = runBriefCore(opts)
-  if (code === 0) emit(text)
-  else emitErr(text)
-  return code
-}
+export * from './read_brief.js'
 
 // ---- grep -------------------------------------------------------------------
 
