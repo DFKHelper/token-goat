@@ -32,9 +32,13 @@ import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { summarize, SOURCE_HINT } from '../src/stats.js'
 import { PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js'
+import { globalDbPath } from '../src/constants.js'
+import { getDb } from '../src/db.js'
+import { indexFileSync } from '../src/parser.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
+const indexedFiles: string[] = []
 
 // Unrecognized extension (deliberately not .txt) so callers testing the generic
 // size-based gate exercise that path specifically, not one of the per-type handlers
@@ -156,6 +160,14 @@ beforeEach(() => {
 afterEach(() => {
   clearModuleCaches()
   unpinProtectRecentReadsToZero()
+  if (indexedFiles.length > 0) {
+    const db = getDb(globalDbPath())
+    for (const filePath of indexedFiles.splice(0)) {
+      const normalized = normalizePath(filePath)
+      db.prepare('DELETE FROM symbols WHERE file_path = ?').run(normalized)
+      db.prepare('DELETE FROM files WHERE path = ?').run(normalized)
+    }
+  }
   while (tmpFiles.length > 0) {
     const p = tmpFiles.pop()
     if (p === undefined) continue
@@ -279,7 +291,8 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('already read this session')
-      expect(result.message).toContain('token-goat read/section/symbol')
+      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('SymbolName')
       expect(result.message).not.toContain('To edit it anyway')
       expect(result.message).not.toContain('token-goat replace')
     }
@@ -3867,6 +3880,46 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
   })
 
   describe('sequential line-range paging and slice re-read dedup', () => {
+    it('uses an indexed source symbol in a count-based denial without in-memory file content', () => {
+      pinProtectRecentReadsToZero()
+      const p = path.join(os.tmpdir(), `tg-indexed-hint-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      const content = [
+        'export function indexedHintTarget(): number {',
+        '  return 42',
+        '}',
+        ...Array.from({ length: 60 }, (_, i) => `const filler${i} = ${i}`),
+      ].join('\n')
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+      indexFileSync(normalizePath(p), globalDbPath())
+      indexedFiles.push(p)
+
+      preReadHandler(readEvent(p))
+      preReadHandler(readEvent(p))
+      const result = preReadHandler(readEvent(p))
+
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain(`token-goat read "${normalizePath(p)}::indexedHintTarget"`)
+      }
+    })
+
+    it('uses an indexed document heading in a large-file denial without in-memory file content', () => {
+      const p = path.join(os.tmpdir(), `tg-indexed-heading-${process.pid}-${Math.random().toString(36).slice(2)}.md`)
+      const content = '# Indexed Heading\n\n' + 'x'.repeat(600 * 1024)
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+      indexFileSync(normalizePath(p), globalDbPath())
+      indexedFiles.push(p)
+
+      const result = preReadHandler(readEvent(p))
+
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain(`token-goat section "${normalizePath(p)}::Indexed Heading"`)
+      }
+    })
+
     it('detects and denies redundant line-range re-read when lines were already served', () => {
       const p = path.join(os.tmpdir(), `tg-range-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `const x${i} = ${i};`).join('\n'))

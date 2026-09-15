@@ -505,6 +505,13 @@ export function unwrapCompressCommand(executed: string): string | null {
   for (let i = 0; i + 1 < argv.length; i++) {
     const tok = argv[i]
     if (tok === '-c' || tok === '--cmd') return argv[i + 1] ?? null
+    if (tok === '--cmd-b64') {
+      try {
+        return Buffer.from(argv[i + 1] ?? '', 'base64').toString('utf8')
+      } catch {
+        return null
+      }
+    }
   }
   return null
 }

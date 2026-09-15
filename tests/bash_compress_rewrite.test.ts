@@ -36,6 +36,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 import type { HookEvent } from '../src/hook_registry.js'
 import { serializeOutput } from '../src/hook_registry.js'
 import { preBashHandler, postBashHandler, stripTrailingStderrRedirect } from '../src/hooks_bash.js'
+import { unwrapCompressCommand } from '../src/hooks_bash_commands.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -251,6 +252,13 @@ describe('stripTrailingStderrRedirect', () => {
 })
 
 describe('rewrite ↔ recall interaction', () => {
+  it('unwraps a base64-encoded compress command', () => {
+    const original = `printf "hello" && echo 'world'`
+    const payload = Buffer.from(original, 'utf8').toString('base64')
+
+    expect(unwrapCompressCommand(`token-goat compress -f generic --cmd-b64 ${payload}`)).toBe(original)
+  })
+
   it('post-hook unwraps the compress wrapper so recall keys on the original command', async () => {
     const original = 'cargo build'
     const wrapped = "token-goat compress -f generic -c 'cargo build'"

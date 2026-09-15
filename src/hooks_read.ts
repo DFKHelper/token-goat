@@ -51,6 +51,7 @@ import {
 export { readRequestedSliceWindow, isTruncatedReadDelivery, buildLineDiff } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
+import { querySymbols } from './index_reader.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
   extractMarkdownHeadings,
@@ -250,23 +251,55 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
 
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
+  const escapeHintName = (name: string): string =>
+    name.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ').trim()
 
   if (isDocFile) {
-    if (fileContent && /\.(md|mdx)$/i.test(basename)) {
+    if (fileContent !== undefined && /\.(md|mdx)$/i.test(basename)) {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length > 0) {
         const top = headings.slice(0, 3).map((h) => h.text.trim())
         return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
       }
     }
+    if (fileContent === undefined) {
+      try {
+        const top = querySymbols({ filePath, kind: 'heading', limit: 3 })
+          .map((symbol) => escapeHintName(symbol.name))
+          .filter((name) => name !== '')
+        if (top.length > 0) {
+          return `Use \`token-goat section "${filePath}::${top[0]}"\` (or sections: ${top.join(', ')}) to extract a part.`
+        }
+      } catch {
+        // The index is advisory; retain the clean fallback when it is unavailable.
+      }
+    }
     return `Use \`token-goat section "${filePath}::HeadingName"\` to extract a part.`
   } else if (isSectionFile) {
     return `Use \`token-goat section "${filePath}::name"\` to extract a part.`
   } else {
-    const samples = fileContent ? extractQuickSymbolSamples(fileContent) : []
+    const samples = fileContent !== undefined
+      ? extractQuickSymbolSamples(fileContent)
+      : (() => {
+          try {
+            return querySymbols({ filePath, limit: 3 })
+              .map((symbol) => escapeHintName(symbol.name))
+              .filter((name) => name !== '')
+          } catch {
+            return []
+          }
+        })()
     const sym = samples[0] || 'SymbolName'
     const avail = samples.length > 0 ? ` (available: ${samples.join(', ')})` : ''
     return `Use \`token-goat read "${filePath}::${sym}"\`${avail} for one function, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure.`
+  }
+}
+
+function lineCountForSurgicalHint(filePath: string): number {
+  try {
+    return countTextLines(fs.readFileSync(filePath, 'utf8'))
+  } catch {
+    return 0
   }
 }
 
@@ -679,7 +712,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
               recordStat('session_hint', 0, 0)
               return denyOutput(
                 (basename + ' is unchanged since last read. ' +
-                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
               )
             }
             if (
@@ -691,7 +724,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
               return denyOutput(
                 ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
                 fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
-                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+                surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent), snapDiff.currentContent)).trimEnd(),
               )
             }
             // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to
@@ -768,7 +801,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
       return denyOutput(
         (basename + ' is unchanged since last read. ' +
-        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent))).trimEnd(),
+        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd(),
       )
     }
     if (
@@ -780,7 +813,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       return denyOutput(
         ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
         fenceUntrustedFileContent('```diff\n' + memSnapDiff.diff + '\n```') + '\n\n' +
-        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent))).trimEnd(),
+        surgicalHint(normalized, basename, countTextLines(memSnapDiff.currentContent), memSnapDiff.currentContent)).trimEnd(),
       )
     }
     // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use
@@ -1064,7 +1097,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
         return denyOutput(
           'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' +
-          'Use `token-goat read "' + shown + '::Symbol"` or `token-goat skeleton ' + shown + '` to inspect structure directly without manual chunk paging.',
+          surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) +
+          ' Inspect structure directly without manual chunk paging.',
         )
       }
 
@@ -1079,12 +1113,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(
-          'Tried to read this file ' + reads + ' times already — use `token-goat read "' + shown + '::Symbol"`, `token-goat skeleton ' + shown + '`, or `token-goat outline ' + shown + '` to pull just the part you need.',
+          'Tried to read this file ' + reads + ' times already — ' +
+          surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)),
         )
       }
     }
 
-    const hint = _isDocFile(normalized)
+    const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
+    const contextHint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
@@ -1110,7 +1146,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualSlice(event, normalized)
     return quietContextOutput(
       'Note: ' + shown + ' was already read this session (' + reads + ' ' + plural + '). ' +
-        hint + pagingNote,
+        contextHint + pagingNote,
     )
   }
 
@@ -1135,9 +1171,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     const kb = toKB(size)
     const config = loadConfig()
-    const hint = _isDocFile(normalized)
-      ? 'Use `token-goat section "' + shown + '::SectionName"` to read one section.'
-      : 'Consider token-goat skeleton or token-goat section.'
+    const hint = surgicalHint(normalized, basename, 1000)
     if (gateSize >= largeFileDenyBytes()) {
       // The read is blocked outright, so it never actually happened — don't record it
       // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
