@@ -2,6 +2,25 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **`token-goat upgrade` (alias `update`, `--check`, `--json`)**: Checks the npm registry for a newer published version and installs it with `npm install -g token-goat@latest`, then re-runs `token-goat install` so hooks and bridge manifests point at the build that just landed. Skipping that second step is how an upgrade leaves a machine running new code through old wiring. `--check` reports the status without installing anything, and `--json` emits the same current/latest/updateAvailable result for a script to assert on. The registry request is timeboxed at 3.5 seconds and returns nothing at all when `network.offline` is set, so an offline machine reports that it could not reach the registry instead of hanging. Running it from inside a token-goat git checkout prints the local build commands instead of globally installing over your working tree.
+- **`token-goat doctor` reports an available update**: The audit ends with an update notice when a newer version is published, because the older the installed build, the more likely the rest of the report describes behavior that has already been fixed. The check is timeboxed at 1.5 seconds and stays silent when the registry cannot be reached, so `doctor` still finishes offline.
+- **`token-goat compress --quiet-success` (`-q`)**: On exit code 0, emits a single line (`[tg: ok] <command> (0.4s, recall: token-goat bash-output <id>)`) and stores the full output for recall instead of printing it. A passing test suite says nothing worth reading, so the tokens go to the run that failed. On a non-zero exit the output is delivered as usual, since that is the run you need to see.
+- **`token-goat compress --cmd-b64 <payload>`**: Accepts the command as base64, which survives quotes, backslashes, and dollar signs that a harness or shell would otherwise mangle before token-goat ever sees them. `-c/--cmd` is no longer a required option; supply one form or the other.
+- **`token-goat compress --native`**: Runs the command through the platform's own shell, not bash, which keeps Windows path backslashes intact for tools that reject the forward-slash form.
+
+### Changed
+
+- **Surgical-read hints now name symbols and headings that exist in the file**: The hint shown when a read is declined used to suggest `token-goat read "file::SymbolName"`, a placeholder nobody can run, so following the advice cost a turn to discover the real name. It now reads the file it is talking about and names up to three actual symbols, or for Markdown, up to three actual headings. The hint also offers `outline` beside `skeleton`, since one gives you the shape of a file and the other its signatures.
+
+### Fixed
+
+- **`--quiet-success` no longer bypassed when no filter matches the command**: Commands that match no tool filter took a raw passthrough that streams straight to the terminal, which never sees the output and so could not suppress it. The same shortcut had already been closed for `--max-tokens`; `--quiet-success` now takes the same capture path, so the flag applies to every command, not just the ones a filter happened to recognize.
+- **The upgrade check is declared as network egress**: `token-goat capabilities` lists the new registry request as `network.upgrade_check`, controlled by `network.offline` and pointing at `src/cli_upgrade.ts::fetchLatestVersion`. A test in the suite fails the build when a module can open a network connection and is missing from that inventory, which is the gate a new command like this one is meant to hit.
+
 ## [2.9.13] - 2026-09-14
 
 ### Added
