@@ -478,6 +478,8 @@ The file-by-file table for each harness, and the path that file sits at: **[What
 
 Hooks fire automatically on every tool call once installed — nothing to start or restart there. The background worker is a separate, manual step: `token-goat worker start` launches it as a detached process, `token-goat worker status` checks it, `token-goat worker stop` kills it. It restarts itself automatically if it crashes or gets killed while the machine is running — an edit hook checks its liveness and respawns it, rate-limited to about once every 5 minutes. It does not survive a reboot or logout, though; re-run `worker start` after either. `token-goat uninstall` removes the hook entries, `CLAUDE.md` block, and skill directory, but does not touch a running worker — stop it separately with `token-goat worker stop` if you no longer want it running.
 
+To move to a newer release, `token-goat upgrade` installs it from npm and then re-runs `token-goat install`, so your hooks and integration manifests point at the build that just landed. `token-goat upgrade --check` reports whether one is available without installing anything, and `--json` gives the same answer for a script. Both go quiet when `network.offline` is set, and `token-goat doctor` mentions an available update at the end of its report.
+
 ## Verify
 
 ```
